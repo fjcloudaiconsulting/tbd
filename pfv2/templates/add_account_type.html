@@ -2,17 +2,46 @@
 
 {% block title %}Add Account Type{% endblock %}
 
-{% block adm_content %}
+{% block adm_menu %}
+<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts')}}" role="button" id="home">Admin Accounts</a>
+<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='add') }}" role="butt on" id="addacct">Add Account</a>
+{% endblock %}
+
+{% block adm_content_col1 %}
 <h3>Add New Account Type</h3>
 
 <form method="POST" action="{{ url_for('admin.adm_accounts', op='addtype') }}">
     <div class="form-group">
-        <div class="form-group">
-            <label for="accountNameType">Account Type</label>
-            <input type="text" class="form-control" id="accountNameType" name="accountNameType" placeholder="Checking" required>
-        </div>
-        <button type="submit" class="btn btn-primary">Add Account</button>
+        {{ form.account_type.label }}
+        {{ form.account_type }}
+    </div>
+    <div>
+        {{ form.submit }}
         <a class="btn btn-danger" href="{{ url_for('admin.adm_accounts') }}" role="button" id="canceladd">Cancel</a>
     </div>
 </form>
+{% endblock %}
+
+{% block adm_content_col2 %}
+<h3>All Accounts Types</h3>
+<br>
+<table class="table table-sm" id="accountType">
+    <thead>
+        <tr>
+            <th scope="col">Account Type</th>
+            <th scope="col">Edit</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for type in account_types %}
+        <tr>
+            <td>{{ type.name }}</td>
+            <td>
+                <a class="btn btn-danger btn-sm" href="{{ url_for('admin.adm_accounts', op='removetype', id=type.id) }}" role="button" id="rmaccttype">Remove</a>
+                <a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='edittype', id=type.id) }}" role="button" id="editaccttype">Edit</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
 {% endblock %}

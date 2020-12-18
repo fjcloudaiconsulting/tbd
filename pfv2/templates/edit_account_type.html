@@ -2,7 +2,7 @@
 
 {% block title %}Edit Account{% endblock %}
 
-{% block adm_content %}
+{% block adm_content_col1 %}
 <h3>Edit Account Type</h3>
 <form method="POST" action="{{ url_for('admin.adm_accounts', op='savetype', id=account_type.id) }}">
     <div class="form-group">

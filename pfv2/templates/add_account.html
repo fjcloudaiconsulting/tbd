@@ -2,39 +2,62 @@
 
 {% block title %}Add Accounts{% endblock %}
 
-{% block adm_content %}
+{% block adm_menu %}
+<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts')}}" role="button" id="home">Admin Accounts</a>
+<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account Type</a>
+{% endblock %}
+
+{% block adm_content_col1 %}
 <h3>Add New Account</h3>
 
 <form method="POST" action="{{ url_for('admin.adm_accounts', op='add') }}">
     <div class="form-group">
         <div class="form-group">
-            <label for="accountName">Account Name</label>
-            <input type="text" class="form-control" id="accountName" name="accountName" placeholder="ING" required>
+            {{ form.account_name.label }}
+            {{ form.account_name }}
         </div>
         <div class="form-group">
-            <label for="accountType">Account Type</label>
-            <select class="form-control" id="accountType" name="accountType" required>
-                {% for type in account_types %}
-                    <option value="{{ type.id }}">{{ type.name }}</option>
-                {% endfor %}
-            </select>
+            {{ form.account_type.label }}
+            {{ form.account_type }}
         </div>
-        <!-- <div class="form-group">
-            <label for="accountType">Account Type</label>
-            <input type="text" class="form-control" id="accountType" name="accountType" placeholder="Checking" required>
-        </div> -->
         <div class="form-group">
-            <label for="accountBalance">Initial Balance</label>
+            {{ form.initial_balance.label }}
             <div class="input-group">
                 <div class="input-group-prepend">
                     <span class="input-group-text" id="inputGroupPrepend2">€</span>
                 </div>
-                <input type="text" class="form-control" id="accountBalance" name="accountBalance" 
-                    placeholder="10.00" aria-describedby="inputGroupPrepend2" required>
+                {{ form.initial_balance }}
             </div>
         </div>
-        <button type="submit" class="btn btn-primary">Add Account</button>
+        {{ form.submit }}
         <a class="btn btn-danger" href="{{ url_for('admin.adm_accounts') }}" role="button" id="canceladd">Cancel</a>
     </div>
 </form>
+{% endblock %}
+
+{% block adm_content_col2 %}
+<h3>All Accounts</h3>
+<table class="table table-sm" id="account">
+    <thead>
+        <tr>
+            <th scope="col">Account Name</th>
+            <th scope="col">Account Type</th>
+            <th scope="col">Balance</th>
+            <th scope="col">Edit</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for account in accounts %}
+        <tr>
+            <td>{{ account.name }}</td>
+            <td>{{ account.acct_type.name }}</td>
+            <td>{{ account.balance }}</td>
+            <td>
+                <a class="btn btn-danger btn-sm" href="{{ url_for('admin.adm_accounts', op='remove', id=account.id) }}" role="button" id="rmacct">Remove</a>
+                <a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='edit', id=account.id) }}" role="button" id="editacct">Edit</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
 {% endblock %}

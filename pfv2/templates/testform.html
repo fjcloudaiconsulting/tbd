@@ -1,0 +1,20 @@
+{% extends 'template.html' %}
+
+{% block body %}
+
+<form method="POST" action="/debug">
+    <div class="form-group">
+        {{ form.account_type.label }}
+        {{ form.account_type }}
+    </div>
+    <!-- <div class="input-group">
+        {{ form.account_type.label }}
+        {{ form.account_type(class="input-group-text") }}
+    </div> -->
+    <div>
+        {{ form.submit }}
+    </div>
+
+</form>
+
+{% endblock %}
