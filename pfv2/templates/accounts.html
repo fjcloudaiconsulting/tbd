@@ -3,9 +3,9 @@
 {% block title %}Accounts{% endblock %}
 
 {% block adm_menu %}
-<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
+<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_interface')}}" id="home">Admin Home</a>
 <a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='add') }}" role="butt on" id="addacct">Add Account</a>
-<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account Type</a>
+<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='addtype') }}" id="addaccttype">Add Account Type</a>
 
 {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -43,13 +43,20 @@
             <td>{{ account.acct_type.name }}</td>
             <td>{{ account.balance }}</td>
             <td>
-                <a class="btn btn-danger btn-sm" href="{{ url_for('admin.adm_accounts', op='remove', id=account.id) }}" role="button" id="rmacct">Remove</a>
-                <a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='edit', id=account.id) }}" role="button" id="editacct">Edit</a>
+                <a href="{{ url_for('admin.adm_accounts', op='remove', id=account.id) }}" id="rmacct"><i class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='edit', id=account.id) }}" id="editacct"><i class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
+<!-- <script>
+    $(document).ready( function () {
+      $('#account').DataTable({
+        responsive: true
+      });
+    });
+</script> -->
 {% endblock %}
 
 {% block adm_content_col2 %}
@@ -67,11 +74,18 @@
         <tr>
             <td>{{ type.name }}</td>
             <td>
-                <a class="btn btn-danger btn-sm" href="{{ url_for('admin.adm_accounts', op='removetype', id=type.id) }}" role="button" id="rmaccttype">Remove</a>
-                <a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='edittype', id=type.id) }}" role="button" id="editaccttype">Edit</a>
+                <a href="{{ url_for('admin.adm_accounts', op='removetype', id=type.id) }}" id="rmaccttype"><i class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='edittype', id=type.id) }}" id="editaccttype"><i class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}
     </tbody>
 </table>
+<!-- <script>
+    $(document).ready( function () {
+      $('#accountType').DataTable({
+        responsive: true
+      });
+    });
+</script> -->
 {% endblock %}

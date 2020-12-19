@@ -51,7 +51,7 @@ def adm_accounts(op=None, id=None, accounts=None):
             try:
                 db.session.add(new_account)
                 db.session.commit()
-                flash(f"New Account Name added: {acct_type}", 'success')
+                flash(f"New Account Name added: {acct_name}", 'success')
                 return redirect(url_for('admin.adm_accounts'))
             except exc.IntegrityError:
                 db.session.rollback()

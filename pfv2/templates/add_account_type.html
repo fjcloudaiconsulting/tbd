@@ -37,8 +37,8 @@
         <tr>
             <td>{{ type.name }}</td>
             <td>
-                <a class="btn btn-danger btn-sm" href="{{ url_for('admin.adm_accounts', op='removetype', id=type.id) }}" role="button" id="rmaccttype">Remove</a>
-                <a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='edittype', id=type.id) }}" role="button" id="editaccttype">Edit</a>
+                <a href="{{ url_for('admin.adm_accounts', op='removetype', id=type.id) }}" id="rmaccttype"><i class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='edittype', id=type.id) }}" id="editaccttype"><i class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}
