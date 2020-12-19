@@ -1,0 +1,57 @@
+{% extends 'template.html' %}
+<!-- bla -->
+{% block title %}Home{% endblock %}
+<!-- bla -->
+{% block body %}
+<div class="container-fluid">
+    <div class="row">
+        <h1 style="text-align:center">Main Interface</h1>
+    </div>
+    <div class="row">
+        <div class="col-2">
+            <h2>Add Transaction</h2>
+            <form method="POST" action="#">
+                <div class="form-group">
+                    <label for="expenseType">Type</label>
+                    <select class="form-control" id="expenseType" name="expenseType">
+                        <option>Expense</option>
+                        <option>Income</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="expenseDescription">Description</label>
+                    <input type="text" class="form-control" id="expenseDescription" name="expenseDescription" placeholder="Supermarket">
+                </div>
+                <div class="form-group">
+                    <label for="expenseDate">Date</label>
+                    <input type="date" class="form-control" name="expenseDate" id="expenseDate">
+                </div>
+                <div class="form-group">
+                    <label for="expenseAmount">Value</label>
+                    <input type="number" class="form-control" id="expenseAmount" name="expenseAmount" placeholder="€ 10.00">
+                </div>
+                <div class="form-group">
+                    <label for="expenseAccount">Account</label>
+                    <select class="form-control" id="expenseAccount">
+                        <option>ING_Checking</option>
+                        <option>ING_Credit_Card</option>
+                        <option>N26_Credit_Card</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary">Add Expense</button>
+            </form>
+        </div>
+        <div class="col">
+            <h2>Transactions</h2>
+        </div>
+        <div class="col">
+            <h2>Charts</h2>
+            <div class="card">
+                <div class="card-body">
+                    <canvas id="myChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

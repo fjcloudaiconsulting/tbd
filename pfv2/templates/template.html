@@ -22,10 +22,10 @@
 
 <body>
   <nav class="navbar navbar-dark bg-dark">
-    <a class="navbar-brand" href="{{ url_for('views.index') }}">Personal Finances</a>
+    <a class="navbar-brand" href="{{ url_for('main.index') }}">Personal Finances</a>
     <ul class="nav justify-content-end">
       <li class="nav-item">
-        <a class="nav-link" href="{{ url_for('views.index') }}">Home</a>
+        <a class="nav-link" href="{{ url_for('main.index') }}">Home</a>
       </li>
       <li class="nav-item">
         <a class="nav-link" href="{{ url_for('admin.adm_interface') }}">Admin</a>
@@ -38,6 +38,9 @@
       </li>
     </ul>
   </nav>
+  <div>
+
+  </div>
   {% block body %} {% endblock %}
 </body>
 
