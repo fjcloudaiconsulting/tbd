@@ -10,32 +10,35 @@ auth = Blueprint('auth', __name__)
 
 @auth.route('/login', methods=['GET', 'POST'])
 def login():
+
     if current_user.is_authenticated:
-        print('Authenticado')
         return redirect(url_for('main.index'))
+
     form = LoginForm()
-    if form.validate_on_submit():
+    
+    if request.method == 'POST':
+
         user = User.query.filter_by(username=form.username.data).first()
+
         if user is None or not user.check_password(form.password.data):
-            print('Não achou no banco')
-            flash('Invalid username or password')
+            flash('Invalid username or password','danger')
             return redirect(url_for('auth.login'))
+
         login_user(user, remember=form.remember_me.data)
-        print("Achou no banco, vamo ver os dados", form.username.data)
         next_page = request.args.get('next')
-        print('Next page', next)
+
         if not next_page or url_parse(next_page).netloc != '':
-            print('Sem next page, vai pro index')
-            next_page = url_for('main.index')
-        print('Tem next page, vai pra lá')
-        return redirect(url_for(next_page))
-    print('Por algum caralho voltou pra pagina de login')
+            next_page = url_for('main.frontpage')
+
+        return redirect(next_page)
+
     return render_template('login.html', form=form)
 
 @auth.route('/logout')
 def logout():
     logout_user()
     return redirect(url_for('main.index'))
+
 
 @auth.route('/register', methods=['GET', 'POST'])
 def register():
@@ -47,6 +50,6 @@ def register():
         user.set_password(form.password.data)
         db.session.add(user)
         db.session.commit()
-        flash('Congratulations, you are now a registered user!')
+        flash('Congratulations, you are now a registered user!', 'success')
         return redirect(url_for('auth.login'))
     return render_template('register.html', form=form)

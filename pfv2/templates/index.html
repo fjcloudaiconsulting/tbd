@@ -3,17 +3,17 @@
 {% block title %}Index{% endblock %}
 
 {% block body %}
-<div class="container">
-    {{ current_user.is_anonymous }}
+<div class="container absolute-center is-responsive">
     {% if current_user.is_anonymous %}  
     <div>
         <a href="{{ url_for('auth.login') }}" class="btn btn-primary">Login</a>
     </div>
     {% else %}
     <div>
-        <a href="{{ url_for('main.index') }}" class="btn btn-primary">Main Page</a>
+        <a href="{{ url_for('main.frontpage') }}" class="btn btn-primary">Personal Finances</a>
         <a href="{{ url_for('auth.logout') }}" class="btn btn-primary">Logout</a>
     </div>
     {% endif %}
 </div>
+
 {% endblock %}

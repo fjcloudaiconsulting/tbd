@@ -3,8 +3,8 @@
 {% block title %}Add Accounts{% endblock %}
 
 {% block adm_menu %}
-<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts')}}" role="button" id="home">Admin Accounts</a>
-<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account Type</a>
+<a class="btn" href="{{ url_for('admin.adm_accounts')}}" role="button" id="home">Admin Accounts</a>
+<a class="btn" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account Type</a>
 {% endblock %}
 
 {% block adm_content_col1 %}

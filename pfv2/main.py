@@ -1,6 +1,5 @@
 from flask import Blueprint, render_template, request
 from flask_login import login_required
-#from pfv2 import login
 
 main = Blueprint('main', __name__)
 
