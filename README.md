@@ -2,7 +2,7 @@ Access the root of repository and run the following commands to initialize the d
 
 * pip install -r requirements
 * export FLASK_APP=pfv2
-* export DATABASE_URL="postgres://<USERNAME>:<PASSWORD>@<HOST>:<PORT>/<DATABASE>"
+* export DATABASE_URL="postgres://\<USERNAME\>:\<PASSWORD\>@\<HOST\>:\<PORT\>/\<DATABASE\>"
  - You can use any other DB like MySQL or SQLite
 * flask db init
 * flask db migrate -m "Initial migration."
