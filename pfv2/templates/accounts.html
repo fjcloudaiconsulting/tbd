@@ -3,9 +3,9 @@
 {% block title %}Accounts{% endblock %}
 
 {% block adm_menu %}
-<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_interface')}}" id="home">Admin Home</a>
-<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='add') }}" role="butt on" id="addacct">Add Account</a>
-<a class="btn btn-primary btn-sm" href="{{ url_for('admin.adm_accounts', op='addtype') }}" id="addaccttype">Add Account Type</a>
+<a class="btn" href="{{ url_for('admin.adm_interface')}}" id="home">Admin Home</a>
+<a class="btn" href="{{ url_for('admin.adm_accounts', op='add') }}" role="butt on" id="addacct">Add Account</a>
+<a class="btn" href="{{ url_for('admin.adm_accounts', op='addtype') }}" id="addaccttype">Add Account Type</a>
 
 {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}

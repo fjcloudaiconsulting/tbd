@@ -1,13 +1,15 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, redirect
+from flask_login import login_required
 from sqlalchemy import exc
 from pfv2.models import Account, AccountType
-from pfv2.forms import AddAccountType, AddAccount
+from pfv2.forms import AddAccountTypeForm, AddAccountForm
 from pfv2 import db
 
 admin = Blueprint('admin', __name__)
 
 
 @admin.route('/admin')
+@login_required
 def adm_interface():
     return render_template('admin.html')
 
@@ -15,6 +17,7 @@ def adm_interface():
 @admin.route('/admin/accounts', methods=['GET', 'POST'])
 @admin.route('/admin/accounts/<op>', methods=['GET', 'POST'])
 @admin.route('/admin/accounts/<op>/<int:id>', methods=['GET', 'POST'])
+@login_required
 def adm_accounts(op=None, id=None, accounts=None):
     if request.method == 'POST':
 
@@ -100,7 +103,7 @@ def adm_accounts(op=None, id=None, accounts=None):
     else:
         # Add Account
         if op == "add":
-            form = AddAccount()
+            form = AddAccountForm()
             # Populate the AddAccount form with Account Types
             account_types = [(i.id, i.name) for i in AccountType.query.all()]
             form.account_type.choices = account_types
@@ -108,7 +111,7 @@ def adm_accounts(op=None, id=None, accounts=None):
 
         # Add Account Type
         elif op == "addtype":
-            form = AddAccountType()
+            form = AddAccountTypeForm()
             return render_template('add_account_type.html', form=form, account_types=AccountType.query.all())
 
         # Remove Account
