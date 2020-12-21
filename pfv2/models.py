@@ -15,6 +15,7 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(64), index=True, unique=True)
     email = db.Column(db.String(120), index=True, unique=True)
     password_hash = db.Column(db.String(128))
+    account = db.relationship("Account", backref="owner", lazy='dynamic')
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -36,3 +37,4 @@ class Account(db.Model):
     name = db.Column(db.String(100), nullable=False, unique=True)
     balance = db.Column(db.String(100))
     acct_type_id = db.Column(db.Integer, db.ForeignKey('account_type.id'), nullable=False)
+    owner = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
