@@ -2,31 +2,31 @@
 
 {% block title %}Edit Account{% endblock %}
 
-{% block adm_content_col1 %}
+{% block adm_content_main_col %}
 
 <h3>Edit Account</h3>
 
-<form method="POST" action="{{ url_for('admin.adm_accounts', op='save', id=account.id) }}">
+<form method="POST" action="{{ url_for('admin.adm_budgets', op='savebudget', id=budget.id) }}">
     <div class="form-group">
         <div class="form-group">
-            {{ form.account_name.label }}
-            {{ form.account_name(value=account.name) }}
+            {{ form.budget_name.label }}
+            {{ form.budget_name(value=budget.name) }}
         </div>
         <div class="form-group">
-            {{ form.account_type.label }}
-            {{ form.account_type }}
+            {{ form.budget_month.label }}
+            {{ form.budget_month }}
         </div>
         <div class="form-group">
-            {{ form.initial_balance.label }}
+            {{ form.budget_total.label }}
             <div class="input-group">
                 <div class="input-group-prepend">
                     <span class="input-group-text" id="inputGroupPrepend2">€</span>
                 </div>
-                {{ form.initial_balance(value=account.balance) }}
+                {{ form.budget_total(value=budget.total) }}
             </div>
         </div>
         {{ form.submit }}
-        <a class="btn btn-danger" href="{{ url_for('admin.adm_accounts') }}" role="button" id="canceledit">Cancel</a>
+        <a class="btn btn-danger" href="{{ url_for('admin.adm_budgets') }}" role="button" id="cancelbdgt">Cancel</a>
     </div>
 </form>
 

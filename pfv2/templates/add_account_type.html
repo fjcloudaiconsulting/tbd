@@ -3,8 +3,10 @@
 {% block title %}Add Account Type{% endblock %}
 
 {% block adm_menu %}
-<a class="btn" href="{{ url_for('admin.adm_accounts')}}" role="button" id="home">Admin Accounts</a>
-<a class="btn" href="{{ url_for('admin.adm_accounts', op='add') }}" role="butt on" id="addacct">Add Account</a>
+
+<a class="btn btn-primary" href="{{ url_for('admin.adm_accounts')}}" role="button" id="home">Admin Accounts</a>
+<a class="btn btn-primary" href="{{ url_for('admin.adm_accounts', op='add') }}" role="butt on" id="addacct">Add Account</a>
+
 {% endblock %}
 
 {% block adm_content_col1 %}
@@ -25,8 +27,8 @@
 {% block adm_content_col2 %}
 <h3>All Accounts Types</h3>
 <br>
-<table class="table table-sm" id="accountType">
-    <thead>
+<table class="table table-sm table-striped" id="accountType">
+    <thead class="thead-dark">
         <tr>
             <th scope="col">Account Type</th>
             <th scope="col">Edit</th>
