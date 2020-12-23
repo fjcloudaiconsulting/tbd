@@ -1,0 +1,54 @@
+{% extends 'admin.html' %}
+
+{% block title %}Add Categories{% endblock %}
+
+{% block adm_menu %}
+
+<a class="btn btn-primary" href="{{ url_for('admin.adm_categories')}}" role="button" id="home">Admin Categories</a>
+<a class="btn btn-primary" href="{{ url_for('admin.adm_budgets', op='addbudget') }}" role="button" id="addbudget">Add Budget</a>
+
+{% endblock %}
+
+{% block adm_content_col1 %}
+<h3>Add New Account</h3>
+
+<form method="POST" action="{{ url_for('admin.adm_categories', op='addcategory') }}">
+    <div class="form-group">
+        <div class="form-group">
+            {{ form.category_name.label }}
+            {{ form.category_name }}
+        </div>
+        <div class="form-group">
+            {{ form.category_budget.label }}
+            {{ form.category_budget }}
+        </div>
+        {{ form.submit }}
+        <a class="btn btn-danger" href="{{ url_for('admin.adm_categories') }}" role="button" id="canceladd">Cancel</a>
+    </div>
+</form>
+{% endblock %}
+
+{% block adm_content_col2 %}
+<h3>All Categories</h3>
+<table class="table table-sm table-striped" id="category">
+    <thead class="thead-dark">
+        <tr>
+            <th scope="col">Category Name</th>
+            <th scope="col">Budget Associated</th>
+            <th scope="col">Edit</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for category in categories %}
+        <tr>
+            <td>{{ category.name }}</td>
+            <td>{{ category.category.name }}</td>
+            <td>
+                <a href="{{ url_for('admin.adm_categories', op='removecategory', id=category.id) }}" id="rmcat"><i class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_categories', op='editcategory', id=category.id) }}" id="editcat"><i class="fas fa-edit"></i></a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

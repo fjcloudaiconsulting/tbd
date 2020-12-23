@@ -1,0 +1,66 @@
+{% extends 'admin.html' %}
+
+{% block title %}Add Budgets{% endblock %}
+
+{% block adm_menu %}
+
+<a class="btn btn-primary" href="{{ url_for('admin.adm_budgets')}}" role="button" id="home">Admin Budgets</a>
+
+{% endblock %}
+
+{% block adm_content_col1 %}
+<h3>Add New Budget</h3>
+
+<form method="POST" action="{{ url_for('admin.adm_budgets', op='addbudget') }}">
+    <div class="form-group">
+        <div class="form-group">
+            {{ form.budget_name.label }}
+            {{ form.budget_name }}
+        </div>
+        <div class="form-group">
+            {{ form.budget_month.label }}
+            {{ form.budget_month }}
+        </div>
+        <div class="form-group">
+            {{ form.budget_total.label }}
+            <div class="input-group">
+                <div class="input-group-prepend">
+                    <span class="input-group-text" id="inputGroupPrepend2">€</span>
+                </div>
+                {{ form.budget_total }}
+            </div>
+        </div>
+        {{ form.submit }}
+        <a class="btn btn-danger" href="{{ url_for('admin.adm_budgets') }}" role="button" id="cancelbdgt">Cancel</a>
+    </div>
+</form>
+{% endblock %}
+
+{% block adm_content_col2 %}
+<h3>All Budgets</h3>
+<table class="table table-sm table-striped" id="account">
+    <thead class="thead-dark">
+        <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Month</th>
+            <th scope="col">Year</th>
+            <th scope="col">Value</th>
+            <th scope="col">Edit</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for budget in budgets %}
+        <tr>
+            <td>{{ budget.name }}</td>
+            <td>{{ budget.month }}</td>
+            <td>{{ budget.year }}</td>
+            <td>{{ budget.total }}</td>
+            <td>
+                <a href="{{ url_for('admin.adm_budgets', op='removebudget', id=budget.id) }}" id="rmbdgt"><i class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_budgets', op='editbudget', id=budget.id) }}" id="editbdgt"><i class="fas fa-edit"></i></a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -3,7 +3,7 @@
 {% block title %}Admin{% endblock %}
 
 {% block body %}
-<!-- <div class="container-fluid"> -->
+
 <div class="container">
     <div class="row">
         <div class="col">
@@ -13,7 +13,7 @@
     <div class="row">
         <div class="col" style="text-align:center">
             {% block adm_menu %}
-             <a class="btn" href="{{ url_for('main.frontpage')}}" role="button" id="home">Home</a>
+             <a class="btn btn-primary" href="{{ url_for('main.frontpage')}}" role="button" id="home">Home</a>
             {% endblock %}
         </div>
     </div>
@@ -27,11 +27,28 @@
             </div>
         </div>
         <div class="col">
-            {% block adm_content_col1 %}{% endblock %}
-        </div>
-        <div class="col">
-            {% block adm_content_col2 %}{% endblock %}
+            {% block adm_content_main_col %}
+            <div class="row">
+                <div class="col">
+                    {% block adm_content_col1 %}{% endblock %}
+                </div>
+                <div class="col">
+                    {% block adm_content_col2 %}{% endblock %}
+                </div>
+            </div>
+            {% endblock %}
         </div>
     </div>
 </div>
+
+<script>
+    $(document).ready(function () {
+        var now = new Date();
+        var month = ("0" + (now.getMonth() + 1)).slice(-2);
+        var year = now.getFullYear();
+        var thisMonth = now.getFullYear() + "-" + (month);
+        $('#monthForm').val(thisMonth);
+    });
+</script>
+
 {% endblock%}

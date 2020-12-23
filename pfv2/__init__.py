@@ -26,7 +26,7 @@ def create_app():
     login.login_view = 'auth.login'
     
     # Importing models
-    from pfv2.models import Account, AccountType
+    from pfv2.models import Account, AccountType, Budget, Category
 
     # Blueprint for generic views in our app
     from pfv2.main import main as main_blueprint

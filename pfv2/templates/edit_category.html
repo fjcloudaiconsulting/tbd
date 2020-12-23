@@ -1,0 +1,24 @@
+{% extends 'admin.html' %}
+
+{% block title %}Edit Account{% endblock %}
+
+{% block adm_content_col1 %}
+
+<h3>Edit Category</h3>
+
+<form method="POST" action="{{ url_for('admin.adm_categories', op='savecategory', id=category.id) }}">
+    <div class="form-group">
+        <div class="form-group">
+            {{ form.category_name.label }}
+            {{ form.category_name(value=category.name) }}
+        </div>
+        <div class="form-group">
+            {{ form.category_budget.label }}
+            {{ form.category_budget }}
+        </div>
+        {{ form.submit }}
+        <a class="btn btn-danger" href="{{ url_for('admin.adm_categories') }}" role="button" id="canceladd">Cancel</a>
+    </div>
+</form>
+
+{% endblock %}

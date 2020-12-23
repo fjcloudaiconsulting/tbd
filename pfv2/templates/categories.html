@@ -1,11 +1,51 @@
 {% extends 'admin.html' %}
+
 {% block title %}Categories{% endblock %}
 
 {% block adm_menu %}
-Buttons to handle Categories
+
+<a class="btn btn-primary" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
+<a class="btn btn-primary" href="{{ url_for('admin.adm_categories', op='addcategory') }}" role="button" id="addacct">Add Category</a>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="close" data-dismiss="alert" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
 {% endblock %}
 
-{% block adm_content %}
-Where the things happens
-{% endblock %}
+{% block adm_content_main_col %}
+<h3>All Categories</h3>
+<br>
 
+<table class="table table-sm table-striped" id="category">
+    <thead class=thead-dark>
+        <tr>
+            <th scope="col">Category Name</th>
+            <th scope="col">Budget Associated</th>
+            <th scope="col">Edit</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for category in categories %}
+        <tr>
+            <td>{{ category.name }}</td>
+            <td>{{ category.category.name }}</td>
+            <td>
+                <a href="{{ url_for('admin.adm_categories', op='removecategory', id=category.id) }}" id="rmcat"><i class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_categories', op='editcategory', id=category.id) }}" id="editcat"><i class="fas fa-edit"></i></a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% endblock %}
