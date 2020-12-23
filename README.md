@@ -13,7 +13,15 @@ I'm going to improve this in the future with instructions for database migration
 
 ## TODO list
 
-- [ ] Avoid add duplicate Accounts and Account Types
-- [ ] Modeling the database for the Budget
-- [ ] Start draft the login interface
-- [ ] Draft the index page and the admin page
+- [ ] Code Improvement - Avoid add duplicate Accounts and Account Types (Camel case)
+- [ ] Database Improvement - Modeling the database for the Annual Budget and Monthly
+- [x] Start draft the login interface
+- [ ] Visual Improvement - Draft the index page and the admin page
+- [ ] Code Improvement - Sort the Budget query results by year (desc)
+- [ ] Code - Draft the User/Profile administration interface
+- [ ] Code - Implement password recovery
+- [ ] Code - Implement number format in the currency fields
+- [ ] Visual Improvement - Rethink the NavBar menu
+- [ ] Visual Improvement - Replace logout link by logout icon
+- [ ] Code Improvement - deduplicate code in admin interface (create operation class and helpers)
+- [ ] Test the `validate_on_submit` to replace `request.method == 'POST'`

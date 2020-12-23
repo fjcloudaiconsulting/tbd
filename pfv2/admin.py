@@ -24,17 +24,15 @@ def adm_accounts(op=None, id=None, accounts=None):
     if request.method == 'POST':
 
         if op is None:
-
             return redirect(url_for('admin.adm_accounts'))
+        
         # Create Account Type
         elif op == "addtype":
 
             acct_type = request.form['account_type']
-            new_type = AccountType(name=acct_type,
-                                    owner_id=current_user.id)
+            new_type = AccountType(name=acct_type, owner_id=current_user.id)
 
             # TODO: Figure out how to check the duplicates (cammel case)
-            
             try:
                 db.session.add(new_type)
                 db.session.commit()
@@ -52,10 +50,7 @@ def adm_accounts(op=None, id=None, accounts=None):
             acct_type = request.form['account_type']
             acct_balance = request.form['initial_balance']
             acct_owner = current_user.id
-            new_account = Account(name=acct_name,
-                                    balance=acct_balance,
-                                    acct_type_id=acct_type,
-                                    owner_id=acct_owner)
+            new_account = Account(name=acct_name, balance=acct_balance, acct_type_id=acct_type, owner_id=acct_owner)
             try:
                 db.session.add(new_account)
                 db.session.commit()
@@ -80,6 +75,7 @@ def adm_accounts(op=None, id=None, accounts=None):
             update_account.name = acct_name
             update_account.acct_type_id = acct_type
             update_account.balance = acct_balance
+
             try:
                 db.session.commit()
                 flash(f"Account {acct_name} updated!", 'success')
@@ -270,6 +266,7 @@ def adm_budgets(op=None, id=None, budgets=None):
 @admin.route('/admin/categories/<op>/<int:id>', methods=['GET', 'POST'])
 @login_required
 def adm_categories(op=None, id=None, categories=None):
+
     if request.method == 'POST':
         if op is None:
             redirect(url_for('admin.adm_categories'))
@@ -291,6 +288,26 @@ def adm_categories(op=None, id=None, categories=None):
                 db.session.rollback()
                 flash(f"Category {category_name} already exists. Try a new name", 'danger')
                 return redirect(url_for('admin.adm_categories'))
+        
+        # Save Category after edit
+        elif op == "savecategory":
+
+            category_name = request.form['category_name']
+            category_budget = request.form['category_budget']
+
+            update_category = Category.query.filter_by(id=id).filter_by(owner_id=current_user.id).first()
+            update_category.name = category_name
+            update_category.budget_id = category_budget
+
+            try:
+                db.session.commit()
+                flash(f"Category {category_name} updated!", 'success')
+                return redirect(url_for('admin.adm_categories'))
+            except exc.IntegrityError:
+                db.session.rollback()
+                flash(f"Category {category_name} already exists. Try a new name", 'danger')
+                return redirect(url_for('admin.adm_accounts'))
+
 
     else:
         # Add new Category
@@ -300,6 +317,32 @@ def adm_categories(op=None, id=None, categories=None):
             category_budgets = [(i.id, i.name) for i in Budget.query.filter_by(owner_id=current_user.id).all()]
             form.category_budget.choices = category_budgets
             return render_template('add_category.html', form=form, categories=Category.query.filter_by(owner_id=current_user.id).all())
+        
+        # Remove Category
+        elif op == "removecategory":
+
+            category = Category.query.filter_by(id=id).filter_by(owner_id=current_user.id).first()
+
+            try:
+                Category.query.filter_by(id=id).filter_by(owner_id=current_user.id).delete()
+                db.session.commit()
+                flash(f"Category {category.name} removed", 'danger')
+                return redirect(url_for('admin.adm_categories'))
+            except:
+                # TODO: Handle the exception correctly.
+                db.session.rollback()
+                flash('Unexpected error', 'danger')
+                raise
+
+        # Edit Category
+        elif op == "editcategory":
+            form = AddCatetoryForm()
+            # Populate the Category form with Budgets
+            budgets_category = [(i.id, i.name) for i in Budget.query.filter_by(owner_id=current_user.id).all()]
+            form.category_budget.choices = budgets_category
+            form.submit.label.text = 'Save'
+            category = Category.query.filter_by(id=id).first()
+            return render_template('edit_category.html', category=category, form=form)
         
         else:
             return render_template('categories.html', categories=Category.query.filter_by(owner_id=current_user.id).all())

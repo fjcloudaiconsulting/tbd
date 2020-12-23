@@ -40,8 +40,8 @@
             <td>{{ category.name }}</td>
             <td>{{ category.category.name }}</td>
             <td>
-                <a href="{{ url_for('admin.adm_accounts', op='remove', id=category.id) }}" id="rmacct"><i class="fas fa-trash-alt"></i></a>
-                <a href="{{ url_for('admin.adm_accounts', op='edit', id=category.id) }}" id="editacct"><i class="fas fa-edit"></i></a>
+                <a href="{{ url_for('admin.adm_categories', op='removecategory', id=category.id) }}" id="rmcat"><i class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_categories', op='editcategory', id=category.id) }}" id="editcat"><i class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}

@@ -19,7 +19,7 @@ class User(UserMixin, db.Model):
     account_type = db.relationship("AccountType", backref="owner", lazy="dynamic")
     budget = db.relationship("Budget", backref="owner", lazy="dynamic")
     category = db.relationship("Category", backref="owner", lazy="dynamic")
-    
+
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -48,7 +48,7 @@ class Account(db.Model):
 class Budget(db.Model):
     __tablename__ = 'budget'
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False, unique=True)
+    name = db.Column(db.String(100), nullable=False)
     month = db.Column(db.String(2), nullable=False)
     year = db.Column(db.String(4), nullable=False)
     balance = db.Column(db.Numeric(10), nullable=True)
