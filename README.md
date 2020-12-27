@@ -20,7 +20,7 @@ I'm going to improve this in the future with instructions for database migration
 - [ ] Code Improvement - Sort the Budget query results by year (desc)
 - [ ] Code - Draft the User/Profile administration interface
 - [ ] Code - Implement password recovery
-- [ ] Code - Implement number format in the currency fields
+- [x] Code - Implement number format in the currency fields
 - [ ] Visual Improvement - Rethink the NavBar menu
 - [ ] Visual Improvement - Replace logout link by logout icon
 - [ ] Code Improvement - deduplicate code in admin interface (create operation class and helpers)

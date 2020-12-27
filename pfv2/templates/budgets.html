@@ -5,9 +5,10 @@
 {% block adm_menu %}
 
 <a class="btn btn-primary" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
+<a class="btn btn-primary" href="{{ url_for('admin.adm_categories', op='addcategory') }}" role="button" id="addcat">Add Category</a>
 <a class="btn btn-primary" href="{{ url_for('admin.adm_budgets', op='addbudget') }}" role="button" id="addbudget">Add Budget</a>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
+<!-- {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
         {% for category, message in messages %}
             <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
@@ -18,7 +19,7 @@
             </div>
         {% endfor %}
     {% endif %}
-{% endwith %}
+{% endwith %} -->
 
 {% endblock %}
 

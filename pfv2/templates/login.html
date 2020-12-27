@@ -5,7 +5,7 @@
 {% block body %}
 <div class="container">
     <div class="absolute-center is-responsive">
-        {% with messages = get_flashed_messages(with_categories=true) %}
+        <!-- {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 {% for category, message in messages %}
                     <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
@@ -16,7 +16,7 @@
                     </div>
                 {% endfor %}
             {% endif %}
-        {% endwith %}
+        {% endwith %} -->
         <form method="POST" action="{{ url_for('auth.login') }}">
             <div class="form-group">
                 {{ form.username.label }}

@@ -2,6 +2,9 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_login import LoginManager
+from flask.logging import default_handler
+from flask_wtf.csrf import CSRFProtect
+import logging
 from pfv2.config import Config
 
 
@@ -9,14 +12,13 @@ from pfv2.config import Config
 db = SQLAlchemy()
 migrate = Migrate()
 login = LoginManager()
-
+# csrf = CSRFProtect()
 
 def create_app():
     app = Flask(__name__)
     
     # Flask configuration
     app.config.from_object(Config)
-
     # Initializing DB
     db.init_app(app)
     # Adding support to DB migrations 
@@ -24,7 +26,11 @@ def create_app():
     # Adding support to login
     login.init_app(app)
     login.login_view = 'auth.login'
-    
+    # CSRF Protection
+    # csrf.init_app(app)
+
+    # Logging 
+
     # Importing models
     from pfv2.models import Account, AccountType, Budget, Category
 
