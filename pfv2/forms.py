@@ -6,7 +6,7 @@ from pfv2 import db
 from pfv2.models import Account, AccountType, User
 
 STRING_FIELD_RENDER = {
-    "class": "form-control",
+    "class": "form-control form-control-sm",
 }
 
 SUBMIT_FIELD_RENDER = {
@@ -14,25 +14,20 @@ SUBMIT_FIELD_RENDER = {
 }
 
 SELECT_FIELD_RENDER = {
-    "class": "form-control"
+    "class": "form-control form-control-sm"
 }
 
 MONTH_FIELD_RENDER = {
-    "class": "form-control",
+    "class": "form-control form-control-sm",
     "type": "month",
     "id": "monthForm",
 }
 
 DATE_FIELD_RENDER = {
-    "class": "form-control",
+    "class": "form-control form-control-sm",
     "type": "date",
     "id": "dateForm"
 }
-
-# Potential solution for number validateion
-# https://stackoverflow.com/questions/62207106/wtford-decimal-field-format-currency-with-code
-# number_usd = DecimalField("Some USD Number", use_locale=True, number_format="#,##0.00 USD;-# USD")
-# Something to explore
 
 
 class RegistrationForm(FlaskForm):
