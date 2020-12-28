@@ -1,6 +1,7 @@
 from flask import Blueprint, render_template, request, jsonify, flash, url_for, redirect
 from flask_login import login_required, current_user
 from sqlalchemy import exc
+import decimal
 from pfv2.helpers import fixdate
 from pfv2.models import Account, Category, Transaction, Budget
 from pfv2.forms import TransactionForm
@@ -59,7 +60,23 @@ def frontpage(op=None, id=None):
                                           account_id=tr_account,
                                           category_id=tr_category,
                                           nature=tr_type)
-            # TODO: Implement Update Account Balance
+            # Update Account Balance
+            account = Account.query.filter_by(id=tr_account).filter_by(owner_id=current_user.id).first()
+            account_balance = account.balance
+            # Convert the string to Decimal to make the operations
+            tr_value = decimal.Decimal(tr_value)
+
+            if tr_type == "income":
+                account.balance = account_balance + tr_value
+            
+            if tr_type == "expense":
+                category = Category.query.filter_by(id=tr_category).first()
+                budget_balance = category.category.balance
+                category.category.balance = budget_balance - tr_value
+                account.balance = account_balance - tr_value
+            
+            # TODO: Implement the Transfer operation
+
             try:
                 db.session.add(new_transaction)
                 db.session.commit()
