@@ -1,0 +1,44 @@
+{% extends 'admin.html' %}
+
+{% block title %}Edit Transactions{% endblock %}
+
+{% block adm_content_main_col %}
+
+<h3>Edit Transaction</h3>
+
+<!-- <form method="POST" action="{{ url_for('admin.adm_budgets', op='savetransaction', id=transaction.id) }}"> -->
+<form method="POST" action="{{ url_for('main.frontpage', op='savetr', id=transaction.id) }}">
+    <div class="form-group">
+        {{ form.tr_type.label }}
+        {{ form.tr_type(value=transaction.type) }}
+    </div>
+    <div class="form-group">
+        {{ form.tr_desc.label }}
+        {{ form.tr_desc(value=transaction.name) }}
+    </div>
+    <div class="form-group">
+        {{ form.tr_date.label }}
+        {{ form.tr_date }}
+    </div>
+    <div class="form-group">
+        {{ form.tr_value.label }}
+        <div class="input-group">
+            <div class="input-group-prepend">
+                <span class="input-group-text" id="inputGroupPrepend2">€</span>
+            </div>
+            {{ form.tr_value(value=transaction.value) }}
+        </div>
+    </div>
+    <div class="form-group">
+        {{ form.tr_account.label }}
+        {{ form.tr_account(value=transaction.account_id.name) }}
+    </div>
+    <div class="form-group">
+        {{ form.tr_category.label }}
+        {{ form.tr_category(value=transaction.category_id.name) }}
+    </div>
+    {{ form.submit }}
+    <a class="btn btn-danger" href="{{ url_for('main.frontpage') }}" role="button" id="cancelt">Cancel</a>
+</form>
+
+{% endblock %}

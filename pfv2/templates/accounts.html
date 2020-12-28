@@ -8,7 +8,7 @@
 <a class="btn btn-primary" href="{{ url_for('admin.adm_accounts', op='add') }}" role="button" id="addacct">Add Account</a>
 <a class="btn btn-primary" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account Type</a>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
+<!-- {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
         {% for category, message in messages %}
             <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
@@ -19,7 +19,7 @@
             </div>
         {% endfor %}
     {% endif %}
-{% endwith %}
+{% endwith %} -->
 
 {% endblock %}
 

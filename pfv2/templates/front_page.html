@@ -5,47 +5,86 @@
 {% block body %}
 <div class="container-fluid">
     <div class="row">
-        <h1 style="text-align:center">Main Interface</h1>
+        <div class="col">
+            <h1 style="text-align:center">Front Page</h1>
+        </div>
     </div>
     <div class="row">
         <div class="col-2">
-            <h2>Add Transaction</h2>
-            <form method="POST" action="#">
+            <h2 style="text-align:center">Add Transaction</h2>
+            <form method="POST" action="{{ url_for('main.frontpage') }}">
                 <div class="form-group">
-                    <label for="expenseType">Type</label>
-                    <select class="form-control" id="expenseType" name="expenseType">
-                        <option>Expense</option>
-                        <option>Income</option>
-                    </select>
+                    {{ form.tr_type.label }}
+                    {{ form.tr_type }}
                 </div>
                 <div class="form-group">
-                    <label for="expenseDescription">Description</label>
-                    <input type="text" class="form-control" id="expenseDescription" name="expenseDescription" placeholder="Supermarket">
+                    {{ form.tr_desc.label }}
+                    {{ form.tr_desc }}
                 </div>
                 <div class="form-group">
-                    <label for="expenseDate">Date</label>
-                    <input type="date" class="form-control" name="expenseDate" id="expenseDate">
+                    {{ form.tr_date.label }}
+                    {{ form.tr_date }}
                 </div>
                 <div class="form-group">
-                    <label for="expenseAmount">Value</label>
-                    <input type="number" class="form-control" id="expenseAmount" name="expenseAmount" placeholder="€ 10.00">
+                    {{ form.tr_value.label }}
+                    <div class="input-group">
+                        <div class="input-group-prepend">
+                            <span class="input-group-text" id="inputGroupPrepend2">€</span>
+                        </div>
+                        {{ form.tr_value }}
+                    </div>
                 </div>
                 <div class="form-group">
-                    <label for="expenseAccount">Account</label>
-                    <select class="form-control" id="expenseAccount">
-                        <option>ING_Checking</option>
-                        <option>ING_Credit_Card</option>
-                        <option>N26_Credit_Card</option>
-                    </select>
+                    {{ form.tr_account.label }}
+                    {{ form.tr_account }}
                 </div>
-                <button type="submit" class="btn btn-primary">Add Expense</button>
+                <div class="form-group">
+                    {{ form.tr_category.label }}
+                    {{ form.tr_category }}
+                </div>
+                {{ form.submit }}
             </form>
         </div>
         <div class="col">
-            <h2>Transactions</h2>
+            <h2 style="text-align:center">Transactions</h2>
+            <table class="table table-sm table-striped" id="account">
+                <thead class="thead-dark">
+                    <tr>
+                        <th scope="col">Type</th>
+                        <th scope="col">Date</th>
+                        <th scope="col">Description</th>
+                        <th scope="col">Account</th>
+                        <th scope="col">Category</th>
+                        <th scope="col">Value</th>
+                        <th scope="col">Edit</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for transaction in transactions %}
+                    <tr>
+                        {% if transaction.nature == 'income' %}
+                            <td><i class="fas fa-hand-holding-usd icon-income" title="Income"></i></td>
+                        {% elif transaction.nature == 'expense' %}
+                            <td><i class="fas fa-hand-holding-usd icon-expense" title="Expense"></i></td>
+                        {% else %}
+                            <td><i class="fas fa-hand-holding-usd" title="Transfer"></i></td>
+                        {% endif %}
+                        <td>{{ transaction.date }}</td>
+                        <td>{{ transaction.name }}</td>
+                        <td>{{ transaction.account.name }}</td>
+                        <td>{{ transaction.category.name }}</td>
+                        <td>{{ transaction.value }}</td>
+                        <td>
+                            <a href="{{ url_for('main.frontpage', op='rmtr', id=transaction.id) }}" id="rmtr"><i class="fas fa-trash-alt"></i></a>
+                            <a href="{{ url_for('main.frontpage', op='edittr', id=transaction.id) }}" id="edittr"><i class="fas fa-edit"></i></a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
         <div class="col">
-            <h2>Charts</h2>
+            <h2 style="text-align:center">Charts</h2>
             <div class="card">
                 <div class="card-body">
                     <canvas id="myChart"></canvas>
@@ -54,4 +93,5 @@
         </div>
     </div>
 </div>
+
 {% endblock %}
