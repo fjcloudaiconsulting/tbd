@@ -75,8 +75,8 @@
                         <td>{{ transaction.category.name }}</td>
                         <td>{{ transaction.value }}</td>
                         <td>
-                            <a href="{{ url_for('main.frontpage', op='rmtr', id=transaction.id) }}" id="rmtr"><i class="fas fa-trash-alt"></i></a>
-                            <a href="{{ url_for('main.frontpage', op='edittr', id=transaction.id) }}" id="edittr"><i class="fas fa-edit"></i></a>
+                            <a href="{{ url_for('main.frontpage', op='rmtr', id=transaction.id, value=transaction.value, category=transaction.category.name) }}" id="rmtr"><i class="fas fa-trash-alt"></i></a>
+                            <a href="{{ url_for('main.frontpage', op='edittr', id=transaction.id, value=transaction.value, category=transaction.category.name) }}" id="edittr"><i class="fas fa-edit"></i></a>
                         </td>
                     </tr>
                     {% endfor %}
@@ -84,12 +84,49 @@
             </table>
         </div>
         <div class="col">
-            <h2 style="text-align:center">Charts</h2>
-            <div class="card">
-                <div class="card-body">
-                    <canvas id="myChart"></canvas>
-                </div>
-            </div>
+            <h2>Accounts Balance</h2>
+            <table class="table table-sm table-striped" id="account">
+                <thead class="thead-dark">
+                    <tr>
+                        <th scope="col">Account Name</th>
+                        <th scope="col">Account Type</th>
+                        <th scope="col">Balance</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for account in accounts %}
+                    <tr>
+                        <td>{{ account.name }}</td>
+                        <td>{{ account.acct_type.name }}</td>
+                        <td>{{ account.balance }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <br>
+            <h2>Budgets Balance</h2>
+            <table class="table table-sm table-striped" id="account">
+                <thead class="thead-dark">
+                    <tr>
+                        <th scope="col">Budget Name</th>
+                        <th scope="col">Budget Month</th>
+                        <th scope="col">Budget Year</th>
+                        <th scope="col">Budget Value</th>
+                        <th scope="col">Budget Balance</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for budget in budgets %}
+                    <tr>
+                        <td>{{ budget.name }}</td>
+                        <td>{{ budget.month }}</td>
+                        <td>{{ budget.year }}</td>
+                        <td>{{ budget.total }}</td>
+                        <td>{{ budget.balance }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
     </div>
 </div>

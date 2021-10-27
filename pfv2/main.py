@@ -3,7 +3,7 @@ from flask_login import login_required, current_user
 from sqlalchemy import exc
 import decimal
 from pfv2.helpers import fixdate
-from pfv2.models import Account, Category, Transaction, Budget
+from pfv2.models import Account, Category, Transaction, Budget, AccountType
 from pfv2.forms import TransactionForm
 from pfv2 import db
 
@@ -93,9 +93,22 @@ def frontpage(op=None, id=None):
 
         form = TransactionForm()
 
-        # Remove Budget
+        # Remove transaction
         if op == "rmtr":
             try:
+                transaction = Transaction.query.filter_by(id=id).filter_by(owner_id=current_user.id).first()
+                # tr_category = transaction.id
+                tr_value = transaction.value
+                tr_account = transaction.account_id
+                # Update Account Balance
+                account = Account.query.filter_by(id=tr_account).filter_by(owner_id=current_user.id).first()
+                account_balance = account.balance
+                # Convert the string to Decimal to make the operations
+                tr_value = decimal.Decimal(tr_value)
+                # category = Category.query.filter_by(id=tr_category).first()
+                # budget_balance = category.category.balance 
+                # category.category.balance = budget_balance - tr_value
+                account.balance = account_balance + tr_value
                 Transaction.query.filter_by(id=id).filter_by(owner_id=current_user.id).delete()
                 db.session.commit()
                 flash(f"Transaction Removed", 'danger')
@@ -106,7 +119,7 @@ def frontpage(op=None, id=None):
                 flash('Unexpected error', 'danger')
                 raise
 
-        # Edit budget
+        # Edit transaction
         elif op == "edittr":
             accounts = [(i.id, i.name) for i in Account.query.filter_by(owner_id=current_user.id).all()]
             categories = [(i.id, i.name) for i in Category.query.filter_by(owner_id=current_user.id).all()]
@@ -117,11 +130,13 @@ def frontpage(op=None, id=None):
             return render_template('edit_transaction.html', transaction=transaction, form=form)
 
         else:
-            accounts = [(i.id, i.name) for i in Account.query.filter_by(owner_id=current_user.id).all()]
-            categories = [(i.id, i.name) for i in Category.query.filter_by(owner_id=current_user.id).all()]
-            form.tr_account.choices = accounts
-            form.tr_category.choices = categories
             # TODO: Limit the number of results to N
             # incomes = Income.query.filter_by(owner_id=current_user.id).order_by(Income.date.desc()).limit(10).all
             transactions = Transaction.query.filter_by(owner_id=current_user.id).order_by(Transaction.date.desc()).all()
-            return render_template('front_page.html', form=form, accounts=accounts, transactions=transactions)
+            accounts = Account.query.filter_by(owner_id=current_user.id).all()
+            budgets = Budget.query.filter_by(owner_id=current_user.id).all()
+            account_names = [(i.id, i.name) for i in Account.query.filter_by(owner_id=current_user.id).all()]
+            categories = [(i.id, i.name) for i in Category.query.filter_by(owner_id=current_user.id).all()]
+            form.tr_account.choices = account_names
+            form.tr_category.choices = categories
+            return render_template('front_page.html', form=form, accounts=accounts, transactions=transactions, budgets=budgets)
