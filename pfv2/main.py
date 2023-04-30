@@ -2,10 +2,11 @@ from flask import Blueprint, render_template, request, jsonify, flash, url_for, 
 from flask_login import login_required, current_user
 from sqlalchemy import exc
 import decimal
-from pfv2.helpers import fixdate
+from datetime import datetime
 from pfv2.models import Account, Category, Transaction, Budget, AccountType
 from pfv2.forms import TransactionForm
 from pfv2 import db
+from pfv2.helpers.fixdate import fixdateformat
 
 main = Blueprint('main', __name__)
 
@@ -24,7 +25,7 @@ def frontpage(op=None, id=None):
         tr_account = request.form['tr_account']
         tr_category = request.form['tr_category']
         # TODO: Set date format before insert
-        tr_date = request.form['tr_date']
+        tr_date = fixdateformat(request.form['tr_date'])
         tr_desc = request.form['tr_desc']
         tr_value = request.form['tr_value']
         tr_type = request.form['tr_type']

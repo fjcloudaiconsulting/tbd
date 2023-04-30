@@ -78,7 +78,7 @@ class AddCatetoryForm(FlaskForm):
     submit = SubmitField(label='Add Category', render_kw=SUBMIT_FIELD_RENDER)
 
 class TransactionForm(FlaskForm):
-    tr_type = SelectField(label="Type", validators=[DataRequired()], choices=[("income", "Income"), ("expense", "Expense"), ("transfer", "Transfer")], render_kw=SELECT_FIELD_RENDER)
+    tr_type = SelectField(label="Type", validators=[DataRequired()], choices=[("expense", "Expense"), ("income", "Income"), ("transfer", "Transfer")], render_kw=SELECT_FIELD_RENDER)
     tr_desc = StringField(label="Description", validators=[DataRequired()], render_kw={**STRING_FIELD_RENDER, "placeholder": "Kruidwat"})
     tr_date = DateField(label="Date", validators=[DataRequired()], render_kw=DATE_FIELD_RENDER)
     tr_value = DecimalField(label="Value", validators=[DataRequired()], render_kw={"type":"number", "step": "0.01", "class":"form-control", "placeholder": "50.00"}, places=2, rounding=None)
