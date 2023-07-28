@@ -140,7 +140,9 @@ dmypy.json
 
 ### Local development
 *.sqlite
+*.db
 migrations/
 migrations
 local.env
 .envrc
+.vscode

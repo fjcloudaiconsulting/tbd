@@ -42,6 +42,10 @@
                     {{ form.tr_category.label }}
                     {{ form.tr_category }}
                 </div>
+                <div class="form-group">
+                    {{ form.tr_budget.label }}
+                    {{ form.tr_budget }}
+                </div>
                 {{ form.submit }}
             </form>
         </div>
@@ -55,6 +59,7 @@
                         <th scope="col">Description</th>
                         <th scope="col">Account</th>
                         <th scope="col">Category</th>
+                        <th scope="col">Budget</th>
                         <th scope="col">Value</th>
                         <th scope="col">Edit</th>
                     </tr>
@@ -63,20 +68,23 @@
                     {% for transaction in transactions %}
                     <tr>
                         {% if transaction.nature == 'income' %}
-                            <td><i class="fas fa-hand-holding-usd icon-income" title="Income"></i></td>
+                        <td><i class="fas fa-hand-holding-usd icon-income" title="Income"></i></td>
                         {% elif transaction.nature == 'expense' %}
-                            <td><i class="fas fa-hand-holding-usd icon-expense" title="Expense"></i></td>
+                        <td><i class="fas fa-hand-holding-usd icon-expense" title="Expense"></i></td>
                         {% else %}
-                            <td><i class="fas fa-hand-holding-usd" title="Transfer"></i></td>
+                        <td><i class="fas fa-hand-holding-usd" title="Transfer"></i></td>
                         {% endif %}
                         <td>{{ transaction.date }}</td>
                         <td>{{ transaction.name }}</td>
                         <td>{{ transaction.account.name }}</td>
                         <td>{{ transaction.category.name }}</td>
+                        <td>{{ transaction.budget.name }}</td>
                         <td>{{ transaction.value }}</td>
                         <td>
-                            <a href="{{ url_for('main.frontpage', op='rmtr', id=transaction.id, value=transaction.value, category=transaction.category.name) }}" id="rmtr"><i class="fas fa-trash-alt"></i></a>
-                            <a href="{{ url_for('main.frontpage', op='edittr', id=transaction.id, value=transaction.value, category=transaction.category.name) }}" id="edittr"><i class="fas fa-edit"></i></a>
+                            <a href="{{ url_for('main.frontpage', op='rmtr', id=transaction.id, value=transaction.value, category=transaction.category.name) }}"
+                                id="rmtr"><i class="fas fa-trash-alt"></i></a>
+                            <a href="{{ url_for('main.frontpage', op='edittr', id=transaction.id, value=transaction.value, category=transaction.category.name) }}"
+                                id="edittr"><i class="fas fa-edit"></i></a>
                         </td>
                     </tr>
                     {% endfor %}
