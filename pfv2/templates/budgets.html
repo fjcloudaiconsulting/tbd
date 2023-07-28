@@ -2,31 +2,12 @@
 
 {% block title %}Budgets{% endblock %}
 
-{% block adm_menu %}
-
-<a class="btn" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
-<a class="btn" href="{{ url_for('admin.adm_categories', op='addcategory') }}" role="button" id="addcat">Add Category</a>
-<a class="btn" href="{{ url_for('admin.adm_budgets', op='addbudget') }}" role="button" id="addbudget">Add Budget</a>
-
-<!-- {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-        {% for category, message in messages %}
-            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-                {{ message }}
-                <button type="button" class="close" data-dismiss="alert" aria-label="Close">
-                    <span aria-hidden="true">&times;</span>
-                </button>
-            </div>
-        {% endfor %}
-    {% endif %}
-{% endwith %} -->
-
-{% endblock %}
-
 {% block adm_content_main_col %}
 
 <h3>All Budgets</h3>
 <br>
+<a class="btn" href="{{ url_for('admin.adm_budgets', op='addbudget') }}" role="button" id="addbudget">Add Budget</a>
+<a class="btn" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
 <table class="table table-sm table-striped" id="account">
     <thead class="thead-dark">
         <tr>

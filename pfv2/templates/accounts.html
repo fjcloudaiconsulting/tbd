@@ -4,23 +4,10 @@
 
 {% block adm_menu %}
 
-<a class="btn" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
 <a class="btn" href="{{ url_for('admin.adm_accounts', op='add') }}" role="button" id="addacct">Add Account</a>
 <a class="btn" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account
     Type</a>
-
-<!-- {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-        {% for category, message in messages %}
-            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-                {{ message }}
-                <button type="button" class="close" data-dismiss="alert" aria-label="Close">
-                    <span aria-hidden="true">&times;</span>
-                </button>
-            </div>
-        {% endfor %}
-    {% endif %}
-{% endwith %} -->
+<a class="btn" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
 
 {% endblock %}
 

@@ -14,8 +14,9 @@ def login():
         return redirect(url_for("main.index"))
 
     form = LoginForm()
-
-    if request.method == "POST":
+    print(form.data)
+    print(form.validate_on_submit())
+    if form.validate_on_submit():
         user = User.query.filter_by(username=form.username.data).first()
 
         if user is None or not user.check_password(form.password.data):
@@ -44,6 +45,8 @@ def register():
     if current_user.is_authenticated:
         return redirect(url_for("main.index"))
     form = RegistrationForm()
+    print(form.data)
+    print(form.validate_on_submit())
     if form.validate_on_submit():
         user = User(username=form.username.data, email=form.email.data)
         user.set_password(form.password.data)
