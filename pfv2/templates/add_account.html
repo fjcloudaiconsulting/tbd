@@ -4,8 +4,9 @@
 
 {% block adm_menu %}
 
-<a class="btn btn-primary" href="{{ url_for('admin.adm_accounts')}}" role="button" id="home">Admin Accounts</a>
-<a class="btn btn-primary" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account Type</a>
+<a class="btn" href="{{ url_for('admin.adm_accounts')}}" role="button" id="home">Admin Accounts</a>
+<a class="btn" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account
+    Type</a>
 
 {% endblock %}
 
@@ -55,8 +56,10 @@
             <td>{{ account.acct_type.name }}</td>
             <td>{{ account.balance }}</td>
             <td>
-                <a href="{{ url_for('admin.adm_accounts', op='remove', id=account.id) }}" id="rmacct"><i class="fas fa-trash-alt"></i></a>
-                <a href="{{ url_for('admin.adm_accounts', op='edit', id=account.id) }}" id="editacct"><i class="fas fa-edit"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='remove', id=account.id) }}" id="rmacct"><i
+                        class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='edit', id=account.id) }}" id="editacct"><i
+                        class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}

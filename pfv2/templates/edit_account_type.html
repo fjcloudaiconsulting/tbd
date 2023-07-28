@@ -10,11 +10,13 @@
     <div class="form-group">
         <div class="form-group">
             <label for="accountTypeName">Account Name</label>
-            <input type="text" class="form-control form-control-sm" id="accountTypeName" name="accountTypeName" value="{{ account_type.name }}" required>
+            <input type="text" class="form-control form-control-sm" id="accountTypeName" name="accountTypeName"
+                value="{{ account_type.name }}" required>
         </div>
         <div>
-            <button type="submit" class="btn btn-primary">Save</button>
-            <a class="btn btn-danger" href="{{ url_for('admin.adm_accounts') }}" role="button" id="canceledit">Cancel</a>
+            <button type="submit" class="btn">Save</button>
+            <a class="btn btn-danger" href="{{ url_for('admin.adm_accounts') }}" role="button"
+                id="canceledit">Cancel</a>
         </div>
     </div>
 </form>

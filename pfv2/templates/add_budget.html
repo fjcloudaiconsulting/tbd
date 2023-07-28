@@ -4,7 +4,7 @@
 
 {% block adm_menu %}
 
-<a class="btn btn-primary" href="{{ url_for('admin.adm_budgets')}}" role="button" id="home">Admin Budgets</a>
+<a class="btn" href="{{ url_for('admin.adm_budgets')}}" role="button" id="home">Admin Budgets</a>
 
 {% endblock %}
 
@@ -56,8 +56,10 @@
             <td>{{ budget.year }}</td>
             <td>{{ budget.total }}</td>
             <td>
-                <a href="{{ url_for('admin.adm_budgets', op='removebudget', id=budget.id) }}" id="rmbdgt"><i class="fas fa-trash-alt"></i></a>
-                <a href="{{ url_for('admin.adm_budgets', op='editbudget', id=budget.id) }}" id="editbdgt"><i class="fas fa-edit"></i></a>
+                <a href="{{ url_for('admin.adm_budgets', op='removebudget', id=budget.id) }}" id="rmbdgt"><i
+                        class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_budgets', op='editbudget', id=budget.id) }}" id="editbdgt"><i
+                        class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}

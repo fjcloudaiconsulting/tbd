@@ -4,9 +4,9 @@
 
 {% block adm_menu %}
 
-<a class="btn btn-primary" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
-<a class="btn btn-primary" href="{{ url_for('admin.adm_categories', op='addcategory') }}" role="button" id="addcat">Add Category</a>
-<a class="btn btn-primary" href="{{ url_for('admin.adm_budgets', op='addbudget') }}" role="button" id="addbudget">Add Budget</a>
+<a class="btn" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
+<a class="btn" href="{{ url_for('admin.adm_categories', op='addcategory') }}" role="button" id="addcat">Add Category</a>
+<a class="btn" href="{{ url_for('admin.adm_budgets', op='addbudget') }}" role="button" id="addbudget">Add Budget</a>
 
 <!-- {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -47,8 +47,10 @@
             <td>{{ budget.total }}</td>
             <td>{{ budget.balance }}</td>
             <td>
-                <a href="{{ url_for('admin.adm_budgets', op='removebudget', id=budget.id) }}" id="rmbdgt"><i class="fas fa-trash-alt"></i></a>
-                <a href="{{ url_for('admin.adm_budgets', op='editbudget', id=budget.id) }}" id="editbdgt"><i class="fas fa-edit"></i></a>
+                <a href="{{ url_for('admin.adm_budgets', op='removebudget', id=budget.id) }}" id="rmbdgt"><i
+                        class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_budgets', op='editbudget', id=budget.id) }}" id="editbdgt"><i
+                        class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}

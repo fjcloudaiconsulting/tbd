@@ -3,7 +3,7 @@ from flask_login import login_required, current_user
 import decimal
 from datetime import datetime
 from pfv2.models import Account, Category, Transaction, Budget, AccountType
-from pfv2.forms import TransactionForm
+from pfv2.forms import TransactionForm, LoginForm
 from pfv2 import db
 from pfv2.helpers.fixdate import fixdateformat
 
@@ -12,7 +12,8 @@ main = Blueprint("main", __name__)
 
 @main.route("/")
 def index():
-    return render_template("index.html")
+    form = LoginForm()
+    return render_template("index.html", form=form)
 
 
 @main.route("/frontpage", methods=["GET", "POST"])

@@ -4,8 +4,8 @@
 
 {% block adm_menu %}
 
-<a class="btn btn-primary" href="{{ url_for('admin.adm_categories')}}" role="button" id="home">Admin Categories</a>
-<a class="btn btn-primary" href="{{ url_for('admin.adm_budgets', op='addbudget') }}" role="button" id="addbudget">Add
+<a class="btn" href="{{ url_for('admin.adm_categories')}}" role="button" id="home">Admin Categories</a>
+<a class="btn" href="{{ url_for('admin.adm_budgets', op='addbudget') }}" role="button" id="addbudget">Add
     Budget</a>
 
 {% endblock %}

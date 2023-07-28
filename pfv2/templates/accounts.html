@@ -4,9 +4,10 @@
 
 {% block adm_menu %}
 
-<a class="btn btn-primary" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
-<a class="btn btn-primary" href="{{ url_for('admin.adm_accounts', op='add') }}" role="button" id="addacct">Add Account</a>
-<a class="btn btn-primary" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account Type</a>
+<a class="btn" href="{{ url_for('admin.adm_interface')}}" role="button" id="home">Admin Home</a>
+<a class="btn" href="{{ url_for('admin.adm_accounts', op='add') }}" role="button" id="addacct">Add Account</a>
+<a class="btn" href="{{ url_for('admin.adm_accounts', op='addtype') }}" role="button" id="addaccttype">Add Account
+    Type</a>
 
 <!-- {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -43,8 +44,10 @@
             <td>{{ account.acct_type.name }}</td>
             <td>{{ account.balance }}</td>
             <td>
-                <a href="{{ url_for('admin.adm_accounts', op='remove', id=account.id) }}" id="rmacct"><i class="fas fa-trash-alt"></i></a>
-                <a href="{{ url_for('admin.adm_accounts', op='edit', id=account.id) }}" id="editacct"><i class="fas fa-edit"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='remove', id=account.id) }}" id="rmacct"><i
+                        class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='edit', id=account.id) }}" id="editacct"><i
+                        class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}
@@ -68,8 +71,10 @@
         <tr>
             <td>{{ type.name }}</td>
             <td>
-                <a href="{{ url_for('admin.adm_accounts', op='removetype', id=type.id) }}" id="rmaccttype"><i class="fas fa-trash-alt"></i></a>
-                <a href="{{ url_for('admin.adm_accounts', op='edittype', id=type.id) }}" id="editaccttype"><i class="fas fa-edit"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='removetype', id=type.id) }}" id="rmaccttype"><i
+                        class="fas fa-trash-alt"></i></a>
+                <a href="{{ url_for('admin.adm_accounts', op='edittype', id=type.id) }}" id="editaccttype"><i
+                        class="fas fa-edit"></i></a>
             </td>
         </tr>
         {% endfor %}
