@@ -50,9 +50,9 @@ export async function apiFetch<T>(
     credentials: "include",
   });
 
-  // On 401, attempt one silent refresh
-  if (res.status === 401 && accessToken) {
-    // Deduplicate concurrent refresh attempts
+  // On 401, attempt one silent refresh (even without a current token —
+  // the refresh cookie may still be valid)
+  if (res.status === 401) {
     if (!refreshPromise) {
       refreshPromise = refreshAccessToken().finally(() => {
         refreshPromise = null;
