@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Load .env if present
+if [[ -f .env ]]; then
+  set -a; source .env; set +a
+fi
+
+usage() {
+  cat <<EOF
+Usage: ./pfv <command> [options]
+
+Commands:
+  start        Build and start all services
+  stop         Stop all services
+  restart      Restart without rebuild
+  rebuild      Force rebuild (no cache) and start
+  reset        Destroy all data and start fresh
+  migrate      Run pending database migrations
+  logs [svc]   View logs (optional: backend, frontend, nginx, mysql)
+  status       Show container status
+  shell [svc]  Open a shell in a service (default: backend)
+
+EOF
+}
+
+cmd_start() {
+  echo "Starting PFV2 stack..."
+  docker compose up --build -d
+  echo "Waiting for MySQL..."
+  docker compose exec backend alembic upgrade head
+  echo ""
+  echo "Ready:"
+  echo "  App:      http://localhost"
+  echo "  API:      http://localhost/api/"
+  echo "  API docs: http://localhost/api/docs"
+}
+
+cmd_stop() {
+  echo "Stopping..."
+  docker compose down
+}
+
+cmd_restart() {
+  echo "Restarting..."
+  docker compose restart
+}
+
+cmd_rebuild() {
+  echo "Rebuilding (no cache)..."
+  docker compose build --no-cache
+  docker compose up -d
+  docker compose exec backend alembic upgrade head
+  echo "Ready: http://localhost"
+}
+
+cmd_reset() {
+  echo "Destroying all data and starting fresh..."
+  docker compose down -v
+  docker compose up --build -d
+  echo "Waiting for MySQL..."
+  sleep 3
+  docker compose exec backend alembic upgrade head
+  echo "Ready: http://localhost"
+}
+
+cmd_migrate() {
+  docker compose exec backend alembic upgrade head
+}
+
+cmd_logs() {
+  local svc="${1:-}"
+  if [[ -n "$svc" ]]; then
+    shift
+    docker compose logs "$svc" "$@"
+  else
+    docker compose logs "$@"
+  fi
+}
+
+cmd_status() {
+  docker compose ps
+}
+
+cmd_shell() {
+  local svc="${1:-backend}"
+  docker compose exec "$svc" /bin/sh
+}
+
+case "${1:-}" in
+  start)    cmd_start ;;
+  stop)     cmd_stop ;;
+  restart)  cmd_restart ;;
+  rebuild)  cmd_rebuild ;;
+  reset)    cmd_reset ;;
+  migrate)  cmd_migrate ;;
+  logs)     shift; cmd_logs "$@" ;;
+  status)   cmd_status ;;
+  shell)    shift; cmd_shell "$@" ;;
+  *)        usage ;;
+esac
