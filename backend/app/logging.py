@@ -1,9 +1,33 @@
 import logging
+import re
 import sys
 
 import structlog
 
 from app.config import settings
+
+# Pattern to parse uvicorn access log: '127.0.0.1:1234 - "GET /path HTTP/1.1" 200'
+_ACCESS_RE = re.compile(
+    r'^(?P<remote>[^\s]+)\s+-\s+"(?P<method>\w+)\s+(?P<path>\S+)\s+HTTP/[\d.]+"'
+    r"\s+(?P<status>\d+)"
+)
+
+
+def _parse_uvicorn_access(logger: object, method_name: str, event_dict: dict) -> dict:
+    """Parse uvicorn access log into structured fields."""
+    if event_dict.get("logger") != "uvicorn.access":
+        return event_dict
+
+    msg = event_dict.get("event", "")
+    match = _ACCESS_RE.match(str(msg))
+    if match:
+        event_dict["event"] = "request"
+        event_dict["remote_addr"] = match.group("remote")
+        event_dict["method"] = match.group("method")
+        event_dict["path"] = match.group("path")
+        event_dict["status"] = int(match.group("status"))
+
+    return event_dict
 
 
 def setup_logging() -> None:
@@ -12,6 +36,7 @@ def setup_logging() -> None:
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.processors.TimeStamper(fmt="iso"),
+        _parse_uvicorn_access,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
     ]
