@@ -2,10 +2,12 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import type { Account, AccountType } from "@/lib/types";
 
 export default function AccountsPage() {
+  const { user, loading } = useAuth();
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
 
@@ -33,8 +35,10 @@ export default function AccountsPage() {
   };
 
   useEffect(() => {
-    reload().catch(() => {});
-  }, []);
+    if (!loading && user) {
+      reload().catch(() => {});
+    }
+  }, [loading, user]);
 
   // Account type handlers
   async function handleAddType(e: FormEvent) {

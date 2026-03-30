@@ -2,15 +2,19 @@
 
 import { useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import type { Account } from "@/lib/types";
 
 export default function DashboardPage() {
+  const { user, loading } = useAuth();
   const [accounts, setAccounts] = useState<Account[]>([]);
 
   useEffect(() => {
-    apiFetch<Account[]>("/api/v1/accounts").then(setAccounts).catch(() => {});
-  }, []);
+    if (!loading && user) {
+      apiFetch<Account[]>("/api/v1/accounts").then(setAccounts).catch(() => {});
+    }
+  }, [loading, user]);
 
   const activeAccounts = accounts.filter((a) => a.is_active);
   const totalBalance = activeAccounts.reduce((sum, a) => sum + Number(a.balance), 0);
