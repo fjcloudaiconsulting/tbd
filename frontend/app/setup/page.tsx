@@ -44,8 +44,8 @@ export default function SetupPage() {
 
   if (loading || !needsSetup) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600" />
+      <div className="flex h-screen items-center justify-center bg-bg">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
       </div>
     );
   }
@@ -53,26 +53,23 @@ export default function SetupPage() {
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-md">
-        <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold">Welcome to PFV2</h1>
-          <p className="mt-2 text-gray-600">
+        <div className="mb-10 text-center">
+          <h1 className="font-display text-3xl text-accent">Welcome to PFV2</h1>
+          <p className="mt-2 text-sm text-text-secondary">
             Create your administrator account to get started.
           </p>
         </div>
 
-        <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
-          <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="rounded-lg border border-border bg-surface p-6">
+          <form onSubmit={handleSubmit} className="space-y-5">
             {error && (
-              <div className="rounded bg-red-50 p-3 text-sm text-red-700">
+              <div className="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
                 {error}
               </div>
             )}
 
             <div>
-              <label
-                htmlFor="username"
-                className="mb-1 block text-sm font-medium"
-              >
+              <label htmlFor="username" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
                 Username
               </label>
               <input
@@ -81,17 +78,14 @@ export default function SetupPage() {
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className="w-full rounded-md border border-border bg-surface-raised px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
                 autoComplete="username"
                 autoFocus
               />
             </div>
 
             <div>
-              <label
-                htmlFor="email"
-                className="mb-1 block text-sm font-medium"
-              >
+              <label htmlFor="email" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
                 Email
               </label>
               <input
@@ -100,16 +94,13 @@ export default function SetupPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className="w-full rounded-md border border-border bg-surface-raised px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
                 autoComplete="email"
               />
             </div>
 
             <div>
-              <label
-                htmlFor="orgName"
-                className="mb-1 block text-sm font-medium"
-              >
+              <label htmlFor="orgName" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
                 Organization Name
               </label>
               <input
@@ -118,18 +109,15 @@ export default function SetupPage() {
                 value={orgName}
                 onChange={(e) => setOrgName(e.target.value)}
                 placeholder="My Household"
-                className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className="w-full rounded-md border border-border bg-surface-raised px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               />
-              <p className="mt-1 text-xs text-gray-400">
+              <p className="mt-1.5 text-xs text-text-muted">
                 Optional. Defaults to your username.
               </p>
             </div>
 
             <div>
-              <label
-                htmlFor="password"
-                className="mb-1 block text-sm font-medium"
-              >
+              <label htmlFor="password" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
                 Password
               </label>
               <input
@@ -138,16 +126,13 @@ export default function SetupPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className="w-full rounded-md border border-border bg-surface-raised px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
                 autoComplete="new-password"
               />
             </div>
 
             <div>
-              <label
-                htmlFor="password2"
-                className="mb-1 block text-sm font-medium"
-              >
+              <label htmlFor="password2" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
                 Confirm Password
               </label>
               <input
@@ -156,7 +141,7 @@ export default function SetupPage() {
                 required
                 value={password2}
                 onChange={(e) => setPassword2(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className="w-full rounded-md border border-border bg-surface-raised px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
                 autoComplete="new-password"
               />
             </div>
@@ -164,14 +149,14 @@ export default function SetupPage() {
             <button
               type="submit"
               disabled={submitting}
-              className="w-full rounded bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="w-full rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50"
             >
               {submitting ? "Setting up..." : "Create Admin Account"}
             </button>
           </form>
         </div>
 
-        <p className="mt-4 text-center text-xs text-gray-400">
+        <p className="mt-4 text-center text-xs text-text-muted">
           This account will have full administrator privileges.
         </p>
       </div>

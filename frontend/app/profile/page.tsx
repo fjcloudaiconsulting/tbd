@@ -9,7 +9,6 @@ import type { User } from "@/lib/types";
 export default function ProfilePage() {
   const { user, login, refreshMe } = useAuth();
 
-  // Profile form
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
 
@@ -19,11 +18,11 @@ export default function ProfilePage() {
       setEmail(user.email);
     }
   }, [user]);
+
   const [profileMsg, setProfileMsg] = useState("");
   const [profileErr, setProfileErr] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
 
-  // Password form
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -73,7 +72,6 @@ export default function ProfilePage() {
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
-      // Re-login with new password to refresh tokens
       await login(user!.username, newPassword);
       setPwdMsg("Password changed successfully");
     } catch (err) {
@@ -83,23 +81,26 @@ export default function ProfilePage() {
     }
   }
 
+  const inputClass =
+    "w-full rounded-md border border-border bg-surface-raised px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none";
+
   return (
     <AppShell>
-      <h1 className="mb-6 text-xl font-semibold">Profile</h1>
+      <h1 className="mb-8 font-display text-2xl text-text-primary">Profile</h1>
 
       <div className="max-w-lg space-y-6">
         {/* Account info */}
-        <div className="rounded-lg border border-gray-200 bg-white p-5">
-          <div className="mb-4 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
+        <div className="rounded-lg border border-border bg-surface p-6">
+          <div className="flex items-center gap-4">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-dim font-display text-lg text-accent">
               {user?.username?.charAt(0).toUpperCase()}
             </div>
             <div>
-              <p className="font-medium">{user?.username}</p>
-              <p className="text-xs text-gray-400">
+              <p className="font-medium text-text-primary">{user?.username}</p>
+              <p className="mt-0.5 text-xs text-text-muted">
                 {user?.role} · {user?.org_name}
                 {user?.is_superadmin && (
-                  <span className="ml-1 text-blue-600">· superadmin</span>
+                  <span className="ml-1 text-accent">· superadmin</span>
                 )}
               </p>
             </div>
@@ -107,45 +108,49 @@ export default function ProfilePage() {
         </div>
 
         {/* Edit profile */}
-        <div className="rounded-lg border border-gray-200 bg-white p-5">
-          <h2 className="mb-4 text-sm font-medium text-gray-700">
+        <div className="rounded-lg border border-border bg-surface p-6">
+          <h2 className="mb-5 text-xs font-medium uppercase tracking-wider text-text-muted">
             Edit Profile
           </h2>
-          <form onSubmit={handleProfileSubmit} className="space-y-3">
+          <form onSubmit={handleProfileSubmit} className="space-y-4">
             {profileMsg && (
-              <div className="rounded bg-green-50 p-2 text-sm text-green-700">
+              <div className="rounded-md bg-success-dim px-4 py-3 text-sm text-success">
                 {profileMsg}
               </div>
             )}
             {profileErr && (
-              <div className="rounded bg-red-50 p-2 text-sm text-red-700">
+              <div className="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
                 {profileErr}
               </div>
             )}
             <div>
-              <label className="mb-1 block text-sm">Username</label>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
+                Username
+              </label>
               <input
                 type="text"
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className={inputClass}
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm">Email</label>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
+                Email
+              </label>
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className={inputClass}
               />
             </div>
             <button
               type="submit"
               disabled={savingProfile}
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="rounded-md bg-accent px-5 py-2.5 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50"
             >
               {savingProfile ? "Saving..." : "Save Changes"}
             </button>
@@ -153,58 +158,64 @@ export default function ProfilePage() {
         </div>
 
         {/* Change password */}
-        <div className="rounded-lg border border-gray-200 bg-white p-5">
-          <h2 className="mb-4 text-sm font-medium text-gray-700">
+        <div className="rounded-lg border border-border bg-surface p-6">
+          <h2 className="mb-5 text-xs font-medium uppercase tracking-wider text-text-muted">
             Change Password
           </h2>
-          <form onSubmit={handlePasswordSubmit} className="space-y-3">
+          <form onSubmit={handlePasswordSubmit} className="space-y-4">
             {pwdMsg && (
-              <div className="rounded bg-green-50 p-2 text-sm text-green-700">
+              <div className="rounded-md bg-success-dim px-4 py-3 text-sm text-success">
                 {pwdMsg}
               </div>
             )}
             {pwdErr && (
-              <div className="rounded bg-red-50 p-2 text-sm text-red-700">
+              <div className="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
                 {pwdErr}
               </div>
             )}
             <div>
-              <label className="mb-1 block text-sm">Current Password</label>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
+                Current Password
+              </label>
               <input
                 type="password"
                 required
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className={inputClass}
                 autoComplete="current-password"
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm">New Password</label>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
+                New Password
+              </label>
               <input
                 type="password"
                 required
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className={inputClass}
                 autoComplete="new-password"
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm">Confirm New Password</label>
+              <label className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
+                Confirm New Password
+              </label>
               <input
                 type="password"
                 required
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className={inputClass}
                 autoComplete="new-password"
               />
             </div>
             <button
               type="submit"
               disabled={savingPwd}
-              className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="rounded-md bg-accent px-5 py-2.5 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50"
             >
               {savingPwd ? "Changing..." : "Change Password"}
             </button>

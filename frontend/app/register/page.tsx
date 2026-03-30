@@ -12,6 +12,7 @@ export default function RegisterPage() {
   useEffect(() => {
     if (!loading && user) router.replace("/dashboard");
   }, [loading, user, router]);
+
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -43,15 +44,18 @@ export default function RegisterPage() {
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        <h1 className="mb-8 text-center text-2xl font-bold">Create Account</h1>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="mb-10 text-center">
+          <h1 className="font-display text-3xl text-accent">Create Account</h1>
+          <p className="mt-1 text-sm text-text-muted">Join PFV2</p>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-5">
           {error && (
-            <div className="rounded bg-red-50 p-3 text-sm text-red-700">
+            <div className="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
               {error}
             </div>
           )}
           <div>
-            <label htmlFor="username" className="mb-1 block text-sm font-medium">
+            <label htmlFor="username" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
               Username
             </label>
             <input
@@ -60,12 +64,12 @@ export default function RegisterPage() {
               required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+              className="w-full rounded-md border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               autoComplete="username"
             />
           </div>
           <div>
-            <label htmlFor="email" className="mb-1 block text-sm font-medium">
+            <label htmlFor="email" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
               Email
             </label>
             <input
@@ -74,14 +78,13 @@ export default function RegisterPage() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+              className="w-full rounded-md border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               autoComplete="email"
             />
           </div>
           <div>
-            <label htmlFor="orgName" className="mb-1 block text-sm font-medium">
-              Organization Name{" "}
-              <span className="text-gray-400">(optional)</span>
+            <label htmlFor="orgName" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
+              Organization <span className="normal-case tracking-normal text-text-muted">(optional)</span>
             </label>
             <input
               id="orgName"
@@ -89,11 +92,11 @@ export default function RegisterPage() {
               value={orgName}
               onChange={(e) => setOrgName(e.target.value)}
               placeholder="My Household"
-              className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+              className="w-full rounded-md border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
             />
           </div>
           <div>
-            <label htmlFor="password" className="mb-1 block text-sm font-medium">
+            <label htmlFor="password" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
               Password
             </label>
             <input
@@ -102,12 +105,12 @@ export default function RegisterPage() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+              className="w-full rounded-md border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               autoComplete="new-password"
             />
           </div>
           <div>
-            <label htmlFor="password2" className="mb-1 block text-sm font-medium">
+            <label htmlFor="password2" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
               Confirm Password
             </label>
             <input
@@ -116,21 +119,21 @@ export default function RegisterPage() {
               required
               value={password2}
               onChange={(e) => setPassword2(e.target.value)}
-              className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+              className="w-full rounded-md border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               autoComplete="new-password"
             />
           </div>
           <button
             type="submit"
             disabled={submitting}
-            className="w-full rounded bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="w-full rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50"
           >
             {submitting ? "Creating account..." : "Create Account"}
           </button>
         </form>
-        <p className="mt-4 text-center text-sm text-gray-600">
+        <p className="mt-6 text-center text-sm text-text-muted">
           Already have an account?{" "}
-          <Link href="/login" className="text-blue-600 hover:underline">
+          <Link href="/login" className="text-accent hover:text-accent-hover">
             Sign In
           </Link>
         </p>

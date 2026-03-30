@@ -1,1 +1,81 @@
 @import "tailwindcss";
+
+@theme {
+  --color-bg: #0f0f0f;
+  --color-surface: #171715;
+  --color-surface-raised: #1e1e1b;
+  --color-surface-overlay: #252522;
+  --color-border: #2a2a27;
+  --color-border-subtle: #222220;
+
+  --color-text-primary: #e8e4df;
+  --color-text-secondary: #8a857e;
+  --color-text-muted: #5a5650;
+
+  --color-accent: #c9a84c;
+  --color-accent-hover: #d4b85c;
+  --color-accent-dim: rgba(201, 168, 76, 0.12);
+  --color-accent-text: #1a1a17;
+
+  --color-danger: #c45a5a;
+  --color-danger-dim: rgba(196, 90, 90, 0.12);
+  --color-success: #5a9e6f;
+  --color-success-dim: rgba(90, 158, 111, 0.12);
+
+  --font-display: "DM Serif Display", Georgia, serif;
+  --font-body: "DM Sans", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+/* Form elements */
+input,
+select,
+textarea {
+  font-family: var(--font-body);
+}
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px var(--color-surface-raised) inset;
+  -webkit-text-fill-color: var(--color-text-primary);
+  caret-color: var(--color-text-primary);
+}
+
+/* Transitions */
+a,
+button {
+  transition: all 0.15s ease;
+}
+
+/* Selection */
+::selection {
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+}

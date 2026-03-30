@@ -39,15 +39,18 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        <h1 className="mb-8 text-center text-2xl font-bold">PFV2</h1>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="mb-10 text-center">
+          <h1 className="font-display text-3xl text-accent">PFV2</h1>
+          <p className="mt-1 text-sm text-text-muted">Personal Finance</p>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-5">
           {error && (
-            <div className="rounded bg-red-50 p-3 text-sm text-red-700">
+            <div className="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
               {error}
             </div>
           )}
           <div>
-            <label htmlFor="username" className="mb-1 block text-sm font-medium">
+            <label htmlFor="username" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
               Username
             </label>
             <input
@@ -56,12 +59,12 @@ export default function LoginPage() {
               required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+              className="w-full rounded-md border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               autoComplete="username"
             />
           </div>
           <div>
-            <label htmlFor="password" className="mb-1 block text-sm font-medium">
+            <label htmlFor="password" className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-text-muted">
               Password
             </label>
             <input
@@ -70,21 +73,21 @@ export default function LoginPage() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+              className="w-full rounded-md border border-border bg-surface px-4 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
               autoComplete="current-password"
             />
           </div>
           <button
             type="submit"
             disabled={submitting}
-            className="w-full rounded bg-blue-600 px-4 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="w-full rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50"
           >
             {submitting ? "Signing in..." : "Sign In"}
           </button>
         </form>
-        <p className="mt-4 text-center text-sm text-gray-600">
+        <p className="mt-6 text-center text-sm text-text-muted">
           Don&apos;t have an account?{" "}
-          <Link href="/register" className="text-blue-600 hover:underline">
+          <Link href="/register" className="text-accent hover:text-accent-hover">
             Register
           </Link>
         </p>

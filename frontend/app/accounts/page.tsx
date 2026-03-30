@@ -11,12 +11,10 @@ export default function AccountsPage() {
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
 
-  // Account type form
   const [typeName, setTypeName] = useState("");
   const [editingTypeId, setEditingTypeId] = useState<number | null>(null);
   const [editingTypeName, setEditingTypeName] = useState("");
 
-  // Account form
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [acctName, setAcctName] = useState("");
   const [acctTypeId, setAcctTypeId] = useState<number | "">("");
@@ -40,7 +38,6 @@ export default function AccountsPage() {
     }
   }, [loading, user, reload]);
 
-  // Account type handlers
   async function handleAddType(e: FormEvent) {
     e.preventDefault();
     setError("");
@@ -81,7 +78,6 @@ export default function AccountsPage() {
     }
   }
 
-  // Account handlers
   async function handleAddAccount(e: FormEvent) {
     e.preventDefault();
     setError("");
@@ -128,44 +124,49 @@ export default function AccountsPage() {
     }
   }
 
+  const inputClass =
+    "w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none";
+
   return (
     <AppShell>
-      <h1 className="mb-6 text-xl font-semibold">Accounts</h1>
+      <h1 className="mb-8 font-display text-2xl text-text-primary">Accounts</h1>
 
       {error && (
-        <div className="mb-4 rounded bg-red-50 p-3 text-sm text-red-700">
+        <div className="mb-6 rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
           {error}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Account Types */}
-        <div className="rounded-lg border border-gray-200 bg-white">
-          <div className="border-b border-gray-100 px-5 py-3">
-            <h2 className="text-sm font-medium text-gray-700">Account Types</h2>
+        <div className="rounded-lg border border-border bg-surface">
+          <div className="border-b border-border px-6 py-4">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-text-muted">
+              Account Types
+            </h2>
           </div>
-          <div className="p-5">
-            <form onSubmit={handleAddType} className="mb-4 flex gap-2">
+          <div className="p-6">
+            <form onSubmit={handleAddType} className="mb-5 flex gap-2">
               <input
                 type="text"
                 required
                 placeholder="New type name"
                 value={typeName}
                 onChange={(e) => setTypeName(e.target.value)}
-                className="flex-1 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                className={`flex-1 ${inputClass}`}
               />
               <button
                 type="submit"
-                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+                className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text hover:bg-accent-hover"
               >
                 Add
               </button>
             </form>
-            <div className="space-y-2">
+            <div className="space-y-1">
               {accountTypes.map((at) => (
                 <div
                   key={at.id}
-                  className="flex items-center justify-between rounded border border-gray-100 px-3 py-2"
+                  className="flex items-center justify-between rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised"
                 >
                   {editingTypeId === at.id ? (
                     <div className="flex flex-1 gap-2">
@@ -173,7 +174,7 @@ export default function AccountsPage() {
                         type="text"
                         value={editingTypeName}
                         onChange={(e) => setEditingTypeName(e.target.value)}
-                        className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
+                        className={`flex-1 ${inputClass}`}
                         autoFocus
                         onKeyDown={(e) => {
                           if (e.key === "Enter") handleUpdateType(at.id);
@@ -182,38 +183,38 @@ export default function AccountsPage() {
                       />
                       <button
                         onClick={() => handleUpdateType(at.id)}
-                        className="text-sm text-blue-600 hover:underline"
+                        className="text-sm text-accent hover:text-accent-hover"
                       >
                         Save
                       </button>
                       <button
                         onClick={() => setEditingTypeId(null)}
-                        className="text-sm text-gray-400 hover:underline"
+                        className="text-sm text-text-muted hover:text-text-secondary"
                       >
                         Cancel
                       </button>
                     </div>
                   ) : (
                     <>
-                      <div>
-                        <span className="text-sm">{at.name}</span>
-                        <span className="ml-2 text-xs text-gray-400">
-                          ({at.account_count})
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-text-primary">{at.name}</span>
+                        <span className="text-xs text-text-muted">
+                          {at.account_count}
                         </span>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-3 opacity-0 group-hover:opacity-100 [div:hover>&]:opacity-100">
                         <button
                           onClick={() => {
                             setEditingTypeId(at.id);
                             setEditingTypeName(at.name);
                           }}
-                          className="text-xs text-blue-600 hover:underline"
+                          className="text-xs text-text-muted hover:text-accent"
                         >
                           Edit
                         </button>
                         <button
                           onClick={() => handleDeleteType(at.id)}
-                          className="text-xs text-red-500 hover:underline"
+                          className="text-xs text-text-muted hover:text-danger"
                         >
                           Delete
                         </button>
@@ -223,7 +224,7 @@ export default function AccountsPage() {
                 </div>
               ))}
               {accountTypes.length === 0 && (
-                <p className="text-sm text-gray-400">
+                <p className="py-4 text-center text-sm text-text-muted">
                   No account types yet. Add one above.
                 </p>
               )}
@@ -232,28 +233,30 @@ export default function AccountsPage() {
         </div>
 
         {/* Accounts */}
-        <div className="rounded-lg border border-gray-200 bg-white">
-          <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3">
-            <h2 className="text-sm font-medium text-gray-700">Accounts</h2>
+        <div className="rounded-lg border border-border bg-surface">
+          <div className="flex items-center justify-between border-b border-border px-6 py-4">
+            <h2 className="text-xs font-medium uppercase tracking-wider text-text-muted">
+              Accounts
+            </h2>
             {accountTypes.length > 0 && (
               <button
                 onClick={() => setShowAccountForm(!showAccountForm)}
-                className="text-xs text-blue-600 hover:underline"
+                className="text-xs text-accent hover:text-accent-hover"
               >
                 {showAccountForm ? "Cancel" : "+ Add Account"}
               </button>
             )}
           </div>
-          <div className="p-5">
+          <div className="p-6">
             {showAccountForm && (
-              <form onSubmit={handleAddAccount} className="mb-4 space-y-3">
+              <form onSubmit={handleAddAccount} className="mb-5 space-y-3">
                 <input
                   type="text"
                   required
                   placeholder="Account name"
                   value={acctName}
                   onChange={(e) => setAcctName(e.target.value)}
-                  className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  className={inputClass}
                 />
                 <select
                   required
@@ -263,7 +266,7 @@ export default function AccountsPage() {
                       e.target.value === "" ? "" : Number(e.target.value)
                     )
                   }
-                  className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                  className={inputClass}
                 >
                   <option value="">Select type</option>
                   {accountTypes.map((at) => (
@@ -279,7 +282,7 @@ export default function AccountsPage() {
                     placeholder="Initial balance"
                     value={acctBalance}
                     onChange={(e) => setAcctBalance(e.target.value)}
-                    className="flex-1 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                    className={`flex-1 ${inputClass}`}
                   />
                   <input
                     type="text"
@@ -288,62 +291,60 @@ export default function AccountsPage() {
                     onChange={(e) =>
                       setAcctCurrency(e.target.value.toUpperCase())
                     }
-                    className="w-16 rounded border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:outline-none"
+                    className={`w-16 text-center ${inputClass}`}
                   />
                 </div>
                 <button
                   type="submit"
-                  className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+                  className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text hover:bg-accent-hover"
                 >
                   Create Account
                 </button>
               </form>
             )}
-            <div className="space-y-2">
+            <div className="space-y-1">
               {accounts.map((a) => (
                 <div
                   key={a.id}
-                  className={`flex items-center justify-between rounded border px-3 py-2 ${
-                    a.is_active
-                      ? "border-gray-100"
-                      : "border-gray-100 bg-gray-50 opacity-60"
+                  className={`flex items-center justify-between rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised ${
+                    !a.is_active ? "opacity-40" : ""
                   }`}
                 >
                   <div>
-                    <span className="text-sm font-medium">{a.name}</span>
-                    <span className="ml-2 text-xs text-gray-400">
+                    <span className="text-sm font-medium text-text-primary">{a.name}</span>
+                    <span className="ml-2 text-xs text-text-muted">
                       {a.account_type_name}
                     </span>
                     {!a.is_active && (
-                      <span className="ml-2 text-xs text-orange-500">
-                        inactive
-                      </span>
+                      <span className="ml-2 text-xs text-danger">inactive</span>
                     )}
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-medium">
+                  <div className="flex items-center gap-4">
+                    <span className="text-sm tabular-nums text-text-primary">
                       {Number(a.balance).toLocaleString("en", {
                         minimumFractionDigits: 2,
                       })}{" "}
-                      <span className="text-xs text-gray-400">{a.currency}</span>
+                      <span className="text-text-muted">{a.currency}</span>
                     </span>
-                    <button
-                      onClick={() => handleToggleActive(a)}
-                      className="text-xs text-gray-500 hover:underline"
-                    >
-                      {a.is_active ? "Deactivate" : "Activate"}
-                    </button>
-                    <button
-                      onClick={() => handleDeleteAccount(a.id)}
-                      className="text-xs text-red-500 hover:underline"
-                    >
-                      Delete
-                    </button>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => handleToggleActive(a)}
+                        className="text-xs text-text-muted hover:text-text-secondary"
+                      >
+                        {a.is_active ? "Deactivate" : "Activate"}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteAccount(a.id)}
+                        className="text-xs text-text-muted hover:text-danger"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
               {accounts.length === 0 && (
-                <p className="text-sm text-gray-400">
+                <p className="py-4 text-center text-sm text-text-muted">
                   {accountTypes.length === 0
                     ? "Create an account type first."
                     : "No accounts yet. Click '+ Add Account' above."}
