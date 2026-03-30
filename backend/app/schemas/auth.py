@@ -25,6 +25,7 @@ class UserResponse(BaseModel):
     role: str
     org_id: int
     org_name: str
+    is_superadmin: bool
     is_active: bool
 
     model_config = {"from_attributes": True}

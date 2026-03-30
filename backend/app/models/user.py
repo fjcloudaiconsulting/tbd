@@ -43,6 +43,7 @@ class User(Base):
         nullable=False,
         default=Role.OWNER,
     )
+    is_superadmin: Mapped[bool] = mapped_column(default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
