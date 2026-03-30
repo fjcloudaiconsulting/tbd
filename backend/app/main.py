@@ -11,6 +11,9 @@ from app.database import engine
 from app.logging import setup_logging
 from app.routers import account_types, accounts, auth, settings, users
 
+# Setup JSON logging early so uvicorn's loggers are captured
+setup_logging()
+
 logger = structlog.stdlib.get_logger()
 
 
@@ -28,7 +31,6 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    setup_logging()
     _run_migrations()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield

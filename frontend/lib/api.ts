@@ -75,6 +75,11 @@ export async function apiFetch<T>(
     throw new ApiResponseError(res.status, body.detail || "Request failed");
   }
 
+  // 204 No Content — return undefined
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
   return res.json();
 }
 
