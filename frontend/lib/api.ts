@@ -83,6 +83,10 @@ export async function apiFetch<T>(
   return res.json().catch(() => undefined as T);
 }
 
+export function extractErrorMessage(err: unknown, fallback = "Failed"): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
 export class ApiResponseError extends Error {
   constructor(
     public status: number,

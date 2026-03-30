@@ -4,7 +4,8 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Account, Category, Transaction } from "@/lib/types";
 
@@ -35,7 +36,7 @@ export default function TransactionsPage() {
     setFormType(newType);
     setFormCategoryId("");
   }
-  const [formDate, setFormDate] = useState(new Date().toISOString().slice(0, 10));
+  const [formDate, setFormDate] = useState(todayISO());
 
   const loadRefs = useCallback(async () => {
     const [accts, cats] = await Promise.all([
@@ -82,10 +83,10 @@ export default function TransactionsPage() {
         }),
       });
       setFormDescription(""); setFormAmount(""); setFormType("expense");
-      setFormDate(new Date().toISOString().slice(0, 10));
+      setFormDate(todayISO());
       setShowForm(false);
       await loadTransactions(page);
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleDelete(id: number) {
@@ -94,7 +95,7 @@ export default function TransactionsPage() {
     try {
       await apiFetch(`/api/v1/transactions/${id}`, { method: "DELETE" });
       await loadTransactions(page);
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   const activeAccounts = accounts.filter((a) => a.is_active);
@@ -198,7 +199,7 @@ export default function TransactionsPage() {
                   <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
                   <span className={`col-span-2 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
                     {tx.type === "income" ? "+" : "-"}
-                    {Number(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    {formatAmount(tx.amount)}
                   </span>
                   <span className="col-span-1 text-right">
                     <button onClick={() => handleDelete(tx.id)} aria-label={`Delete transaction: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>

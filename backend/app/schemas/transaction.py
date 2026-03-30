@@ -31,7 +31,7 @@ class TransactionResponse(BaseModel):
     category_name: str = ""
     description: str
     amount: Decimal
-    type: str
+    type: Literal["income", "expense"]
     date: datetime.date
 
     model_config = {"from_attributes": True}

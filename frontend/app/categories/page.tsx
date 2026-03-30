@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Category } from "@/lib/types";
 
@@ -49,7 +49,7 @@ export default function CategoriesPage() {
       setName("");
       setCatType("both");
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleUpdate(id: number) {
@@ -58,7 +58,7 @@ export default function CategoriesPage() {
       await apiFetch(`/api/v1/categories/${id}`, { method: "PUT", body: JSON.stringify({ name: editingName, type: editingType }) });
       setEditingId(null);
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleDelete(id: number) {
@@ -67,7 +67,7 @@ export default function CategoriesPage() {
     try {
       await apiFetch(`/api/v1/categories/${id}`, { method: "DELETE" });
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   return (

@@ -93,7 +93,9 @@ async def delete_account_type(
         raise HTTPException(status_code=404, detail="Account type not found")
 
     account_count = await db.scalar(
-        select(func.count()).select_from(Account).where(Account.account_type_id == at.id)
+        select(func.count())
+        .select_from(Account)
+        .where(Account.account_type_id == at.id, Account.org_id == current_user.org_id)
     )
     if account_count and account_count > 0:
         raise HTTPException(

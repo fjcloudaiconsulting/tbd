@@ -36,15 +36,9 @@ def _load_opts():
     return [selectinload(Transaction.account), selectinload(Transaction.category)]
 
 
-async def _validate_refs(
-    db: AsyncSession, org_id: int, account_id: int, category_id: int
+async def _validate_category(
+    db: AsyncSession, category_id: int, org_id: int
 ) -> None:
-    acct = await db.scalar(
-        select(Account.id).where(Account.id == account_id, Account.org_id == org_id)
-    )
-    if acct is None:
-        raise HTTPException(status_code=400, detail="Invalid account")
-
     cat = await db.scalar(
         select(Category.id).where(
             Category.id == category_id, Category.org_id == org_id
@@ -99,10 +93,11 @@ async def create_transaction(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await _validate_refs(db, current_user.org_id, body.account_id, body.category_id)
+    await _validate_category(db, body.category_id, current_user.org_id)
 
     tx_type = TransactionType(body.type)
 
+    # _get_account_for_update validates existence + acquires row lock
     acct = await _get_account_for_update(db, body.account_id, current_user.org_id)
     if tx_type == TransactionType.INCOME:
         acct.balance += body.amount
@@ -174,22 +169,9 @@ async def update_transaction(
         old_account.balance += tx.amount
 
     if body.account_id is not None and body.account_id != tx.account_id:
-        await _validate_refs(
-            db,
-            current_user.org_id,
-            body.account_id,
-            body.category_id or tx.category_id,
-        )
         tx.account_id = body.account_id
     if body.category_id is not None:
-        cat = await db.scalar(
-            select(Category.id).where(
-                Category.id == body.category_id,
-                Category.org_id == current_user.org_id,
-            )
-        )
-        if cat is None:
-            raise HTTPException(status_code=400, detail="Invalid category")
+        await _validate_category(db, body.category_id, current_user.org_id)
         tx.category_id = body.category_id
     if body.description is not None:
         tx.description = body.description

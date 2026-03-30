@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { isAdmin } from "@/lib/auth";
 import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { OrgSetting } from "@/lib/types";
 
@@ -19,11 +20,11 @@ export default function SettingsPage() {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
 
-  const isAdmin = user?.role === "owner" || user?.role === "admin" || user?.is_superadmin;
+  const admin = user ? isAdmin(user) : false;
 
   useEffect(() => {
-    if (!loading && !isAdmin) router.replace("/dashboard");
-  }, [loading, isAdmin, router]);
+    if (!loading && !admin) router.replace("/dashboard");
+  }, [loading, admin, router]);
 
   const reload = useCallback(async () => {
     try {
@@ -33,8 +34,8 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    if (isAdmin) reload();
-  }, [isAdmin, reload]);
+    if (admin) reload();
+  }, [admin, reload]);
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
@@ -43,7 +44,7 @@ export default function SettingsPage() {
       await apiFetch("/api/v1/settings", { method: "PUT", body: JSON.stringify({ key, value }) });
       setKey(""); setValue("");
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleUpdate(settingKey: string) {
@@ -52,7 +53,7 @@ export default function SettingsPage() {
       await apiFetch("/api/v1/settings", { method: "PUT", body: JSON.stringify({ key: settingKey, value: editingValue }) });
       setEditingKey(null);
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleDelete(settingKey: string) {
@@ -61,10 +62,10 @@ export default function SettingsPage() {
     try {
       await apiFetch(`/api/v1/settings/${encodeURIComponent(settingKey)}`, { method: "DELETE" });
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
-  if (loading || !isAdmin) {
+  if (loading || !admin) {
     return <AppShell>{loading && <Spinner />}</AppShell>;
   }
 

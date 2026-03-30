@@ -4,7 +4,8 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Account, AccountType } from "@/lib/types";
 
@@ -47,7 +48,7 @@ export default function AccountsPage() {
       await apiFetch("/api/v1/account-types", { method: "POST", body: JSON.stringify({ name: typeName }) });
       setTypeName("");
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleUpdateType(id: number) {
@@ -56,7 +57,7 @@ export default function AccountsPage() {
       await apiFetch(`/api/v1/account-types/${id}`, { method: "PUT", body: JSON.stringify({ name: editingTypeName }) });
       setEditingTypeId(null);
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleDeleteType(id: number) {
@@ -65,7 +66,7 @@ export default function AccountsPage() {
     try {
       await apiFetch(`/api/v1/account-types/${id}`, { method: "DELETE" });
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleAddAccount(e: FormEvent) {
@@ -78,7 +79,7 @@ export default function AccountsPage() {
       });
       setAcctName(""); setAcctTypeId(""); setAcctBalance("0.00"); setShowAccountForm(false);
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleDeleteAccount(id: number) {
@@ -87,14 +88,14 @@ export default function AccountsPage() {
     try {
       await apiFetch(`/api/v1/accounts/${id}`, { method: "DELETE" });
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleToggleActive(account: Account) {
     try {
       await apiFetch(`/api/v1/accounts/${account.id}`, { method: "PUT", body: JSON.stringify({ is_active: !account.is_active }) });
       await reload();
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   return (
@@ -197,7 +198,7 @@ export default function AccountsPage() {
                     </div>
                     <div className="flex items-center gap-4">
                       <span className="text-sm tabular-nums text-text-primary">
-                        {Number(a.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })}{" "}
+                        {formatAmount(a.balance)}{" "}
                         <span className="text-text-muted">{a.currency}</span>
                       </span>
                       <div className="flex gap-3">
