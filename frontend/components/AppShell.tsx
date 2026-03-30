@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { useTheme } from "@/components/ThemeProvider";
+import ThemeToggle from "@/components/ui/ThemeToggle";
 
 const navItems = [
   {
@@ -59,27 +59,6 @@ const adminItems = [
   },
 ];
 
-function ThemeToggle() {
-  const { theme, toggle } = useTheme();
-  return (
-    <button
-      onClick={toggle}
-      className="rounded-md p-1.5 text-text-muted hover:bg-surface-overlay hover:text-text-secondary"
-      title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-    >
-      {theme === "light" ? (
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z" />
-        </svg>
-      ) : (
-        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z" />
-        </svg>
-      )}
-    </button>
-  );
-}
-
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useAuth();
   const router = useRouter();
@@ -115,14 +94,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       {/* Dark sidebar */}
       <aside className="flex w-56 flex-col bg-sidebar-bg">
-        {/* Logo */}
         <div className="px-5 pt-5 pb-6">
           <Link href="/dashboard" className="font-display text-lg font-semibold text-sidebar-text-bright">
             PFV2
           </Link>
         </div>
 
-        {/* Navigation */}
         <nav className="flex-1 space-y-0.5 px-3">
           {navItems.map((item) => (
             <Link
@@ -188,7 +165,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </svg>
           </button>
 
-          {/* Expanded user menu */}
           {userExpanded && (
             <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg border border-sidebar-border bg-sidebar-bg py-1 shadow-xl">
               <Link
@@ -215,17 +191,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      {/* Right side: header + main + footer */}
       <div className="flex flex-1 flex-col">
-        {/* Top bar */}
         <header className="flex h-14 shrink-0 items-center justify-end border-b border-border bg-surface px-8">
           <ThemeToggle />
         </header>
-
-        {/* Main */}
         <main className="flex-1 p-8">{children}</main>
-
-        {/* Footer */}
         <footer className="border-t border-border bg-surface px-8 py-4">
           <div className="flex items-center justify-between text-xs text-text-muted">
             <span>PFV2 — Personal Finance</span>
