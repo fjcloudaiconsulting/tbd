@@ -1,34 +1,108 @@
 @import "tailwindcss";
 
+/* ─── Light theme (default) ─── */
+:root {
+  --theme-bg: #f3f4f6;
+  --theme-surface: #ffffff;
+  --theme-surface-raised: #f9fafb;
+  --theme-surface-overlay: #f3f4f6;
+  --theme-border: #e5e7eb;
+  --theme-border-subtle: #f3f4f6;
+
+  --theme-text-primary: #111827;
+  --theme-text-secondary: #4b5563;
+  --theme-text-muted: #9ca3af;
+
+  --theme-accent: #2563eb;
+  --theme-accent-hover: #1d4ed8;
+  --theme-accent-dim: rgba(37, 99, 235, 0.08);
+  --theme-accent-text: #ffffff;
+
+  --theme-danger: #dc2626;
+  --theme-danger-dim: rgba(220, 38, 38, 0.06);
+  --theme-success: #16a34a;
+  --theme-success-dim: rgba(22, 163, 74, 0.06);
+
+  /* Sidebar is always dark */
+  --theme-sidebar-bg: #0f172a;
+  --theme-sidebar-text: #94a3b8;
+  --theme-sidebar-text-bright: #f1f5f9;
+  --theme-sidebar-hover: rgba(255, 255, 255, 0.05);
+  --theme-sidebar-active-bg: rgba(37, 99, 235, 0.15);
+  --theme-sidebar-active-text: #60a5fa;
+  --theme-sidebar-border: rgba(255, 255, 255, 0.06);
+  --theme-sidebar-muted: #475569;
+}
+
+/* ─── Dark theme ─── */
+[data-theme="dark"] {
+  --theme-bg: #0b0f1a;
+  --theme-surface: #111827;
+  --theme-surface-raised: #1e293b;
+  --theme-surface-overlay: #1e293b;
+  --theme-border: #1e293b;
+  --theme-border-subtle: #172033;
+
+  --theme-text-primary: #f1f5f9;
+  --theme-text-secondary: #94a3b8;
+  --theme-text-muted: #475569;
+
+  --theme-accent: #3b82f6;
+  --theme-accent-hover: #60a5fa;
+  --theme-accent-dim: rgba(59, 130, 246, 0.12);
+  --theme-accent-text: #ffffff;
+
+  --theme-danger: #f87171;
+  --theme-danger-dim: rgba(248, 113, 113, 0.1);
+  --theme-success: #4ade80;
+  --theme-success-dim: rgba(74, 222, 128, 0.1);
+
+  --theme-sidebar-bg: #060a14;
+  --theme-sidebar-text: #64748b;
+  --theme-sidebar-text-bright: #e2e8f0;
+  --theme-sidebar-hover: rgba(255, 255, 255, 0.04);
+  --theme-sidebar-active-bg: rgba(59, 130, 246, 0.12);
+  --theme-sidebar-active-text: #60a5fa;
+  --theme-sidebar-border: rgba(255, 255, 255, 0.04);
+  --theme-sidebar-muted: #334155;
+}
+
 @theme {
-  --color-bg: #0f0f0f;
-  --color-surface: #171715;
-  --color-surface-raised: #1e1e1b;
-  --color-surface-overlay: #252522;
-  --color-border: #2a2a27;
-  --color-border-subtle: #222220;
+  --color-bg: var(--theme-bg);
+  --color-surface: var(--theme-surface);
+  --color-surface-raised: var(--theme-surface-raised);
+  --color-surface-overlay: var(--theme-surface-overlay);
+  --color-border: var(--theme-border);
+  --color-border-subtle: var(--theme-border-subtle);
 
-  --color-text-primary: #e8e4df;
-  --color-text-secondary: #8a857e;
-  --color-text-muted: #5a5650;
+  --color-text-primary: var(--theme-text-primary);
+  --color-text-secondary: var(--theme-text-secondary);
+  --color-text-muted: var(--theme-text-muted);
 
-  --color-accent: #c9a84c;
-  --color-accent-hover: #d4b85c;
-  --color-accent-dim: rgba(201, 168, 76, 0.12);
-  --color-accent-text: #1a1a17;
+  --color-accent: var(--theme-accent);
+  --color-accent-hover: var(--theme-accent-hover);
+  --color-accent-dim: var(--theme-accent-dim);
+  --color-accent-text: var(--theme-accent-text);
 
-  --color-danger: #c45a5a;
-  --color-danger-dim: rgba(196, 90, 90, 0.12);
-  --color-success: #5a9e6f;
-  --color-success-dim: rgba(90, 158, 111, 0.12);
+  --color-danger: var(--theme-danger);
+  --color-danger-dim: var(--theme-danger-dim);
+  --color-success: var(--theme-success);
+  --color-success-dim: var(--theme-success-dim);
 
-  --font-display: "DM Serif Display", Georgia, serif;
-  --font-body: "DM Sans", system-ui, sans-serif;
+  --color-sidebar-bg: var(--theme-sidebar-bg);
+  --color-sidebar-text: var(--theme-sidebar-text);
+  --color-sidebar-text-bright: var(--theme-sidebar-text-bright);
+  --color-sidebar-hover: var(--theme-sidebar-hover);
+  --color-sidebar-active-bg: var(--theme-sidebar-active-bg);
+  --color-sidebar-active-text: var(--theme-sidebar-active-text);
+  --color-sidebar-border: var(--theme-sidebar-border);
+  --color-sidebar-muted: var(--theme-sidebar-muted);
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Outfit", system-ui, sans-serif;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 html {
   font-family: var(--font-body);
@@ -39,26 +113,12 @@ html {
 body {
   background-color: var(--color-bg);
   color: var(--color-text-primary);
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
-}
-
-/* Form elements */
-input,
-select,
-textarea {
-  font-family: var(--font-body);
-}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
 
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
@@ -68,14 +128,9 @@ input:-webkit-autofill:focus {
   caret-color: var(--color-text-primary);
 }
 
-/* Transitions */
-a,
-button {
-  transition: all 0.15s ease;
-}
-
-/* Selection */
 ::selection {
   background: var(--color-accent-dim);
   color: var(--color-accent);
 }
+
+a, button { transition: all 0.15s ease; }
