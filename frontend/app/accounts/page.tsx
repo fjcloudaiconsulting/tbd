@@ -28,8 +28,8 @@ export default function AccountsPage() {
       apiFetch<AccountType[]>("/api/v1/account-types"),
       apiFetch<Account[]>("/api/v1/accounts"),
     ]);
-    setAccountTypes(types);
-    setAccounts(accts);
+    setAccountTypes(types ?? []);
+    setAccounts(accts ?? []);
   }, []);
 
   useEffect(() => {

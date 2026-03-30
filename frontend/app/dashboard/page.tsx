@@ -13,7 +13,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!loading && user) {
-      apiFetch<Account[]>("/api/v1/accounts").then(setAccounts).catch(() => {});
+      apiFetch<Account[]>("/api/v1/accounts").then((data) => setAccounts(data ?? [])).catch(() => {});
     }
   }, [loading, user]);
 

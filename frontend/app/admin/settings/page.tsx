@@ -29,7 +29,7 @@ export default function SettingsPage() {
   const reload = useCallback(async () => {
     try {
       const data = await apiFetch<OrgSetting[]>("/api/v1/settings");
-      setSettings(data);
+      setSettings(data ?? []);
     } catch {
       // May 403 if not admin
     }
