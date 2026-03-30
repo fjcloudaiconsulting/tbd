@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -26,18 +26,18 @@ export default function SettingsPage() {
     }
   }, [loading, isAdmin, router]);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     try {
       const data = await apiFetch<OrgSetting[]>("/api/v1/settings");
       setSettings(data);
     } catch {
       // May 403 if not admin
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (isAdmin) reload();
-  }, [isAdmin]);
+  }, [isAdmin, reload]);
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
@@ -70,6 +70,7 @@ export default function SettingsPage() {
   }
 
   async function handleDelete(settingKey: string) {
+    if (!confirm(`Delete setting "${settingKey}"?`)) return;
     setError("");
     try {
       await apiFetch(`/api/v1/settings/${encodeURIComponent(settingKey)}`, {

@@ -11,6 +11,7 @@ from app.schemas.auth import (
     TokenResponse,
     UserResponse,
 )
+from app.config import settings as app_settings
 from app.security import (
     create_access_token,
     create_refresh_token,
@@ -40,9 +41,12 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
             detail="Username or email already taken",
         )
 
-    # First user in the system becomes superadmin
-    user_count = await db.scalar(select(func.count()).select_from(User))
-    is_first_user = user_count == 0
+    # First user in the system becomes superadmin.
+    # Check inside a locked read to avoid race conditions.
+    existing_superadmin = await db.scalar(
+        select(func.count()).select_from(User).where(User.is_superadmin == True)
+    )
+    is_first_user = existing_superadmin == 0
 
     org = Organization(name=body.org_name or f"{body.username}'s Organization")
     db.add(org)
@@ -57,7 +61,14 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         is_superadmin=is_first_user,
     )
     db.add(user)
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Registration conflict, please try again",
+        )
     await db.refresh(user)
     await db.refresh(org)
 
@@ -99,7 +110,7 @@ async def login(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=False,  # Set True in production via env var
+        secure=app_settings.cookie_secure,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
         path="/api/v1/auth/refresh",
@@ -144,7 +155,7 @@ async def refresh(
         key="refresh_token",
         value=new_refresh_token,
         httponly=True,
-        secure=False,
+        secure=app_settings.cookie_secure,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
         path="/api/v1/auth/refresh",

@@ -72,4 +72,5 @@ async def ready():
             await conn.execute(text("SELECT 1"))
         return {"status": "ready", "database": "connected"}
     except Exception as e:
-        return {"status": "not_ready", "database": str(e)}
+        logger.error("readiness check failed", error=str(e))
+        return {"status": "not_ready", "database": "connection error"}

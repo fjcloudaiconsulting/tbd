@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
@@ -25,20 +25,20 @@ export default function AccountsPage() {
 
   const [error, setError] = useState("");
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     const [types, accts] = await Promise.all([
       apiFetch<AccountType[]>("/api/v1/account-types"),
       apiFetch<Account[]>("/api/v1/accounts"),
     ]);
     setAccountTypes(types);
     setAccounts(accts);
-  };
+  }, []);
 
   useEffect(() => {
     if (!loading && user) {
       reload().catch(() => {});
     }
-  }, [loading, user]);
+  }, [loading, user, reload]);
 
   // Account type handlers
   async function handleAddType(e: FormEvent) {
@@ -71,6 +71,7 @@ export default function AccountsPage() {
   }
 
   async function handleDeleteType(id: number) {
+    if (!confirm("Delete this account type?")) return;
     setError("");
     try {
       await apiFetch(`/api/v1/account-types/${id}`, { method: "DELETE" });
@@ -105,6 +106,7 @@ export default function AccountsPage() {
   }
 
   async function handleDeleteAccount(id: number) {
+    if (!confirm("Delete this account?")) return;
     setError("");
     try {
       await apiFetch(`/api/v1/accounts/${id}`, { method: "DELETE" });

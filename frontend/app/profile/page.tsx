@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
@@ -10,8 +10,15 @@ export default function ProfilePage() {
   const { user, login } = useAuth();
 
   // Profile form
-  const [username, setUsername] = useState(user?.username || "");
-  const [email, setEmail] = useState(user?.email || "");
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+
+  useEffect(() => {
+    if (user) {
+      setUsername(user.username);
+      setEmail(user.email);
+    }
+  }, [user]);
   const [profileMsg, setProfileMsg] = useState("");
   const [profileErr, setProfileErr] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
@@ -66,7 +73,7 @@ export default function ProfilePage() {
       setNewPassword("");
       setConfirmPassword("");
       // Re-login with new password to refresh tokens
-      await login(username, newPassword);
+      await login(user!.username, newPassword);
       setPwdMsg("Password changed successfully");
     } catch (err) {
       setPwdErr(err instanceof Error ? err.message : "Failed");

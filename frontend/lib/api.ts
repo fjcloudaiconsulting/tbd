@@ -80,7 +80,7 @@ export async function apiFetch<T>(
     return undefined as T;
   }
 
-  return res.json();
+  return res.json().catch(() => undefined as T);
 }
 
 export class ApiResponseError extends Error {

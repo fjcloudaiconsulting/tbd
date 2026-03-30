@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
@@ -28,9 +29,9 @@ export default function DashboardPage() {
           <p>No accounts yet.</p>
           <p className="mt-1 text-sm">
             Go to{" "}
-            <a href="/accounts" className="text-blue-600 hover:underline">
+            <Link href="/accounts" className="text-blue-600 hover:underline">
               Accounts
-            </a>{" "}
+            </Link>{" "}
             to create your first account.
           </p>
         </div>

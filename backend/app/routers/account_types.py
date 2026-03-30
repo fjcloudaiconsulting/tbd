@@ -66,7 +66,9 @@ async def update_account_type(
     await db.refresh(at)
 
     count_result = await db.scalar(
-        select(func.count()).select_from(Account).where(Account.account_type_id == at.id)
+        select(func.count())
+        .select_from(Account)
+        .where(Account.account_type_id == at.id, Account.org_id == current_user.org_id)
     )
     return AccountTypeResponse(id=at.id, name=at.name, account_count=count_result or 0)
 

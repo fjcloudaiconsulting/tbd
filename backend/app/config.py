@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
     jwt_algorithm: str = "HS256"
 
+    # Cookies
+    cookie_secure: bool = False
+
     # CORS
     backend_cors_origins: str = "http://localhost:3000"
 

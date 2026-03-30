@@ -1,10 +1,10 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
     username: str
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8)
     org_name: str | None = None
 
 
