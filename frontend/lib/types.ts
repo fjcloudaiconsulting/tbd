@@ -37,6 +37,7 @@ export interface Account {
 export interface Category {
   id: number;
   name: string;
+  type: "income" | "expense" | "both";
   transaction_count: number;
 }
 

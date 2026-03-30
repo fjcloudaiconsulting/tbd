@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { input, label, btnPrimary, card, cardTitle, error as errorCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { User } from "@/lib/types";
 
@@ -35,7 +35,7 @@ export default function ProfilePage() {
       await apiFetch<User>("/api/v1/users/me", { method: "PUT", body: JSON.stringify({ username, email }) });
       await refreshMe();
       setProfileMsg("Profile updated");
-    } catch (err) { setProfileErr(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setProfileErr(extractErrorMessage(err)); }
     finally { setSavingProfile(false); }
   }
 
@@ -50,7 +50,7 @@ export default function ProfilePage() {
       await login(user!.username, newPassword);
       setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
       setPwdMsg("Password changed successfully");
-    } catch (err) { setPwdErr(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setPwdErr(extractErrorMessage(err)); }
     finally { setSavingPwd(false); }
   }
 

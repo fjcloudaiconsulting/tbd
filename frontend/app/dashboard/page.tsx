@@ -6,6 +6,7 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { formatAmount } from "@/lib/format";
 import { card, cardHeader, cardTitle, pageTitle } from "@/lib/styles";
 import type { Account } from "@/lib/types";
 
@@ -57,7 +58,7 @@ export default function DashboardPage() {
               <div key={currency} className={`flex-1 ${card} p-6`}>
                 <p className={cardTitle}>Total Balance</p>
                 <p className="mt-2 font-display text-3xl text-accent">
-                  {total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {formatAmount(total)}
                   <span className="ml-2 text-lg text-text-muted">{currency}</span>
                 </p>
               </div>
@@ -76,7 +77,7 @@ export default function DashboardPage() {
                     <p className="mt-0.5 text-xs text-text-muted">{account.account_type_name}</p>
                   </div>
                   <p className="text-sm tabular-nums text-text-primary">
-                    {Number(account.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}{" "}
+                    {formatAmount(account.balance)}{" "}
                     <span className="text-text-muted">{account.currency}</span>
                   </p>
                 </div>

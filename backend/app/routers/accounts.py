@@ -6,9 +6,9 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.account import Account, AccountType
-from app.models.transaction import Transaction
+from app.models.transaction import Transaction, TransactionType
 from app.models.user import User
-from app.schemas.account import AccountCreate, AccountResponse, AccountUpdate
+from app.schemas.account import AccountCreate, AccountResponse, AccountUpdate, ReconcileResponse
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
 
@@ -129,6 +129,47 @@ async def update_account(
         .where(Account.id == account.id)
     )
     return _to_response(result.scalar_one())
+
+
+@router.get("/{account_id}/reconcile", response_model=ReconcileResponse)
+async def reconcile_account(
+    account_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Account).where(
+            Account.id == account_id, Account.org_id == current_user.org_id
+        )
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    income = await db.scalar(
+        select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+            Transaction.account_id == account_id,
+            Transaction.org_id == current_user.org_id,
+            Transaction.type == TransactionType.INCOME,
+        )
+    )
+    expense = await db.scalar(
+        select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+            Transaction.account_id == account_id,
+            Transaction.org_id == current_user.org_id,
+            Transaction.type == TransactionType.EXPENSE,
+        )
+    )
+    # computed_balance is SUM(transactions) only — accounts created with a
+    # non-zero initial balance will appear inconsistent unless the opening
+    # balance is represented as an income transaction.
+    computed = income - expense
+    return ReconcileResponse(
+        account_id=account_id,
+        stored_balance=account.balance,
+        computed_balance=computed,
+        is_consistent=account.balance == computed,
+    )
 
 
 @router.delete("/{account_id}", status_code=204)

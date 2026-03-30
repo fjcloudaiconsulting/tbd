@@ -42,3 +42,10 @@ class AccountResponse(BaseModel):
     is_active: bool
 
     model_config = {"from_attributes": True}
+
+
+class ReconcileResponse(BaseModel):
+    account_id: int
+    stored_balance: Decimal
+    computed_balance: Decimal
+    is_consistent: bool

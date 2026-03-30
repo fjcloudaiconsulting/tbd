@@ -5,6 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
+import { isAdmin as checkAdmin } from "@/lib/auth";
 
 const navItems = [
   {
@@ -84,7 +85,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const isAdmin = user.role === "owner" || user.role === "admin" || user.is_superadmin;
+  const admin = checkAdmin(user);
 
   function isActive(href: string) {
     return pathname === href || pathname.startsWith(href + "/");
@@ -116,7 +117,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </Link>
           ))}
 
-          {isAdmin && (
+          {admin && (
             <>
               <div className="pb-1 pt-6 px-3">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-sidebar-muted">

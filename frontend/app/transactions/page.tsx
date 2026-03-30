@@ -4,7 +4,8 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Account, Category, Transaction } from "@/lib/types";
 
@@ -29,7 +30,13 @@ export default function TransactionsPage() {
   const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
   const [formType, setFormType] = useState<"income" | "expense">("expense");
-  const [formDate, setFormDate] = useState(new Date().toISOString().slice(0, 10));
+
+  // Reset category selection when transaction type changes (filtered categories may differ)
+  function handleTypeChange(newType: "income" | "expense") {
+    setFormType(newType);
+    setFormCategoryId("");
+  }
+  const [formDate, setFormDate] = useState(todayISO());
 
   const loadRefs = useCallback(async () => {
     const [accts, cats] = await Promise.all([
@@ -76,10 +83,10 @@ export default function TransactionsPage() {
         }),
       });
       setFormDescription(""); setFormAmount(""); setFormType("expense");
-      setFormDate(new Date().toISOString().slice(0, 10));
+      setFormDate(todayISO());
       setShowForm(false);
       await loadTransactions(page);
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleDelete(id: number) {
@@ -88,7 +95,7 @@ export default function TransactionsPage() {
     try {
       await apiFetch(`/api/v1/transactions/${id}`, { method: "DELETE" });
       await loadTransactions(page);
-    } catch (err) { setError(err instanceof Error ? err.message : "Failed"); }
+    } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   const activeAccounts = accounts.filter((a) => a.is_active);
@@ -121,12 +128,12 @@ export default function TransactionsPage() {
               <label htmlFor="tx-category" className={label}>Category</label>
               <select id="tx-category" required value={formCategoryId} onChange={(e) => setFormCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                 <option value="">Select category</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {categories.filter((c) => c.type === "both" || c.type === formType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
             <div>
               <label htmlFor="tx-type" className={label}>Type</label>
-              <select id="tx-type" value={formType} onChange={(e) => setFormType(e.target.value as "income" | "expense")} className={input}>
+              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
                 <option value="expense">Expense</option>
                 <option value="income">Income</option>
               </select>
@@ -192,7 +199,7 @@ export default function TransactionsPage() {
                   <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
                   <span className={`col-span-2 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
                     {tx.type === "income" ? "+" : "-"}
-                    {Number(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    {formatAmount(tx.amount)}
                   </span>
                   <span className="col-span-1 text-right">
                     <button onClick={() => handleDelete(tx.id)} aria-label={`Delete transaction: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
