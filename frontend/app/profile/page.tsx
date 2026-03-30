@@ -47,8 +47,8 @@ export default function ProfilePage() {
     try {
       await apiFetch("/api/v1/users/me/password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) });
       setPwdMsg("Password changed. Signing in with new credentials...");
-      setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
       await login(user!.username, newPassword);
+      setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
       setPwdMsg("Password changed successfully");
     } catch (err) { setPwdErr(err instanceof Error ? err.message : "Failed"); }
     finally { setSavingPwd(false); }

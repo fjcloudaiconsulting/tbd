@@ -1,6 +1,6 @@
 import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +10,7 @@ class TransactionCreate(BaseModel):
     category_id: int
     description: str
     amount: Decimal = Field(gt=0)
-    type: str  # "income" or "expense"
+    type: Literal["income", "expense"]
     date: datetime.date
 
 
@@ -19,7 +19,7 @@ class TransactionUpdate(BaseModel):
     category_id: Optional[int] = None
     description: Optional[str] = None
     amount: Optional[Decimal] = Field(default=None, gt=0)
-    type: Optional[str] = None
+    type: Optional[Literal["income", "expense"]] = None
     date: Optional[datetime.date] = None
 
 

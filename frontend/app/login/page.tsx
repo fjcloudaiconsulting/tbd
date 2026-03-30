@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { input, label, error as errorCls } from "@/lib/styles";
+import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 
 export default function LoginPage() {
   const { user, login, loading, needsSetup } = useAuth();
@@ -53,7 +53,7 @@ export default function LoginPage() {
             <label htmlFor="login-password" className={label}>Password</label>
             <input id="login-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="current-password" />
           </div>
-          <button type="submit" disabled={submitting} className="w-full rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50">
+          <button type="submit" disabled={submitting} className={`w-full ${btnPrimary}`}>
             {submitting ? "Signing in..." : "Sign In"}
           </button>
         </form>

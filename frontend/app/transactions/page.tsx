@@ -40,7 +40,7 @@ export default function TransactionsPage() {
     setCategories(cats ?? []);
   }, []);
 
-  const loadTransactions = useCallback(async (p = page) => {
+  const loadTransactions = useCallback(async (p: number) => {
     let url = `/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}`;
     if (filterAccount) url += `&account_id=${filterAccount}`;
     if (filterCategory) url += `&category_id=${filterCategory}`;
@@ -48,7 +48,7 @@ export default function TransactionsPage() {
     setHasMore(data.length > PAGE_SIZE);
     setTransactions(data.slice(0, PAGE_SIZE));
     setFetching(false);
-  }, [filterAccount, filterCategory, page]);
+  }, [filterAccount, filterCategory]);
 
   useEffect(() => {
     if (!loading && user) loadRefs().catch(() => {});
@@ -57,9 +57,9 @@ export default function TransactionsPage() {
   useEffect(() => {
     if (!loading && user) {
       setFetching(true);
-      loadTransactions().catch(() => setFetching(false));
+      loadTransactions(page).catch(() => setFetching(false));
     }
-  }, [loading, user, loadTransactions]);
+  }, [loading, user, loadTransactions, page]);
 
   // Reset page when filters change
   useEffect(() => { setPage(0); }, [filterAccount, filterCategory]);

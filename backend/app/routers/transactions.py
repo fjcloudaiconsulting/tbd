@@ -54,6 +54,20 @@ async def _validate_refs(
         raise HTTPException(status_code=400, detail="Invalid category")
 
 
+async def _get_account_for_update(
+    db: AsyncSession, account_id: int, org_id: int
+) -> Account:
+    result = await db.execute(
+        select(Account)
+        .where(Account.id == account_id, Account.org_id == org_id)
+        .with_for_update()
+    )
+    acct = result.scalar_one_or_none()
+    if acct is None:
+        raise HTTPException(status_code=400, detail="Invalid account")
+    return acct
+
+
 @router.get("", response_model=list[TransactionResponse])
 async def list_transactions(
     current_user: User = Depends(get_current_user),
@@ -87,18 +101,9 @@ async def create_transaction(
 ):
     await _validate_refs(db, current_user.org_id, body.account_id, body.category_id)
 
-    try:
-        tx_type = TransactionType(body.type)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="type must be 'income' or 'expense'")
+    tx_type = TransactionType(body.type)
 
-    # Update account balance
-    acct_result = await db.execute(
-        select(Account).where(
-            Account.id == body.account_id, Account.org_id == current_user.org_id
-        )
-    )
-    acct = acct_result.scalar_one()
+    acct = await _get_account_for_update(db, body.account_id, current_user.org_id)
     if tx_type == TransactionType.INCOME:
         acct.balance += body.amount
     else:
@@ -161,11 +166,8 @@ async def update_transaction(
     if tx is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    # Revert old balance impact
-    old_acct = await db.execute(
-        select(Account).where(Account.id == tx.account_id)
-    )
-    old_account = old_acct.scalar_one()
+    # Revert old balance impact (with row lock)
+    old_account = await _get_account_for_update(db, tx.account_id, current_user.org_id)
     if tx.type == TransactionType.INCOME:
         old_account.balance -= tx.amount
     else:
@@ -194,20 +196,12 @@ async def update_transaction(
     if body.amount is not None:
         tx.amount = body.amount
     if body.type is not None:
-        try:
-            tx.type = TransactionType(body.type)
-        except ValueError:
-            raise HTTPException(
-                status_code=400, detail="type must be 'income' or 'expense'"
-            )
+        tx.type = TransactionType(body.type)
     if body.date is not None:
         tx.date = body.date
 
-    # Apply new balance impact
-    new_acct = await db.execute(
-        select(Account).where(Account.id == tx.account_id)
-    )
-    new_account = new_acct.scalar_one()
+    # Apply new balance impact (with row lock)
+    new_account = await _get_account_for_update(db, tx.account_id, current_user.org_id)
     if tx.type == TransactionType.INCOME:
         new_account.balance += tx.amount
     else:
@@ -237,11 +231,8 @@ async def delete_transaction(
     if tx is None:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    # Revert balance impact
-    acct_result = await db.execute(
-        select(Account).where(Account.id == tx.account_id)
-    )
-    acct = acct_result.scalar_one()
+    # Revert balance impact (with row lock)
+    acct = await _get_account_for_update(db, tx.account_id, current_user.org_id)
     if tx.type == TransactionType.INCOME:
         acct.balance -= tx.amount
     else:

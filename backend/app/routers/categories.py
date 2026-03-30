@@ -99,7 +99,10 @@ async def delete_category(
     tx_count = await db.scalar(
         select(func.count())
         .select_from(Transaction)
-        .where(Transaction.category_id == cat.id)
+        .where(
+            Transaction.category_id == cat.id,
+            Transaction.org_id == current_user.org_id,
+        )
     )
     if tx_count and tx_count > 0:
         raise HTTPException(

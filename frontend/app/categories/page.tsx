@@ -91,7 +91,7 @@ export default function CategoriesPage() {
                     <>
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-text-primary">{cat.name}</span>
-                        <span className="text-xs text-text-muted">{cat.transaction_count}</span>
+                        <span className="text-xs text-text-muted" title={`${cat.transaction_count} transaction(s)`}>{cat.transaction_count}</span>
                       </div>
                       <div className="flex gap-3">
                         <button onClick={() => { setEditingId(cat.id); setEditingName(cat.name); }} aria-label={`Edit ${cat.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>

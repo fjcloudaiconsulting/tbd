@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { input, label, error as errorCls } from "@/lib/styles";
+import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 
 export default function SetupPage() {
   const { needsSetup, loading, register, login } = useAuth();
@@ -78,7 +78,7 @@ export default function SetupPage() {
               <label htmlFor="setup-password2" className={label}>Confirm Password</label>
               <input id="setup-password2" type="password" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
             </div>
-            <button type="submit" disabled={submitting} className="w-full rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50">
+            <button type="submit" disabled={submitting} className={`w-full ${btnPrimary}`}>
               {submitting ? "Setting up..." : "Create Admin Account"}
             </button>
           </form>

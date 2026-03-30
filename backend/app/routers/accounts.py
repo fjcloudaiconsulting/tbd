@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.account import Account, AccountType
+from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.account import AccountCreate, AccountResponse, AccountUpdate
 
@@ -144,6 +145,20 @@ async def delete_account(
     account = result.scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    tx_count = await db.scalar(
+        select(func.count())
+        .select_from(Transaction)
+        .where(
+            Transaction.account_id == account.id,
+            Transaction.org_id == current_user.org_id,
+        )
+    )
+    if tx_count and tx_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot delete: {tx_count} transaction(s) use this account",
+        )
 
     await db.delete(account)
     await db.commit()

@@ -135,7 +135,7 @@ export default function AccountsPage() {
                       <>
                         <div className="flex items-center gap-2">
                           <span className="text-sm text-text-primary">{at.name}</span>
-                          <span className="text-xs text-text-muted">{at.account_count}</span>
+                          <span className="text-xs text-text-muted" title={`${at.account_count} account(s)`}>{at.account_count}</span>
                         </div>
                         <div className="flex gap-3">
                           <button onClick={() => { setEditingTypeId(at.id); setEditingTypeName(at.name); }} aria-label={`Edit ${at.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>

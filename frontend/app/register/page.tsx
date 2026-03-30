@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { input, label, error as errorCls } from "@/lib/styles";
+import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 
 export default function RegisterPage() {
   const { user, register, loading } = useAuth();
