@@ -14,7 +14,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+/lib/
 lib64/
 parts/
 sdist/
@@ -146,3 +146,16 @@ migrations
 local.env
 .envrc
 .vscode
+
+### Node / Frontend
+node_modules/
+.next/
+out/
+.env.local
+.env.*.local
+
+### Docker
+mysql_data/
+
+### OS
+.DS_Store
