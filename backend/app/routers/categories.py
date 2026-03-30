@@ -32,7 +32,7 @@ async def list_categories(
         .order_by(Category.name)
     )
     return [
-        CategoryResponse(id=cat.id, name=cat.name, transaction_count=count)
+        CategoryResponse(id=cat.id, name=cat.name, type=cat.type.value, transaction_count=count)
         for cat, count in result.all()
     ]
 
@@ -43,11 +43,11 @@ async def create_category(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    cat = Category(org_id=current_user.org_id, name=body.name)
+    cat = Category(org_id=current_user.org_id, name=body.name, type=body.type)
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
-    return CategoryResponse(id=cat.id, name=cat.name, transaction_count=0)
+    return CategoryResponse(id=cat.id, name=cat.name, type=cat.type.value, transaction_count=0)
 
 
 @router.put("/{category_id}", response_model=CategoryResponse)
@@ -66,7 +66,10 @@ async def update_category(
     if cat is None:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    cat.name = body.name
+    if body.name is not None:
+        cat.name = body.name
+    if body.type is not None:
+        cat.type = body.type
     await db.commit()
     await db.refresh(cat)
 
@@ -78,7 +81,7 @@ async def update_category(
             Transaction.org_id == current_user.org_id,
         )
     )
-    return CategoryResponse(id=cat.id, name=cat.name, transaction_count=count_result or 0)
+    return CategoryResponse(id=cat.id, name=cat.name, type=cat.type.value, transaction_count=count_result or 0)
 
 
 @router.delete("/{category_id}", status_code=204)

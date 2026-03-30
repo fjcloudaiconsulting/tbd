@@ -121,7 +121,7 @@ export default function TransactionsPage() {
               <label htmlFor="tx-category" className={label}>Category</label>
               <select id="tx-category" required value={formCategoryId} onChange={(e) => setFormCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                 <option value="">Select category</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {categories.filter((c) => c.type === "both" || c.type === formType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
             <div>
