@@ -13,6 +13,7 @@ import type { User, TokenResponse } from "@/lib/types";
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
+  needsSetup: boolean;
   login: (username: string, password: string) => Promise<void>;
   register: (
     username: string,
@@ -28,6 +29,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   const fetchMe = useCallback(async () => {
     try {
@@ -39,10 +41,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // On mount, try silent refresh to restore session
   useEffect(() => {
     const restore = async () => {
       try {
+        // Check if system needs initial setup
+        const status = await apiFetch<{ needs_setup: boolean }>(
+          "/api/v1/auth/status"
+        );
+        if (status.needs_setup) {
+          setNeedsSetup(true);
+          setLoading(false);
+          return;
+        }
+
+        // Try silent refresh to restore session
         const data = await apiFetch<TokenResponse>("/api/v1/auth/refresh", {
           method: "POST",
         });
@@ -64,6 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     setAccessToken(data.access_token);
     await fetchMe();
+    setNeedsSetup(false);
   };
 
   const register = async (
@@ -94,7 +107,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider
+      value={{ user, loading, needsSetup, login, register, logout }}
+    >
       {children}
     </AuthContext.Provider>
   );
