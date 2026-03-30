@@ -18,7 +18,16 @@ export default function DashboardPage() {
   }, [loading, user]);
 
   const activeAccounts = accounts.filter((a) => a.is_active);
-  const totalBalance = activeAccounts.reduce((sum, a) => sum + Number(a.balance), 0);
+
+  const balanceByCurrency = activeAccounts.reduce<Record<string, number>>(
+    (acc, a) => {
+      const cur = a.currency || "EUR";
+      acc[cur] = (acc[cur] || 0) + Number(a.balance);
+      return acc;
+    },
+    {}
+  );
+  const currencies = Object.entries(balanceByCurrency);
 
   return (
     <AppShell>
@@ -37,15 +46,24 @@ export default function DashboardPage() {
         </div>
       ) : (
         <div className="space-y-4">
-          <div className="rounded-lg border border-gray-200 bg-white p-5">
-            <p className="text-sm text-gray-500">Total Balance</p>
-            <p className="mt-1 text-2xl font-bold">
-              {totalBalance.toLocaleString("en", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}{" "}
-              <span className="text-base font-normal text-gray-400">EUR</span>
-            </p>
+          <div className="flex gap-4">
+            {currencies.map(([currency, total]) => (
+              <div
+                key={currency}
+                className="flex-1 rounded-lg border border-gray-200 bg-white p-5"
+              >
+                <p className="text-sm text-gray-500">Total Balance</p>
+                <p className="mt-1 text-2xl font-bold">
+                  {total.toLocaleString("en", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}{" "}
+                  <span className="text-base font-normal text-gray-400">
+                    {currency}
+                  </span>
+                </p>
+              </div>
+            ))}
           </div>
 
           <div className="rounded-lg border border-gray-200 bg-white">

@@ -21,7 +21,11 @@ async def list_account_types(
             AccountType,
             func.count(Account.id).label("account_count"),
         )
-        .outerjoin(Account, Account.account_type_id == AccountType.id)
+        .outerjoin(
+            Account,
+            (Account.account_type_id == AccountType.id)
+            & (Account.org_id == current_user.org_id),
+        )
         .where(AccountType.org_id == current_user.org_id)
         .group_by(AccountType.id)
         .order_by(AccountType.name)

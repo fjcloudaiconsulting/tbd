@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -59,7 +60,21 @@ async def upsert_setting(
         )
         db.add(setting)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        # Concurrent insert won the race — retry as update
+        result = await db.execute(
+            select(OrgSetting).where(
+                OrgSetting.org_id == current_user.org_id,
+                OrgSetting.key == body.key,
+            )
+        )
+        setting = result.scalar_one()
+        setting.value = body.value
+        await db.commit()
+
     await db.refresh(setting)
     return OrgSettingResponse(key=setting.key, value=setting.value)
 

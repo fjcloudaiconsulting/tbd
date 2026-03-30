@@ -7,7 +7,7 @@ import { apiFetch } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 export default function ProfilePage() {
-  const { user, login } = useAuth();
+  const { user, login, refreshMe } = useAuth();
 
   // Profile form
   const [username, setUsername] = useState("");
@@ -41,6 +41,7 @@ export default function ProfilePage() {
         method: "PUT",
         body: JSON.stringify({ username, email }),
       });
+      await refreshMe();
       setProfileMsg("Profile updated");
     } catch (err) {
       setProfileErr(err instanceof Error ? err.message : "Failed");
