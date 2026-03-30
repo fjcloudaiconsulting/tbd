@@ -31,7 +31,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const fetchMe = useCallback(async () => {
     try {
-      const u = await apiFetch<User>("/api/auth/me");
+      const u = await apiFetch<User>("/api/v1/auth/me");
       setUser(u);
     } catch {
       setUser(null);
@@ -43,7 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const restore = async () => {
       try {
-        const data = await apiFetch<TokenResponse>("/api/auth/refresh", {
+        const data = await apiFetch<TokenResponse>("/api/v1/auth/refresh", {
           method: "POST",
         });
         setAccessToken(data.access_token);
@@ -58,7 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchMe]);
 
   const login = async (username: string, password: string) => {
-    const data = await apiFetch<TokenResponse>("/api/auth/login", {
+    const data = await apiFetch<TokenResponse>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     });
@@ -72,7 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     password: string,
     orgName?: string
   ) => {
-    await apiFetch<User>("/api/auth/register", {
+    await apiFetch<User>("/api/v1/auth/register", {
       method: "POST",
       body: JSON.stringify({
         username,
@@ -85,7 +85,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     try {
-      await apiFetch("/api/auth/logout", { method: "POST" });
+      await apiFetch("/api/v1/auth/logout", { method: "POST" });
     } catch {
       // Best-effort
     }

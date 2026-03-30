@@ -13,7 +13,7 @@ export function getAccessToken(): string | null {
 
 async function refreshAccessToken(): Promise<string | null> {
   try {
-    const res = await fetch(`${API_URL}/api/auth/refresh`, {
+    const res = await fetch(`${API_URL}/api/v1/auth/refresh`, {
       method: "POST",
       credentials: "include",
     });

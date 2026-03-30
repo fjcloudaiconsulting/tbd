@@ -19,7 +19,7 @@ from app.security import (
     verify_password,
 )
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=UserResponse, status_code=201)
@@ -89,7 +89,7 @@ async def login(
         secure=False,  # Set True in production via env var
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/api/auth/refresh",
+        path="/api/v1/auth/refresh",
     )
 
     return TokenResponse(access_token=access_token)
@@ -134,7 +134,7 @@ async def refresh(
         secure=False,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/api/auth/refresh",
+        path="/api/v1/auth/refresh",
     )
 
     return TokenResponse(access_token=access_token)
@@ -159,5 +159,5 @@ async def me(
 
 @router.post("/logout")
 async def logout(response: Response):
-    response.delete_cookie("refresh_token", path="/api/auth/refresh")
+    response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
     return {"detail": "Logged out"}
