@@ -9,7 +9,7 @@ from sqlalchemy import text
 from app.config import settings as app_settings
 from app.database import engine
 from app.logging import setup_logging
-from app.routers import account_types, accounts, auth, settings, users
+from app.routers import account_types, accounts, auth, categories, settings, transactions, users
 
 # Setup JSON logging early so uvicorn's loggers are captured
 setup_logging()
@@ -57,6 +57,8 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(account_types.router)
 app.include_router(accounts.router)
+app.include_router(categories.router)
+app.include_router(transactions.router)
 app.include_router(settings.router)
 
 

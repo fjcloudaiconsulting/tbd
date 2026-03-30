@@ -34,6 +34,24 @@ export interface Account {
   is_active: boolean;
 }
 
+export interface Category {
+  id: number;
+  name: string;
+  transaction_count: number;
+}
+
+export interface Transaction {
+  id: number;
+  account_id: number;
+  account_name: string;
+  category_id: number;
+  category_name: string;
+  description: string;
+  amount: number;
+  type: "income" | "expense";
+  date: string;
+}
+
 export interface OrgSetting {
   key: string;
   value: string;
