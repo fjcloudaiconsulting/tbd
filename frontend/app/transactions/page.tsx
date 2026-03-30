@@ -29,6 +29,12 @@ export default function TransactionsPage() {
   const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
   const [formType, setFormType] = useState<"income" | "expense">("expense");
+
+  // Reset category selection when transaction type changes (filtered categories may differ)
+  function handleTypeChange(newType: "income" | "expense") {
+    setFormType(newType);
+    setFormCategoryId("");
+  }
   const [formDate, setFormDate] = useState(new Date().toISOString().slice(0, 10));
 
   const loadRefs = useCallback(async () => {
@@ -126,7 +132,7 @@ export default function TransactionsPage() {
             </div>
             <div>
               <label htmlFor="tx-type" className={label}>Type</label>
-              <select id="tx-type" value={formType} onChange={(e) => setFormType(e.target.value as "income" | "expense")} className={input}>
+              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
                 <option value="expense">Expense</option>
                 <option value="income">Income</option>
               </select>

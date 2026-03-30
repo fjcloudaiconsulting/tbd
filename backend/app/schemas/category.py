@@ -16,7 +16,7 @@ class CategoryUpdate(BaseModel):
 class CategoryResponse(BaseModel):
     id: int
     name: str
-    type: str
+    type: Literal["income", "expense", "both"]
     transaction_count: int = 0
 
     model_config = {"from_attributes": True}

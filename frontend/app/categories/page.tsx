@@ -8,13 +8,13 @@ import { apiFetch } from "@/lib/api";
 import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Category } from "@/lib/types";
 
-const TYPE_LABELS: Record<string, string> = {
+const TYPE_LABELS: Record<Category["type"], string> = {
   income: "Income",
   expense: "Expense",
   both: "Both",
 };
 
-const TYPE_COLORS: Record<string, string> = {
+const TYPE_COLORS: Record<Category["type"], string> = {
   income: "text-success",
   expense: "text-danger",
   both: "text-text-muted",

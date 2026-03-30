@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_user
-from app.models.category import Category
+from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.category import CategoryCreate, CategoryResponse, CategoryUpdate
@@ -43,7 +43,7 @@ async def create_category(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    cat = Category(org_id=current_user.org_id, name=body.name, type=body.type)
+    cat = Category(org_id=current_user.org_id, name=body.name, type=CategoryType(body.type))
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
@@ -69,7 +69,7 @@ async def update_category(
     if body.name is not None:
         cat.name = body.name
     if body.type is not None:
-        cat.type = body.type
+        cat.type = CategoryType(body.type)
     await db.commit()
     await db.refresh(cat)
 

@@ -160,6 +160,9 @@ async def reconcile_account(
             Transaction.type == TransactionType.EXPENSE,
         )
     )
+    # computed_balance is SUM(transactions) only — accounts created with a
+    # non-zero initial balance will appear inconsistent unless the opening
+    # balance is represented as an income transaction.
     computed = income - expense
     return ReconcileResponse(
         account_id=account_id,
