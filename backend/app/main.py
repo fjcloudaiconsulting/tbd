@@ -1,3 +1,4 @@
+import subprocess
 from contextlib import asynccontextmanager
 
 import structlog
@@ -13,9 +14,22 @@ from app.routers import auth
 logger = structlog.stdlib.get_logger()
 
 
+def _run_migrations() -> None:
+    """Run Alembic migrations. In development, this runs on app startup.
+    In production, use a K8s init container instead."""
+    result = subprocess.run(
+        ["alembic", "upgrade", "head"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Migration failed: {result.stderr}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    _run_migrations()
     await logger.ainfo("starting", app=settings.app_name, env=settings.app_env)
     yield
     await engine.dispose()

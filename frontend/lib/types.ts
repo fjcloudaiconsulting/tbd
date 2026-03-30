@@ -5,6 +5,7 @@ export interface User {
   role: "owner" | "admin" | "member";
   org_id: number;
   org_name: string;
+  is_superadmin: boolean;
   is_active: boolean;
 }
 

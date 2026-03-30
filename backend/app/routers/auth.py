@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, Cookie, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -19,7 +19,7 @@ from app.security import (
     verify_password,
 )
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=UserResponse, status_code=201)
@@ -33,6 +33,10 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
             detail="Username or email already taken",
         )
 
+    # First user in the system becomes superadmin
+    user_count = await db.scalar(select(func.count()).select_from(User))
+    is_first_user = user_count == 0
+
     org = Organization(name=body.org_name or f"{body.username}'s Organization")
     db.add(org)
     await db.flush()
@@ -43,6 +47,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         email=body.email,
         password_hash=hash_password(body.password),
         role=Role.OWNER,
+        is_superadmin=is_first_user,
     )
     db.add(user)
     await db.commit()
@@ -56,6 +61,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         role=user.role.value,
         org_id=org.id,
         org_name=org.name,
+        is_superadmin=user.is_superadmin,
         is_active=user.is_active,
     )
 
@@ -89,7 +95,7 @@ async def login(
         secure=False,  # Set True in production via env var
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/api/auth/refresh",
+        path="/api/v1/auth/refresh",
     )
 
     return TokenResponse(access_token=access_token)
@@ -134,7 +140,7 @@ async def refresh(
         secure=False,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/api/auth/refresh",
+        path="/api/v1/auth/refresh",
     )
 
     return TokenResponse(access_token=access_token)
@@ -153,11 +159,12 @@ async def me(
         role=current_user.role.value,
         org_id=current_user.org_id,
         org_name=current_user.organization.name,
+        is_superadmin=current_user.is_superadmin,
         is_active=current_user.is_active,
     )
 
 
 @router.post("/logout")
 async def logout(response: Response):
-    response.delete_cookie("refresh_token", path="/api/auth/refresh")
+    response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
     return {"detail": "Logged out"}
