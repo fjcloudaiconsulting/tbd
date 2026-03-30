@@ -22,6 +22,13 @@ from app.security import (
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
+@router.get("/status")
+async def auth_status(db: AsyncSession = Depends(get_db)):
+    """Check if the system needs initial setup (no users exist)."""
+    user_count = await db.scalar(select(func.count()).select_from(User))
+    return {"needs_setup": user_count == 0}
+
+
 @router.post("/register", response_model=UserResponse, status_code=201)
 async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     existing = await db.execute(
