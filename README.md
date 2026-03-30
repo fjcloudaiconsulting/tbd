@@ -1,28 +1,40 @@
-Access the root of repository and run the following commands to initialize the database and run the application.
+# PFV2
 
-* pip install -r requirements
-* export FLASK_APP=pfv2
-* export FLASK_ENV=development
-* export DATABASE_URL="postgres://\<USERNAME\>:\<PASSWORD\>@\<HOST\>:\<PORT\>/\<DATABASE\>"
- - You can use any other DB like MySQL or SQLite
-* flask db init
-* flask db migrate -m "Initial migration."
-* flask db upgrade
-* flask run
+Personal finance management application.
 
-I'm going to improve this in the future with instructions for database migrations and whatever more necessary.
+## Stack
 
-## TODO list
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic
+- **Frontend:** Next.js 15, React 19, TypeScript, Tailwind CSS
+- **Database:** MySQL 8.0
+- **Reverse proxy:** nginx
 
-- [ ] Code Improvement - Avoid add duplicate Accounts and Account Types (Camel case)
-- [ ] Database Improvement - Modeling the database for the Annual Budget and Monthly
-- [x] Start draft the login interface
-- [ ] Visual Improvement - Draft the index page and the admin page
-- [ ] Code Improvement - Sort the Budget query results by year (desc)
-- [ ] Code - Draft the User/Profile administration interface
-- [ ] Code - Implement password recovery
-- [x] Code - Implement number format in the currency fields
-- [ ] Visual Improvement - Rethink the NavBar menu
-- [ ] Visual Improvement - Replace logout link by logout icon
-- [ ] Code Improvement - deduplicate code in admin interface (create operation class and helpers)
-- [ ] Test the `validate_on_submit` to replace `request.method == 'POST'`
+## Quick Start
+
+```bash
+cp .env.example .env    # first time only
+./pfv start             # build, start, run migrations
+```
+
+App: http://localhost
+
+## Commands
+
+```bash
+./pfv start             # build and start all services
+./pfv stop              # stop all services
+./pfv restart           # restart without rebuild
+./pfv rebuild           # force rebuild (no cache)
+./pfv reset             # destroy all data and start fresh
+./pfv migrate           # run pending migrations
+./pfv logs [service]    # view logs (backend, frontend, nginx, mysql)
+./pfv status            # container status
+./pfv shell [service]   # shell into a container (default: backend)
+```
+
+## Architecture
+
+```
+Browser -> nginx (:80) -> /api/*  -> backend (FastAPI :8000) -> MySQL (:3306)
+                       -> /*      -> frontend (Next.js :3000)
+```
