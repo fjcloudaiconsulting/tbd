@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 
 export default function LoginPage() {
-  const { login, loading, needsSetup } = useAuth();
+  const { user, login, loading, needsSetup } = useAuth();
   const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -17,7 +17,10 @@ export default function LoginPage() {
     if (!loading && needsSetup) {
       router.replace("/setup");
     }
-  }, [loading, needsSetup, router]);
+    if (!loading && user) {
+      router.replace("/dashboard");
+    }
+  }, [loading, needsSetup, user, router]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
