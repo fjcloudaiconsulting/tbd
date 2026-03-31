@@ -22,6 +22,16 @@ export default function TransactionsPage() {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
 
+  // Edit
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDesc, setEditDesc] = useState("");
+  const [editAmount, setEditAmount] = useState("");
+  const [editType, setEditType] = useState<"income" | "expense">("expense");
+  const [editStatus, setEditStatus] = useState<"settled" | "pending">("settled");
+  const [editDate, setEditDate] = useState("");
+  const [editAccountId, setEditAccountId] = useState<number | "">("");
+  const [editCategoryId, setEditCategoryId] = useState<number | "">("");
+
   // Filters
   const [filterAccount, setFilterAccount] = useState<number | "">("");
   const [filterCategory, setFilterCategory] = useState<number | "">("");
@@ -113,6 +123,40 @@ export default function TransactionsPage() {
     setError("");
     try {
       await apiFetch(`/api/v1/transactions/${id}`, { method: "DELETE" });
+      await loadTransactions(page);
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  }
+
+  function startEdit(tx: Transaction) {
+    setEditingId(tx.id);
+    setEditDesc(tx.description);
+    setEditAmount(String(tx.amount));
+    setEditType(tx.type);
+    setEditStatus(tx.status);
+    setEditDate(tx.date);
+    setEditAccountId(tx.account_id);
+    setEditCategoryId(tx.category_id);
+  }
+
+  async function handleSaveEdit() {
+    if (editingId === null) return;
+    setError("");
+    try {
+      await apiFetch(`/api/v1/transactions/${editingId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          description: editDesc,
+          amount: editAmount,
+          type: editType,
+          status: editStatus,
+          date: editDate,
+          account_id: editAccountId,
+          category_id: editCategoryId,
+        }),
+      });
+      setEditingId(null);
       await loadTransactions(page);
     } catch (err) {
       setError(extractErrorMessage(err));
@@ -257,35 +301,68 @@ export default function TransactionsPage() {
               </div>
             </div>
             <div className="divide-y divide-border-subtle">
-              {transactions.map((tx) => (
-                <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
-                  <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
-                  <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
-                  <span className="col-span-2 text-sm text-text-secondary">{tx.account_name}</span>
-                  <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
-                  <span className="col-span-1 text-center">
-                    <button
-                      onClick={() => handleToggleStatus(tx)}
-                      aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                        tx.status === "settled"
-                          ? "bg-success-dim text-success"
-                          : "bg-surface-overlay text-text-muted"
-                      }`}
-                    >
-                      {tx.status}
-                    </button>
-                  </span>
-                  <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
-                    {tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
-                  </span>
-                  <span className="col-span-1 text-right">
-                    <button onClick={() => handleDelete(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">
-                      Delete
-                    </button>
-                  </span>
-                </div>
-              ))}
+              {transactions.map((tx) =>
+                editingId === tx.id ? (
+                  <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
+                    <span className="col-span-2"><input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
+                    <span className="col-span-2"><input type="text" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
+                    <span className="col-span-2">
+                      <select value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
+                        {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      </select>
+                    </span>
+                    <span className="col-span-2">
+                      <select value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
+                        {categories.filter((c) => c.type === "both" || c.type === editType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </span>
+                    <span className="col-span-1">
+                      <select value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
+                        <option value="settled">Settled</option>
+                        <option value="pending">Pending</option>
+                      </select>
+                    </span>
+                    <span className="col-span-1 flex gap-1">
+                      <select value={editType} onChange={(e) => setEditType(e.target.value as "income" | "expense")} className={`text-[11px] w-14 ${input}`}>
+                        <option value="expense">-</option>
+                        <option value="income">+</option>
+                      </select>
+                      <input type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm w-20 ${input}`} />
+                    </span>
+                    <span className="col-span-2 flex justify-end gap-2">
+                      <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>
+                      <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                    </span>
+                  </div>
+                ) : (
+                  <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
+                    <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
+                    <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
+                    <span className="col-span-2 text-sm text-text-secondary">{tx.account_name}</span>
+                    <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
+                    <span className="col-span-1 text-center">
+                      <button
+                        onClick={() => handleToggleStatus(tx)}
+                        aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                          tx.status === "settled"
+                            ? "bg-success-dim text-success"
+                            : "bg-surface-overlay text-text-muted"
+                        }`}
+                      >
+                        {tx.status}
+                      </button>
+                    </span>
+                    <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
+                      {tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                    </span>
+                    <span className="col-span-1 flex justify-end gap-2">
+                      <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                      <button onClick={() => handleDelete(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                    </span>
+                  </div>
+                )
+              )}
               {transactions.length === 0 && (
                 <div className="px-6 py-8 text-center text-sm text-text-muted">
                   {activeAccounts.length === 0
