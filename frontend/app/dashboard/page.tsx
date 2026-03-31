@@ -342,10 +342,26 @@ export default function DashboardPage() {
                           </p>
                         </div>
                       </div>
-                      <span className={`text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : tx.type === "transfer" ? "text-accent" : "text-danger"}`}>
-                        {tx.type === "income" ? "+" : tx.type === "transfer" ? "" : "-"}{formatAmount(tx.amount)}
-                        {tx.type === "transfer" && <span className="ml-1 text-xs text-text-muted">transfer</span>}
-                      </span>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : tx.type === "transfer" ? "text-accent" : "text-danger"}`}>
+                          {tx.type === "income" ? "+" : tx.type === "transfer" ? "" : "-"}{formatAmount(tx.amount)}
+                          {tx.type === "transfer" && <span className="ml-1 text-xs text-text-muted">transfer</span>}
+                        </span>
+                        <button
+                          onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await Promise.all([loadRefs(), loadTransactions(page)]); } catch (err) { setError(extractErrorMessage(err)); } }}
+                          aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}
+                        >
+                          {tx.status}
+                        </button>
+                        <button
+                          onClick={async () => { if (!confirm("Delete this transaction?")) return; try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "DELETE" }); await Promise.all([loadRefs(), loadTransactions(page)]); } catch (err) { setError(extractErrorMessage(err)); } }}
+                          aria-label={`Delete: ${tx.description}`}
+                          className="text-xs text-text-muted hover:text-danger"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   );
                 });
