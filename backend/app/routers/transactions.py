@@ -1,3 +1,6 @@
+import datetime
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,10 +23,10 @@ async def list_transactions(
     db: AsyncSession = Depends(get_db),
     account_id: int | None = Query(default=None),
     category_id: int | None = Query(default=None),
-    type: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    date_from: str | None = Query(default=None),
-    date_to: str | None = Query(default=None),
+    tx_type: Literal["income", "expense"] | None = Query(default=None, alias="type"),
+    status: Literal["settled", "pending"] | None = Query(default=None),
+    date_from: datetime.date | None = Query(default=None),
+    date_to: datetime.date | None = Query(default=None),
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
 ):
@@ -31,7 +34,7 @@ async def list_transactions(
         db, current_user.org_id,
         account_id=account_id,
         category_id=category_id,
-        tx_type=type,
+        tx_type=tx_type,
         status=status,
         date_from=date_from,
         date_to=date_to,

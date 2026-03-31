@@ -10,13 +10,21 @@ import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
 import type { Account, Category, Transaction } from "@/lib/types";
 
+function formatLocalDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 function currentMonthRange(): { from: string; to: string } {
   const now = new Date();
   const y = now.getFullYear();
   const m = now.getMonth();
-  const from = new Date(y, m, 1).toISOString().slice(0, 10);
-  const to = new Date(y, m + 1, 0).toISOString().slice(0, 10);
-  return { from, to };
+  return {
+    from: formatLocalDate(new Date(y, m, 1)),
+    to: formatLocalDate(new Date(y, m + 1, 0)),
+  };
 }
 
 const PAGE_SIZE = 10;
@@ -61,17 +69,15 @@ export default function DashboardPage() {
   }, [monthFrom, monthTo]);
 
   useEffect(() => {
-    if (!loading && user) {
-      loadRefs().catch(() => {});
-      loadTransactions(0).catch(() => setFetching(false));
-    }
-  }, [loading, user, loadRefs, loadTransactions]);
+    if (!loading && user) loadRefs().catch(() => {});
+  }, [loading, user, loadRefs]);
 
   useEffect(() => {
-    if (!loading && user && page > 0) {
-      loadTransactions(page).catch(() => {});
+    if (!loading && user) {
+      setFetching(true);
+      loadTransactions(page).catch(() => setFetching(false));
     }
-  }, [page, loading, user, loadTransactions]);
+  }, [loading, user, loadTransactions, page]);
 
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);

@@ -32,3 +32,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_transactions_status")
     op.drop_column("transactions", "status")
+
+    # Drop the enum type (needed for PostgreSQL; no-op on MySQL)
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        sa.Enum(name="transactionstatus").drop(bind, checkfirst=True)
