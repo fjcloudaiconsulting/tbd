@@ -308,28 +308,48 @@ export default function DashboardPage() {
               </Link>
             </div>
             <div className="divide-y divide-border-subtle">
-              {transactions.map((tx) => (
-                <div key={tx.id} className="flex items-center justify-between px-6 py-3">
-                  <div className="flex items-center gap-4">
-                    <span className="text-sm tabular-nums text-text-muted w-20">{tx.date}</span>
-                    <div>
-                      <p className="text-sm text-text-primary">{tx.description}</p>
-                      <p className="text-xs text-text-muted">
-                        {tx.account_name} · {tx.category_name}
-                        {tx.status === "pending" && (
-                          <span className="ml-1.5 rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">
-                            pending
-                          </span>
-                        )}
-                      </p>
+              {(() => {
+                // Deduplicate transfers: keep only one side, find the linked one for display
+                const seenLinked = new Set<number>();
+                return transactions.filter((tx) => {
+                  if (tx.type === "transfer" && tx.linked_transaction_id) {
+                    if (seenLinked.has(tx.id)) return false;
+                    seenLinked.add(tx.linked_transaction_id);
+                  }
+                  return true;
+                }).map((tx) => {
+                  // For transfers, find the other side to show "From → To"
+                  const linkedTx = tx.type === "transfer" && tx.linked_transaction_id
+                    ? transactions.find((t) => t.id === tx.linked_transaction_id)
+                    : null;
+
+                  return (
+                    <div key={tx.id} className="flex items-center justify-between px-6 py-3">
+                      <div className="flex items-center gap-4">
+                        <span className="text-sm tabular-nums text-text-muted w-20">{tx.date}</span>
+                        <div>
+                          <p className="text-sm text-text-primary">{tx.description}</p>
+                          <p className="text-xs text-text-muted">
+                            {tx.type === "transfer" && linkedTx
+                              ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+                              : <>{tx.account_name} · {tx.category_name}</>
+                            }
+                            {tx.status === "pending" && (
+                              <span className="ml-1.5 rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">
+                                pending
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                      <span className={`text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : tx.type === "transfer" ? "text-accent" : "text-danger"}`}>
+                        {tx.type === "income" ? "+" : tx.type === "transfer" ? "" : "-"}{formatAmount(tx.amount)}
+                        {tx.type === "transfer" && <span className="ml-1 text-xs text-text-muted">transfer</span>}
+                      </span>
                     </div>
-                  </div>
-                  <span className={`text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : tx.type === "transfer" ? "text-accent" : "text-danger"}`}>
-                    {tx.type === "income" ? "+" : tx.type === "transfer" ? "" : "-"}{formatAmount(tx.amount)}
-                    {tx.type === "transfer" && <span className="ml-1 text-xs text-text-muted">transfer</span>}
-                  </span>
-                </div>
-              ))}
+                  );
+                });
+              })()}
               {transactions.length === 0 && (
                 <div className="px-6 py-8 text-center text-sm text-text-muted">
                   {!canAdd
