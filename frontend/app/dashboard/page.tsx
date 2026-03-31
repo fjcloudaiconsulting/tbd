@@ -149,6 +149,7 @@ export default function DashboardPage() {
     setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
   }
 
+  // Total balance by currency (settled only — what's in the accounts)
   const balanceByCurrency = activeAccounts.reduce<Record<string, number>>(
     (acc, a) => {
       const cur = a.currency || "EUR";
@@ -158,6 +159,18 @@ export default function DashboardPage() {
     {}
   );
   const currencies = Object.entries(balanceByCurrency);
+
+  // Accounts with balance != 0 for individual tiles
+  const accountsWithBalance = activeAccounts.filter((a) => Number(a.balance) !== 0);
+
+  // Pending totals per account from current-month transactions
+  const pendingByAccount = transactions
+    .filter((tx) => tx.status === "pending")
+    .reduce<Record<number, number>>((acc, tx) => {
+      const sign = tx.type === "income" ? 1 : -1;
+      acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
+      return acc;
+    }, {});
 
   return (
     <AppShell>
@@ -241,18 +254,48 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Balance cards */}
+          {/* Total balance */}
           {currencies.length > 0 && (
             <div className="flex gap-4">
               {currencies.map(([currency, total]) => (
                 <div key={currency} className={`flex-1 ${card} p-6`}>
-                  <p className={cardTitle}>Balance</p>
+                  <p className={cardTitle}>Total Balance</p>
                   <p className="mt-2 font-display text-3xl text-accent">
                     {formatAmount(total)}
                     <span className="ml-2 text-lg text-text-muted">{currency}</span>
                   </p>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Per-account tiles */}
+          {accountsWithBalance.length > 0 && (
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {accountsWithBalance.map((acct) => {
+                const pending = pendingByAccount[acct.id] || 0;
+                const isCreditCard = acct.account_type_slug === "credit_card";
+                return (
+                  <div key={acct.id} className={`${card} p-4`}>
+                    <p className="text-xs font-medium text-text-muted truncate">{acct.name}</p>
+                    <p className="text-[11px] text-text-muted">{acct.account_type_name}</p>
+                    <p className="mt-1.5 text-lg font-semibold tabular-nums text-text-primary">
+                      {formatAmount(acct.balance)} <span className="text-xs text-text-muted">{acct.currency}</span>
+                    </p>
+                    {pending !== 0 && (
+                      <p className={`mt-0.5 text-xs tabular-nums ${isCreditCard ? "text-danger" : "text-text-muted"}`}>
+                        {isCreditCard ? "Pending charges: " : "Pending: "}
+                        {formatAmount(Math.abs(pending))}
+                      </p>
+                    )}
+                    {isCreditCard && pending !== 0 && (
+                      <p className="mt-0.5 text-xs tabular-nums text-text-secondary">
+                        Net: {formatAmount(Number(acct.balance) + pending)}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
