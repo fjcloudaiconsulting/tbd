@@ -69,6 +69,12 @@ async def update_account_type(
     if at is None:
         raise HTTPException(status_code=404, detail="Account type not found")
 
+    if at.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot rename system account type",
+        )
+
     at.name = body.name
     await db.commit()
     await db.refresh(at)

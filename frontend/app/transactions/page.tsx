@@ -304,30 +304,30 @@ export default function TransactionsPage() {
               {transactions.map((tx) =>
                 editingId === tx.id ? (
                   <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
-                    <span className="col-span-2"><input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
-                    <span className="col-span-2"><input type="text" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
+                    <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
+                    <span className="col-span-2"><input aria-label="Description" type="text" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
                     <span className="col-span-2">
-                      <select value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
-                        {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                      <select aria-label="Account" value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
+                        {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
                       </select>
                     </span>
                     <span className="col-span-2">
-                      <select value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
+                      <select aria-label="Category" value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
                         {categories.filter((c) => c.type === "both" || c.type === editType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
                     </span>
                     <span className="col-span-1">
-                      <select value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
+                      <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
                         <option value="settled">Settled</option>
                         <option value="pending">Pending</option>
                       </select>
                     </span>
                     <span className="col-span-1 flex gap-1">
-                      <select value={editType} onChange={(e) => setEditType(e.target.value as "income" | "expense")} className={`text-[11px] w-14 ${input}`}>
+                      <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] w-14 ${input}`}>
                         <option value="expense">-</option>
                         <option value="income">+</option>
                       </select>
-                      <input type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm w-20 ${input}`} />
+                      <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm w-20 ${input}`} />
                     </span>
                     <span className="col-span-2 flex justify-end gap-2">
                       <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>

@@ -123,7 +123,7 @@ async def update_account(
         account.account_type_id = body.account_type_id
     if body.is_active is not None:
         account.is_active = body.is_active
-    if body.close_day is not None:
+    if "close_day" in body.model_fields_set:
         account.close_day = body.close_day
 
     await db.commit()

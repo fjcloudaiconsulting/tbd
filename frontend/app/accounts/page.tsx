@@ -79,7 +79,8 @@ export default function AccountsPage() {
         method: "POST",
         body: JSON.stringify({
           name: acctName, account_type_id: acctTypeId, balance: acctBalance,
-          currency: acctCurrency, close_day: acctCloseDay ? Number(acctCloseDay) : null,
+          currency: acctCurrency,
+          close_day: selectedType?.slug === "credit_card" && acctCloseDay ? Number(acctCloseDay) : null,
         }),
       });
       setAcctName(""); setAcctTypeId(""); setAcctBalance("0.00"); setAcctCloseDay(""); setShowAccountForm(false);
@@ -210,7 +211,7 @@ export default function AccountsPage() {
                     <div>
                       <span className="text-sm font-medium text-text-primary">{a.name}</span>
                       <span className="ml-2 text-xs text-text-muted">{a.account_type_name}</span>
-                      {a.close_day && <span className="ml-1 text-xs text-text-muted">· closes {a.close_day}th</span>}
+                      {a.close_day && <span className="ml-1 text-xs text-text-muted">· closes day {a.close_day}</span>}
                       {!a.is_active && <span className="ml-2 text-xs text-danger">inactive</span>}
                     </div>
                     <div className="flex items-center gap-4">
