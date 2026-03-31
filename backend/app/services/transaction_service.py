@@ -95,6 +95,8 @@ async def assert_no_dependents(
 # ── Balance logic ─────────────────────────────────────────────────────────────
 
 def apply_balance(account: Account, amount: Decimal, tx_type: TransactionType) -> None:
+    if tx_type == TransactionType.TRANSFER:
+        raise ValidationError("Cannot apply balance for TRANSFER type directly")
     if tx_type == TransactionType.INCOME:
         account.balance += amount
     else:
@@ -102,6 +104,8 @@ def apply_balance(account: Account, amount: Decimal, tx_type: TransactionType) -
 
 
 def revert_balance(account: Account, amount: Decimal, tx_type: TransactionType) -> None:
+    if tx_type == TransactionType.TRANSFER:
+        raise ValidationError("Cannot revert balance for TRANSFER type directly")
     if tx_type == TransactionType.INCOME:
         account.balance -= amount
     else:
@@ -154,6 +158,9 @@ async def update_transaction(
     tx = result.scalar_one_or_none()
     if tx is None:
         raise NotFoundError("Transaction")
+
+    if tx.linked_transaction_id is not None:
+        raise ConflictError("Cannot edit a transfer transaction. Delete and recreate it instead.")
 
     # Validate references regardless of status
     if body.account_id is not None and body.account_id != tx.account_id:
