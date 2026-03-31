@@ -208,6 +208,7 @@ export default function TransactionsPage() {
 
   function handleAccountChange(id: number | "") {
     setFormAccountId(id);
+    if (formToAccountId === id) setFormToAccountId("");
     const acct = accounts.find((a) => a.id === id);
     setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
   }
@@ -349,18 +350,18 @@ export default function TransactionsPage() {
             </div>
             <div className="divide-y divide-border-subtle">
               {(() => {
-                // Deduplicate transfers: keep one side, find linked for display
-                const seenLinked = new Set<number>();
-                return transactions.filter((tx) => {
-                  if (tx.type === "transfer" && tx.linked_transaction_id) {
-                    if (seenLinked.has(tx.id)) return false;
-                    seenLinked.add(tx.linked_transaction_id);
+                // Precompute tx map for O(1) lookups
+                const txMap = new Map(transactions.map((t) => [t.id, t]));
+                // Deduplicate transfers: keep the lower id (expense side)
+                const hiddenIds = new Set<number>();
+                for (const t of transactions) {
+                  if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
+                    hiddenIds.add(t.id);
                   }
-                  return true;
-                }).map((tx) => {
-                const linkedTx = tx.type === "transfer" && tx.linked_transaction_id
-                  ? transactions.find((t) => t.id === tx.linked_transaction_id)
-                  : null;
+                }
+                return transactions.filter((t) => !hiddenIds.has(t.id)).map((tx) => {
+                const isTransfer = tx.linked_transaction_id !== null;
+                const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                 return editingId === tx.id ? (
                   <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
                     <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
@@ -396,7 +397,7 @@ export default function TransactionsPage() {
                     <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
                     <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
                     <span className="col-span-2 text-sm text-text-secondary">
-                      {tx.type === "transfer" && linkedTx
+                      {isTransfer && linkedTx
                         ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
                         : tx.account_name}
                     </span>
@@ -414,11 +415,11 @@ export default function TransactionsPage() {
                         {tx.status}
                       </button>
                     </span>
-                    <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : tx.type === "transfer" ? "text-accent" : "text-danger"}`}>
-                      {tx.type === "income" ? "+" : tx.type === "transfer" ? "" : "-"}{formatAmount(tx.amount)}
+                    <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                      {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                     </span>
                     <span className="col-span-1 flex justify-end gap-2">
-                      {tx.type !== "transfer" && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
+                      {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
                       <button onClick={() => handleDelete(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                     </span>
                   </div>

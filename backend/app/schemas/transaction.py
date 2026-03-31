@@ -43,7 +43,7 @@ class TransactionResponse(BaseModel):
     category_name: str = ""
     description: str
     amount: Decimal
-    type: Literal["income", "expense", "transfer"]
+    type: Literal["income", "expense"]
     status: Literal["settled", "pending"]
     linked_transaction_id: Optional[int] = None
     date: datetime.date

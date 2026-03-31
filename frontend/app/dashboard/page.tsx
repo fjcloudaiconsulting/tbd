@@ -145,6 +145,7 @@ export default function DashboardPage() {
 
   function handleAccountChange(id: number | "") {
     setFormAccountId(id);
+    if (formToAccountId === id) setFormToAccountId("");
     const acct = accounts.find((a) => a.id === id);
     setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
   }
@@ -162,6 +163,9 @@ export default function DashboardPage() {
 
   // Accounts with balance != 0 for individual tiles
   const accountsWithBalance = activeAccounts.filter((a) => Number(a.balance) !== 0);
+
+  // Precompute tx map for O(1) linked lookups
+  const txMap = new Map(transactions.map((tx) => [tx.id, tx]));
 
   // Pending totals per account from current-month transactions
   const pendingByAccount = transactions
@@ -309,19 +313,16 @@ export default function DashboardPage() {
             </div>
             <div className="divide-y divide-border-subtle">
               {(() => {
-                // Deduplicate transfers: keep only one side, find the linked one for display
-                const seenLinked = new Set<number>();
-                return transactions.filter((tx) => {
-                  if (tx.type === "transfer" && tx.linked_transaction_id) {
-                    if (seenLinked.has(tx.id)) return false;
-                    seenLinked.add(tx.linked_transaction_id);
+                // Deduplicate transfers: keep the expense side (lower id for stability)
+                const hiddenIds = new Set<number>();
+                for (const tx of transactions) {
+                  if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) {
+                    hiddenIds.add(tx.id);
                   }
-                  return true;
-                }).map((tx) => {
-                  // For transfers, find the other side to show "From → To"
-                  const linkedTx = tx.type === "transfer" && tx.linked_transaction_id
-                    ? transactions.find((t) => t.id === tx.linked_transaction_id)
-                    : null;
+                }
+                return transactions.filter((tx) => !hiddenIds.has(tx.id)).map((tx) => {
+                  const isTransfer = tx.linked_transaction_id !== null;
+                  const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
 
                   return (
                     <div key={tx.id} className="flex items-center justify-between px-6 py-3">
@@ -330,7 +331,7 @@ export default function DashboardPage() {
                         <div>
                           <p className="text-sm text-text-primary">{tx.description}</p>
                           <p className="text-xs text-text-muted">
-                            {tx.type === "transfer" && linkedTx
+                            {isTransfer && linkedTx
                               ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
                               : <>{tx.account_name} · {tx.category_name}</>
                             }
@@ -343,9 +344,9 @@ export default function DashboardPage() {
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
-                        <span className={`text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : tx.type === "transfer" ? "text-accent" : "text-danger"}`}>
-                          {tx.type === "income" ? "+" : tx.type === "transfer" ? "" : "-"}{formatAmount(tx.amount)}
-                          {tx.type === "transfer" && <span className="ml-1 text-xs text-text-muted">transfer</span>}
+                        <span className={`text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                          {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                          {isTransfer && <span className="ml-1 text-xs text-text-muted">transfer</span>}
                         </span>
                         <button
                           onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await Promise.all([loadRefs(), loadTransactions(page)]); } catch (err) { setError(extractErrorMessage(err)); } }}

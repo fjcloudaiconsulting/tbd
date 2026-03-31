@@ -22,6 +22,7 @@ def upgrade() -> None:
         "transactions",
         "type",
         type_=sa.Enum("income", "expense", "transfer", name="transactiontype"),
+        existing_type=sa.Enum("income", "expense", name="transactiontype"),
         existing_nullable=False,
     )
     op.add_column(
@@ -43,5 +44,6 @@ def downgrade() -> None:
         "transactions",
         "type",
         type_=sa.Enum("income", "expense", name="transactiontype"),
+        existing_type=sa.Enum("income", "expense", "transfer", name="transactiontype"),
         existing_nullable=False,
     )

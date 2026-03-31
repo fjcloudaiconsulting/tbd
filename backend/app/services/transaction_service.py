@@ -236,16 +236,21 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
         linked_tx = linked_result.scalar_one_or_none()
 
     async with db.begin_nested():
-        if tx.status == TransactionStatus.SETTLED:
+        # For transfers, lock both accounts in deterministic order
+        if linked_tx and tx.status == TransactionStatus.SETTLED:
+            first_id, second_id = sorted([tx.account_id, linked_tx.account_id])
+            first = await get_account_for_update(db, first_id, org_id)
+            second = await get_account_for_update(db, second_id, org_id)
+            tx_acct = first if tx.account_id == first_id else second
+            linked_acct = first if linked_tx.account_id == first_id else second
+            revert_balance(tx_acct, tx.amount, tx.type)
+            revert_balance(linked_acct, linked_tx.amount, linked_tx.type)
+        elif tx.status == TransactionStatus.SETTLED:
             acct = await get_account_for_update(db, tx.account_id, org_id)
             revert_balance(acct, tx.amount, tx.type)
 
         if linked_tx:
-            if linked_tx.status == TransactionStatus.SETTLED:
-                linked_acct = await get_account_for_update(db, linked_tx.account_id, org_id)
-                revert_balance(linked_acct, linked_tx.amount, linked_tx.type)
             await db.delete(linked_tx)
-
         await db.delete(tx)
 
     await db.commit()
@@ -265,25 +270,26 @@ async def create_transfer(
     tx_status = TransactionStatus(body.status)
 
     async with db.begin_nested():
-        # Expense on source account
+        # Expense side (source account) — uses EXPENSE type so existing
+        # balance logic (apply/revert) works unchanged
         expense_tx = Transaction(
             org_id=org_id,
             account_id=body.from_account_id,
             category_id=body.category_id,
             description=body.description,
             amount=body.amount,
-            type=TransactionType.TRANSFER,
+            type=TransactionType.EXPENSE,
             status=tx_status,
             date=body.date,
         )
-        # Income on destination account
+        # Income side (destination account)
         income_tx = Transaction(
             org_id=org_id,
             account_id=body.to_account_id,
             category_id=body.category_id,
             description=body.description,
             amount=body.amount,
-            type=TransactionType.TRANSFER,
+            type=TransactionType.INCOME,
             status=tx_status,
             date=body.date,
         )
@@ -291,14 +297,15 @@ async def create_transfer(
         db.add(income_tx)
         await db.flush()
 
-        # Link them
         expense_tx.linked_transaction_id = income_tx.id
         income_tx.linked_transaction_id = expense_tx.id
 
-        # Apply balance if settled
         if tx_status == TransactionStatus.SETTLED:
-            from_acct = await get_account_for_update(db, body.from_account_id, org_id)
-            to_acct = await get_account_for_update(db, body.to_account_id, org_id)
+            first_id, second_id = sorted([body.from_account_id, body.to_account_id])
+            first = await get_account_for_update(db, first_id, org_id)
+            second = await get_account_for_update(db, second_id, org_id)
+            from_acct = first if body.from_account_id == first_id else second
+            to_acct = first if body.to_account_id == first_id else second
             from_acct.balance -= body.amount
             to_acct.balance += body.amount
 
@@ -307,10 +314,10 @@ async def create_transfer(
     result = await db.execute(
         select(Transaction).options(*_load_opts()).where(
             Transaction.id.in_([expense_tx.id, income_tx.id])
-        )
+        ).order_by(Transaction.id)
     )
-    txns = list(result.scalars().all())
-    return txns[0], txns[1]
+    tx_by_id = {tx.id: tx for tx in result.scalars().all()}
+    return tx_by_id[expense_tx.id], tx_by_id[income_tx.id]
 
 
 async def get_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> Transaction:
