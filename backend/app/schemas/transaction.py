@@ -11,6 +11,7 @@ class TransactionCreate(BaseModel):
     description: str
     amount: Decimal = Field(gt=0)
     type: Literal["income", "expense"]
+    status: Literal["settled", "pending"] = "settled"
     date: datetime.date
 
 
@@ -20,6 +21,7 @@ class TransactionUpdate(BaseModel):
     description: Optional[str] = None
     amount: Optional[Decimal] = Field(default=None, gt=0)
     type: Optional[Literal["income", "expense"]] = None
+    status: Optional[Literal["settled", "pending"]] = None
     date: Optional[datetime.date] = None
 
 
@@ -32,6 +34,7 @@ class TransactionResponse(BaseModel):
     description: str
     amount: Decimal
     type: Literal["income", "expense"]
+    status: Literal["settled", "pending"]
     date: datetime.date
 
     model_config = {"from_attributes": True}
