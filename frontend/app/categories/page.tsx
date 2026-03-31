@@ -7,6 +7,26 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Category } from "@/lib/types";
+import {
+  Wallet, Home, Zap, UtensilsCrossed, Car, HeartPulse,
+  Scissors, Gamepad2, Target, CreditCard, Gift, HelpCircle, Tag,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
+const CATEGORY_ICONS: Record<string, LucideIcon> = {
+  income: Wallet,
+  housing: Home,
+  utilities: Zap,
+  food_dining: UtensilsCrossed,
+  transportation: Car,
+  health: HeartPulse,
+  personal_care: Scissors,
+  lifestyle: Gamepad2,
+  financial_goals: Target,
+  debt: CreditCard,
+  giving: Gift,
+  miscellaneous: HelpCircle,
+};
 
 const TYPE_COLORS: Record<Category["type"], string> = {
   income: "text-success",
@@ -154,10 +174,12 @@ export default function CategoriesPage() {
         <div className="space-y-4">
           {masters.map((master) => {
             const subs = childrenOf(master.id);
+            const Icon = (master.slug && CATEGORY_ICONS[master.slug]) || Tag;
             return (
               <div key={master.id} className={card}>
                 <div className={`flex items-center justify-between ${cardHeader}`}>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <Icon className="h-4 w-4 text-text-muted" />
                     <h2 className="text-sm font-medium text-text-primary">{master.name}</h2>
                     <span className={`text-[11px] font-medium ${TYPE_COLORS[master.type]}`}>
                       {master.type}
