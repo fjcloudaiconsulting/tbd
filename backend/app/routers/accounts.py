@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -127,14 +127,13 @@ async def update_account(
     if "close_day" in body.model_fields_set:
         account.close_day = body.close_day
     if body.is_default is True:
-        # Clear default from all other accounts in this org
-        from sqlalchemy import update
-        await db.execute(
-            update(Account)
-            .where(Account.org_id == current_user.org_id, Account.id != account.id)
-            .values(is_default=False)
-        )
-        account.is_default = True
+        async with db.begin_nested():
+            await db.execute(
+                update(Account)
+                .where(Account.org_id == current_user.org_id, Account.id != account.id)
+                .values(is_default=False)
+            )
+            account.is_default = True
     elif body.is_default is False:
         account.is_default = False
 

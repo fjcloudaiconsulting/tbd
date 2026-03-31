@@ -38,10 +38,11 @@ class Category(Base):
     )
 
     parent: Mapped[Optional["Category"]] = relationship(
-        remote_side="Category.id", foreign_keys="Category.parent_id"
+        remote_side="Category.id", foreign_keys="Category.parent_id",
+        back_populates="children",
     )
     children: Mapped[list["Category"]] = relationship(
-        back_populates="parent", foreign_keys="Category.parent_id"
+        back_populates="parent", foreign_keys="Category.parent_id",
     )
     transactions: Mapped[list["Transaction"]] = relationship(back_populates="category")
 

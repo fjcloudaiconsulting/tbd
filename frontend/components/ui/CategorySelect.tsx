@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import type { Category } from "@/lib/types";
 
 const RECENT_KEY = "pfv2-recent-categories";
@@ -25,9 +26,10 @@ interface Props {
   onChange: (id: number | "") => void;
   filterType?: "income" | "expense";
   className?: string;
+  "aria-label"?: string;
 }
 
-export default function CategorySelect({ id, categories, value, onChange, filterType, className = "" }: Props) {
+export default function CategorySelect({ id, categories, value, onChange, filterType, className = "", "aria-label": ariaLabel }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(-1);
@@ -36,17 +38,26 @@ export default function CategorySelect({ id, categories, value, onChange, filter
 
   const selected = categories.find((c) => c.id === value);
 
-  // Build flat list of selectable items
-  const selectable = categories.filter((c) => {
-    if (filterType && c.type !== filterType && c.type !== "both") return false;
-    const hasChildren = categories.some((ch) => ch.parent_id === c.id);
-    return c.parent_id !== null || !hasChildren;
-  });
+  // Precompute parent IDs set and selectable items (O(n) instead of O(n^2))
+  const { selectable, parentIds } = useMemo(() => {
+    const pIds = new Set<number>();
+    for (const c of categories) {
+      if (c.parent_id !== null) pIds.add(c.parent_id);
+    }
+    const items = categories.filter((c) => {
+      if (filterType && c.type !== filterType && c.type !== "both") return false;
+      return c.parent_id !== null || !pIds.has(c.id);
+    });
+    return { selectable: items, parentIds: pIds };
+  }, [categories, filterType]);
 
   const q = query.toLowerCase();
-  const filtered = q
-    ? selectable.filter((c) => c.name.toLowerCase().includes(q) || (c.parent_name?.toLowerCase().includes(q) ?? false))
-    : selectable;
+  const filtered = useMemo(() =>
+    q
+      ? selectable.filter((c) => c.name.toLowerCase().includes(q) || (c.parent_name?.toLowerCase().includes(q) ?? false))
+      : selectable,
+    [selectable, q]
+  );
 
   // Recent items at top
   const recentIds = getRecent();
@@ -76,7 +87,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     setOpen(false);
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
+  function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (!open) {
       if (e.key === "ArrowDown" || e.key === "Enter") { setOpen(true); e.preventDefault(); }
       return;
@@ -95,7 +106,6 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     }
   }
 
-  // Scroll highlighted item into view
   useEffect(() => {
     if (highlightIdx < 0 || !listRef.current) return;
     const items = listRef.current.querySelectorAll("[data-cat-item]");
@@ -104,15 +114,21 @@ export default function CategorySelect({ id, categories, value, onChange, filter
 
   // Group non-recent by master for display
   const masters = categories.filter((c) => c.parent_id === null);
-  const grouped: { label: string; items: Category[] }[] = [];
-  for (const master of masters) {
-    const items = nonRecent.filter((c) => c.parent_id === master.id);
-    if (items.length > 0) grouped.push({ label: master.name, items });
-  }
-  const masterless = nonRecent.filter((c) => c.parent_id === null);
-  if (masterless.length > 0) grouped.push({ label: "Other", items: masterless });
+  const grouped = useMemo(() => {
+    const groups: { label: string; items: Category[] }[] = [];
+    for (const master of masters) {
+      const items = nonRecent.filter((c) => c.parent_id === master.id);
+      if (items.length > 0) groups.push({ label: master.name, items });
+    }
+    const masterless = nonRecent.filter((c) => c.parent_id === null);
+    if (masterless.length > 0) groups.push({ label: "Other", items: masterless });
+    return groups;
+  }, [masters, nonRecent]);
 
-  let itemIdx = recentItems.length; // track index for highlight
+  const activeDescendant = highlightIdx >= 0 && highlightIdx < flatList.length
+    ? `${id}-opt-${flatList[highlightIdx].id}` : undefined;
+
+  let itemIdx = recentItems.length;
 
   return (
     <div ref={ref} className="relative">
@@ -129,18 +145,21 @@ export default function CategorySelect({ id, categories, value, onChange, filter
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-activedescendant={activeDescendant}
+        aria-label={ariaLabel}
       />
       <input type="hidden" name={`${id}-value`} value={value} required />
 
       {open && (
-        <div ref={listRef} role="listbox" className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border border-border bg-surface shadow-lg">
+        <div ref={listRef} role="listbox" id={`${id}-listbox`} className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border border-border bg-surface shadow-lg">
           {recentItems.length > 0 && (
             <>
               <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Recent</div>
               {recentItems.map((cat, i) => (
                 <button key={cat.id} type="button" data-cat-item onClick={() => handleSelect(cat)}
+                  id={`${id}-opt-${cat.id}`}
                   className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${highlightIdx === i ? "bg-accent-dim text-accent" : "text-text-primary hover:bg-surface-raised"}`}
-                  role="option" aria-selected={highlightIdx === i}>
+                  role="option" aria-selected={cat.id === value}>
                   <span>{cat.name}</span>
                   <span className="text-xs text-text-muted">{cat.parent_name}</span>
                 </button>
@@ -157,8 +176,9 @@ export default function CategorySelect({ id, categories, value, onChange, filter
                 <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{group.label}</div>
                 {group.items.map((cat, i) => (
                   <button key={cat.id} type="button" data-cat-item onClick={() => handleSelect(cat)}
+                    id={`${id}-opt-${cat.id}`}
                     className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${highlightIdx === startIdx + i ? "bg-accent-dim text-accent" : "text-text-primary hover:bg-surface-raised"}`}
-                    role="option" aria-selected={highlightIdx === startIdx + i}>
+                    role="option" aria-selected={cat.id === value}>
                     <span>{cat.name}</span>
                     {cat.description && <span className="ml-2 truncate text-xs text-text-muted">{cat.description}</span>}
                   </button>

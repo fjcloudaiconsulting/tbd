@@ -64,13 +64,16 @@ async def create_category(
     db: AsyncSession = Depends(get_db),
 ):
     if body.parent_id is not None:
-        parent = await db.scalar(
-            select(Category.id).where(
+        parent_row = await db.execute(
+            select(Category).where(
                 Category.id == body.parent_id, Category.org_id == current_user.org_id
             )
         )
-        if parent is None:
+        parent_cat = parent_row.scalar_one_or_none()
+        if parent_cat is None:
             raise HTTPException(status_code=400, detail="Invalid parent category")
+        if parent_cat.parent_id is not None:
+            raise HTTPException(status_code=400, detail="Cannot nest more than two levels")
 
     cat = Category(
         org_id=current_user.org_id,
@@ -86,7 +89,9 @@ async def create_category(
     parent_name = None
     if cat.parent_id:
         parent_name = await db.scalar(
-            select(Category.name).where(Category.id == cat.parent_id)
+            select(Category.name).where(
+                Category.id == cat.parent_id, Category.org_id == current_user.org_id
+            )
         )
 
     return _to_response(cat, parent_name, 0)
@@ -126,7 +131,9 @@ async def update_category(
     parent_name = None
     if cat.parent_id:
         parent_name = await db.scalar(
-            select(Category.name).where(Category.id == cat.parent_id)
+            select(Category.name).where(
+                Category.id == cat.parent_id, Category.org_id == current_user.org_id
+            )
         )
 
     count_result = await db.scalar(

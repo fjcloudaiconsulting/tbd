@@ -222,7 +222,7 @@ export default function AccountsPage() {
                       </span>
                       <div className="flex gap-3">
                         {!a.is_default && a.is_active && (
-                          <button onClick={async () => { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); }} aria-label={`Set ${a.name} as default`} className="text-xs text-text-muted hover:text-accent">
+                          <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="text-xs text-text-muted hover:text-accent">
                             Set Default
                           </button>
                         )}
