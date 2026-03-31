@@ -348,8 +348,20 @@ export default function TransactionsPage() {
               </div>
             </div>
             <div className="divide-y divide-border-subtle">
-              {transactions.map((tx) =>
-                editingId === tx.id ? (
+              {(() => {
+                // Deduplicate transfers: keep one side, find linked for display
+                const seenLinked = new Set<number>();
+                return transactions.filter((tx) => {
+                  if (tx.type === "transfer" && tx.linked_transaction_id) {
+                    if (seenLinked.has(tx.id)) return false;
+                    seenLinked.add(tx.linked_transaction_id);
+                  }
+                  return true;
+                }).map((tx) => {
+                const linkedTx = tx.type === "transfer" && tx.linked_transaction_id
+                  ? transactions.find((t) => t.id === tx.linked_transaction_id)
+                  : null;
+                return editingId === tx.id ? (
                   <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
                     <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
                     <span className="col-span-2"><input aria-label="Description" type="text" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
@@ -383,7 +395,11 @@ export default function TransactionsPage() {
                   <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
                     <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
                     <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
-                    <span className="col-span-2 text-sm text-text-secondary">{tx.account_name}</span>
+                    <span className="col-span-2 text-sm text-text-secondary">
+                      {tx.type === "transfer" && linkedTx
+                        ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+                        : tx.account_name}
+                    </span>
                     <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
                     <span className="col-span-1 text-center">
                       <button
@@ -398,16 +414,17 @@ export default function TransactionsPage() {
                         {tx.status}
                       </button>
                     </span>
-                    <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
-                      {tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                    <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : tx.type === "transfer" ? "text-accent" : "text-danger"}`}>
+                      {tx.type === "income" ? "+" : tx.type === "transfer" ? "" : "-"}{formatAmount(tx.amount)}
                     </span>
                     <span className="col-span-1 flex justify-end gap-2">
-                      <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                      {tx.type !== "transfer" && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
                       <button onClick={() => handleDelete(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                     </span>
                   </div>
-                )
-              )}
+                );
+                });
+              })()}
               {transactions.length === 0 && (
                 <div className="px-6 py-8 text-center text-sm text-text-muted">
                   {activeAccounts.length === 0
