@@ -42,7 +42,9 @@ export default function DashboardPage() {
 
   // Quick-add form
   const [showForm, setShowForm] = useState(false);
+  const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
   const [formAccountId, setFormAccountId] = useState<number | "">("");
+  const [formToAccountId, setFormToAccountId] = useState<number | "">("");
   const [formCategoryId, setFormCategoryId] = useState<number | "">("");
   const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
@@ -89,22 +91,38 @@ export default function DashboardPage() {
     e.preventDefault();
     setError("");
     try {
-      await apiFetch("/api/v1/transactions", {
-        method: "POST",
-        body: JSON.stringify({
-          account_id: formAccountId,
-          category_id: formCategoryId,
-          description: formDescription,
-          amount: formAmount,
-          type: formType,
-          status: formStatus,
-          date: formDate,
-        }),
-      });
+      if (formMode === "transfer") {
+        await apiFetch("/api/v1/transactions/transfer", {
+          method: "POST",
+          body: JSON.stringify({
+            from_account_id: formAccountId,
+            to_account_id: formToAccountId,
+            category_id: formCategoryId,
+            description: formDescription,
+            amount: formAmount,
+            status: formStatus,
+            date: formDate,
+          }),
+        });
+      } else {
+        await apiFetch("/api/v1/transactions", {
+          method: "POST",
+          body: JSON.stringify({
+            account_id: formAccountId,
+            category_id: formCategoryId,
+            description: formDescription,
+            amount: formAmount,
+            type: formType,
+            status: formStatus,
+            date: formDate,
+          }),
+        });
+      }
       setFormDescription("");
       setFormAmount("");
       setFormType("expense");
       setFormStatus("settled");
+      setFormToAccountId("");
       setFormDate(todayISO());
       setShowForm(false);
       await Promise.all([loadRefs(), loadTransactions(page)]);
@@ -127,10 +145,12 @@ export default function DashboardPage() {
 
   function handleAccountChange(id: number | "") {
     setFormAccountId(id);
+    if (formToAccountId === id) setFormToAccountId("");
     const acct = accounts.find((a) => a.id === id);
     setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
   }
 
+  // Total balance by currency (settled only — what's in the accounts)
   const balanceByCurrency = activeAccounts.reduce<Record<string, number>>(
     (acc, a) => {
       const cur = a.currency || "EUR";
@@ -140,6 +160,21 @@ export default function DashboardPage() {
     {}
   );
   const currencies = Object.entries(balanceByCurrency);
+
+  // Accounts with balance != 0 for individual tiles
+  const accountsWithBalance = activeAccounts.filter((a) => Number(a.balance) !== 0);
+
+  // Precompute tx map for O(1) linked lookups
+  const txMap = new Map(transactions.map((tx) => [tx.id, tx]));
+
+  // Pending totals per account from current-month transactions
+  const pendingByAccount = transactions
+    .filter((tx) => tx.status === "pending")
+    .reduce<Record<number, number>>((acc, tx) => {
+      const sign = tx.type === "income" ? 1 : -1;
+      acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
+      return acc;
+    }, {});
 
   return (
     <AppShell>
@@ -161,25 +196,41 @@ export default function DashboardPage() {
           {/* Quick-add form */}
           {showForm && (
             <div className={`${card} p-6`}>
-              <h2 className={`mb-4 ${cardTitle}`}>New Transaction</h2>
+              <div className="mb-4 flex items-center gap-4">
+                <h2 className={cardTitle}>{formMode === "transfer" ? "Quick Transfer" : "Quick Add"}</h2>
+                <div className="flex rounded-md border border-border text-xs">
+                  <button type="button" onClick={() => setFormMode("transaction")} className={`px-3 py-1 rounded-l-md ${formMode === "transaction" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transaction</button>
+                  <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
+                </div>
+              </div>
               <form onSubmit={handleQuickAdd} className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                 <div>
-                  <label htmlFor="da-account" className={label}>Account</label>
+                  <label htmlFor="da-account" className={label}>{formMode === "transfer" ? "From Account" : "Account"}</label>
                   <select id="da-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                     <option value="">Select account</option>
                     {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
                 </div>
-                <div>
-                  <label htmlFor="da-type" className={label}>Type</label>
-                  <select id="da-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                    <option value="expense">Expense</option>
-                    <option value="income">Income</option>
-                  </select>
-                </div>
+                {formMode === "transfer" ? (
+                  <div>
+                    <label htmlFor="da-to-account" className={label}>To Account</label>
+                    <select id="da-to-account" required value={formToAccountId} onChange={(e) => setFormToAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
+                      <option value="">Select account</option>
+                      {activeAccounts.filter((a) => a.id !== formAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                  </div>
+                ) : (
+                  <div>
+                    <label htmlFor="da-type" className={label}>Type</label>
+                    <select id="da-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
+                      <option value="expense">Expense</option>
+                      <option value="income">Income</option>
+                    </select>
+                  </div>
+                )}
                 <div>
                   <label htmlFor="da-category" className={label}>Category</label>
-                  <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+                  <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formMode === "transfer" ? "expense" : formType} className={input} />
                 </div>
                 <div>
                   <label htmlFor="da-desc" className={label}>Description</label>
@@ -207,18 +258,48 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Balance cards */}
+          {/* Total balance */}
           {currencies.length > 0 && (
             <div className="flex gap-4">
               {currencies.map(([currency, total]) => (
                 <div key={currency} className={`flex-1 ${card} p-6`}>
-                  <p className={cardTitle}>Balance</p>
+                  <p className={cardTitle}>Total Balance</p>
                   <p className="mt-2 font-display text-3xl text-accent">
                     {formatAmount(total)}
                     <span className="ml-2 text-lg text-text-muted">{currency}</span>
                   </p>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Per-account tiles */}
+          {accountsWithBalance.length > 0 && (
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              {accountsWithBalance.map((acct) => {
+                const pending = pendingByAccount[acct.id] || 0;
+                const isCreditCard = acct.account_type_slug === "credit_card";
+                return (
+                  <div key={acct.id} className={`${card} p-4`}>
+                    <p className="text-xs font-medium text-text-muted truncate">{acct.name}</p>
+                    <p className="text-[11px] text-text-muted">{acct.account_type_name}</p>
+                    <p className="mt-1.5 text-lg font-semibold tabular-nums text-text-primary">
+                      {formatAmount(acct.balance)} <span className="text-xs text-text-muted">{acct.currency}</span>
+                    </p>
+                    {pending !== 0 && (
+                      <p className={`mt-0.5 text-xs tabular-nums ${isCreditCard ? "text-danger" : "text-text-muted"}`}>
+                        {isCreditCard ? "Pending charges: " : "Pending: "}
+                        {formatAmount(Math.abs(pending))}
+                      </p>
+                    )}
+                    {isCreditCard && pending !== 0 && (
+                      <p className="mt-0.5 text-xs tabular-nums text-text-secondary">
+                        Net: {formatAmount(Number(acct.balance) + pending)}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
@@ -231,27 +312,63 @@ export default function DashboardPage() {
               </Link>
             </div>
             <div className="divide-y divide-border-subtle">
-              {transactions.map((tx) => (
-                <div key={tx.id} className="flex items-center justify-between px-6 py-3">
-                  <div className="flex items-center gap-4">
-                    <span className="text-sm tabular-nums text-text-muted w-20">{tx.date}</span>
-                    <div>
-                      <p className="text-sm text-text-primary">{tx.description}</p>
-                      <p className="text-xs text-text-muted">
-                        {tx.account_name} · {tx.category_name}
-                        {tx.status === "pending" && (
-                          <span className="ml-1.5 rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">
-                            pending
-                          </span>
+              {(() => {
+                // Deduplicate transfers: keep the expense side (lower id for stability)
+                const hiddenIds = new Set<number>();
+                for (const tx of transactions) {
+                  if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) {
+                    hiddenIds.add(tx.id);
+                  }
+                }
+                return transactions.filter((tx) => !hiddenIds.has(tx.id)).map((tx) => {
+                  const isTransfer = tx.linked_transaction_id !== null;
+                  const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+
+                  return (
+                    <div key={tx.id} className="flex items-center justify-between px-6 py-3">
+                      <div className="flex items-center gap-4">
+                        <span className="text-sm tabular-nums text-text-muted w-20">{tx.date}</span>
+                        <div>
+                          <p className="text-sm text-text-primary">{tx.description}</p>
+                          <p className="text-xs text-text-muted">
+                            {isTransfer && linkedTx
+                              ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+                              : <>{tx.account_name} · {tx.category_name}</>
+                            }
+                            {tx.status === "pending" && (
+                              <span className="ml-1.5 rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">
+                                pending
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                          {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                          {isTransfer && <span className="ml-1 text-xs text-text-muted">transfer</span>}
+                        </span>
+                        {!isTransfer && (
+                          <button
+                            onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await Promise.all([loadRefs(), loadTransactions(page)]); } catch (err) { setError(extractErrorMessage(err)); } }}
+                            aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}
+                          >
+                            {tx.status}
+                          </button>
                         )}
-                      </p>
+                        <button
+                          onClick={async () => { if (!confirm("Delete this transaction?")) return; try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "DELETE" }); await Promise.all([loadRefs(), loadTransactions(page)]); } catch (err) { setError(extractErrorMessage(err)); } }}
+                          aria-label={`Delete: ${tx.description}`}
+                          className="text-xs text-text-muted hover:text-danger"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <span className={`text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
-                    {tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
-                  </span>
-                </div>
-              ))}
+                  );
+                });
+              })()}
               {transactions.length === 0 && (
                 <div className="px-6 py-8 text-center text-sm text-text-muted">
                   {!canAdd

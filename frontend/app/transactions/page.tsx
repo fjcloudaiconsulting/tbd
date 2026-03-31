@@ -42,7 +42,9 @@ export default function TransactionsPage() {
   const [filterDateTo, setFilterDateTo] = useState("");
 
   // Form
+  const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
   const [formAccountId, setFormAccountId] = useState<number | "">("");
+  const [formToAccountId, setFormToAccountId] = useState<number | "">("");
   const [formCategoryId, setFormCategoryId] = useState<number | "">("");
   const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
@@ -95,22 +97,38 @@ export default function TransactionsPage() {
     e.preventDefault();
     setError("");
     try {
-      await apiFetch("/api/v1/transactions", {
-        method: "POST",
-        body: JSON.stringify({
-          account_id: formAccountId,
-          category_id: formCategoryId,
-          description: formDescription,
-          amount: formAmount,
-          type: formType,
-          status: formStatus,
-          date: formDate,
-        }),
-      });
+      if (formMode === "transfer") {
+        await apiFetch("/api/v1/transactions/transfer", {
+          method: "POST",
+          body: JSON.stringify({
+            from_account_id: formAccountId,
+            to_account_id: formToAccountId,
+            category_id: formCategoryId,
+            description: formDescription,
+            amount: formAmount,
+            status: formStatus,
+            date: formDate,
+          }),
+        });
+      } else {
+        await apiFetch("/api/v1/transactions", {
+          method: "POST",
+          body: JSON.stringify({
+            account_id: formAccountId,
+            category_id: formCategoryId,
+            description: formDescription,
+            amount: formAmount,
+            type: formType,
+            status: formStatus,
+            date: formDate,
+          }),
+        });
+      }
       setFormDescription("");
       setFormAmount("");
       setFormType("expense");
       setFormStatus("settled");
+      setFormToAccountId("");
       setFormDate(todayISO());
       setShowForm(false);
       await loadTransactions(page);
@@ -190,6 +208,7 @@ export default function TransactionsPage() {
 
   function handleAccountChange(id: number | "") {
     setFormAccountId(id);
+    if (formToAccountId === id) setFormToAccountId("");
     const acct = accounts.find((a) => a.id === id);
     setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
   }
@@ -209,25 +228,41 @@ export default function TransactionsPage() {
 
       {showForm && (
         <div className={`mb-6 ${card} p-6`}>
-          <h2 className={`mb-4 ${cardTitle}`}>New Transaction</h2>
+          <div className="mb-4 flex items-center gap-4">
+            <h2 className={cardTitle}>{formMode === "transfer" ? "New Transfer" : "New Transaction"}</h2>
+            <div className="flex rounded-md border border-border text-xs">
+              <button type="button" onClick={() => setFormMode("transaction")} className={`px-3 py-1 rounded-l-md ${formMode === "transaction" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transaction</button>
+              <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
+            </div>
+          </div>
           <form onSubmit={handleAdd} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div>
-              <label htmlFor="tx-account" className={label}>Account</label>
+              <label htmlFor="tx-account" className={label}>{formMode === "transfer" ? "From Account" : "Account"}</label>
               <select id="tx-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                 <option value="">Select account</option>
                 {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </div>
-            <div>
-              <label htmlFor="tx-type" className={label}>Type</label>
-              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                <option value="expense">Expense</option>
-                <option value="income">Income</option>
-              </select>
-            </div>
+            {formMode === "transfer" ? (
+              <div>
+                <label htmlFor="tx-to-account" className={label}>To Account</label>
+                <select id="tx-to-account" required value={formToAccountId} onChange={(e) => setFormToAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
+                  <option value="">Select account</option>
+                  {activeAccounts.filter((a) => a.id !== formAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+            ) : (
+              <div>
+                <label htmlFor="tx-type" className={label}>Type</label>
+                <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
+                  <option value="expense">Expense</option>
+                  <option value="income">Income</option>
+                </select>
+              </div>
+            )}
             <div>
               <label htmlFor="tx-category" className={label}>Category</label>
-              <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+              <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formMode === "transfer" ? "expense" : formType} className={input} />
             </div>
             <div>
               <label htmlFor="tx-desc" className={label}>Description</label>
@@ -314,8 +349,20 @@ export default function TransactionsPage() {
               </div>
             </div>
             <div className="divide-y divide-border-subtle">
-              {transactions.map((tx) =>
-                editingId === tx.id ? (
+              {(() => {
+                // Precompute tx map for O(1) lookups
+                const txMap = new Map(transactions.map((t) => [t.id, t]));
+                // Deduplicate transfers: keep the lower id (expense side)
+                const hiddenIds = new Set<number>();
+                for (const t of transactions) {
+                  if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
+                    hiddenIds.add(t.id);
+                  }
+                }
+                return transactions.filter((t) => !hiddenIds.has(t.id)).map((tx) => {
+                const isTransfer = tx.linked_transaction_id !== null;
+                const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                return editingId === tx.id ? (
                   <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
                     <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
                     <span className="col-span-2"><input aria-label="Description" type="text" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
@@ -349,7 +396,11 @@ export default function TransactionsPage() {
                   <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
                     <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
                     <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
-                    <span className="col-span-2 text-sm text-text-secondary">{tx.account_name}</span>
+                    <span className="col-span-2 text-sm text-text-secondary">
+                      {isTransfer && linkedTx
+                        ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+                        : tx.account_name}
+                    </span>
                     <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
                     <span className="col-span-1 text-center">
                       <button
@@ -364,16 +415,17 @@ export default function TransactionsPage() {
                         {tx.status}
                       </button>
                     </span>
-                    <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
-                      {tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                    <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                      {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                     </span>
                     <span className="col-span-1 flex justify-end gap-2">
-                      <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                      {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
                       <button onClick={() => handleDelete(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                     </span>
                   </div>
-                )
-              )}
+                );
+                });
+              })()}
               {transactions.length === 0 && (
                 <div className="px-6 py-8 text-center text-sm text-text-muted">
                   {activeAccounts.length === 0

@@ -1,6 +1,7 @@
 import enum
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import (
     Date,
@@ -20,6 +21,7 @@ from app.models.base import Base
 class TransactionType(str, enum.Enum):
     INCOME = "income"
     EXPENSE = "expense"
+    TRANSFER = "transfer"
 
 
 class TransactionStatus(str, enum.Enum):
@@ -51,6 +53,9 @@ class Transaction(Base):
         nullable=False,
         default=TransactionStatus.SETTLED,
     )
+    linked_transaction_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True
+    )
     date: Mapped[date] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
@@ -61,3 +66,6 @@ class Transaction(Base):
 
     account: Mapped["Account"] = relationship()
     category: Mapped["Category"] = relationship(back_populates="transactions")
+    linked_transaction: Mapped[Optional["Transaction"]] = relationship(
+        foreign_keys=[linked_transaction_id], remote_side="Transaction.id"
+    )

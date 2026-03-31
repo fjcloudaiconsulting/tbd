@@ -8,6 +8,7 @@ const RECENT_KEY = "pfv2-recent-categories";
 const MAX_RECENT = 5;
 
 function getRecent(): number[] {
+  if (typeof window === "undefined") return [];
   try {
     return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
   } catch { return []; }
@@ -59,8 +60,10 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     [selectable, q]
   );
 
-  // Recent items at top
-  const recentIds = getRecent();
+  // Recent items — loaded client-side only to avoid SSR hydration mismatch
+  const [recentIds, setRecentIds] = useState<number[]>([]);
+  useEffect(() => { setRecentIds(getRecent()); }, [open]);
+
   const recentItems = recentIds
     .map((rid) => filtered.find((c) => c.id === rid))
     .filter(Boolean) as Category[];
@@ -145,6 +148,8 @@ export default function CategorySelect({ id, categories, value, onChange, filter
         role="combobox"
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-autocomplete="list"
+        aria-controls={`${id}-listbox`}
         aria-activedescendant={activeDescendant}
         aria-label={ariaLabel}
       />

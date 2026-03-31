@@ -61,6 +61,7 @@ export interface Transaction {
   amount: number;
   type: "income" | "expense";
   status: "settled" | "pending";
+  linked_transaction_id: number | null;
   date: string;
 }
 

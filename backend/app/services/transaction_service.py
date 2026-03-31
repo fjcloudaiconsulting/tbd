@@ -20,7 +20,7 @@ from sqlalchemy.orm import selectinload
 from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate
+from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate, TransferCreate
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
@@ -41,6 +41,7 @@ def to_response(tx: Transaction) -> TransactionResponse:
         amount=tx.amount,
         type=tx.type.value,
         status=tx.status.value,
+        linked_transaction_id=tx.linked_transaction_id,
         date=tx.date,
     )
 
@@ -94,6 +95,8 @@ async def assert_no_dependents(
 # ── Balance logic ─────────────────────────────────────────────────────────────
 
 def apply_balance(account: Account, amount: Decimal, tx_type: TransactionType) -> None:
+    if tx_type == TransactionType.TRANSFER:
+        raise ValidationError("Cannot apply balance for TRANSFER type directly")
     if tx_type == TransactionType.INCOME:
         account.balance += amount
     else:
@@ -101,6 +104,8 @@ def apply_balance(account: Account, amount: Decimal, tx_type: TransactionType) -
 
 
 def revert_balance(account: Account, amount: Decimal, tx_type: TransactionType) -> None:
+    if tx_type == TransactionType.TRANSFER:
+        raise ValidationError("Cannot revert balance for TRANSFER type directly")
     if tx_type == TransactionType.INCOME:
         account.balance -= amount
     else:
@@ -153,6 +158,9 @@ async def update_transaction(
     tx = result.scalar_one_or_none()
     if tx is None:
         raise NotFoundError("Transaction")
+
+    if tx.linked_transaction_id is not None:
+        raise ConflictError("Cannot edit a transfer transaction. Delete and recreate it instead.")
 
     # Validate references regardless of status
     if body.account_id is not None and body.account_id != tx.account_id:
@@ -224,13 +232,99 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
     if tx is None:
         raise NotFoundError("Transaction")
 
+    # Collect linked transaction (transfer pair) if any
+    linked_tx = None
+    if tx.linked_transaction_id:
+        linked_result = await db.execute(
+            select(Transaction).where(
+                Transaction.id == tx.linked_transaction_id, Transaction.org_id == org_id
+            )
+        )
+        linked_tx = linked_result.scalar_one_or_none()
+
     async with db.begin_nested():
-        if tx.status == TransactionStatus.SETTLED:
+        # For transfers, lock both accounts in deterministic order
+        if linked_tx and tx.status == TransactionStatus.SETTLED:
+            first_id, second_id = sorted([tx.account_id, linked_tx.account_id])
+            first = await get_account_for_update(db, first_id, org_id)
+            second = await get_account_for_update(db, second_id, org_id)
+            tx_acct = first if tx.account_id == first_id else second
+            linked_acct = first if linked_tx.account_id == first_id else second
+            revert_balance(tx_acct, tx.amount, tx.type)
+            revert_balance(linked_acct, linked_tx.amount, linked_tx.type)
+        elif tx.status == TransactionStatus.SETTLED:
             acct = await get_account_for_update(db, tx.account_id, org_id)
             revert_balance(acct, tx.amount, tx.type)
+
+        if linked_tx:
+            await db.delete(linked_tx)
         await db.delete(tx)
 
     await db.commit()
+
+
+async def create_transfer(
+    db: AsyncSession, org_id: int, body: TransferCreate
+) -> tuple[Transaction, Transaction]:
+    """Create a linked pair of transactions for a transfer between accounts."""
+    if body.from_account_id == body.to_account_id:
+        raise ValidationError("Source and destination accounts must be different")
+
+    await validate_account(db, body.from_account_id, org_id)
+    await validate_account(db, body.to_account_id, org_id)
+    await validate_category(db, body.category_id, org_id)
+
+    tx_status = TransactionStatus(body.status)
+
+    async with db.begin_nested():
+        # Expense side (source account) — uses EXPENSE type so existing
+        # balance logic (apply/revert) works unchanged
+        expense_tx = Transaction(
+            org_id=org_id,
+            account_id=body.from_account_id,
+            category_id=body.category_id,
+            description=body.description,
+            amount=body.amount,
+            type=TransactionType.EXPENSE,
+            status=tx_status,
+            date=body.date,
+        )
+        # Income side (destination account)
+        income_tx = Transaction(
+            org_id=org_id,
+            account_id=body.to_account_id,
+            category_id=body.category_id,
+            description=body.description,
+            amount=body.amount,
+            type=TransactionType.INCOME,
+            status=tx_status,
+            date=body.date,
+        )
+        db.add(expense_tx)
+        db.add(income_tx)
+        await db.flush()
+
+        expense_tx.linked_transaction_id = income_tx.id
+        income_tx.linked_transaction_id = expense_tx.id
+
+        if tx_status == TransactionStatus.SETTLED:
+            first_id, second_id = sorted([body.from_account_id, body.to_account_id])
+            first = await get_account_for_update(db, first_id, org_id)
+            second = await get_account_for_update(db, second_id, org_id)
+            from_acct = first if body.from_account_id == first_id else second
+            to_acct = first if body.to_account_id == first_id else second
+            from_acct.balance -= body.amount
+            to_acct.balance += body.amount
+
+    await db.commit()
+
+    result = await db.execute(
+        select(Transaction).options(*_load_opts()).where(
+            Transaction.id.in_([expense_tx.id, income_tx.id])
+        ).order_by(Transaction.id)
+    )
+    tx_by_id = {tx.id: tx for tx in result.scalars().all()}
+    return tx_by_id[expense_tx.id], tx_by_id[income_tx.id]
 
 
 async def get_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> Transaction:

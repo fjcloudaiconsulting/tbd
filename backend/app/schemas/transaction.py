@@ -15,6 +15,16 @@ class TransactionCreate(BaseModel):
     date: datetime.date
 
 
+class TransferCreate(BaseModel):
+    from_account_id: int
+    to_account_id: int
+    category_id: int
+    description: str
+    amount: Decimal = Field(gt=0)
+    status: Literal["settled", "pending"] = "settled"
+    date: datetime.date
+
+
 class TransactionUpdate(BaseModel):
     account_id: Optional[int] = None
     category_id: Optional[int] = None
@@ -35,6 +45,7 @@ class TransactionResponse(BaseModel):
     amount: Decimal
     type: Literal["income", "expense"]
     status: Literal["settled", "pending"]
+    linked_transaction_id: Optional[int] = None
     date: datetime.date
 
     model_config = {"from_attributes": True}
