@@ -30,12 +30,13 @@ interface Props {
 export default function CategorySelect({ id, categories, value, onChange, filterType, className = "" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [highlightIdx, setHighlightIdx] = useState(-1);
   const ref = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const selected = categories.find((c) => c.id === value);
 
-  // Filter categories: only subcategories (parent_id set) or masters with no children
+  // Build flat list of selectable items
   const selectable = categories.filter((c) => {
     if (filterType && c.type !== filterType && c.type !== "both") return false;
     const hasChildren = categories.some((ch) => ch.parent_id === c.id);
@@ -54,16 +55,8 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     .filter(Boolean) as Category[];
   const nonRecent = filtered.filter((c) => !recentIds.includes(c.id));
 
-  // Group non-recent by master
-  const masters = categories.filter((c) => c.parent_id === null);
-  const grouped: { label: string; items: Category[] }[] = [];
-  for (const master of masters) {
-    const items = nonRecent.filter((c) => c.parent_id === master.id);
-    if (items.length > 0) grouped.push({ label: master.name, items });
-  }
-  // Masterless (custom with no parent)
-  const masterless = nonRecent.filter((c) => c.parent_id === null);
-  if (masterless.length > 0) grouped.push({ label: "Other", items: masterless });
+  // Build ordered flat list for keyboard nav
+  const flatList: Category[] = [...recentItems, ...nonRecent];
 
   useEffect(() => {
     if (!open) return;
@@ -74,12 +67,52 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
+  useEffect(() => { setHighlightIdx(-1); }, [query, open]);
+
   function handleSelect(cat: Category) {
     onChange(cat.id);
     saveRecent(cat.id);
     setQuery("");
     setOpen(false);
   }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (!open) {
+      if (e.key === "ArrowDown" || e.key === "Enter") { setOpen(true); e.preventDefault(); }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightIdx((prev) => Math.min(prev + 1, flatList.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightIdx((prev) => Math.max(prev - 1, 0));
+    } else if (e.key === "Enter" && highlightIdx >= 0 && highlightIdx < flatList.length) {
+      e.preventDefault();
+      handleSelect(flatList[highlightIdx]);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  }
+
+  // Scroll highlighted item into view
+  useEffect(() => {
+    if (highlightIdx < 0 || !listRef.current) return;
+    const items = listRef.current.querySelectorAll("[data-cat-item]");
+    items[highlightIdx]?.scrollIntoView({ block: "nearest" });
+  }, [highlightIdx]);
+
+  // Group non-recent by master for display
+  const masters = categories.filter((c) => c.parent_id === null);
+  const grouped: { label: string; items: Category[] }[] = [];
+  for (const master of masters) {
+    const items = nonRecent.filter((c) => c.parent_id === master.id);
+    if (items.length > 0) grouped.push({ label: master.name, items });
+  }
+  const masterless = nonRecent.filter((c) => c.parent_id === null);
+  if (masterless.length > 0) grouped.push({ label: "Other", items: masterless });
+
+  let itemIdx = recentItems.length; // track index for highlight
 
   return (
     <div ref={ref} className="relative">
@@ -91,20 +124,23 @@ export default function CategorySelect({ id, categories, value, onChange, filter
         placeholder="Search category..."
         onChange={(e) => { setQuery(e.target.value); if (!open) setOpen(true); }}
         onFocus={() => { setOpen(true); setQuery(""); }}
-        ref={inputRef}
+        onKeyDown={handleKeyDown}
         className={className}
+        role="combobox"
+        aria-expanded={open}
+        aria-haspopup="listbox"
       />
-      {/* Hidden input for form required validation */}
       <input type="hidden" name={`${id}-value`} value={value} required />
 
       {open && (
-        <div className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border border-border bg-surface shadow-lg">
+        <div ref={listRef} role="listbox" className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border border-border bg-surface shadow-lg">
           {recentItems.length > 0 && (
             <>
               <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Recent</div>
-              {recentItems.map((cat) => (
-                <button key={cat.id} type="button" onClick={() => handleSelect(cat)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-raised">
+              {recentItems.map((cat, i) => (
+                <button key={cat.id} type="button" data-cat-item onClick={() => handleSelect(cat)}
+                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${highlightIdx === i ? "bg-accent-dim text-accent" : "text-text-primary hover:bg-surface-raised"}`}
+                  role="option" aria-selected={highlightIdx === i}>
                   <span>{cat.name}</span>
                   <span className="text-xs text-text-muted">{cat.parent_name}</span>
                 </button>
@@ -113,18 +149,23 @@ export default function CategorySelect({ id, categories, value, onChange, filter
             </>
           )}
 
-          {grouped.map((group) => (
-            <div key={group.label}>
-              <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{group.label}</div>
-              {group.items.map((cat) => (
-                <button key={cat.id} type="button" onClick={() => handleSelect(cat)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left text-sm text-text-primary hover:bg-surface-raised">
-                  <span>{cat.name}</span>
-                  {cat.description && <span className="ml-2 truncate text-xs text-text-muted">{cat.description}</span>}
-                </button>
-              ))}
-            </div>
-          ))}
+          {grouped.map((group) => {
+            const startIdx = itemIdx;
+            itemIdx += group.items.length;
+            return (
+              <div key={group.label}>
+                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{group.label}</div>
+                {group.items.map((cat, i) => (
+                  <button key={cat.id} type="button" data-cat-item onClick={() => handleSelect(cat)}
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${highlightIdx === startIdx + i ? "bg-accent-dim text-accent" : "text-text-primary hover:bg-surface-raised"}`}
+                    role="option" aria-selected={highlightIdx === startIdx + i}>
+                    <span>{cat.name}</span>
+                    {cat.description && <span className="ml-2 truncate text-xs text-text-muted">{cat.description}</span>}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
 
           {filtered.length === 0 && (
             <div className="px-3 py-4 text-center text-sm text-text-muted">No categories match</div>

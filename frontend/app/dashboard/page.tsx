@@ -114,7 +114,15 @@ export default function DashboardPage() {
   }
 
   const activeAccounts = accounts.filter((a) => a.is_active);
+  const defaultAccount = activeAccounts.find((a) => a.is_default);
   const canAdd = activeAccounts.length > 0 && categories.length > 0;
+
+  // Pre-select default account when opening form
+  useEffect(() => {
+    if (showForm && formAccountId === "" && defaultAccount) {
+      setFormAccountId(defaultAccount.id);
+    }
+  }, [showForm, formAccountId, defaultAccount]);
 
   const balanceByCurrency = activeAccounts.reduce<Record<string, number>>(
     (acc, a) => {

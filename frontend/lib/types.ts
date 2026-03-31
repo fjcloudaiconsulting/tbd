@@ -36,6 +36,7 @@ export interface Account {
   currency: string;
   is_active: boolean;
   close_day: number | null;
+  is_default: boolean;
 }
 
 export interface Category {

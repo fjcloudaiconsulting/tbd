@@ -35,6 +35,7 @@ class AccountUpdate(BaseModel):
     account_type_id: Optional[int] = None
     is_active: Optional[bool] = None
     close_day: Optional[int] = Field(default=None, ge=1, le=28)
+    is_default: Optional[bool] = None
 
 
 class AccountResponse(BaseModel):
@@ -47,6 +48,7 @@ class AccountResponse(BaseModel):
     currency: str
     is_active: bool
     close_day: Optional[int] = None
+    is_default: bool = False
 
     model_config = {"from_attributes": True}
 

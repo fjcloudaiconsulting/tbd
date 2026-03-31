@@ -178,6 +178,14 @@ export default function TransactionsPage() {
   }
 
   const activeAccounts = accounts.filter((a) => a.is_active);
+  const defaultAccount = activeAccounts.find((a) => a.is_default);
+
+  // Pre-select default account when opening form
+  useEffect(() => {
+    if (showForm && formAccountId === "" && defaultAccount) {
+      setFormAccountId(defaultAccount.id);
+    }
+  }, [showForm, formAccountId, defaultAccount]);
 
   return (
     <AppShell>

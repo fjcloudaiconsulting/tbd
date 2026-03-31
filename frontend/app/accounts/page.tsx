@@ -211,6 +211,7 @@ export default function AccountsPage() {
                     <div>
                       <span className="text-sm font-medium text-text-primary">{a.name}</span>
                       <span className="ml-2 text-xs text-text-muted">{a.account_type_name}</span>
+                      {a.is_default && <span className="ml-1 text-xs text-accent">· default</span>}
                       {a.close_day && <span className="ml-1 text-xs text-text-muted">· closes day {a.close_day}</span>}
                       {!a.is_active && <span className="ml-2 text-xs text-danger">inactive</span>}
                     </div>
@@ -220,6 +221,11 @@ export default function AccountsPage() {
                         <span className="text-text-muted">{a.currency}</span>
                       </span>
                       <div className="flex gap-3">
+                        {!a.is_default && a.is_active && (
+                          <button onClick={async () => { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); }} aria-label={`Set ${a.name} as default`} className="text-xs text-text-muted hover:text-accent">
+                            Set Default
+                          </button>
+                        )}
                         <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="text-xs text-text-muted hover:text-text-secondary">
                           {a.is_active ? "Deactivate" : "Activate"}
                         </button>
