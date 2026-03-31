@@ -4,12 +4,14 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.config import settings as app_settings
 from app.database import engine
 from app.logging import setup_logging
 from app.routers import account_types, accounts, auth, categories, settings, transactions, users
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 # Setup JSON logging early so uvicorn's loggers are captured
 setup_logging()
@@ -52,6 +54,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(NotFoundError)
+async def not_found_handler(request, exc: NotFoundError):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(ValidationError)
+async def validation_handler(request, exc: ValidationError):
+    return JSONResponse(status_code=400, content={"detail": exc.detail})
+
+
+@app.exception_handler(ConflictError)
+async def conflict_handler(request, exc: ConflictError):
+    return JSONResponse(status_code=409, content={"detail": exc.detail})
+
 
 app.include_router(auth.router)
 app.include_router(users.router)

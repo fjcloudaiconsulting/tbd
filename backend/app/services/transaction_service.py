@@ -2,11 +2,13 @@
 
 All balance-affecting operations go through this module so they can be reused
 from HTTP routers, recurring transaction jobs, or any future entry point.
+
+Raises domain exceptions (NotFoundError, ValidationError, ConflictError)
+instead of HTTPException — callers map these to the appropriate response.
 """
 
 from decimal import Decimal
 
-from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,6 +17,7 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction, TransactionType
 from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
 # ── Response helpers ──────────────────────────────────────────────────────────
@@ -44,7 +47,7 @@ async def validate_category(db: AsyncSession, category_id: int, org_id: int) -> 
         select(Category.id).where(Category.id == category_id, Category.org_id == org_id)
     )
     if cat is None:
-        raise HTTPException(status_code=400, detail="Invalid category")
+        raise ValidationError("Invalid category")
 
 
 async def get_account_for_update(db: AsyncSession, account_id: int, org_id: int) -> Account:
@@ -55,7 +58,7 @@ async def get_account_for_update(db: AsyncSession, account_id: int, org_id: int)
     )
     acct = result.scalar_one_or_none()
     if acct is None:
-        raise HTTPException(status_code=400, detail="Invalid account")
+        raise ValidationError("Invalid account")
     return acct
 
 
@@ -66,15 +69,12 @@ async def assert_no_dependents(
     noun: str,
     resource: str,
 ) -> None:
-    """Raise 409 if any rows match the given filters."""
+    """Raise ConflictError if any rows match the given filters."""
     count = await db.scalar(
         select(func.count()).select_from(model).where(*filters)
     )
     if count and count > 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot delete: {count} {noun}(s) use this {resource}",
-        )
+        raise ConflictError(f"Cannot delete: {count} {noun}(s) use this {resource}")
 
 
 # ── Balance logic ─────────────────────────────────────────────────────────────
@@ -101,19 +101,21 @@ async def create_transaction(
     await validate_category(db, body.category_id, org_id)
     tx_type = TransactionType(body.type)
 
-    acct = await get_account_for_update(db, body.account_id, org_id)
-    apply_balance(acct, body.amount, tx_type)
+    async with db.begin_nested():
+        acct = await get_account_for_update(db, body.account_id, org_id)
+        apply_balance(acct, body.amount, tx_type)
 
-    tx = Transaction(
-        org_id=org_id,
-        account_id=body.account_id,
-        category_id=body.category_id,
-        description=body.description,
-        amount=body.amount,
-        type=tx_type,
-        date=body.date,
-    )
-    db.add(tx)
+        tx = Transaction(
+            org_id=org_id,
+            account_id=body.account_id,
+            category_id=body.category_id,
+            description=body.description,
+            amount=body.amount,
+            type=tx_type,
+            date=body.date,
+        )
+        db.add(tx)
+
     await db.commit()
 
     result = await db.execute(
@@ -132,18 +134,53 @@ async def update_transaction(
     )
     tx = result.scalar_one_or_none()
     if tx is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise NotFoundError("Transaction")
 
-    # Revert old balance impact
-    old_account = await get_account_for_update(db, tx.account_id, org_id)
-    revert_balance(old_account, tx.amount, tx.type)
+    old_account_id = tx.account_id
+    old_amount = tx.amount
+    old_type = tx.type
 
-    # Apply field updates
-    if body.account_id is not None and body.account_id != tx.account_id:
-        tx.account_id = body.account_id
-    if body.category_id is not None:
-        await validate_category(db, body.category_id, org_id)
-        tx.category_id = body.category_id
+    new_account_id = body.account_id if body.account_id is not None else old_account_id
+
+    async with db.begin_nested():
+        # Lock accounts in deterministic order to prevent deadlocks
+        if new_account_id == old_account_id:
+            account = await get_account_for_update(db, old_account_id, org_id)
+            revert_balance(account, old_amount, old_type)
+
+            _apply_field_updates(tx, body)
+            if body.category_id is not None:
+                await validate_category(db, body.category_id, org_id)
+                tx.category_id = body.category_id
+
+            apply_balance(account, tx.amount, tx.type)
+        else:
+            first_id, second_id = sorted([old_account_id, new_account_id])
+            first = await get_account_for_update(db, first_id, org_id)
+            second = await get_account_for_update(db, second_id, org_id)
+
+            old_account = first if old_account_id == first_id else second
+            new_account = first if new_account_id == first_id else second
+
+            revert_balance(old_account, old_amount, old_type)
+
+            _apply_field_updates(tx, body)
+            if body.category_id is not None:
+                await validate_category(db, body.category_id, org_id)
+                tx.category_id = body.category_id
+            tx.account_id = new_account_id
+
+            apply_balance(new_account, tx.amount, tx.type)
+
+    await db.commit()
+
+    result = await db.execute(
+        select(Transaction).options(*_load_opts()).where(Transaction.id == tx.id)
+    )
+    return result.scalar_one()
+
+
+def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:
     if body.description is not None:
         tx.description = body.description
     if body.amount is not None:
@@ -152,17 +189,6 @@ async def update_transaction(
         tx.type = TransactionType(body.type)
     if body.date is not None:
         tx.date = body.date
-
-    # Apply new balance impact
-    new_account = await get_account_for_update(db, tx.account_id, org_id)
-    apply_balance(new_account, tx.amount, tx.type)
-
-    await db.commit()
-
-    result = await db.execute(
-        select(Transaction).options(*_load_opts()).where(Transaction.id == tx.id)
-    )
-    return result.scalar_one()
 
 
 async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> None:
@@ -173,12 +199,13 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
     )
     tx = result.scalar_one_or_none()
     if tx is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise NotFoundError("Transaction")
 
-    acct = await get_account_for_update(db, tx.account_id, org_id)
-    revert_balance(acct, tx.amount, tx.type)
+    async with db.begin_nested():
+        acct = await get_account_for_update(db, tx.account_id, org_id)
+        revert_balance(acct, tx.amount, tx.type)
+        await db.delete(tx)
 
-    await db.delete(tx)
     await db.commit()
 
 
@@ -190,7 +217,7 @@ async def get_transaction(db: AsyncSession, org_id: int, transaction_id: int) ->
     )
     tx = result.scalar_one_or_none()
     if tx is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise NotFoundError("Transaction")
     return tx
 
 
