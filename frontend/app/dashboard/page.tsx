@@ -121,8 +121,15 @@ export default function DashboardPage() {
   useEffect(() => {
     if (showForm && formAccountId === "" && defaultAccount) {
       setFormAccountId(defaultAccount.id);
+      if (defaultAccount.account_type_slug === "credit_card") setFormStatus("pending");
     }
   }, [showForm, formAccountId, defaultAccount]);
+
+  function handleAccountChange(id: number | "") {
+    setFormAccountId(id);
+    const acct = accounts.find((a) => a.id === id);
+    setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
+  }
 
   const balanceByCurrency = activeAccounts.reduce<Record<string, number>>(
     (acc, a) => {
@@ -158,7 +165,7 @@ export default function DashboardPage() {
               <form onSubmit={handleQuickAdd} className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                 <div>
                   <label htmlFor="da-account" className={label}>Account</label>
-                  <select id="da-account" required value={formAccountId} onChange={(e) => setFormAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
+                  <select id="da-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                     <option value="">Select account</option>
                     {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
