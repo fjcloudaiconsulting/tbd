@@ -22,20 +22,21 @@ export default function TransactionsPage() {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
 
+  // Filters
   const [filterAccount, setFilterAccount] = useState<number | "">("");
   const [filterCategory, setFilterCategory] = useState<number | "">("");
+  const [filterType, setFilterType] = useState<string>("");
+  const [filterStatus, setFilterStatus] = useState<string>("");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
 
+  // Form
   const [formAccountId, setFormAccountId] = useState<number | "">("");
   const [formCategoryId, setFormCategoryId] = useState<number | "">("");
   const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
   const [formType, setFormType] = useState<"income" | "expense">("expense");
-
-  // Reset category selection when transaction type changes (filtered categories may differ)
-  function handleTypeChange(newType: "income" | "expense") {
-    setFormType(newType);
-    setFormCategoryId("");
-  }
+  const [formStatus, setFormStatus] = useState<"settled" | "pending">("settled");
   const [formDate, setFormDate] = useState(todayISO());
 
   const loadRefs = useCallback(async () => {
@@ -51,11 +52,15 @@ export default function TransactionsPage() {
     let url = `/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}`;
     if (filterAccount) url += `&account_id=${filterAccount}`;
     if (filterCategory) url += `&category_id=${filterCategory}`;
+    if (filterType) url += `&type=${filterType}`;
+    if (filterStatus) url += `&status=${filterStatus}`;
+    if (filterDateFrom) url += `&date_from=${filterDateFrom}`;
+    if (filterDateTo) url += `&date_to=${filterDateTo}`;
     const data = (await apiFetch<Transaction[]>(url)) ?? [];
     setHasMore(data.length > PAGE_SIZE);
     setTransactions(data.slice(0, PAGE_SIZE));
     setFetching(false);
-  }, [filterAccount, filterCategory]);
+  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo]);
 
   useEffect(() => {
     if (!loading && user) loadRefs().catch(() => {});
@@ -68,8 +73,12 @@ export default function TransactionsPage() {
     }
   }, [loading, user, loadTransactions, page]);
 
-  // Reset page when filters change
-  useEffect(() => { setPage(0); }, [filterAccount, filterCategory]);
+  useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo]);
+
+  function handleTypeChange(t: "income" | "expense") {
+    setFormType(t);
+    setFormCategoryId("");
+  }
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
@@ -78,15 +87,25 @@ export default function TransactionsPage() {
       await apiFetch("/api/v1/transactions", {
         method: "POST",
         body: JSON.stringify({
-          account_id: formAccountId, category_id: formCategoryId,
-          description: formDescription, amount: formAmount, type: formType, date: formDate,
+          account_id: formAccountId,
+          category_id: formCategoryId,
+          description: formDescription,
+          amount: formAmount,
+          type: formType,
+          status: formStatus,
+          date: formDate,
         }),
       });
-      setFormDescription(""); setFormAmount(""); setFormType("expense");
+      setFormDescription("");
+      setFormAmount("");
+      setFormType("expense");
+      setFormStatus("settled");
       setFormDate(todayISO());
       setShowForm(false);
       await loadTransactions(page);
-    } catch (err) { setError(extractErrorMessage(err)); }
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
   }
 
   async function handleDelete(id: number) {
@@ -95,7 +114,22 @@ export default function TransactionsPage() {
     try {
       await apiFetch(`/api/v1/transactions/${id}`, { method: "DELETE" });
       await loadTransactions(page);
-    } catch (err) { setError(extractErrorMessage(err)); }
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  }
+
+  async function handleToggleStatus(tx: Transaction) {
+    setError("");
+    try {
+      await apiFetch(`/api/v1/transactions/${tx.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }),
+      });
+      await loadTransactions(page);
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
   }
 
   const activeAccounts = accounts.filter((a) => a.is_active);
@@ -116,7 +150,7 @@ export default function TransactionsPage() {
       {showForm && (
         <div className={`mb-6 ${card} p-6`}>
           <h2 className={`mb-4 ${cardTitle}`}>New Transaction</h2>
-          <form onSubmit={handleAdd} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <form onSubmit={handleAdd} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div>
               <label htmlFor="tx-account" className={label}>Account</label>
               <select id="tx-account" required value={formAccountId} onChange={(e) => setFormAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
@@ -132,13 +166,6 @@ export default function TransactionsPage() {
               </select>
             </div>
             <div>
-              <label htmlFor="tx-type" className={label}>Type</label>
-              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                <option value="expense">Expense</option>
-                <option value="income">Income</option>
-              </select>
-            </div>
-            <div>
               <label htmlFor="tx-desc" className={label}>Description</label>
               <input id="tx-desc" type="text" required placeholder="What was it for?" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
             </div>
@@ -147,10 +174,24 @@ export default function TransactionsPage() {
               <input id="tx-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
             </div>
             <div>
+              <label htmlFor="tx-type" className={label}>Type</label>
+              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="tx-status" className={label}>Status</label>
+              <select id="tx-status" value={formStatus} onChange={(e) => setFormStatus(e.target.value as "settled" | "pending")} className={input}>
+                <option value="settled">Settled</option>
+                <option value="pending">Pending</option>
+              </select>
+            </div>
+            <div>
               <label htmlFor="tx-date" className={label}>Date</label>
               <input id="tx-date" type="date" required value={formDate} onChange={(e) => setFormDate(e.target.value)} className={input} />
             </div>
-            <div className="flex items-end sm:col-span-2 lg:col-span-3">
+            <div className="flex items-end">
               <button type="submit" className={btnPrimary}>Add Transaction</button>
             </div>
           </form>
@@ -160,18 +201,42 @@ export default function TransactionsPage() {
       {/* Filters */}
       <div className="mb-4 flex flex-wrap gap-3">
         <div>
-          <label htmlFor="filter-account" className="sr-only">Filter by account</label>
-          <select id="filter-account" value={filterAccount} onChange={(e) => setFilterAccount(e.target.value === "" ? "" : Number(e.target.value))} className={`w-48 ${input}`}>
+          <label htmlFor="f-account" className="sr-only">Filter by account</label>
+          <select id="f-account" value={filterAccount} onChange={(e) => setFilterAccount(e.target.value === "" ? "" : Number(e.target.value))} className={`w-40 ${input}`}>
             <option value="">All accounts</option>
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </div>
         <div>
-          <label htmlFor="filter-category" className="sr-only">Filter by category</label>
-          <select id="filter-category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value === "" ? "" : Number(e.target.value))} className={`w-48 ${input}`}>
+          <label htmlFor="f-category" className="sr-only">Filter by category</label>
+          <select id="f-category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value === "" ? "" : Number(e.target.value))} className={`w-40 ${input}`}>
             <option value="">All categories</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
+        </div>
+        <div>
+          <label htmlFor="f-type" className="sr-only">Filter by type</label>
+          <select id="f-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className={`w-32 ${input}`}>
+            <option value="">All types</option>
+            <option value="income">Income</option>
+            <option value="expense">Expense</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="f-status" className="sr-only">Filter by status</label>
+          <select id="f-status" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={`w-32 ${input}`}>
+            <option value="">All statuses</option>
+            <option value="settled">Settled</option>
+            <option value="pending">Pending</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="f-from" className="sr-only">From date</label>
+          <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className={`w-36 ${input}`} placeholder="From" />
+        </div>
+        <div>
+          <label htmlFor="f-to" className="sr-only">To date</label>
+          <input id="f-to" type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className={`w-36 ${input}`} placeholder="To" />
         </div>
       </div>
 
@@ -186,23 +251,38 @@ export default function TransactionsPage() {
                 <span className="col-span-3">Description</span>
                 <span className="col-span-2">Account</span>
                 <span className="col-span-2">Category</span>
-                <span className="col-span-2 text-right">Amount</span>
+                <span className="col-span-1 text-center">Status</span>
+                <span className="col-span-1 text-right">Amount</span>
                 <span className="col-span-1" />
               </div>
             </div>
             <div className="divide-y divide-border-subtle">
               {transactions.map((tx) => (
-                <div key={tx.id} className="grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised">
+                <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
                   <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
                   <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
                   <span className="col-span-2 text-sm text-text-secondary">{tx.account_name}</span>
                   <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
-                  <span className={`col-span-2 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
-                    {tx.type === "income" ? "+" : "-"}
-                    {formatAmount(tx.amount)}
+                  <span className="col-span-1 text-center">
+                    <button
+                      onClick={() => handleToggleStatus(tx)}
+                      aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                        tx.status === "settled"
+                          ? "bg-success-dim text-success"
+                          : "bg-surface-overlay text-text-muted"
+                      }`}
+                    >
+                      {tx.status}
+                    </button>
+                  </span>
+                  <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
+                    {tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                   </span>
                   <span className="col-span-1 text-right">
-                    <button onClick={() => handleDelete(tx.id)} aria-label={`Delete transaction: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                    <button onClick={() => handleDelete(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">
+                      Delete
+                    </button>
                   </span>
                 </div>
               ))}
@@ -212,28 +292,19 @@ export default function TransactionsPage() {
                     ? "Create an account first."
                     : categories.length === 0
                       ? "Create a category first."
-                      : "No transactions yet. Click '+ New Transaction' to add one."}
+                      : "No transactions match your filters."}
                 </div>
               )}
             </div>
           </div>
 
-          {/* Pagination */}
           {(page > 0 || hasMore) && (
             <div className="mt-4 flex items-center justify-between">
-              <button
-                onClick={() => setPage(Math.max(0, page - 1))}
-                disabled={page === 0}
-                className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40"
-              >
+              <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40">
                 Previous
               </button>
               <span className="text-xs text-text-muted">Page {page + 1}</span>
-              <button
-                onClick={() => setPage(page + 1)}
-                disabled={!hasMore}
-                className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40"
-              >
+              <button onClick={() => setPage(page + 1)} disabled={!hasMore} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40">
                 Next
               </button>
             </div>

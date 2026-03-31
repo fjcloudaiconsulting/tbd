@@ -22,6 +22,11 @@ class TransactionType(str, enum.Enum):
     EXPENSE = "expense"
 
 
+class TransactionStatus(str, enum.Enum):
+    SETTLED = "settled"
+    PENDING = "pending"
+
+
 class Transaction(Base):
     __tablename__ = "transactions"
 
@@ -40,6 +45,11 @@ class Transaction(Base):
     type: Mapped[TransactionType] = mapped_column(
         Enum(TransactionType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
+    )
+    status: Mapped[TransactionStatus] = mapped_column(
+        Enum(TransactionStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+        default=TransactionStatus.SETTLED,
     )
     date: Mapped[date] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
