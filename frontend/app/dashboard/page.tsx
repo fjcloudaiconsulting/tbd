@@ -156,6 +156,13 @@ export default function DashboardPage() {
                   </select>
                 </div>
                 <div>
+                  <label htmlFor="da-type" className={label}>Type</label>
+                  <select id="da-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
+                    <option value="expense">Expense</option>
+                    <option value="income">Income</option>
+                  </select>
+                </div>
+                <div>
                   <label htmlFor="da-category" className={label}>Category</label>
                   <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
                 </div>
@@ -166,13 +173,6 @@ export default function DashboardPage() {
                 <div>
                   <label htmlFor="da-amount" className={label}>Amount</label>
                   <input id="da-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
-                </div>
-                <div>
-                  <label htmlFor="da-type" className={label}>Type</label>
-                  <select id="da-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                    <option value="expense">Expense</option>
-                    <option value="income">Income</option>
-                  </select>
                 </div>
                 <div>
                   <label htmlFor="da-status" className={label}>Status</label>

@@ -204,6 +204,13 @@ export default function TransactionsPage() {
               </select>
             </div>
             <div>
+              <label htmlFor="tx-type" className={label}>Type</label>
+              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
+              </select>
+            </div>
+            <div>
               <label htmlFor="tx-category" className={label}>Category</label>
               <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
             </div>
@@ -214,13 +221,6 @@ export default function TransactionsPage() {
             <div>
               <label htmlFor="tx-amount" className={label}>Amount</label>
               <input id="tx-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
-            </div>
-            <div>
-              <label htmlFor="tx-type" className={label}>Type</label>
-              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                <option value="expense">Expense</option>
-                <option value="income">Income</option>
-              </select>
             </div>
             <div>
               <label htmlFor="tx-status" className={label}>Status</label>
