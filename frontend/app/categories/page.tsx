@@ -25,6 +25,9 @@ export default function CategoriesPage() {
   const [newSubName, setNewSubName] = useState("");
   const [newSubDesc, setNewSubDesc] = useState("");
 
+  // Search
+  const [search, setSearch] = useState("");
+
   // Add custom master form
   const [showAddMaster, setShowAddMaster] = useState(false);
   const [newMasterName, setNewMasterName] = useState("");
@@ -41,8 +44,16 @@ export default function CategoriesPage() {
     if (!loading && user) reload().catch(() => setFetching(false));
   }, [loading, user, reload]);
 
-  const masters = categories.filter((c) => c.parent_id === null);
+  const allMasters = categories.filter((c) => c.parent_id === null);
   const childrenOf = (parentId: number) => categories.filter((c) => c.parent_id === parentId);
+
+  const sq = search.toLowerCase();
+  const masters = sq
+    ? allMasters.filter((m) => {
+        if (m.name.toLowerCase().includes(sq)) return true;
+        return childrenOf(m.id).some((c) => c.name.toLowerCase().includes(sq));
+      })
+    : allMasters;
 
   async function handleAddSub(e: FormEvent) {
     e.preventDefault();
@@ -127,6 +138,13 @@ export default function CategoriesPage() {
             </div>
             <button type="submit" className={btnPrimary}>Add</button>
           </form>
+        </div>
+      )}
+
+      {!fetching && allMasters.length > 6 && (
+        <div className="mb-4">
+          <label htmlFor="cat-search" className="sr-only">Search categories</label>
+          <input id="cat-search" type="text" placeholder="Search categories..." value={search} onChange={(e) => setSearch(e.target.value)} className={`max-w-sm ${input}`} />
         </div>
       )}
 
