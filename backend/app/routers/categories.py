@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,6 +8,7 @@ from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.category import CategoryCreate, CategoryResponse, CategoryUpdate
+from app.services.transaction_service import assert_no_dependents
 
 router = APIRouter(prefix="/api/v1/categories", tags=["categories"])
 
@@ -99,19 +100,11 @@ async def delete_category(
     if cat is None:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    tx_count = await db.scalar(
-        select(func.count())
-        .select_from(Transaction)
-        .where(
-            Transaction.category_id == cat.id,
-            Transaction.org_id == current_user.org_id,
-        )
+    await assert_no_dependents(
+        db, Transaction,
+        [Transaction.category_id == cat.id, Transaction.org_id == current_user.org_id],
+        "transaction", "category",
     )
-    if tx_count and tx_count > 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot delete: {tx_count} transaction(s) use this category",
-        )
 
     await db.delete(cat)
     await db.commit()

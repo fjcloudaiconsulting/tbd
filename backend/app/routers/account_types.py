@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,6 +7,7 @@ from app.deps import get_current_user
 from app.models.account import Account, AccountType
 from app.models.user import User
 from app.schemas.account import AccountTypeCreate, AccountTypeResponse, AccountTypeUpdate
+from app.services.transaction_service import assert_no_dependents
 
 router = APIRouter(prefix="/api/v1/account-types", tags=["account-types"])
 
@@ -92,16 +93,11 @@ async def delete_account_type(
     if at is None:
         raise HTTPException(status_code=404, detail="Account type not found")
 
-    account_count = await db.scalar(
-        select(func.count())
-        .select_from(Account)
-        .where(Account.account_type_id == at.id, Account.org_id == current_user.org_id)
+    await assert_no_dependents(
+        db, Account,
+        [Account.account_type_id == at.id, Account.org_id == current_user.org_id],
+        "account", "type",
     )
-    if account_count and account_count > 0:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot delete: {account_count} account(s) use this type",
-        )
 
     await db.delete(at)
     await db.commit()
