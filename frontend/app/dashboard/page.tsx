@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
+import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
 
 function formatLocalDate(d: Date): string {
@@ -156,10 +157,7 @@ export default function DashboardPage() {
                 </div>
                 <div>
                   <label htmlFor="da-category" className={label}>Category</label>
-                  <select id="da-category" required value={formCategoryId} onChange={(e) => setFormCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
-                    <option value="">Select category</option>
-                    {categories.filter((c) => c.type === "both" || c.type === formType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
+                  <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
                 </div>
                 <div>
                   <label htmlFor="da-desc" className={label}>Description</label>

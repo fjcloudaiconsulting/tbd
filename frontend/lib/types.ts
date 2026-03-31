@@ -42,6 +42,11 @@ export interface Category {
   id: number;
   name: string;
   type: "income" | "expense" | "both";
+  parent_id: number | null;
+  parent_name: string | null;
+  description: string | null;
+  slug: string | null;
+  is_system: boolean;
   transaction_count: number;
 }
 

@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
 
 const PAGE_SIZE = 20;
@@ -204,10 +205,7 @@ export default function TransactionsPage() {
             </div>
             <div>
               <label htmlFor="tx-category" className={label}>Category</label>
-              <select id="tx-category" required value={formCategoryId} onChange={(e) => setFormCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
-                <option value="">Select category</option>
-                {categories.filter((c) => c.type === "both" || c.type === formType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
             </div>
             <div>
               <label htmlFor="tx-desc" className={label}>Description</label>
@@ -312,9 +310,7 @@ export default function TransactionsPage() {
                       </select>
                     </span>
                     <span className="col-span-2">
-                      <select aria-label="Category" value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
-                        {categories.filter((c) => c.type === "both" || c.type === editType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                      </select>
+                      <CategorySelect id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
                     </span>
                     <span className="col-span-1">
                       <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>

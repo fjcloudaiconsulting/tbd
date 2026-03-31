@@ -8,12 +8,6 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Category } from "@/lib/types";
 
-const TYPE_LABELS: Record<Category["type"], string> = {
-  income: "Income",
-  expense: "Expense",
-  both: "Both",
-};
-
 const TYPE_COLORS: Record<Category["type"], string> = {
   income: "text-success",
   expense: "text-danger",
@@ -24,12 +18,18 @@ export default function CategoriesPage() {
   const { user, loading } = useAuth();
   const [categories, setCategories] = useState<Category[]>([]);
   const [fetching, setFetching] = useState(true);
-  const [name, setName] = useState("");
-  const [catType, setCatType] = useState<"income" | "expense" | "both">("both");
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editingName, setEditingName] = useState("");
-  const [editingType, setEditingType] = useState<"income" | "expense" | "both">("both");
   const [error, setError] = useState("");
+
+  // Add subcategory form
+  const [addingToMaster, setAddingToMaster] = useState<number | null>(null);
+  const [newSubName, setNewSubName] = useState("");
+  const [newSubDesc, setNewSubDesc] = useState("");
+
+  // Add custom master form
+  const [showAddMaster, setShowAddMaster] = useState(false);
+  const [newMasterName, setNewMasterName] = useState("");
+  const [newMasterType, setNewMasterType] = useState<"income" | "expense" | "both">("expense");
+  const [newMasterDesc, setNewMasterDesc] = useState("");
 
   const reload = useCallback(async () => {
     const data = await apiFetch<Category[]>("/api/v1/categories");
@@ -41,22 +41,46 @@ export default function CategoriesPage() {
     if (!loading && user) reload().catch(() => setFetching(false));
   }, [loading, user, reload]);
 
-  async function handleAdd(e: FormEvent) {
+  const masters = categories.filter((c) => c.parent_id === null);
+  const childrenOf = (parentId: number) => categories.filter((c) => c.parent_id === parentId);
+
+  async function handleAddSub(e: FormEvent) {
     e.preventDefault();
+    if (!addingToMaster) return;
+    const master = categories.find((c) => c.id === addingToMaster);
     setError("");
     try {
-      await apiFetch("/api/v1/categories", { method: "POST", body: JSON.stringify({ name, type: catType }) });
-      setName("");
-      setCatType("both");
+      await apiFetch("/api/v1/categories", {
+        method: "POST",
+        body: JSON.stringify({
+          name: newSubName,
+          description: newSubDesc || null,
+          parent_id: addingToMaster,
+          type: master?.type ?? "expense",
+        }),
+      });
+      setNewSubName("");
+      setNewSubDesc("");
+      setAddingToMaster(null);
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
-  async function handleUpdate(id: number) {
+  async function handleAddMaster(e: FormEvent) {
+    e.preventDefault();
     setError("");
     try {
-      await apiFetch(`/api/v1/categories/${id}`, { method: "PUT", body: JSON.stringify({ name: editingName, type: editingType }) });
-      setEditingId(null);
+      await apiFetch("/api/v1/categories", {
+        method: "POST",
+        body: JSON.stringify({
+          name: newMasterName,
+          type: newMasterType,
+          description: newMasterDesc || null,
+        }),
+      });
+      setNewMasterName("");
+      setNewMasterDesc("");
+      setShowAddMaster(false);
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -72,72 +96,116 @@ export default function CategoriesPage() {
 
   return (
     <AppShell>
-      <h1 className={pageTitle}>Categories</h1>
+      <div className="mb-8 flex items-center justify-between">
+        <h1 className={`${pageTitle} mb-0`}>Categories</h1>
+        <button onClick={() => setShowAddMaster(!showAddMaster)} className={btnPrimary}>
+          {showAddMaster ? "Cancel" : "+ Custom Category"}
+        </button>
+      </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+
+      {showAddMaster && (
+        <div className={`mb-6 ${card} p-6`}>
+          <h2 className={`mb-4 ${cardTitle}`}>New Master Category</h2>
+          <form onSubmit={handleAddMaster} className="flex flex-wrap gap-3">
+            <div className="flex-1 min-w-[200px]">
+              <label htmlFor="master-name" className="sr-only">Name</label>
+              <input id="master-name" type="text" required placeholder="Category name" value={newMasterName} onChange={(e) => setNewMasterName(e.target.value)} className={input} />
+            </div>
+            <div className="w-32">
+              <label htmlFor="master-type" className="sr-only">Type</label>
+              <select id="master-type" value={newMasterType} onChange={(e) => setNewMasterType(e.target.value as typeof newMasterType)} className={input}>
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
+                <option value="both">Both</option>
+              </select>
+            </div>
+            <div className="flex-1 min-w-[200px]">
+              <label htmlFor="master-desc" className="sr-only">Description</label>
+              <input id="master-desc" type="text" placeholder="Description (optional)" value={newMasterDesc} onChange={(e) => setNewMasterDesc(e.target.value)} className={input} />
+            </div>
+            <button type="submit" className={btnPrimary}>Add</button>
+          </form>
+        </div>
+      )}
 
       {fetching ? (
         <Spinner />
       ) : (
-        <div className={`max-w-xl ${card}`}>
-          <div className={cardHeader}>
-            <h2 className={cardTitle}>Manage Categories</h2>
-          </div>
-          <div className="p-6">
-            <form onSubmit={handleAdd} className="mb-5 flex gap-2">
-              <div className="flex-1">
-                <label htmlFor="cat-name" className="sr-only">New category name</label>
-                <input id="cat-name" type="text" required placeholder="New category name" value={name} onChange={(e) => setName(e.target.value)} className={input} />
-              </div>
-              <div className="w-28">
-                <label htmlFor="cat-type" className="sr-only">Category type</label>
-                <select id="cat-type" value={catType} onChange={(e) => setCatType(e.target.value as typeof catType)} className={input}>
-                  <option value="both">Both</option>
-                  <option value="income">Income</option>
-                  <option value="expense">Expense</option>
-                </select>
-              </div>
-              <button type="submit" className={btnPrimary}>Add</button>
-            </form>
-            <div className="space-y-1">
-              {categories.map((cat) => (
-                <div key={cat.id} className="flex items-center justify-between rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised">
-                  {editingId === cat.id ? (
-                    <div className="flex flex-1 gap-2">
-                      <label htmlFor={`edit-cat-${cat.id}`} className="sr-only">Edit category name</label>
-                      <input id={`edit-cat-${cat.id}`} type="text" value={editingName} onChange={(e) => setEditingName(e.target.value)} className={`flex-1 ${input}`} autoFocus
-                        onKeyDown={(e) => { if (e.key === "Enter") handleUpdate(cat.id); if (e.key === "Escape") setEditingId(null); }} />
-                      <label htmlFor={`edit-type-${cat.id}`} className="sr-only">Edit category type</label>
-                      <select id={`edit-type-${cat.id}`} value={editingType} onChange={(e) => setEditingType(e.target.value as typeof editingType)} className={`w-28 ${input}`}>
-                        <option value="both">Both</option>
-                        <option value="income">Income</option>
-                        <option value="expense">Expense</option>
-                      </select>
-                      <button onClick={() => handleUpdate(cat.id)} className="text-sm text-accent hover:text-accent-hover">Save</button>
-                      <button onClick={() => setEditingId(null)} className="text-sm text-text-muted hover:text-text-secondary">Cancel</button>
+        <div className="space-y-4">
+          {masters.map((master) => {
+            const subs = childrenOf(master.id);
+            return (
+              <div key={master.id} className={card}>
+                <div className={`flex items-center justify-between ${cardHeader}`}>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-medium text-text-primary">{master.name}</h2>
+                    <span className={`text-[11px] font-medium ${TYPE_COLORS[master.type]}`}>
+                      {master.type}
+                    </span>
+                    {master.is_system && <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">system</span>}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => { setAddingToMaster(addingToMaster === master.id ? null : master.id); setNewSubName(""); setNewSubDesc(""); }}
+                      className="text-xs text-accent hover:text-accent-hover"
+                    >
+                      {addingToMaster === master.id ? "Cancel" : "+ Add Sub"}
+                    </button>
+                    {!master.is_system && (
+                      <button onClick={() => handleDelete(master.id)} aria-label={`Delete ${master.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                    )}
+                  </div>
+                </div>
+
+                {master.description && (
+                  <p className="px-6 pt-2 text-xs text-text-muted">{master.description}</p>
+                )}
+
+                <div className="px-6 py-3">
+                  {addingToMaster === master.id && (
+                    <form onSubmit={handleAddSub} className="mb-3 flex gap-2">
+                      <div className="flex-1">
+                        <label htmlFor={`sub-name-${master.id}`} className="sr-only">Subcategory name</label>
+                        <input id={`sub-name-${master.id}`} type="text" required placeholder="Subcategory name" value={newSubName} onChange={(e) => setNewSubName(e.target.value)} className={input} autoFocus />
+                      </div>
+                      <div className="flex-1">
+                        <label htmlFor={`sub-desc-${master.id}`} className="sr-only">Description</label>
+                        <input id={`sub-desc-${master.id}`} type="text" placeholder="Hint / description" value={newSubDesc} onChange={(e) => setNewSubDesc(e.target.value)} className={input} />
+                      </div>
+                      <button type="submit" className={btnPrimary}>Add</button>
+                    </form>
+                  )}
+
+                  {subs.length > 0 ? (
+                    <div className="space-y-0.5">
+                      {subs.map((sub) => (
+                        <div key={sub.id} className="flex items-center justify-between rounded-md px-3 py-2 transition-colors hover:bg-surface-raised">
+                          <div>
+                            <span className="text-sm text-text-primary">{sub.name}</span>
+                            {sub.description && <span className="ml-2 text-xs text-text-muted">{sub.description}</span>}
+                            <span className="ml-2 text-xs text-text-muted" title={`${sub.transaction_count} transaction(s)`}>{sub.transaction_count}</span>
+                          </div>
+                          {!sub.is_system && (
+                            <button onClick={() => handleDelete(sub.id)} aria-label={`Delete ${sub.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   ) : (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-text-primary">{cat.name}</span>
-                        <span className={`text-[11px] font-medium ${TYPE_COLORS[cat.type]}`}>
-                          {TYPE_LABELS[cat.type]}
-                        </span>
-                        <span className="text-xs text-text-muted" title={`${cat.transaction_count} transaction(s)`}>
-                          {cat.transaction_count}
-                        </span>
-                      </div>
-                      <div className="flex gap-3">
-                        <button onClick={() => { setEditingId(cat.id); setEditingName(cat.name); setEditingType(cat.type); }} aria-label={`Edit ${cat.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                        <button onClick={() => handleDelete(cat.id)} aria-label={`Delete ${cat.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
-                      </div>
-                    </>
+                    <p className="text-xs text-text-muted py-1">No subcategories</p>
                   )}
                 </div>
-              ))}
-              {categories.length === 0 && <p className="py-4 text-center text-sm text-text-muted">No categories yet. Add one above.</p>}
+              </div>
+            );
+          })}
+
+          {masters.length === 0 && (
+            <div className={`${card} p-8 text-center`}>
+              <p className="text-sm text-text-muted">No categories yet. Register a new account to seed system categories.</p>
             </div>
-          </div>
+          )}
         </div>
       )}
     </AppShell>
