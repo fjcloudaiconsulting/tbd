@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
+import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
 
 function formatLocalDate(d: Date): string {
@@ -113,7 +114,22 @@ export default function DashboardPage() {
   }
 
   const activeAccounts = accounts.filter((a) => a.is_active);
+  const defaultAccount = activeAccounts.find((a) => a.is_default);
   const canAdd = activeAccounts.length > 0 && categories.length > 0;
+
+  // Pre-select default account when opening form
+  useEffect(() => {
+    if (showForm && formAccountId === "" && defaultAccount) {
+      setFormAccountId(defaultAccount.id);
+      if (defaultAccount.account_type_slug === "credit_card") setFormStatus("pending");
+    }
+  }, [showForm, formAccountId, defaultAccount]);
+
+  function handleAccountChange(id: number | "") {
+    setFormAccountId(id);
+    const acct = accounts.find((a) => a.id === id);
+    setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
+  }
 
   const balanceByCurrency = activeAccounts.reduce<Record<string, number>>(
     (acc, a) => {
@@ -149,17 +165,21 @@ export default function DashboardPage() {
               <form onSubmit={handleQuickAdd} className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                 <div>
                   <label htmlFor="da-account" className={label}>Account</label>
-                  <select id="da-account" required value={formAccountId} onChange={(e) => setFormAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
+                  <select id="da-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                     <option value="">Select account</option>
                     {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label htmlFor="da-category" className={label}>Category</label>
-                  <select id="da-category" required value={formCategoryId} onChange={(e) => setFormCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
-                    <option value="">Select category</option>
-                    {categories.filter((c) => c.type === "both" || c.type === formType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  <label htmlFor="da-type" className={label}>Type</label>
+                  <select id="da-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
+                    <option value="expense">Expense</option>
+                    <option value="income">Income</option>
                   </select>
+                </div>
+                <div>
+                  <label htmlFor="da-category" className={label}>Category</label>
+                  <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
                 </div>
                 <div>
                   <label htmlFor="da-desc" className={label}>Description</label>
@@ -168,13 +188,6 @@ export default function DashboardPage() {
                 <div>
                   <label htmlFor="da-amount" className={label}>Amount</label>
                   <input id="da-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
-                </div>
-                <div>
-                  <label htmlFor="da-type" className={label}>Type</label>
-                  <select id="da-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                    <option value="expense">Expense</option>
-                    <option value="income">Income</option>
-                  </select>
                 </div>
                 <div>
                   <label htmlFor="da-status" className={label}>Status</label>

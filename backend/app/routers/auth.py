@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
+from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import Organization, Role, User
 from app.schemas.auth import (
     LoginRequest,
@@ -56,6 +57,29 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     # Seed system account types for the new org
     for sat in SYSTEM_ACCOUNT_TYPES:
         db.add(AccountType(org_id=org.id, name=sat["name"], slug=sat["slug"], is_system=True))
+
+    # Seed system categories (master + subcategories)
+    for master_def in SYSTEM_CATEGORIES:
+        master = Category(
+            org_id=org.id,
+            name=master_def["name"],
+            slug=master_def["slug"],
+            description=master_def["description"],
+            type=CategoryType(master_def["type"]),
+            is_system=True,
+        )
+        db.add(master)
+        await db.flush()
+        for child_def in master_def.get("children", []):
+            db.add(Category(
+                org_id=org.id,
+                parent_id=master.id,
+                name=child_def["name"],
+                slug=child_def["slug"],
+                description=child_def["description"],
+                type=CategoryType(master_def["type"]),
+                is_system=True,
+            ))
 
     user = User(
         org_id=org.id,

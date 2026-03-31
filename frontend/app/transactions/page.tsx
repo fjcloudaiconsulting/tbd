@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
 
 const PAGE_SIZE = 20;
@@ -177,6 +178,21 @@ export default function TransactionsPage() {
   }
 
   const activeAccounts = accounts.filter((a) => a.is_active);
+  const defaultAccount = activeAccounts.find((a) => a.is_default);
+
+  // Pre-select default account when opening form
+  useEffect(() => {
+    if (showForm && formAccountId === "" && defaultAccount) {
+      setFormAccountId(defaultAccount.id);
+      if (defaultAccount.account_type_slug === "credit_card") setFormStatus("pending");
+    }
+  }, [showForm, formAccountId, defaultAccount]);
+
+  function handleAccountChange(id: number | "") {
+    setFormAccountId(id);
+    const acct = accounts.find((a) => a.id === id);
+    setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
+  }
 
   return (
     <AppShell>
@@ -197,17 +213,21 @@ export default function TransactionsPage() {
           <form onSubmit={handleAdd} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div>
               <label htmlFor="tx-account" className={label}>Account</label>
-              <select id="tx-account" required value={formAccountId} onChange={(e) => setFormAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
+              <select id="tx-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                 <option value="">Select account</option>
                 {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </div>
             <div>
-              <label htmlFor="tx-category" className={label}>Category</label>
-              <select id="tx-category" required value={formCategoryId} onChange={(e) => setFormCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
-                <option value="">Select category</option>
-                {categories.filter((c) => c.type === "both" || c.type === formType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <label htmlFor="tx-type" className={label}>Type</label>
+              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
+                <option value="expense">Expense</option>
+                <option value="income">Income</option>
               </select>
+            </div>
+            <div>
+              <label htmlFor="tx-category" className={label}>Category</label>
+              <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
             </div>
             <div>
               <label htmlFor="tx-desc" className={label}>Description</label>
@@ -216,13 +236,6 @@ export default function TransactionsPage() {
             <div>
               <label htmlFor="tx-amount" className={label}>Amount</label>
               <input id="tx-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
-            </div>
-            <div>
-              <label htmlFor="tx-type" className={label}>Type</label>
-              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                <option value="expense">Expense</option>
-                <option value="income">Income</option>
-              </select>
             </div>
             <div>
               <label htmlFor="tx-status" className={label}>Status</label>
@@ -312,9 +325,7 @@ export default function TransactionsPage() {
                       </select>
                     </span>
                     <span className="col-span-2">
-                      <select aria-label="Category" value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
-                        {categories.filter((c) => c.type === "both" || c.type === editType).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                      </select>
+                      <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
                     </span>
                     <span className="col-span-1">
                       <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>

@@ -59,6 +59,7 @@ class Account(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="EUR")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     close_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
