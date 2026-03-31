@@ -1,0 +1,270 @@
+"""Transaction business logic — balance mutations, validation, and guards.
+
+All balance-affecting operations go through this module so they can be reused
+from HTTP routers, recurring transaction jobs, or any future entry point.
+
+Raises domain exceptions (NotFoundError, ValidationError, ConflictError)
+instead of HTTPException — callers map these to the appropriate response.
+"""
+
+from decimal import Decimal
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.models.account import Account
+from app.models.category import Category
+from app.models.transaction import Transaction, TransactionType
+from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+
+
+# ── Response helpers ──────────────────────────────────────────────────────────
+
+def _load_opts():
+    return [selectinload(Transaction.account), selectinload(Transaction.category)]
+
+
+def to_response(tx: Transaction) -> TransactionResponse:
+    return TransactionResponse(
+        id=tx.id,
+        account_id=tx.account_id,
+        account_name=tx.account.name if tx.account else "",
+        category_id=tx.category_id,
+        category_name=tx.category.name if tx.category else "",
+        description=tx.description,
+        amount=tx.amount,
+        type=tx.type.value,
+        date=tx.date,
+    )
+
+
+# ── Validation ────────────────────────────────────────────────────────────────
+
+async def validate_category(db: AsyncSession, category_id: int, org_id: int) -> None:
+    cat = await db.scalar(
+        select(Category.id).where(Category.id == category_id, Category.org_id == org_id)
+    )
+    if cat is None:
+        raise ValidationError("Invalid category")
+
+
+async def get_account_for_update(db: AsyncSession, account_id: int, org_id: int) -> Account:
+    result = await db.execute(
+        select(Account)
+        .where(Account.id == account_id, Account.org_id == org_id)
+        .with_for_update()
+    )
+    acct = result.scalar_one_or_none()
+    if acct is None:
+        raise ValidationError("Invalid account")
+    return acct
+
+
+async def assert_no_dependents(
+    db: AsyncSession,
+    model: type,
+    filters: list,
+    noun: str,
+    resource: str,
+) -> None:
+    """Raise ConflictError if any rows match the given filters."""
+    count = await db.scalar(
+        select(func.count()).select_from(model).where(*filters)
+    )
+    if count and count > 0:
+        raise ConflictError(f"Cannot delete: {count} {noun}(s) use this {resource}")
+
+
+# ── Balance logic ─────────────────────────────────────────────────────────────
+
+def apply_balance(account: Account, amount: Decimal, tx_type: TransactionType) -> None:
+    if tx_type == TransactionType.INCOME:
+        account.balance += amount
+    else:
+        account.balance -= amount
+
+
+def revert_balance(account: Account, amount: Decimal, tx_type: TransactionType) -> None:
+    if tx_type == TransactionType.INCOME:
+        account.balance -= amount
+    else:
+        account.balance += amount
+
+
+# ── CRUD operations ───────────────────────────────────────────────────────────
+
+async def create_transaction(
+    db: AsyncSession, org_id: int, body: TransactionCreate
+) -> Transaction:
+    await validate_category(db, body.category_id, org_id)
+    tx_type = TransactionType(body.type)
+
+    async with db.begin_nested():
+        acct = await get_account_for_update(db, body.account_id, org_id)
+        apply_balance(acct, body.amount, tx_type)
+
+        tx = Transaction(
+            org_id=org_id,
+            account_id=body.account_id,
+            category_id=body.category_id,
+            description=body.description,
+            amount=body.amount,
+            type=tx_type,
+            date=body.date,
+        )
+        db.add(tx)
+
+    await db.commit()
+
+    result = await db.execute(
+        select(Transaction).options(*_load_opts()).where(Transaction.id == tx.id)
+    )
+    return result.scalar_one()
+
+
+async def update_transaction(
+    db: AsyncSession, org_id: int, transaction_id: int, body: TransactionUpdate
+) -> Transaction:
+    result = await db.execute(
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.id == transaction_id, Transaction.org_id == org_id)
+    )
+    tx = result.scalar_one_or_none()
+    if tx is None:
+        raise NotFoundError("Transaction")
+
+    old_account_id = tx.account_id
+    old_amount = tx.amount
+    old_type = tx.type
+
+    new_account_id = body.account_id if body.account_id is not None else old_account_id
+
+    async with db.begin_nested():
+        # Lock accounts in deterministic order to prevent deadlocks
+        if new_account_id == old_account_id:
+            account = await get_account_for_update(db, old_account_id, org_id)
+            revert_balance(account, old_amount, old_type)
+
+            _apply_field_updates(tx, body)
+            if body.category_id is not None:
+                await validate_category(db, body.category_id, org_id)
+                tx.category_id = body.category_id
+
+            apply_balance(account, tx.amount, tx.type)
+        else:
+            first_id, second_id = sorted([old_account_id, new_account_id])
+            first = await get_account_for_update(db, first_id, org_id)
+            second = await get_account_for_update(db, second_id, org_id)
+
+            old_account = first if old_account_id == first_id else second
+            new_account = first if new_account_id == first_id else second
+
+            revert_balance(old_account, old_amount, old_type)
+
+            _apply_field_updates(tx, body)
+            if body.category_id is not None:
+                await validate_category(db, body.category_id, org_id)
+                tx.category_id = body.category_id
+            tx.account_id = new_account_id
+
+            apply_balance(new_account, tx.amount, tx.type)
+
+    await db.commit()
+
+    result = await db.execute(
+        select(Transaction).options(*_load_opts()).where(Transaction.id == tx.id)
+    )
+    return result.scalar_one()
+
+
+def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:
+    if body.description is not None:
+        tx.description = body.description
+    if body.amount is not None:
+        tx.amount = body.amount
+    if body.type is not None:
+        tx.type = TransactionType(body.type)
+    if body.date is not None:
+        tx.date = body.date
+
+
+async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> None:
+    result = await db.execute(
+        select(Transaction).where(
+            Transaction.id == transaction_id, Transaction.org_id == org_id
+        )
+    )
+    tx = result.scalar_one_or_none()
+    if tx is None:
+        raise NotFoundError("Transaction")
+
+    async with db.begin_nested():
+        acct = await get_account_for_update(db, tx.account_id, org_id)
+        revert_balance(acct, tx.amount, tx.type)
+        await db.delete(tx)
+
+    await db.commit()
+
+
+async def get_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> Transaction:
+    result = await db.execute(
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.id == transaction_id, Transaction.org_id == org_id)
+    )
+    tx = result.scalar_one_or_none()
+    if tx is None:
+        raise NotFoundError("Transaction")
+    return tx
+
+
+async def list_transactions(
+    db: AsyncSession,
+    org_id: int,
+    account_id: int | None = None,
+    category_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Transaction]:
+    q = (
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.org_id == org_id)
+    )
+    if account_id is not None:
+        q = q.where(Transaction.account_id == account_id)
+    if category_id is not None:
+        q = q.where(Transaction.category_id == category_id)
+    q = q.order_by(Transaction.date.desc(), Transaction.id.desc())
+    q = q.limit(limit).offset(offset)
+
+    result = await db.execute(q)
+    return list(result.scalars().all())
+
+
+async def reconcile_account(
+    db: AsyncSession, org_id: int, account: Account
+) -> tuple[Decimal, Decimal, bool]:
+    """Returns (stored_balance, computed_balance, is_consistent)."""
+    income = await db.scalar(
+        select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+            Transaction.account_id == account.id,
+            Transaction.org_id == org_id,
+            Transaction.type == TransactionType.INCOME,
+        )
+    )
+    expense = await db.scalar(
+        select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+            Transaction.account_id == account.id,
+            Transaction.org_id == org_id,
+            Transaction.type == TransactionType.EXPENSE,
+        )
+    )
+    # computed_balance is SUM(transactions) only — accounts created with a
+    # non-zero initial balance will appear inconsistent unless the opening
+    # balance is represented as an income transaction.
+    computed = income - expense
+    return account.balance, computed, account.balance == computed
