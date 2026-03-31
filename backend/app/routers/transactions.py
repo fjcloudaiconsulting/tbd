@@ -11,6 +11,7 @@ from app.schemas.transaction import (
     TransactionCreate,
     TransactionResponse,
     TransactionUpdate,
+    TransferCreate,
 )
 from app.services import transaction_service as svc
 
@@ -52,6 +53,16 @@ async def create_transaction(
 ):
     tx = await svc.create_transaction(db, current_user.org_id, body)
     return svc.to_response(tx)
+
+
+@router.post("/transfer", response_model=list[TransactionResponse], status_code=201)
+async def create_transfer(
+    body: TransferCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tx1, tx2 = await svc.create_transfer(db, current_user.org_id, body)
+    return [svc.to_response(tx1), svc.to_response(tx2)]
 
 
 @router.get("/{transaction_id}", response_model=TransactionResponse)

@@ -42,7 +42,9 @@ export default function TransactionsPage() {
   const [filterDateTo, setFilterDateTo] = useState("");
 
   // Form
+  const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
   const [formAccountId, setFormAccountId] = useState<number | "">("");
+  const [formToAccountId, setFormToAccountId] = useState<number | "">("");
   const [formCategoryId, setFormCategoryId] = useState<number | "">("");
   const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
@@ -95,22 +97,38 @@ export default function TransactionsPage() {
     e.preventDefault();
     setError("");
     try {
-      await apiFetch("/api/v1/transactions", {
-        method: "POST",
-        body: JSON.stringify({
-          account_id: formAccountId,
-          category_id: formCategoryId,
-          description: formDescription,
-          amount: formAmount,
-          type: formType,
-          status: formStatus,
-          date: formDate,
-        }),
-      });
+      if (formMode === "transfer") {
+        await apiFetch("/api/v1/transactions/transfer", {
+          method: "POST",
+          body: JSON.stringify({
+            from_account_id: formAccountId,
+            to_account_id: formToAccountId,
+            category_id: formCategoryId,
+            description: formDescription,
+            amount: formAmount,
+            status: formStatus,
+            date: formDate,
+          }),
+        });
+      } else {
+        await apiFetch("/api/v1/transactions", {
+          method: "POST",
+          body: JSON.stringify({
+            account_id: formAccountId,
+            category_id: formCategoryId,
+            description: formDescription,
+            amount: formAmount,
+            type: formType,
+            status: formStatus,
+            date: formDate,
+          }),
+        });
+      }
       setFormDescription("");
       setFormAmount("");
       setFormType("expense");
       setFormStatus("settled");
+      setFormToAccountId("");
       setFormDate(todayISO());
       setShowForm(false);
       await loadTransactions(page);
@@ -209,25 +227,41 @@ export default function TransactionsPage() {
 
       {showForm && (
         <div className={`mb-6 ${card} p-6`}>
-          <h2 className={`mb-4 ${cardTitle}`}>New Transaction</h2>
+          <div className="mb-4 flex items-center gap-4">
+            <h2 className={cardTitle}>{formMode === "transfer" ? "New Transfer" : "New Transaction"}</h2>
+            <div className="flex rounded-md border border-border text-xs">
+              <button type="button" onClick={() => setFormMode("transaction")} className={`px-3 py-1 rounded-l-md ${formMode === "transaction" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transaction</button>
+              <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
+            </div>
+          </div>
           <form onSubmit={handleAdd} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div>
-              <label htmlFor="tx-account" className={label}>Account</label>
+              <label htmlFor="tx-account" className={label}>{formMode === "transfer" ? "From Account" : "Account"}</label>
               <select id="tx-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                 <option value="">Select account</option>
                 {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </div>
-            <div>
-              <label htmlFor="tx-type" className={label}>Type</label>
-              <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                <option value="expense">Expense</option>
-                <option value="income">Income</option>
-              </select>
-            </div>
+            {formMode === "transfer" ? (
+              <div>
+                <label htmlFor="tx-to-account" className={label}>To Account</label>
+                <select id="tx-to-account" required value={formToAccountId} onChange={(e) => setFormToAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
+                  <option value="">Select account</option>
+                  {activeAccounts.filter((a) => a.id !== formAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+              </div>
+            ) : (
+              <div>
+                <label htmlFor="tx-type" className={label}>Type</label>
+                <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
+                  <option value="expense">Expense</option>
+                  <option value="income">Income</option>
+                </select>
+              </div>
+            )}
             <div>
               <label htmlFor="tx-category" className={label}>Category</label>
-              <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+              <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formMode === "transfer" ? "expense" : formType} className={input} />
             </div>
             <div>
               <label htmlFor="tx-desc" className={label}>Description</label>

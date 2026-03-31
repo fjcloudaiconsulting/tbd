@@ -247,8 +247,9 @@ export default function DashboardPage() {
                       </p>
                     </div>
                   </div>
-                  <span className={`text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : "text-danger"}`}>
-                    {tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                  <span className={`text-sm font-medium tabular-nums ${tx.type === "income" ? "text-success" : tx.type === "transfer" ? "text-accent" : "text-danger"}`}>
+                    {tx.type === "income" ? "+" : tx.type === "transfer" ? "" : "-"}{formatAmount(tx.amount)}
+                    {tx.type === "transfer" && <span className="ml-1 text-xs text-text-muted">transfer</span>}
                   </span>
                 </div>
               ))}
