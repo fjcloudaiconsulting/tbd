@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_user
+from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.user import Organization, Role, User
 from app.schemas.auth import (
     LoginRequest,
@@ -51,6 +52,10 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     org = Organization(name=body.org_name or f"{body.username}'s Organization")
     db.add(org)
     await db.flush()
+
+    # Seed system account types for the new org
+    for sat in SYSTEM_ACCOUNT_TYPES:
+        db.add(AccountType(org_id=org.id, name=sat["name"], slug=sat["slug"], is_system=True))
 
     user = User(
         org_id=org.id,

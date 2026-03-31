@@ -21,6 +21,8 @@ export interface ApiError {
 export interface AccountType {
   id: number;
   name: string;
+  slug: string | null;
+  is_system: boolean;
   account_count: number;
 }
 
@@ -29,9 +31,11 @@ export interface Account {
   name: string;
   account_type_id: number;
   account_type_name: string;
+  account_type_slug: string | null;
   balance: number;
   currency: string;
   is_active: boolean;
+  close_day: number | null;
 }
 
 export interface Category {

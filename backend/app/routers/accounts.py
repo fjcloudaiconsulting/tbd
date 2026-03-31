@@ -20,9 +20,11 @@ def _to_response(account: Account) -> AccountResponse:
         name=account.name,
         account_type_id=account.account_type_id,
         account_type_name=account.account_type.name if account.account_type else "",
+        account_type_slug=account.account_type.slug if account.account_type else None,
         balance=account.balance,
         currency=account.currency,
         is_active=account.is_active,
+        close_day=account.close_day,
     )
 
 
@@ -61,6 +63,7 @@ async def create_account(
         name=body.name,
         balance=body.balance,
         currency=body.currency,
+        close_day=body.close_day,
     )
     db.add(account)
     await db.commit()
@@ -120,6 +123,8 @@ async def update_account(
         account.account_type_id = body.account_type_id
     if body.is_active is not None:
         account.is_active = body.is_active
+    if "close_day" in body.model_fields_set:
+        account.close_day = body.close_day
 
     await db.commit()
 

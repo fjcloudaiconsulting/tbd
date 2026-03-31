@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -15,6 +16,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 
+SYSTEM_ACCOUNT_TYPES = [
+    {"slug": "checking", "name": "Checking"},
+    {"slug": "savings", "name": "Savings"},
+    {"slug": "credit_card", "name": "Credit Card"},
+    {"slug": "investment", "name": "Investment"},
+    {"slug": "cash", "name": "Cash"},
+]
+
+
 class AccountType(Base):
     __tablename__ = "account_types"
 
@@ -23,6 +33,8 @@ class AccountType(Base):
         Integer, ForeignKey("organizations.id"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    slug: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -46,6 +58,7 @@ class Account(Base):
     )
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="EUR")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    close_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

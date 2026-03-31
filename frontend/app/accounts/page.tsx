@@ -24,6 +24,8 @@ export default function AccountsPage() {
   const [acctTypeId, setAcctTypeId] = useState<number | "">("");
   const [acctBalance, setAcctBalance] = useState("0.00");
   const [acctCurrency, setAcctCurrency] = useState("EUR");
+  const [acctCloseDay, setAcctCloseDay] = useState("");
+  const selectedType = accountTypes.find((t) => t.id === acctTypeId) ?? null;
 
   const [error, setError] = useState("");
 
@@ -75,9 +77,13 @@ export default function AccountsPage() {
     try {
       await apiFetch("/api/v1/accounts", {
         method: "POST",
-        body: JSON.stringify({ name: acctName, account_type_id: acctTypeId, balance: acctBalance, currency: acctCurrency }),
+        body: JSON.stringify({
+          name: acctName, account_type_id: acctTypeId, balance: acctBalance,
+          currency: acctCurrency,
+          close_day: selectedType?.slug === "credit_card" && acctCloseDay ? Number(acctCloseDay) : null,
+        }),
       });
-      setAcctName(""); setAcctTypeId(""); setAcctBalance("0.00"); setShowAccountForm(false);
+      setAcctName(""); setAcctTypeId(""); setAcctBalance("0.00"); setAcctCloseDay(""); setShowAccountForm(false);
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -136,11 +142,16 @@ export default function AccountsPage() {
                       <>
                         <div className="flex items-center gap-2">
                           <span className="text-sm text-text-primary">{at.name}</span>
+                          {at.is_system && <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">system</span>}
                           <span className="text-xs text-text-muted" title={`${at.account_count} account(s)`}>{at.account_count}</span>
                         </div>
                         <div className="flex gap-3">
-                          <button onClick={() => { setEditingTypeId(at.id); setEditingTypeName(at.name); }} aria-label={`Edit ${at.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                          <button onClick={() => handleDeleteType(at.id)} aria-label={`Delete ${at.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                          {!at.is_system && (
+                            <>
+                              <button onClick={() => { setEditingTypeId(at.id); setEditingTypeName(at.name); }} aria-label={`Edit ${at.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                              <button onClick={() => handleDeleteType(at.id)} aria-label={`Delete ${at.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                            </>
+                          )}
                         </div>
                       </>
                     )}
@@ -185,6 +196,12 @@ export default function AccountsPage() {
                       <input id="acct-currency" type="text" maxLength={3} value={acctCurrency} onChange={(e) => setAcctCurrency(e.target.value.toUpperCase())} className={`text-center ${input}`} />
                     </div>
                   </div>
+                  {selectedType?.slug === "credit_card" && (
+                    <div>
+                      <label htmlFor="acct-close" className={label}>Bill close day (1-28)</label>
+                      <input id="acct-close" type="number" min={1} max={28} value={acctCloseDay} onChange={(e) => setAcctCloseDay(e.target.value)} className={`w-24 ${input}`} placeholder="15" />
+                    </div>
+                  )}
                   <button type="submit" className={btnPrimary}>Create Account</button>
                 </form>
               )}
@@ -194,6 +211,7 @@ export default function AccountsPage() {
                     <div>
                       <span className="text-sm font-medium text-text-primary">{a.name}</span>
                       <span className="ml-2 text-xs text-text-muted">{a.account_type_name}</span>
+                      {a.close_day && <span className="ml-1 text-xs text-text-muted">· closes day {a.close_day}</span>}
                       {!a.is_active && <span className="ml-2 text-xs text-danger">inactive</span>}
                     </div>
                     <div className="flex items-center gap-4">

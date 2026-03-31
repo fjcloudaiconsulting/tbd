@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,7 +32,10 @@ async def list_account_types(
         .order_by(AccountType.name)
     )
     return [
-        AccountTypeResponse(id=at.id, name=at.name, account_count=count)
+        AccountTypeResponse(
+            id=at.id, name=at.name, slug=at.slug,
+            is_system=at.is_system, account_count=count,
+        )
         for at, count in result.all()
     ]
 
@@ -47,7 +50,7 @@ async def create_account_type(
     db.add(at)
     await db.commit()
     await db.refresh(at)
-    return AccountTypeResponse(id=at.id, name=at.name, account_count=0)
+    return AccountTypeResponse(id=at.id, name=at.name, slug=at.slug, is_system=at.is_system, account_count=0)
 
 
 @router.put("/{type_id}", response_model=AccountTypeResponse)
@@ -66,6 +69,12 @@ async def update_account_type(
     if at is None:
         raise HTTPException(status_code=404, detail="Account type not found")
 
+    if at.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot rename system account type",
+        )
+
     at.name = body.name
     await db.commit()
     await db.refresh(at)
@@ -75,7 +84,10 @@ async def update_account_type(
         .select_from(Account)
         .where(Account.account_type_id == at.id, Account.org_id == current_user.org_id)
     )
-    return AccountTypeResponse(id=at.id, name=at.name, account_count=count_result or 0)
+    return AccountTypeResponse(
+        id=at.id, name=at.name, slug=at.slug,
+        is_system=at.is_system, account_count=count_result or 0,
+    )
 
 
 @router.delete("/{type_id}", status_code=204)
@@ -92,6 +104,12 @@ async def delete_account_type(
     at = result.scalar_one_or_none()
     if at is None:
         raise HTTPException(status_code=404, detail="Account type not found")
+
+    if at.is_system:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete system account type",
+        )
 
     await assert_no_dependents(
         db, Account,
