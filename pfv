@@ -23,6 +23,7 @@ Commands:
   logs [svc]   View logs (optional: backend, frontend, nginx, mysql)
   status       Show container status
   shell [svc]  Open a shell in a service (default: backend)
+  seed         Populate with mock data (demo user + 3 months of transactions)
 
 EOF
 }
@@ -84,6 +85,11 @@ cmd_shell() {
   docker compose exec "$svc" /bin/sh
 }
 
+cmd_seed() {
+  echo "Seeding mock data..."
+  docker compose exec backend python seed.py
+}
+
 case "${1:-}" in
   start)    cmd_start ;;
   stop)     cmd_stop ;;
@@ -94,5 +100,6 @@ case "${1:-}" in
   logs)     shift; cmd_logs "$@" ;;
   status)   cmd_status ;;
   shell)    shift; cmd_shell "$@" ;;
+  seed)     cmd_seed ;;
   *)        usage ;;
 esac
