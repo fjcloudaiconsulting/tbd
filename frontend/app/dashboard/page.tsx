@@ -18,29 +18,10 @@ function formatLocalDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-function billingCycleRange(cycleDay: number): { from: string; to: string } {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  const d = now.getDate();
-
-  let fromDate: Date;
-  let toDate: Date;
-
-  if (d >= cycleDay) {
-    // We're in the current cycle: cycleDay this month → cycleDay next month - 1
-    fromDate = new Date(y, m, cycleDay);
-    toDate = new Date(y, m + 1, cycleDay - 1);
-  } else {
-    // We're before the cycle day: cycleDay last month → cycleDay this month - 1
-    fromDate = new Date(y, m - 1, cycleDay);
-    toDate = new Date(y, m, cycleDay - 1);
-  }
-
-  return {
-    from: formatLocalDate(fromDate),
-    to: formatLocalDate(toDate),
-  };
+interface BillingPeriod {
+  id: number;
+  start_date: string;
+  end_date: string | null;
 }
 
 const PAGE_SIZE = 10;
@@ -51,6 +32,7 @@ export default function DashboardPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [period, setPeriod] = useState<BillingPeriod | null>(null);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -71,18 +53,20 @@ export default function DashboardPage() {
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
 
-  const cycleDay = user?.billing_cycle_day ?? 1;
-  const { from: monthFrom, to: monthTo } = billingCycleRange(cycleDay);
+  const monthFrom = period?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const monthTo = period?.end_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
 
   const loadRefs = useCallback(async () => {
     const [accts, cats] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<Budget[]>("/api/v1/budgets"),
+      apiFetch<BillingPeriod>("/api/v1/settings/billing-period"),
     ]);
     setAccounts(accts ?? []);
     setCategories(cats ?? []);
     setBudgets(bds ?? []);
+    if (per) setPeriod(per);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {

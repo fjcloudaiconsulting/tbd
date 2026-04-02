@@ -21,9 +21,11 @@ export default function SettingsPage() {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
 
-  // Billing cycle
+  // Billing
   const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
   const [savingCycle, setSavingCycle] = useState(false);
+  const [currentPeriod, setCurrentPeriod] = useState<{ id: number; start_date: string; end_date: string | null } | null>(null);
+  const [closingPeriod, setClosingPeriod] = useState(false);
 
   const admin = user ? isAdmin(user) : false;
 
@@ -42,10 +44,18 @@ export default function SettingsPage() {
     if (admin) reload();
   }, [admin, reload]);
 
-  // Sync billing cycle from user when available
   useEffect(() => {
     if (user?.billing_cycle_day) setBillingCycleDay(user.billing_cycle_day);
   }, [user]);
+
+  // Load current billing period
+  useEffect(() => {
+    if (admin) {
+      apiFetch<{ id: number; start_date: string; end_date: string | null }>("/api/v1/settings/billing-period")
+        .then((p) => { if (p) setCurrentPeriod(p); })
+        .catch(() => {});
+    }
+  }, [admin]);
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
@@ -89,44 +99,77 @@ export default function SettingsPage() {
           <p className="text-sm text-text-primary">{user?.org_name}</p>
         </div>
 
-        {/* Billing Cycle */}
+        {/* Billing Period */}
         <div className={`${card} p-6`}>
-          <h2 className={`mb-4 ${cardTitle}`}>Billing Cycle</h2>
-          <p className="mb-4 text-xs text-text-muted">
-            Set the day of the month when your billing cycle starts. This affects how the dashboard
-            and budgets define &quot;current month&quot; (e.g., day 15 means 15th to 14th).
-          </p>
+          <h2 className={`mb-4 ${cardTitle}`}>Billing Period</h2>
           {successMsg && <div className={`mb-4 ${successCls}`}>{successMsg}</div>}
-          <div className="flex items-end gap-3">
-            <div>
-              <label htmlFor="cycle-day" className={label}>Cycle Start Day (1-28)</label>
-              <input
-                id="cycle-day"
-                type="number"
-                min={1}
-                max={28}
-                value={billingCycleDay}
-                onChange={(e) => setBillingCycleDay(Number(e.target.value))}
-                className={`w-24 ${input}`}
-              />
+
+          {currentPeriod && (
+            <div className="mb-4 rounded-md bg-surface-raised px-4 py-3">
+              <p className="text-sm text-text-primary">
+                Current period: <span className="font-medium">{currentPeriod.start_date}</span>
+                {currentPeriod.end_date
+                  ? <> — <span className="font-medium">{currentPeriod.end_date}</span></>
+                  : <span className="ml-1 text-success text-xs font-medium">open</span>
+                }
+              </p>
             </div>
+          )}
+
+          <p className="mb-4 text-xs text-text-muted">
+            Close the current period when you receive your salary. The next period starts the following day.
+            Past settled transactions remain in their original period.
+          </p>
+
+          <div className="flex flex-wrap items-end gap-4">
             <button
-              disabled={savingCycle}
+              disabled={closingPeriod}
               onClick={async () => {
-                setSavingCycle(true); setError(""); setSuccessMsg("");
+                if (!confirm("Close the current billing period?\n\nA new period will start tomorrow. Budgets for the new period will need to be set.")) return;
+                setClosingPeriod(true); setError(""); setSuccessMsg("");
                 try {
-                  await apiFetch("/api/v1/settings/billing-cycle", {
-                    method: "PUT",
-                    body: JSON.stringify({ billing_cycle_day: billingCycleDay }),
-                  });
-                  setSuccessMsg("Billing cycle updated. Refresh to see changes on the dashboard.");
+                  const newP = await apiFetch<{ id: number; start_date: string; end_date: string | null }>("/api/v1/settings/billing-period/close", { method: "POST" });
+                  if (newP) setCurrentPeriod(newP);
+                  setSuccessMsg("Period closed. New period started.");
                 } catch (err) { setError(extractErrorMessage(err)); }
-                finally { setSavingCycle(false); }
+                finally { setClosingPeriod(false); }
               }}
               className={btnPrimary}
             >
-              {savingCycle ? "Saving..." : "Save"}
+              {closingPeriod ? "Closing..." : "Close Current Period"}
             </button>
+
+            <div className="border-l border-border pl-4">
+              <p className="text-xs text-text-muted mb-1">Default cycle hint day (for new periods)</p>
+              <div className="flex items-center gap-2">
+                <input
+                  id="cycle-day"
+                  type="number"
+                  min={1}
+                  max={28}
+                  value={billingCycleDay}
+                  onChange={(e) => setBillingCycleDay(Number(e.target.value))}
+                  className={`w-20 text-sm ${input}`}
+                />
+                <button
+                  disabled={savingCycle}
+                  onClick={async () => {
+                    setSavingCycle(true); setError(""); setSuccessMsg("");
+                    try {
+                      await apiFetch("/api/v1/settings/billing-cycle", {
+                        method: "PUT",
+                        body: JSON.stringify({ billing_cycle_day: billingCycleDay }),
+                      });
+                      setSuccessMsg("Default cycle day updated.");
+                    } catch (err) { setError(extractErrorMessage(err)); }
+                    finally { setSavingCycle(false); }
+                  }}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-raised"
+                >
+                  {savingCycle ? "..." : "Save"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 

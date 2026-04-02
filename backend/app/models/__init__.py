@@ -5,6 +5,7 @@ from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction, TransactionType, TransactionStatus
 from app.models.recurring import RecurringTransaction, Frequency
 from app.models.budget import Budget
+from app.models.billing import BillingPeriod
 from app.models.settings import OrgSetting
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "RecurringTransaction",
     "Frequency",
     "Budget",
+    "BillingPeriod",
     "OrgSetting",
 ]

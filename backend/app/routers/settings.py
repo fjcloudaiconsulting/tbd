@@ -8,6 +8,7 @@ from app.deps import get_current_user
 from app.models.settings import OrgSetting
 from app.models.user import Organization, Role, User
 from app.schemas.settings import BillingCycleUpdate, OrgSettingResponse, OrgSettingUpdate
+from app.services import billing_service
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
@@ -127,3 +128,49 @@ async def update_billing_cycle(
     org.billing_cycle_day = body.billing_cycle_day
     await db.commit()
     return {"billing_cycle_day": org.billing_cycle_day}
+
+
+@router.get("/billing-period")
+async def get_current_period(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    period = await billing_service.get_current_period(db, current_user.org_id)
+    return {
+        "id": period.id,
+        "start_date": period.start_date.isoformat(),
+        "end_date": period.end_date.isoformat() if period.end_date else None,
+    }
+
+
+@router.get("/billing-periods")
+async def list_periods(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    periods = await billing_service.list_periods(db, current_user.org_id)
+    return [
+        {
+            "id": p.id,
+            "start_date": p.start_date.isoformat(),
+            "end_date": p.end_date.isoformat() if p.end_date else None,
+        }
+        for p in periods
+    ]
+
+
+@router.post("/billing-period/close")
+async def close_period(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    close_date: str | None = None,
+):
+    _require_admin(current_user)
+    import datetime
+    cd = datetime.date.fromisoformat(close_date) if close_date else None
+    new_period = await billing_service.close_period(db, current_user.org_id, cd)
+    return {
+        "id": new_period.id,
+        "start_date": new_period.start_date.isoformat(),
+        "end_date": None,
+    }
