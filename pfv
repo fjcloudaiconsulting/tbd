@@ -87,7 +87,13 @@ cmd_shell() {
 
 cmd_seed() {
   echo "Seeding mock data..."
-  docker compose exec backend python seed.py
+  # Pass SEED_* env vars from .env or command line
+  docker compose exec \
+    ${SEED_USERNAME:+-e SEED_USERNAME="$SEED_USERNAME"} \
+    ${SEED_PASSWORD:+-e SEED_PASSWORD="$SEED_PASSWORD"} \
+    ${SEED_EMAIL:+-e SEED_EMAIL="$SEED_EMAIL"} \
+    ${SEED_ORG:+-e SEED_ORG="$SEED_ORG"} \
+    backend python seed.py
 }
 
 case "${1:-}" in

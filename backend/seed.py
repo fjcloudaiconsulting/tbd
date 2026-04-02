@@ -13,25 +13,30 @@ import httpx
 
 BASE = "http://localhost:8000"
 
-# Test user
-USER = {"username": "demo", "email": "demo@example.com", "password": "demo1234", "org_name": "Demo Household"}
+# Default user — override with env vars SEED_USERNAME / SEED_PASSWORD
+import os
+USER = {
+    "username": os.getenv("SEED_USERNAME", "demo"),
+    "email": os.getenv("SEED_EMAIL", "demo@example.com"),
+    "password": os.getenv("SEED_PASSWORD", "demo1234"),
+    "org_name": os.getenv("SEED_ORG", "Demo Household"),
+}
 
 
 async def main():
     async with httpx.AsyncClient(base_url=BASE) as c:
         print("=== PFV2 Seed Script ===\n")
 
-        # Register
-        print("1. Registering user...")
-        r = await c.post("/api/v1/auth/register", json=USER)
-        if r.status_code == 409:
-            print("   User already exists, logging in...")
-        elif r.status_code != 201:
-            print(f"   Registration failed: {r.text}")
-            return
-
-        # Login
+        # Register (skip if user exists)
+        print("1. Authenticating...")
         r = await c.post("/api/v1/auth/login", json={"username": USER["username"], "password": USER["password"]})
+        if r.status_code != 200:
+            print("   User not found, registering...")
+            r = await c.post("/api/v1/auth/register", json=USER)
+            if r.status_code != 201:
+                print(f"   Registration failed: {r.text}")
+                return
+            r = await c.post("/api/v1/auth/login", json={"username": USER["username"], "password": USER["password"]})
         token = r.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
         print(f"   Logged in as {USER['username']}")
