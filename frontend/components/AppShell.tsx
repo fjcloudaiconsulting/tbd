@@ -45,6 +45,16 @@ const navItems = [
     ),
   },
   {
+    href: "/budgets",
+    label: "Budgets",
+    icon: (
+      <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6a7.5 7.5 0 1 0 7.5 7.5h-7.5V6Z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 10.5H21A7.5 7.5 0 0 0 13.5 3v7.5Z" />
+      </svg>
+    ),
+  },
+  {
     href: "/categories",
     label: "Categories",
     icon: (

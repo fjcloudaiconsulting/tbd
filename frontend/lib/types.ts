@@ -82,6 +82,18 @@ export interface RecurringTransaction {
   is_active: boolean;
 }
 
+export interface Budget {
+  id: number;
+  category_id: number;
+  category_name: string;
+  amount: number;
+  spent: number;
+  remaining: number;
+  percent_used: number;
+  period_start: string;
+  period_end: string;
+}
+
 export interface OrgSetting {
   key: string;
   value: string;

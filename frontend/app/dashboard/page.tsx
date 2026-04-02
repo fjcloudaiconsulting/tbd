@@ -9,7 +9,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
-import type { Account, Category, Transaction } from "@/lib/types";
+import type { Account, Budget, Category, Transaction } from "@/lib/types";
 
 function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
@@ -50,6 +50,7 @@ export default function DashboardPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -77,9 +78,11 @@ export default function DashboardPage() {
     const [accts, cats] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
       apiFetch<Category[]>("/api/v1/categories"),
+      apiFetch<Budget[]>("/api/v1/budgets"),
     ]);
     setAccounts(accts ?? []);
     setCategories(cats ?? []);
+    setBudgets(bds ?? []);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
@@ -359,6 +362,38 @@ export default function DashboardPage() {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Budget progress */}
+          {budgets.length > 0 && (
+            <div className={card}>
+              <div className={`flex items-center justify-between ${cardHeader}`}>
+                <h2 className={cardTitle}>Budget Progress</h2>
+                <a href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</a>
+              </div>
+              <div className="divide-y divide-border-subtle">
+                {budgets.slice(0, 5).map((b) => {
+                  const pct = Math.min(b.percent_used, 100);
+                  const over = b.percent_used > 100;
+                  return (
+                    <div key={b.id} className="px-6 py-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm text-text-primary">{b.category_name}</span>
+                        <span className={`text-xs tabular-nums ${over ? "text-danger" : "text-text-muted"}`}>
+                          {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-surface-overlay">
+                        <div
+                          className={`h-1.5 rounded-full transition-all ${over ? "bg-danger" : pct > 80 ? "bg-amber-500" : "bg-success"}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
