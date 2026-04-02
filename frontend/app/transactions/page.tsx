@@ -41,6 +41,12 @@ export default function TransactionsPage() {
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterSearch, setFilterSearch] = useState("");
+  const [sortField, setSortField] = useState<"date" | "description" | "account_name" | "category_name" | "status" | "amount">("date");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  // Billing periods for filter
+  const [periods, setPeriods] = useState<{ id: number; start_date: string; end_date: string | null }[]>([]);
+  const [filterPeriod, setFilterPeriod] = useState<string>("");
 
   // Form
   const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
@@ -57,12 +63,14 @@ export default function TransactionsPage() {
   const [formAutoSettle, setFormAutoSettle] = useState(false);
 
   const loadRefs = useCallback(async () => {
-    const [accts, cats] = await Promise.all([
+    const [accts, cats, pers] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
       apiFetch<Category[]>("/api/v1/categories"),
+      apiFetch<{ id: number; start_date: string; end_date: string | null }[]>("/api/v1/settings/billing-periods"),
     ]);
     setAccounts(accts ?? []);
     setCategories(cats ?? []);
+    setPeriods(pers ?? []);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
@@ -71,14 +79,25 @@ export default function TransactionsPage() {
     if (filterCategory) url += `&category_id=${filterCategory}`;
     if (filterType) url += `&type=${filterType}`;
     if (filterStatus) url += `&status=${filterStatus}`;
-    if (filterDateFrom) url += `&date_from=${filterDateFrom}`;
-    if (filterDateTo) url += `&date_to=${filterDateTo}`;
+
+    // Period filter overrides date_from/date_to
+    if (filterPeriod) {
+      const per = periods.find((p) => String(p.id) === filterPeriod);
+      if (per) {
+        url += `&date_from=${per.start_date}`;
+        if (per.end_date) url += `&date_to=${per.end_date}`;
+      }
+    } else {
+      if (filterDateFrom) url += `&date_from=${filterDateFrom}`;
+      if (filterDateTo) url += `&date_to=${filterDateTo}`;
+    }
+
     if (filterSearch) url += `&search=${encodeURIComponent(filterSearch)}`;
     const data = (await apiFetch<Transaction[]>(url)) ?? [];
     setHasMore(data.length > PAGE_SIZE);
     setTransactions(data.slice(0, PAGE_SIZE));
     setFetching(false);
-  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch]);
+  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods]);
 
   useEffect(() => {
     if (!loading && user) loadRefs().catch(() => {});
@@ -91,7 +110,7 @@ export default function TransactionsPage() {
     }
   }, [loading, user, loadTransactions, page]);
 
-  useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch]);
+  useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
 
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);
@@ -219,6 +238,22 @@ export default function TransactionsPage() {
   }
 
   const activeAccounts = accounts.filter((a) => a.is_active);
+
+  // Sort helper
+  function toggleSort(field: typeof sortField) {
+    if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortField(field); setSortDir(field === "date" ? "desc" : "asc"); }
+  }
+  const sortedTransactions = [...transactions].sort((a, b) => {
+    let cmp = 0;
+    if (sortField === "date") cmp = a.date.localeCompare(b.date);
+    else if (sortField === "description") cmp = a.description.localeCompare(b.description);
+    else if (sortField === "account_name") cmp = a.account_name.localeCompare(b.account_name);
+    else if (sortField === "category_name") cmp = a.category_name.localeCompare(b.category_name);
+    else if (sortField === "status") cmp = a.status.localeCompare(b.status);
+    else if (sortField === "amount") cmp = Number(a.amount) - Number(b.amount);
+    return sortDir === "asc" ? cmp : -cmp;
+  });
   const defaultAccount = activeAccounts.find((a) => a.is_default);
 
   // Pre-select default account when opening form
@@ -397,6 +432,19 @@ export default function TransactionsPage() {
           <label htmlFor="f-to" className="sr-only">To date</label>
           <input id="f-to" type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className={`w-36 ${input}`} placeholder="To" />
         </div>
+        {periods.length > 0 && (
+          <div>
+            <label htmlFor="f-period" className="sr-only">Billing period</label>
+            <select id="f-period" value={filterPeriod} onChange={(e) => { setFilterPeriod(e.target.value); if (e.target.value) { setFilterDateFrom(""); setFilterDateTo(""); } }} className={`w-52 ${input}`}>
+              <option value="">All periods</option>
+              {periods.map((p) => (
+                <option key={p.id} value={String(p.id)}>
+                  {p.start_date}{p.end_date ? ` — ${p.end_date}` : " (current)"}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {fetching ? (
@@ -406,12 +454,18 @@ export default function TransactionsPage() {
           <div className={card}>
             <div className="border-b border-border px-6 py-3">
               <div className="grid grid-cols-12 gap-4 text-xs font-medium uppercase tracking-wider text-text-muted">
-                <span className="col-span-2">Date</span>
-                <span className="col-span-3">Description</span>
-                <span className="col-span-2">Account</span>
-                <span className="col-span-2">Category</span>
-                <span className="col-span-1 text-center">Status</span>
-                <span className="col-span-1 text-right">Amount</span>
+                {([
+                  { field: "date" as const, label: "Date", span: "col-span-2", align: "" },
+                  { field: "description" as const, label: "Description", span: "col-span-3", align: "" },
+                  { field: "account_name" as const, label: "Account", span: "col-span-2", align: "" },
+                  { field: "category_name" as const, label: "Category", span: "col-span-2", align: "" },
+                  { field: "status" as const, label: "Status", span: "col-span-1", align: "text-center" },
+                  { field: "amount" as const, label: "Amount", span: "col-span-1", align: "text-right" },
+                ]).map((col) => (
+                  <button key={col.field} onClick={() => toggleSort(col.field)} className={`${col.span} ${col.align} hover:text-text-primary transition-colors`}>
+                    {col.label}{sortField === col.field ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
+                  </button>
+                ))}
                 <span className="col-span-1" />
               </div>
             </div>
@@ -426,7 +480,7 @@ export default function TransactionsPage() {
                     hiddenIds.add(t.id);
                   }
                 }
-                return transactions.filter((t) => !hiddenIds.has(t.id)).map((tx) => {
+                return sortedTransactions.filter((t) => !hiddenIds.has(t.id)).map((tx) => {
                 const isTransfer = tx.linked_transaction_id !== null;
                 const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                 return editingId === tx.id ? (

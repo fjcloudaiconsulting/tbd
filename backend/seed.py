@@ -190,23 +190,31 @@ async def main():
 
         print(f"   Created {tx_count} transactions")
 
-        # Historical billing periods with varying salary days
+        # Create explicit billing periods with varying salary days
         print("\n5. Creating billing periods...")
-        salary_days = [25, 23, 24]  # varying per month
-        for i, offset in enumerate(range(3, 0, -1)):
-            m = today.replace(day=1) - relativedelta(months=offset)
-            sal_day = salary_days[i % len(salary_days)]
-            period_start = date(m.year, m.month, sal_day)
-            # Close the day before next salary
-            next_m = m + relativedelta(months=1)
-            next_sal_day = salary_days[(i + 1) % len(salary_days)]
-            period_end = date(next_m.year, next_m.month, next_sal_day) - timedelta(days=1)
-            if period_end <= today:
-                await c.post("/api/v1/settings/billing-period/close", headers=headers,
-                             params={"close_date": period_end.isoformat()})
-                print(f"   Period: {period_start} — {period_end} (salary day {sal_day})")
+        period_defs = [
+            # (start, end) — salary on 25th, 23rd, 24th
+            (today.replace(day=1) - relativedelta(months=3) + timedelta(days=24),
+             today.replace(day=1) - relativedelta(months=2) + timedelta(days=21)),  # 25th → 22nd next
+            (today.replace(day=1) - relativedelta(months=2) + timedelta(days=22),
+             today.replace(day=1) - relativedelta(months=1) + timedelta(days=22)),  # 23rd → 23rd next
+            (today.replace(day=1) - relativedelta(months=1) + timedelta(days=23),
+             today.replace(day=1) + timedelta(days=23)),  # 24th → 24th next (closed)
+        ]
+        for start, end in period_defs:
+            if end < today:
+                r = await c.post("/api/v1/settings/billing-period", headers=headers,
+                                 params={"start_date": start.isoformat(), "end_date": end.isoformat()})
+                if r.status_code == 200:
+                    print(f"   Period: {start} — {end}")
 
-        # Set default billing cycle day to 25
+        # Current open period (starts day after last closed)
+        last_end = period_defs[-1][1] if period_defs[-1][1] < today else period_defs[-2][1]
+        current_start = last_end + timedelta(days=1)
+        await c.post("/api/v1/settings/billing-period", headers=headers,
+                     params={"start_date": current_start.isoformat()})
+        print(f"   Current period: {current_start} — open")
+
         await c.put("/api/v1/settings/billing-cycle", headers=headers,
                     json={"billing_cycle_day": 25})
         print("   Default cycle day set to 25")

@@ -51,6 +51,8 @@ export default function DashboardPage() {
   const [formAutoSettle, setFormAutoSettle] = useState(false);
 
   const [chartFilter, setChartFilter] = useState<string | null>(null);
+  const [dashSortField, setDashSortField] = useState<"date" | "description" | "amount">("date");
+  const [dashSortDir, setDashSortDir] = useState<"asc" | "desc">("desc");
 
   // Selected period (navigate with arrows)
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
@@ -222,12 +224,32 @@ export default function DashboardPage() {
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value);
 
+  // When chart filter is active, show from allTransactions; otherwise paginated
+  const txSource = chartFilter ? allTransactions : transactions;
+
   // Dedup transfers
   const hiddenIds = new Set<number>();
-  for (const tx of transactions) {
+  for (const tx of txSource) {
     if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) hiddenIds.add(tx.id);
   }
-  const visibleTxs = transactions.filter((tx) => !hiddenIds.has(tx.id));
+  const visibleTxs = txSource.filter((tx) => !hiddenIds.has(tx.id));
+
+
+  function toggleDashSort(field: typeof dashSortField) {
+    if (dashSortField === field) setDashSortDir(dashSortDir === "asc" ? "desc" : "asc");
+    else { setDashSortField(field); setDashSortDir(field === "date" ? "desc" : "asc"); }
+  }
+
+  // Sort + filter the visible transactions
+  const sortedVisibleTxs = visibleTxs
+    .filter((tx) => !chartFilter || tx.category_name === chartFilter)
+    .sort((a, b) => {
+      let cmp = 0;
+      if (dashSortField === "date") cmp = a.date.localeCompare(b.date);
+      else if (dashSortField === "description") cmp = a.description.localeCompare(b.description);
+      else if (dashSortField === "amount") cmp = Number(a.amount) - Number(b.amount);
+      return dashSortDir === "asc" ? cmp : -cmp;
+    });
 
   const CHART_COLORS = ["#D4A64A", "#5FA8D3", "#4ade80", "#f87171", "#a78bfa", "#fb923c", "#38bdf8", "#e879f9", "#34d399", "#fbbf24"];
 
@@ -468,8 +490,16 @@ export default function DashboardPage() {
               </div>
               <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All</Link>
             </div>
+            {/* Sortable mini-header */}
+            <div className="flex items-center justify-between px-5 py-1.5 border-b border-border-subtle text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <div className="flex items-center gap-3">
+                <button onClick={() => toggleDashSort("date")} className="w-16 text-left hover:text-text-primary">Date{dashSortField === "date" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+                <button onClick={() => toggleDashSort("description")} className="text-left hover:text-text-primary">Description{dashSortField === "description" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+              </div>
+              <button onClick={() => toggleDashSort("amount")} className="hover:text-text-primary">Amount{dashSortField === "amount" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+            </div>
             <div className="divide-y divide-border-subtle">
-              {visibleTxs.filter((tx) => !chartFilter || tx.category_name === chartFilter).map((tx) => {
+              {sortedVisibleTxs.map((tx) => {
                 const isTransfer = tx.linked_transaction_id !== null;
                 const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                 return (
@@ -503,7 +533,7 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
-            {(page > 0 || hasMore) && (
+            {!chartFilter && (page > 0 || hasMore) && (
               <div className="flex items-center justify-between border-t border-border px-5 py-2.5">
                 <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised disabled:opacity-40">Prev</button>
                 <span className="text-[11px] text-text-muted">Page {page + 1}</span>
