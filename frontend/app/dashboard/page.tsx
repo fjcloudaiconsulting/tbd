@@ -332,50 +332,38 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Row 1: KPI tiles */}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {currencies.map(([currency, total]) => (
-              <div key={currency} className={`${card} p-4`}>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Total Balance</p>
-                <p className="mt-1 font-display text-2xl text-accent tabular-nums">
-                  {formatAmount(total)} <span className="text-sm text-text-muted">{currency}</span>
-                </p>
-              </div>
-            ))}
+          {/* Summary + Account tiles — unified grid */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            {/* KPI tiles */}
             <div className={`${card} p-4`}>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
-              <p className="mt-1 text-xl font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
+              <p className="mt-1.5 text-lg font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
             </div>
             <div className={`${card} p-4`}>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
-              <p className="mt-1 text-xl font-semibold tabular-nums text-danger">-{formatAmount(totalExpense)}</p>
+              <p className="mt-1.5 text-lg font-semibold tabular-nums text-danger">-{formatAmount(totalExpense)}</p>
             </div>
             <div className={`${card} p-4`}>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Net</p>
-              <p className={`mt-1 text-xl font-semibold tabular-nums ${totalIncome - totalExpense >= 0 ? "text-success" : "text-danger"}`}>
+              <p className={`mt-1.5 text-lg font-semibold tabular-nums ${totalIncome - totalExpense >= 0 ? "text-success" : "text-danger"}`}>
                 {totalIncome - totalExpense >= 0 ? "+" : ""}{formatAmount(totalIncome - totalExpense)}
               </p>
             </div>
+            {/* Account tiles — same size as KPIs */}
+            {accountsWithBalance.map((acct) => {
+              const pending = pendingByAccount[acct.id] || 0;
+              const isCreditCard = acct.account_type_slug === "credit_card";
+              return (
+                <div key={acct.id} className={`${card} p-4`}>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
+                  <p className="mt-1.5 text-lg font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
+                  {isCreditCard && pending !== 0 && (
+                    <p className="mt-0.5 text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
-
-          {/* Row 2: Accounts strip */}
-          {accountsWithBalance.length > 0 && (
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {accountsWithBalance.map((acct) => {
-                const pending = pendingByAccount[acct.id] || 0;
-                const isCreditCard = acct.account_type_slug === "credit_card";
-                return (
-                  <div key={acct.id} className={`${card} px-3 py-2 shrink-0`} style={{ minWidth: "140px" }}>
-                    <p className="text-[10px] font-medium text-text-muted truncate">{acct.name}</p>
-                    <p className="mt-0.5 text-sm font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
-                    {isCreditCard && pending !== 0 && (
-                      <p className="text-[10px] tabular-nums text-danger">Pend: {formatAmount(Math.abs(pending))}</p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
 
           {/* Row 3: Two-column — Chart + Budget */}
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">

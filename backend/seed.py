@@ -190,8 +190,29 @@ async def main():
 
         print(f"   Created {tx_count} transactions")
 
+        # Historical billing periods with varying salary days
+        print("\n5. Creating billing periods...")
+        salary_days = [25, 23, 24]  # varying per month
+        for i, offset in enumerate(range(3, 0, -1)):
+            m = today.replace(day=1) - relativedelta(months=offset)
+            sal_day = salary_days[i % len(salary_days)]
+            period_start = date(m.year, m.month, sal_day)
+            # Close the day before next salary
+            next_m = m + relativedelta(months=1)
+            next_sal_day = salary_days[(i + 1) % len(salary_days)]
+            period_end = date(next_m.year, next_m.month, next_sal_day) - timedelta(days=1)
+            if period_end <= today:
+                await c.post("/api/v1/settings/billing-period/close", headers=headers,
+                             params={"close_date": period_end.isoformat()})
+                print(f"   Period: {period_start} — {period_end} (salary day {sal_day})")
+
+        # Set default billing cycle day to 25
+        await c.put("/api/v1/settings/billing-cycle", headers=headers,
+                    json={"billing_cycle_day": 25})
+        print("   Default cycle day set to 25")
+
         # Recurring
-        print("\n5. Creating recurring transactions...")
+        print("\n6. Creating recurring transactions...")
         rec_defs = [
             {"acct": "ING Checking", "cat": "rent_mortgage", "desc": "Rent - Apartment", "amount": "1200.00", "freq": "monthly", "day": 1, "auto": True},
             {"acct": "ING Checking", "cat": "gym", "desc": "BasicFit Membership", "amount": "29.99", "freq": "monthly", "day": 1, "auto": True},
@@ -211,7 +232,7 @@ async def main():
         print(f"   Created {len(rec_defs)} recurring templates")
 
         # Budgets
-        print("\n6. Creating budgets...")
+        print("\n7. Creating budgets...")
         budget_defs = [
             {"cat": "housing", "amount": "1400.00"},
             {"cat": "utilities", "amount": "250.00"},
