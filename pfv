@@ -58,6 +58,19 @@ cmd_rebuild() {
 cmd_reset() {
   echo "Destroying all data and starting fresh..."
   docker compose down -v
+
+  # Rotate JWT secret to invalidate all existing tokens
+  if [[ -f .env ]]; then
+    local new_secret
+    new_secret=$(openssl rand -hex 32)
+    if grep -q "^JWT_SECRET_KEY=" .env; then
+      sed -i.bak "s/^JWT_SECRET_KEY=.*/JWT_SECRET_KEY=${new_secret}/" .env && rm -f .env.bak
+    else
+      echo "JWT_SECRET_KEY=${new_secret}" >> .env
+    fi
+    echo "JWT secret rotated (all previous sessions invalidated)"
+  fi
+
   docker compose up --build -d
   echo "Ready: http://localhost"
 }
