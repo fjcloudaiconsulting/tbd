@@ -149,7 +149,7 @@ export default function DashboardPage() {
       setFormAutoSettle(false);
       setFormDate(todayISO());
       setShowForm(false);
-      await Promise.all([loadRefs(), loadTransactions(page)]);
+      await loadRefs();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -205,10 +205,16 @@ export default function DashboardPage() {
       return acc;
     }, {});
 
-  // Data for donut chart
-  const donutData = totalExpense > 0
-    ? budgets.filter((b) => b.spent > 0).map((b) => ({ name: b.category_name, value: Number(b.spent) }))
-    : [];
+  // Spending by category from current-period transactions (not budgets, which are always current)
+  const spendingByCategory = transactions
+    .filter((tx) => tx.type === "expense" && tx.status === "settled")
+    .reduce<Record<string, number>>((acc, tx) => {
+      acc[tx.category_name] = (acc[tx.category_name] || 0) + Number(tx.amount);
+      return acc;
+    }, {});
+  const donutData = Object.entries(spendingByCategory)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
 
   // Dedup transfers
   const hiddenIds = new Set<number>();
