@@ -19,8 +19,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>("dark");
 
   useEffect(() => {
-    const stored = localStorage.getItem("pfv2-theme") as Theme | null;
-    if (stored) {
+    const stored = localStorage.getItem("pfv2-theme");
+    if (stored === "light" || stored === "dark") {
       setTheme(stored);
       if (stored === "light") {
         document.documentElement.setAttribute("data-theme", "light");

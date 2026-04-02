@@ -60,3 +60,9 @@ def downgrade() -> None:
     op.drop_index("ix_recurring_org")
     op.drop_table("recurring_transactions")
     op.drop_column("organizations", "billing_cycle_day")
+
+    # Drop enum types on PostgreSQL
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        sa.Enum(name="recurringtxtype").drop(bind, checkfirst=True)
+        sa.Enum(name="frequency").drop(bind, checkfirst=True)
