@@ -173,11 +173,11 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        <div className={card}>
-          <div className={cardHeader}>
-            <h2 className={cardTitle}>Configuration</h2>
-            <p className="mt-1 text-xs text-text-muted">Runtime settings persisted in the database.</p>
-          </div>
+        <details className={card}>
+          <summary className={`cursor-pointer ${cardHeader}`}>
+            <h2 className={`inline ${cardTitle}`}>Advanced Configuration</h2>
+            <p className="mt-1 text-xs text-text-muted">Custom key-value settings for developers. Most users don't need this.</p>
+          </summary>
           <div className="p-6">
             {error && <div className={`mb-5 ${errorCls}`}>{error}</div>}
 
@@ -222,7 +222,7 @@ export default function SettingsPage() {
               {settings.length === 0 && <p className="py-4 text-center text-sm text-text-muted">No settings configured yet.</p>}
             </div>
           </div>
-        </div>
+        </details>
       </div>
     </AppShell>
   );

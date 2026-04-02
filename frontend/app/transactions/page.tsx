@@ -5,7 +5,7 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount, todayISO } from "@/lib/format";
+import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
@@ -40,6 +40,7 @@ export default function TransactionsPage() {
   const [filterStatus, setFilterStatus] = useState<string>("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterSearch, setFilterSearch] = useState("");
 
   // Form
   const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
@@ -72,11 +73,12 @@ export default function TransactionsPage() {
     if (filterStatus) url += `&status=${filterStatus}`;
     if (filterDateFrom) url += `&date_from=${filterDateFrom}`;
     if (filterDateTo) url += `&date_to=${filterDateTo}`;
+    if (filterSearch) url += `&search=${encodeURIComponent(filterSearch)}`;
     const data = (await apiFetch<Transaction[]>(url)) ?? [];
     setHasMore(data.length > PAGE_SIZE);
     setTransactions(data.slice(0, PAGE_SIZE));
     setFetching(false);
-  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo]);
+  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch]);
 
   useEffect(() => {
     if (!loading && user) loadRefs().catch(() => {});
@@ -89,7 +91,7 @@ export default function TransactionsPage() {
     }
   }, [loading, user, loadTransactions, page]);
 
-  useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo]);
+  useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch]);
 
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);
@@ -337,7 +339,25 @@ export default function TransactionsPage() {
         </div>
       )}
 
-      {/* Filters */}
+      {/* Search + Preset filters */}
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="flex-1 min-w-[200px]">
+          <label htmlFor="f-search" className="sr-only">Search transactions</label>
+          <input id="f-search" type="text" placeholder="Search descriptions..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className={input} />
+        </div>
+        <div className="flex gap-1">
+          {[
+            { label: "Today", fn: () => { const d = todayISO(); setFilterDateFrom(d); setFilterDateTo(d); } },
+            { label: "This Week", fn: () => { const now = new Date(); const mon = new Date(now); mon.setDate(now.getDate() - now.getDay() + 1); setFilterDateFrom(formatLocalDate(mon)); setFilterDateTo(todayISO()); } },
+            { label: "This Month", fn: () => { const now = new Date(); setFilterDateFrom(formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 1))); setFilterDateTo(todayISO()); } },
+            { label: "All", fn: () => { setFilterDateFrom(""); setFilterDateTo(""); } },
+          ].map((p) => (
+            <button key={p.label} type="button" onClick={p.fn} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised">
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="mb-4 flex flex-wrap gap-3">
         <div>
           <label htmlFor="f-account" className="sr-only">Filter by account</label>

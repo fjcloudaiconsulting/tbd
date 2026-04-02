@@ -28,6 +28,7 @@ async def list_transactions(
     status: Literal["settled", "pending"] | None = Query(default=None),
     date_from: datetime.date | None = Query(default=None),
     date_to: datetime.date | None = Query(default=None),
+    search: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
 ):
@@ -39,6 +40,7 @@ async def list_transactions(
         status=status,
         date_from=date_from,
         date_to=date_to,
+        search=search,
         limit=limit,
         offset=offset,
     )

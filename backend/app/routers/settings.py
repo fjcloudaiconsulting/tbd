@@ -126,6 +126,21 @@ async def update_billing_cycle(
     )
     org = result.scalar_one()
     org.billing_cycle_day = body.billing_cycle_day
+
+    # Recalculate the current open period to match the new cycle day
+    current_period = await billing_service.get_current_period(db, current_user.org_id)
+    if current_period.end_date is None:
+        import datetime
+        today = datetime.date.today()
+        new_day = body.billing_cycle_day
+        y, m, d = today.year, today.month, today.day
+        if d >= new_day:
+            new_start = datetime.date(y, m, new_day)
+        else:
+            prev = datetime.date(y, m, 1) - datetime.timedelta(days=1)
+            new_start = datetime.date(prev.year, prev.month, new_day)
+        current_period.start_date = new_start
+
     await db.commit()
     return {"billing_cycle_day": org.billing_cycle_day}
 
