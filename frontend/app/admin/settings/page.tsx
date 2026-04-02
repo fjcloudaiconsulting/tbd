@@ -7,7 +7,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
-import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { OrgSetting } from "@/lib/types";
 
 export default function SettingsPage() {
@@ -17,8 +17,13 @@ export default function SettingsPage() {
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
+
+  // Billing cycle
+  const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
+  const [savingCycle, setSavingCycle] = useState(false);
 
   const admin = user ? isAdmin(user) : false;
 
@@ -36,6 +41,11 @@ export default function SettingsPage() {
   useEffect(() => {
     if (admin) reload();
   }, [admin, reload]);
+
+  // Sync billing cycle from user when available
+  useEffect(() => {
+    if (user?.billing_cycle_day) setBillingCycleDay(user.billing_cycle_day);
+  }, [user]);
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
@@ -77,6 +87,47 @@ export default function SettingsPage() {
         <div className={`${card} p-6`}>
           <h2 className={`mb-2 ${cardTitle}`}>Organization</h2>
           <p className="text-sm text-text-primary">{user?.org_name}</p>
+        </div>
+
+        {/* Billing Cycle */}
+        <div className={`${card} p-6`}>
+          <h2 className={`mb-4 ${cardTitle}`}>Billing Cycle</h2>
+          <p className="mb-4 text-xs text-text-muted">
+            Set the day of the month when your billing cycle starts. This affects how the dashboard
+            and budgets define &quot;current month&quot; (e.g., day 15 means 15th to 14th).
+          </p>
+          {successMsg && <div className={`mb-4 ${successCls}`}>{successMsg}</div>}
+          <div className="flex items-end gap-3">
+            <div>
+              <label htmlFor="cycle-day" className={label}>Cycle Start Day (1-28)</label>
+              <input
+                id="cycle-day"
+                type="number"
+                min={1}
+                max={28}
+                value={billingCycleDay}
+                onChange={(e) => setBillingCycleDay(Number(e.target.value))}
+                className={`w-24 ${input}`}
+              />
+            </div>
+            <button
+              disabled={savingCycle}
+              onClick={async () => {
+                setSavingCycle(true); setError(""); setSuccessMsg("");
+                try {
+                  await apiFetch("/api/v1/settings/billing-cycle", {
+                    method: "PUT",
+                    body: JSON.stringify({ billing_cycle_day: billingCycleDay }),
+                  });
+                  setSuccessMsg("Billing cycle updated. Refresh to see changes on the dashboard.");
+                } catch (err) { setError(extractErrorMessage(err)); }
+                finally { setSavingCycle(false); }
+              }}
+              className={btnPrimary}
+            >
+              {savingCycle ? "Saving..." : "Save"}
+            </button>
+          </div>
         </div>
 
         <div className={card}>
