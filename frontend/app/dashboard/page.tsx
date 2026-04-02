@@ -8,7 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
+import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Budget, Category, Transaction } from "@/lib/types";
 
@@ -448,24 +448,28 @@ export default function DashboardPage() {
                 <Link href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</Link>
               </div>
               {budgets.length > 0 ? (
-                <div className="divide-y divide-border-subtle">
-                  {budgets.slice(0, 6).map((b) => {
-                    const pct = Math.min(b.percent_used, 100);
-                    const over = b.percent_used > 100;
-                    return (
-                      <div key={b.id} className="px-5 py-2.5">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs text-text-primary">{b.category_name}</span>
-                          <span className={`text-[11px] tabular-nums ${over ? "text-danger" : "text-text-muted"}`}>
-                            {formatAmount(b.spent)} / {formatAmount(b.amount)}
-                          </span>
-                        </div>
-                        <div className="h-1.5 rounded-full bg-surface-overlay">
-                          <div className={`h-1.5 rounded-full transition-all ${over ? "bg-danger" : pct > 80 ? "bg-amber-500" : "bg-success"}`} style={{ width: `${pct}%` }} />
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="p-4" style={{ height: Math.max(budgets.slice(0, 6).length * 40, 100) }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={budgets.slice(0, 6).map((b) => ({
+                      name: b.category_name,
+                      spent: Number(b.spent),
+                      remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
+                      pct: b.percent_used,
+                    }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
+                      <XAxis type="number" hide />
+                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
+                      <Tooltip
+                        formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : "Remaining"]}
+                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                      />
+                      <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
+                        {budgets.slice(0, 6).map((b, i) => (
+                          <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
+                        ))}
+                      </Bar>
+                      <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={600} />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               ) : (
                 <div className="px-5 py-6 text-center text-sm text-text-muted">

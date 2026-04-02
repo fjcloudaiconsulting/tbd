@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import type { Budget, Category } from "@/lib/types";
 
 interface BillingPeriod {
@@ -175,22 +176,54 @@ export default function BudgetsPage() {
             </div>
           )}
 
-          {/* Budget list */}
+          {/* Budget chart */}
+          {budgets.length > 0 && (
+            <div className={`${card} p-5`}>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className={cardTitle}>Budget Overview</h2>
+                <span className="text-xs text-text-muted">
+                  {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</>}
+                </span>
+              </div>
+              <div style={{ height: Math.max(budgets.length * 48, 120) }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={budgets.map((b) => ({
+                    name: b.category_name,
+                    spent: Number(b.spent),
+                    remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
+                    over: Math.max(Number(b.spent) - Number(b.amount), 0),
+                    budget: Number(b.amount),
+                    pct: b.percent_used,
+                  }))} layout="vertical" margin={{ left: 10, right: 10, top: 0, bottom: 0 }}>
+                    <XAxis type="number" hide />
+                    <YAxis type="category" dataKey="name" width={120} tick={{ fill: "var(--color-text-secondary)", fontSize: 12 }} />
+                    <Tooltip
+                      formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : name === "remaining" ? "Remaining" : "Over budget"]}
+                      contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }}
+                    />
+                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={800}>
+                      {budgets.map((b, i) => (
+                        <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
+                      ))}
+                    </Bar>
+                    <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={800} />
+                    <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={800} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* Budget details */}
           <div className={card}>
             <div className={cardHeader}>
-              <h2 className={cardTitle}>
-                {selectedPeriod && (
-                  <span>Period: {selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</span>
-                )}
-                {budgets.length === 0 && "Current Period"}
-              </h2>
+              <h2 className={cardTitle}>Details</h2>
             </div>
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
-                const pct = Math.min(b.percent_used, 100);
                 const overBudget = b.percent_used > 100;
                 return (
-                  <div key={b.id} className="px-6 py-4">
+                  <div key={b.id} className="px-6 py-3">
                     {editingId === b.id ? (
                       <div className="flex items-center gap-3">
                         <span className="text-sm font-medium text-text-primary flex-1">{b.category_name}</span>
@@ -201,31 +234,21 @@ export default function BudgetsPage() {
                         <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
                       </div>
                     ) : (
-                      <>
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm font-medium text-text-primary">{b.category_name}</span>
-                          <div className="flex items-center gap-4">
-                            <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
-                              {formatAmount(b.spent)} / {formatAmount(b.amount)}
-                            </span>
-                            <div className="flex gap-2">
-                              <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                              <button onClick={() => handleDelete(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
-                            </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-text-primary">{b.category_name}</span>
+                        <div className="flex items-center gap-4">
+                          <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
+                            {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                          </span>
+                          <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
+                            {b.percent_used}%
+                          </span>
+                          <div className="flex gap-2">
+                            <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                            <button onClick={() => handleDelete(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
                           </div>
                         </div>
-                        {/* Progress bar */}
-                        <div className="h-2 rounded-full bg-surface-overlay">
-                          <div
-                            className={`h-2 rounded-full transition-all ${overBudget ? "bg-danger" : pct > 80 ? "bg-amber-500" : "bg-success"}`}
-                            style={{ width: `${Math.min(pct, 100)}%` }}
-                          />
-                        </div>
-                        <div className="mt-1 flex justify-between text-xs text-text-muted">
-                          <span>{b.percent_used}% used</span>
-                          <span>{formatAmount(b.remaining)} left</span>
-                        </div>
-                      </>
+                      </div>
                     )}
                   </div>
                 );
