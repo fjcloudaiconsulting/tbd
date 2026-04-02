@@ -239,7 +239,7 @@ async def main():
                 })
         print(f"   Created {len(rec_defs)} recurring templates")
 
-        # Budgets
+        # Budgets — create for all periods (historical + current)
         print("\n7. Creating budgets...")
         budget_defs = [
             {"cat": "housing", "amount": "1400.00"},
@@ -250,13 +250,17 @@ async def main():
             {"cat": "lifestyle", "amount": "150.00"},
             {"cat": "personal_care", "amount": "100.00"},
         ]
-        for bd in budget_defs:
-            if bd["cat"] in master_cats:
-                r = await c.post("/api/v1/budgets", headers=headers, json={
-                    "category_id": master_cats[bd["cat"]], "amount": bd["amount"],
-                })
-                if r.status_code == 201:
-                    print(f"   {bd['cat']} = {bd['amount']}")
+        # Get all periods
+        r = await c.get("/api/v1/settings/billing-periods", headers=headers)
+        all_periods = r.json() if r.status_code == 200 else []
+        for per in all_periods:
+            ps = per["start_date"]
+            for bd in budget_defs:
+                if bd["cat"] in master_cats:
+                    await c.post(f"/api/v1/budgets?period_start={ps}", headers=headers, json={
+                        "category_id": master_cats[bd["cat"]], "amount": bd["amount"],
+                    })
+            print(f"   Budgets for period {ps}")
 
         print(f"\n=== Seed complete! ===")
         print(f"Login: {USER['username']} / {USER['password']}")

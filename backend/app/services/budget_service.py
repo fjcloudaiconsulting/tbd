@@ -65,9 +65,24 @@ def _to_response(budget: Budget, spent: Decimal) -> BudgetResponse:
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
-async def list_budgets(db: AsyncSession, org_id: int) -> list[BudgetResponse]:
-    """List budgets for the current billing period with spend computation."""
-    period = await get_current_period(db, org_id)
+async def list_budgets(
+    db: AsyncSession, org_id: int, period_start: datetime.date | None = None
+) -> list[BudgetResponse]:
+    """List budgets for a billing period with spend computation.
+    If period_start is None, uses the current open period."""
+    if period_start:
+        from app.models.billing import BillingPeriod
+        period_result = await db.execute(
+            select(BillingPeriod).where(
+                BillingPeriod.org_id == org_id,
+                BillingPeriod.start_date == period_start,
+            )
+        )
+        period = period_result.scalar_one_or_none()
+        if period is None:
+            return []
+    else:
+        period = await get_current_period(db, org_id)
 
     result = await db.execute(
         select(Budget)
@@ -90,8 +105,11 @@ async def list_budgets(db: AsyncSession, org_id: int) -> list[BudgetResponse]:
     return responses
 
 
-async def create_budget(db: AsyncSession, org_id: int, body: BudgetCreate) -> BudgetResponse:
-    """Create a budget for the current period. Only master categories allowed."""
+async def create_budget(
+    db: AsyncSession, org_id: int, body: BudgetCreate,
+    period_start: datetime.date | None = None,
+) -> BudgetResponse:
+    """Create a budget for a period. Only master categories allowed."""
     cat_result = await db.execute(
         select(Category).where(Category.id == body.category_id, Category.org_id == org_id)
     )
@@ -101,7 +119,19 @@ async def create_budget(db: AsyncSession, org_id: int, body: BudgetCreate) -> Bu
     if cat.parent_id is not None:
         raise ValidationError("Budgets can only be set for master categories, not subcategories")
 
-    period = await get_current_period(db, org_id)
+    if period_start:
+        from app.models.billing import BillingPeriod
+        period_result = await db.execute(
+            select(BillingPeriod).where(
+                BillingPeriod.org_id == org_id,
+                BillingPeriod.start_date == period_start,
+            )
+        )
+        period = period_result.scalar_one_or_none()
+        if period is None:
+            raise ValidationError("Billing period not found")
+    else:
+        period = await get_current_period(db, org_id)
 
     existing = await db.scalar(
         select(Budget.id).where(

@@ -76,14 +76,17 @@ export default function DashboardPage() {
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
-    const [pageData, allData] = await Promise.all([
+    const budgetUrl = monthFrom ? `/api/v1/budgets?period_start=${monthFrom}` : "/api/v1/budgets";
+    const [pageData, allData, bds] = await Promise.all([
       apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`),
       p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&date_from=${monthFrom}&date_to=${monthTo}`) : null,
+      p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
     ]);
     const page_txs = pageData ?? [];
     setHasMore(page_txs.length > PAGE_SIZE);
     setTransactions(page_txs.slice(0, PAGE_SIZE));
     if (allData) setAllTransactions(allData);
+    if (bds) setBudgets(bds);
     setFetching(false);
   }, [monthFrom, monthTo]);
 

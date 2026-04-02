@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends
+import datetime
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -14,8 +16,9 @@ router = APIRouter(prefix="/api/v1/budgets", tags=["budgets"])
 async def list_budgets(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    period_start: datetime.date | None = Query(default=None),
 ):
-    return await svc.list_budgets(db, current_user.org_id)
+    return await svc.list_budgets(db, current_user.org_id, period_start=period_start)
 
 
 @router.post("", response_model=BudgetResponse, status_code=201)
@@ -23,8 +26,9 @@ async def create_budget(
     body: BudgetCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    period_start: datetime.date | None = Query(default=None),
 ):
-    return await svc.create_budget(db, current_user.org_id, body)
+    return await svc.create_budget(db, current_user.org_id, body, period_start=period_start)
 
 
 @router.put("/{budget_id}", response_model=BudgetResponse)
