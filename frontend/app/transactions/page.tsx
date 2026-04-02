@@ -51,6 +51,9 @@ export default function TransactionsPage() {
   const [formType, setFormType] = useState<"income" | "expense">("expense");
   const [formStatus, setFormStatus] = useState<"settled" | "pending">("settled");
   const [formDate, setFormDate] = useState(todayISO());
+  const [formRecurring, setFormRecurring] = useState(false);
+  const [formFrequency, setFormFrequency] = useState("monthly");
+  const [formAutoSettle, setFormAutoSettle] = useState(false);
 
   const loadRefs = useCallback(async () => {
     const [accts, cats] = await Promise.all([
@@ -123,12 +126,30 @@ export default function TransactionsPage() {
             date: formDate,
           }),
         });
+        // Create recurring template if repeat is enabled
+        if (formRecurring && formMode === "transaction") {
+          await apiFetch("/api/v1/recurring", {
+            method: "POST",
+            body: JSON.stringify({
+              account_id: formAccountId,
+              category_id: formCategoryId,
+              description: formDescription,
+              amount: formAmount,
+              type: formType,
+              frequency: formFrequency,
+              next_due_date: formDate,
+              auto_settle: formAutoSettle,
+            }),
+          });
+        }
       }
       setFormDescription("");
       setFormAmount("");
       setFormType("expense");
       setFormStatus("settled");
       setFormToAccountId("");
+      setFormRecurring(false);
+      setFormAutoSettle(false);
       setFormDate(todayISO());
       setShowForm(false);
       await loadTransactions(page);
@@ -283,8 +304,34 @@ export default function TransactionsPage() {
               <label htmlFor="tx-date" className={label}>Date</label>
               <input id="tx-date" type="date" required value={formDate} onChange={(e) => setFormDate(e.target.value)} className={input} />
             </div>
+            {formMode === "transaction" && (
+              <div className="flex items-end gap-4">
+                <label className="flex items-center gap-2 text-sm text-text-secondary">
+                  <input type="checkbox" checked={formRecurring} onChange={(e) => setFormRecurring(e.target.checked)} className="rounded border-border" />
+                  Repeats
+                </label>
+                {formRecurring && (
+                  <>
+                    <div>
+                      <label htmlFor="tx-freq" className="sr-only">Frequency</label>
+                      <select id="tx-freq" value={formFrequency} onChange={(e) => setFormFrequency(e.target.value)} className={input}>
+                        <option value="weekly">Weekly</option>
+                        <option value="biweekly">Every 2 weeks</option>
+                        <option value="monthly">Monthly</option>
+                        <option value="quarterly">Quarterly</option>
+                        <option value="yearly">Yearly</option>
+                      </select>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-text-muted">
+                      <input type="checkbox" checked={formAutoSettle} onChange={(e) => setFormAutoSettle(e.target.checked)} className="rounded border-border" />
+                      Auto-settle
+                    </label>
+                  </>
+                )}
+              </div>
+            )}
             <div className="flex items-end">
-              <button type="submit" className={btnPrimary}>Add Transaction</button>
+              <button type="submit" className={btnPrimary}>{formMode === "transfer" ? "Transfer" : "Add Transaction"}</button>
             </div>
           </form>
         </div>

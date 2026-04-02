@@ -66,6 +66,9 @@ export default function DashboardPage() {
   const [formType, setFormType] = useState<"income" | "expense">("expense");
   const [formStatus, setFormStatus] = useState<"settled" | "pending">("settled");
   const [formDate, setFormDate] = useState(todayISO());
+  const [formRecurring, setFormRecurring] = useState(false);
+  const [formFrequency, setFormFrequency] = useState("monthly");
+  const [formAutoSettle, setFormAutoSettle] = useState(false);
 
   const cycleDay = user?.billing_cycle_day ?? 1;
   const { from: monthFrom, to: monthTo } = billingCycleRange(cycleDay);
@@ -133,12 +136,29 @@ export default function DashboardPage() {
             date: formDate,
           }),
         });
+        if (formRecurring && formMode === "transaction") {
+          await apiFetch("/api/v1/recurring", {
+            method: "POST",
+            body: JSON.stringify({
+              account_id: formAccountId,
+              category_id: formCategoryId,
+              description: formDescription,
+              amount: formAmount,
+              type: formType,
+              frequency: formFrequency,
+              next_due_date: formDate,
+              auto_settle: formAutoSettle,
+            }),
+          });
+        }
       }
       setFormDescription("");
       setFormAmount("");
       setFormType("expense");
       setFormStatus("settled");
       setFormToAccountId("");
+      setFormRecurring(false);
+      setFormAutoSettle(false);
       setFormDate(todayISO());
       setShowForm(false);
       await Promise.all([loadRefs(), loadTransactions(page)]);
@@ -267,6 +287,29 @@ export default function DashboardPage() {
                   <label htmlFor="da-date" className={label}>Date</label>
                   <input id="da-date" type="date" required value={formDate} onChange={(e) => setFormDate(e.target.value)} className={input} />
                 </div>
+                {formMode === "transaction" && (
+                  <div className="flex items-end gap-3">
+                    <label className="flex items-center gap-2 text-sm text-text-secondary">
+                      <input type="checkbox" checked={formRecurring} onChange={(e) => setFormRecurring(e.target.checked)} className="rounded border-border" />
+                      Repeats
+                    </label>
+                    {formRecurring && (
+                      <>
+                        <select value={formFrequency} onChange={(e) => setFormFrequency(e.target.value)} aria-label="Frequency" className={`w-32 text-sm ${input}`}>
+                          <option value="weekly">Weekly</option>
+                          <option value="biweekly">Biweekly</option>
+                          <option value="monthly">Monthly</option>
+                          <option value="quarterly">Quarterly</option>
+                          <option value="yearly">Yearly</option>
+                        </select>
+                        <label className="flex items-center gap-1 text-xs text-text-muted">
+                          <input type="checkbox" checked={formAutoSettle} onChange={(e) => setFormAutoSettle(e.target.checked)} className="rounded border-border" />
+                          Auto
+                        </label>
+                      </>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-end">
                   <button type="submit" className={btnPrimary}>Add</button>
                 </div>
