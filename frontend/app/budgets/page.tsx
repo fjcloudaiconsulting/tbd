@@ -9,10 +9,18 @@ import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Budget, Category } from "@/lib/types";
 
+interface BillingPeriod {
+  id: number;
+  start_date: string;
+  end_date: string | null;
+}
+
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [periods, setPeriods] = useState<BillingPeriod[]>([]);
+  const [periodIdx, setPeriodIdx] = useState(0);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
@@ -24,19 +32,36 @@ export default function BudgetsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editAmount, setEditAmount] = useState("");
 
-  const reload = useCallback(async () => {
-    const [b, c] = await Promise.all([
-      apiFetch<Budget[]>("/api/v1/budgets"),
+  const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
+  const periodStart = selectedPeriod?.start_date ?? "";
+  const isCurrentPeriod = periodIdx === 0;
+
+  const loadRefs = useCallback(async () => {
+    const [c, p] = await Promise.all([
       apiFetch<Category[]>("/api/v1/categories"),
+      apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
-    setBudgets(b ?? []);
     setCategories(c ?? []);
-    setFetching(false);
+    setPeriods(p ?? []);
   }, []);
 
+  const loadBudgets = useCallback(async () => {
+    const url = periodStart ? `/api/v1/budgets?period_start=${periodStart}` : "/api/v1/budgets";
+    const b = await apiFetch<Budget[]>(url);
+    setBudgets(b ?? []);
+    setFetching(false);
+  }, [periodStart]);
+
   useEffect(() => {
-    if (!loading && user) reload().catch(() => setFetching(false));
-  }, [loading, user, reload]);
+    if (!loading && user) loadRefs().catch(() => {});
+  }, [loading, user, loadRefs]);
+
+  useEffect(() => {
+    if (!loading && user) {
+      setFetching(true);
+      loadBudgets().catch(() => setFetching(false));
+    }
+  }, [loading, user, loadBudgets]);
 
   // Master categories that don't have a budget yet
   const masterCategories = categories.filter((c) => c.parent_id === null && c.type === "expense");
@@ -47,12 +72,13 @@ export default function BudgetsPage() {
     e.preventDefault();
     setError("");
     try {
-      await apiFetch("/api/v1/budgets", {
+      const url = periodStart ? `/api/v1/budgets?period_start=${periodStart}` : "/api/v1/budgets";
+      await apiFetch(url, {
         method: "POST",
         body: JSON.stringify({ category_id: formCategoryId, amount: formAmount }),
       });
       setFormCategoryId(""); setFormAmount(""); setShowForm(false);
-      await reload();
+      await loadBudgets();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -64,7 +90,7 @@ export default function BudgetsPage() {
         body: JSON.stringify({ amount: editAmount }),
       });
       setEditingId(null);
-      await reload();
+      await loadBudgets();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -72,7 +98,7 @@ export default function BudgetsPage() {
     if (!confirm("Remove this budget?")) return;
     try {
       await apiFetch(`/api/v1/budgets/${id}`, { method: "DELETE" });
-      await reload();
+      await loadBudgets();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -81,7 +107,7 @@ export default function BudgetsPage() {
 
   return (
     <AppShell>
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Budgets</h1>
         {availableCategories.length > 0 && (
           <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
@@ -89,6 +115,22 @@ export default function BudgetsPage() {
           </button>
         )}
       </div>
+
+      {/* Period navigation */}
+      {periods.length > 0 && (
+        <div className="mb-5 flex items-center gap-3">
+          <button onClick={() => setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+          </button>
+          <span className="text-sm text-text-secondary">
+            {selectedPeriod?.start_date}{selectedPeriod?.end_date ? ` — ${selectedPeriod.end_date}` : ""}
+            {isCurrentPeriod && <span className="ml-2 text-xs text-success font-medium">current</span>}
+          </span>
+          <button onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+          </button>
+        </div>
+      )}
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
 
@@ -137,8 +179,8 @@ export default function BudgetsPage() {
           <div className={card}>
             <div className={cardHeader}>
               <h2 className={cardTitle}>
-                {budgets.length > 0 && budgets[0].period_start && (
-                  <span>Period: {budgets[0].period_start} — {budgets[0].period_end}</span>
+                {selectedPeriod && (
+                  <span>Period: {selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</span>
                 )}
                 {budgets.length === 0 && "Current Period"}
               </h2>
