@@ -6,41 +6,15 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount, todayISO } from "@/lib/format";
+import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
-import type { Account, Category, Transaction } from "@/lib/types";
+import type { Account, Budget, Category, Transaction } from "@/lib/types";
 
-function formatLocalDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function billingCycleRange(cycleDay: number): { from: string; to: string } {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  const d = now.getDate();
-
-  let fromDate: Date;
-  let toDate: Date;
-
-  if (d >= cycleDay) {
-    // We're in the current cycle: cycleDay this month → cycleDay next month - 1
-    fromDate = new Date(y, m, cycleDay);
-    toDate = new Date(y, m + 1, cycleDay - 1);
-  } else {
-    // We're before the cycle day: cycleDay last month → cycleDay this month - 1
-    fromDate = new Date(y, m - 1, cycleDay);
-    toDate = new Date(y, m, cycleDay - 1);
-  }
-
-  return {
-    from: formatLocalDate(fromDate),
-    to: formatLocalDate(toDate),
-  };
+interface BillingPeriod {
+  id: number;
+  start_date: string;
+  end_date: string | null;
 }
 
 const PAGE_SIZE = 10;
@@ -50,6 +24,10 @@ export default function DashboardPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [period, setPeriod] = useState<BillingPeriod | null>(null);
+  const [periods, setPeriods] = useState<BillingPeriod[]>([]);
+  const [periodIdx, setPeriodIdx] = useState(0);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -70,16 +48,25 @@ export default function DashboardPage() {
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
 
-  const cycleDay = user?.billing_cycle_day ?? 1;
-  const { from: monthFrom, to: monthTo } = billingCycleRange(cycleDay);
+  // Selected period (navigate with arrows)
+  const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
+  const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const monthTo = selectedPeriod?.end_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
 
   const loadRefs = useCallback(async () => {
-    const [accts, cats] = await Promise.all([
+    const [accts, cats, bds, per, plist] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
       apiFetch<Category[]>("/api/v1/categories"),
+      apiFetch<Budget[]>("/api/v1/budgets"),
+      apiFetch<BillingPeriod>("/api/v1/settings/billing-period"),
+      apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
     setAccounts(accts ?? []);
     setCategories(cats ?? []);
+    setBudgets(bds ?? []);
+    if (per) setPeriod(per);
+    setPeriods(plist ?? []);
+    setPeriodIdx(0);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
@@ -202,6 +189,11 @@ export default function DashboardPage() {
 
   // Precompute tx map for O(1) linked lookups
   const txMap = new Map(transactions.map((tx) => [tx.id, tx]));
+
+  // Income vs expense totals for the period
+  const totalIncome = transactions.filter((tx) => tx.type === "income" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
+  const totalExpense = transactions.filter((tx) => tx.type === "expense" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
+  const maxBar = Math.max(totalIncome, totalExpense, 1);
 
   // Pending totals per account from current-month transactions
   const pendingByAccount = transactions
@@ -332,28 +324,21 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Per-account tiles */}
+          {/* Per-account tiles — compact */}
           {accountsWithBalance.length > 0 && (
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-3 gap-2 lg:grid-cols-5 xl:grid-cols-6">
               {accountsWithBalance.map((acct) => {
                 const pending = pendingByAccount[acct.id] || 0;
                 const isCreditCard = acct.account_type_slug === "credit_card";
                 return (
-                  <div key={acct.id} className={`${card} p-4`}>
-                    <p className="text-xs font-medium text-text-muted truncate">{acct.name}</p>
-                    <p className="text-[11px] text-text-muted">{acct.account_type_name}</p>
-                    <p className="mt-1.5 text-lg font-semibold tabular-nums text-text-primary">
-                      {formatAmount(acct.balance)} <span className="text-xs text-text-muted">{acct.currency}</span>
+                  <div key={acct.id} className={`${card} px-3 py-2.5`}>
+                    <p className="text-[11px] font-medium text-text-muted truncate">{acct.name}</p>
+                    <p className="mt-1 text-sm font-semibold tabular-nums text-text-primary">
+                      {formatAmount(acct.balance)} <span className="text-[10px] text-text-muted">{acct.currency}</span>
                     </p>
-                    {pending !== 0 && (
-                      <p className={`mt-0.5 text-xs tabular-nums ${isCreditCard ? "text-danger" : "text-text-muted"}`}>
-                        {isCreditCard ? "Pending charges: " : "Pending: "}
-                        {formatAmount(Math.abs(pending))}
-                      </p>
-                    )}
                     {isCreditCard && pending !== 0 && (
-                      <p className="mt-0.5 text-xs tabular-nums text-text-secondary">
-                        Net: {formatAmount(Number(acct.balance) + pending)}
+                      <p className="mt-0.5 text-[10px] tabular-nums text-danger">
+                        Pending: {formatAmount(Math.abs(pending))}
                       </p>
                     )}
                   </div>
@@ -362,10 +347,96 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Recent transactions (current month) */}
+          {/* Budget progress */}
+          {budgets.length > 0 && (
+            <div className={card}>
+              <div className={`flex items-center justify-between ${cardHeader}`}>
+                <h2 className={cardTitle}>Budget Progress</h2>
+                <a href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</a>
+              </div>
+              <div className="divide-y divide-border-subtle">
+                {budgets.slice(0, 5).map((b) => {
+                  const pct = Math.min(b.percent_used, 100);
+                  const over = b.percent_used > 100;
+                  return (
+                    <div key={b.id} className="px-6 py-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm text-text-primary">{b.category_name}</span>
+                        <span className={`text-xs tabular-nums ${over ? "text-danger" : "text-text-muted"}`}>
+                          {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-surface-overlay">
+                        <div
+                          className={`h-1.5 rounded-full transition-all ${over ? "bg-danger" : pct > 80 ? "bg-amber-500" : "bg-success"}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Income vs Expense chart */}
+          {(totalIncome > 0 || totalExpense > 0) && (
+            <div className={`${card} p-5`}>
+              <h2 className={`mb-4 ${cardTitle}`}>Income vs Expense</h2>
+              <div className="space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-text-muted">Income</span>
+                    <span className="text-sm font-medium tabular-nums text-success">+{formatAmount(totalIncome)}</span>
+                  </div>
+                  <div className="h-3 rounded-full bg-surface-overlay">
+                    <div className="h-3 rounded-full bg-success transition-all" style={{ width: `${(totalIncome / maxBar) * 100}%` }} />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-text-muted">Expenses</span>
+                    <span className="text-sm font-medium tabular-nums text-danger">-{formatAmount(totalExpense)}</span>
+                  </div>
+                  <div className="h-3 rounded-full bg-surface-overlay">
+                    <div className="h-3 rounded-full bg-danger transition-all" style={{ width: `${(totalExpense / maxBar) * 100}%` }} />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-1 border-t border-border-subtle">
+                  <span className="text-xs text-text-muted">Net</span>
+                  <span className={`text-sm font-semibold tabular-nums ${totalIncome - totalExpense >= 0 ? "text-success" : "text-danger"}`}>
+                    {totalIncome - totalExpense >= 0 ? "+" : ""}{formatAmount(totalIncome - totalExpense)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Transactions with period navigation */}
           <div className={card}>
             <div className={`flex items-center justify-between ${cardHeader}`}>
-              <h2 className={cardTitle}>Transactions — This Month</h2>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))}
+                  disabled={periodIdx >= periods.length - 1}
+                  className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30"
+                  aria-label="Previous period"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                </button>
+                <h2 className={cardTitle}>
+                  {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
+                  {periodIdx === 0 && <span className="ml-2 text-success text-[10px]">current</span>}
+                </h2>
+                <button
+                  onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))}
+                  disabled={periodIdx <= 0}
+                  className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30"
+                  aria-label="Next period"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+                </button>
+              </div>
               <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">
                 View All
               </Link>

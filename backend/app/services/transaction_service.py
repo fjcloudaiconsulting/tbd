@@ -349,6 +349,7 @@ async def list_transactions(
     status: str | None = None,
     date_from: datetime.date | None = None,
     date_to: datetime.date | None = None,
+    search: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> list[Transaction]:
@@ -369,6 +370,8 @@ async def list_transactions(
         q = q.where(Transaction.date >= date_from)
     if date_to is not None:
         q = q.where(Transaction.date <= date_to)
+    if search is not None:
+        q = q.where(Transaction.description.ilike(f"%{search}%"))
     q = q.order_by(Transaction.date.desc(), Transaction.id.desc())
     q = q.limit(limit).offset(offset)
 

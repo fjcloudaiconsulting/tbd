@@ -19,6 +19,11 @@ export default function AccountsPage() {
   const [editingTypeId, setEditingTypeId] = useState<number | null>(null);
   const [editingTypeName, setEditingTypeName] = useState("");
 
+  // Account edit
+  const [editAcctId, setEditAcctId] = useState<number | null>(null);
+  const [editAcctName, setEditAcctName] = useState("");
+  const [editAcctCloseDay, setEditAcctCloseDay] = useState("");
+
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [acctName, setAcctName] = useState("");
   const [acctTypeId, setAcctTypeId] = useState<number | "">("");
@@ -93,6 +98,28 @@ export default function AccountsPage() {
     setError("");
     try {
       await apiFetch(`/api/v1/accounts/${id}`, { method: "DELETE" });
+      await reload();
+    } catch (err) { setError(extractErrorMessage(err)); }
+  }
+
+  function startEditAcct(a: Account) {
+    setEditAcctId(a.id);
+    setEditAcctName(a.name);
+    setEditAcctCloseDay(a.close_day ? String(a.close_day) : "");
+  }
+
+  async function handleSaveAcct() {
+    if (!editAcctId) return;
+    setError("");
+    try {
+      await apiFetch(`/api/v1/accounts/${editAcctId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: editAcctName,
+          close_day: editAcctCloseDay ? Number(editAcctCloseDay) : null,
+        }),
+      });
+      setEditAcctId(null);
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -206,7 +233,17 @@ export default function AccountsPage() {
                 </form>
               )}
               <div className="space-y-1">
-                {accounts.map((a) => (
+                {accounts.map((a) => editAcctId === a.id ? (
+                  <div key={a.id} className="flex items-center gap-3 rounded-md bg-surface-raised px-3 py-2.5">
+                    <input aria-label="Account name" type="text" value={editAcctName} onChange={(e) => setEditAcctName(e.target.value)} className={`flex-1 text-sm ${input}`}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleSaveAcct(); if (e.key === "Escape") setEditAcctId(null); }} autoFocus />
+                    {a.account_type_slug === "credit_card" && (
+                      <input aria-label="Close day" type="number" min={1} max={28} value={editAcctCloseDay} onChange={(e) => setEditAcctCloseDay(e.target.value)} placeholder="Close day" className={`w-24 text-sm ${input}`} />
+                    )}
+                    <button onClick={handleSaveAcct} className="text-xs text-accent hover:text-accent-hover">Save</button>
+                    <button onClick={() => setEditAcctId(null)} className="text-xs text-text-muted">Cancel</button>
+                  </div>
+                ) : (
                   <div key={a.id} className={`flex items-center justify-between rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised ${!a.is_active ? "opacity-40" : ""}`}>
                     <div>
                       <span className="text-sm font-medium text-text-primary">{a.name}</span>
@@ -221,9 +258,10 @@ export default function AccountsPage() {
                         <span className="text-text-muted">{a.currency}</span>
                       </span>
                       <div className="flex gap-3">
+                        <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
                         {!a.is_default && a.is_active && (
                           <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="text-xs text-text-muted hover:text-accent">
-                            Set Default
+                            Default
                           </button>
                         )}
                         <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="text-xs text-text-muted hover:text-text-secondary">
@@ -233,6 +271,7 @@ export default function AccountsPage() {
                       </div>
                     </div>
                   </div>
+                ))
                 ))}
                 {accounts.length === 0 && (
                   <p className="py-4 text-center text-sm text-text-muted">

@@ -23,6 +23,7 @@ Commands:
   logs [svc]   View logs (optional: backend, frontend, nginx, mysql)
   status       Show container status
   shell [svc]  Open a shell in a service (default: backend)
+  seed         Populate with mock data (demo user + 3 months of transactions)
 
 EOF
 }
@@ -57,6 +58,19 @@ cmd_rebuild() {
 cmd_reset() {
   echo "Destroying all data and starting fresh..."
   docker compose down -v
+
+  # Rotate JWT secret to invalidate all existing tokens
+  if [[ -f .env ]]; then
+    local new_secret
+    new_secret=$(openssl rand -hex 32)
+    if grep -q "^JWT_SECRET_KEY=" .env; then
+      sed -i.bak "s/^JWT_SECRET_KEY=.*/JWT_SECRET_KEY=${new_secret}/" .env && rm -f .env.bak
+    else
+      echo "JWT_SECRET_KEY=${new_secret}" >> .env
+    fi
+    echo "JWT secret rotated (all previous sessions invalidated)"
+  fi
+
   docker compose up --build -d
   echo "Ready: http://localhost"
 }
@@ -84,6 +98,17 @@ cmd_shell() {
   docker compose exec "$svc" /bin/sh
 }
 
+cmd_seed() {
+  echo "Seeding mock data..."
+  # Pass SEED_* env vars from .env or command line
+  docker compose exec \
+    ${SEED_USERNAME:+-e SEED_USERNAME="$SEED_USERNAME"} \
+    ${SEED_PASSWORD:+-e SEED_PASSWORD="$SEED_PASSWORD"} \
+    ${SEED_EMAIL:+-e SEED_EMAIL="$SEED_EMAIL"} \
+    ${SEED_ORG:+-e SEED_ORG="$SEED_ORG"} \
+    backend python seed.py
+}
+
 case "${1:-}" in
   start)    cmd_start ;;
   stop)     cmd_stop ;;
@@ -94,5 +119,6 @@ case "${1:-}" in
   logs)     shift; cmd_logs "$@" ;;
   status)   cmd_status ;;
   shell)    shift; cmd_shell "$@" ;;
+  seed)     cmd_seed ;;
   *)        usage ;;
 esac
