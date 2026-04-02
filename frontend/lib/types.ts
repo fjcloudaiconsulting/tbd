@@ -5,6 +5,7 @@ export interface User {
   role: "owner" | "admin" | "member";
   org_id: number;
   org_name: string;
+  billing_cycle_day: number;
   is_superadmin: boolean;
   is_active: boolean;
 }
@@ -62,7 +63,23 @@ export interface Transaction {
   type: "income" | "expense";
   status: "settled" | "pending";
   linked_transaction_id: number | null;
+  recurring_id: number | null;
   date: string;
+}
+
+export interface RecurringTransaction {
+  id: number;
+  account_id: number;
+  account_name: string;
+  category_id: number;
+  category_name: string;
+  description: string;
+  amount: number;
+  type: "income" | "expense";
+  frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly";
+  next_due_date: string;
+  auto_settle: boolean;
+  is_active: boolean;
 }
 
 export interface OrgSetting {

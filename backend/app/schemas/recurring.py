@@ -5,37 +5,30 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
-class TransactionCreate(BaseModel):
+class RecurringCreate(BaseModel):
     account_id: int
     category_id: int
     description: str
     amount: Decimal = Field(gt=0)
     type: Literal["income", "expense"]
-    status: Literal["settled", "pending"] = "settled"
-    date: datetime.date
+    frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
+    next_due_date: datetime.date
+    auto_settle: bool = False
 
 
-class TransferCreate(BaseModel):
-    from_account_id: int
-    to_account_id: int
-    category_id: int
-    description: str
-    amount: Decimal = Field(gt=0)
-    status: Literal["settled", "pending"] = "settled"
-    date: datetime.date
-
-
-class TransactionUpdate(BaseModel):
+class RecurringUpdate(BaseModel):
     account_id: Optional[int] = None
     category_id: Optional[int] = None
     description: Optional[str] = None
     amount: Optional[Decimal] = Field(default=None, gt=0)
     type: Optional[Literal["income", "expense"]] = None
-    status: Optional[Literal["settled", "pending"]] = None
-    date: Optional[datetime.date] = None
+    frequency: Optional[Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]] = None
+    next_due_date: Optional[datetime.date] = None
+    auto_settle: Optional[bool] = None
+    is_active: Optional[bool] = None
 
 
-class TransactionResponse(BaseModel):
+class RecurringResponse(BaseModel):
     id: int
     account_id: int
     account_name: str = ""
@@ -44,9 +37,9 @@ class TransactionResponse(BaseModel):
     description: str
     amount: Decimal
     type: Literal["income", "expense"]
-    status: Literal["settled", "pending"]
-    linked_transaction_id: Optional[int] = None
-    recurring_id: Optional[int] = None
-    date: datetime.date
+    frequency: str
+    next_due_date: datetime.date
+    auto_settle: bool
+    is_active: bool
 
     model_config = {"from_attributes": True}

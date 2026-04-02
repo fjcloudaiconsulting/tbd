@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.settings import OrgSetting
-from app.models.user import Role, User
-from app.schemas.settings import OrgSettingResponse, OrgSettingUpdate
+from app.models.user import Organization, Role, User
+from app.schemas.settings import BillingCycleUpdate, OrgSettingResponse, OrgSettingUpdate
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
@@ -99,3 +99,31 @@ async def delete_setting(
 
     await db.delete(setting)
     await db.commit()
+
+
+@router.get("/billing-cycle")
+async def get_billing_cycle(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Organization).where(Organization.id == current_user.org_id)
+    )
+    org = result.scalar_one()
+    return {"billing_cycle_day": org.billing_cycle_day}
+
+
+@router.put("/billing-cycle")
+async def update_billing_cycle(
+    body: BillingCycleUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    _require_admin(current_user)
+    result = await db.execute(
+        select(Organization).where(Organization.id == current_user.org_id)
+    )
+    org = result.scalar_one()
+    org.billing_cycle_day = body.billing_cycle_day
+    await db.commit()
+    return {"billing_cycle_day": org.billing_cycle_day}

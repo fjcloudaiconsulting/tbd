@@ -50,6 +50,7 @@ async def update_profile(
         role=current_user.role.value,
         org_id=current_user.org_id,
         org_name=current_user.organization.name,
+        billing_cycle_day=current_user.organization.billing_cycle_day,
         is_superadmin=current_user.is_superadmin,
         is_active=current_user.is_active,
     )

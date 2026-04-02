@@ -1,70 +1,82 @@
 @import "tailwindcss";
 
-/* ─── Light theme (default) ─── */
+/* ─── FJ Consulting Brand Theme ───
+   Primary: Dark Navy #0B1F3A
+   Accent:  Gold #D4A64A
+   Text:    Off-White #E6EAF0
+   Info:    Secondary Blue #5FA8D3
+   Hover:   Dark Gold #B88A2E
+   Default: premium dark theme
+─── */
+
+/* ─── Dark theme (default — premium dark) ─── */
 :root {
-  --theme-bg: #f3f4f6;
+  --theme-bg: #070d18;
+  --theme-surface: #0B1F3A;
+  --theme-surface-raised: #122a4a;
+  --theme-surface-overlay: #163157;
+  --theme-border: #1a3560;
+  --theme-border-subtle: #122a4a;
+
+  --theme-text-primary: #E6EAF0;
+  --theme-text-secondary: #9ba8bd;
+  --theme-text-muted: #5a6a82;
+
+  --theme-accent: #D4A64A;
+  --theme-accent-hover: #B88A2E;
+  --theme-accent-dim: rgba(212, 166, 74, 0.12);
+  --theme-accent-text: #0B1F3A;
+
+  --theme-danger: #f87171;
+  --theme-danger-dim: rgba(248, 113, 113, 0.12);
+  --theme-success: #4ade80;
+  --theme-success-dim: rgba(74, 222, 128, 0.12);
+  --theme-info: #5FA8D3;
+  --theme-info-dim: rgba(95, 168, 211, 0.12);
+
+  --theme-sidebar-bg: #06101e;
+  --theme-sidebar-text: #7a8da6;
+  --theme-sidebar-text-bright: #E6EAF0;
+  --theme-sidebar-hover: rgba(212, 166, 74, 0.06);
+  --theme-sidebar-active-bg: rgba(212, 166, 74, 0.12);
+  --theme-sidebar-active-text: #D4A64A;
+  --theme-sidebar-border: rgba(212, 166, 74, 0.08);
+  --theme-sidebar-muted: #3d4f68;
+}
+
+/* ─── Light theme ─── */
+[data-theme="light"] {
+  --theme-bg: #f0f2f5;
   --theme-surface: #ffffff;
-  --theme-surface-raised: #f9fafb;
-  --theme-surface-overlay: #f3f4f6;
-  --theme-border: #e5e7eb;
-  --theme-border-subtle: #f3f4f6;
+  --theme-surface-raised: #f7f8fa;
+  --theme-surface-overlay: #f0f2f5;
+  --theme-border: #dde1e8;
+  --theme-border-subtle: #e8ebf0;
 
-  --theme-text-primary: #111827;
-  --theme-text-secondary: #4b5563;
-  --theme-text-muted: #9ca3af;
+  --theme-text-primary: #0B1F3A;
+  --theme-text-secondary: #3d5070;
+  --theme-text-muted: #8895a8;
 
-  --theme-accent: #2563eb;
-  --theme-accent-hover: #1d4ed8;
-  --theme-accent-dim: rgba(37, 99, 235, 0.08);
+  --theme-accent: #B88A2E;
+  --theme-accent-hover: #9a7425;
+  --theme-accent-dim: rgba(184, 138, 46, 0.08);
   --theme-accent-text: #ffffff;
 
   --theme-danger: #dc2626;
   --theme-danger-dim: rgba(220, 38, 38, 0.06);
   --theme-success: #16a34a;
   --theme-success-dim: rgba(22, 163, 74, 0.06);
+  --theme-info: #2d7db3;
+  --theme-info-dim: rgba(45, 125, 179, 0.08);
 
-  /* Sidebar is always dark */
-  --theme-sidebar-bg: #0f172a;
-  --theme-sidebar-text: #94a3b8;
-  --theme-sidebar-text-bright: #f1f5f9;
-  --theme-sidebar-hover: rgba(255, 255, 255, 0.05);
-  --theme-sidebar-active-bg: rgba(37, 99, 235, 0.15);
-  --theme-sidebar-active-text: #60a5fa;
-  --theme-sidebar-border: rgba(255, 255, 255, 0.06);
-  --theme-sidebar-muted: #475569;
-}
-
-/* ─── Dark theme ─── */
-[data-theme="dark"] {
-  --theme-bg: #0b0f1a;
-  --theme-surface: #111827;
-  --theme-surface-raised: #1e293b;
-  --theme-surface-overlay: #1e293b;
-  --theme-border: #1e293b;
-  --theme-border-subtle: #172033;
-
-  --theme-text-primary: #f1f5f9;
-  --theme-text-secondary: #94a3b8;
-  --theme-text-muted: #475569;
-
-  --theme-accent: #3b82f6;
-  --theme-accent-hover: #60a5fa;
-  --theme-accent-dim: rgba(59, 130, 246, 0.12);
-  --theme-accent-text: #ffffff;
-
-  --theme-danger: #f87171;
-  --theme-danger-dim: rgba(248, 113, 113, 0.1);
-  --theme-success: #4ade80;
-  --theme-success-dim: rgba(74, 222, 128, 0.1);
-
-  --theme-sidebar-bg: #060a14;
-  --theme-sidebar-text: #64748b;
-  --theme-sidebar-text-bright: #e2e8f0;
-  --theme-sidebar-hover: rgba(255, 255, 255, 0.04);
-  --theme-sidebar-active-bg: rgba(59, 130, 246, 0.12);
-  --theme-sidebar-active-text: #60a5fa;
-  --theme-sidebar-border: rgba(255, 255, 255, 0.04);
-  --theme-sidebar-muted: #334155;
+  --theme-sidebar-bg: #0B1F3A;
+  --theme-sidebar-text: #7a8da6;
+  --theme-sidebar-text-bright: #E6EAF0;
+  --theme-sidebar-hover: rgba(212, 166, 74, 0.06);
+  --theme-sidebar-active-bg: rgba(212, 166, 74, 0.12);
+  --theme-sidebar-active-text: #D4A64A;
+  --theme-sidebar-border: rgba(212, 166, 74, 0.08);
+  --theme-sidebar-muted: #3d4f68;
 }
 
 @theme {
@@ -88,6 +100,8 @@
   --color-danger-dim: var(--theme-danger-dim);
   --color-success: var(--theme-success);
   --color-success-dim: var(--theme-success-dim);
+  --color-info: var(--theme-info);
+  --color-info-dim: var(--theme-info-dim);
 
   --color-sidebar-bg: var(--theme-sidebar-bg);
   --color-sidebar-text: var(--theme-sidebar-text);

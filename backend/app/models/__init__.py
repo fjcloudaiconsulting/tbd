@@ -3,6 +3,7 @@ from app.models.user import Organization, User
 from app.models.account import AccountType, Account
 from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction, TransactionType, TransactionStatus
+from app.models.recurring import RecurringTransaction, Frequency
 from app.models.settings import OrgSetting
 
 __all__ = [
@@ -16,5 +17,7 @@ __all__ = [
     "Transaction",
     "TransactionType",
     "TransactionStatus",
+    "RecurringTransaction",
+    "Frequency",
     "OrgSetting",
 ]

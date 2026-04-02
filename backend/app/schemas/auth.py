@@ -25,6 +25,7 @@ class UserResponse(BaseModel):
     role: str
     org_id: int
     org_name: str
+    billing_cycle_day: int = 1
     is_superadmin: bool
     is_active: bool
 

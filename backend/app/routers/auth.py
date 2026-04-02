@@ -108,6 +108,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         role=user.role.value,
         org_id=org.id,
         org_name=org.name,
+        billing_cycle_day=org.billing_cycle_day,
         is_superadmin=user.is_superadmin,
         is_active=user.is_active,
     )
@@ -206,6 +207,7 @@ async def me(
         role=current_user.role.value,
         org_id=current_user.org_id,
         org_name=current_user.organization.name,
+        billing_cycle_day=current_user.organization.billing_cycle_day,
         is_superadmin=current_user.is_superadmin,
         is_active=current_user.is_active,
     )
