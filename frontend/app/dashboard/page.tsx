@@ -18,13 +18,28 @@ function formatLocalDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-function currentMonthRange(): { from: string; to: string } {
+function billingCycleRange(cycleDay: number): { from: string; to: string } {
   const now = new Date();
   const y = now.getFullYear();
   const m = now.getMonth();
+  const d = now.getDate();
+
+  let fromDate: Date;
+  let toDate: Date;
+
+  if (d >= cycleDay) {
+    // We're in the current cycle: cycleDay this month → cycleDay next month - 1
+    fromDate = new Date(y, m, cycleDay);
+    toDate = new Date(y, m + 1, cycleDay - 1);
+  } else {
+    // We're before the cycle day: cycleDay last month → cycleDay this month - 1
+    fromDate = new Date(y, m - 1, cycleDay);
+    toDate = new Date(y, m, cycleDay - 1);
+  }
+
   return {
-    from: formatLocalDate(new Date(y, m, 1)),
-    to: formatLocalDate(new Date(y, m + 1, 0)),
+    from: formatLocalDate(fromDate),
+    to: formatLocalDate(toDate),
   };
 }
 
@@ -52,7 +67,8 @@ export default function DashboardPage() {
   const [formStatus, setFormStatus] = useState<"settled" | "pending">("settled");
   const [formDate, setFormDate] = useState(todayISO());
 
-  const { from: monthFrom, to: monthTo } = currentMonthRange();
+  const cycleDay = user?.billing_cycle_day ?? 1;
+  const { from: monthFrom, to: monthTo } = billingCycleRange(cycleDay);
 
   const loadRefs = useCallback(async () => {
     const [accts, cats] = await Promise.all([
