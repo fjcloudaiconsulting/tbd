@@ -50,6 +50,8 @@ export default function DashboardPage() {
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
 
+  const [chartFilter, setChartFilter] = useState<string | null>(null);
+
   // Selected period (navigate with arrows)
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
@@ -370,13 +372,28 @@ export default function DashboardPage() {
             {/* Spending by category (donut) */}
             <div className={`${card} p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
+              {chartFilter && (
+                <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-accent-dim px-2.5 py-1 text-xs text-accent hover:bg-accent/20">
+                  Filtering: {chartFilter} &times;
+                </button>
+              )}
               {donutData.length > 0 ? (
                 <div className="flex items-center gap-4">
                   <div className="w-40 h-40">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
-                        <Pie data={donutData} cx="50%" cy="50%" innerRadius={35} outerRadius={65} paddingAngle={2} dataKey="value" stroke="none">
-                          {donutData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                        <Pie
+                          data={donutData} cx="50%" cy="50%" innerRadius={35} outerRadius={65}
+                          paddingAngle={2} dataKey="value" stroke="none" cursor="pointer"
+                          onClick={(_, idx) => {
+                            const name = donutData[idx]?.name;
+                            setChartFilter(chartFilter === name ? null : name);
+                          }}
+                        >
+                          {donutData.map((d, i) => (
+                            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]}
+                              opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
+                          ))}
                         </Pie>
                         <Tooltip formatter={(v: number) => formatAmount(v)} contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }} />
                       </PieChart>
@@ -384,13 +401,14 @@ export default function DashboardPage() {
                   </div>
                   <div className="flex-1 space-y-1.5">
                     {donutData.map((d, i) => (
-                      <div key={d.name} className="flex items-center justify-between">
+                      <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
+                        className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-accent-dim" : ""}`}>
                         <div className="flex items-center gap-2">
                           <div className="h-2.5 w-2.5 rounded-full" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
                           <span className="text-xs text-text-secondary">{d.name}</span>
                         </div>
                         <span className="text-xs tabular-nums text-text-muted">{formatAmount(d.value)}</span>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -437,21 +455,21 @@ export default function DashboardPage() {
           <div className={card}>
             <div className={`flex items-center justify-between ${cardHeader}`}>
               <div className="flex items-center gap-2">
-                <button onClick={() => setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+                <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </button>
                 <h2 className={`${cardTitle} text-[11px]`}>
                   {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
                   {periodIdx === 0 && <span className="ml-1.5 text-success">current</span>}
                 </h2>
-                <button onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+                <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
                 </button>
               </div>
               <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All</Link>
             </div>
             <div className="divide-y divide-border-subtle">
-              {visibleTxs.map((tx) => {
+              {visibleTxs.filter((tx) => !chartFilter || tx.category_name === chartFilter).map((tx) => {
                 const isTransfer = tx.linked_transaction_id !== null;
                 const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                 return (
