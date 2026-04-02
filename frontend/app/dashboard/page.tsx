@@ -25,6 +25,7 @@ export default function DashboardPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [period, setPeriod] = useState<BillingPeriod | null>(null);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
@@ -71,10 +72,14 @@ export default function DashboardPage() {
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
-    const url = `/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`;
-    const data = (await apiFetch<Transaction[]>(url)) ?? [];
-    setHasMore(data.length > PAGE_SIZE);
-    setTransactions(data.slice(0, PAGE_SIZE));
+    const [pageData, allData] = await Promise.all([
+      apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`),
+      p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&date_from=${monthFrom}&date_to=${monthTo}`) : null,
+    ]);
+    const page_txs = pageData ?? [];
+    setHasMore(page_txs.length > PAGE_SIZE);
+    setTransactions(page_txs.slice(0, PAGE_SIZE));
+    if (allData) setAllTransactions(allData);
     setFetching(false);
   }, [monthFrom, monthTo]);
 
@@ -191,13 +196,12 @@ export default function DashboardPage() {
   // Precompute tx map for O(1) linked lookups
   const txMap = new Map(transactions.map((tx) => [tx.id, tx]));
 
-  // Income vs expense totals for the period
-  const totalIncome = transactions.filter((tx) => tx.type === "income" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
-  const totalExpense = transactions.filter((tx) => tx.type === "expense" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
-  const maxBar = Math.max(totalIncome, totalExpense, 1);
+  // Totals from ALL period transactions (not just the paginated page)
+  const totalIncome = allTransactions.filter((tx) => tx.type === "income" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
+  const totalExpense = allTransactions.filter((tx) => tx.type === "expense" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
 
-  // Pending totals per account from current-month transactions
-  const pendingByAccount = transactions
+  // Pending totals per account from all period transactions
+  const pendingByAccount = allTransactions
     .filter((tx) => tx.status === "pending")
     .reduce<Record<number, number>>((acc, tx) => {
       const sign = tx.type === "income" ? 1 : -1;
@@ -205,8 +209,8 @@ export default function DashboardPage() {
       return acc;
     }, {});
 
-  // Spending by category from current-period transactions (not budgets, which are always current)
-  const spendingByCategory = transactions
+  // Spending by category from all period transactions
+  const spendingByCategory = allTransactions
     .filter((tx) => tx.type === "expense" && tx.status === "settled")
     .reduce<Record<string, number>>((acc, tx) => {
       acc[tx.category_name] = (acc[tx.category_name] || 0) + Number(tx.amount);
