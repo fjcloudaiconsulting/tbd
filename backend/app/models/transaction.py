@@ -56,6 +56,9 @@ class Transaction(Base):
     linked_transaction_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True
     )
+    recurring_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("recurring_transactions.id", ondelete="SET NULL"), nullable=True
+    )
     date: Mapped[date] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

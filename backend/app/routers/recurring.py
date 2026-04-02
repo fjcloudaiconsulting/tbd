@@ -40,13 +40,24 @@ async def update_recurring(
     return svc.to_response(r)
 
 
-@router.delete("/{recurring_id}", status_code=204)
+@router.post("/{recurring_id}/stop", response_model=dict)
+async def stop_recurring(
+    recurring_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    removed = await svc.stop_recurring(db, current_user.org_id, recurring_id)
+    return {"stopped": True, "pending_removed": removed}
+
+
+@router.delete("/{recurring_id}", response_model=dict)
 async def delete_recurring(
     recurring_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await svc.delete_recurring(db, current_user.org_id, recurring_id)
+    removed = await svc.delete_recurring(db, current_user.org_id, recurring_id)
+    return {"deleted": True, "pending_removed": removed}
 
 
 @router.post("/generate", response_model=dict)

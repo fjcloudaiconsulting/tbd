@@ -35,20 +35,34 @@ export default function RecurringPage() {
     if (!loading && user) reload().catch(() => setFetching(false));
   }, [loading, user, reload]);
 
-  async function handleToggleActive(item: RecurringTransaction) {
+  async function handleStop(item: RecurringTransaction) {
+    if (!confirm(
+      `Stop "${item.description}"?\n\nThis will deactivate the recurring schedule and delete any pending future transactions.\n\nSettled (past) transactions will NOT be affected.`
+    )) return;
+    setError(""); setSuccessMsg("");
+    try {
+      const res = await apiFetch<{ pending_removed: number }>(`/api/v1/recurring/${item.id}/stop`, { method: "POST" });
+      setSuccessMsg(`Stopped "${item.description}". ${res?.pending_removed ?? 0} pending transaction(s) removed.`);
+      await reload();
+    } catch (err) { setError(extractErrorMessage(err)); }
+  }
+
+  async function handleResume(item: RecurringTransaction) {
     try {
       await apiFetch(`/api/v1/recurring/${item.id}`, {
         method: "PUT",
-        body: JSON.stringify({ is_active: !item.is_active }),
+        body: JSON.stringify({ is_active: true }),
       });
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Delete this recurring transaction?")) return;
+    if (!confirm("Permanently delete this recurring template?\n\nAny remaining pending future transactions will also be removed.\nSettled transactions are preserved.")) return;
+    setError(""); setSuccessMsg("");
     try {
-      await apiFetch(`/api/v1/recurring/${id}`, { method: "DELETE" });
+      const res = await apiFetch<{ pending_removed: number }>(`/api/v1/recurring/${id}`, { method: "DELETE" });
+      setSuccessMsg(`Deleted. ${res?.pending_removed ?? 0} pending transaction(s) removed.`);
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -107,7 +121,7 @@ export default function RecurringPage() {
                     {r.type === "income" ? "+" : "-"}{formatAmount(r.amount)}
                   </span>
                   <span className="col-span-2 flex justify-end gap-2">
-                    <button onClick={() => handleToggleActive(r)} className="text-xs text-text-muted hover:text-text-secondary">Pause</button>
+                    <button onClick={() => handleStop(r)} className="text-xs text-text-muted hover:text-accent">Stop</button>
                     <button onClick={() => handleDelete(r.id)} className="text-xs text-text-muted hover:text-danger">Delete</button>
                   </span>
                 </div>
@@ -138,7 +152,7 @@ export default function RecurringPage() {
                       {r.type === "income" ? "+" : "-"}{formatAmount(r.amount)}
                     </span>
                     <span className="col-span-2 flex justify-end gap-2">
-                      <button onClick={() => handleToggleActive(r)} className="text-xs text-text-muted hover:text-accent">Resume</button>
+                      <button onClick={() => handleResume(r)} className="text-xs text-text-muted hover:text-accent">Resume</button>
                       <button onClick={() => handleDelete(r.id)} className="text-xs text-text-muted hover:text-danger">Delete</button>
                     </span>
                   </div>

@@ -46,6 +46,7 @@ class TransactionResponse(BaseModel):
     type: Literal["income", "expense"]
     status: Literal["settled", "pending"]
     linked_transaction_id: Optional[int] = None
+    recurring_id: Optional[int] = None
     date: datetime.date
 
     model_config = {"from_attributes": True}
