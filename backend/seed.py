@@ -190,8 +190,37 @@ async def main():
 
         print(f"   Created {tx_count} transactions")
 
+        # Create explicit billing periods with varying salary days
+        print("\n5. Creating billing periods...")
+        period_defs = [
+            # (start, end) — salary on 25th, 23rd, 24th
+            (today.replace(day=1) - relativedelta(months=3) + timedelta(days=24),
+             today.replace(day=1) - relativedelta(months=2) + timedelta(days=21)),  # 25th → 22nd next
+            (today.replace(day=1) - relativedelta(months=2) + timedelta(days=22),
+             today.replace(day=1) - relativedelta(months=1) + timedelta(days=22)),  # 23rd → 23rd next
+            (today.replace(day=1) - relativedelta(months=1) + timedelta(days=23),
+             today.replace(day=1) + timedelta(days=23)),  # 24th → 24th next (closed)
+        ]
+        for start, end in period_defs:
+            if end < today:
+                r = await c.post("/api/v1/settings/billing-period", headers=headers,
+                                 params={"start_date": start.isoformat(), "end_date": end.isoformat()})
+                if r.status_code == 200:
+                    print(f"   Period: {start} — {end}")
+
+        # Current open period (starts day after last closed)
+        last_end = period_defs[-1][1] if period_defs[-1][1] < today else period_defs[-2][1]
+        current_start = last_end + timedelta(days=1)
+        await c.post("/api/v1/settings/billing-period", headers=headers,
+                     params={"start_date": current_start.isoformat()})
+        print(f"   Current period: {current_start} — open")
+
+        await c.put("/api/v1/settings/billing-cycle", headers=headers,
+                    json={"billing_cycle_day": 25})
+        print("   Default cycle day set to 25")
+
         # Recurring
-        print("\n5. Creating recurring transactions...")
+        print("\n6. Creating recurring transactions...")
         rec_defs = [
             {"acct": "ING Checking", "cat": "rent_mortgage", "desc": "Rent - Apartment", "amount": "1200.00", "freq": "monthly", "day": 1, "auto": True},
             {"acct": "ING Checking", "cat": "gym", "desc": "BasicFit Membership", "amount": "29.99", "freq": "monthly", "day": 1, "auto": True},
@@ -210,8 +239,8 @@ async def main():
                 })
         print(f"   Created {len(rec_defs)} recurring templates")
 
-        # Budgets
-        print("\n6. Creating budgets...")
+        # Budgets — create for all periods (historical + current)
+        print("\n7. Creating budgets...")
         budget_defs = [
             {"cat": "housing", "amount": "1400.00"},
             {"cat": "utilities", "amount": "250.00"},
@@ -221,13 +250,17 @@ async def main():
             {"cat": "lifestyle", "amount": "150.00"},
             {"cat": "personal_care", "amount": "100.00"},
         ]
-        for bd in budget_defs:
-            if bd["cat"] in master_cats:
-                r = await c.post("/api/v1/budgets", headers=headers, json={
-                    "category_id": master_cats[bd["cat"]], "amount": bd["amount"],
-                })
-                if r.status_code == 201:
-                    print(f"   {bd['cat']} = {bd['amount']}")
+        # Get all periods
+        r = await c.get("/api/v1/settings/billing-periods", headers=headers)
+        all_periods = r.json() if r.status_code == 200 else []
+        for per in all_periods:
+            ps = per["start_date"]
+            for bd in budget_defs:
+                if bd["cat"] in master_cats:
+                    await c.post(f"/api/v1/budgets?period_start={ps}", headers=headers, json={
+                        "category_id": master_cats[bd["cat"]], "amount": bd["amount"],
+                    })
+            print(f"   Budgets for period {ps}")
 
         print(f"\n=== Seed complete! ===")
         print(f"Login: {USER['username']} / {USER['password']}")

@@ -29,7 +29,7 @@ async function refreshAccessToken(): Promise<string | null> {
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
-): Promise<T | undefined> {
+): Promise<T> {
   const headers = new Headers(options.headers);
 
   if (accessToken) {
@@ -75,12 +75,12 @@ export async function apiFetch<T>(
     throw new ApiResponseError(res.status, body.detail || "Request failed");
   }
 
-  // 204 No Content — return undefined
+  // 204 No Content
   if (res.status === 204) {
-    return undefined as T;
+    return undefined as unknown as T;
   }
 
-  return res.json().catch(() => undefined as T);
+  return res.json();
 }
 
 export function extractErrorMessage(err: unknown, fallback = "Failed"): string {

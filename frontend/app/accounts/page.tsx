@@ -271,7 +271,6 @@ export default function AccountsPage() {
                       </div>
                     </div>
                   </div>
-                ))
                 ))}
                 {accounts.length === 0 && (
                   <p className="py-4 text-center text-sm text-text-muted">

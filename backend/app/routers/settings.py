@@ -176,6 +176,27 @@ async def list_periods(
     ]
 
 
+@router.post("/billing-period")
+async def create_period(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    start_date: datetime.date = None,
+    end_date: datetime.date | None = None,
+):
+    """Create a billing period with explicit dates (for seeding/migration)."""
+    _require_admin(current_user)
+    from app.models.billing import BillingPeriod
+    period = BillingPeriod(org_id=current_user.org_id, start_date=start_date, end_date=end_date)
+    db.add(period)
+    await db.commit()
+    await db.refresh(period)
+    return {
+        "id": period.id,
+        "start_date": period.start_date.isoformat(),
+        "end_date": period.end_date.isoformat() if period.end_date else None,
+    }
+
+
 @router.post("/billing-period/close")
 async def close_period(
     current_user: User = Depends(get_current_user),

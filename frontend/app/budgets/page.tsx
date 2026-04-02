@@ -7,12 +7,21 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import type { Budget, Category } from "@/lib/types";
+
+interface BillingPeriod {
+  id: number;
+  start_date: string;
+  end_date: string | null;
+}
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [periods, setPeriods] = useState<BillingPeriod[]>([]);
+  const [periodIdx, setPeriodIdx] = useState(0);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
@@ -24,19 +33,36 @@ export default function BudgetsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editAmount, setEditAmount] = useState("");
 
-  const reload = useCallback(async () => {
-    const [b, c] = await Promise.all([
-      apiFetch<Budget[]>("/api/v1/budgets"),
+  const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
+  const periodStart = selectedPeriod?.start_date ?? "";
+  const isCurrentPeriod = periodIdx === 0;
+
+  const loadRefs = useCallback(async () => {
+    const [c, p] = await Promise.all([
       apiFetch<Category[]>("/api/v1/categories"),
+      apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
-    setBudgets(b ?? []);
     setCategories(c ?? []);
-    setFetching(false);
+    setPeriods(p ?? []);
   }, []);
 
+  const loadBudgets = useCallback(async () => {
+    const url = periodStart ? `/api/v1/budgets?period_start=${periodStart}` : "/api/v1/budgets";
+    const b = await apiFetch<Budget[]>(url);
+    setBudgets(b ?? []);
+    setFetching(false);
+  }, [periodStart]);
+
   useEffect(() => {
-    if (!loading && user) reload().catch(() => setFetching(false));
-  }, [loading, user, reload]);
+    if (!loading && user) loadRefs().catch(() => {});
+  }, [loading, user, loadRefs]);
+
+  useEffect(() => {
+    if (!loading && user) {
+      setFetching(true);
+      loadBudgets().catch(() => setFetching(false));
+    }
+  }, [loading, user, loadBudgets]);
 
   // Master categories that don't have a budget yet
   const masterCategories = categories.filter((c) => c.parent_id === null && c.type === "expense");
@@ -47,12 +73,13 @@ export default function BudgetsPage() {
     e.preventDefault();
     setError("");
     try {
-      await apiFetch("/api/v1/budgets", {
+      const url = periodStart ? `/api/v1/budgets?period_start=${periodStart}` : "/api/v1/budgets";
+      await apiFetch(url, {
         method: "POST",
         body: JSON.stringify({ category_id: formCategoryId, amount: formAmount }),
       });
       setFormCategoryId(""); setFormAmount(""); setShowForm(false);
-      await reload();
+      await loadBudgets();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -64,7 +91,7 @@ export default function BudgetsPage() {
         body: JSON.stringify({ amount: editAmount }),
       });
       setEditingId(null);
-      await reload();
+      await loadBudgets();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -72,7 +99,7 @@ export default function BudgetsPage() {
     if (!confirm("Remove this budget?")) return;
     try {
       await apiFetch(`/api/v1/budgets/${id}`, { method: "DELETE" });
-      await reload();
+      await loadBudgets();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -81,7 +108,7 @@ export default function BudgetsPage() {
 
   return (
     <AppShell>
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Budgets</h1>
         {availableCategories.length > 0 && (
           <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
@@ -89,6 +116,22 @@ export default function BudgetsPage() {
           </button>
         )}
       </div>
+
+      {/* Period navigation */}
+      {periods.length > 0 && (
+        <div className="mb-5 flex items-center gap-3">
+          <button onClick={() => setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+          </button>
+          <span className="text-sm text-text-secondary">
+            {selectedPeriod?.start_date}{selectedPeriod?.end_date ? ` — ${selectedPeriod.end_date}` : ""}
+            {isCurrentPeriod && <span className="ml-2 text-xs text-success font-medium">current</span>}
+          </span>
+          <button onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+          </button>
+        </div>
+      )}
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
 
@@ -133,22 +176,54 @@ export default function BudgetsPage() {
             </div>
           )}
 
-          {/* Budget list */}
+          {/* Budget chart */}
+          {budgets.length > 0 && (
+            <div className={`${card} p-5`}>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className={cardTitle}>Budget Overview</h2>
+                <span className="text-xs text-text-muted">
+                  {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</>}
+                </span>
+              </div>
+              <div style={{ height: Math.max(budgets.length * 48, 120) }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={budgets.map((b) => ({
+                    name: b.category_name,
+                    spent: Number(b.spent),
+                    remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
+                    over: Math.max(Number(b.spent) - Number(b.amount), 0),
+                    budget: Number(b.amount),
+                    pct: b.percent_used,
+                  }))} layout="vertical" margin={{ left: 10, right: 10, top: 0, bottom: 0 }}>
+                    <XAxis type="number" hide />
+                    <YAxis type="category" dataKey="name" width={120} tick={{ fill: "var(--color-text-secondary)", fontSize: 12 }} />
+                    <Tooltip
+                      formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : name === "remaining" ? "Remaining" : "Over budget"]}
+                      contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }}
+                    />
+                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={800}>
+                      {budgets.map((b, i) => (
+                        <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
+                      ))}
+                    </Bar>
+                    <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={800} />
+                    <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={800} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* Budget details */}
           <div className={card}>
             <div className={cardHeader}>
-              <h2 className={cardTitle}>
-                {budgets.length > 0 && budgets[0].period_start && (
-                  <span>Period: {budgets[0].period_start} — {budgets[0].period_end}</span>
-                )}
-                {budgets.length === 0 && "Current Period"}
-              </h2>
+              <h2 className={cardTitle}>Details</h2>
             </div>
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
-                const pct = Math.min(b.percent_used, 100);
                 const overBudget = b.percent_used > 100;
                 return (
-                  <div key={b.id} className="px-6 py-4">
+                  <div key={b.id} className="px-6 py-3">
                     {editingId === b.id ? (
                       <div className="flex items-center gap-3">
                         <span className="text-sm font-medium text-text-primary flex-1">{b.category_name}</span>
@@ -159,31 +234,21 @@ export default function BudgetsPage() {
                         <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
                       </div>
                     ) : (
-                      <>
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm font-medium text-text-primary">{b.category_name}</span>
-                          <div className="flex items-center gap-4">
-                            <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
-                              {formatAmount(b.spent)} / {formatAmount(b.amount)}
-                            </span>
-                            <div className="flex gap-2">
-                              <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                              <button onClick={() => handleDelete(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
-                            </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-text-primary">{b.category_name}</span>
+                        <div className="flex items-center gap-4">
+                          <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
+                            {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                          </span>
+                          <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
+                            {b.percent_used}%
+                          </span>
+                          <div className="flex gap-2">
+                            <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                            <button onClick={() => handleDelete(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
                           </div>
                         </div>
-                        {/* Progress bar */}
-                        <div className="h-2 rounded-full bg-surface-overlay">
-                          <div
-                            className={`h-2 rounded-full transition-all ${overBudget ? "bg-danger" : pct > 80 ? "bg-amber-500" : "bg-success"}`}
-                            style={{ width: `${Math.min(pct, 100)}%` }}
-                          />
-                        </div>
-                        <div className="mt-1 flex justify-between text-xs text-text-muted">
-                          <span>{b.percent_used}% used</span>
-                          <span>{formatAmount(b.remaining)} left</span>
-                        </div>
-                      </>
+                      </div>
                     )}
                   </div>
                 );

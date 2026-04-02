@@ -8,6 +8,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
+import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Budget, Category, Transaction } from "@/lib/types";
 
@@ -24,6 +25,7 @@ export default function DashboardPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [period, setPeriod] = useState<BillingPeriod | null>(null);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
@@ -48,6 +50,10 @@ export default function DashboardPage() {
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
 
+  const [chartFilter, setChartFilter] = useState<string | null>(null);
+  const [dashSortField, setDashSortField] = useState<"date" | "description" | "amount">("date");
+  const [dashSortDir, setDashSortDir] = useState<"asc" | "desc">("desc");
+
   // Selected period (navigate with arrows)
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
@@ -66,14 +72,20 @@ export default function DashboardPage() {
     setBudgets(bds ?? []);
     if (per) setPeriod(per);
     setPeriods(plist ?? []);
-    setPeriodIdx(0);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
-    const url = `/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`;
-    const data = (await apiFetch<Transaction[]>(url)) ?? [];
-    setHasMore(data.length > PAGE_SIZE);
-    setTransactions(data.slice(0, PAGE_SIZE));
+    const budgetUrl = monthFrom ? `/api/v1/budgets?period_start=${monthFrom}` : "/api/v1/budgets";
+    const [pageData, allData, bds] = await Promise.all([
+      apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`),
+      p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&date_from=${monthFrom}&date_to=${monthTo}`) : null,
+      p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
+    ]);
+    const page_txs = pageData ?? [];
+    setHasMore(page_txs.length > PAGE_SIZE);
+    setTransactions(page_txs.slice(0, PAGE_SIZE));
+    if (allData) setAllTransactions(allData);
+    if (bds) setBudgets(bds);
     setFetching(false);
   }, [monthFrom, monthTo]);
 
@@ -148,7 +160,7 @@ export default function DashboardPage() {
       setFormAutoSettle(false);
       setFormDate(todayISO());
       setShowForm(false);
-      await Promise.all([loadRefs(), loadTransactions(page)]);
+      await loadRefs();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -190,13 +202,12 @@ export default function DashboardPage() {
   // Precompute tx map for O(1) linked lookups
   const txMap = new Map(transactions.map((tx) => [tx.id, tx]));
 
-  // Income vs expense totals for the period
-  const totalIncome = transactions.filter((tx) => tx.type === "income" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
-  const totalExpense = transactions.filter((tx) => tx.type === "expense" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
-  const maxBar = Math.max(totalIncome, totalExpense, 1);
+  // Totals from ALL period transactions (not just the paginated page)
+  const totalIncome = allTransactions.filter((tx) => tx.type === "income" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
+  const totalExpense = allTransactions.filter((tx) => tx.type === "expense" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
 
-  // Pending totals per account from current-month transactions
-  const pendingByAccount = transactions
+  // Pending totals per account from all period transactions
+  const pendingByAccount = allTransactions
     .filter((tx) => tx.status === "pending")
     .reduce<Record<number, number>>((acc, tx) => {
       const sign = tx.type === "income" ? 1 : -1;
@@ -204,9 +215,49 @@ export default function DashboardPage() {
       return acc;
     }, {});
 
+  // Spending by category from all period transactions
+  const spendingByCategory = allTransactions
+    .filter((tx) => tx.type === "expense" && tx.status === "settled")
+    .reduce<Record<string, number>>((acc, tx) => {
+      acc[tx.category_name] = (acc[tx.category_name] || 0) + Number(tx.amount);
+      return acc;
+    }, {});
+  const donutData = Object.entries(spendingByCategory)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+
+  // When chart filter is active, show from allTransactions; otherwise paginated
+  const txSource = chartFilter ? allTransactions : transactions;
+
+  // Dedup transfers
+  const hiddenIds = new Set<number>();
+  for (const tx of txSource) {
+    if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) hiddenIds.add(tx.id);
+  }
+  const visibleTxs = txSource.filter((tx) => !hiddenIds.has(tx.id));
+
+
+  function toggleDashSort(field: typeof dashSortField) {
+    if (dashSortField === field) setDashSortDir(dashSortDir === "asc" ? "desc" : "asc");
+    else { setDashSortField(field); setDashSortDir(field === "date" ? "desc" : "asc"); }
+  }
+
+  // Sort + filter the visible transactions
+  const sortedVisibleTxs = visibleTxs
+    .filter((tx) => !chartFilter || tx.category_name === chartFilter)
+    .sort((a, b) => {
+      let cmp = 0;
+      if (dashSortField === "date") cmp = a.date.localeCompare(b.date);
+      else if (dashSortField === "description") cmp = a.description.localeCompare(b.description);
+      else if (dashSortField === "amount") cmp = Number(a.amount) - Number(b.amount);
+      return dashSortDir === "asc" ? cmp : -cmp;
+    });
+
+  const CHART_COLORS = ["#D4A64A", "#5FA8D3", "#4ade80", "#f87171", "#a78bfa", "#fb923c", "#38bdf8", "#e879f9", "#34d399", "#fbbf24"];
+
   return (
     <AppShell>
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-6 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
         {canAdd && (
           <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
@@ -220,7 +271,7 @@ export default function DashboardPage() {
       {fetching ? (
         <Spinner />
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-5">
           {/* Quick-add form */}
           {showForm && (
             <div className={`${card} p-6`}>
@@ -231,9 +282,9 @@ export default function DashboardPage() {
                   <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
                 </div>
               </div>
-              <form onSubmit={handleQuickAdd} className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <form onSubmit={handleQuickAdd} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <div>
-                  <label htmlFor="da-account" className={label}>{formMode === "transfer" ? "From Account" : "Account"}</label>
+                  <label htmlFor="da-account" className={label}>{formMode === "transfer" ? "From" : "Account"}</label>
                   <select id="da-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                     <option value="">Select account</option>
                     {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -241,7 +292,7 @@ export default function DashboardPage() {
                 </div>
                 {formMode === "transfer" ? (
                   <div>
-                    <label htmlFor="da-to-account" className={label}>To Account</label>
+                    <label htmlFor="da-to-account" className={label}>To</label>
                     <select id="da-to-account" required value={formToAccountId} onChange={(e) => setFormToAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                       <option value="">Select account</option>
                       {activeAccounts.filter((a) => a.id !== formAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -279,265 +330,229 @@ export default function DashboardPage() {
                   <label htmlFor="da-date" className={label}>Date</label>
                   <input id="da-date" type="date" required value={formDate} onChange={(e) => setFormDate(e.target.value)} className={input} />
                 </div>
-                {formMode === "transaction" && (
+                {formMode === "transaction" ? (
                   <div className="flex items-end gap-3">
                     <label className="flex items-center gap-2 text-sm text-text-secondary">
                       <input type="checkbox" checked={formRecurring} onChange={(e) => setFormRecurring(e.target.checked)} className="rounded border-border" />
                       Repeats
                     </label>
                     {formRecurring && (
-                      <>
-                        <select value={formFrequency} onChange={(e) => setFormFrequency(e.target.value)} aria-label="Frequency" className={`w-32 text-sm ${input}`}>
-                          <option value="weekly">Weekly</option>
-                          <option value="biweekly">Biweekly</option>
-                          <option value="monthly">Monthly</option>
-                          <option value="quarterly">Quarterly</option>
-                          <option value="yearly">Yearly</option>
-                        </select>
-                        <label className="flex items-center gap-1 text-xs text-text-muted">
-                          <input type="checkbox" checked={formAutoSettle} onChange={(e) => setFormAutoSettle(e.target.checked)} className="rounded border-border" />
-                          Auto
-                        </label>
-                      </>
+                      <select value={formFrequency} onChange={(e) => setFormFrequency(e.target.value)} aria-label="Frequency" className={`w-28 text-xs ${input}`}>
+                        <option value="monthly">Monthly</option>
+                        <option value="weekly">Weekly</option>
+                        <option value="yearly">Yearly</option>
+                      </select>
                     )}
                   </div>
+                ) : (
+                  <div className="flex items-end">
+                    <button type="submit" className={btnPrimary}>Transfer</button>
+                  </div>
                 )}
-                <div className="flex items-end">
-                  <button type="submit" className={btnPrimary}>Add</button>
-                </div>
+                {formMode === "transaction" && (
+                  <div className="flex items-end">
+                    <button type="submit" className={btnPrimary}>Add</button>
+                  </div>
+                )}
               </form>
             </div>
           )}
 
-          {/* Total balance */}
-          {currencies.length > 0 && (
-            <div className="flex gap-4">
-              {currencies.map(([currency, total]) => (
-                <div key={currency} className={`flex-1 ${card} p-6`}>
-                  <p className={cardTitle}>Total Balance</p>
-                  <p className="mt-2 font-display text-3xl text-accent">
-                    {formatAmount(total)}
-                    <span className="ml-2 text-lg text-text-muted">{currency}</span>
-                  </p>
+          {/* Summary + Account tiles — unified grid */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            {/* KPI tiles */}
+            <div className={`${card} p-4`}>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
+              <p className="mt-1.5 text-lg font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
+            </div>
+            <div className={`${card} p-4`}>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
+              <p className="mt-1.5 text-lg font-semibold tabular-nums text-danger">-{formatAmount(totalExpense)}</p>
+            </div>
+            <div className={`${card} p-4`}>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Net</p>
+              <p className={`mt-1.5 text-lg font-semibold tabular-nums ${totalIncome - totalExpense >= 0 ? "text-success" : "text-danger"}`}>
+                {totalIncome - totalExpense >= 0 ? "+" : ""}{formatAmount(totalIncome - totalExpense)}
+              </p>
+            </div>
+            {/* Account tiles — same size as KPIs */}
+            {accountsWithBalance.map((acct) => {
+              const pending = pendingByAccount[acct.id] || 0;
+              const isCreditCard = acct.account_type_slug === "credit_card";
+              return (
+                <div key={acct.id} className={`${card} p-4`}>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
+                  <p className="mt-1.5 text-lg font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
+                  {isCreditCard && pending !== 0 && (
+                    <p className="mt-0.5 text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
+                  )}
                 </div>
-              ))}
-            </div>
-          )}
+              );
+            })}
+          </div>
 
-          {/* Per-account tiles — compact */}
-          {accountsWithBalance.length > 0 && (
-            <div className="grid grid-cols-3 gap-2 lg:grid-cols-5 xl:grid-cols-6">
-              {accountsWithBalance.map((acct) => {
-                const pending = pendingByAccount[acct.id] || 0;
-                const isCreditCard = acct.account_type_slug === "credit_card";
-                return (
-                  <div key={acct.id} className={`${card} px-3 py-2.5`}>
-                    <p className="text-[11px] font-medium text-text-muted truncate">{acct.name}</p>
-                    <p className="mt-1 text-sm font-semibold tabular-nums text-text-primary">
-                      {formatAmount(acct.balance)} <span className="text-[10px] text-text-muted">{acct.currency}</span>
-                    </p>
-                    {isCreditCard && pending !== 0 && (
-                      <p className="mt-0.5 text-[10px] tabular-nums text-danger">
-                        Pending: {formatAmount(Math.abs(pending))}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Budget progress */}
-          {budgets.length > 0 && (
-            <div className={card}>
-              <div className={`flex items-center justify-between ${cardHeader}`}>
-                <h2 className={cardTitle}>Budget Progress</h2>
-                <a href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</a>
-              </div>
-              <div className="divide-y divide-border-subtle">
-                {budgets.slice(0, 5).map((b) => {
-                  const pct = Math.min(b.percent_used, 100);
-                  const over = b.percent_used > 100;
-                  return (
-                    <div key={b.id} className="px-6 py-3">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm text-text-primary">{b.category_name}</span>
-                        <span className={`text-xs tabular-nums ${over ? "text-danger" : "text-text-muted"}`}>
-                          {formatAmount(b.spent)} / {formatAmount(b.amount)}
-                        </span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-surface-overlay">
-                        <div
-                          className={`h-1.5 rounded-full transition-all ${over ? "bg-danger" : pct > 80 ? "bg-amber-500" : "bg-success"}`}
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Income vs Expense chart */}
-          {(totalIncome > 0 || totalExpense > 0) && (
+          {/* Row 3: Two-column — Chart + Budget */}
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            {/* Spending by category (donut) */}
             <div className={`${card} p-5`}>
-              <h2 className={`mb-4 ${cardTitle}`}>Income vs Expense</h2>
-              <div className="space-y-3">
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs text-text-muted">Income</span>
-                    <span className="text-sm font-medium tabular-nums text-success">+{formatAmount(totalIncome)}</span>
-                  </div>
-                  <div className="h-3 rounded-full bg-surface-overlay">
-                    <div className="h-3 rounded-full bg-success transition-all" style={{ width: `${(totalIncome / maxBar) * 100}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs text-text-muted">Expenses</span>
-                    <span className="text-sm font-medium tabular-nums text-danger">-{formatAmount(totalExpense)}</span>
-                  </div>
-                  <div className="h-3 rounded-full bg-surface-overlay">
-                    <div className="h-3 rounded-full bg-danger transition-all" style={{ width: `${(totalExpense / maxBar) * 100}%` }} />
-                  </div>
-                </div>
-                <div className="flex items-center justify-between pt-1 border-t border-border-subtle">
-                  <span className="text-xs text-text-muted">Net</span>
-                  <span className={`text-sm font-semibold tabular-nums ${totalIncome - totalExpense >= 0 ? "text-success" : "text-danger"}`}>
-                    {totalIncome - totalExpense >= 0 ? "+" : ""}{formatAmount(totalIncome - totalExpense)}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Transactions with period navigation */}
-          <div className={card}>
-            <div className={`flex items-center justify-between ${cardHeader}`}>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))}
-                  disabled={periodIdx >= periods.length - 1}
-                  className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30"
-                  aria-label="Previous period"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+              <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
+              {chartFilter && (
+                <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-accent-dim px-2.5 py-1 text-xs text-accent hover:bg-accent/20">
+                  Filtering: {chartFilter} &times;
                 </button>
-                <h2 className={cardTitle}>
-                  {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
-                  {periodIdx === 0 && <span className="ml-2 text-success text-[10px]">current</span>}
-                </h2>
-                <button
-                  onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))}
-                  disabled={periodIdx <= 0}
-                  className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30"
-                  aria-label="Next period"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
-                </button>
-              </div>
-              <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">
-                View All
-              </Link>
-            </div>
-            <div className="divide-y divide-border-subtle">
-              {(() => {
-                // Deduplicate transfers: keep the expense side (lower id for stability)
-                const hiddenIds = new Set<number>();
-                for (const tx of transactions) {
-                  if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) {
-                    hiddenIds.add(tx.id);
-                  }
-                }
-                return transactions.filter((tx) => !hiddenIds.has(tx.id)).map((tx) => {
-                  const isTransfer = tx.linked_transaction_id !== null;
-                  const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
-
-                  return (
-                    <div key={tx.id} className="flex items-center justify-between px-6 py-3">
-                      <div className="flex items-center gap-4">
-                        <span className="text-sm tabular-nums text-text-muted w-20">{tx.date}</span>
-                        <div>
-                          <p className="text-sm text-text-primary">{tx.description}</p>
-                          <p className="text-xs text-text-muted">
-                            {isTransfer && linkedTx
-                              ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
-                              : <>{tx.account_name} · {tx.category_name}</>
-                            }
-                            {tx.status === "pending" && (
-                              <span className="ml-1.5 rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">
-                                pending
-                              </span>
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className={`text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                          {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
-                          {isTransfer && <span className="ml-1 text-xs text-text-muted">transfer</span>}
-                        </span>
-                        {!isTransfer && (
-                          <button
-                            onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await Promise.all([loadRefs(), loadTransactions(page)]); } catch (err) { setError(extractErrorMessage(err)); } }}
-                            aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
-                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}
-                          >
-                            {tx.status}
-                          </button>
-                        )}
-                        <button
-                          onClick={async () => { if (!confirm("Delete this transaction?")) return; try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "DELETE" }); await Promise.all([loadRefs(), loadTransactions(page)]); } catch (err) { setError(extractErrorMessage(err)); } }}
-                          aria-label={`Delete: ${tx.description}`}
-                          className="text-xs text-text-muted hover:text-danger"
+              )}
+              {donutData.length > 0 ? (
+                <div className="flex items-center gap-4">
+                  <div className="w-40 h-40">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={donutData} cx="50%" cy="50%" innerRadius={35} outerRadius={65}
+                          paddingAngle={2} dataKey="value" stroke="none" cursor="pointer"
+                          onClick={(_, idx) => {
+                            const name = donutData[idx]?.name;
+                            setChartFilter(chartFilter === name ? null : name);
+                          }}
                         >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-              {transactions.length === 0 && (
-                <div className="px-6 py-8 text-center text-sm text-text-muted">
-                  {!canAdd
-                    ? "Create accounts and categories first."
-                    : "No transactions this month."}
+                          {donutData.map((d, i) => (
+                            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]}
+                              opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="flex-1 space-y-1.5">
+                    {donutData.map((d, i) => (
+                      <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
+                        className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-accent-dim" : ""}`}>
+                        <div className="flex items-center gap-2">
+                          <div className="h-2.5 w-2.5 rounded-full" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                          <span className="text-xs text-text-secondary">{d.name}</span>
+                        </div>
+                        <span className="text-xs tabular-nums text-text-muted">{formatAmount(d.value)}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
+              ) : (
+                <p className="text-sm text-text-muted py-6 text-center">No expense data yet</p>
               )}
             </div>
 
-            {/* Pagination */}
-            {(page > 0 || hasMore) && (
-              <div className="flex items-center justify-between border-t border-border px-6 py-3">
-                <button
-                  onClick={() => setPage(Math.max(0, page - 1))}
-                  disabled={page === 0}
-                  className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40"
-                >
-                  Previous
+            {/* Budget progress */}
+            <div className={card}>
+              <div className={`flex items-center justify-between ${cardHeader}`}>
+                <h2 className={cardTitle}>Budget Progress</h2>
+                <Link href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</Link>
+              </div>
+              {budgets.length > 0 ? (
+                <div className="p-4" style={{ height: Math.max(budgets.slice(0, 6).length * 40, 100) }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={budgets.slice(0, 6).map((b) => ({
+                      name: b.category_name,
+                      spent: Number(b.spent),
+                      remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
+                      pct: b.percent_used,
+                    }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
+                      <XAxis type="number" hide />
+                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
+                      <Tooltip
+                        formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : "Remaining"]}
+                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                      />
+                      <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
+                        {budgets.slice(0, 6).map((b, i) => (
+                          <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
+                        ))}
+                      </Bar>
+                      <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={600} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="px-5 py-6 text-center text-sm text-text-muted">
+                  No budgets set. <Link href="/budgets" className="text-accent">Add one</Link>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Row 4: Recent transactions with period nav */}
+          <div className={card}>
+            <div className={`flex items-center justify-between ${cardHeader}`}>
+              <div className="flex items-center gap-2">
+                <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </button>
-                <span className="text-xs text-text-muted">Page {page + 1}</span>
-                <button
-                  onClick={() => setPage(page + 1)}
-                  disabled={!hasMore}
-                  className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40"
-                >
-                  Next
+                <h2 className={`${cardTitle} text-[11px]`}>
+                  {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
+                  {periodIdx === 0 && <span className="ml-1.5 text-success">current</span>}
+                </h2>
+                <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
                 </button>
+              </div>
+              <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All</Link>
+            </div>
+            {/* Sortable mini-header */}
+            <div className="flex items-center justify-between px-5 py-1.5 border-b border-border-subtle text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <div className="flex items-center gap-3">
+                <button onClick={() => toggleDashSort("date")} className="w-16 text-left hover:text-text-primary">Date{dashSortField === "date" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+                <button onClick={() => toggleDashSort("description")} className="text-left hover:text-text-primary">Description{dashSortField === "description" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+              </div>
+              <button onClick={() => toggleDashSort("amount")} className="hover:text-text-primary">Amount{dashSortField === "amount" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+            </div>
+            <div className="divide-y divide-border-subtle">
+              {sortedVisibleTxs.map((tx) => {
+                const isTransfer = tx.linked_transaction_id !== null;
+                const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                return (
+                  <div key={tx.id} className="flex items-center justify-between px-5 py-2.5">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-xs tabular-nums text-text-muted w-16 shrink-0">{tx.date.slice(5)}</span>
+                      <div className="min-w-0">
+                        <p className="text-sm text-text-primary truncate">{tx.description}</p>
+                        <p className="text-[11px] text-text-muted truncate">
+                          {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : <>{tx.account_name} · {tx.category_name}</>}
+                          {tx.status === "pending" && <span className="ml-1 rounded bg-surface-overlay px-1 py-0.5 text-[9px] font-medium text-text-muted">pending</span>}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                        {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                      </span>
+                      {!isTransfer && (
+                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                          {tx.status}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {transactions.length === 0 && (
+                <div className="px-5 py-6 text-center text-sm text-text-muted">
+                  {!canAdd ? "Create accounts and categories first." : "No transactions this period."}
+                </div>
+              )}
+            </div>
+            {!chartFilter && (page > 0 || hasMore) && (
+              <div className="flex items-center justify-between border-t border-border px-5 py-2.5">
+                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised disabled:opacity-40">Prev</button>
+                <span className="text-[11px] text-text-muted">Page {page + 1}</span>
+                <button onClick={() => setPage(page + 1)} disabled={!hasMore} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised disabled:opacity-40">Next</button>
               </div>
             )}
           </div>
 
-          {/* Empty state for no accounts */}
           {activeAccounts.length === 0 && (
             <div className={`${card} p-10 text-center`}>
               <p className="text-text-secondary">No accounts yet.</p>
               <p className="mt-2 text-sm text-text-muted">
-                Go to{" "}
-                <Link href="/accounts" className="text-accent hover:text-accent-hover">Accounts</Link>{" "}
-                to create your first account.
+                Go to <Link href="/accounts" className="text-accent hover:text-accent-hover">Accounts</Link> to get started.
               </p>
             </div>
           )}
