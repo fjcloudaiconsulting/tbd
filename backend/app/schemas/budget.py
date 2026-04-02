@@ -23,6 +23,6 @@ class BudgetResponse(BaseModel):
     remaining: Decimal = Decimal("0.00")
     percent_used: float = 0.0
     period_start: datetime.date
-    period_end: datetime.date
+    period_end: Optional[datetime.date] = None
 
     model_config = {"from_attributes": True}

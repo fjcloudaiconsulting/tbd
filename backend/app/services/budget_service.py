@@ -118,7 +118,7 @@ async def create_budget(db: AsyncSession, org_id: int, body: BudgetCreate) -> Bu
         category_id=body.category_id,
         amount=body.amount,
         period_start=period.start_date,
-        period_end=period.end_date or period.start_date,
+        period_end=period.end_date,
     )
     db.add(budget)
     await db.commit()
@@ -144,7 +144,10 @@ async def update_budget(
     await db.commit()
     await db.refresh(budget, ["category"])
 
-    spent = await _compute_spent(db, org_id, budget.category_id, budget.period_start, budget.period_end)
+    # Use the live period end_date (not the stored one) for open periods
+    period = await get_current_period(db, org_id)
+    end = period.end_date if period.start_date == budget.period_start else budget.period_end
+    spent = await _compute_spent(db, org_id, budget.category_id, budget.period_start, end)
     return _to_response(budget, spent)
 
 

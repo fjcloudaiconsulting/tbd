@@ -470,17 +470,23 @@ export default function TransactionsPage() {
                     </span>
                     <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
                     <span className="col-span-1 text-center">
-                      <button
-                        onClick={() => handleToggleStatus(tx)}
-                        aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
-                        className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                          tx.status === "settled"
-                            ? "bg-success-dim text-success"
-                            : "bg-surface-overlay text-text-muted"
-                        }`}
-                      >
-                        {tx.status}
-                      </button>
+                      {isTransfer ? (
+                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                          {tx.status}
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleToggleStatus(tx)}
+                          aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            tx.status === "settled"
+                              ? "bg-success-dim text-success"
+                              : "bg-surface-overlay text-text-muted"
+                          }`}
+                        >
+                          {tx.status}
+                        </button>
+                      )}
                     </span>
                     <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                       {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}

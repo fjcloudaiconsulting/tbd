@@ -1,3 +1,5 @@
+import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -178,12 +180,10 @@ async def list_periods(
 async def close_period(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    close_date: str | None = None,
+    close_date: datetime.date | None = None,
 ):
     _require_admin(current_user)
-    import datetime
-    cd = datetime.date.fromisoformat(close_date) if close_date else None
-    new_period = await billing_service.close_period(db, current_user.org_id, cd)
+    new_period = await billing_service.close_period(db, current_user.org_id, close_date)
     return {
         "id": new_period.id,
         "start_date": new_period.start_date.isoformat(),

@@ -54,7 +54,7 @@ export default function DashboardPage() {
   const monthTo = selectedPeriod?.end_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
 
   const loadRefs = useCallback(async () => {
-    const [accts, cats] = await Promise.all([
+    const [accts, cats, bds, per, plist] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<Budget[]>("/api/v1/budgets"),

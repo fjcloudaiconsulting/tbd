@@ -140,7 +140,7 @@ export default function SettingsPage() {
             </button>
 
             <div className="border-l border-border pl-4">
-              <p className="text-xs text-text-muted mb-1">Default cycle hint day (for new periods)</p>
+              <label htmlFor="cycle-day" className="text-xs text-text-muted mb-1 block">Default cycle hint day (for new periods)</label>
               <div className="flex items-center gap-2">
                 <input
                   id="cycle-day"
