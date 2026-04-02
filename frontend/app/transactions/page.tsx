@@ -383,7 +383,7 @@ export default function TransactionsPage() {
         <div className="flex gap-1">
           {[
             { label: "Today", fn: () => { const d = todayISO(); setFilterDateFrom(d); setFilterDateTo(d); } },
-            { label: "This Week", fn: () => { const now = new Date(); const mon = new Date(now); mon.setDate(now.getDate() - now.getDay() + 1); setFilterDateFrom(formatLocalDate(mon)); setFilterDateTo(todayISO()); } },
+            { label: "This Week", fn: () => { const now = new Date(); const day = now.getDay(); const diff = day === 0 ? 6 : day - 1; const mon = new Date(now); mon.setDate(now.getDate() - diff); setFilterDateFrom(formatLocalDate(mon)); setFilterDateTo(todayISO()); } },
             { label: "This Month", fn: () => { const now = new Date(); setFilterDateFrom(formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 1))); setFilterDateTo(todayISO()); } },
             { label: "All", fn: () => { setFilterDateFrom(""); setFilterDateTo(""); } },
           ].map((p) => (

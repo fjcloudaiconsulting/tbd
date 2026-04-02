@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -64,8 +64,19 @@ export default function CategoriesPage() {
     if (!loading && user) reload().catch(() => setFetching(false));
   }, [loading, user, reload]);
 
-  const allMasters = categories.filter((c) => c.parent_id === null);
-  const childrenOf = (parentId: number) => categories.filter((c) => c.parent_id === parentId);
+  const { allMasters, childrenMap } = useMemo(() => {
+    const masters = categories.filter((c) => c.parent_id === null);
+    const map = new Map<number, Category[]>();
+    for (const c of categories) {
+      if (c.parent_id !== null) {
+        const list = map.get(c.parent_id) ?? [];
+        list.push(c);
+        map.set(c.parent_id, list);
+      }
+    }
+    return { allMasters: masters, childrenMap: map };
+  }, [categories]);
+  const childrenOf = (parentId: number) => childrenMap.get(parentId) ?? [];
 
   const sq = search.toLowerCase();
   const masters = sq

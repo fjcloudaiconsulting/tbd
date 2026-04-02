@@ -72,7 +72,6 @@ export default function DashboardPage() {
     setBudgets(bds ?? []);
     if (per) setPeriod(per);
     setPeriods(plist ?? []);
-    setPeriodIdx(0);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
@@ -420,7 +419,7 @@ export default function DashboardPage() {
                               opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
                           ))}
                         </Pie>
-                        <Tooltip formatter={(v: number) => formatAmount(v)} contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }} />
+                        <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
@@ -522,7 +521,7 @@ export default function DashboardPage() {
                         {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                       </span>
                       {!isTransfer && (
-                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await Promise.all([loadRefs(), loadTransactions(page)]); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
                           {tx.status}
                         </button>
                       )}
