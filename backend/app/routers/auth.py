@@ -81,6 +81,13 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
                 is_system=True,
             ))
 
+    # Transfer category (used automatically for transfers, no parent)
+    db.add(Category(
+        org_id=org.id, name="Transfer", slug="transfer",
+        description="Internal transfers between accounts",
+        type=CategoryType.BOTH, is_system=True,
+    ))
+
     user = User(
         org_id=org.id,
         username=body.username,

@@ -204,9 +204,7 @@ export default function CategoriesPage() {
                     >
                       {addingToMaster === master.id ? "Cancel" : "+ Add Sub"}
                     </button>
-                    {!master.is_system && (
-                      <button onClick={() => handleDelete(master.id)} aria-label={`Delete ${master.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
-                    )}
+                    <button onClick={() => handleDelete(master.id)} aria-label={`Delete ${master.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                   </div>
                 </div>
 
@@ -238,9 +236,7 @@ export default function CategoriesPage() {
                             {sub.description && <span className="ml-2 text-xs text-text-muted">{sub.description}</span>}
                             <span className="ml-2 text-xs text-text-muted" title={`${sub.transaction_count} transaction(s)`}>{sub.transaction_count}</span>
                           </div>
-                          {!sub.is_system && (
-                            <button onClick={() => handleDelete(sub.id)} aria-label={`Delete ${sub.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
-                          )}
+                          <button onClick={() => handleDelete(sub.id)} aria-label={`Delete ${sub.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                         </div>
                       ))}
                     </div>

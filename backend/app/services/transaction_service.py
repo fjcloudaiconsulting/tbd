@@ -273,7 +273,18 @@ async def create_transfer(
 
     await validate_account(db, body.from_account_id, org_id)
     await validate_account(db, body.to_account_id, org_id)
-    await validate_category(db, body.category_id, org_id)
+
+    # Auto-assign Transfer category if not provided
+    category_id = body.category_id
+    if category_id is None:
+        transfer_cat = await db.scalar(
+            select(Category.id).where(Category.slug == "transfer", Category.org_id == org_id)
+        )
+        if transfer_cat is None:
+            raise ValidationError("Transfer category not found. Please re-register or create one manually.")
+        category_id = transfer_cat
+    else:
+        await validate_category(db, category_id, org_id)
 
     tx_status = TransactionStatus(body.status)
 
@@ -283,7 +294,7 @@ async def create_transfer(
         expense_tx = Transaction(
             org_id=org_id,
             account_id=body.from_account_id,
-            category_id=body.category_id,
+            category_id=category_id,
             description=body.description,
             amount=body.amount,
             type=TransactionType.EXPENSE,
@@ -294,7 +305,7 @@ async def create_transfer(
         income_tx = Transaction(
             org_id=org_id,
             account_id=body.to_account_id,
-            category_id=body.category_id,
+            category_id=category_id,
             description=body.description,
             amount=body.amount,
             type=TransactionType.INCOME,

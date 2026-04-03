@@ -127,7 +127,6 @@ export default function TransactionsPage() {
           body: JSON.stringify({
             from_account_id: formAccountId,
             to_account_id: formToAccountId,
-            category_id: formCategoryId,
             description: formDescription,
             amount: formAmount,
             status: formStatus,
@@ -318,10 +317,12 @@ export default function TransactionsPage() {
                 </select>
               </div>
             )}
-            <div>
-              <label htmlFor="tx-category" className={label}>Category</label>
-              <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formMode === "transfer" ? "expense" : formType} className={input} />
-            </div>
+            {formMode === "transaction" && (
+              <div>
+                <label htmlFor="tx-category" className={label}>Category</label>
+                <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+              </div>
+            )}
             <div>
               <label htmlFor="tx-desc" className={label}>Description</label>
               <input id="tx-desc" type="text" required placeholder="What was it for?" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />

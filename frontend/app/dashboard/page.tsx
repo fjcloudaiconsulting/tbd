@@ -135,7 +135,6 @@ export default function DashboardPage() {
           body: JSON.stringify({
             from_account_id: formAccountId,
             to_account_id: formToAccountId,
-            category_id: formCategoryId,
             description: formDescription,
             amount: formAmount,
             status: formStatus,
@@ -327,10 +326,12 @@ export default function DashboardPage() {
                     </select>
                   </div>
                 )}
-                <div>
-                  <label htmlFor="da-category" className={label}>Category</label>
-                  <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formMode === "transfer" ? "expense" : formType} className={input} />
-                </div>
+                {formMode === "transaction" && (
+                  <div>
+                    <label htmlFor="da-category" className={label}>Category</label>
+                    <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+                  </div>
+                )}
                 <div>
                   <label htmlFor="da-desc" className={label}>Description</label>
                   <input id="da-desc" type="text" required placeholder="What was it for?" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
