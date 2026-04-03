@@ -12,6 +12,22 @@ import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveCo
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Budget, Category, Transaction } from "@/lib/types";
 
+interface Forecast {
+  period_start: string;
+  period_end: string;
+  executed_income: string;
+  executed_expense: string;
+  executed_net: string;
+  pending_income: string;
+  pending_expense: string;
+  recurring_income: string;
+  recurring_expense: string;
+  forecast_income: string;
+  forecast_expense: string;
+  forecast_net: string;
+  categories: { category_id: number; category_name: string; executed: string; pending: string; recurring: string; forecast: string }[];
+}
+
 interface BillingPeriod {
   id: number;
   start_date: string;
@@ -30,6 +46,7 @@ export default function DashboardPage() {
   const [period, setPeriod] = useState<BillingPeriod | null>(null);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
   const [periodIdx, setPeriodIdx] = useState(0);
+  const [forecast, setForecast] = useState<Forecast | null>(null);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -76,16 +93,19 @@ export default function DashboardPage() {
 
   const loadTransactions = useCallback(async (p: number) => {
     const budgetUrl = monthFrom ? `/api/v1/budgets?period_start=${monthFrom}` : "/api/v1/budgets";
-    const [pageData, allData, bds] = await Promise.all([
+    const forecastUrl = monthFrom ? `/api/v1/forecast?period_start=${monthFrom}` : "/api/v1/forecast";
+    const [pageData, allData, bds, fc] = await Promise.all([
       apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`),
       p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&date_from=${monthFrom}&date_to=${monthTo}`) : null,
       p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
+      p === 0 ? apiFetch<Forecast>(forecastUrl) : null,
     ]);
     const page_txs = pageData ?? [];
     setHasMore(page_txs.length > PAGE_SIZE);
     setTransactions(page_txs.slice(0, PAGE_SIZE));
     if (allData) setAllTransactions(allData);
     if (bds) setBudgets(bds);
+    if (fc) setForecast(fc);
     setFetching(false);
   }, [monthFrom, monthTo]);
 
@@ -390,6 +410,84 @@ export default function DashboardPage() {
               );
             })}
           </div>
+
+          {/* Forecast: Executed vs Forecast comparison */}
+          {forecast && (Number(forecast.forecast_expense) > 0 || Number(forecast.forecast_income) > 0) && (
+            <div className={`${card} p-5`}>
+              <h2 className={`mb-4 ${cardTitle}`}>Executed vs Forecast</h2>
+              <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Executed Income</p>
+                  <p className="mt-1 text-lg font-semibold tabular-nums text-success">+{formatAmount(forecast.executed_income)}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Forecast Income</p>
+                  <p className="mt-1 text-lg font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_income)}</p>
+                  {Number(forecast.pending_income) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.pending_income)} pending</p>}
+                  {Number(forecast.recurring_income) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.recurring_income)} recurring</p>}
+                </div>
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Executed Expenses</p>
+                  <p className="mt-1 text-lg font-semibold tabular-nums text-danger">-{formatAmount(forecast.executed_expense)}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Forecast Expenses</p>
+                  <p className="mt-1 text-lg font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_expense)}</p>
+                  {Number(forecast.pending_expense) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.pending_expense)} pending</p>}
+                  {Number(forecast.recurring_expense) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.recurring_expense)} recurring</p>}
+                </div>
+              </div>
+              <div className="mt-4 flex items-center justify-between border-t border-border-subtle pt-3">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Executed Net</p>
+                  <p className={`text-lg font-semibold tabular-nums ${Number(forecast.executed_net) >= 0 ? "text-success" : "text-danger"}`}>
+                    {Number(forecast.executed_net) >= 0 ? "+" : ""}{formatAmount(forecast.executed_net)}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Forecast Net</p>
+                  <p className={`text-lg font-semibold tabular-nums ${Number(forecast.forecast_net) >= 0 ? "text-success" : "text-danger"}`}>
+                    {Number(forecast.forecast_net) >= 0 ? "+" : ""}{formatAmount(forecast.forecast_net)}
+                  </p>
+                </div>
+              </div>
+              {/* Category forecast bars */}
+              {forecast.categories.length > 0 && (
+                <div className="mt-4 border-t border-border-subtle pt-4">
+                  <p className={`mb-3 ${cardTitle}`}>Expense Forecast by Category</p>
+                  <div style={{ height: Math.max(forecast.categories.length * 36, 80) }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={forecast.categories.map((c) => ({
+                          name: c.category_name,
+                          executed: Number(c.executed),
+                          pending: Number(c.pending),
+                          recurring: Number(c.recurring),
+                        }))}
+                        layout="vertical"
+                        margin={{ left: 10, right: 10, top: 0, bottom: 0 }}
+                      >
+                        <XAxis type="number" hide />
+                        <YAxis type="category" dataKey="name" width={110} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
+                        <Tooltip
+                          formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? "Executed" : name === "pending" ? "Pending" : "Recurring"]}
+                          contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                        />
+                        <Bar dataKey="executed" stackId="a" fill="#4ade80" radius={[4, 0, 0, 4]} animationDuration={600} />
+                        <Bar dataKey="pending" stackId="a" fill="#D4A64A" animationDuration={600} />
+                        <Bar dataKey="recurring" stackId="a" fill="#5FA8D3" radius={[0, 4, 4, 0]} animationDuration={600} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="mt-2 flex gap-4 text-[10px] text-text-muted">
+                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-success" /> Executed</span>
+                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Pending</span>
+                    <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#5FA8D3" }} /> Recurring</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Row 3: Two-column — Chart + Budget */}
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
