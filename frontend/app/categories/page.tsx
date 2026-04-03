@@ -132,6 +132,7 @@ export default function CategoriesPage() {
   }
 
   async function handleEditCat(id: number) {
+    if (!editCatName.trim()) return;
     setError("");
     try {
       await apiFetch(`/api/v1/categories/${id}`, {

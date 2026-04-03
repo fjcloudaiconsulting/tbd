@@ -182,7 +182,9 @@ async def compute_forecast(
     cat_names = {}
     if all_cat_ids:
         name_result = await db.execute(
-            select(Category.id, Category.name, Category.parent_id).where(Category.id.in_(all_cat_ids))
+            select(Category.id, Category.name, Category.parent_id).where(
+                Category.id.in_(all_cat_ids), Category.org_id == org_id
+            )
         )
         for row in name_result.all():
             cat_names[row[0]] = {"name": row[1], "parent_id": row[2]}

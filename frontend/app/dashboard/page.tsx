@@ -180,6 +180,7 @@ export default function DashboardPage() {
       setFormDate(todayISO());
       setShowForm(false);
       await loadRefs();
+      await loadTransactions(0);
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -219,7 +220,7 @@ export default function DashboardPage() {
   const accountsWithBalance = activeAccounts.filter((a) => Number(a.balance) !== 0);
 
   // Precompute tx map for O(1) linked lookups
-  const txMap = new Map(transactions.map((tx) => [tx.id, tx]));
+  const txMap = new Map(allTransactions.map((tx) => [tx.id, tx]));
 
   // Totals from ALL period transactions (not just the paginated page)
   const totalIncome = allTransactions.filter((tx) => tx.type === "income" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
