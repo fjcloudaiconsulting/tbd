@@ -378,106 +378,117 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* ═══ HERO: Period + Net Position + Forecast Gauge ═══ */}
-          <div className={`${card} overflow-hidden`}>
-            {/* Period nav bar */}
-            <div className="flex items-center justify-between px-6 py-3 border-b border-border-subtle">
-              <div className="flex items-center gap-2">
-                <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                </button>
-                <span className="text-xs font-medium text-text-secondary">
-                  {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
-                  {periodIdx === 0 && <span className="ml-1.5 text-success">current</span>}
-                </span>
-                <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
-                </button>
-              </div>
-              <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All Transactions</Link>
+          {/* ═══ BILLING PERIOD — standalone nav bar ═══ */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+              </button>
+              <span className="text-sm font-medium text-text-primary">
+                {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
+              </span>
+              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+              </button>
+              {periodIdx === 0 && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
             </div>
+            <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All Transactions</Link>
+          </div>
 
-            {/* Hero content: 3-column */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-border-subtle">
-              {/* Left: Income flow */}
-              <div className="p-6">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-3">Income</p>
-                <div className="flex items-baseline gap-3">
-                  <p className="text-2xl font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
-                  {forecast && Number(forecast.forecast_income) !== totalIncome && (
-                    <p className="text-xs text-text-muted tabular-nums">forecast {formatAmount(forecast.forecast_income)}</p>
-                  )}
+          {/* ═══ ROW 1: Executed | Forecast — two symmetric columns ═══ */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {/* Executed */}
+            <div className={`${card} p-5`}>
+              <h2 className={`mb-4 ${cardTitle}`}>Executed</h2>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
+                  <p className="mt-1 text-xl font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
                 </div>
-                {forecast && Number(forecast.pending_income) > 0 && (
-                  <p className="mt-1 text-[11px] text-text-muted">+{formatAmount(forecast.pending_income)} pending</p>
-                )}
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
+                  <p className="mt-1 text-xl font-semibold tabular-nums text-danger">-{formatAmount(totalExpense)}</p>
+                </div>
               </div>
-
-              {/* Center: Net position — the HERO number */}
-              <div className="p-6 flex flex-col items-center justify-center text-center">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-2">Net This Period</p>
-                <p className={`font-display text-4xl tabular-nums ${totalIncome - totalExpense >= 0 ? "text-accent" : "text-danger"}`}>
+              <div className="mt-4 pt-3 border-t border-border-subtle">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Net</p>
+                <p className={`mt-1 font-display text-2xl tabular-nums ${totalIncome - totalExpense >= 0 ? "text-accent" : "text-danger"}`}>
                   {totalIncome - totalExpense >= 0 ? "+" : ""}{formatAmount(totalIncome - totalExpense)}
                 </p>
-                {forecast && (
-                  <div className="mt-3 w-full max-w-[200px]">
-                    <div className="flex justify-between text-[10px] text-text-muted mb-1">
-                      <span>Executed</span>
-                      <span>Forecast</span>
+              </div>
+            </div>
+
+            {/* Forecast */}
+            <div className={`${card} p-5`}>
+              <h2 className={`mb-4 ${cardTitle}`}>Forecast</h2>
+              {forecast ? (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
+                      <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_income)}</p>
+                      {Number(forecast.pending_income) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.pending_income)} pending</p>}
+                      {Number(forecast.recurring_income) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.recurring_income)} recurring</p>}
                     </div>
-                    <div className="h-2 rounded-full bg-surface-overlay overflow-hidden">
-                      <div
-                        className="h-2 rounded-full bg-accent transition-all duration-700"
-                        style={{ width: `${Math.min((totalExpense / Math.max(Number(forecast.forecast_expense), 1)) * 100, 100)}%` }}
-                      />
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
+                      <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_expense)}</p>
+                      {Number(forecast.pending_expense) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.pending_expense)} pending</p>}
+                      {Number(forecast.recurring_expense) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.recurring_expense)} recurring</p>}
                     </div>
-                    <p className="mt-1 text-center text-[10px] text-text-muted tabular-nums">
-                      {formatAmount(forecast.forecast_net)} projected
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-border-subtle">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Projected Net</p>
+                    <p className={`mt-1 font-display text-2xl tabular-nums ${Number(forecast.forecast_net) >= 0 ? "text-accent" : "text-danger"}`}>
+                      {Number(forecast.forecast_net) >= 0 ? "+" : ""}{formatAmount(forecast.forecast_net)}
                     </p>
                   </div>
-                )}
-              </div>
-
-              {/* Right: Expense flow */}
-              <div className="p-6">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted mb-3">Expenses</p>
-                <div className="flex items-baseline gap-3">
-                  <p className="text-2xl font-semibold tabular-nums text-danger">-{formatAmount(totalExpense)}</p>
-                  {forecast && Number(forecast.forecast_expense) !== totalExpense && (
-                    <p className="text-xs text-text-muted tabular-nums">forecast {formatAmount(forecast.forecast_expense)}</p>
-                  )}
-                </div>
-                {forecast && Number(forecast.pending_expense) > 0 && (
-                  <p className="mt-1 text-[11px] text-text-muted">+{formatAmount(forecast.pending_expense)} pending</p>
-                )}
-                {forecast && Number(forecast.recurring_expense) > 0 && (
-                  <p className="text-[11px] text-text-muted">+{formatAmount(forecast.recurring_expense)} upcoming</p>
-                )}
-              </div>
+                </>
+              ) : (
+                <p className="text-sm text-text-muted py-4">No forecast data</p>
+              )}
             </div>
           </div>
 
-          {/* ═══ ACCOUNTS — horizontal strip ═══ */}
-          {accountsWithBalance.length > 0 && (
-            <div className="flex gap-3 overflow-x-auto pb-1">
-              {accountsWithBalance.map((acct) => {
-                const pending = pendingByAccount[acct.id] || 0;
-                const isCreditCard = acct.account_type_slug === "credit_card";
-                return (
-                  <div key={acct.id} className={`${card} px-4 py-3 shrink-0 min-w-[150px]`}>
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
-                    <p className="mt-1 text-base font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
-                    {isCreditCard && pending !== 0 && (
-                      <p className="text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
+          {/* ═══ ROW 2: Accounts — default first (larger), others sorted ═══ */}
+          {accountsWithBalance.length > 0 && (() => {
+            const defaultAcct = accountsWithBalance.find((a) => a.is_default);
+            const others = accountsWithBalance.filter((a) => !a.is_default);
+            return (
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                {/* Default/main account — spans 2 cols */}
+                {defaultAcct && (
+                  <div className={`${card} p-5 col-span-2`}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">{defaultAcct.name}</p>
+                      <span className="rounded bg-accent-dim px-1.5 py-0.5 text-[9px] font-semibold text-accent">PRIMARY</span>
+                    </div>
+                    <p className="font-display text-3xl tabular-nums text-text-primary">{formatAmount(defaultAcct.balance)} <span className="text-base text-text-muted">{defaultAcct.currency}</span></p>
+                    {pendingByAccount[defaultAcct.id] !== undefined && pendingByAccount[defaultAcct.id] !== 0 && (
+                      <p className="mt-1 text-xs tabular-nums text-text-muted">Pending: {formatAmount(Math.abs(pendingByAccount[defaultAcct.id]))}</p>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          )}
+                )}
+                {/* Other accounts */}
+                {others.map((acct) => {
+                  const pending = pendingByAccount[acct.id] || 0;
+                  const isCreditCard = acct.account_type_slug === "credit_card";
+                  return (
+                    <div key={acct.id} className={`${card} p-4`}>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
+                      <p className="mt-1.5 text-lg font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
+                      {isCreditCard && pending !== 0 && (
+                        <p className="mt-0.5 text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
-          {/* Row 3: Two-column — Chart + Budget */}
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          {/* ═══ ROW 3: Three equal charts ═══ */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             {/* Spending by category (donut) */}
             <div className={`${card} p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
@@ -561,6 +572,44 @@ export default function DashboardPage() {
                   No budgets set. <Link href="/budgets" className="text-accent">Add one</Link>
                 </div>
               )}
+            </div>
+
+            {/* Forecast comparison — executed vs forecast per category */}
+            <div className={`${card} p-5`}>
+              <h2 className={`mb-3 ${cardTitle}`}>Forecast by Category</h2>
+              {forecast && forecast.categories.length > 0 ? (
+                <div style={{ height: Math.max(Math.min(forecast.categories.length, 8) * 32, 100) }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={forecast.categories.slice(0, 8).map((c) => ({
+                        name: c.category_name.length > 12 ? c.category_name.slice(0, 12) + "…" : c.category_name,
+                        executed: Number(c.executed),
+                        pending: Number(c.pending),
+                        recurring: Number(c.recurring),
+                      }))}
+                      layout="vertical"
+                      margin={{ left: 0, right: 0, top: 0, bottom: 0 }}
+                    >
+                      <XAxis type="number" hide />
+                      <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
+                      <Tooltip
+                        formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? "Executed" : name === "pending" ? "Pending" : "Recurring"]}
+                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                      />
+                      <Bar dataKey="executed" stackId="a" fill="#4ade80" radius={[3, 0, 0, 3]} animationDuration={600} />
+                      <Bar dataKey="pending" stackId="a" fill="#D4A64A" animationDuration={600} />
+                      <Bar dataKey="recurring" stackId="a" fill="#5FA8D3" radius={[0, 3, 3, 0]} animationDuration={600} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <p className="text-sm text-text-muted py-6 text-center">No forecast data</p>
+              )}
+              <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-success" /> Executed</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Pending</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#5FA8D3" }} /> Recurring</span>
+              </div>
             </div>
           </div>
 
