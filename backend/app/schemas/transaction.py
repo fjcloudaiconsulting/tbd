@@ -19,7 +19,7 @@ class TransferCreate(BaseModel):
     from_account_id: int
     to_account_id: int
     category_id: Optional[int] = None
-    description: str
+    description: str = "Transfer"
     amount: Decimal = Field(gt=0)
     status: Literal["settled", "pending"] = "settled"
     date: datetime.date

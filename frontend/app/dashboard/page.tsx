@@ -334,7 +334,7 @@ export default function DashboardPage() {
                 )}
                 <div>
                   <label htmlFor="da-desc" className={label}>Description</label>
-                  <input id="da-desc" type="text" required placeholder="What was it for?" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
+                  <input id="da-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Transfer (optional)" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
                 </div>
                 <div>
                   <label htmlFor="da-amount" className={label}>Amount</label>
@@ -451,22 +451,22 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* ═══ ROW 2: Accounts — default first (larger), others sorted ═══ */}
+          {/* ═══ ROW 2: Accounts — single row, primary slightly bigger ═══ */}
           {accountsWithBalance.length > 0 && (() => {
             const defaultAcct = accountsWithBalance.find((a) => a.is_default);
             const others = accountsWithBalance.filter((a) => !a.is_default);
             return (
-              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                {/* Default/main account — spans 2 cols */}
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {/* Primary account — wider */}
                 {defaultAcct && (
-                  <div className={`${card} p-5 col-span-2`}>
-                    <div className="flex items-center gap-2 mb-2">
+                  <div className={`${card} px-5 py-3 shrink-0`} style={{ minWidth: "220px" }}>
+                    <div className="flex items-center gap-2">
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">{defaultAcct.name}</p>
                       <span className="rounded bg-accent-dim px-1.5 py-0.5 text-[9px] font-semibold text-accent">PRIMARY</span>
                     </div>
-                    <p className="font-display text-3xl tabular-nums text-text-primary">{formatAmount(defaultAcct.balance)} <span className="text-base text-text-muted">{defaultAcct.currency}</span></p>
+                    <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(defaultAcct.balance)} <span className="text-xs text-text-muted">{defaultAcct.currency}</span></p>
                     {pendingByAccount[defaultAcct.id] !== undefined && pendingByAccount[defaultAcct.id] !== 0 && (
-                      <p className="mt-1 text-xs tabular-nums text-text-muted">Pending: {formatAmount(Math.abs(pendingByAccount[defaultAcct.id]))}</p>
+                      <p className="text-[10px] tabular-nums text-text-muted">Pending: {formatAmount(Math.abs(pendingByAccount[defaultAcct.id]))}</p>
                     )}
                   </div>
                 )}
@@ -475,11 +475,11 @@ export default function DashboardPage() {
                   const pending = pendingByAccount[acct.id] || 0;
                   const isCreditCard = acct.account_type_slug === "credit_card";
                   return (
-                    <div key={acct.id} className={`${card} p-4`}>
+                    <div key={acct.id} className={`${card} px-4 py-3 shrink-0`} style={{ minWidth: "150px" }}>
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
-                      <p className="mt-1.5 text-lg font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
+                      <p className="mt-1 text-base font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
                       {isCreditCard && pending !== 0 && (
-                        <p className="mt-0.5 text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
+                        <p className="text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
                       )}
                     </div>
                   );

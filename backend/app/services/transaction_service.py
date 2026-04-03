@@ -281,7 +281,16 @@ async def create_transfer(
             select(Category.id).where(Category.slug == "transfer", Category.org_id == org_id)
         )
         if transfer_cat is None:
-            raise ValidationError("Transfer category not found. Please re-register or create one manually.")
+            # Auto-create the Transfer category if missing (legacy data)
+            from app.models.category import CategoryType
+            new_cat = Category(
+                org_id=org_id, name="Transfer", slug="transfer",
+                description="Internal transfers between accounts",
+                type=CategoryType.BOTH, is_system=True,
+            )
+            db.add(new_cat)
+            await db.flush()
+            transfer_cat = new_cat.id
         category_id = transfer_cat
     else:
         await validate_category(db, category_id, org_id)

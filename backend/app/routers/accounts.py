@@ -123,6 +123,11 @@ async def update_account(
             raise HTTPException(status_code=400, detail="Invalid account type")
         account.account_type_id = body.account_type_id
     if body.is_active is not None:
+        if body.is_active is False and account.balance != 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot deactivate account with balance {account.balance}. Transfer the balance first.",
+            )
         account.is_active = body.is_active
     if "close_day" in body.model_fields_set:
         account.close_day = body.close_day
@@ -185,6 +190,12 @@ async def delete_account(
     account = result.scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    if account.balance != 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot delete account with balance {account.balance}. Transfer the balance first.",
+        )
 
     await assert_no_dependents(
         db, Transaction,
