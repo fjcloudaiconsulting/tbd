@@ -113,12 +113,6 @@ async def update_category(
     if cat is None:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    if cat.is_system:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot modify system category",
-        )
-
     if body.name is not None:
         cat.name = body.name
     if body.type is not None:
@@ -161,12 +155,6 @@ async def delete_category(
     cat = result.scalar_one_or_none()
     if cat is None:
         raise HTTPException(status_code=404, detail="Category not found")
-
-    if cat.is_system:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Cannot delete system category",
-        )
 
     # Check for child categories
     await assert_no_dependents(

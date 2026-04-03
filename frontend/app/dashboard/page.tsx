@@ -12,6 +12,22 @@ import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveCo
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Budget, Category, Transaction } from "@/lib/types";
 
+interface Forecast {
+  period_start: string;
+  period_end: string;
+  executed_income: string;
+  executed_expense: string;
+  executed_net: string;
+  pending_income: string;
+  pending_expense: string;
+  recurring_income: string;
+  recurring_expense: string;
+  forecast_income: string;
+  forecast_expense: string;
+  forecast_net: string;
+  categories: { category_id: number; category_name: string; executed: string; pending: string; recurring: string; forecast: string }[];
+}
+
 interface BillingPeriod {
   id: number;
   start_date: string;
@@ -30,6 +46,7 @@ export default function DashboardPage() {
   const [period, setPeriod] = useState<BillingPeriod | null>(null);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
   const [periodIdx, setPeriodIdx] = useState(0);
+  const [forecast, setForecast] = useState<Forecast | null>(null);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -76,16 +93,19 @@ export default function DashboardPage() {
 
   const loadTransactions = useCallback(async (p: number) => {
     const budgetUrl = monthFrom ? `/api/v1/budgets?period_start=${monthFrom}` : "/api/v1/budgets";
-    const [pageData, allData, bds] = await Promise.all([
+    const forecastUrl = monthFrom ? `/api/v1/forecast?period_start=${monthFrom}` : "/api/v1/forecast";
+    const [pageData, allData, bds, fc] = await Promise.all([
       apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`),
       p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&date_from=${monthFrom}&date_to=${monthTo}`) : null,
       p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
+      p === 0 ? apiFetch<Forecast>(forecastUrl) : null,
     ]);
     const page_txs = pageData ?? [];
     setHasMore(page_txs.length > PAGE_SIZE);
     setTransactions(page_txs.slice(0, PAGE_SIZE));
     if (allData) setAllTransactions(allData);
     if (bds) setBudgets(bds);
+    if (fc) setForecast(fc);
     setFetching(false);
   }, [monthFrom, monthTo]);
 
@@ -115,7 +135,6 @@ export default function DashboardPage() {
           body: JSON.stringify({
             from_account_id: formAccountId,
             to_account_id: formToAccountId,
-            category_id: formCategoryId,
             description: formDescription,
             amount: formAmount,
             status: formStatus,
@@ -161,6 +180,7 @@ export default function DashboardPage() {
       setFormDate(todayISO());
       setShowForm(false);
       await loadRefs();
+      await loadTransactions(0);
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -200,7 +220,7 @@ export default function DashboardPage() {
   const accountsWithBalance = activeAccounts.filter((a) => Number(a.balance) !== 0);
 
   // Precompute tx map for O(1) linked lookups
-  const txMap = new Map(transactions.map((tx) => [tx.id, tx]));
+  const txMap = new Map(allTransactions.map((tx) => [tx.id, tx]));
 
   // Totals from ALL period transactions (not just the paginated page)
   const totalIncome = allTransactions.filter((tx) => tx.type === "income" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
@@ -307,13 +327,15 @@ export default function DashboardPage() {
                     </select>
                   </div>
                 )}
-                <div>
-                  <label htmlFor="da-category" className={label}>Category</label>
-                  <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formMode === "transfer" ? "expense" : formType} className={input} />
-                </div>
+                {formMode === "transaction" && (
+                  <div>
+                    <label htmlFor="da-category" className={label}>Category</label>
+                    <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+                  </div>
+                )}
                 <div>
                   <label htmlFor="da-desc" className={label}>Description</label>
-                  <input id="da-desc" type="text" required placeholder="What was it for?" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
+                  <input id="da-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Transfer (optional)" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
                 </div>
                 <div>
                   <label htmlFor="da-amount" className={label}>Amount</label>
@@ -358,41 +380,117 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {/* Summary + Account tiles — unified grid */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {/* KPI tiles */}
-            <div className={`${card} p-4`}>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
-              <p className="mt-1.5 text-lg font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
+          {/* ═══ BILLING PERIOD — standalone nav bar ═══ */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+              </button>
+              <span className="text-sm font-medium text-text-primary">
+                {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
+              </span>
+              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+              </button>
+              {periodIdx === 0 && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
             </div>
-            <div className={`${card} p-4`}>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
-              <p className="mt-1.5 text-lg font-semibold tabular-nums text-danger">-{formatAmount(totalExpense)}</p>
-            </div>
-            <div className={`${card} p-4`}>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Net</p>
-              <p className={`mt-1.5 text-lg font-semibold tabular-nums ${totalIncome - totalExpense >= 0 ? "text-success" : "text-danger"}`}>
-                {totalIncome - totalExpense >= 0 ? "+" : ""}{formatAmount(totalIncome - totalExpense)}
-              </p>
-            </div>
-            {/* Account tiles — same size as KPIs */}
-            {accountsWithBalance.map((acct) => {
-              const pending = pendingByAccount[acct.id] || 0;
-              const isCreditCard = acct.account_type_slug === "credit_card";
-              return (
-                <div key={acct.id} className={`${card} p-4`}>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
-                  <p className="mt-1.5 text-lg font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
-                  {isCreditCard && pending !== 0 && (
-                    <p className="mt-0.5 text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
-                  )}
-                </div>
-              );
-            })}
+            <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All Transactions</Link>
           </div>
 
-          {/* Row 3: Two-column — Chart + Budget */}
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          {/* ═══ ROW 1: Executed | Forecast — two symmetric columns ═══ */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {/* Executed */}
+            <div className={`${card} p-5`}>
+              <h2 className={`mb-4 ${cardTitle}`}>Executed</h2>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
+                  <p className="mt-1 text-xl font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
+                  <p className="mt-1 text-xl font-semibold tabular-nums text-danger">-{formatAmount(totalExpense)}</p>
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-border-subtle">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Net</p>
+                <p className={`mt-1 font-display text-2xl tabular-nums ${totalIncome - totalExpense >= 0 ? "text-accent" : "text-danger"}`}>
+                  {totalIncome - totalExpense >= 0 ? "+" : ""}{formatAmount(totalIncome - totalExpense)}
+                </p>
+              </div>
+            </div>
+
+            {/* Forecast */}
+            <div className={`${card} p-5`}>
+              <h2 className={`mb-4 ${cardTitle}`}>Forecast</h2>
+              {forecast ? (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
+                      <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_income)}</p>
+                      {Number(forecast.pending_income) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.pending_income)} pending</p>}
+                      {Number(forecast.recurring_income) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.recurring_income)} recurring</p>}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
+                      <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_expense)}</p>
+                      {Number(forecast.pending_expense) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.pending_expense)} pending</p>}
+                      {Number(forecast.recurring_expense) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.recurring_expense)} recurring</p>}
+                    </div>
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-border-subtle">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Projected Net</p>
+                    <p className={`mt-1 font-display text-2xl tabular-nums ${Number(forecast.forecast_net) >= 0 ? "text-accent" : "text-danger"}`}>
+                      {Number(forecast.forecast_net) >= 0 ? "+" : ""}{formatAmount(forecast.forecast_net)}
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-text-muted py-4">No forecast data</p>
+              )}
+            </div>
+          </div>
+
+          {/* ═══ ROW 2: Accounts — single row, primary slightly bigger ═══ */}
+          {accountsWithBalance.length > 0 && (() => {
+            const defaultAcct = accountsWithBalance.find((a) => a.is_default);
+            const others = accountsWithBalance.filter((a) => !a.is_default);
+            return (
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {/* Primary account — wider */}
+                {defaultAcct && (
+                  <div className={`${card} px-5 py-3 shrink-0`} style={{ minWidth: "220px" }}>
+                    <div className="flex items-center gap-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">{defaultAcct.name}</p>
+                      <span className="rounded bg-accent-dim px-1.5 py-0.5 text-[9px] font-semibold text-accent">PRIMARY</span>
+                    </div>
+                    <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(defaultAcct.balance)} <span className="text-xs text-text-muted">{defaultAcct.currency}</span></p>
+                    {pendingByAccount[defaultAcct.id] !== undefined && pendingByAccount[defaultAcct.id] !== 0 && (
+                      <p className="text-[10px] tabular-nums text-text-muted">Pending: {formatAmount(Math.abs(pendingByAccount[defaultAcct.id]))}</p>
+                    )}
+                  </div>
+                )}
+                {/* Other accounts */}
+                {others.map((acct) => {
+                  const pending = pendingByAccount[acct.id] || 0;
+                  const isCreditCard = acct.account_type_slug === "credit_card";
+                  return (
+                    <div key={acct.id} className={`${card} px-4 py-3 shrink-0`} style={{ minWidth: "150px" }}>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
+                      <p className="mt-1 text-base font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
+                      {isCreditCard && pending !== 0 && (
+                        <p className="text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          {/* ═══ ROW 3: Three equal charts ═══ */}
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             {/* Spending by category (donut) */}
             <div className={`${card} p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
@@ -477,24 +575,50 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
+
+            {/* Forecast comparison — executed vs forecast per category */}
+            <div className={`${card} p-5`}>
+              <h2 className={`mb-3 ${cardTitle}`}>Forecast by Category</h2>
+              {forecast && forecast.categories.length > 0 ? (
+                <div style={{ height: Math.max(Math.min(forecast.categories.length, 8) * 32, 100) }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={forecast.categories.slice(0, 8).map((c) => ({
+                        name: c.category_name.length > 12 ? c.category_name.slice(0, 12) + "…" : c.category_name,
+                        executed: Number(c.executed),
+                        pending: Number(c.pending),
+                        recurring: Number(c.recurring),
+                      }))}
+                      layout="vertical"
+                      margin={{ left: 0, right: 0, top: 0, bottom: 0 }}
+                    >
+                      <XAxis type="number" hide />
+                      <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
+                      <Tooltip
+                        formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? "Executed" : name === "pending" ? "Pending" : "Recurring"]}
+                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                      />
+                      <Bar dataKey="executed" stackId="a" fill="#4ade80" radius={[3, 0, 0, 3]} animationDuration={600} />
+                      <Bar dataKey="pending" stackId="a" fill="#D4A64A" animationDuration={600} />
+                      <Bar dataKey="recurring" stackId="a" fill="#5FA8D3" radius={[0, 3, 3, 0]} animationDuration={600} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <p className="text-sm text-text-muted py-6 text-center">No forecast data</p>
+              )}
+              <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-success" /> Executed</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Pending</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#5FA8D3" }} /> Recurring</span>
+              </div>
+            </div>
           </div>
 
-          {/* Row 4: Recent transactions with period nav */}
+          {/* Recent transactions */}
           <div className={card}>
             <div className={`flex items-center justify-between ${cardHeader}`}>
-              <div className="flex items-center gap-2">
-                <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                </button>
-                <h2 className={`${cardTitle} text-[11px]`}>
-                  {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
-                  {periodIdx === 0 && <span className="ml-1.5 text-success">current</span>}
-                </h2>
-                <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
-                </button>
-              </div>
-              <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All</Link>
+              <h2 className={cardTitle}>Recent Transactions</h2>
             </div>
             {/* Sortable mini-header */}
             <div className="flex items-center justify-between px-5 py-1.5 border-b border-border-subtle text-[10px] font-semibold uppercase tracking-wider text-text-muted">

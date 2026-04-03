@@ -40,6 +40,10 @@ export default function CategoriesPage() {
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
 
+  // Edit
+  const [editingCatId, setEditingCatId] = useState<number | null>(null);
+  const [editCatName, setEditCatName] = useState("");
+
   // Add subcategory form
   const [addingToMaster, setAddingToMaster] = useState<number | null>(null);
   const [newSubName, setNewSubName] = useState("");
@@ -127,6 +131,19 @@ export default function CategoriesPage() {
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
+  async function handleEditCat(id: number) {
+    if (!editCatName.trim()) return;
+    setError("");
+    try {
+      await apiFetch(`/api/v1/categories/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ name: editCatName }),
+      });
+      setEditingCatId(null);
+      await reload();
+    } catch (err) { setError(extractErrorMessage(err)); }
+  }
+
   async function handleDelete(id: number) {
     if (!confirm("Delete this category?")) return;
     setError("");
@@ -191,11 +208,20 @@ export default function CategoriesPage() {
                 <div className={`flex items-center justify-between ${cardHeader}`}>
                   <div className="flex items-center gap-2.5">
                     <Icon className="h-4 w-4 text-text-muted" />
-                    <h2 className="text-sm font-medium text-text-primary">{master.name}</h2>
-                    <span className={`text-[11px] font-medium ${TYPE_COLORS[master.type]}`}>
-                      {master.type}
-                    </span>
-                    {master.is_system && <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">system</span>}
+                    {editingCatId === master.id ? (
+                      <div className="flex items-center gap-2">
+                        <input type="text" value={editCatName} onChange={(e) => setEditCatName(e.target.value)} className={`text-sm ${input}`} autoFocus
+                          onKeyDown={(e) => { if (e.key === "Enter") handleEditCat(master.id); if (e.key === "Escape") setEditingCatId(null); }} />
+                        <button onClick={() => handleEditCat(master.id)} className="text-xs text-accent">Save</button>
+                        <button onClick={() => setEditingCatId(null)} className="text-xs text-text-muted">Cancel</button>
+                      </div>
+                    ) : (
+                      <>
+                        <h2 className="text-sm font-medium text-text-primary">{master.name}</h2>
+                        <span className={`text-[11px] font-medium ${TYPE_COLORS[master.type]}`}>{master.type}</span>
+                        {master.is_system && <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">system</span>}
+                      </>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <button
@@ -204,9 +230,8 @@ export default function CategoriesPage() {
                     >
                       {addingToMaster === master.id ? "Cancel" : "+ Add Sub"}
                     </button>
-                    {!master.is_system && (
-                      <button onClick={() => handleDelete(master.id)} aria-label={`Delete ${master.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
-                    )}
+                    <button onClick={() => { setEditingCatId(master.id); setEditCatName(master.name); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                    <button onClick={() => handleDelete(master.id)} aria-label={`Delete ${master.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                   </div>
                 </div>
 
@@ -233,13 +258,25 @@ export default function CategoriesPage() {
                     <div className="space-y-0.5">
                       {subs.map((sub) => (
                         <div key={sub.id} className="flex items-center justify-between rounded-md px-3 py-2 transition-colors hover:bg-surface-raised">
-                          <div>
-                            <span className="text-sm text-text-primary">{sub.name}</span>
-                            {sub.description && <span className="ml-2 text-xs text-text-muted">{sub.description}</span>}
-                            <span className="ml-2 text-xs text-text-muted" title={`${sub.transaction_count} transaction(s)`}>{sub.transaction_count}</span>
-                          </div>
-                          {!sub.is_system && (
-                            <button onClick={() => handleDelete(sub.id)} aria-label={`Delete ${sub.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                          {editingCatId === sub.id ? (
+                            <div className="flex flex-1 items-center gap-2">
+                              <input type="text" value={editCatName} onChange={(e) => setEditCatName(e.target.value)} className={`flex-1 text-sm ${input}`} autoFocus
+                                onKeyDown={(e) => { if (e.key === "Enter") handleEditCat(sub.id); if (e.key === "Escape") setEditingCatId(null); }} />
+                              <button onClick={() => handleEditCat(sub.id)} className="text-xs text-accent">Save</button>
+                              <button onClick={() => setEditingCatId(null)} className="text-xs text-text-muted">Cancel</button>
+                            </div>
+                          ) : (
+                            <>
+                              <div>
+                                <span className="text-sm text-text-primary">{sub.name}</span>
+                                {sub.description && <span className="ml-2 text-xs text-text-muted">{sub.description}</span>}
+                                <span className="ml-2 text-xs text-text-muted" title={`${sub.transaction_count} transaction(s)`}>{sub.transaction_count}</span>
+                              </div>
+                              <div className="flex gap-2">
+                                <button onClick={() => { setEditingCatId(sub.id); setEditCatName(sub.name); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                                <button onClick={() => handleDelete(sub.id)} aria-label={`Delete ${sub.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                              </div>
+                            </>
                           )}
                         </div>
                       ))}
