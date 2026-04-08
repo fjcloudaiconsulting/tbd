@@ -85,6 +85,24 @@ async def activate_plan(
     return await svc.activate_plan(db, current_user.org_id, plan_id)
 
 
+@router.post("/{plan_id}/revert", response_model=ForecastPlanResponse)
+async def revert_to_draft(
+    plan_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await svc.revert_to_draft(db, current_user.org_id, plan_id)
+
+
+@router.post("/{plan_id}/discard", response_model=ForecastPlanResponse)
+async def discard_plan(
+    plan_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await svc.discard_plan(db, current_user.org_id, plan_id)
+
+
 @router.post("/copy", response_model=ForecastPlanResponse)
 async def copy_plan(
     source_period_start: datetime.date = Query(),

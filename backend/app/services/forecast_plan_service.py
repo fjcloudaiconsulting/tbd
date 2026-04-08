@@ -91,6 +91,12 @@ async def _get_or_create_plan_row(
     return plan
 
 
+def _require_draft(plan: ForecastPlan) -> None:
+    """Raise if the plan is active (read-only)."""
+    if plan.status == PlanStatus.ACTIVE:
+        raise ValidationError("Cannot modify an active plan. Revert to draft first.")
+
+
 async def _validate_master_category(
     db: AsyncSession, org_id: int, category_id: int,
 ) -> None:
@@ -328,6 +334,7 @@ async def upsert_item(
 ) -> ForecastPlanResponse:
     """Add or update a single plan item."""
     plan = await _get_plan(db, org_id, plan_id)
+    _require_draft(plan)
 
     await _validate_master_category(db, org_id, body.category_id)
 
@@ -362,6 +369,7 @@ async def bulk_upsert(
 ) -> ForecastPlanResponse:
     """Bulk add/update multiple plan items at once."""
     plan = await _get_plan(db, org_id, plan_id)
+    _require_draft(plan)
 
     # Validate all category IDs belong to the org and are master categories
     requested_ids = {item.category_id for item in body.items}
@@ -408,6 +416,7 @@ async def update_item(
 ) -> ForecastPlanResponse:
     """Update a single plan item amount."""
     plan = await _get_plan(db, org_id, plan_id)
+    _require_draft(plan)
 
     item = None
     for i in plan.items:
@@ -431,6 +440,7 @@ async def delete_item(
 ) -> ForecastPlanResponse:
     """Remove a single plan item."""
     plan = await _get_plan(db, org_id, plan_id)
+    _require_draft(plan)
 
     item = None
     for i in plan.items:
@@ -450,13 +460,43 @@ async def delete_item(
 async def activate_plan(
     db: AsyncSession, org_id: int, plan_id: int,
 ) -> ForecastPlanResponse:
-    """Mark plan as active (finalized)."""
+    """Mark plan as active (finalized). Active plans are read-only."""
     plan = await _get_plan(db, org_id, plan_id)
 
     if not plan.items:
         raise ValidationError("Cannot activate an empty plan")
 
     plan.status = PlanStatus.ACTIVE
+    await db.commit()
+    await db.refresh(plan, ["billing_period", "items"])
+    return await _build_response(db, org_id, plan)
+
+
+async def revert_to_draft(
+    db: AsyncSession, org_id: int, plan_id: int,
+) -> ForecastPlanResponse:
+    """Revert an active plan back to draft for editing."""
+    plan = await _get_plan(db, org_id, plan_id)
+
+    if plan.status != PlanStatus.ACTIVE:
+        raise ValidationError("Plan is already a draft")
+
+    plan.status = PlanStatus.DRAFT
+    await db.commit()
+    await db.refresh(plan, ["billing_period", "items"])
+    return await _build_response(db, org_id, plan)
+
+
+async def discard_plan(
+    db: AsyncSession, org_id: int, plan_id: int,
+) -> ForecastPlanResponse:
+    """Remove all items from a plan and reset to draft."""
+    plan = await _get_plan(db, org_id, plan_id)
+
+    for item in list(plan.items):
+        await db.delete(item)
+
+    plan.status = PlanStatus.DRAFT
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
     return await _build_response(db, org_id, plan)

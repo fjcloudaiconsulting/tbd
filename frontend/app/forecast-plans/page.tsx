@@ -62,13 +62,34 @@ export default function ForecastPlansPage() {
   const [editAmount, setEditAmount] = useState("");
 
   // View filter
-  const [viewFilter, setViewFilter] = useState<"all" | "income" | "expense">("all");
+  const [viewFilter, setViewFilter] = useState<"all" | "income" | "expense">(
+    "all"
+  );
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
-  const isCurrentPeriod = periodIdx === 0;
+  const isActive = plan?.status === "active";
+  const isDraft = plan?.status === "draft";
+  const hasItems = (plan?.items?.length ?? 0) > 0;
+
+  // Determine period context label
+  const today = new Date().toISOString().slice(0, 10);
+  const isFuturePeriod = selectedPeriod
+    ? selectedPeriod.start_date > today
+    : false;
+  const isCurrentPeriod = selectedPeriod
+    ? selectedPeriod.start_date <= today &&
+      (!selectedPeriod.end_date || selectedPeriod.end_date >= today)
+    : false;
+  const isPastPeriod = selectedPeriod
+    ? selectedPeriod.end_date !== null && selectedPeriod.end_date < today
+    : false;
 
   const loadRefs = useCallback(async () => {
+    // Ensure future period stubs exist before loading the list
+    await apiFetch("/api/v1/settings/billing-periods/ensure-future", {
+      method: "POST",
+    });
     const [c, p] = await Promise.all([
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
@@ -78,10 +99,10 @@ export default function ForecastPlansPage() {
   }, []);
 
   const loadPlan = useCallback(async () => {
-    const url = periodStart
-      ? `/api/v1/forecast-plans?period_start=${periodStart}`
-      : "/api/v1/forecast-plans";
-    const p = await apiFetch<ForecastPlan>(url);
+    if (!periodStart) return;
+    const p = await apiFetch<ForecastPlan>(
+      `/api/v1/forecast-plans?period_start=${periodStart}`
+    );
     setPlan(p);
     setFetching(false);
   }, [periodStart]);
@@ -91,11 +112,13 @@ export default function ForecastPlansPage() {
   }, [loading, user, loadRefs]);
 
   useEffect(() => {
-    if (!loading && user) {
+    if (!loading && user && periodStart) {
       setFetching(true);
+      setShowForm(false);
+      setEditingId(null);
       loadPlan().catch(() => setFetching(false));
     }
-  }, [loading, user, loadPlan]);
+  }, [loading, user, loadPlan, periodStart]);
 
   // Available categories for add form
   const masterCategories = categories.filter((c) => c.parent_id === null);
@@ -114,18 +137,18 @@ export default function ForecastPlansPage() {
   const items = (plan?.items ?? []).filter(
     (i) => viewFilter === "all" || i.type === viewFilter
   );
-
-  // Grouped by type for display
   const incomeItems = items.filter((i) => i.type === "income");
   const expenseItems = items.filter((i) => i.type === "expense");
+
+  // ── Actions ──────────────────────────────────────────────────────────────
 
   async function handlePopulate() {
     setError("");
     try {
-      const url = periodStart
-        ? `/api/v1/forecast-plans/populate?period_start=${periodStart}`
-        : "/api/v1/forecast-plans/populate";
-      const p = await apiFetch<ForecastPlan>(url, { method: "POST" });
+      const p = await apiFetch<ForecastPlan>(
+        `/api/v1/forecast-plans/populate?period_start=${periodStart}`,
+        { method: "POST" }
+      );
       setPlan(p);
     } catch (err) {
       setError(extractErrorMessage(err));
@@ -189,7 +212,12 @@ export default function ForecastPlansPage() {
   }
 
   async function handleActivate() {
-    if (!plan || !confirm("Mark this plan as active? You can still edit items."))
+    if (
+      !plan ||
+      !confirm(
+        "Finalize this plan? It will become read-only. You can revert to draft later if needed."
+      )
+    )
       return;
     setError("");
     try {
@@ -203,7 +231,43 @@ export default function ForecastPlansPage() {
     }
   }
 
-  // Chart data — expense items only
+  async function handleRevertToDraft() {
+    if (!plan || !confirm("Revert to draft? This will unlock the plan for editing."))
+      return;
+    setError("");
+    try {
+      const p = await apiFetch<ForecastPlan>(
+        `/api/v1/forecast-plans/${plan.id}/revert`,
+        { method: "POST" }
+      );
+      setPlan(p);
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  }
+
+  async function handleDiscard() {
+    if (
+      !plan ||
+      !confirm(
+        "Discard this plan? All items will be removed and the plan will reset to an empty draft."
+      )
+    )
+      return;
+    setError("");
+    try {
+      const p = await apiFetch<ForecastPlan>(
+        `/api/v1/forecast-plans/${plan.id}/discard`,
+        { method: "POST" }
+      );
+      setPlan(p);
+      setShowForm(false);
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  }
+
+  // Chart data
   const chartData = expenseItems.map((i) => ({
     name: i.category_name,
     planned: Number(i.planned_amount),
@@ -219,20 +283,49 @@ export default function ForecastPlansPage() {
 
   return (
     <AppShell>
-      <div className="mb-6 flex items-center justify-between">
+      {/* Header */}
+      <div className="mb-2 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Forecast Plans</h1>
-        <div className="flex gap-2">
-          <button onClick={handlePopulate} className={btnPrimary}>
-            Auto-populate
+        {isDraft && (
+          <div className="flex gap-2">
+            <button onClick={handlePopulate} className={btnPrimary}>
+              Auto-populate
+            </button>
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className={btnPrimary}
+            >
+              {showForm ? "Cancel" : "+ Add Item"}
+            </button>
+          </div>
+        )}
+        {isActive && (
+          <button onClick={handleRevertToDraft} className={btnPrimary}>
+            Edit Plan
           </button>
-          <button
-            onClick={() => setShowForm(!showForm)}
-            className={btnPrimary}
-          >
-            {showForm ? "Cancel" : "+ Add Item"}
-          </button>
-        </div>
+        )}
       </div>
+
+      {/* Contextual guidance */}
+      <p className="mb-5 text-xs text-text-muted leading-relaxed">
+        {isFuturePeriod
+          ? "Plan your expected income and expenses for this future period. Use Auto-populate to import from recurring templates and historical averages, then adjust manually."
+          : isCurrentPeriod
+            ? "Track your planned vs actual income and expenses for the current period. Actuals update automatically from settled transactions."
+            : isPastPeriod
+              ? "Review how your plan compared to actual results for this closed period."
+              : "Set up your financial plan for this billing period."}
+        {isDraft && hasItems && (
+          <span className="ml-1">
+            This plan is a <strong>draft</strong> — finalize it when you&apos;re done editing.
+          </span>
+        )}
+        {isActive && (
+          <span className="ml-1">
+            This plan is <strong>finalized</strong>. Click <strong>Edit Plan</strong> to make changes.
+          </span>
+        )}
+      </p>
 
       {/* Period navigation */}
       {periods.length > 0 && (
@@ -269,6 +362,11 @@ export default function ForecastPlansPage() {
                 current
               </span>
             )}
+            {isFuturePeriod && (
+              <span className="ml-2 text-xs font-medium text-accent">
+                future
+              </span>
+            )}
           </span>
           <button
             onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))}
@@ -292,13 +390,13 @@ export default function ForecastPlansPage() {
           </button>
           {plan && (
             <span
-              className={`ml-3 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
-                plan.status === "active"
+              className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                isActive
                   ? "bg-success/15 text-success"
                   : "bg-accent/15 text-accent"
               }`}
             >
-              {plan.status}
+              {isActive ? "Finalized" : "Draft"}
             </span>
           )}
         </div>
@@ -306,8 +404,8 @@ export default function ForecastPlansPage() {
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
 
-      {/* Add item form */}
-      {showForm && (
+      {/* Add item form (draft only) */}
+      {showForm && isDraft && (
         <div className={`mb-6 ${card} p-6`}>
           <form
             onSubmit={handleAddItem}
@@ -380,7 +478,7 @@ export default function ForecastPlansPage() {
       ) : (
         <div className="space-y-6">
           {/* Summary cards */}
-          {plan && plan.items.length > 0 && (
+          {plan && hasItems && (
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <div className={`${card} p-5`}>
                 <p className={cardTitle}>Planned Income</p>
@@ -489,7 +587,7 @@ export default function ForecastPlansPage() {
           )}
 
           {/* Filter tabs */}
-          {plan && plan.items.length > 0 && (
+          {plan && hasItems && (
             <div className="flex gap-1">
               {(["all", "expense", "income"] as const).map((f) => (
                 <button
@@ -511,12 +609,13 @@ export default function ForecastPlansPage() {
             </div>
           )}
 
-          {/* Item list */}
+          {/* Item lists */}
           {(viewFilter === "all" || viewFilter === "income") &&
             incomeItems.length > 0 && (
               <ItemSection
                 title="Income"
                 items={incomeItems}
+                readOnly={isActive}
                 editingId={editingId}
                 editAmount={editAmount}
                 onStartEdit={(item) => {
@@ -535,6 +634,7 @@ export default function ForecastPlansPage() {
               <ItemSection
                 title="Expenses"
                 items={expenseItems}
+                readOnly={isActive}
                 editingId={editingId}
                 editAmount={editAmount}
                 onStartEdit={(item) => {
@@ -548,23 +648,38 @@ export default function ForecastPlansPage() {
               />
             )}
 
-          {plan && plan.items.length === 0 && (
+          {/* Empty state */}
+          {plan && !hasItems && (
             <div className={`${card} px-6 py-12 text-center`}>
               <p className="text-sm text-text-muted">
                 No plan items yet. Click{" "}
                 <strong>&quot;Auto-populate&quot;</strong> to import from
-                recurring templates and history, or{" "}
-                <strong>&quot;+ Add Item&quot;</strong> manually.
+                recurring templates and historical averages, or{" "}
+                <strong>&quot;+ Add Item&quot;</strong> to add manually.
               </p>
             </div>
           )}
 
-          {/* Actions */}
-          {plan && plan.items.length > 0 && plan.status === "draft" && (
-            <div className="flex justify-end">
-              <button onClick={handleActivate} className={btnPrimary}>
-                Activate Plan
-              </button>
+          {/* Bottom actions */}
+          {plan && hasItems && (
+            <div className="flex items-center justify-between">
+              <div>
+                {isDraft && hasItems && (
+                  <button
+                    onClick={handleDiscard}
+                    className="text-xs text-text-muted hover:text-danger"
+                  >
+                    Discard Draft
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-3">
+                {isDraft && (
+                  <button onClick={handleActivate} className={btnPrimary}>
+                    Finalize Plan
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -578,6 +693,7 @@ export default function ForecastPlansPage() {
 function ItemSection({
   title,
   items,
+  readOnly,
   editingId,
   editAmount,
   onStartEdit,
@@ -588,6 +704,7 @@ function ItemSection({
 }: {
   title: string;
   items: ForecastPlanItem[];
+  readOnly: boolean;
   editingId: number | null;
   editAmount: string;
   onStartEdit: (item: ForecastPlanItem) => void;
@@ -596,19 +713,25 @@ function ItemSection({
   onDelete: (id: number) => void;
   setEditAmount: (v: string) => void;
 }) {
+  const colTemplate = readOnly
+    ? "grid-cols-[1fr_100px_100px_100px_80px]"
+    : "grid-cols-[1fr_100px_100px_100px_80px_100px]";
+
   return (
     <div className={card}>
       <div className={cardHeader}>
         <h2 className={cardTitle}>{title}</h2>
       </div>
       {/* Header row */}
-      <div className="grid grid-cols-[1fr_100px_100px_100px_80px_100px] gap-2 px-6 py-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+      <div
+        className={`grid ${colTemplate} gap-2 px-6 py-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted`}
+      >
         <span>Category</span>
         <span className="text-right">Planned</span>
         <span className="text-right">Actual</span>
         <span className="text-right">Variance</span>
         <span className="text-center">Source</span>
-        <span className="text-right">Actions</span>
+        {!readOnly && <span className="text-right">Actions</span>}
       </div>
       <div className="divide-y divide-border-subtle">
         {items.map((item) => {
@@ -618,9 +741,9 @@ function ItemSection({
           return (
             <div
               key={item.id}
-              className="grid grid-cols-[1fr_100px_100px_100px_80px_100px] items-center gap-2 px-6 py-2.5"
+              className={`grid ${colTemplate} items-center gap-2 px-6 py-2.5`}
             >
-              {editingId === item.id ? (
+              {!readOnly && editingId === item.id ? (
                 <>
                   <span className="text-sm text-text-primary">
                     {item.category_name}
@@ -680,20 +803,22 @@ function ItemSection({
                   <span className="text-center text-[11px] text-text-muted">
                     {SOURCE_LABELS[item.source] ?? item.source}
                   </span>
-                  <div className="flex justify-end gap-2">
-                    <button
-                      onClick={() => onStartEdit(item)}
-                      className={btnLink}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => onDelete(item.id)}
-                      className={btnDanger}
-                    >
-                      Remove
-                    </button>
-                  </div>
+                  {!readOnly && (
+                    <div className="flex justify-end gap-2">
+                      <button
+                        onClick={() => onStartEdit(item)}
+                        className={btnLink}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => onDelete(item.id)}
+                        className={btnDanger}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
