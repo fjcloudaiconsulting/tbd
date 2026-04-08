@@ -7,6 +7,7 @@ from app.models.recurring import RecurringTransaction, Frequency
 from app.models.budget import Budget
 from app.models.billing import BillingPeriod
 from app.models.settings import OrgSetting
+from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus, ForecastItemType, ItemSource
 
 __all__ = [
     "Base",
@@ -24,4 +25,9 @@ __all__ = [
     "Budget",
     "BillingPeriod",
     "OrgSetting",
+    "ForecastPlan",
+    "ForecastPlanItem",
+    "PlanStatus",
+    "ForecastItemType",
+    "ItemSource",
 ]
