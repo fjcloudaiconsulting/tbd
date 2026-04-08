@@ -172,7 +172,7 @@ export default function ForecastPlansPage() {
           body: JSON.stringify({
             category_id: formCategoryId,
             type: formType,
-            planned_amount: parseFloat(formAmount),
+            planned_amount: formAmount,
           }),
         }
       );
@@ -193,7 +193,7 @@ export default function ForecastPlansPage() {
         `/api/v1/forecast-plans/${plan.id}/items/${itemId}`,
         {
           method: "PUT",
-          body: JSON.stringify({ planned_amount: parseFloat(editAmount) }),
+          body: JSON.stringify({ planned_amount: editAmount }),
         }
       );
       setPlan(p);

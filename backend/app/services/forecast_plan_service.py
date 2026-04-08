@@ -111,34 +111,64 @@ async def _validate_master_category(
         raise ValidationError("Forecast plan items must use master categories, not subcategories")
 
 
-async def _compute_actual(
-    db: AsyncSession, org_id: int, category_id: int,
-    item_type: ForecastItemType,
+async def _compute_actuals_batch(
+    db: AsyncSession, org_id: int,
+    items: list[ForecastPlanItem],
     period_start: datetime.date, period_end: datetime.date | None,
-) -> Decimal:
-    """Sum settled transactions for a category within the period."""
-    tx_type = TransactionType.INCOME if item_type == ForecastItemType.INCOME else TransactionType.EXPENSE
+) -> dict[tuple[int, str], Decimal]:
+    """Compute actual amounts for all plan items in two queries (income + expense).
 
-    # Include subcategories
+    Returns a dict keyed by (category_id, type_value) → actual amount.
+    Each category includes its subcategories in the sum.
+    """
+    if not items:
+        return {}
+
+    # Collect all master category IDs from plan items
+    master_ids = {item.category_id for item in items}
+
+    # Build mapping: master_id → [master_id, sub1, sub2, ...]
     sub_result = await db.execute(
-        select(Category.id).where(
-            Category.parent_id == category_id, Category.org_id == org_id
+        select(Category.id, Category.parent_id).where(
+            Category.parent_id.in_(master_ids), Category.org_id == org_id
         )
     )
-    all_ids = [category_id] + [r[0] for r in sub_result.all()]
+    cat_to_master: dict[int, int] = {}
+    for cat_id, parent_id in sub_result.all():
+        cat_to_master[cat_id] = parent_id
+    # Masters map to themselves
+    for mid in master_ids:
+        cat_to_master[mid] = mid
 
-    q = select(func.coalesce(func.sum(Transaction.amount), 0)).where(
+    all_cat_ids = list(cat_to_master.keys())
+
+    # Single query: sum by (category_id, type) for all relevant categories
+    q = select(
+        Transaction.category_id,
+        Transaction.type,
+        func.coalesce(func.sum(Transaction.amount), 0),
+    ).where(
         Transaction.org_id == org_id,
-        Transaction.category_id.in_(all_ids),
-        Transaction.type == tx_type,
+        Transaction.category_id.in_(all_cat_ids),
         Transaction.status == TransactionStatus.SETTLED,
         Transaction.date >= period_start,
+        Transaction.type.in_(["income", "expense"]),
     )
     if period_end is not None:
         q = q.where(Transaction.date <= period_end)
+    q = q.group_by(Transaction.category_id, Transaction.type)
 
-    val = await db.scalar(q)
-    return Decimal(str(val))
+    result = await db.execute(q)
+
+    # Aggregate to master category level
+    actuals: dict[tuple[int, str], Decimal] = {}
+    for cat_id, tx_type_raw, amount in result.all():
+        tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
+        master_id = cat_to_master.get(cat_id, cat_id)
+        key = (master_id, tx_type)
+        actuals[key] = actuals.get(key, Decimal("0")) + Decimal(str(amount))
+
+    return actuals
 
 
 def _item_response(item: ForecastPlanItem, actual: Decimal) -> ForecastPlanItemResponse:
@@ -163,6 +193,9 @@ async def _build_response(
     p_start = period.start_date
     p_end = period.end_date
 
+    # Batch compute actuals for all items (2 queries instead of 2*N)
+    actuals = await _compute_actuals_batch(db, org_id, plan.items, p_start, p_end)
+
     item_responses = []
     total_planned_income = Decimal("0")
     total_planned_expense = Decimal("0")
@@ -170,7 +203,7 @@ async def _build_response(
     total_actual_expense = Decimal("0")
 
     for item in plan.items:
-        actual = await _compute_actual(db, org_id, item.category_id, item.type, p_start, p_end)
+        actual = actuals.get((item.category_id, item.type.value), Decimal("0"))
         resp = _item_response(item, actual)
         item_responses.append(resp)
 

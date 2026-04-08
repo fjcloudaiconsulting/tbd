@@ -55,3 +55,8 @@ class BulkUpsertItem(BaseModel):
 
 class BulkUpsertRequest(BaseModel):
     items: list[BulkUpsertItem]
+
+
+class CopyPlanRequest(BaseModel):
+    source_period_start: datetime.date
+    target_period_start: Optional[datetime.date] = None

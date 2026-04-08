@@ -8,6 +8,7 @@ from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.forecast_plan import (
     BulkUpsertRequest,
+    CopyPlanRequest,
     ForecastPlanItemCreate,
     ForecastPlanItemUpdate,
     ForecastPlanResponse,
@@ -105,13 +106,12 @@ async def discard_plan(
 
 @router.post("/copy", response_model=ForecastPlanResponse)
 async def copy_plan(
-    source_period_start: datetime.date = Query(),
+    body: CopyPlanRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    period_start: datetime.date | None = Query(default=None),
 ):
     return await svc.copy_from_period(
         db, current_user.org_id,
-        target_period_start=period_start,
-        source_period_start=source_period_start,
+        target_period_start=body.target_period_start,
+        source_period_start=body.source_period_start,
     )
