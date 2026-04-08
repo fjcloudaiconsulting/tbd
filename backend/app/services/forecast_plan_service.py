@@ -76,9 +76,9 @@ async def _get_or_create_plan_row(
     )
     db.add(plan)
     try:
-        await db.flush()
+        async with db.begin_nested():
+            await db.flush()
     except IntegrityError:
-        await db.rollback()
         result = await db.execute(
             select(ForecastPlan).where(
                 ForecastPlan.org_id == org_id,
@@ -238,13 +238,18 @@ async def populate_from_sources(
         if key in existing_keys:
             continue
 
-        # Count occurrences within the period
+        # Count occurrences within the period — advance to period start first
         total = Decimal("0")
         d = r.next_due_date
-        while d <= p_end:
-            if d >= p_start:
-                total += r.amount
+        # Fast-forward past dates before the period to avoid unnecessary iterations
+        while d < p_start and d <= p_end:
             d = _advance_date(d, r.frequency)
+        while d <= p_end:
+            total += r.amount
+            prev = d
+            d = _advance_date(d, r.frequency)
+            if d <= prev:
+                break  # safety: prevent infinite loop on bad frequency
 
         if total > 0:
             item = ForecastPlanItem(
@@ -490,8 +495,9 @@ async def revert_to_draft(
 async def discard_plan(
     db: AsyncSession, org_id: int, plan_id: int,
 ) -> ForecastPlanResponse:
-    """Remove all items from a plan and reset to draft."""
+    """Remove all items from a draft plan."""
     plan = await _get_plan(db, org_id, plan_id)
+    _require_draft(plan)
 
     for item in list(plan.items):
         await db.delete(item)
@@ -525,6 +531,7 @@ async def copy_from_period(
     # Get or create target plan (race-safe)
     target_plan = await _get_or_create_plan_row(db, org_id, target_period.id)
     await db.refresh(target_plan, ["billing_period", "items"])
+    _require_draft(target_plan)
 
     existing_keys: set[tuple[int, str]] = set()
     if target_plan.items:

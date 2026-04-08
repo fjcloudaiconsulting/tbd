@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -85,11 +85,16 @@ export default function ForecastPlansPage() {
     ? selectedPeriod.end_date !== null && selectedPeriod.end_date < today
     : false;
 
+  const futureEnsured = useRef(false);
+
   const loadRefs = useCallback(async () => {
-    // Ensure future period stubs exist before loading the list
-    await apiFetch("/api/v1/settings/billing-periods/ensure-future", {
-      method: "POST",
-    });
+    // Ensure future period stubs exist (once per session)
+    if (!futureEnsured.current) {
+      await apiFetch("/api/v1/settings/billing-periods/ensure-future", {
+        method: "POST",
+      });
+      futureEnsured.current = true;
+    }
     const [c, p] = await Promise.all([
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
