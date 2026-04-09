@@ -74,7 +74,7 @@ export default function DashboardPage() {
   // Selected period (navigate with arrows)
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const monthTo = selectedPeriod?.end_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
+  const monthTo = selectedPeriod?.end_date ?? "";
 
   const loadRefs = useCallback(async () => {
     const [accts, cats, bds, per, plist] = await Promise.all([
@@ -98,9 +98,10 @@ export default function DashboardPage() {
   const loadTransactions = useCallback(async (p: number) => {
     const budgetUrl = monthFrom ? `/api/v1/budgets?period_start=${monthFrom}` : "/api/v1/budgets";
     const forecastUrl = monthFrom ? `/api/v1/forecast?period_start=${monthFrom}` : "/api/v1/forecast";
+    const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
     const [pageData, allData, bds, fc] = await Promise.all([
-      apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`),
-      p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&date_from=${monthFrom}&date_to=${monthTo}`) : null,
+      apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&${dateFilter}`),
+      p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&${dateFilter}`) : null,
       p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
       p === 0 ? apiFetch<Forecast>(forecastUrl) : null,
     ]);
@@ -391,7 +392,7 @@ export default function DashboardPage() {
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
               </button>
               <span className="text-sm font-medium text-text-primary">
-                {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
+                {monthFrom}{monthTo ? ` — ${monthTo}` : ""}
               </span>
               <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
