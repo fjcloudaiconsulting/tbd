@@ -133,6 +133,10 @@ async def update_billing_cycle(
     current_period = await billing_service.get_current_period(db, current_user.org_id)
     if current_period.end_date is None:
         import datetime
+        from sqlalchemy import update
+        from app.models.budget import Budget
+
+        old_start = current_period.start_date
         today = datetime.date.today()
         new_day = body.billing_cycle_day
         y, m, d = today.year, today.month, today.day
@@ -142,6 +146,14 @@ async def update_billing_cycle(
             prev = datetime.date(y, m, 1) - datetime.timedelta(days=1)
             new_start = datetime.date(prev.year, prev.month, new_day)
         current_period.start_date = new_start
+
+        # Update budgets tied to the old period start date
+        if old_start != new_start:
+            await db.execute(
+                update(Budget)
+                .where(Budget.org_id == current_user.org_id, Budget.period_start == old_start)
+                .values(period_start=new_start)
+            )
 
     await db.commit()
     return {"billing_cycle_day": org.billing_cycle_day}
