@@ -55,9 +55,68 @@ async def list_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
         select(BillingPeriod)
         .where(BillingPeriod.org_id == org_id)
         .order_by(BillingPeriod.start_date.desc())
-        .limit(12)
+        .limit(24)
     )
     return list(result.scalars().all())
+
+
+async def ensure_future_periods(
+    db: AsyncSession, org_id: int, count: int = 3,
+) -> list[BillingPeriod]:
+    """Create stub periods for the next `count` months from today.
+
+    Always anchored to today — calling this multiple times is idempotent
+    and will never create stubs beyond `count` months in the future.
+    """
+    import calendar
+
+    from dateutil.relativedelta import relativedelta
+
+    current = await get_current_period(db, org_id)
+    org = await db.scalar(select(Organization).where(Organization.id == org_id))
+    cycle_day = org.billing_cycle_day if org else 1
+
+    def _snap_to_cycle(d: datetime.date) -> datetime.date:
+        try:
+            return d.replace(day=cycle_day)
+        except ValueError:
+            last = calendar.monthrange(d.year, d.month)[1]
+            return d.replace(day=min(cycle_day, last))
+
+    # Build the target months: 1, 2, ... count months from current period
+    base = current.start_date
+    created = []
+    for i in range(1, count + 1):
+        next_start = _snap_to_cycle(base + relativedelta(months=i))
+
+        # Skip if already exists
+        existing = await db.scalar(
+            select(BillingPeriod.id).where(
+                BillingPeriod.org_id == org_id,
+                BillingPeriod.start_date == next_start,
+            )
+        )
+        if existing:
+            continue
+
+        end_date = _snap_to_cycle(next_start + relativedelta(months=1)) - datetime.timedelta(days=1)
+
+        stub = BillingPeriod(org_id=org_id, start_date=next_start, end_date=end_date)
+        db.add(stub)
+        created.append(stub)
+
+    if created:
+        from sqlalchemy.exc import IntegrityError
+        try:
+            await db.commit()
+            for s in created:
+                await db.refresh(s)
+        except IntegrityError:
+            # Concurrent request already created the stubs — safe to ignore
+            await db.rollback()
+            created = []
+
+    return created
 
 
 async def close_period(db: AsyncSession, org_id: int, close_date: datetime.date | None = None) -> BillingPeriod:

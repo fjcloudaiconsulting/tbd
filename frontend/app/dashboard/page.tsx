@@ -88,7 +88,11 @@ export default function DashboardPage() {
     setCategories(cats ?? []);
     setBudgets(bds ?? []);
     if (per) setPeriod(per);
-    setPeriods(plist ?? []);
+    const pl = plist ?? [];
+    setPeriods(pl);
+    // Default to current period (open = no end_date), not index 0
+    const currentIdx = pl.findIndex((p) => p.end_date === null);
+    if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
@@ -392,7 +396,10 @@ export default function DashboardPage() {
               <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
               </button>
-              {periodIdx === 0 && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
+              {selectedPeriod?.end_date === null && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
+              {selectedPeriod?.end_date !== null && (
+                <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised">Today</button>
+              )}
             </div>
             <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All Transactions</Link>
           </div>

@@ -35,7 +35,7 @@ export default function BudgetsPage() {
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
-  const isCurrentPeriod = periodIdx === 0;
+  const isCurrentPeriod = selectedPeriod?.end_date === null;
 
   const loadRefs = useCallback(async () => {
     const [c, p] = await Promise.all([
@@ -43,7 +43,11 @@ export default function BudgetsPage() {
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
     setCategories(c ?? []);
-    setPeriods(p ?? []);
+    const pl = p ?? [];
+    setPeriods(pl);
+    // Default to current period (open = no end_date), not index 0
+    const currentIdx = pl.findIndex((bp) => bp.end_date === null);
+    if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, []);
 
   const loadBudgets = useCallback(async () => {
@@ -130,6 +134,9 @@ export default function BudgetsPage() {
           <button onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
           </button>
+          {!isCurrentPeriod && (
+            <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) setPeriodIdx(idx); }} className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised">Today</button>
+          )}
         </div>
       )}
 

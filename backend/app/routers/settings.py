@@ -197,6 +197,25 @@ async def create_period(
     }
 
 
+@router.post("/billing-periods/ensure-future")
+async def ensure_future_periods(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    count: int = 3,
+):
+    """Create stub periods for upcoming months so the user can plan ahead."""
+    count = min(max(count, 1), 6)  # Cap between 1 and 6 months
+    created = await billing_service.ensure_future_periods(db, current_user.org_id, count=count)
+    return [
+        {
+            "id": p.id,
+            "start_date": p.start_date.isoformat(),
+            "end_date": p.end_date.isoformat() if p.end_date else None,
+        }
+        for p in created
+    ]
+
+
 @router.post("/billing-period/close")
 async def close_period(
     current_user: User = Depends(get_current_user),

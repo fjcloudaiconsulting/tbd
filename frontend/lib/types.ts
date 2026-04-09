@@ -98,3 +98,29 @@ export interface OrgSetting {
   key: string;
   value: string;
 }
+
+export interface ForecastPlanItem {
+  id: number;
+  plan_id: number;
+  category_id: number;
+  category_name: string;
+  parent_id: number | null;
+  type: "income" | "expense";
+  planned_amount: number;
+  source: "manual" | "recurring" | "history";
+  actual_amount: number;
+  variance: number;
+}
+
+export interface ForecastPlan {
+  id: number;
+  billing_period_id: number;
+  period_start: string;
+  period_end: string | null;
+  status: "draft" | "active";
+  total_planned_income: number;
+  total_planned_expense: number;
+  total_actual_income: number;
+  total_actual_expense: number;
+  items: ForecastPlanItem[];
+}
