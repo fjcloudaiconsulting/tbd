@@ -45,6 +45,7 @@ export default function DashboardPage() {
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [period, setPeriod] = useState<BillingPeriod | null>(null);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
+  const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
   const [periodIdx, setPeriodIdx] = useState(0);
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [fetching, setFetching] = useState(true);
@@ -75,7 +76,7 @@ export default function DashboardPage() {
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   // For open periods, compute expected end from billing cycle day
-  const cycleDay = user?.billing_cycle_day ?? 1;
+  const cycleDay = billingCycleDay;
   let monthTo = selectedPeriod?.end_date ?? "";
   if (!monthTo && monthFrom) {
     const start = new Date(monthFrom + "T00:00:00");
@@ -85,16 +86,18 @@ export default function DashboardPage() {
   }
 
   const loadRefs = useCallback(async () => {
-    const [accts, cats, bds, per, plist] = await Promise.all([
+    const [accts, cats, bds, per, plist, bc] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<Budget[]>("/api/v1/budgets"),
       apiFetch<BillingPeriod>("/api/v1/settings/billing-period"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
+      apiFetch<{ billing_cycle_day: number }>("/api/v1/settings/billing-cycle"),
     ]);
     setAccounts(accts ?? []);
     setCategories(cats ?? []);
     setBudgets(bds ?? []);
+    if (bc) setBillingCycleDay(bc.billing_cycle_day);
     if (per) setPeriod(per);
     const pl = plist ?? [];
     setPeriods(pl);
