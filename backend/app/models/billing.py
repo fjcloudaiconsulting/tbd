@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, func
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -9,6 +9,9 @@ from app.models.base import Base
 
 class BillingPeriod(Base):
     __tablename__ = "billing_periods"
+    __table_args__ = (
+        UniqueConstraint("org_id", "start_date", name="uq_billing_period_org_start"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     org_id: Mapped[int] = mapped_column(

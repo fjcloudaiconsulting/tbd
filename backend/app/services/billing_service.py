@@ -106,9 +106,15 @@ async def ensure_future_periods(
         created.append(stub)
 
     if created:
-        await db.commit()
-        for s in created:
-            await db.refresh(s)
+        from sqlalchemy.exc import IntegrityError
+        try:
+            await db.commit()
+            for s in created:
+                await db.refresh(s)
+        except IntegrityError:
+            # Concurrent request already created the stubs — safe to ignore
+            await db.rollback()
+            created = []
 
     return created
 
