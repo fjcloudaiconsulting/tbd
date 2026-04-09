@@ -33,6 +33,11 @@ export default function BudgetsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editAmount, setEditAmount] = useState("");
 
+  // Transfer
+  const [transferringId, setTransferringId] = useState<number | null>(null);
+  const [transferCategoryId, setTransferCategoryId] = useState<number | "">("");
+  const [transferAmount, setTransferAmount] = useState("");
+
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
   const isCurrentPeriod = selectedPeriod?.end_date === null;
@@ -103,6 +108,24 @@ export default function BudgetsPage() {
     if (!confirm("Remove this budget?")) return;
     try {
       await apiFetch(`/api/v1/budgets/${id}`, { method: "DELETE" });
+      await loadBudgets();
+    } catch (err) { setError(extractErrorMessage(err)); }
+  }
+
+  async function handleTransfer(fromId: number) {
+    setError("");
+    try {
+      await apiFetch("/api/v1/budgets/transfer", {
+        method: "POST",
+        body: JSON.stringify({
+          from_budget_id: fromId,
+          to_category_id: transferCategoryId,
+          amount: transferAmount,
+        }),
+      });
+      setTransferringId(null);
+      setTransferCategoryId("");
+      setTransferAmount("");
       await loadBudgets();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -229,6 +252,8 @@ export default function BudgetsPage() {
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
                 const overBudget = b.percent_used > 100;
+                const otherBudgetedCats = new Set(budgets.filter((x) => x.id !== b.id).map((x) => x.category_id));
+                const transferTargets = masterCategories.filter((c) => c.id !== b.category_id);
                 return (
                   <div key={b.id} className="px-6 py-3">
                     {editingId === b.id ? (
@@ -239,6 +264,24 @@ export default function BudgetsPage() {
                           onKeyDown={(e) => { if (e.key === "Enter") handleUpdate(b.id); if (e.key === "Escape") setEditingId(null); }} />
                         <button onClick={() => handleUpdate(b.id)} className="text-xs text-accent hover:text-accent-hover">Save</button>
                         <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                      </div>
+                    ) : transferringId === b.id ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-text-primary">{b.category_name}</span>
+                          <span className="text-xs text-text-muted">— transfer to:</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`flex-1 ${input}`}>
+                            <option value="">Select target category</option>
+                            {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{otherBudgetedCats.has(c.id) ? " (has budget)" : ""}</option>)}
+                          </select>
+                          <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
+                            className={`w-32 ${input}`}
+                            onKeyDown={(e) => { if (e.key === "Enter" && transferCategoryId && transferAmount) handleTransfer(b.id); if (e.key === "Escape") setTransferringId(null); }} />
+                          <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="text-xs text-accent hover:text-accent-hover disabled:opacity-50">Transfer</button>
+                          <button onClick={() => setTransferringId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                        </div>
                       </div>
                     ) : (
                       <div className="flex items-center justify-between">
@@ -251,6 +294,7 @@ export default function BudgetsPage() {
                             {b.percent_used}%
                           </span>
                           <div className="flex gap-2">
+                            <button onClick={() => { setTransferringId(b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="text-xs text-text-muted hover:text-accent">Transfer</button>
                             <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
                             <button onClick={() => handleDelete(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
                           </div>
