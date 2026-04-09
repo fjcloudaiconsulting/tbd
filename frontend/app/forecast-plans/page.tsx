@@ -604,7 +604,9 @@ export default function ForecastPlansPage() {
                         <Cell
                           key={i}
                           fill={
-                            d.actual > d.planned ? "#f87171" : "#4ade80"
+                            d.actual > d.planned
+                              ? "var(--color-danger)"
+                              : "var(--color-success)"
                           }
                         />
                       ))}

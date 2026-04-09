@@ -522,6 +522,7 @@ async def activate_plan(
 ) -> ForecastPlanResponse:
     """Mark plan as active (finalized). Active plans are read-only."""
     plan = await _get_plan(db, org_id, plan_id)
+    _require_draft(plan)
 
     if not plan.items:
         raise ValidationError("Cannot activate an empty plan")
