@@ -259,6 +259,7 @@ async def populate_from_sources(
     """
     period = await _resolve_period(db, org_id, period_start)
     plan = await _get_or_create_plan_row(db, org_id, period.id)
+    _require_draft(plan)
     await db.refresh(plan, ["billing_period", "items"])
 
     # Existing (category_id, type_str) combos — always use strings for consistency

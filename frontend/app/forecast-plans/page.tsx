@@ -96,7 +96,11 @@ export default function ForecastPlansPage() {
       }).then(() => {
         // Reload periods after stubs are created
         apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods").then((pl2) => {
-          if (pl2) setPeriods(pl2);
+          if (pl2) {
+            setPeriods(pl2);
+            const idx = pl2.findIndex((bp) => bp.end_date === null);
+            if (idx >= 0) setPeriodIdx(idx);
+          }
         });
       }).catch(() => {});
     }
@@ -214,6 +218,7 @@ export default function ForecastPlansPage() {
 
   async function handleDeleteItem(itemId: number) {
     if (!plan || !confirm("Remove this plan item?")) return;
+    setError("");
     try {
       const p = await apiFetch<ForecastPlan>(
         `/api/v1/forecast-plans/${plan.id}/items/${itemId}`,
