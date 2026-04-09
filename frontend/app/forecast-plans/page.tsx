@@ -579,6 +579,7 @@ export default function ForecastPlansPage() {
                         border: "1px solid var(--color-border)",
                         borderRadius: "6px",
                         fontSize: "11px",
+                        color: "var(--color-text-primary)",
                       }}
                     />
                     <Legend

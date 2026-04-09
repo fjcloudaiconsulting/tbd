@@ -229,7 +229,7 @@ export default function BudgetsPage() {
                     <YAxis type="category" dataKey="name" width={120} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
                     <Tooltip
                       formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : name === "remaining" ? "Remaining" : "Over budget"]}
-                      contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                      contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px", color: "var(--color-text-primary)" }}
                     />
                     <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
                       {budgets.map((b, i) => (

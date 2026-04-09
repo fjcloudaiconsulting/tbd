@@ -536,7 +536,7 @@ export default function DashboardPage() {
                               opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
                           ))}
                         </Pie>
-                        <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }} />
+                        <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px", color: "var(--color-text-primary)" }} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
@@ -577,7 +577,7 @@ export default function DashboardPage() {
                       <YAxis type="category" dataKey="name" width={100} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
                       <Tooltip
                         formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : "Remaining"]}
-                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px", color: "var(--color-text-primary)" }}
                       />
                       <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
                         {budgets.slice(0, 6).map((b, i) => (
@@ -615,7 +615,7 @@ export default function DashboardPage() {
                       <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
                       <Tooltip
                         formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? "Executed" : name === "pending" ? "Pending" : "Recurring"]}
-                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px", color: "var(--color-text-primary)" }}
                       />
                       <Bar dataKey="executed" stackId="a" fill="#4ade80" radius={[3, 0, 0, 3]} animationDuration={600} />
                       <Bar dataKey="pending" stackId="a" fill="#D4A64A" animationDuration={600} />
