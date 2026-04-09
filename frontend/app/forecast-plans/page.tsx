@@ -596,6 +596,7 @@ export default function ForecastPlansPage() {
                     />
                     <Bar
                       dataKey="actual"
+                      fill="var(--color-success)"
                       radius={[4, 4, 4, 4]}
                       barSize={14}
                       animationDuration={800}
