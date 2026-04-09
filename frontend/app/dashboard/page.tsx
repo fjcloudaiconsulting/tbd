@@ -74,7 +74,15 @@ export default function DashboardPage() {
   // Selected period (navigate with arrows)
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const monthTo = selectedPeriod?.end_date ?? "";
+  // For open periods, compute expected end from billing cycle day
+  const cycleDay = user?.billing_cycle_day ?? 1;
+  let monthTo = selectedPeriod?.end_date ?? "";
+  if (!monthTo && monthFrom) {
+    const start = new Date(monthFrom + "T00:00:00");
+    const nextMonth = new Date(start.getFullYear(), start.getMonth() + 1, cycleDay);
+    nextMonth.setDate(nextMonth.getDate() - 1);
+    monthTo = formatLocalDate(nextMonth);
+  }
 
   const loadRefs = useCallback(async () => {
     const [accts, cats, bds, per, plist] = await Promise.all([
