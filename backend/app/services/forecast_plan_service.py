@@ -268,7 +268,16 @@ async def populate_from_sources(
     p_start = period.start_date
     p_end = period.end_date or (p_start + relativedelta(months=1) - datetime.timedelta(days=1))
 
+    # ── Pre-fetch category → master mapping ──
+    cat_result = await db.execute(
+        select(Category.id, Category.parent_id).where(Category.org_id == org_id)
+    )
+    cat_to_master: dict[int, int] = {}
+    for cid, pid in cat_result.all():
+        cat_to_master[cid] = pid if pid else cid
+
     # ── From active recurring templates (with date filter) ──
+    # Aggregate by master category before inserting
     rec_result = await db.execute(
         select(RecurringTransaction).where(
             RecurringTransaction.org_id == org_id,
@@ -276,15 +285,15 @@ async def populate_from_sources(
             RecurringTransaction.next_due_date <= p_end,
         )
     )
+    recurring_totals: dict[tuple[int, str], Decimal] = {}
     for r in rec_result.scalars().all():
-        key = (r.category_id, r.type)  # r.type is str on RecurringTransaction
+        master_id = cat_to_master.get(r.category_id, r.category_id)
+        key = (master_id, r.type)
         if key in existing_keys:
             continue
 
-        # Count occurrences within the period — advance to period start first
         total = Decimal("0")
         d = r.next_due_date
-        # Fast-forward past dates before the period to avoid unnecessary iterations
         while d < p_start and d <= p_end:
             d = _advance_date(d, r.frequency)
         while d <= p_end:
@@ -292,21 +301,28 @@ async def populate_from_sources(
             prev = d
             d = _advance_date(d, r.frequency)
             if d <= prev:
-                break  # safety: prevent infinite loop on bad frequency
+                break
 
         if total > 0:
-            item = ForecastPlanItem(
-                plan_id=plan.id,
-                org_id=org_id,
-                category_id=r.category_id,
-                type=ForecastItemType(r.type),
-                planned_amount=total,
-                source=ItemSource.RECURRING,
-            )
-            db.add(item)
-            existing_keys.add(key)
+            recurring_totals[key] = recurring_totals.get(key, Decimal("0")) + total
+
+    for key, total in recurring_totals.items():
+        if key in existing_keys:
+            continue
+        master_id, r_type = key
+        item = ForecastPlanItem(
+            plan_id=plan.id,
+            org_id=org_id,
+            category_id=master_id,
+            type=ForecastItemType(r_type),
+            planned_amount=total,
+            source=ItemSource.RECURRING,
+        )
+        db.add(item)
+        existing_keys.add(key)
 
     # ── From 3-month historical monthly averages ──
+    # Aggregate subcategories into master before averaging
     three_months_ago = p_start - relativedelta(months=3)
 
     # Subquery: sum per category per type per month
@@ -328,49 +344,44 @@ async def populate_from_sources(
         .subquery()
     )
 
-    # Average the monthly totals
     hist_result = await db.execute(
         select(
             monthly_sub.c.category_id,
             monthly_sub.c.type,
-            func.avg(monthly_sub.c.monthly_total),
-            func.count(literal_column("*")),
-        ).group_by(monthly_sub.c.category_id, monthly_sub.c.type)
+            monthly_sub.c.month,
+            monthly_sub.c.monthly_total,
+        )
     )
 
-    for cat_id, tx_type_raw, avg_monthly, month_count in hist_result.all():
-        # Normalize tx_type to string (may come back as enum or str depending on driver)
+    # Roll up to master category, then compute monthly averages
+    # Structure: {(master_id, type): {month: total}}
+    master_monthly: dict[tuple[int, str], dict[str, Decimal]] = {}
+    for cat_id, tx_type_raw, month, monthly_total in hist_result.all():
         tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
+        master_id = cat_to_master.get(cat_id, cat_id)
+        key = (master_id, tx_type)
+        if key not in master_monthly:
+            master_monthly[key] = {}
+        master_monthly[key][month] = master_monthly[key].get(month, Decimal("0")) + Decimal(str(monthly_total))
 
-        key = (cat_id, tx_type)
+    for key, months in master_monthly.items():
         if key in existing_keys:
             continue
-        if month_count < 2:  # Need at least 2 months to suggest
+        if len(months) < 2:  # Need at least 2 months to suggest
             continue
-
-        # Resolve to master category for the plan item
-        cat_result = await db.execute(
-            select(Category).where(Category.id == cat_id, Category.org_id == org_id)
-        )
-        cat = cat_result.scalar_one_or_none()
-        if cat is None:
-            continue
-
-        master_id = cat.parent_id if cat.parent_id else cat.id
-        master_key = (master_id, tx_type)
-        if master_key in existing_keys:
-            continue
+        master_id, tx_type = key
+        avg_amount = sum(months.values()) / len(months)
 
         item = ForecastPlanItem(
             plan_id=plan.id,
             org_id=org_id,
             category_id=master_id,
             type=ForecastItemType(tx_type),
-            planned_amount=Decimal(str(round(float(avg_monthly), 2))),
+            planned_amount=Decimal(str(round(float(avg_amount), 2))),
             source=ItemSource.HISTORY,
         )
         db.add(item)
-        existing_keys.add(master_key)
+        existing_keys.add(key)
 
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
@@ -453,6 +464,7 @@ async def bulk_upsert(
                 source=ItemSource(item_data.source),
             )
             db.add(new_item)
+            existing_map[key] = new_item  # track to handle duplicates in same request
 
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
