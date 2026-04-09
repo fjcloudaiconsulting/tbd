@@ -252,7 +252,7 @@ export default function BudgetsPage() {
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
                 const overBudget = b.percent_used > 100;
-                const otherBudgetedCats = new Set(budgets.filter((x) => x.id !== b.id).map((x) => x.category_id));
+                const budgetedCatIds = new Set(budgets.map((x) => x.category_id));
                 const transferTargets = masterCategories.filter((c) => c.id !== b.category_id);
                 return (
                   <div key={b.id} className="px-6 py-3">
@@ -274,7 +274,7 @@ export default function BudgetsPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`min-w-0 flex-1 basis-40 ${input}`}>
                             <option value="">Select target category</option>
-                            {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{otherBudgetedCats.has(c.id) ? " (has budget)" : ""}</option>)}
+                            {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{budgetedCatIds.has(c.id) ? " (has budget)" : ""}</option>)}
                           </select>
                           <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
                             className={`w-28 ${input}`}
