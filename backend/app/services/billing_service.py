@@ -63,41 +63,33 @@ async def list_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
 async def ensure_future_periods(
     db: AsyncSession, org_id: int, count: int = 3,
 ) -> list[BillingPeriod]:
-    """Create stub periods for upcoming months so the user can plan ahead.
+    """Create stub periods for the next `count` months from today.
 
-    Stubs have a start_date and end_date derived from the org's billing cycle day.
-    They are distinguishable from real (closed) periods only by being in the future.
-    Returns the newly created stubs (if any).
+    Always anchored to today — calling this multiple times is idempotent
+    and will never create stubs beyond `count` months in the future.
     """
+    import calendar
+
     from dateutil.relativedelta import relativedelta
 
     current = await get_current_period(db, org_id)
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     cycle_day = org.billing_cycle_day if org else 1
 
-    # Find the latest period start_date
-    result = await db.execute(
-        select(BillingPeriod.start_date)
-        .where(BillingPeriod.org_id == org_id)
-        .order_by(BillingPeriod.start_date.desc())
-        .limit(1)
-    )
-    latest_start = result.scalar_one()
-
-    created = []
-    for i in range(count):
-        # Next period starts ~1 month after the latest
-        next_start = latest_start + relativedelta(months=1)
-        # Snap to cycle_day
+    def _snap_to_cycle(d: datetime.date) -> datetime.date:
         try:
-            next_start = next_start.replace(day=cycle_day)
+            return d.replace(day=cycle_day)
         except ValueError:
-            # e.g. cycle_day=31 in a 30-day month — use last day
-            import calendar
-            last_day = calendar.monthrange(next_start.year, next_start.month)[1]
-            next_start = next_start.replace(day=min(cycle_day, last_day))
+            last = calendar.monthrange(d.year, d.month)[1]
+            return d.replace(day=min(cycle_day, last))
 
-        # Check if it already exists
+    # Build the target months: 1, 2, ... count months from current period
+    base = current.start_date
+    created = []
+    for i in range(1, count + 1):
+        next_start = _snap_to_cycle(base + relativedelta(months=i))
+
+        # Skip if already exists
         existing = await db.scalar(
             select(BillingPeriod.id).where(
                 BillingPeriod.org_id == org_id,
@@ -105,23 +97,13 @@ async def ensure_future_periods(
             )
         )
         if existing:
-            latest_start = next_start
             continue
 
-        # Compute end_date (day before the next cycle start)
-        end_date = next_start + relativedelta(months=1)
-        try:
-            end_date = end_date.replace(day=cycle_day)
-        except ValueError:
-            import calendar
-            last_day = calendar.monthrange(end_date.year, end_date.month)[1]
-            end_date = end_date.replace(day=min(cycle_day, last_day))
-        end_date = end_date - datetime.timedelta(days=1)
+        end_date = _snap_to_cycle(next_start + relativedelta(months=1)) - datetime.timedelta(days=1)
 
         stub = BillingPeriod(org_id=org_id, start_date=next_start, end_date=end_date)
         db.add(stub)
         created.append(stub)
-        latest_start = next_start
 
     if created:
         await db.commit()

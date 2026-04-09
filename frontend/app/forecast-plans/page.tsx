@@ -407,6 +407,17 @@ export default function ForecastPlansPage() {
               />
             </svg>
           </button>
+          {!isCurrentPeriod && (
+            <button
+              onClick={() => {
+                const idx = periods.findIndex((p) => p.end_date === null);
+                if (idx >= 0) setPeriodIdx(idx);
+              }}
+              className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised"
+            >
+              Today
+            </button>
+          )}
           {plan && (
             <span
               className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
