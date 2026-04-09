@@ -190,9 +190,13 @@ async def transfer_budget(
     If the target category has no budget yet, one is created.
     Returns both the source and target budgets.
     """
-    # Load source budget
+    from sqlalchemy.exc import IntegrityError
+
+    # Lock source budget for update to prevent concurrent over-allocation
     result = await db.execute(
-        select(Budget).where(Budget.id == from_budget_id, Budget.org_id == org_id)
+        select(Budget)
+        .where(Budget.id == from_budget_id, Budget.org_id == org_id)
+        .with_for_update()
     )
     source = result.scalar_one_or_none()
     if source is None:
@@ -232,6 +236,26 @@ async def transfer_budget(
             period_end=source.period_end,
         )
         db.add(target)
+        try:
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            # Re-lock source and re-fetch target after race
+            result = await db.execute(
+                select(Budget).where(Budget.id == from_budget_id, Budget.org_id == org_id).with_for_update()
+            )
+            source = result.scalar_one()
+            if amount > source.amount:
+                raise ValidationError("Transfer amount exceeds source budget")
+            target_result = await db.execute(
+                select(Budget).where(
+                    Budget.org_id == org_id,
+                    Budget.category_id == to_category_id,
+                    Budget.period_start == source.period_start,
+                )
+            )
+            target = target_result.scalar_one()
+            target.amount += amount
     else:
         target.amount += amount
 
