@@ -566,7 +566,7 @@ export default function ForecastPlansPage() {
                       width={130}
                       tick={{
                         fill: "var(--color-text-secondary)",
-                        fontSize: 12,
+                        fontSize: 11,
                       }}
                     />
                     <Tooltip
@@ -578,28 +578,26 @@ export default function ForecastPlansPage() {
                         background: "var(--color-surface)",
                         border: "1px solid var(--color-border)",
                         borderRadius: "6px",
-                        fontSize: "12px",
+                        fontSize: "11px",
                       }}
                     />
                     <Legend
                       formatter={(v) =>
                         v === "planned" ? "Planned" : "Actual"
                       }
-                      wrapperStyle={{ fontSize: "12px" }}
+                      wrapperStyle={{ fontSize: "11px" }}
                     />
                     <Bar
                       dataKey="planned"
                       fill="var(--color-accent)"
-                      radius={[4, 4, 4, 4]}
-                      barSize={14}
-                      animationDuration={800}
+                      radius={[4, 0, 0, 4]}
+                      animationDuration={600}
                     />
                     <Bar
                       dataKey="actual"
                       fill="var(--color-success)"
-                      radius={[4, 4, 4, 4]}
-                      barSize={14}
-                      animationDuration={800}
+                      radius={[0, 4, 4, 0]}
+                      animationDuration={600}
                     >
                       {chartData.map((d, i) => (
                         <Cell

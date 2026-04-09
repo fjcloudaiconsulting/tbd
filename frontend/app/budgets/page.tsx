@@ -226,18 +226,18 @@ export default function BudgetsPage() {
                     pct: b.percent_used,
                   }))} layout="vertical" margin={{ left: 10, right: 10, top: 0, bottom: 0 }}>
                     <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="name" width={120} tick={{ fill: "var(--color-text-secondary)", fontSize: 12 }} />
+                    <YAxis type="category" dataKey="name" width={120} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
                     <Tooltip
                       formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : name === "remaining" ? "Remaining" : "Over budget"]}
-                      contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }}
+                      contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
                     />
-                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={800}>
+                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
                       {budgets.map((b, i) => (
                         <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
                       ))}
                     </Bar>
-                    <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={800} />
-                    <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={800} />
+                    <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={600} />
+                    <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={600} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
