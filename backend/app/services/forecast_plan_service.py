@@ -171,21 +171,6 @@ async def _compute_actuals_batch(
     return actuals
 
 
-def _item_response(item: ForecastPlanItem, actual: Decimal) -> ForecastPlanItemResponse:
-    return ForecastPlanItemResponse(
-        id=item.id,
-        plan_id=item.plan_id,
-        category_id=item.category_id,
-        category_name=item.category.name if item.category else "",
-        parent_id=item.category.parent_id if item.category else None,
-        type=item.type.value,
-        planned_amount=item.planned_amount,
-        source=item.source.value,
-        actual_amount=actual,
-        variance=actual - item.planned_amount,
-    )
-
-
 async def _build_response(
     db: AsyncSession, org_id: int, plan: ForecastPlan,
 ) -> ForecastPlanResponse:
@@ -196,6 +181,18 @@ async def _build_response(
     # Batch compute actuals for all items (2 queries instead of 2*N)
     actuals = await _compute_actuals_batch(db, org_id, plan.items, p_start, p_end)
 
+    # Batch fetch category names (avoids lazy-load MissingGreenlet in async)
+    cat_ids = {item.category_id for item in plan.items}
+    cat_info: dict[int, tuple[str, int | None]] = {}
+    if cat_ids:
+        cat_result = await db.execute(
+            select(Category.id, Category.name, Category.parent_id).where(
+                Category.id.in_(cat_ids), Category.org_id == org_id
+            )
+        )
+        for cid, cname, pid in cat_result.all():
+            cat_info[cid] = (cname, pid)
+
     item_responses = []
     total_planned_income = Decimal("0")
     total_planned_expense = Decimal("0")
@@ -204,7 +201,19 @@ async def _build_response(
 
     for item in plan.items:
         actual = actuals.get((item.category_id, item.type.value), Decimal("0"))
-        resp = _item_response(item, actual)
+        cname, pid = cat_info.get(item.category_id, ("Unknown", None))
+        resp = ForecastPlanItemResponse(
+            id=item.id,
+            plan_id=item.plan_id,
+            category_id=item.category_id,
+            category_name=cname,
+            parent_id=pid,
+            type=item.type.value,
+            planned_amount=item.planned_amount,
+            source=item.source.value,
+            actual_amount=actual,
+            variance=actual - item.planned_amount,
+        )
         item_responses.append(resp)
 
         if item.type == ForecastItemType.INCOME:

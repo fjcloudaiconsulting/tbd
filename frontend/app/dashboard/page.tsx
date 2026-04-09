@@ -88,7 +88,11 @@ export default function DashboardPage() {
     setCategories(cats ?? []);
     setBudgets(bds ?? []);
     if (per) setPeriod(per);
-    setPeriods(plist ?? []);
+    const pl = plist ?? [];
+    setPeriods(pl);
+    // Default to current period (open = no end_date), not index 0
+    const currentIdx = pl.findIndex((p) => p.end_date === null);
+    if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {

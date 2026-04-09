@@ -43,7 +43,11 @@ export default function BudgetsPage() {
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
     setCategories(c ?? []);
-    setPeriods(p ?? []);
+    const pl = p ?? [];
+    setPeriods(pl);
+    // Default to current period (open = no end_date), not index 0
+    const currentIdx = pl.findIndex((bp) => bp.end_date === null);
+    if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, []);
 
   const loadBudgets = useCallback(async () => {

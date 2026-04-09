@@ -88,19 +88,28 @@ export default function ForecastPlansPage() {
   const futureEnsured = useRef(false);
 
   const loadRefs = useCallback(async () => {
-    // Ensure future period stubs exist (once per session)
+    // Ensure future period stubs exist (fire-and-forget, once per session)
     if (!futureEnsured.current) {
-      await apiFetch("/api/v1/settings/billing-periods/ensure-future", {
-        method: "POST",
-      });
       futureEnsured.current = true;
+      apiFetch("/api/v1/settings/billing-periods/ensure-future", {
+        method: "POST",
+      }).then(() => {
+        // Reload periods after stubs are created
+        apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods").then((pl2) => {
+          if (pl2) setPeriods(pl2);
+        });
+      }).catch(() => {});
     }
     const [c, p] = await Promise.all([
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
     setCategories(c ?? []);
-    setPeriods(p ?? []);
+    const pl = p ?? [];
+    setPeriods(pl);
+    // Default to current period (open = no end_date), not index 0
+    const currentIdx = pl.findIndex((bp) => bp.end_date === null);
+    if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, []);
 
   const loadPlan = useCallback(async () => {
