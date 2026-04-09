@@ -297,7 +297,15 @@ export default function ForecastPlansPage() {
       <div className="mb-2 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Forecast Plans</h1>
         {isDraft && (
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {hasItems && (
+              <button
+                onClick={handleDiscard}
+                className="rounded-md px-3 py-2 text-xs text-text-muted hover:text-danger"
+              >
+                Discard
+              </button>
+            )}
             <button onClick={handlePopulate} className={btnPrimary}>
               Auto-populate
             </button>
@@ -682,25 +690,11 @@ export default function ForecastPlansPage() {
           )}
 
           {/* Bottom actions */}
-          {plan && hasItems && (
-            <div className="flex items-center justify-between">
-              <div>
-                {isDraft && hasItems && (
-                  <button
-                    onClick={handleDiscard}
-                    className="text-xs text-text-muted hover:text-danger"
-                  >
-                    Discard Draft
-                  </button>
-                )}
-              </div>
-              <div className="flex gap-3">
-                {isDraft && (
-                  <button onClick={handleActivate} className={btnPrimary}>
-                    Finalize Plan
-                  </button>
-                )}
-              </div>
+          {plan && hasItems && isDraft && (
+            <div className="flex justify-end">
+              <button onClick={handleActivate} className={btnPrimary}>
+                Finalize Plan
+              </button>
             </div>
           )}
         </div>
