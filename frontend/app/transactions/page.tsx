@@ -202,6 +202,7 @@ export default function TransactionsPage() {
 
   async function handleSaveEdit() {
     if (editingId === null) return;
+    if (!editDesc.trim()) { setError("Description is required"); return; }
     setError("");
     try {
       await apiFetch(`/api/v1/transactions/${editingId}`, {

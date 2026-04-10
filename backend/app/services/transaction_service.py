@@ -275,8 +275,8 @@ async def create_transfer(
     await validate_account(db, body.to_account_id, org_id)
 
     # Auto-generate description if not provided
-    description = body.description
-    if not description.strip():
+    description = body.description.strip()
+    if not description:
         from_name = await db.scalar(
             select(Account.name).where(Account.id == body.from_account_id, Account.org_id == org_id)
         )
