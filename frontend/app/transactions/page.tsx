@@ -427,16 +427,16 @@ export default function TransactionsPage() {
         </div>
         <div>
           <label htmlFor="f-from" className="sr-only">From date</label>
-          <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className={`w-36 ${input}`} placeholder="From" />
+          <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className={`w-32 ${input}`} placeholder="From" />
         </div>
         <div>
           <label htmlFor="f-to" className="sr-only">To date</label>
-          <input id="f-to" type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className={`w-36 ${input}`} placeholder="To" />
+          <input id="f-to" type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className={`w-32 ${input}`} placeholder="To" />
         </div>
         {periods.length > 0 && (
           <div>
             <label htmlFor="f-period" className="sr-only">Billing period</label>
-            <select id="f-period" value={filterPeriod} onChange={(e) => { setFilterPeriod(e.target.value); if (e.target.value) { setFilterDateFrom(""); setFilterDateTo(""); } }} className={`w-52 ${input}`}>
+            <select id="f-period" value={filterPeriod} onChange={(e) => { setFilterPeriod(e.target.value); if (e.target.value) { setFilterDateFrom(""); setFilterDateTo(""); } }} className={`w-40 ${input}`}>
               <option value="">All periods</option>
               {periods.map((p) => (
                 <option key={p.id} value={String(p.id)}>
