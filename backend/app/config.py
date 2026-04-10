@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Cookies
     cookie_secure: bool = False
 
+    # Redis (optional — used for sessions/cache in production)
+    redis_url: str = ""
+
     # CORS
     backend_cors_origins: str = "http://localhost:3000"
 

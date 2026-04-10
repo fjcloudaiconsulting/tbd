@@ -1,0 +1,55 @@
+# PFV2 Helm values
+# Override these per environment (staging, production)
+
+image:
+  backend:
+    repository: pfv2-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: pfv2-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+backend:
+  replicas: 2
+  workers: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+frontend:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+mysql:
+  # Use an external MySQL instance in production
+  # These are for reference / secrets
+  host: mysql
+  port: 3306
+  database: pfv2
+  user: pfv2
+
+redis:
+  host: redis
+  port: 6379
+
+env:
+  APP_ENV: production
+  LOG_LEVEL: INFO
+
+ingress:
+  enabled: true
+  className: nginx
+  host: pfv2.example.com
+  tls: true

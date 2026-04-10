@@ -14,13 +14,14 @@ usage() {
 Usage: ./pfv <command> [options]
 
 Commands:
-  start        Build and start all services
+  start        Build and start all services (development)
   stop         Stop all services
   restart      Restart without rebuild
   rebuild      Force rebuild (no cache) and start
   reset        Destroy all data and start fresh
+  prod         Build and start in production mode (standalone frontend, no reload)
   migrate      Run pending database migrations
-  logs [svc]   View logs (optional: backend, frontend, nginx, mysql)
+  logs [svc]   View logs (optional: backend, frontend, nginx, mysql, redis)
   status       Show container status
   shell [svc]  Open a shell in a service (default: backend)
   seed         Populate with mock data (demo user + 3 months of transactions)
@@ -53,6 +54,15 @@ cmd_rebuild() {
   docker compose build --no-cache
   docker compose up -d
   echo "Ready: http://localhost"
+}
+
+cmd_prod() {
+  echo "Starting PFV2 in PRODUCTION mode..."
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+  echo ""
+  echo "Ready (production mode — standalone frontend, no reload):"
+  echo "  App:      http://localhost"
+  echo "  API:      http://localhost/api/"
 }
 
 cmd_reset() {
@@ -114,6 +124,7 @@ case "${1:-}" in
   stop)     cmd_stop ;;
   restart)  cmd_restart ;;
   rebuild)  cmd_rebuild ;;
+  prod)     cmd_prod ;;
   reset)    cmd_reset ;;
   migrate)  cmd_migrate ;;
   logs)     shift; cmd_logs "$@" ;;

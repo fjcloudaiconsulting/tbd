@@ -33,7 +33,8 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _run_migrations()
+    if app_settings.app_env != "production":
+        _run_migrations()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
     await engine.dispose()
