@@ -224,7 +224,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <header className="flex h-14 shrink-0 items-center justify-end border-b border-border bg-surface px-8">
           <ThemeToggle />
         </header>
-        <main className="flex-1 overflow-auto p-8"><div className="mx-auto max-w-6xl">{children}</div></main>
+        <main className="flex-1 overflow-auto p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
         <footer className="border-t border-border bg-surface px-8 py-4">
           <div className="flex items-center justify-between text-xs text-text-muted">
             <span>PFV2 — Personal Finance</span>
