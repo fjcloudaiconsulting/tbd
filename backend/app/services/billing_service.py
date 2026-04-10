@@ -26,7 +26,19 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
             BillingPeriod.end_date.is_(None),
         ).order_by(BillingPeriod.start_date.desc())
     )
-    period = result.scalars().first()
+    open_periods = list(result.scalars().all())
+
+    if len(open_periods) > 1:
+        import structlog
+        logger = structlog.stdlib.get_logger()
+        await logger.awarning(
+            "multiple open billing periods",
+            org_id=org_id,
+            count=len(open_periods),
+            period_ids=[p.id for p in open_periods],
+        )
+
+    period = open_periods[0] if open_periods else None
 
     if period is None:
         # Auto-create first period based on org's billing_cycle_day

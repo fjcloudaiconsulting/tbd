@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -43,12 +43,15 @@ export default function RegisterPage() {
     if (slug) setUsername(slug);
   }, [firstName, lastName, usernameManual]);
 
-  // Check username availability (debounced)
+  // Check username availability (debounced, cancels stale requests)
+  const checkRef = useRef(0);
   const checkUsername = useCallback(async (name: string) => {
     if (name.length < 2) { setUsernameStatus(""); return; }
+    const id = ++checkRef.current;
     setUsernameStatus("checking");
     try {
       const result = await apiFetch<UsernameCheck>(`/api/v1/auth/check-username?username=${encodeURIComponent(name)}`);
+      if (id !== checkRef.current) return; // stale response
       if (result.available) {
         setUsernameStatus("available");
         setUsernameSuggestion("");
@@ -57,7 +60,7 @@ export default function RegisterPage() {
         setUsernameSuggestion(result.suggestion ?? "");
       }
     } catch {
-      setUsernameStatus("");
+      if (id === checkRef.current) setUsernameStatus("");
     }
   }, []);
 

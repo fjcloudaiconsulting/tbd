@@ -59,14 +59,15 @@ async def update_profile(
             )
         current_user.email = body.email
 
-    if body.first_name is not None:
-        current_user.first_name = body.first_name
-    if body.last_name is not None:
-        current_user.last_name = body.last_name
-    if body.phone is not None:
-        current_user.phone = body.phone
-    if body.avatar_url is not None:
-        current_user.avatar_url = body.avatar_url
+    sent = body.model_fields_set
+    if "first_name" in sent:
+        current_user.first_name = body.first_name or None
+    if "last_name" in sent:
+        current_user.last_name = body.last_name or None
+    if "phone" in sent:
+        current_user.phone = body.phone or None
+    if "avatar_url" in sent:
+        current_user.avatar_url = body.avatar_url or None
 
     await db.commit()
     await db.refresh(current_user, ["organization"])
