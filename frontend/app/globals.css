@@ -148,3 +148,16 @@ input:-webkit-autofill:focus {
 }
 
 a, button { transition: all 0.15s ease; }
+
+/* ─── Recharts tooltip override (inline styles don't resolve CSS vars in portals) ─── */
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: var(--theme-surface) !important;
+  border-color: var(--theme-border) !important;
+  border-radius: 6px !important;
+}
+.recharts-tooltip-wrapper .recharts-default-tooltip .recharts-tooltip-label {
+  color: var(--theme-text-secondary) !important;
+}
+.recharts-tooltip-wrapper .recharts-default-tooltip .recharts-tooltip-item {
+  color: var(--theme-text-primary) !important;
+}

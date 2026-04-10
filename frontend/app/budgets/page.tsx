@@ -215,7 +215,7 @@ export default function BudgetsPage() {
                   {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</>}
                 </span>
               </div>
-              <div style={{ height: Math.max(budgets.length * 48, 120) }}>
+              <div style={{ height: Math.max(budgets.length * 44, 120) }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={budgets.map((b) => ({
                     name: b.category_name,
@@ -224,19 +224,19 @@ export default function BudgetsPage() {
                     over: Math.max(Number(b.spent) - Number(b.amount), 0),
                     budget: Number(b.amount),
                     pct: b.percent_used,
-                  }))} layout="vertical" margin={{ left: 10, right: 10, top: 0, bottom: 0 }}>
+                  }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
                     <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="name" width={120} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
+                    <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                     <Tooltip
                       formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : name === "remaining" ? "Remaining" : "Over budget"]}
-                      contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px", color: "var(--color-text-primary)" }}
+                      contentStyle={{ fontSize: "11px" }}
                     />
                     <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
                       {budgets.map((b, i) => (
                         <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
                       ))}
                     </Bar>
-                    <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={600} />
+                    <Bar dataKey="remaining" stackId="a" fill="#163157" radius={[0, 4, 4, 0]} animationDuration={600} />
                     <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={600} />
                   </BarChart>
                 </ResponsiveContainer>

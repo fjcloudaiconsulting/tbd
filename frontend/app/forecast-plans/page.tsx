@@ -552,35 +552,26 @@ export default function ForecastPlansPage() {
               <h2 className={`${cardTitle} mb-4`}>
                 Planned vs Actual (Expenses)
               </h2>
-              <div style={{ height: Math.max(chartData.length * 52, 120) }}>
+              <div style={{ height: Math.max(chartData.length * 44, 120) }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={chartData}
                     layout="vertical"
-                    margin={{ left: 10, right: 10, top: 0, bottom: 0 }}
+                    margin={{ left: 0, right: 0, top: 0, bottom: 0 }}
                   >
                     <XAxis type="number" hide />
                     <YAxis
                       type="category"
                       dataKey="name"
-                      width={130}
-                      tick={{
-                        fill: "var(--color-text-secondary)",
-                        fontSize: 11,
-                      }}
+                      width={100}
+                      tick={{ fill: "#9ba8bd", fontSize: 11 }}
                     />
                     <Tooltip
                       formatter={(v: number, name: string) => [
                         formatAmount(v),
                         name === "planned" ? "Planned" : "Actual",
                       ]}
-                      contentStyle={{
-                        background: "var(--color-surface)",
-                        border: "1px solid var(--color-border)",
-                        borderRadius: "6px",
-                        fontSize: "11px",
-                        color: "var(--color-text-primary)",
-                      }}
+                      contentStyle={{ fontSize: "11px" }}
                     />
                     <Legend
                       formatter={(v) =>
@@ -590,24 +581,20 @@ export default function ForecastPlansPage() {
                     />
                     <Bar
                       dataKey="planned"
-                      fill="var(--color-accent)"
+                      fill="#D4A64A"
                       radius={[4, 0, 0, 4]}
                       animationDuration={600}
                     />
                     <Bar
                       dataKey="actual"
-                      fill="var(--color-success)"
+                      fill="#4ade80"
                       radius={[0, 4, 4, 0]}
                       animationDuration={600}
                     >
                       {chartData.map((d, i) => (
                         <Cell
                           key={i}
-                          fill={
-                            d.actual > d.planned
-                              ? "var(--color-danger)"
-                              : "var(--color-success)"
-                          }
+                          fill={d.actual > d.planned ? "#f87171" : "#4ade80"}
                         />
                       ))}
                     </Bar>
