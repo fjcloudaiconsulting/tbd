@@ -1,5 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, Cookie, status
-from sqlalchemy import func, select
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, Cookie, status
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -11,6 +13,7 @@ from app.schemas.auth import (
     LoginRequest,
     RegisterRequest,
     TokenResponse,
+    UsernameCheckResponse,
     UserResponse,
 )
 from app.config import settings as app_settings
@@ -25,6 +28,48 @@ from app.security import (
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
+def _user_response(user: User, org: Organization) -> UserResponse:
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        phone=user.phone,
+        avatar_url=user.avatar_url,
+        email_verified=user.email_verified,
+        role=user.role.value,
+        org_id=org.id,
+        org_name=org.name,
+        billing_cycle_day=org.billing_cycle_day,
+        is_superadmin=user.is_superadmin,
+        is_active=user.is_active,
+    )
+
+
+def _suggest_username(full_name: str | None, email: str) -> str:
+    """Generate a username suggestion from full_name or email."""
+    if full_name:
+        # "John Doe" → "john.doe"
+        slug = re.sub(r"[^a-z0-9]+", ".", full_name.lower().strip()).strip(".")
+        if slug:
+            return slug
+    # Fall back to email prefix: "john@example.com" → "john"
+    return email.split("@")[0].lower()
+
+
+async def _find_available_username(db: AsyncSession, base: str) -> str:
+    """Return base username if available, otherwise append a number."""
+    candidate = base
+    for i in range(100):
+        exists = await db.scalar(
+            select(User.id).where(User.username == candidate)
+        )
+        if not exists:
+            return candidate
+        candidate = f"{base}{i + 1}"
+    return f"{base}{hash(base) % 10000}"
+
+
 @router.get("/status")
 async def auth_status(db: AsyncSession = Depends(get_db)):
     """Check if the system needs initial setup (no users exist)."""
@@ -32,10 +77,25 @@ async def auth_status(db: AsyncSession = Depends(get_db)):
     return {"needs_setup": user_count == 0}
 
 
+@router.get("/check-username", response_model=UsernameCheckResponse)
+async def check_username(
+    username: str = Query(min_length=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if a username is available and suggest alternatives."""
+    exists = await db.scalar(
+        select(User.id).where(User.username == username)
+    )
+    if not exists:
+        return UsernameCheckResponse(available=True)
+    suggestion = await _find_available_username(db, username)
+    return UsernameCheckResponse(available=False, suggestion=suggestion)
+
+
 @router.post("/register", response_model=UserResponse, status_code=201)
 async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     existing = await db.execute(
-        select(User).where((User.username == body.username) | (User.email == body.email))
+        select(User).where(or_(User.username == body.username, User.email == body.email))
     )
     if existing.scalar_one_or_none():
         raise HTTPException(
@@ -43,8 +103,6 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
             detail="Username or email already taken",
         )
 
-    # First user in the system becomes superadmin.
-    # Check inside a locked read to avoid race conditions.
     existing_superadmin = await db.scalar(
         select(func.count()).select_from(User).where(User.is_superadmin == True)
     )
@@ -54,11 +112,9 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     db.add(org)
     await db.flush()
 
-    # Seed system account types for the new org
     for sat in SYSTEM_ACCOUNT_TYPES:
         db.add(AccountType(org_id=org.id, name=sat["name"], slug=sat["slug"], is_system=True))
 
-    # Seed system categories (master + subcategories)
     for master_def in SYSTEM_CATEGORIES:
         master = Category(
             org_id=org.id,
@@ -81,7 +137,6 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
                 is_system=True,
             ))
 
-    # Transfer category (used automatically for transfers, no parent)
     db.add(Category(
         org_id=org.id, name="Transfer", slug="transfer",
         description="Internal transfers between accounts",
@@ -92,6 +147,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         org_id=org.id,
         username=body.username,
         email=body.email,
+        full_name=body.full_name,
         password_hash=hash_password(body.password),
         role=Role.OWNER,
         is_superadmin=is_first_user,
@@ -108,30 +164,25 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.refresh(user)
     await db.refresh(org)
 
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        email=user.email,
-        role=user.role.value,
-        org_id=org.id,
-        org_name=org.name,
-        billing_cycle_day=org.billing_cycle_day,
-        is_superadmin=user.is_superadmin,
-        is_active=user.is_active,
-    )
+    return _user_response(user, org)
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
     body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(User).where(User.username == body.username))
+    # Accept username or email
+    result = await db.execute(
+        select(User).where(
+            or_(User.username == body.login, User.email == body.login)
+        )
+    )
     user = result.scalar_one_or_none()
 
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
+            detail="Invalid credentials",
         )
 
     if not user.is_active:
@@ -207,17 +258,7 @@ async def me(
     db: AsyncSession = Depends(get_db),
 ):
     await db.refresh(current_user, ["organization"])
-    return UserResponse(
-        id=current_user.id,
-        username=current_user.username,
-        email=current_user.email,
-        role=current_user.role.value,
-        org_id=current_user.org_id,
-        org_name=current_user.organization.name,
-        billing_cycle_day=current_user.organization.billing_cycle_day,
-        is_superadmin=current_user.is_superadmin,
-        is_active=current_user.is_active,
-    )
+    return _user_response(current_user, current_user.organization)
 
 
 @router.post("/logout")

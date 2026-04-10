@@ -2,6 +2,10 @@ export interface User {
   id: number;
   username: string;
   email: string;
+  full_name: string | null;
+  phone: string | null;
+  avatar_url: string | null;
+  email_verified: boolean;
   role: "owner" | "admin" | "member";
   org_id: number;
   org_name: string;
