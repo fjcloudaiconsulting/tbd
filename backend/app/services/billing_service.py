@@ -24,9 +24,9 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
         select(BillingPeriod).where(
             BillingPeriod.org_id == org_id,
             BillingPeriod.end_date.is_(None),
-        )
+        ).order_by(BillingPeriod.start_date.desc())
     )
-    period = result.scalar_one_or_none()
+    period = result.scalars().first()
 
     if period is None:
         # Auto-create first period based on org's billing_cycle_day
