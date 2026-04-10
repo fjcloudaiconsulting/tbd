@@ -21,6 +21,8 @@ USER = {
     "username": os.getenv("SEED_USERNAME", "demo"),
     "email": os.getenv("SEED_EMAIL", "demo@example.com"),
     "password": os.getenv("SEED_PASSWORD", "demo1234"),
+    "first_name": os.getenv("SEED_FIRST_NAME", "Demo"),
+    "last_name": os.getenv("SEED_LAST_NAME", "User"),
     "org_name": os.getenv("SEED_ORG", "Demo Household"),
 }
 
@@ -31,14 +33,21 @@ async def main():
 
         # Auth
         print("1. Authenticating...")
-        r = await c.post("/api/v1/auth/login", json={"username": USER["username"], "password": USER["password"]})
+        r = await c.post("/api/v1/auth/login", json={"login": USER["username"], "password": USER["password"]})
         if r.status_code != 200:
             print("   User not found, registering...")
-            r = await c.post("/api/v1/auth/register", json=USER)
+            r = await c.post("/api/v1/auth/register", json={
+                "username": USER["username"],
+                "email": USER["email"],
+                "password": USER["password"],
+                "first_name": USER["first_name"],
+                "last_name": USER["last_name"],
+                "org_name": USER["org_name"],
+            })
             if r.status_code != 201:
                 print(f"   Registration failed: {r.text}")
                 return
-            r = await c.post("/api/v1/auth/login", json={"username": USER["username"], "password": USER["password"]})
+            r = await c.post("/api/v1/auth/login", json={"login": USER["username"], "password": USER["password"]})
 
         token = r.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
