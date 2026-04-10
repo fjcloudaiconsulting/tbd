@@ -567,8 +567,8 @@ export default function ForecastPlansPage() {
                       tick={{ fill: "#9ba8bd", fontSize: 11 }}
                     />
                     <Tooltip
-                      formatter={(v: number, name: string) => [
-                        formatAmount(v),
+                      formatter={(v, name) => [
+                        formatAmount(Number(v)),
                         name === "planned" ? "Planned" : "Actual",
                       ]}
                       contentStyle={{ fontSize: "11px" }}

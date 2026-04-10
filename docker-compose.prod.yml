@@ -1,0 +1,59 @@
+# Production overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Key differences from dev:
+# - Frontend uses production Dockerfile (multi-stage, standalone build)
+# - Backend runs without --reload, multiple workers
+# - No volume mounts (immutable containers)
+# - Migration runs as a one-shot service before backend starts
+# - All services restart unless-stopped
+
+services:
+  mysql:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  backend:
+    restart: unless-stopped
+    environment:
+      - APP_ENV=production
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    volumes: []  # Override dev volume mounts — immutable container
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_URL=
+      - HOSTNAME=0.0.0.0
+    depends_on:
+      - backend
+    volumes: []  # Override dev volume mounts — immutable container
+
+  nginx:
+    restart: unless-stopped

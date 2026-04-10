@@ -33,7 +33,8 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _run_migrations()
+    if app_settings.app_env != "production":
+        _run_migrations()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
     await engine.dispose()
@@ -96,4 +97,7 @@ async def ready():
         return {"status": "ready", "database": "connected"}
     except Exception as e:
         logger.error("readiness check failed", error=str(e))
-        return {"status": "not_ready", "database": "connection error"}
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "database": "connection error"},
+        )

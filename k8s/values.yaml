@@ -1,0 +1,61 @@
+# PFV2 Helm values
+# Override these per environment (staging, production)
+
+image:
+  backend:
+    repository: pfv2-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: pfv2-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+
+backend:
+  replicas: 2
+  workers: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+frontend:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+mysql:
+  # External prerequisite — this chart does NOT deploy MySQL.
+  # Provide connection details for an existing MySQL instance.
+  host: ""      # REQUIRED — e.g. mysql.default.svc.cluster.local or RDS endpoint
+  port: 3306
+  database: pfv2
+  user: pfv2
+  password: ""  # REQUIRED — set via --set or values override
+
+redis:
+  # External prerequisite — this chart does NOT deploy Redis.
+  # Provide connection details for an existing Redis instance.
+  host: ""      # REQUIRED — e.g. redis.default.svc.cluster.local or ElastiCache endpoint
+  port: 6379
+
+secrets:
+  jwtSecretKey: ""  # REQUIRED — generate with: openssl rand -hex 32
+
+env:
+  APP_ENV: production
+  LOG_LEVEL: INFO
+
+ingress:
+  enabled: true
+  className: nginx
+  host: pfv2.example.com
+  tls: true
