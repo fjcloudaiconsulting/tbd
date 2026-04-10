@@ -180,10 +180,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-sidebar-hover"
           >
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-sidebar-active-bg text-xs font-semibold text-sidebar-active-text">
-              {user.username.charAt(0).toUpperCase()}
+              {(user.first_name ?? user.username).charAt(0).toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="truncate text-[13px] font-medium text-sidebar-text-bright">{user.username}</p>
+              <p className="truncate text-[13px] font-medium text-sidebar-text-bright">{user.first_name ?? user.username}</p>
               <p className="truncate text-[11px] text-sidebar-muted">{user.org_name}</p>
             </div>
             <svg

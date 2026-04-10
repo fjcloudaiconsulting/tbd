@@ -20,7 +20,8 @@ interface AuthContextValue {
     email: string,
     password: string,
     orgName?: string,
-    fullName?: string,
+    firstName?: string,
+    lastName?: string,
   ) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -86,7 +87,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     email: string,
     password: string,
     orgName?: string,
-    fullName?: string,
+    firstName?: string,
+    lastName?: string,
   ) => {
     await apiFetch<User>("/api/v1/auth/register", {
       method: "POST",
@@ -95,7 +97,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email,
         password,
         org_name: orgName || undefined,
-        full_name: fullName || undefined,
+        first_name: firstName || undefined,
+        last_name: lastName || undefined,
       }),
     });
   };

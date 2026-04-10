@@ -21,7 +21,8 @@ export default function RegisterPage() {
     if (!loading && user) router.replace("/dashboard");
   }, [loading, user, router]);
 
-  const [fullName, setFullName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [username, setUsername] = useState("");
   const [usernameManual, setUsernameManual] = useState(false);
   const [usernameStatus, setUsernameStatus] = useState<"" | "checking" | "available" | "taken">("");
@@ -33,12 +34,14 @@ export default function RegisterPage() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Auto-suggest username from full name
+  // Auto-suggest username from name
   useEffect(() => {
-    if (usernameManual || !fullName.trim()) return;
-    const slug = fullName.toLowerCase().trim().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
+    if (usernameManual) return;
+    const parts = [firstName, lastName].filter(Boolean).join(" ");
+    if (!parts.trim()) return;
+    const slug = parts.toLowerCase().trim().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
     if (slug) setUsername(slug);
-  }, [fullName, usernameManual]);
+  }, [firstName, lastName, usernameManual]);
 
   // Check username availability (debounced)
   const checkUsername = useCallback(async (name: string) => {
@@ -70,7 +73,7 @@ export default function RegisterPage() {
     if (password !== password2) { setError("Passwords do not match"); return; }
     setSubmitting(true);
     try {
-      await register(username, email, password, orgName || undefined, fullName || undefined);
+      await register(username, email, password, orgName || undefined, firstName || undefined, lastName || undefined);
       router.push("/login");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
@@ -90,9 +93,15 @@ export default function RegisterPage() {
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <div className={errorCls}>{error}</div>}
-          <div>
-            <label htmlFor="reg-fullname" className={label}>Full Name</label>
-            <input id="reg-fullname" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} className={input} autoComplete="name" placeholder="John Doe" />
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label htmlFor="reg-firstname" className={label}>First Name</label>
+              <input id="reg-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} autoComplete="given-name" placeholder="John" />
+            </div>
+            <div className="flex-1">
+              <label htmlFor="reg-lastname" className={label}>Last Name</label>
+              <input id="reg-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} autoComplete="family-name" placeholder="Doe" />
+            </div>
           </div>
           <div>
             <label htmlFor="reg-username" className={label}>Username</label>

@@ -10,14 +10,16 @@ import type { User } from "@/lib/types";
 export default function ProfilePage() {
   const { user, login, refreshMe } = useAuth();
 
-  const [fullName, setFullName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
 
   useEffect(() => {
     if (user) {
-      setFullName(user.full_name ?? "");
+      setFirstName(user.first_name ?? "");
+      setLastName(user.last_name ?? "");
       setUsername(user.username);
       setEmail(user.email);
       setPhone(user.phone ?? "");
@@ -42,7 +44,8 @@ export default function ProfilePage() {
       await apiFetch<User>("/api/v1/users/me", {
         method: "PUT",
         body: JSON.stringify({
-          full_name: fullName || null,
+          first_name: firstName || null,
+          last_name: lastName || null,
           username,
           email,
           phone: phone || null,
@@ -72,8 +75,8 @@ export default function ProfilePage() {
     finally { setSavingPwd(false); }
   }
 
-  const displayName = user?.full_name || user?.username || "";
-  const initials = displayName.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2) || "?";
+  const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.username || "";
+  const initials = [user?.first_name?.[0], user?.last_name?.[0]].filter(Boolean).join("").toUpperCase() || user?.username?.charAt(0).toUpperCase() || "?";
 
   return (
     <AppShell>
@@ -103,9 +106,15 @@ export default function ProfilePage() {
           <form onSubmit={handleProfileSubmit} className="space-y-4">
             {profileMsg && <div className={successCls}>{profileMsg}</div>}
             {profileErr && <div className={errorCls}>{profileErr}</div>}
-            <div>
-              <label htmlFor="profile-fullname" className={label}>Full Name</label>
-              <input id="profile-fullname" type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} className={input} placeholder="John Doe" />
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label htmlFor="profile-firstname" className={label}>First Name</label>
+                <input id="profile-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} placeholder="John" />
+              </div>
+              <div className="flex-1">
+                <label htmlFor="profile-lastname" className={label}>Last Name</label>
+                <input id="profile-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} placeholder="Doe" />
+              </div>
             </div>
             <div>
               <label htmlFor="profile-username" className={label}>Username</label>

@@ -33,7 +33,8 @@ def _user_response(user: User, org: Organization) -> UserResponse:
         id=user.id,
         username=user.username,
         email=user.email,
-        full_name=user.full_name,
+        first_name=user.first_name,
+        last_name=user.last_name,
         phone=user.phone,
         avatar_url=user.avatar_url,
         email_verified=user.email_verified,
@@ -46,14 +47,13 @@ def _user_response(user: User, org: Organization) -> UserResponse:
     )
 
 
-def _suggest_username(full_name: str | None, email: str) -> str:
-    """Generate a username suggestion from full_name or email."""
-    if full_name:
-        # "John Doe" → "john.doe"
-        slug = re.sub(r"[^a-z0-9]+", ".", full_name.lower().strip()).strip(".")
+def _suggest_username(first_name: str | None, last_name: str | None, email: str) -> str:
+    """Generate a username suggestion from name or email."""
+    parts = [p for p in [first_name, last_name] if p]
+    if parts:
+        slug = re.sub(r"[^a-z0-9]+", ".", " ".join(parts).lower().strip()).strip(".")
         if slug:
             return slug
-    # Fall back to email prefix: "john@example.com" → "john"
     return email.split("@")[0].lower()
 
 
@@ -147,7 +147,8 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         org_id=org.id,
         username=body.username,
         email=body.email,
-        full_name=body.full_name,
+        first_name=body.first_name,
+        last_name=body.last_name,
         password_hash=hash_password(body.password),
         role=Role.OWNER,
         is_superadmin=is_first_user,

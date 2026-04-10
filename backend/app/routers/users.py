@@ -17,7 +17,8 @@ def _user_response(user: User) -> UserResponse:
         id=user.id,
         username=user.username,
         email=user.email,
-        full_name=user.full_name,
+        first_name=user.first_name,
+        last_name=user.last_name,
         phone=user.phone,
         avatar_url=user.avatar_url,
         email_verified=user.email_verified,
@@ -58,8 +59,10 @@ async def update_profile(
             )
         current_user.email = body.email
 
-    if body.full_name is not None:
-        current_user.full_name = body.full_name
+    if body.first_name is not None:
+        current_user.first_name = body.first_name
+    if body.last_name is not None:
+        current_user.last_name = body.last_name
     if body.phone is not None:
         current_user.phone = body.phone
     if body.avatar_url is not None:

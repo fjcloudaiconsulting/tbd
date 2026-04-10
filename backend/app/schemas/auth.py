@@ -5,7 +5,8 @@ class RegisterRequest(BaseModel):
     username: str
     email: EmailStr
     password: str = Field(min_length=8)
-    full_name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
     org_name: str | None = None
 
 
@@ -23,7 +24,8 @@ class UserResponse(BaseModel):
     id: int
     username: str
     email: str
-    full_name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
     phone: str | None = None
     avatar_url: str | None = None
     email_verified: bool = False
