@@ -33,14 +33,18 @@ frontend:
       memory: 256Mi
 
 mysql:
-  host: mysql
+  # External prerequisite — this chart does NOT deploy MySQL.
+  # Provide connection details for an existing MySQL instance.
+  host: ""      # REQUIRED — e.g. mysql.default.svc.cluster.local or RDS endpoint
   port: 3306
   database: pfv2
   user: pfv2
   password: ""  # REQUIRED — set via --set or values override
 
 redis:
-  host: redis
+  # External prerequisite — this chart does NOT deploy Redis.
+  # Provide connection details for an existing Redis instance.
+  host: ""      # REQUIRED — e.g. redis.default.svc.cluster.local or ElastiCache endpoint
   port: 6379
 
 secrets:

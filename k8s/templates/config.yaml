@@ -7,7 +7,7 @@ data:
   APP_NAME: "PFV2"
   LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
   REDIS_URL: "redis://{{ .Values.redis.host }}:{{ .Values.redis.port }}/0"
-  BACKEND_CORS_ORIGINS: "https://{{ .Values.ingress.host }}"
+  BACKEND_CORS_ORIGINS: "{{ if .Values.ingress.tls }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}"
 ---
 apiVersion: v1
 kind: Secret
@@ -20,6 +20,12 @@ stringData:
   {{- end }}
   {{- if not .Values.secrets.jwtSecretKey }}
   {{- fail "secrets.jwtSecretKey is required — generate with: openssl rand -hex 32" }}
+  {{- end }}
+  {{- if not .Values.mysql.host }}
+  {{- fail "mysql.host is required — this chart does not deploy MySQL" }}
+  {{- end }}
+  {{- if not .Values.redis.host }}
+  {{- fail "redis.host is required — this chart does not deploy Redis" }}
   {{- end }}
   DATABASE_URL: "mysql+aiomysql://{{ .Values.mysql.user }}:{{ .Values.mysql.password }}@{{ .Values.mysql.host }}:{{ .Values.mysql.port }}/{{ .Values.mysql.database }}"
   JWT_SECRET_KEY: {{ .Values.secrets.jwtSecretKey | quote }}

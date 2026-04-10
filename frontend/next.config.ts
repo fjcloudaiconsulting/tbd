@@ -7,7 +7,6 @@ const nextConfig: NextConfig = {
       fullUrl: false,
     },
   },
-  serverExternalPackages: ["pino", "pino-pretty"],
 };
 
 export default nextConfig;

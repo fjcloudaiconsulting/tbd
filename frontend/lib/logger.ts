@@ -1,7 +1,7 @@
 /**
  * Structured JSON logger for Next.js — matches backend/nginx log format.
  *
- * Server-side: uses pino for structured JSON to stdout.
+ * Server-side: writes JSON directly to stdout/stderr.
  * Client-side: uses console.* (logs go to browser devtools, not server).
  *
  * Usage:
