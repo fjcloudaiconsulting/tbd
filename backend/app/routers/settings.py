@@ -1,12 +1,13 @@
 import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_user
+from app.models.budget import Budget
 from app.models.settings import OrgSetting
 from app.models.user import Organization, Role, User
 from app.schemas.settings import BillingCycleUpdate, OrgSettingResponse, OrgSettingUpdate
@@ -132,7 +133,7 @@ async def update_billing_cycle(
     # Recalculate the current open period to match the new cycle day
     current_period = await billing_service.get_current_period(db, current_user.org_id)
     if current_period.end_date is None:
-        import datetime
+        old_start = current_period.start_date
         today = datetime.date.today()
         new_day = body.billing_cycle_day
         y, m, d = today.year, today.month, today.day
@@ -142,6 +143,14 @@ async def update_billing_cycle(
             prev = datetime.date(y, m, 1) - datetime.timedelta(days=1)
             new_start = datetime.date(prev.year, prev.month, new_day)
         current_period.start_date = new_start
+
+        # Update budgets tied to the old period start date
+        if old_start != new_start:
+            await db.execute(
+                update(Budget)
+                .where(Budget.org_id == current_user.org_id, Budget.period_start == old_start)
+                .values(period_start=new_start)
+            )
 
     await db.commit()
     return {"billing_cycle_day": org.billing_cycle_day}
@@ -204,6 +213,7 @@ async def ensure_future_periods(
     count: int = 3,
 ):
     """Create stub periods for upcoming months so the user can plan ahead."""
+    _require_admin(current_user)
     count = min(max(count, 1), 6)  # Cap between 1 and 6 months
     created = await billing_service.ensure_future_periods(db, current_user.org_id, count=count)
     return [

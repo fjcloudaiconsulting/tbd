@@ -120,16 +120,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen">
-      {/* Dark sidebar */}
-      <aside className="flex w-56 flex-col bg-sidebar-bg">
+    <div className="flex h-screen overflow-hidden">
+      {/* Dark sidebar — fixed height, never scrolls */}
+      <aside className="flex h-screen w-56 flex-col bg-sidebar-bg shrink-0">
         <div className="px-5 pt-5 pb-6">
           <Link href="/dashboard" className="font-display text-lg font-semibold text-sidebar-text-bright">
             PFV2
           </Link>
         </div>
 
-        <nav className="flex-1 space-y-0.5 px-3">
+        <nav className="flex-1 overflow-y-auto space-y-0.5 px-3">
           {navItems.map((item) => (
             <Link
               key={item.href}
@@ -220,11 +220,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <div className="flex flex-1 flex-col">
+      <div className="flex flex-1 flex-col overflow-hidden">
         <header className="flex h-14 shrink-0 items-center justify-end border-b border-border bg-surface px-8">
           <ThemeToggle />
         </header>
-        <main className="flex-1 p-8">{children}</main>
+        <main className="flex-1 overflow-auto p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
         <footer className="border-t border-border bg-surface px-8 py-4">
           <div className="flex items-center justify-between text-xs text-text-muted">
             <span>PFV2 — Personal Finance</span>

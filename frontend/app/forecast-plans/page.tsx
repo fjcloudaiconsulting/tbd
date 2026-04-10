@@ -26,7 +26,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
-  Legend,
+
 } from "recharts";
 import type { Category, ForecastPlan, ForecastPlanItem } from "@/lib/types";
 
@@ -552,67 +552,53 @@ export default function ForecastPlansPage() {
               <h2 className={`${cardTitle} mb-4`}>
                 Planned vs Actual (Expenses)
               </h2>
-              <div style={{ height: Math.max(chartData.length * 52, 120) }}>
+              <div style={{ height: Math.max(chartData.length * 40, 100) }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={chartData}
                     layout="vertical"
-                    margin={{ left: 10, right: 10, top: 0, bottom: 0 }}
+                    margin={{ left: 0, right: 0, top: 0, bottom: 0 }}
                   >
                     <XAxis type="number" hide />
                     <YAxis
                       type="category"
                       dataKey="name"
-                      width={130}
-                      tick={{
-                        fill: "var(--color-text-secondary)",
-                        fontSize: 12,
-                      }}
+                      width={100}
+                      tick={{ fill: "#9ba8bd", fontSize: 11 }}
                     />
                     <Tooltip
                       formatter={(v: number, name: string) => [
                         formatAmount(v),
                         name === "planned" ? "Planned" : "Actual",
                       ]}
-                      contentStyle={{
-                        background: "var(--color-surface)",
-                        border: "1px solid var(--color-border)",
-                        borderRadius: "6px",
-                        fontSize: "12px",
-                      }}
-                    />
-                    <Legend
-                      formatter={(v) =>
-                        v === "planned" ? "Planned" : "Actual"
-                      }
-                      wrapperStyle={{ fontSize: "12px" }}
+                      contentStyle={{ fontSize: "11px" }}
                     />
                     <Bar
                       dataKey="planned"
-                      fill="var(--color-accent)"
+                      fill="#D4A64A"
                       radius={[4, 4, 4, 4]}
-                      barSize={14}
-                      animationDuration={800}
+                      animationDuration={600}
                     />
                     <Bar
                       dataKey="actual"
+                      fill="#4ade80"
                       radius={[4, 4, 4, 4]}
-                      barSize={14}
-                      animationDuration={800}
+                      animationDuration={600}
                     >
                       {chartData.map((d, i) => (
                         <Cell
                           key={i}
-                          fill={
-                            d.actual > d.planned
-                              ? "var(--color-danger)"
-                              : "var(--color-success)"
-                          }
+                          fill={d.actual > d.planned ? "#f87171" : "#4ade80"}
                         />
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
+              </div>
+              <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Planned</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#4ade80" }} /> Under plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over plan</span>
               </div>
             </div>
           )}

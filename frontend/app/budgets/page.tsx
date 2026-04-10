@@ -33,6 +33,11 @@ export default function BudgetsPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editAmount, setEditAmount] = useState("");
 
+  // Transfer
+  const [transferringId, setTransferringId] = useState<number | null>(null);
+  const [transferCategoryId, setTransferCategoryId] = useState<number | "">("");
+  const [transferAmount, setTransferAmount] = useState("");
+
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
   const isCurrentPeriod = selectedPeriod?.end_date === null;
@@ -103,6 +108,24 @@ export default function BudgetsPage() {
     if (!confirm("Remove this budget?")) return;
     try {
       await apiFetch(`/api/v1/budgets/${id}`, { method: "DELETE" });
+      await loadBudgets();
+    } catch (err) { setError(extractErrorMessage(err)); }
+  }
+
+  async function handleTransfer(fromId: number) {
+    setError("");
+    try {
+      await apiFetch("/api/v1/budgets/transfer", {
+        method: "POST",
+        body: JSON.stringify({
+          from_budget_id: fromId,
+          to_category_id: transferCategoryId,
+          amount: transferAmount,
+        }),
+      });
+      setTransferringId(null);
+      setTransferCategoryId("");
+      setTransferAmount("");
       await loadBudgets();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -192,31 +215,35 @@ export default function BudgetsPage() {
                   {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</>}
                 </span>
               </div>
-              <div style={{ height: Math.max(budgets.length * 48, 120) }}>
+              <div className="p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={budgets.map((b) => ({
                     name: b.category_name,
                     spent: Number(b.spent),
                     remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
                     over: Math.max(Number(b.spent) - Number(b.amount), 0),
-                    budget: Number(b.amount),
-                    pct: b.percent_used,
-                  }))} layout="vertical" margin={{ left: 10, right: 10, top: 0, bottom: 0 }}>
+                  }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
                     <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="name" width={120} tick={{ fill: "var(--color-text-secondary)", fontSize: 12 }} />
+                    <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                     <Tooltip
                       formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : name === "remaining" ? "Remaining" : "Over budget"]}
-                      contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }}
+                      contentStyle={{ fontSize: "11px" }}
                     />
-                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={800}>
+                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
                       {budgets.map((b, i) => (
-                        <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
+                        <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
                       ))}
                     </Bar>
-                    <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={800} />
-                    <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={800} />
+                    <Bar dataKey="remaining" stackId="a" fill="#e8ebf0" radius={[0, 4, 4, 0]} animationDuration={600} />
+                    <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={600} />
                   </BarChart>
                 </ResponsiveContainer>
+              </div>
+              <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Spent</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f59e0b" }} /> &gt;80%</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over budget</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#e8ebf0" }} /> Remaining</span>
               </div>
             </div>
           )}
@@ -229,6 +256,8 @@ export default function BudgetsPage() {
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
                 const overBudget = b.percent_used > 100;
+                const budgetedCatIds = new Set(budgets.map((x) => x.category_id));
+                const transferTargets = masterCategories.filter((c) => c.id !== b.category_id);
                 return (
                   <div key={b.id} className="px-6 py-3">
                     {editingId === b.id ? (
@@ -239,6 +268,24 @@ export default function BudgetsPage() {
                           onKeyDown={(e) => { if (e.key === "Enter") handleUpdate(b.id); if (e.key === "Escape") setEditingId(null); }} />
                         <button onClick={() => handleUpdate(b.id)} className="text-xs text-accent hover:text-accent-hover">Save</button>
                         <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                      </div>
+                    ) : transferringId === b.id ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-text-primary">{b.category_name}</span>
+                          <span className="text-xs text-text-muted">— transfer to:</span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`min-w-0 flex-1 basis-40 ${input}`}>
+                            <option value="">Select target category</option>
+                            {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{budgetedCatIds.has(c.id) ? " (has budget)" : ""}</option>)}
+                          </select>
+                          <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
+                            className={`w-28 ${input}`}
+                            onKeyDown={(e) => { if (e.key === "Enter" && transferCategoryId && transferAmount) handleTransfer(b.id); if (e.key === "Escape") setTransferringId(null); }} />
+                          <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="text-xs text-accent hover:text-accent-hover disabled:opacity-50">Transfer</button>
+                          <button onClick={() => setTransferringId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                        </div>
                       </div>
                     ) : (
                       <div className="flex items-center justify-between">
@@ -251,6 +298,7 @@ export default function BudgetsPage() {
                             {b.percent_used}%
                           </span>
                           <div className="flex gap-2">
+                            <button onClick={() => { setTransferringId(b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="text-xs text-text-muted hover:text-accent">Transfer</button>
                             <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
                             <button onClick={() => handleDelete(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
                           </div>

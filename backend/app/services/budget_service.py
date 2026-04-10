@@ -181,6 +181,99 @@ async def update_budget(
     return _to_response(budget, spent)
 
 
+async def transfer_budget(
+    db: AsyncSession, org_id: int,
+    from_budget_id: int, to_category_id: int, amount: Decimal,
+) -> list[BudgetResponse]:
+    """Transfer allocation from one budget to another within the same period.
+
+    If the target category has no budget yet, one is created.
+    Returns both the source and target budgets.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    # Lock source budget for update to prevent concurrent over-allocation
+    result = await db.execute(
+        select(Budget)
+        .where(Budget.id == from_budget_id, Budget.org_id == org_id)
+        .with_for_update()
+    )
+    source = result.scalar_one_or_none()
+    if source is None:
+        raise NotFoundError("Source budget")
+
+    if amount > source.amount:
+        raise ValidationError("Transfer amount exceeds source budget")
+
+    # Validate target is a master category
+    cat_result = await db.execute(
+        select(Category).where(Category.id == to_category_id, Category.org_id == org_id)
+    )
+    target_cat = cat_result.scalar_one_or_none()
+    if target_cat is None:
+        raise ValidationError("Invalid target category")
+    if target_cat.parent_id is not None:
+        raise ValidationError("Target must be a master category")
+    if target_cat.id == source.category_id:
+        raise ValidationError("Cannot transfer to the same category")
+
+    # Find or create target budget in same period
+    target_result = await db.execute(
+        select(Budget).where(
+            Budget.org_id == org_id,
+            Budget.category_id == to_category_id,
+            Budget.period_start == source.period_start,
+        )
+    )
+    target = target_result.scalar_one_or_none()
+
+    if target is None:
+        target = Budget(
+            org_id=org_id,
+            category_id=to_category_id,
+            amount=amount,
+            period_start=source.period_start,
+            period_end=source.period_end,
+        )
+        db.add(target)
+        try:
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            # Re-lock source and re-fetch target after race
+            result = await db.execute(
+                select(Budget).where(Budget.id == from_budget_id, Budget.org_id == org_id).with_for_update()
+            )
+            source = result.scalar_one()
+            if amount > source.amount:
+                raise ValidationError("Transfer amount exceeds source budget")
+            target_result = await db.execute(
+                select(Budget).where(
+                    Budget.org_id == org_id,
+                    Budget.category_id == to_category_id,
+                    Budget.period_start == source.period_start,
+                )
+            )
+            target = target_result.scalar_one()
+            target.amount += amount
+    else:
+        target.amount += amount
+
+    source.amount -= amount
+
+    await db.commit()
+    await db.refresh(source, ["category"])
+    await db.refresh(target, ["category"])
+
+    period = await get_current_period(db, org_id)
+    end = period.end_date if period.start_date == source.period_start else source.period_end
+
+    source_spent = await _compute_spent(db, org_id, source.category_id, source.period_start, end)
+    target_spent = await _compute_spent(db, org_id, target.category_id, target.period_start, end)
+
+    return [_to_response(source, source_spent), _to_response(target, target_spent)]
+
+
 async def delete_budget(db: AsyncSession, org_id: int, budget_id: int) -> None:
     result = await db.execute(
         select(Budget).where(Budget.id == budget_id, Budget.org_id == org_id)

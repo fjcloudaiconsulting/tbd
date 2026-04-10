@@ -45,6 +45,7 @@ export default function DashboardPage() {
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [period, setPeriod] = useState<BillingPeriod | null>(null);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
+  const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
   const [periodIdx, setPeriodIdx] = useState(0);
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [fetching, setFetching] = useState(true);
@@ -74,19 +75,29 @@ export default function DashboardPage() {
   // Selected period (navigate with arrows)
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const monthTo = selectedPeriod?.end_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0));
+  // For open periods, compute expected end from billing cycle day
+  const cycleDay = billingCycleDay;
+  let monthTo = selectedPeriod?.end_date ?? "";
+  if (!monthTo && monthFrom) {
+    const start = new Date(monthFrom + "T00:00:00");
+    const nextMonth = new Date(start.getFullYear(), start.getMonth() + 1, cycleDay);
+    nextMonth.setDate(nextMonth.getDate() - 1);
+    monthTo = formatLocalDate(nextMonth);
+  }
 
   const loadRefs = useCallback(async () => {
-    const [accts, cats, bds, per, plist] = await Promise.all([
+    const [accts, cats, bds, per, plist, bc] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<Budget[]>("/api/v1/budgets"),
       apiFetch<BillingPeriod>("/api/v1/settings/billing-period"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
+      apiFetch<{ billing_cycle_day: number }>("/api/v1/settings/billing-cycle"),
     ]);
     setAccounts(accts ?? []);
     setCategories(cats ?? []);
     setBudgets(bds ?? []);
+    if (bc) setBillingCycleDay(bc.billing_cycle_day);
     if (per) setPeriod(per);
     const pl = plist ?? [];
     setPeriods(pl);
@@ -98,9 +109,10 @@ export default function DashboardPage() {
   const loadTransactions = useCallback(async (p: number) => {
     const budgetUrl = monthFrom ? `/api/v1/budgets?period_start=${monthFrom}` : "/api/v1/budgets";
     const forecastUrl = monthFrom ? `/api/v1/forecast?period_start=${monthFrom}` : "/api/v1/forecast";
+    const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
     const [pageData, allData, bds, fc] = await Promise.all([
-      apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&date_from=${monthFrom}&date_to=${monthTo}`),
-      p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&date_from=${monthFrom}&date_to=${monthTo}`) : null,
+      apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&${dateFilter}`),
+      p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&${dateFilter}`) : null,
       p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
       p === 0 ? apiFetch<Forecast>(forecastUrl) : null,
     ]);
@@ -391,7 +403,7 @@ export default function DashboardPage() {
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
               </button>
               <span className="text-sm font-medium text-text-primary">
-                {monthFrom}{monthTo !== monthFrom ? ` — ${monthTo}` : ""}
+                {monthFrom}{monthTo ? ` — ${monthTo}` : ""}
               </span>
               <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
@@ -524,7 +536,7 @@ export default function DashboardPage() {
                               opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
                           ))}
                         </Pie>
-                        <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "12px" }} />
+                        <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ fontSize: "12px" }} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
@@ -553,6 +565,7 @@ export default function DashboardPage() {
                 <Link href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</Link>
               </div>
               {budgets.length > 0 ? (
+                <>
                 <div className="p-4" style={{ height: Math.max(budgets.slice(0, 6).length * 40, 100) }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={budgets.slice(0, 6).map((b) => ({
@@ -562,20 +575,25 @@ export default function DashboardPage() {
                       pct: b.percent_used,
                     }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
                       <XAxis type="number" hide />
-                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
+                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                       <Tooltip
                         formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : "Remaining"]}
-                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                        contentStyle={{ fontSize: "11px" }}
                       />
                       <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
                         {budgets.slice(0, 6).map((b, i) => (
-                          <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
+                          <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
                         ))}
                       </Bar>
-                      <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={600} />
+                      <Bar dataKey="remaining" stackId="a" fill="#e8ebf0" radius={[0, 4, 4, 0]} animationDuration={600} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+                <div className="flex gap-3 px-4 pb-3 text-[10px] text-text-muted">
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Spent</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#e8ebf0" }} /> Remaining</span>
+                </div>
+                </>
               ) : (
                 <div className="px-5 py-6 text-center text-sm text-text-muted">
                   No budgets set. <Link href="/budgets" className="text-accent">Add one</Link>
@@ -603,7 +621,7 @@ export default function DashboardPage() {
                       <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
                       <Tooltip
                         formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? "Executed" : name === "pending" ? "Pending" : "Recurring"]}
-                        contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "6px", fontSize: "11px" }}
+                        contentStyle={{ fontSize: "11px" }}
                       />
                       <Bar dataKey="executed" stackId="a" fill="#4ade80" radius={[3, 0, 0, 3]} animationDuration={600} />
                       <Bar dataKey="pending" stackId="a" fill="#D4A64A" animationDuration={600} />
