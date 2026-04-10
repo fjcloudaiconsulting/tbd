@@ -5,11 +5,13 @@ class RegisterRequest(BaseModel):
     username: str
     email: EmailStr
     password: str = Field(min_length=8)
+    first_name: str | None = None
+    last_name: str | None = None
     org_name: str | None = None
 
 
 class LoginRequest(BaseModel):
-    username: str
+    login: str  # accepts username or email
     password: str
 
 
@@ -22,6 +24,11 @@ class UserResponse(BaseModel):
     id: int
     username: str
     email: str
+    first_name: str | None = None
+    last_name: str | None = None
+    phone: str | None = None
+    avatar_url: str | None = None
+    email_verified: bool = False
     role: str
     org_id: int
     org_name: str
@@ -30,3 +37,8 @@ class UserResponse(BaseModel):
     is_active: bool
 
     model_config = {"from_attributes": True}
+
+
+class UsernameCheckResponse(BaseModel):
+    available: bool
+    suggestion: str | None = None

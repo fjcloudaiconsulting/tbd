@@ -1,11 +1,17 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { apiFetch } from "@/lib/api";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
+
+interface UsernameCheck {
+  available: boolean;
+  suggestion: string | null;
+}
 
 export default function RegisterPage() {
   const { user, register, loading } = useAuth();
@@ -15,7 +21,12 @@ export default function RegisterPage() {
     if (!loading && user) router.replace("/dashboard");
   }, [loading, user, router]);
 
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [username, setUsername] = useState("");
+  const [usernameManual, setUsernameManual] = useState(false);
+  const [usernameStatus, setUsernameStatus] = useState<"" | "checking" | "available" | "taken">("");
+  const [usernameSuggestion, setUsernameSuggestion] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
@@ -23,13 +34,49 @@ export default function RegisterPage() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // Auto-suggest username from name
+  useEffect(() => {
+    if (usernameManual) return;
+    const parts = [firstName, lastName].filter(Boolean).join(" ");
+    if (!parts.trim()) return;
+    const slug = parts.toLowerCase().trim().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
+    if (slug) setUsername(slug);
+  }, [firstName, lastName, usernameManual]);
+
+  // Check username availability (debounced, cancels stale requests)
+  const checkRef = useRef(0);
+  const checkUsername = useCallback(async (name: string) => {
+    if (name.length < 2) { setUsernameStatus(""); return; }
+    const id = ++checkRef.current;
+    setUsernameStatus("checking");
+    try {
+      const result = await apiFetch<UsernameCheck>(`/api/v1/auth/check-username?username=${encodeURIComponent(name)}`);
+      if (id !== checkRef.current) return; // stale response
+      if (result.available) {
+        setUsernameStatus("available");
+        setUsernameSuggestion("");
+      } else {
+        setUsernameStatus("taken");
+        setUsernameSuggestion(result.suggestion ?? "");
+      }
+    } catch {
+      if (id === checkRef.current) setUsernameStatus("");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!username) { setUsernameStatus(""); return; }
+    const timer = setTimeout(() => checkUsername(username), 400);
+    return () => clearTimeout(timer);
+  }, [username, checkUsername]);
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
     if (password !== password2) { setError("Passwords do not match"); return; }
     setSubmitting(true);
     try {
-      await register(username, email, password, orgName || undefined);
+      await register(username, email, password, orgName || undefined, firstName || undefined, lastName || undefined);
       router.push("/login");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
@@ -49,13 +96,32 @@ export default function RegisterPage() {
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <div className={errorCls}>{error}</div>}
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label htmlFor="reg-firstname" className={label}>First Name</label>
+              <input id="reg-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} autoComplete="given-name" placeholder="John" />
+            </div>
+            <div className="flex-1">
+              <label htmlFor="reg-lastname" className={label}>Last Name</label>
+              <input id="reg-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} autoComplete="family-name" placeholder="Doe" />
+            </div>
+          </div>
           <div>
             <label htmlFor="reg-username" className={label}>Username</label>
-            <input id="reg-username" type="text" required value={username} onChange={(e) => setUsername(e.target.value)} className={input} autoComplete="username" />
+            <input id="reg-username" type="text" required value={username} onChange={(e) => { setUsername(e.target.value); setUsernameManual(true); }} className={input} autoComplete="username" />
+            {usernameStatus === "checking" && <p className="mt-1 text-xs text-text-muted">Checking...</p>}
+            {usernameStatus === "available" && <p className="mt-1 text-xs text-success">Available</p>}
+            {usernameStatus === "taken" && (
+              <p className="mt-1 text-xs text-danger">
+                Taken{usernameSuggestion && (
+                  <> — try <button type="button" onClick={() => { setUsername(usernameSuggestion); setUsernameManual(true); }} className="text-accent underline">{usernameSuggestion}</button></>
+                )}
+              </p>
+            )}
           </div>
           <div>
             <label htmlFor="reg-email" className={label}>Email</label>
-            <input id="reg-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={input} autoComplete="email" />
+            <input id="reg-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={input} autoComplete="email" placeholder="you@example.com" />
           </div>
           <div>
             <label htmlFor="reg-org" className={label}>Organization <span className="normal-case tracking-normal">(optional)</span></label>
@@ -63,13 +129,13 @@ export default function RegisterPage() {
           </div>
           <div>
             <label htmlFor="reg-password" className={label}>Password</label>
-            <input id="reg-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="new-password" />
+            <input id="reg-password" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="new-password" />
           </div>
           <div>
             <label htmlFor="reg-password2" className={label}>Confirm Password</label>
             <input id="reg-password2" type="password" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
           </div>
-          <button type="submit" disabled={submitting} className="w-full rounded-md bg-accent px-4 py-2.5 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50">
+          <button type="submit" disabled={submitting || usernameStatus === "taken"} className={`w-full ${btnPrimary}`}>
             {submitting ? "Creating account..." : "Create Account"}
           </button>
         </form>

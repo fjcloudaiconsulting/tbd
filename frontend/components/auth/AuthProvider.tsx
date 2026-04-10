@@ -14,12 +14,14 @@ interface AuthContextValue {
   user: User | null;
   loading: boolean;
   needsSetup: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,
     email: string,
     password: string,
-    orgName?: string
+    orgName?: string,
+    firstName?: string,
+    lastName?: string,
   ) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -70,10 +72,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     restore();
   }, [fetchMe]);
 
-  const login = async (username: string, password: string) => {
+  const login = async (loginId: string, password: string) => {
     const data = await apiFetch<TokenResponse>("/api/v1/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ login: loginId, password }),
     });
     setAccessToken(data.access_token);
     await fetchMe();
@@ -84,7 +86,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     username: string,
     email: string,
     password: string,
-    orgName?: string
+    orgName?: string,
+    firstName?: string,
+    lastName?: string,
   ) => {
     await apiFetch<User>("/api/v1/auth/register", {
       method: "POST",
@@ -93,6 +97,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email,
         password,
         org_name: orgName || undefined,
+        first_name: firstName || undefined,
+        last_name: lastName || undefined,
       }),
     });
   };

@@ -10,7 +10,7 @@ import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 export default function LoginPage() {
   const { user, login, loading, needsSetup } = useAuth();
   const router = useRouter();
-  const [username, setUsername] = useState("");
+  const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -25,7 +25,7 @@ export default function LoginPage() {
     setError("");
     setSubmitting(true);
     try {
-      await login(username, password);
+      await login(loginId, password);
       router.push("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -46,8 +46,8 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <div className={errorCls}>{error}</div>}
           <div>
-            <label htmlFor="login-username" className={label}>Username</label>
-            <input id="login-username" type="text" required value={username} onChange={(e) => setUsername(e.target.value)} className={input} autoComplete="username" />
+            <label htmlFor="login-id" className={label}>Email or Username</label>
+            <input id="login-id" type="text" required value={loginId} onChange={(e) => setLoginId(e.target.value)} className={input} autoComplete="username" placeholder="you@example.com" />
           </div>
           <div>
             <label htmlFor="login-password" className={label}>Password</label>

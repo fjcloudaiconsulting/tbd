@@ -12,6 +12,25 @@ from app.security import hash_password, verify_password
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
 
+def _user_response(user: User) -> UserResponse:
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        phone=user.phone,
+        avatar_url=user.avatar_url,
+        email_verified=user.email_verified,
+        role=user.role.value,
+        org_id=user.org_id,
+        org_name=user.organization.name,
+        billing_cycle_day=user.organization.billing_cycle_day,
+        is_superadmin=user.is_superadmin,
+        is_active=user.is_active,
+    )
+
+
 @router.put("/me", response_model=UserResponse)
 async def update_profile(
     body: ProfileUpdate,
@@ -40,20 +59,20 @@ async def update_profile(
             )
         current_user.email = body.email
 
+    sent = body.model_fields_set
+    if "first_name" in sent:
+        current_user.first_name = body.first_name or None
+    if "last_name" in sent:
+        current_user.last_name = body.last_name or None
+    if "phone" in sent:
+        current_user.phone = body.phone or None
+    if "avatar_url" in sent:
+        current_user.avatar_url = body.avatar_url or None
+
     await db.commit()
     await db.refresh(current_user, ["organization"])
 
-    return UserResponse(
-        id=current_user.id,
-        username=current_user.username,
-        email=current_user.email,
-        role=current_user.role.value,
-        org_id=current_user.org_id,
-        org_name=current_user.organization.name,
-        billing_cycle_day=current_user.organization.billing_cycle_day,
-        is_superadmin=current_user.is_superadmin,
-        is_active=current_user.is_active,
-    )
+    return _user_response(current_user)
 
 
 @router.post("/me/password", status_code=204)

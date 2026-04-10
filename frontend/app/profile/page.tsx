@@ -10,11 +10,20 @@ import type { User } from "@/lib/types";
 export default function ProfilePage() {
   const { user, login, refreshMe } = useAuth();
 
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
 
   useEffect(() => {
-    if (user) { setUsername(user.username); setEmail(user.email); }
+    if (user) {
+      setFirstName(user.first_name ?? "");
+      setLastName(user.last_name ?? "");
+      setUsername(user.username);
+      setEmail(user.email);
+      setPhone(user.phone ?? "");
+    }
   }, [user]);
 
   const [profileMsg, setProfileMsg] = useState("");
@@ -32,7 +41,16 @@ export default function ProfilePage() {
     e.preventDefault();
     setProfileMsg(""); setProfileErr(""); setSavingProfile(true);
     try {
-      await apiFetch<User>("/api/v1/users/me", { method: "PUT", body: JSON.stringify({ username, email }) });
+      await apiFetch<User>("/api/v1/users/me", {
+        method: "PUT",
+        body: JSON.stringify({
+          first_name: firstName || null,
+          last_name: lastName || null,
+          username,
+          email,
+          phone: phone || null,
+        }),
+      });
       await refreshMe();
       setProfileMsg("Profile updated");
     } catch (err) { setProfileErr(extractErrorMessage(err)); }
@@ -45,7 +63,10 @@ export default function ProfilePage() {
     if (newPassword !== confirmPassword) { setPwdErr("New passwords do not match"); return; }
     setSavingPwd(true);
     try {
-      await apiFetch("/api/v1/users/me/password", { method: "POST", body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) });
+      await apiFetch("/api/v1/users/me/password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
       setPwdMsg("Password changed. Signing in with new credentials...");
       await login(user!.username, newPassword);
       setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
@@ -53,6 +74,9 @@ export default function ProfilePage() {
     } catch (err) { setPwdErr(extractErrorMessage(err)); }
     finally { setSavingPwd(false); }
   }
+
+  const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.username || "";
+  const initials = [user?.first_name?.[0], user?.last_name?.[0]].filter(Boolean).join("").toUpperCase() || user?.username?.charAt(0).toUpperCase() || "?";
 
   return (
     <AppShell>
@@ -62,14 +86,17 @@ export default function ProfilePage() {
         <div className={`${card} p-6`}>
           <div className="flex items-center gap-4">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-dim font-display text-lg text-accent">
-              {user?.username?.charAt(0).toUpperCase()}
+              {initials}
             </div>
             <div>
-              <p className="font-medium text-text-primary">{user?.username}</p>
+              <p className="font-medium text-text-primary">{displayName}</p>
               <p className="mt-0.5 text-xs text-text-muted">
                 {user?.role} · {user?.org_name}
                 {user?.is_superadmin && <span className="ml-1 text-accent">· superadmin</span>}
               </p>
+              {user?.email_verified && (
+                <p className="mt-0.5 text-[10px] text-success">Email verified</p>
+              )}
             </div>
           </div>
         </div>
@@ -79,6 +106,16 @@ export default function ProfilePage() {
           <form onSubmit={handleProfileSubmit} className="space-y-4">
             {profileMsg && <div className={successCls}>{profileMsg}</div>}
             {profileErr && <div className={errorCls}>{profileErr}</div>}
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label htmlFor="profile-firstname" className={label}>First Name</label>
+                <input id="profile-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} placeholder="John" />
+              </div>
+              <div className="flex-1">
+                <label htmlFor="profile-lastname" className={label}>Last Name</label>
+                <input id="profile-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} placeholder="Doe" />
+              </div>
+            </div>
             <div>
               <label htmlFor="profile-username" className={label}>Username</label>
               <input id="profile-username" type="text" required value={username} onChange={(e) => setUsername(e.target.value)} className={input} />
@@ -86,6 +123,10 @@ export default function ProfilePage() {
             <div>
               <label htmlFor="profile-email" className={label}>Email</label>
               <input id="profile-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={input} />
+            </div>
+            <div>
+              <label htmlFor="profile-phone" className={label}>Phone</label>
+              <input id="profile-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} className={input} placeholder="+1 234 567 8900" />
             </div>
             <button type="submit" disabled={savingProfile} className={btnPrimary}>
               {savingProfile ? "Saving..." : "Save Changes"}
@@ -104,7 +145,7 @@ export default function ProfilePage() {
             </div>
             <div>
               <label htmlFor="pwd-new" className={label}>New Password</label>
-              <input id="pwd-new" type="password" required value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={input} autoComplete="new-password" />
+              <input id="pwd-new" type="password" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={input} autoComplete="new-password" />
             </div>
             <div>
               <label htmlFor="pwd-confirm" className={label}>Confirm New Password</label>
