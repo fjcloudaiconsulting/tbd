@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   output: "standalone",
   logging: {
     fetches: {
-      fullUrl: true,
+      fullUrl: false,
     },
   },
   serverExternalPackages: ["pino", "pino-pretty"],

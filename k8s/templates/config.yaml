@@ -15,6 +15,11 @@ metadata:
   name: {{ .Release.Name }}-secrets
 type: Opaque
 stringData:
-  # Populate these via Helm values, sealed secrets, or external secrets operator
-  DATABASE_URL: "mysql+aiomysql://{{ .Values.mysql.user }}:CHANGE_ME@{{ .Values.mysql.host }}:{{ .Values.mysql.port }}/{{ .Values.mysql.database }}"
-  JWT_SECRET_KEY: "CHANGE_ME"
+  {{- if not .Values.mysql.password }}
+  {{- fail "mysql.password is required — set via --set mysql.password=..." }}
+  {{- end }}
+  {{- if not .Values.secrets.jwtSecretKey }}
+  {{- fail "secrets.jwtSecretKey is required — generate with: openssl rand -hex 32" }}
+  {{- end }}
+  DATABASE_URL: "mysql+aiomysql://{{ .Values.mysql.user }}:{{ .Values.mysql.password }}@{{ .Values.mysql.host }}:{{ .Values.mysql.port }}/{{ .Values.mysql.database }}"
+  JWT_SECRET_KEY: {{ .Values.secrets.jwtSecretKey | quote }}

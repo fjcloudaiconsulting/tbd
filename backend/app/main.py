@@ -97,4 +97,7 @@ async def ready():
         return {"status": "ready", "database": "connected"}
     except Exception as e:
         logger.error("readiness check failed", error=str(e))
-        return {"status": "not_ready", "database": "connection error"}
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "database": "connection error"},
+        )

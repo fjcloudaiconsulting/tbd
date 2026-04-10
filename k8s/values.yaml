@@ -33,16 +33,18 @@ frontend:
       memory: 256Mi
 
 mysql:
-  # Use an external MySQL instance in production
-  # These are for reference / secrets
   host: mysql
   port: 3306
   database: pfv2
   user: pfv2
+  password: ""  # REQUIRED — set via --set or values override
 
 redis:
   host: redis
   port: 6379
+
+secrets:
+  jwtSecretKey: ""  # REQUIRED — generate with: openssl rand -hex 32
 
 env:
   APP_ENV: production
