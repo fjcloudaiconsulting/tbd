@@ -215,15 +215,13 @@ export default function BudgetsPage() {
                   {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</>}
                 </span>
               </div>
-              <div style={{ height: Math.max(budgets.length * 44, 120) }}>
+              <div style={{ height: Math.max(budgets.length * 40, 100) }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={budgets.map((b) => ({
                     name: b.category_name,
                     spent: Number(b.spent),
                     remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
                     over: Math.max(Number(b.spent) - Number(b.amount), 0),
-                    budget: Number(b.amount),
-                    pct: b.percent_used,
                   }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
                     <XAxis type="number" hide />
                     <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
@@ -233,13 +231,19 @@ export default function BudgetsPage() {
                     />
                     <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
                       {budgets.map((b, i) => (
-                        <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
+                        <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
                       ))}
                     </Bar>
-                    <Bar dataKey="remaining" stackId="a" fill="#163157" radius={[0, 4, 4, 0]} animationDuration={600} />
+                    <Bar dataKey="remaining" stackId="a" fill="#e8ebf0" radius={[0, 4, 4, 0]} animationDuration={600} />
                     <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={600} />
                   </BarChart>
                 </ResponsiveContainer>
+              </div>
+              <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Spent</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f59e0b" }} /> &gt;80%</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over budget</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#e8ebf0" }} /> Remaining</span>
               </div>
             </div>
           )}

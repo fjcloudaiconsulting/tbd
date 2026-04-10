@@ -26,7 +26,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
-  Legend,
+
 } from "recharts";
 import type { Category, ForecastPlan, ForecastPlanItem } from "@/lib/types";
 
@@ -552,7 +552,7 @@ export default function ForecastPlansPage() {
               <h2 className={`${cardTitle} mb-4`}>
                 Planned vs Actual (Expenses)
               </h2>
-              <div style={{ height: Math.max(chartData.length * 44, 120) }}>
+              <div style={{ height: Math.max(chartData.length * 40, 100) }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={chartData}
@@ -573,22 +573,16 @@ export default function ForecastPlansPage() {
                       ]}
                       contentStyle={{ fontSize: "11px" }}
                     />
-                    <Legend
-                      formatter={(v) =>
-                        v === "planned" ? "Planned" : "Actual"
-                      }
-                      wrapperStyle={{ fontSize: "11px" }}
-                    />
                     <Bar
                       dataKey="planned"
                       fill="#D4A64A"
-                      radius={[4, 0, 0, 4]}
+                      radius={[4, 4, 4, 4]}
                       animationDuration={600}
                     />
                     <Bar
                       dataKey="actual"
                       fill="#4ade80"
-                      radius={[0, 4, 4, 0]}
+                      radius={[4, 4, 4, 4]}
                       animationDuration={600}
                     >
                       {chartData.map((d, i) => (
@@ -600,6 +594,11 @@ export default function ForecastPlansPage() {
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
+              </div>
+              <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Planned</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#4ade80" }} /> Under plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over plan</span>
               </div>
             </div>
           )}

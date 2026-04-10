@@ -565,6 +565,7 @@ export default function DashboardPage() {
                 <Link href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</Link>
               </div>
               {budgets.length > 0 ? (
+                <>
                 <div className="p-4" style={{ height: Math.max(budgets.slice(0, 6).length * 40, 100) }}>
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={budgets.slice(0, 6).map((b) => ({
@@ -574,20 +575,25 @@ export default function DashboardPage() {
                       pct: b.percent_used,
                     }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
                       <XAxis type="number" hide />
-                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
+                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                       <Tooltip
                         formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : "Remaining"]}
                         contentStyle={{ fontSize: "11px" }}
                       />
                       <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
                         {budgets.slice(0, 6).map((b, i) => (
-                          <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#4ade80"} />
+                          <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
                         ))}
                       </Bar>
-                      <Bar dataKey="remaining" stackId="a" fill="var(--color-surface-overlay)" radius={[0, 4, 4, 0]} animationDuration={600} />
+                      <Bar dataKey="remaining" stackId="a" fill="#e8ebf0" radius={[0, 4, 4, 0]} animationDuration={600} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+                <div className="flex gap-3 px-4 pb-3 text-[10px] text-text-muted">
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Spent</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#e8ebf0" }} /> Remaining</span>
+                </div>
+                </>
               ) : (
                 <div className="px-5 py-6 text-center text-sm text-text-muted">
                   No budgets set. <Link href="/budgets" className="text-accent">Add one</Link>
