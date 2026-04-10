@@ -274,6 +274,17 @@ async def create_transfer(
     await validate_account(db, body.from_account_id, org_id)
     await validate_account(db, body.to_account_id, org_id)
 
+    # Auto-generate description if not provided
+    description = body.description
+    if not description.strip():
+        from_name = await db.scalar(
+            select(Account.name).where(Account.id == body.from_account_id, Account.org_id == org_id)
+        )
+        to_name = await db.scalar(
+            select(Account.name).where(Account.id == body.to_account_id, Account.org_id == org_id)
+        )
+        description = f"Transfer from {from_name} to {to_name}"
+
     # Auto-assign Transfer category if not provided
     category_id = body.category_id
     if category_id is None:
@@ -304,7 +315,7 @@ async def create_transfer(
             org_id=org_id,
             account_id=body.from_account_id,
             category_id=category_id,
-            description=body.description,
+            description=description,
             amount=body.amount,
             type=TransactionType.EXPENSE,
             status=tx_status,
@@ -315,7 +326,7 @@ async def create_transfer(
             org_id=org_id,
             account_id=body.to_account_id,
             category_id=category_id,
-            description=body.description,
+            description=description,
             amount=body.amount,
             type=TransactionType.INCOME,
             status=tx_status,

@@ -226,7 +226,7 @@ export default function BudgetsPage() {
                     <XAxis type="number" hide />
                     <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                     <Tooltip
-                      formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : name === "remaining" ? "Remaining" : "Over budget"]}
+                      formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? <span style={{ color: "#ef4444" }}>Spent</span> : name === "remaining" ? <span style={{ color: "#4ade80" }}>Remaining</span> : <span style={{ color: "#ef4444" }}>Over budget</span>]}
                       contentStyle={{ fontSize: "11px" }}
                     />
                     <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>

@@ -569,7 +569,7 @@ export default function ForecastPlansPage() {
                     <Tooltip
                       formatter={(v, name) => [
                         formatAmount(Number(v)),
-                        name === "planned" ? "Planned" : "Actual",
+                        name === "planned" ? <span style={{ color: "#D4A64A" }}>Planned</span> : <span style={{ color: "#4ade80" }}>Actual</span>,
                       ]}
                       contentStyle={{ fontSize: "11px" }}
                     />
