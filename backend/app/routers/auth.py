@@ -3,7 +3,7 @@ import secrets
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, Cookie, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, Cookie, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +32,7 @@ from app.security import (
     hash_password,
     verify_password,
 )
+from app.rate_limit import limiter
 from app.services.email_service import send_password_reset_email, send_verification_email
 
 GOOGLE_OAUTH_TIMEOUT = httpx.Timeout(10.0)
@@ -197,8 +198,9 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 async def login(
-    body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
+    request: Request, body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
 ):
     # Accept username or email
     result = await db.execute(
@@ -300,7 +302,8 @@ async def logout(response: Response):
 
 
 @router.post("/forgot-password")
-async def forgot_password(body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def forgot_password(request: Request, body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
     """Send a password reset email. Always returns 200 to prevent email enumeration."""
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
