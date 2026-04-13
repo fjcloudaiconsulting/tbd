@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, error as errorCls, success } from "@/lib/styles";
 
 interface UsernameCheck {
   available: boolean;
@@ -33,6 +33,7 @@ export default function RegisterPage() {
   const [orgName, setOrgName] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [registered, setRegistered] = useState(false);
 
   // Auto-suggest username from name
   useEffect(() => {
@@ -77,12 +78,44 @@ export default function RegisterPage() {
     setSubmitting(true);
     try {
       await register(username, email, password, orgName || undefined, firstName || undefined, lastName || undefined);
-      router.push("/login");
+      setRegistered(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function handleGoogleLogin() {
+    try {
+      const data = await apiFetch<{ redirect_url: string }>("/api/v1/auth/google");
+      window.location.href = data.redirect_url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in is not available");
+    }
+  }
+
+  if (registered) {
+    return (
+      <div className="relative flex min-h-screen items-center justify-center px-4">
+        <ThemeToggle className="absolute right-6 top-6" />
+        <div className="w-full max-w-sm">
+          <div className="mb-10 text-center">
+            <h1 className="font-display text-3xl font-semibold text-text-primary">Check Your Email</h1>
+          </div>
+          <div className="space-y-5">
+            <div className={success}>
+              Account created! Check your email to verify your account.
+            </div>
+            <p className="text-center text-sm text-text-muted">
+              <Link href="/login" className="text-accent hover:text-accent-hover">
+                Go to login
+              </Link>
+            </p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -137,6 +170,14 @@ export default function RegisterPage() {
           </div>
           <button type="submit" disabled={submitting || usernameStatus === "taken"} className={`w-full ${btnPrimary}`}>
             {submitting ? "Creating account..." : "Create Account"}
+          </button>
+          <div className="flex items-center gap-3 my-4">
+            <div className="flex-1 border-t border-border" />
+            <span className="text-xs text-text-muted">or</span>
+            <div className="flex-1 border-t border-border" />
+          </div>
+          <button onClick={handleGoogleLogin} className={btnSecondary + " w-full"} type="button">
+            Sign up with Google
           </button>
         </form>
         <p className="mt-6 text-center text-sm text-text-muted">

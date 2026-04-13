@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     # Redis (optional — used for sessions/cache in production)
     redis_url: str = ""
 
+    # Email (Mailgun)
+    mailgun_api_key: str = ""
+    mailgun_domain: str = ""
+    email_from: str = "PFV2 <noreply@pfv.app>"
+    app_url: str = "http://localhost"  # used for email links
+
+    # Google SSO
+    google_client_id: str = ""
+    google_client_secret: str = ""
+
     # CORS
     backend_cors_origins: str = "http://localhost:3000"
 
