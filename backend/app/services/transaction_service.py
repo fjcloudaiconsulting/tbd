@@ -44,6 +44,7 @@ def to_response(tx: Transaction) -> TransactionResponse:
         linked_transaction_id=tx.linked_transaction_id,
         recurring_id=tx.recurring_id,
         date=tx.date,
+        is_imported=tx.is_imported,
     )
 
 
@@ -116,7 +117,7 @@ def revert_balance(account: Account, amount: Decimal, tx_type: TransactionType) 
 # ── CRUD operations ───────────────────────────────────────────────────────────
 
 async def create_transaction(
-    db: AsyncSession, org_id: int, body: TransactionCreate
+    db: AsyncSession, org_id: int, body: TransactionCreate, *, is_imported: bool = False
 ) -> Transaction:
     await validate_account(db, body.account_id, org_id)
     await validate_category(db, body.category_id, org_id)
@@ -137,6 +138,7 @@ async def create_transaction(
             type=tx_type,
             status=tx_status,
             date=body.date,
+            is_imported=is_imported,
         )
         db.add(tx)
 
@@ -265,7 +267,7 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
 
 
 async def create_transfer(
-    db: AsyncSession, org_id: int, body: TransferCreate
+    db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:
     """Create a linked pair of transactions for a transfer between accounts."""
     if body.from_account_id == body.to_account_id:
@@ -320,6 +322,7 @@ async def create_transfer(
             type=TransactionType.EXPENSE,
             status=tx_status,
             date=body.date,
+            is_imported=is_imported,
         )
         # Income side (destination account)
         income_tx = Transaction(
@@ -331,6 +334,7 @@ async def create_transfer(
             type=TransactionType.INCOME,
             status=tx_status,
             date=body.date,
+            is_imported=is_imported,
         )
         db.add(expense_tx)
         db.add(income_tx)

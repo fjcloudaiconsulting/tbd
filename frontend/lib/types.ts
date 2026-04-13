@@ -70,6 +70,7 @@ export interface Transaction {
   linked_transaction_id: number | null;
   recurring_id: number | null;
   date: string;
+  is_imported: boolean;
 }
 
 export interface RecurringTransaction {
@@ -128,4 +129,58 @@ export interface ForecastPlan {
   total_actual_income: number;
   total_actual_expense: number;
   items: ForecastPlanItem[];
+}
+
+// ── Import ──────────────────────────────────────────────────────────────────
+
+export interface ImportPreviewRow {
+  row_number: number;
+  date: string;
+  description: string;
+  amount: number;
+  type: "income" | "expense";
+  counterparty: string | null;
+  transaction_type: string | null;
+  is_duplicate: boolean;
+  duplicate_transaction_id: number | null;
+  is_potential_transfer: boolean;
+}
+
+export interface ImportPreviewResponse {
+  rows: ImportPreviewRow[];
+  account_id: number;
+  file_name: string;
+  total_rows: number;
+  duplicate_count: number;
+  transfer_candidate_count: number;
+}
+
+export interface ImportConfirmRow {
+  row_number: number;
+  date: string;
+  description: string;
+  amount: number;
+  type: "income" | "expense";
+  category_id: number | null;
+  skip: boolean;
+  is_transfer: boolean;
+  transfer_account_id: number | null;
+}
+
+export interface ImportConfirmRequest {
+  account_id: number;
+  default_category_id: number;
+  rows: ImportConfirmRow[];
+}
+
+export interface ImportRowError {
+  row_number: number;
+  error: string;
+}
+
+export interface ImportConfirmResponse {
+  imported_count: number;
+  skipped_count: number;
+  error_count: number;
+  errors: ImportRowError[];
 }

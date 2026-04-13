@@ -1,14 +1,17 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
-import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
+
+
 
 const PAGE_SIZE = 20;
 
@@ -275,11 +278,16 @@ export default function TransactionsPage() {
     <AppShell>
       <div className="mb-8 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Transactions</h1>
-        {activeAccounts.length > 0 && categories.length > 0 && (
-          <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
-            {showForm ? "Cancel" : "+ New Transaction"}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {activeAccounts.length > 0 && categories.length > 0 && (
+            <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
+              {showForm ? "Cancel" : "+ New Transaction"}
+            </button>
+          )}
+          <Link href="/import" className={btnSecondary}>
+            Import
+          </Link>
+        </div>
       </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}

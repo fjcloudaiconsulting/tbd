@@ -7,7 +7,9 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
-import { input, label, btnPrimary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
+
+
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Budget, Category, Transaction } from "@/lib/types";
@@ -295,11 +297,16 @@ export default function DashboardPage() {
     <AppShell>
       <div className="mb-6 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
-        {canAdd && (
-          <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
-            {showForm ? "Cancel" : "+ Quick Add"}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {canAdd && (
+            <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
+              {showForm ? "Cancel" : "+ Quick Add"}
+            </button>
+          )}
+          <Link href="/import" className={btnSecondary}>
+            Import
+          </Link>
+        </div>
       </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
