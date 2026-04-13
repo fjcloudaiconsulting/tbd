@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 class TransactionCreate(BaseModel):
     account_id: int
     category_id: int
-    description: str
+    description: str = Field(max_length=255)
     amount: Decimal = Field(gt=0)
     type: Literal["income", "expense"]
     status: Literal["settled", "pending"] = "settled"
@@ -26,7 +26,7 @@ class TransferCreate(BaseModel):
     from_account_id: int
     to_account_id: int
     category_id: Optional[int] = None
-    description: str = ""
+    description: str = Field(default="", max_length=255)
     amount: Decimal = Field(gt=0)
     status: Literal["settled", "pending"] = "settled"
     date: datetime.date
