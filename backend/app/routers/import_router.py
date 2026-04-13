@@ -11,7 +11,10 @@ from app.schemas.import_schemas import (
     ImportPreviewResponse,
 )
 from app.services import import_service
+from app.services.exceptions import ValidationError
 from app.services.import_parser import ParseError, parse_csv
+
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 
 router = APIRouter(prefix="/api/v1/import", tags=["import"])
 
@@ -27,13 +30,14 @@ async def preview_import(
 
     The file is parsed in memory — no persistence happens at this stage.
     """
-    content = (await file.read()).decode("utf-8-sig")  # handles BOM
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValidationError(f"File too large ({len(raw)} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
+    content = raw.decode("utf-8-sig")  # handles BOM
 
     try:
         parsed_rows = parse_csv(content)
     except ParseError as exc:
-        from app.services.exceptions import ValidationError
-
         detail = str(exc)
         if exc.row_number:
             detail = f"Row {exc.row_number}: {detail}"

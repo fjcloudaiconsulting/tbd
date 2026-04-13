@@ -64,7 +64,10 @@ def _parse_date_yyyymmdd(value: str) -> date:
     cleaned = value.strip().strip('"')
     if len(cleaned) != 8 or not cleaned.isdigit():
         raise ParseError(f"Cannot parse date: '{value}'")
-    return date(int(cleaned[:4]), int(cleaned[4:6]), int(cleaned[6:8]))
+    try:
+        return date(int(cleaned[:4]), int(cleaned[4:6]), int(cleaned[6:8]))
+    except ValueError:
+        raise ParseError(f"Invalid date: '{value}'")
 
 
 def _strip_bom(content: str) -> str:

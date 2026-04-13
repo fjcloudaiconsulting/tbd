@@ -18,6 +18,7 @@ from app.schemas.import_schemas import (
 )
 from app.schemas.transaction import TransactionCreate, TransferCreate
 from app.services import transaction_service
+from app.services.exceptions import ValidationError
 from app.services.import_parser import ParsedRow
 
 logger = structlog.get_logger()
@@ -35,24 +36,34 @@ async def build_preview(
 ) -> ImportPreviewResponse:
     """Build a preview response: flag duplicates and potential transfers."""
 
+    # Validate account belongs to this org
+    await transaction_service.validate_account(db, account_id, org_id)
+
+    # ── Batch duplicate check: single query for the CSV date range ──
+    min_date = min(r.date for r in parsed_rows)
+    max_date = max(r.date for r in parsed_rows)
+    existing_result = await db.execute(
+        select(
+            Transaction.id, Transaction.date, Transaction.amount, Transaction.description
+        ).where(
+            and_(
+                Transaction.org_id == org_id,
+                Transaction.account_id == account_id,
+                Transaction.date.between(min_date, max_date),
+            )
+        )
+    )
+    existing_map: dict[tuple, int] = {
+        (row.date, row.amount, row.description): row.id
+        for row in existing_result.all()
+    }
+
     preview_rows: list[ImportPreviewRow] = []
     duplicate_count = 0
     transfer_count = 0
 
     for row in parsed_rows:
-        # ── Duplicate check: date + amount + description ──
-        dup_result = await db.execute(
-            select(Transaction.id).where(
-                and_(
-                    Transaction.org_id == org_id,
-                    Transaction.account_id == account_id,
-                    Transaction.date == row.date,
-                    Transaction.amount == row.amount,
-                    Transaction.description == row.description,
-                )
-            )
-        )
-        dup_id = dup_result.scalar_one_or_none()
+        dup_id = existing_map.get((row.date, row.amount, row.description))
         is_dup = dup_id is not None
 
         # ── Transfer detection: heuristic on transaction_type ──
@@ -112,6 +123,11 @@ async def execute_import(
 
         category_id = row.category_id or body.default_category_id
 
+        # Validate transfer rows have a target account
+        if row.is_transfer and not row.transfer_account_id:
+            errors.append(ImportRowError(row_number=row.row_number, error="Transfer requires a target account"))
+            continue
+
         try:
             if row.is_transfer and row.transfer_account_id:
                 # Determine direction: the imported account is source for expenses,
@@ -149,6 +165,7 @@ async def execute_import(
             imported_count += 1
 
         except Exception as exc:
+            await db.rollback()
             await logger.awarning(
                 "import_row_failed",
                 row_number=row.row_number,

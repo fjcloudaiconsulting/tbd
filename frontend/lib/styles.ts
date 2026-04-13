@@ -7,6 +7,9 @@ export const label =
 export const btnPrimary =
   "rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50";
 
+export const btnSecondary =
+  "rounded-md border border-border px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-raised transition-colors";
+
 export const btnDanger =
   "text-xs text-text-muted hover:text-danger";
 

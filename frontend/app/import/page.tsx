@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import AppShell from "@/components/AppShell";
-import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type {
   Account,
   Category,
@@ -15,7 +15,6 @@ import type {
   ImportPreviewRow,
 } from "@/lib/types";
 
-const btnSecondary = "rounded-md border border-border px-4 py-2 text-sm font-medium text-text-secondary hover:bg-surface-raised transition-colors";
 
 type Step = "upload" | "preview" | "results";
 

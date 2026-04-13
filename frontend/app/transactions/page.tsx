@@ -7,11 +7,11 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
-import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
 
-const btnSecondary = "rounded-md border border-border px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-raised";
+
 
 const PAGE_SIZE = 20;
 
