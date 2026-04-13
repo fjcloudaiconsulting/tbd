@@ -24,7 +24,9 @@ function sanitizeQuery(search: string): string | undefined {
 }
 
 export function middleware(request: NextRequest) {
+  const start = Date.now();
   const response = NextResponse.next();
+  const duration = Date.now() - start;
 
   const entry = {
     timestamp: new Date().toISOString(),
@@ -33,9 +35,19 @@ export function middleware(request: NextRequest) {
     method: request.method,
     path: request.nextUrl.pathname,
     query: sanitizeQuery(request.nextUrl.search),
+    status: response.status,
+    duration_ms: duration,
+    remote_addr: request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown",
+    user_agent: request.headers.get("user-agent") || undefined,
+    referer: request.headers.get("referer") || undefined,
   };
 
-  console.log(JSON.stringify(entry));
+  // Remove undefined values for cleaner JSON
+  const clean = Object.fromEntries(
+    Object.entries(entry).filter(([, v]) => v !== undefined)
+  );
+
+  console.log(JSON.stringify(clean));
 
   return response;
 }
