@@ -23,10 +23,14 @@ function sanitizeQuery(search: string): string | undefined {
   return result || undefined;
 }
 
+function clientIp(request: NextRequest): string {
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",")[0].trim();
+  return request.headers.get("x-real-ip") || "unknown";
+}
+
 export function middleware(request: NextRequest) {
-  const start = Date.now();
   const response = NextResponse.next();
-  const duration = Date.now() - start;
 
   const entry = {
     timestamp: new Date().toISOString(),
@@ -35,9 +39,7 @@ export function middleware(request: NextRequest) {
     method: request.method,
     path: request.nextUrl.pathname,
     query: sanitizeQuery(request.nextUrl.search),
-    status: response.status,
-    duration_ms: duration,
-    remote_addr: request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown",
+    remote_addr: clientIp(request),
     user_agent: request.headers.get("user-agent") || undefined,
     referer: request.headers.get("referer") || undefined,
   };

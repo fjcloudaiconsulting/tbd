@@ -20,9 +20,16 @@ def upgrade() -> None:
     )
     # Backfill: existing settled transactions get their date as settled_date
     op.execute(
-        "UPDATE transactions SET settled_date = date WHERE status = 'settled'"
+        "UPDATE transactions SET settled_date = `date` WHERE status = 'settled'"
+    )
+    # Index for budget/forecast queries that filter by org + status + settled_date
+    op.create_index(
+        "ix_transactions_org_settled_date",
+        "transactions",
+        ["org_id", "status", "settled_date"],
     )
 
 
 def downgrade() -> None:
+    op.drop_index("ix_transactions_org_settled_date", table_name="transactions")
     op.drop_column("transactions", "settled_date")

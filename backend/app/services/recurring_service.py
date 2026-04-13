@@ -241,6 +241,7 @@ async def generate_due_transactions(db: AsyncSession, org_id: int) -> int:
                     type=TransactionType(r.type),
                     status=tx_status,
                     date=r.next_due_date,
+                    settled_date=r.next_due_date if tx_status == TransactionStatus.SETTLED else None,
                     recurring_id=r.id,
                 )
                 db.add(tx)
