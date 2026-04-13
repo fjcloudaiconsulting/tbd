@@ -20,8 +20,8 @@ logger = structlog.stdlib.get_logger()
 
 
 def _run_migrations() -> None:
-    """Run Alembic migrations. In development, this runs on app startup.
-    In production, use a K8s init container instead."""
+    """Run Alembic migrations on startup. Idempotent — alembic upgrade head
+    is a no-op when already at the latest revision."""
     result = subprocess.run(
         ["alembic", "upgrade", "head"],
         capture_output=True,
@@ -33,8 +33,7 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if app_settings.app_env != "production":
-        _run_migrations()
+    _run_migrations()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
     await engine.dispose()
