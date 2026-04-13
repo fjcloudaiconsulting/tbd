@@ -62,6 +62,7 @@ class TransactionResponse(BaseModel):
     linked_transaction_id: Optional[int] = None
     recurring_id: Optional[int] = None
     date: datetime.date
+    settled_date: datetime.date | None = None
     is_imported: bool = False
 
     model_config = {"from_attributes": True}

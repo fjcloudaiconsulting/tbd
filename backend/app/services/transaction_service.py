@@ -44,6 +44,7 @@ def to_response(tx: Transaction) -> TransactionResponse:
         linked_transaction_id=tx.linked_transaction_id,
         recurring_id=tx.recurring_id,
         date=tx.date,
+        settled_date=tx.settled_date,
         is_imported=tx.is_imported,
     )
 
@@ -138,6 +139,7 @@ async def create_transaction(
             type=tx_type,
             status=tx_status,
             date=body.date,
+            settled_date=body.date if tx_status == TransactionStatus.SETTLED else None,
             is_imported=is_imported,
         )
         db.add(tx)
@@ -200,6 +202,10 @@ async def update_transaction(
             tx.account_id = body.account_id
         if body.status is not None:
             tx.status = new_status
+            if new_status == TransactionStatus.SETTLED and old_status != TransactionStatus.SETTLED:
+                tx.settled_date = datetime.date.today()
+            elif new_status == TransactionStatus.PENDING and old_status == TransactionStatus.SETTLED:
+                tx.settled_date = None
 
         # Apply new balance if now settled
         if new_status == TransactionStatus.SETTLED:
@@ -313,6 +319,7 @@ async def create_transfer(
     async with db.begin_nested():
         # Expense side (source account) — uses EXPENSE type so existing
         # balance logic (apply/revert) works unchanged
+        settled = body.date if tx_status == TransactionStatus.SETTLED else None
         expense_tx = Transaction(
             org_id=org_id,
             account_id=body.from_account_id,
@@ -322,6 +329,7 @@ async def create_transfer(
             type=TransactionType.EXPENSE,
             status=tx_status,
             date=body.date,
+            settled_date=settled,
             is_imported=is_imported,
         )
         # Income side (destination account)
@@ -334,6 +342,7 @@ async def create_transfer(
             type=TransactionType.INCOME,
             status=tx_status,
             date=body.date,
+            settled_date=settled,
             is_imported=is_imported,
         )
         db.add(expense_tx)

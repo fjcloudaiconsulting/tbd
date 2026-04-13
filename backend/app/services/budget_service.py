@@ -32,16 +32,18 @@ async def _compute_spent(
     sub_ids = [r[0] for r in sub_ids_result.all()]
     all_cat_ids = [master_category_id] + sub_ids
 
+    # Use settled_date for budget computation — transactions count against
+    # the billing period in which they settled, not when the purchase happened.
     q = select(func.coalesce(func.sum(Transaction.amount), 0)).where(
         Transaction.org_id == org_id,
         Transaction.category_id.in_(all_cat_ids),
         Transaction.type == TransactionType.EXPENSE,
         Transaction.status == TransactionStatus.SETTLED,
-        Transaction.date >= period_start,
+        Transaction.settled_date >= period_start,
     )
     # If period is still open (no end_date), include all from start_date onward
     if period_end is not None:
-        q = q.where(Transaction.date <= period_end)
+        q = q.where(Transaction.settled_date <= period_end)
 
     spent = await db.scalar(q)
     return Decimal(str(spent))
