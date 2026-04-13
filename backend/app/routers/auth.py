@@ -1,5 +1,6 @@
 import re
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, Cookie, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -359,3 +360,167 @@ async def resend_verification(
     token = create_email_verification_token(current_user.id)
     await send_verification_email(current_user.email, token)
     return {"detail": "Verification email sent"}
+
+
+# ── Google SSO ───────────────────────────────────────────────────────────────
+
+
+@router.get("/google")
+async def google_login():
+    """Redirect to Google OAuth consent screen."""
+    if not app_settings.google_client_id:
+        raise HTTPException(status_code=501, detail="Google SSO not configured")
+
+    params = {
+        "client_id": app_settings.google_client_id,
+        "redirect_uri": f"{app_settings.app_url}/api/v1/auth/google/callback",
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    return {"redirect_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"}
+
+
+@router.get("/google/callback")
+async def google_callback(
+    code: str,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle Google OAuth callback — exchange code for tokens, create or login user."""
+    if not app_settings.google_client_id:
+        raise HTTPException(status_code=501, detail="Google SSO not configured")
+
+    # Exchange authorization code for tokens
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": app_settings.google_client_id,
+                "client_secret": app_settings.google_client_secret,
+                "redirect_uri": f"{app_settings.app_url}/api/v1/auth/google/callback",
+                "grant_type": "authorization_code",
+            },
+        )
+        if token_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to exchange Google auth code")
+        tokens = token_resp.json()
+
+        # Get user info from Google
+        userinfo_resp = await client.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        if userinfo_resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to get Google user info")
+        google_user = userinfo_resp.json()
+
+    email = google_user.get("email", "")
+    first_name = google_user.get("given_name", "")
+    last_name = google_user.get("family_name", "")
+
+    # Check if user already exists by email
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if user:
+        # Existing user — login
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Account is deactivated")
+        # Update email_verified since Google verified it
+        if not user.email_verified:
+            user.email_verified = True
+            await db.commit()
+    else:
+        # New user — register with Google profile
+        # Check for existing superadmin
+        existing_superadmin = await db.scalar(
+            select(func.count()).select_from(User).where(User.is_superadmin == True)
+        )
+        is_first_user = existing_superadmin == 0
+
+        # Generate a username from Google name
+        base_username = _suggest_username(first_name, last_name, email)
+        username = await _find_available_username(db, base_username)
+
+        # Create org + user + system data (same as register)
+        org = Organization(name=f"{username}'s Organization")
+        db.add(org)
+        await db.flush()
+
+        for sat in SYSTEM_ACCOUNT_TYPES:
+            db.add(AccountType(org_id=org.id, name=sat["name"], slug=sat["slug"], is_system=True))
+
+        for master_def in SYSTEM_CATEGORIES:
+            master = Category(
+                org_id=org.id,
+                name=master_def["name"],
+                slug=master_def["slug"],
+                description=master_def["description"],
+                type=CategoryType(master_def["type"]),
+                is_system=True,
+            )
+            db.add(master)
+            await db.flush()
+            for child_def in master_def.get("children", []):
+                db.add(Category(
+                    org_id=org.id,
+                    parent_id=master.id,
+                    name=child_def["name"],
+                    slug=child_def["slug"],
+                    description=child_def["description"],
+                    type=CategoryType(master_def["type"]),
+                    is_system=True,
+                ))
+
+        db.add(Category(
+            org_id=org.id, name="Transfer", slug="transfer",
+            description="Internal transfers between accounts",
+            type=CategoryType.BOTH, is_system=True,
+        ))
+
+        # Google users get a random password (they login via Google)
+        import secrets
+        random_password = secrets.token_urlsafe(32)
+
+        user = User(
+            org_id=org.id,
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            avatar_url=google_user.get("picture"),
+            password_hash=hash_password(random_password),
+            email_verified=True,  # Google verified the email
+            role=Role.OWNER,
+            is_superadmin=is_first_user,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+    # Issue tokens
+    await db.refresh(user, ["organization"])
+    access_token = create_access_token(user.id, user.org_id, user.role.value)
+    refresh_token = create_refresh_token(user.id)
+
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=app_settings.cookie_secure,
+        samesite="lax",
+        max_age=7 * 24 * 60 * 60,
+        path="/api/v1/auth/refresh",
+    )
+
+    # Redirect to frontend with access token
+    from urllib.parse import urlencode
+    redirect_params = urlencode({"token": access_token})
+    return Response(
+        status_code=302,
+        headers={"Location": f"{app_settings.app_url}/auth/google/callback?{redirect_params}"},
+    )
