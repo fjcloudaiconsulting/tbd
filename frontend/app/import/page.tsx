@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import AppShell from "@/components/AppShell";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type {
   Account,
@@ -141,6 +142,7 @@ export default function ImportPage() {
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
+    <AppShell>
     <div className="mx-auto max-w-6xl space-y-6 p-6">
       <div className="flex items-center justify-between">
         <h1 className={pageTitle}>Import Transactions</h1>
@@ -405,5 +407,6 @@ export default function ImportPage() {
         </div>
       )}
     </div>
+    </AppShell>
   );
 }
