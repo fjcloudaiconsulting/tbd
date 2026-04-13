@@ -42,3 +42,16 @@ class UserResponse(BaseModel):
 class UsernameCheckResponse(BaseModel):
     available: bool
     suggestion: str | None = None
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8)
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str
