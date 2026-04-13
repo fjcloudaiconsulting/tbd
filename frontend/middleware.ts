@@ -23,6 +23,12 @@ function sanitizeQuery(search: string): string | undefined {
   return result || undefined;
 }
 
+function clientIp(request: NextRequest): string {
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",")[0].trim();
+  return request.headers.get("x-real-ip") || "unknown";
+}
+
 export function middleware(request: NextRequest) {
   const response = NextResponse.next();
 
@@ -33,9 +39,17 @@ export function middleware(request: NextRequest) {
     method: request.method,
     path: request.nextUrl.pathname,
     query: sanitizeQuery(request.nextUrl.search),
+    remote_addr: clientIp(request),
+    user_agent: request.headers.get("user-agent") || undefined,
+    referer: request.headers.get("referer") || undefined,
   };
 
-  console.log(JSON.stringify(entry));
+  // Remove undefined values for cleaner JSON
+  const clean = Object.fromEntries(
+    Object.entries(entry).filter(([, v]) => v !== undefined)
+  );
+
+  console.log(JSON.stringify(clean));
 
   return response;
 }

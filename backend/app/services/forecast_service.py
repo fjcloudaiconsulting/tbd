@@ -68,14 +68,16 @@ async def compute_forecast(
     # For open periods, project to ~30 days from start
     p_end = period.end_date or (p_start + relativedelta(months=1) - datetime.timedelta(days=1))
 
-    # ── Executed (settled) ────────────────────────────────────────────────
+    # ── Executed (settled) — uses settled_date for period assignment ─────
+    # Transactions count against the period in which they settled,
+    # not when the purchase happened (important for CC late settlements).
     executed_income = await db.scalar(
         select(func.coalesce(func.sum(Transaction.amount), 0)).where(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.INCOME,
             Transaction.status == TransactionStatus.SETTLED,
-            Transaction.date >= p_start,
-            Transaction.date <= p_end,
+            Transaction.settled_date >= p_start,
+            Transaction.settled_date <= p_end,
         )
     ) or Decimal("0")
 
@@ -84,12 +86,12 @@ async def compute_forecast(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.SETTLED,
-            Transaction.date >= p_start,
-            Transaction.date <= p_end,
+            Transaction.settled_date >= p_start,
+            Transaction.settled_date <= p_end,
         )
     ) or Decimal("0")
 
-    # ── Pending ───────────────────────────────────────────────────────────
+    # ── Pending — uses transaction date (when purchase happened) ──────────
     pending_income = await db.scalar(
         select(func.coalesce(func.sum(Transaction.amount), 0)).where(
             Transaction.org_id == org_id,
@@ -135,7 +137,7 @@ async def compute_forecast(
             d = _advance_date(d, r.frequency)
 
     # ── Per-category breakdown ────────────────────────────────────────────
-    # Executed by category
+    # Executed by category (uses settled_date for period assignment)
     cat_exec_result = await db.execute(
         select(
             Transaction.category_id,
@@ -144,8 +146,8 @@ async def compute_forecast(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.SETTLED,
-            Transaction.date >= p_start,
-            Transaction.date <= p_end,
+            Transaction.settled_date >= p_start,
+            Transaction.settled_date <= p_end,
         ).group_by(Transaction.category_id)
     )
     cat_executed = {row[0]: Decimal(str(row[1])) for row in cat_exec_result.all()}
