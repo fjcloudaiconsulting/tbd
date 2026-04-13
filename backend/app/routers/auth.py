@@ -303,14 +303,19 @@ async def logout(response: Response):
 
 @router.post("/forgot-password")
 @limiter.limit("5/minute")
-async def forgot_password(request: Request, body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+async def forgot_password(
+    request: Request,
+    body: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     """Send a password reset email. Always returns 200 to prevent email enumeration."""
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
     if user and user.is_active:
         token = create_password_reset_token(user.id)
-        await send_password_reset_email(user.email, token)
+        background_tasks.add_task(send_password_reset_email, user.email, token)
 
     return {"detail": "If that email exists, a reset link has been sent"}
 
