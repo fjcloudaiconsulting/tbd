@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import AppShell from "@/components/AppShell";
@@ -19,6 +19,14 @@ import type {
 type Step = "upload" | "preview" | "results";
 
 export default function ImportPage() {
+  return (
+    <Suspense>
+      <ImportPageContent />
+    </Suspense>
+  );
+}
+
+function ImportPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
