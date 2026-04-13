@@ -1,8 +1,30 @@
+import ssl
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 
-engine = create_async_engine(settings.database_url, echo=False)
+
+def _build_connect_args() -> dict:
+    """Build connect_args for the async engine.
+
+    DO managed MySQL requires SSL on external connections. When the DATABASE_URL
+    contains a DO-style host (port 25060), enable SSL with server verification
+    disabled (DO uses self-signed certs with their own CA).
+    """
+    if ":25060" in settings.database_url:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return {"ssl": ctx}
+    return {}
+
+
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    connect_args=_build_connect_args(),
+)
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
