@@ -44,6 +44,7 @@ def to_response(tx: Transaction) -> TransactionResponse:
         linked_transaction_id=tx.linked_transaction_id,
         recurring_id=tx.recurring_id,
         date=tx.date,
+        is_imported=tx.is_imported,
     )
 
 
