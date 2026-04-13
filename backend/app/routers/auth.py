@@ -10,20 +10,26 @@ from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import Organization, Role, User
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     LoginRequest,
     RegisterRequest,
+    ResetPasswordRequest,
     TokenResponse,
     UsernameCheckResponse,
     UserResponse,
+    VerifyEmailRequest,
 )
 from app.config import settings as app_settings
 from app.security import (
     create_access_token,
+    create_email_verification_token,
+    create_password_reset_token,
     create_refresh_token,
     decode_token,
     hash_password,
     verify_password,
 )
+from app.services.email_service import send_password_reset_email, send_verification_email
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -165,6 +171,10 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.refresh(user)
     await db.refresh(org)
 
+    # Send verification email (non-blocking — don't fail registration if email fails)
+    token = create_email_verification_token(user.id)
+    await send_verification_email(user.email, token)
+
     return _user_response(user, org)
 
 
@@ -266,3 +276,86 @@ async def me(
 async def logout(response: Response):
     response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
     return {"detail": "Logged out"}
+
+
+# ── Password Reset ───────────────────────────────────────────────────────────
+
+
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+    """Send a password reset email. Always returns 200 to prevent email enumeration."""
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+
+    if user and user.is_active:
+        token = create_password_reset_token(user.id)
+        await send_password_reset_email(user.email, token)
+
+    return {"detail": "If that email exists, a reset link has been sent"}
+
+
+@router.post("/reset-password")
+async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    """Reset password using a valid reset token."""
+    payload = decode_token(body.token)
+    if payload is None or payload.get("type") != "password_reset":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    user_id = int(payload["sub"])
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+
+    user.password_hash = hash_password(body.new_password)
+    await db.commit()
+    return {"detail": "Password has been reset"}
+
+
+# ── Email Verification ───────────────────────────────────────────────────────
+
+
+@router.post("/verify-email")
+async def verify_email(body: VerifyEmailRequest, db: AsyncSession = Depends(get_db)):
+    """Verify email address using a verification token."""
+    payload = decode_token(body.token)
+    if payload is None or payload.get("type") != "email_verify":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+
+    user_id = int(payload["sub"])
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+
+    user.email_verified = True
+    await db.commit()
+    return {"detail": "Email verified"}
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resend verification email for the current user."""
+    if current_user.email_verified:
+        return {"detail": "Email already verified"}
+
+    token = create_email_verification_token(current_user.id)
+    await send_verification_email(current_user.email, token)
+    return {"detail": "Verification email sent"}
