@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
     jwt_algorithm: str = "HS256"
 
-    # Cookies
-    cookie_secure: bool = False
+    # Cookies — True in production (HTTPS), False in dev (HTTP)
+    cookie_secure: bool = True
 
     # Redis (optional — used for sessions/cache in production)
     redis_url: str = ""
