@@ -1,7 +1,9 @@
 import re
+import secrets
+from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, Cookie, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, Cookie, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +33,8 @@ from app.security import (
     verify_password,
 )
 from app.services.email_service import send_password_reset_email, send_verification_email
+
+GOOGLE_OAUTH_TIMEOUT = httpx.Timeout(10.0)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -77,45 +81,9 @@ async def _find_available_username(db: AsyncSession, base: str) -> str:
     return f"{base}{hash(base) % 10000}"
 
 
-@router.get("/status")
-async def auth_status(db: AsyncSession = Depends(get_db)):
-    """Check if the system needs initial setup (no users exist)."""
-    user_count = await db.scalar(select(func.count()).select_from(User))
-    return {"needs_setup": user_count == 0}
-
-
-@router.get("/check-username", response_model=UsernameCheckResponse)
-async def check_username(
-    username: str = Query(min_length=1),
-    db: AsyncSession = Depends(get_db),
-):
-    """Check if a username is available and suggest alternatives."""
-    exists = await db.scalar(
-        select(User.id).where(User.username == username)
-    )
-    if not exists:
-        return UsernameCheckResponse(available=True)
-    suggestion = await _find_available_username(db, username)
-    return UsernameCheckResponse(available=False, suggestion=suggestion)
-
-
-@router.post("/register", response_model=UserResponse, status_code=201)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    existing = await db.execute(
-        select(User).where(or_(User.username == body.username, User.email == body.email))
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Username or email already taken",
-        )
-
-    existing_superadmin = await db.scalar(
-        select(func.count()).select_from(User).where(User.is_superadmin == True)
-    )
-    is_first_user = existing_superadmin == 0
-
-    org = Organization(name=body.org_name or f"{body.username}'s Organization")
+async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organization:
+    """Create an organization with system account types and categories."""
+    org = Organization(name=org_name)
     db.add(org)
     await db.flush()
 
@@ -150,6 +118,55 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         type=CategoryType.BOTH, is_system=True,
     ))
 
+    return org
+
+
+@router.get("/status")
+async def auth_status(db: AsyncSession = Depends(get_db)):
+    """Check if the system needs initial setup (no users exist)."""
+    user_count = await db.scalar(select(func.count()).select_from(User))
+    return {"needs_setup": user_count == 0}
+
+
+@router.get("/check-username", response_model=UsernameCheckResponse)
+async def check_username(
+    username: str = Query(min_length=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if a username is available and suggest alternatives."""
+    exists = await db.scalar(
+        select(User.id).where(User.username == username)
+    )
+    if not exists:
+        return UsernameCheckResponse(available=True)
+    suggestion = await _find_available_username(db, username)
+    return UsernameCheckResponse(available=False, suggestion=suggestion)
+
+
+@router.post("/register", response_model=UserResponse, status_code=201)
+async def register(
+    body: RegisterRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    existing = await db.execute(
+        select(User).where(or_(User.username == body.username, User.email == body.email))
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username or email already taken",
+        )
+
+    existing_superadmin = await db.scalar(
+        select(func.count()).select_from(User).where(User.is_superadmin == True)
+    )
+    is_first_user = existing_superadmin == 0
+
+    org = await _create_org_with_defaults(
+        db, body.org_name or f"{body.username}'s Organization"
+    )
+
     user = User(
         org_id=org.id,
         username=body.username,
@@ -172,9 +189,9 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.refresh(user)
     await db.refresh(org)
 
-    # Send verification email (non-blocking — don't fail registration if email fails)
+    # Send verification email in background — don't block registration
     token = create_email_verification_token(user.id)
-    await send_verification_email(user.email, token)
+    background_tasks.add_task(send_verification_email, user.email, token)
 
     return _user_response(user, org)
 
@@ -365,11 +382,28 @@ async def resend_verification(
 # ── Google SSO ───────────────────────────────────────────────────────────────
 
 
-@router.get("/google")
-async def google_login():
-    """Redirect to Google OAuth consent screen."""
-    if not app_settings.google_client_id:
+def _validate_google_config() -> None:
+    """Raise 501 if Google SSO is not fully configured."""
+    if not app_settings.google_client_id or not app_settings.google_client_secret:
         raise HTTPException(status_code=501, detail="Google SSO not configured")
+
+
+@router.get("/google")
+async def google_login(response: Response):
+    """Redirect to Google OAuth consent screen."""
+    _validate_google_config()
+
+    # Generate CSRF state token and store in a signed cookie
+    state = secrets.token_urlsafe(32)
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        httponly=True,
+        secure=app_settings.cookie_secure,
+        samesite="lax",
+        max_age=600,  # 10 minutes
+        path="/api/v1/auth/google",
+    )
 
     params = {
         "client_id": app_settings.google_client_id,
@@ -378,47 +412,63 @@ async def google_login():
         "scope": "openid email profile",
         "access_type": "offline",
         "prompt": "select_account",
+        "state": state,
     }
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    return {"redirect_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"}
+    return {"redirect_url": f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"}
 
 
 @router.get("/google/callback")
 async def google_callback(
     code: str,
+    state: str,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    oauth_state: str | None = Cookie(default=None),
 ):
     """Handle Google OAuth callback — exchange code for tokens, create or login user."""
-    if not app_settings.google_client_id:
-        raise HTTPException(status_code=501, detail="Google SSO not configured")
+    _validate_google_config()
+
+    # Validate CSRF state
+    if not oauth_state or oauth_state != state:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF")
+
+    # Clear the state cookie
+    response.delete_cookie("oauth_state", path="/api/v1/auth/google")
 
     # Exchange authorization code for tokens
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "code": code,
-                "client_id": app_settings.google_client_id,
-                "client_secret": app_settings.google_client_secret,
-                "redirect_uri": f"{app_settings.app_url}/api/v1/auth/google/callback",
-                "grant_type": "authorization_code",
-            },
-        )
-        if token_resp.status_code != 200:
-            raise HTTPException(status_code=400, detail="Failed to exchange Google auth code")
-        tokens = token_resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=GOOGLE_OAUTH_TIMEOUT) as client:
+            token_resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": app_settings.google_client_id,
+                    "client_secret": app_settings.google_client_secret,
+                    "redirect_uri": f"{app_settings.app_url}/api/v1/auth/google/callback",
+                    "grant_type": "authorization_code",
+                },
+            )
+            if token_resp.status_code != 200:
+                raise HTTPException(status_code=400, detail="Failed to exchange Google auth code")
+            tokens = token_resp.json()
 
-        # Get user info from Google
-        userinfo_resp = await client.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {tokens['access_token']}"},
-        )
-        if userinfo_resp.status_code != 200:
-            raise HTTPException(status_code=400, detail="Failed to get Google user info")
-        google_user = userinfo_resp.json()
+            # Get user info from Google
+            userinfo_resp = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {tokens['access_token']}"},
+            )
+            if userinfo_resp.status_code != 200:
+                raise HTTPException(status_code=400, detail="Failed to get Google user info")
+            google_user = userinfo_resp.json()
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Failed to communicate with Google")
 
     email = google_user.get("email", "")
+    if not email:
+        raise HTTPException(status_code=400, detail="Google account has no email")
+
+    # Only trust email_verified if Google explicitly says so
+    google_verified = google_user.get("verified_email", False)
     first_name = google_user.get("given_name", "")
     last_name = google_user.get("family_name", "")
 
@@ -430,61 +480,20 @@ async def google_callback(
         # Existing user — login
         if not user.is_active:
             raise HTTPException(status_code=403, detail="Account is deactivated")
-        # Update email_verified since Google verified it
-        if not user.email_verified:
+        if google_verified and not user.email_verified:
             user.email_verified = True
             await db.commit()
     else:
         # New user — register with Google profile
-        # Check for existing superadmin
         existing_superadmin = await db.scalar(
             select(func.count()).select_from(User).where(User.is_superadmin == True)
         )
         is_first_user = existing_superadmin == 0
 
-        # Generate a username from Google name
         base_username = _suggest_username(first_name, last_name, email)
         username = await _find_available_username(db, base_username)
 
-        # Create org + user + system data (same as register)
-        org = Organization(name=f"{username}'s Organization")
-        db.add(org)
-        await db.flush()
-
-        for sat in SYSTEM_ACCOUNT_TYPES:
-            db.add(AccountType(org_id=org.id, name=sat["name"], slug=sat["slug"], is_system=True))
-
-        for master_def in SYSTEM_CATEGORIES:
-            master = Category(
-                org_id=org.id,
-                name=master_def["name"],
-                slug=master_def["slug"],
-                description=master_def["description"],
-                type=CategoryType(master_def["type"]),
-                is_system=True,
-            )
-            db.add(master)
-            await db.flush()
-            for child_def in master_def.get("children", []):
-                db.add(Category(
-                    org_id=org.id,
-                    parent_id=master.id,
-                    name=child_def["name"],
-                    slug=child_def["slug"],
-                    description=child_def["description"],
-                    type=CategoryType(master_def["type"]),
-                    is_system=True,
-                ))
-
-        db.add(Category(
-            org_id=org.id, name="Transfer", slug="transfer",
-            description="Internal transfers between accounts",
-            type=CategoryType.BOTH, is_system=True,
-        ))
-
-        # Google users get a random password (they login via Google)
-        import secrets
-        random_password = secrets.token_urlsafe(32)
+        org = await _create_org_with_defaults(db, f"{username}'s Organization")
 
         user = User(
             org_id=org.id,
@@ -493,8 +502,8 @@ async def google_callback(
             first_name=first_name,
             last_name=last_name,
             avatar_url=google_user.get("picture"),
-            password_hash=hash_password(random_password),
-            email_verified=True,  # Google verified the email
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+            email_verified=google_verified,
             role=Role.OWNER,
             is_superadmin=is_first_user,
         )
@@ -517,10 +526,9 @@ async def google_callback(
         path="/api/v1/auth/refresh",
     )
 
-    # Redirect to frontend with access token
-    from urllib.parse import urlencode
-    redirect_params = urlencode({"token": access_token})
+    # Redirect to frontend with token in URL fragment (not query string)
+    # Fragments are not sent to the server, preventing leaks in logs/Referer headers
     return Response(
         status_code=302,
-        headers={"Location": f"{app_settings.app_url}/auth/google/callback?{redirect_params}"},
+        headers={"Location": f"{app_settings.app_url}/auth/google/callback#token={access_token}"},
     )

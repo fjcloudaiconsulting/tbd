@@ -64,7 +64,7 @@ export default function LoginPage() {
             <input id="login-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="current-password" />
           </div>
           <div className="text-right">
-            <a href="/forgot-password" className="text-xs text-accent hover:text-accent-hover">Forgot your password?</a>
+            <Link href="/forgot-password" className="text-xs text-accent hover:text-accent-hover">Forgot your password?</Link>
           </div>
           <button type="submit" disabled={submitting} className={`w-full ${btnPrimary}`}>
             {submitting ? "Signing in..." : "Sign In"}

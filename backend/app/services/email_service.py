@@ -33,7 +33,7 @@ async def send_email(
 
     # Production: send via Mailgun HTTP API
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             response = await client.post(
                 f"https://api.mailgun.net/v3/{settings.mailgun_domain}/messages",
                 auth=("api", settings.mailgun_api_key),
