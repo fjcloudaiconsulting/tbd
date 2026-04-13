@@ -8,13 +8,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
-import type { Budget, Category } from "@/lib/types";
-
-interface BillingPeriod {
-  id: number;
-  start_date: string;
-  end_date: string | null;
-}
+import type { BillingPeriod, Budget, Category } from "@/lib/types";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();

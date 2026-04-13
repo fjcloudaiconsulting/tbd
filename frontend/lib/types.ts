@@ -101,6 +101,12 @@ export interface Budget {
   period_end: string;
 }
 
+export interface BillingPeriod {
+  id: number;
+  start_date: string;
+  end_date: string | null;
+}
+
 export interface OrgSetting {
   key: string;
   value: string;

@@ -28,13 +28,7 @@ import {
   Cell,
 
 } from "recharts";
-import type { Category, ForecastPlan, ForecastPlanItem } from "@/lib/types";
-
-interface BillingPeriod {
-  id: number;
-  start_date: string;
-  end_date: string | null;
-}
+import type { BillingPeriod, Category, ForecastPlan, ForecastPlanItem } from "@/lib/types";
 
 const SOURCE_LABELS: Record<string, string> = {
   manual: "Manual",
