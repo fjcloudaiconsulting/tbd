@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import BillingPeriod
+from app.models.category import Category
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services.billing_service import get_current_period
@@ -167,7 +168,6 @@ async def compute_forecast(
     all_cat_ids = set(cat_executed.keys()) | set(cat_pending.keys()) | set(cat_recurring.keys())
 
     # Get category names
-    from app.models.category import Category
     cat_names = {}
     if all_cat_ids:
         name_result = await db.execute(
