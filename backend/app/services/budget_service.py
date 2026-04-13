@@ -15,7 +15,7 @@ from app.models.budget import Budget
 from app.models.category import Category
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
-from app.services.billing_service import get_current_period
+from app.services.billing_service import get_current_period, resolve_period
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
@@ -72,19 +72,10 @@ async def list_budgets(
 ) -> list[BudgetResponse]:
     """List budgets for a billing period with spend computation.
     If period_start is None, uses the current open period."""
-    if period_start:
-        from app.models.billing import BillingPeriod
-        period_result = await db.execute(
-            select(BillingPeriod).where(
-                BillingPeriod.org_id == org_id,
-                BillingPeriod.start_date == period_start,
-            )
-        )
-        period = period_result.scalar_one_or_none()
-        if period is None:
-            return []
-    else:
-        period = await get_current_period(db, org_id)
+    try:
+        period = await resolve_period(db, org_id, period_start)
+    except ValidationError:
+        return []
 
     result = await db.execute(
         select(Budget)
@@ -121,19 +112,7 @@ async def create_budget(
     if cat.parent_id is not None:
         raise ValidationError("Budgets can only be set for master categories, not subcategories")
 
-    if period_start:
-        from app.models.billing import BillingPeriod
-        period_result = await db.execute(
-            select(BillingPeriod).where(
-                BillingPeriod.org_id == org_id,
-                BillingPeriod.start_date == period_start,
-            )
-        )
-        period = period_result.scalar_one_or_none()
-        if period is None:
-            raise ValidationError("Billing period not found")
-    else:
-        period = await get_current_period(db, org_id)
+    period = await resolve_period(db, org_id, period_start)
 
     existing = await db.scalar(
         select(Budget.id).where(

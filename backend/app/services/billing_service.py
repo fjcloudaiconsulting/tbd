@@ -62,6 +62,27 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
     return period
 
 
+async def resolve_period(
+    db: AsyncSession, org_id: int, period_start: datetime.date | None,
+) -> BillingPeriod:
+    """Resolve a billing period by start_date, or fall back to the current open period.
+
+    Raises ValidationError if period_start is given but no matching period exists.
+    """
+    if period_start:
+        result = await db.execute(
+            select(BillingPeriod).where(
+                BillingPeriod.org_id == org_id,
+                BillingPeriod.start_date == period_start,
+            )
+        )
+        period = result.scalar_one_or_none()
+        if period is None:
+            raise ValidationError("Billing period not found")
+        return period
+    return await get_current_period(db, org_id)
+
+
 async def list_periods(db: AsyncSession, org_id: int) -> list[BillingPeriod]:
     result = await db.execute(
         select(BillingPeriod)
