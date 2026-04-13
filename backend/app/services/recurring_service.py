@@ -10,14 +10,17 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.account import Account
-from app.models.category import Category
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.recurring import RecurringCreate, RecurringResponse, RecurringUpdate
 from app.services.date_utils import advance_date
 from app.services.exceptions import NotFoundError, ValidationError
-from app.services.transaction_service import apply_balance, get_account_for_update
+from app.services.transaction_service import (
+    apply_balance,
+    get_account_for_update,
+    validate_account,
+    validate_category,
+)
 
 
 def _load_opts():
@@ -55,12 +58,8 @@ async def list_recurring(db: AsyncSession, org_id: int) -> list[RecurringTransac
 
 async def create_recurring(db: AsyncSession, org_id: int, body: RecurringCreate) -> RecurringTransaction:
     # Validate refs
-    acct = await db.scalar(select(Account.id).where(Account.id == body.account_id, Account.org_id == org_id))
-    if acct is None:
-        raise ValidationError("Invalid account")
-    cat = await db.scalar(select(Category.id).where(Category.id == body.category_id, Category.org_id == org_id))
-    if cat is None:
-        raise ValidationError("Invalid category")
+    await validate_account(db, body.account_id, org_id)
+    await validate_category(db, body.category_id, org_id)
 
     r = RecurringTransaction(
         org_id=org_id,
@@ -95,14 +94,10 @@ async def update_recurring(
         raise NotFoundError("Recurring transaction")
 
     if body.account_id is not None:
-        acct = await db.scalar(select(Account.id).where(Account.id == body.account_id, Account.org_id == org_id))
-        if acct is None:
-            raise ValidationError("Invalid account")
+        await validate_account(db, body.account_id, org_id)
         r.account_id = body.account_id
     if body.category_id is not None:
-        cat = await db.scalar(select(Category.id).where(Category.id == body.category_id, Category.org_id == org_id))
-        if cat is None:
-            raise ValidationError("Invalid category")
+        await validate_category(db, body.category_id, org_id)
         r.category_id = body.category_id
     if body.description is not None:
         r.description = body.description
