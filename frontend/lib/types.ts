@@ -70,6 +70,7 @@ export interface Transaction {
   linked_transaction_id: number | null;
   recurring_id: number | null;
   date: string;
+  is_imported: boolean;
 }
 
 export interface RecurringTransaction {

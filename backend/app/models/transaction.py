@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Enum,
@@ -60,6 +61,7 @@ class Transaction(Base):
         Integer, ForeignKey("recurring_transactions.id", ondelete="SET NULL"), nullable=True
     )
     date: Mapped[date] = mapped_column(Date, nullable=False)
+    is_imported: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
