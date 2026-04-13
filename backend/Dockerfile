@@ -11,6 +11,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+RUN addgroup --system --gid 1001 backend && \
+    adduser --system --uid 1001 backend
+USER backend
+
 ENV PYTHONPATH=/app
 
 EXPOSE 8000
