@@ -32,8 +32,8 @@ from app.schemas.forecast_plan import (
     ForecastPlanResponse,
 )
 from app.services.billing_service import get_current_period
+from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
-from app.services.forecast_service import _advance_date
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -295,11 +295,11 @@ async def populate_from_sources(
         total = Decimal("0")
         d = r.next_due_date
         while d < p_start and d <= p_end:
-            d = _advance_date(d, r.frequency)
+            d = advance_date(d, r.frequency)
         while d <= p_end:
             total += r.amount
             prev = d
-            d = _advance_date(d, r.frequency)
+            d = advance_date(d, r.frequency)
             if d <= prev:
                 break
 

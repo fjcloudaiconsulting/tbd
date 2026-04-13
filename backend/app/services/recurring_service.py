@@ -5,7 +5,6 @@ next_due_date has passed. Advances next_due_date based on frequency.
 """
 
 import datetime
-from dateutil.relativedelta import relativedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +15,7 @@ from app.models.category import Category
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.recurring import RecurringCreate, RecurringResponse, RecurringUpdate
+from app.services.date_utils import advance_date
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.transaction_service import apply_balance, get_account_for_update
 
@@ -39,20 +39,6 @@ def to_response(r: RecurringTransaction) -> RecurringResponse:
         auto_settle=r.auto_settle,
         is_active=r.is_active,
     )
-
-
-def _advance_date(current: datetime.date, freq: Frequency) -> datetime.date:
-    if freq == Frequency.WEEKLY:
-        return current + datetime.timedelta(weeks=1)
-    elif freq == Frequency.BIWEEKLY:
-        return current + datetime.timedelta(weeks=2)
-    elif freq == Frequency.MONTHLY:
-        return current + relativedelta(months=1)
-    elif freq == Frequency.QUARTERLY:
-        return current + relativedelta(months=3)
-    elif freq == Frequency.YEARLY:
-        return current + relativedelta(years=1)
-    return current + relativedelta(months=1)
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -250,7 +236,7 @@ async def generate_due_transactions(db: AsyncSession, org_id: int) -> int:
                     acct = await get_account_for_update(db, r.account_id, org_id)
                     apply_balance(acct, r.amount, TransactionType(r.type))
 
-            r.next_due_date = _advance_date(r.next_due_date, r.frequency)
+            r.next_due_date = advance_date(r.next_due_date, r.frequency)
             generated += 1
 
     await db.commit()

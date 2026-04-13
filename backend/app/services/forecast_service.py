@@ -16,20 +16,7 @@ from app.models.billing import BillingPeriod
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services.billing_service import get_current_period
-
-
-def _advance_date(current: datetime.date, freq: Frequency) -> datetime.date:
-    if freq == Frequency.WEEKLY:
-        return current + datetime.timedelta(weeks=1)
-    elif freq == Frequency.BIWEEKLY:
-        return current + datetime.timedelta(weeks=2)
-    elif freq == Frequency.MONTHLY:
-        return current + relativedelta(months=1)
-    elif freq == Frequency.QUARTERLY:
-        return current + relativedelta(months=3)
-    elif freq == Frequency.YEARLY:
-        return current + relativedelta(years=1)
-    return current + relativedelta(months=1)
+from app.services.date_utils import advance_date
 
 
 async def compute_forecast(
@@ -134,7 +121,7 @@ async def compute_forecast(
                 recurring_income += r.amount
             else:
                 recurring_expense += r.amount
-            d = _advance_date(d, r.frequency)
+            d = advance_date(d, r.frequency)
 
     # ── Per-category breakdown ────────────────────────────────────────────
     # Executed by category (uses settled_date for period assignment)
@@ -174,7 +161,7 @@ async def compute_forecast(
             d = r.next_due_date
             while d <= p_end:
                 cat_recurring[r.category_id] = cat_recurring.get(r.category_id, Decimal("0")) + r.amount
-                d = _advance_date(d, r.frequency)
+                d = advance_date(d, r.frequency)
 
     # Merge all category IDs
     all_cat_ids = set(cat_executed.keys()) | set(cat_pending.keys()) | set(cat_recurring.keys())
