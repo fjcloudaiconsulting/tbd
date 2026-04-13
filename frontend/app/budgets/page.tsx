@@ -250,7 +250,6 @@ export default function BudgetsPage() {
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
                 const overBudget = b.percent_used > 100;
-                const budgetedCatIds = new Set(budgets.map((x) => x.category_id));
                 const transferTargets = masterCategories.filter((c) => c.id !== b.category_id);
                 return (
                   <div key={b.id} className="px-6 py-3">
