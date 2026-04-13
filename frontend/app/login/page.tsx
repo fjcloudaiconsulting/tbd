@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
+import { apiFetch } from "@/lib/api";
+import { input, label, btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
 
 export default function LoginPage() {
   const { user, login, loading, needsSetup } = useAuth();
@@ -34,6 +35,15 @@ export default function LoginPage() {
     }
   }
 
+  async function handleGoogleLogin() {
+    try {
+      const data = await apiFetch<{ redirect_url: string }>("/api/v1/auth/google");
+      window.location.href = data.redirect_url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in is not available");
+    }
+  }
+
   return (
     <div className="relative flex min-h-screen items-center justify-center px-4">
       <ThemeToggle className="absolute right-6 top-6" />
@@ -53,8 +63,19 @@ export default function LoginPage() {
             <label htmlFor="login-password" className={label}>Password</label>
             <input id="login-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="current-password" />
           </div>
+          <div className="text-right">
+            <a href="/forgot-password" className="text-xs text-accent hover:text-accent-hover">Forgot your password?</a>
+          </div>
           <button type="submit" disabled={submitting} className={`w-full ${btnPrimary}`}>
             {submitting ? "Signing in..." : "Sign In"}
+          </button>
+          <div className="flex items-center gap-3 my-4">
+            <div className="flex-1 border-t border-border" />
+            <span className="text-xs text-text-muted">or</span>
+            <div className="flex-1 border-t border-border" />
+          </div>
+          <button onClick={handleGoogleLogin} className={btnSecondary + " w-full"} type="button">
+            Sign in with Google
           </button>
         </form>
         <p className="mt-6 text-center text-sm text-text-muted">
