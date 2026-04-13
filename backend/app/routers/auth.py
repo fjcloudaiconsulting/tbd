@@ -1,5 +1,6 @@
 import re
 import secrets
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
@@ -340,7 +341,17 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
             detail="Invalid or expired reset token",
         )
 
+    # Reject tokens issued before the last password change
+    if user.password_changed_at:
+        token_iat = datetime.fromtimestamp(payload.get("iat", 0), tz=timezone.utc)
+        if token_iat < user.password_changed_at:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired reset token",
+            )
+
     user.password_hash = hash_password(body.new_password)
+    user.password_changed_at = datetime.now(timezone.utc)
     await db.commit()
     return {"detail": "Password has been reset"}
 
