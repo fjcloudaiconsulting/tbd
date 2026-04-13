@@ -351,7 +351,7 @@ export default function DashboardPage() {
                 )}
                 <div>
                   <label htmlFor="da-desc" className={label}>Description</label>
-                  <input id="da-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Transfer (optional)" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
+                  <input id="da-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Auto: Transfer from X to Y" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
                 </div>
                 <div>
                   <label htmlFor="da-amount" className={label}>Amount</label>
@@ -577,7 +577,7 @@ export default function DashboardPage() {
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                       <Tooltip
-                        formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? "Spent" : "Remaining"]}
+                        formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? <span style={{ color: "#ef4444" }}>Spent</span> : <span style={{ color: "#4ade80" }}>Remaining</span>]}
                         contentStyle={{ fontSize: "11px" }}
                       />
                       <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
@@ -620,7 +620,7 @@ export default function DashboardPage() {
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
                       <Tooltip
-                        formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? "Executed" : name === "pending" ? "Pending" : "Recurring"]}
+                        formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? <span style={{ color: "#4ade80" }}>Executed</span> : name === "pending" ? <span style={{ color: "#D4A64A" }}>Pending</span> : <span style={{ color: "#5FA8D3" }}>Recurring</span>]}
                         contentStyle={{ fontSize: "11px" }}
                       />
                       <Bar dataKey="executed" stackId="a" fill="#4ade80" radius={[3, 0, 0, 3]} animationDuration={600} />

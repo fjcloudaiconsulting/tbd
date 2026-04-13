@@ -202,6 +202,7 @@ export default function TransactionsPage() {
 
   async function handleSaveEdit() {
     if (editingId === null) return;
+    if (!editDesc.trim()) { setError("Description is required"); return; }
     setError("");
     try {
       await apiFetch(`/api/v1/transactions/${editingId}`, {
@@ -325,7 +326,7 @@ export default function TransactionsPage() {
             )}
             <div>
               <label htmlFor="tx-desc" className={label}>Description</label>
-              <input id="tx-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Transfer (optional)" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
+              <input id="tx-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Auto: Transfer from X to Y" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
             </div>
             <div>
               <label htmlFor="tx-amount" className={label}>Amount</label>
@@ -487,7 +488,7 @@ export default function TransactionsPage() {
                 return editingId === tx.id ? (
                   <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
                     <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
-                    <span className="col-span-2"><input aria-label="Description" type="text" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
+                    <span className="col-span-2"><input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
                     <span className="col-span-2">
                       <select aria-label="Account" value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
                         {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}

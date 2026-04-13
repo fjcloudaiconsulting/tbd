@@ -2,7 +2,7 @@ import datetime
 from decimal import Decimal
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class TransactionCreate(BaseModel):
@@ -14,12 +14,19 @@ class TransactionCreate(BaseModel):
     status: Literal["settled", "pending"] = "settled"
     date: datetime.date
 
+    @field_validator("description")
+    @classmethod
+    def description_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Description is required")
+        return v.strip()
+
 
 class TransferCreate(BaseModel):
     from_account_id: int
     to_account_id: int
     category_id: Optional[int] = None
-    description: str = "Transfer"
+    description: str = ""
     amount: Decimal = Field(gt=0)
     status: Literal["settled", "pending"] = "settled"
     date: datetime.date
@@ -33,6 +40,13 @@ class TransactionUpdate(BaseModel):
     type: Optional[Literal["income", "expense"]] = None
     status: Optional[Literal["settled", "pending"]] = None
     date: Optional[datetime.date] = None
+
+    @field_validator("description")
+    @classmethod
+    def description_not_empty(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("Description is required")
+        return v.strip() if v is not None else v
 
 
 class TransactionResponse(BaseModel):
