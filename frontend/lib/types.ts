@@ -13,11 +13,27 @@ export interface User {
   billing_cycle_day: number;
   is_superadmin: boolean;
   is_active: boolean;
+  mfa_enabled: boolean;
 }
 
 export interface TokenResponse {
   access_token: string;
   token_type: string;
+}
+
+export interface MfaChallengeResponse {
+  mfa_required: boolean;
+  mfa_token: string;
+}
+
+export interface MfaSetupResponse {
+  qr_code: string;
+  secret: string;
+  uri: string;
+}
+
+export interface MfaEnableResponse {
+  recovery_codes: string[];
 }
 
 export interface ApiError {

@@ -8,7 +8,14 @@ import {
   useState,
 } from "react";
 import { apiFetch, setAccessToken } from "@/lib/api";
-import type { User, TokenResponse } from "@/lib/types";
+import type { User, TokenResponse, MfaChallengeResponse } from "@/lib/types";
+
+export class MfaRequiredError extends Error {
+  constructor(public mfaToken: string) {
+    super("MFA required");
+    this.name = "MfaRequiredError";
+  }
+}
 
 interface AuthContextValue {
   user: User | null;
@@ -73,11 +80,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchMe]);
 
   const login = async (loginId: string, password: string) => {
-    const data = await apiFetch<TokenResponse>("/api/v1/auth/login", {
+    const data = await apiFetch<TokenResponse | MfaChallengeResponse>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify({ login: loginId, password }),
     });
-    setAccessToken(data.access_token);
+
+    // MFA challenge — throw so the login page can redirect
+    if ("mfa_required" in data && data.mfa_required) {
+      throw new MfaRequiredError((data as MfaChallengeResponse).mfa_token);
+    }
+
+    const tokenData = data as TokenResponse;
+    setAccessToken(tokenData.access_token);
     await fetchMe();
     setNeedsSetup(false);
   };

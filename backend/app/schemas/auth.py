@@ -20,6 +20,11 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class MfaChallengeResponse(BaseModel):
+    mfa_required: bool = True
+    mfa_token: str
+
+
 class UserResponse(BaseModel):
     id: int
     username: str
@@ -35,6 +40,7 @@ class UserResponse(BaseModel):
     billing_cycle_day: int = 1
     is_superadmin: bool
     is_active: bool
+    mfa_enabled: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -55,3 +61,48 @@ class ResetPasswordRequest(BaseModel):
 
 class VerifyEmailRequest(BaseModel):
     token: str
+
+
+# ── MFA ─────────────────────────────────────────────────────────────────────
+
+
+class MfaSetupResponse(BaseModel):
+    qr_code: str  # base64 PNG
+    secret: str  # for manual entry
+    uri: str  # otpauth:// URI
+
+
+class MfaEnableRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+
+class MfaEnableResponse(BaseModel):
+    recovery_codes: list[str]
+
+
+class MfaDisableRequest(BaseModel):
+    password: str = Field(max_length=128)
+
+
+class MfaVerifyRequest(BaseModel):
+    mfa_token: str = Field(max_length=2048)
+    code: str = Field(min_length=6, max_length=6)
+
+
+class MfaRecoveryRequest(BaseModel):
+    mfa_token: str = Field(max_length=2048)
+    code: str = Field(max_length=20)
+
+
+class MfaEmailCodeRequest(BaseModel):
+    mfa_token: str = Field(max_length=2048)
+
+
+class MfaEmailVerifyRequest(BaseModel):
+    mfa_token: str = Field(max_length=2048)
+    email_token: str = Field(max_length=2048)
+    code: str = Field(min_length=6, max_length=6)
+
+
+class MfaRegenerateRequest(BaseModel):
+    password: str = Field(max_length=128)

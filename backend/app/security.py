@@ -53,6 +53,30 @@ def create_password_reset_token(user_id: int) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
+def create_mfa_challenge_token(user_id: int) -> str:
+    """Create a short-lived token for MFA challenge (5 minutes)."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    payload = {
+        "sub": str(user_id),
+        "type": "mfa_challenge",
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def create_mfa_email_token(user_id: int, code: str) -> str:
+    """Create a short-lived token containing an MFA email code (10 minutes)."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=10)
+    code_hash = __import__("hashlib").sha256(code.encode()).hexdigest()
+    payload = {
+        "sub": str(user_id),
+        "type": "mfa_email",
+        "code_hash": code_hash,
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
 def create_email_verification_token(user_id: int) -> str:
     """Create a token for email verification (24 hours)."""
     expire = datetime.now(timezone.utc) + timedelta(hours=24)

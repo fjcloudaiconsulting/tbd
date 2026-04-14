@@ -2,7 +2,7 @@ import enum
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -53,6 +53,9 @@ class User(Base):
     is_superadmin: Mapped[bool] = mapped_column(default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
+    totp_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    recovery_codes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

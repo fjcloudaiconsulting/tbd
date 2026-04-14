@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     email_from: str = "PFV2 <noreply@pfv.app>"
     app_url: str = "http://localhost"  # used for email links
 
+    # MFA
+    mfa_encryption_key: str = ""  # Fernet key for encrypting TOTP secrets
+
     # Google SSO
     google_client_id: str = ""
     google_client_secret: str = ""
