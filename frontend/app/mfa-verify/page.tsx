@@ -160,7 +160,7 @@ export default function MfaVerifyPage() {
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 className={`${input} text-center tracking-wider`}
-                placeholder="xxxx-xxxx"
+                placeholder="xxxx-xxxx-xxxx-xxxx"
               />
             </div>
             <button type="submit" disabled={submitting || !code.trim()} className={`w-full ${btnPrimary}`}>

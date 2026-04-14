@@ -28,6 +28,7 @@ def _user_response(user: User) -> UserResponse:
         billing_cycle_day=user.organization.billing_cycle_day,
         is_superadmin=user.is_superadmin,
         is_active=user.is_active,
+        mfa_enabled=user.mfa_enabled,
     )
 
 

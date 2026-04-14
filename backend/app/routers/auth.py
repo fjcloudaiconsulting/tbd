@@ -1,4 +1,3 @@
-import hashlib
 import re
 import secrets
 from datetime import datetime, timezone
@@ -441,6 +440,9 @@ async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> User:
     user = result.scalar_one_or_none()
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+    # Reject if MFA was disabled after the challenge token was issued
+    if not user.mfa_enabled:
+        raise HTTPException(status_code=401, detail="MFA is no longer enabled for this account")
     return user
 
 
@@ -474,7 +476,10 @@ async def mfa_setup(
     qr_code = generate_qr_base64(uri)
 
     # Store encrypted secret (not yet enabled)
-    current_user.totp_secret = encrypt_secret(secret)
+    try:
+        current_user.totp_secret = encrypt_secret(secret)
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="MFA is not available — encryption not configured")
     await db.commit()
 
     return MfaSetupResponse(qr_code=qr_code, secret=secret, uri=uri)
@@ -492,7 +497,10 @@ async def mfa_enable(
     if not current_user.totp_secret:
         raise HTTPException(status_code=400, detail="Call /mfa/setup first")
 
-    secret = decrypt_secret(current_user.totp_secret)
+    try:
+        secret = decrypt_secret(current_user.totp_secret)
+    except (ValueError, RuntimeError):
+        raise HTTPException(status_code=503, detail="MFA configuration error — contact support")
     if not verify_totp(secret, body.code):
         raise HTTPException(status_code=400, detail="Invalid TOTP code")
 
@@ -557,7 +565,10 @@ async def mfa_verify(
     if not user.totp_secret:
         raise HTTPException(status_code=400, detail="MFA not configured")
 
-    secret = decrypt_secret(user.totp_secret)
+    try:
+        secret = decrypt_secret(user.totp_secret)
+    except (ValueError, RuntimeError):
+        raise HTTPException(status_code=503, detail="MFA configuration error — contact support")
     if not verify_totp(secret, body.code):
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
@@ -623,9 +634,11 @@ async def mfa_email_verify(
     db: AsyncSession = Depends(get_db),
 ):
     """Verify an email-based MFA code to complete authentication."""
+    import hmac as _hmac
+
     user = await _resolve_mfa_user(body.mfa_token, db)
 
-    # Validate the email_token and extract the code hash
+    # Validate the email_token and extract the code HMAC
     email_payload = decode_token(body.email_token)
     if email_payload is None or email_payload.get("type") != "mfa_email":
         raise HTTPException(status_code=401, detail="Invalid or expired email code")
@@ -634,9 +647,11 @@ async def mfa_email_verify(
     if int(email_payload["sub"]) != user.id:
         raise HTTPException(status_code=401, detail="Invalid or expired email code")
 
-    # Verify the code matches
-    code_hash = hashlib.sha256(body.code.encode()).hexdigest()
-    if code_hash != email_payload.get("code_hash"):
+    # Verify the code matches using HMAC (keyed hash, not brute-forceable)
+    expected_hmac = _hmac.new(
+        app_settings.jwt_secret_key.encode(), body.code.encode(), "sha256"
+    ).hexdigest()
+    if not _hmac.compare_digest(expected_hmac, email_payload.get("code_hmac", "")):
         raise HTTPException(status_code=401, detail="Invalid code")
 
     return _issue_tokens(user, response)

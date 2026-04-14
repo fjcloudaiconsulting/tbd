@@ -1,6 +1,6 @@
 """MFA service — TOTP setup, verification, recovery codes, and encryption."""
 
-import hashlib
+import hmac
 import io
 import secrets
 from base64 import b64encode
@@ -73,24 +73,30 @@ def generate_qr_base64(uri: str) -> str:
 
 
 def generate_recovery_codes(count: int = 8) -> list[str]:
-    """Generate high-entropy recovery codes (xxxx-xxxx format)."""
+    """Generate high-entropy recovery codes (xxxx-xxxx-xxxx-xxxx format, 64-bit)."""
     codes = []
     for _ in range(count):
-        raw = secrets.token_hex(4)  # 8 hex chars
-        codes.append(f"{raw[:4]}-{raw[4:]}")
+        raw = secrets.token_hex(8)  # 16 hex chars = 64 bits
+        codes.append(f"{raw[:4]}-{raw[4:8]}-{raw[8:12]}-{raw[12:]}")
     return codes
 
 
+def _hmac_key() -> bytes:
+    """Return the HMAC key for recovery code hashing (derived from JWT secret)."""
+    return settings.jwt_secret_key.encode()
+
+
 def hash_recovery_code(code: str) -> str:
-    """SHA-256 hash a recovery code for storage."""
+    """HMAC-SHA256 a recovery code for storage (keyed, not brute-forceable)."""
     normalized = code.strip().lower().replace("-", "")
-    return hashlib.sha256(normalized.encode()).hexdigest()
+    return hmac.new(_hmac_key(), normalized.encode(), "sha256").hexdigest()
 
 
 def verify_recovery_code(code: str, hashed_codes: list[str]) -> int | None:
-    """Check if a code matches any stored hash. Returns index if found."""
-    h = hash_recovery_code(code)
+    """Check if a code matches any stored HMAC. Constant-time, no early exit."""
+    candidate = hash_recovery_code(code)
+    match_idx: int | None = None
     for i, stored in enumerate(hashed_codes):
-        if h == stored:
-            return i
-    return None
+        if hmac.compare_digest(candidate, stored):
+            match_idx = i
+    return match_idx

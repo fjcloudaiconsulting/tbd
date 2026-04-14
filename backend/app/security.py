@@ -65,13 +65,20 @@ def create_mfa_challenge_token(user_id: int) -> str:
 
 
 def create_mfa_email_token(user_id: int, code: str) -> str:
-    """Create a short-lived token containing an MFA email code (10 minutes)."""
+    """Create a short-lived token containing an MFA email code (10 minutes).
+
+    Uses HMAC-SHA256 keyed with jwt_secret_key so the code hash cannot be
+    brute-forced offline even though JWT payloads are readable.
+    """
+    import hmac as _hmac
     expire = datetime.now(timezone.utc) + timedelta(minutes=10)
-    code_hash = __import__("hashlib").sha256(code.encode()).hexdigest()
+    code_hmac = _hmac.new(
+        settings.jwt_secret_key.encode(), code.encode(), "sha256"
+    ).hexdigest()
     payload = {
         "sub": str(user_id),
         "type": "mfa_email",
-        "code_hash": code_hash,
+        "code_hmac": code_hmac,
         "exp": expire,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
