@@ -48,6 +48,7 @@ from app.security import (
 from app.rate_limit import limiter
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
 from app.services.mfa_service import (
+    MfaConfigError,
     decrypt_secret,
     encrypt_secret,
     generate_qr_base64,
@@ -478,7 +479,7 @@ async def mfa_setup(
     # Store encrypted secret (not yet enabled)
     try:
         current_user.totp_secret = encrypt_secret(secret)
-    except RuntimeError:
+    except MfaConfigError:
         raise HTTPException(status_code=503, detail="MFA is not available — encryption not configured")
     await db.commit()
 
@@ -499,7 +500,7 @@ async def mfa_enable(
 
     try:
         secret = decrypt_secret(current_user.totp_secret)
-    except (ValueError, RuntimeError):
+    except (ValueError, MfaConfigError):
         raise HTTPException(status_code=503, detail="MFA configuration error — contact support")
     if not verify_totp(secret, body.code):
         raise HTTPException(status_code=400, detail="Invalid TOTP code")
@@ -567,7 +568,7 @@ async def mfa_verify(
 
     try:
         secret = decrypt_secret(user.totp_secret)
-    except (ValueError, RuntimeError):
+    except (ValueError, MfaConfigError):
         raise HTTPException(status_code=503, detail="MFA configuration error — contact support")
     if not verify_totp(secret, body.code):
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
