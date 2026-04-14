@@ -5,11 +5,14 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 
 from app.config import settings as app_settings
 from app.database import engine
 from app.logging import setup_logging
+from app.rate_limit import limiter
 from app.routers import account_types, accounts, auth, budgets, categories, forecast, forecast_plans, import_router, recurring, settings, transactions, users
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
@@ -47,12 +50,15 @@ app = FastAPI(
     redoc_url=None,
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=app_settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 @app.exception_handler(NotFoundError)

@@ -31,29 +31,12 @@ from app.schemas.forecast_plan import (
     ForecastPlanItemUpdate,
     ForecastPlanResponse,
 )
-from app.services.billing_service import get_current_period
+from app.services.billing_service import resolve_period
+from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
-from app.services.forecast_service import _advance_date
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-
-async def _resolve_period(
-    db: AsyncSession, org_id: int, period_start: datetime.date | None
-) -> BillingPeriod:
-    if period_start:
-        result = await db.execute(
-            select(BillingPeriod).where(
-                BillingPeriod.org_id == org_id,
-                BillingPeriod.start_date == period_start,
-            )
-        )
-        period = result.scalar_one_or_none()
-        if period is None:
-            raise ValidationError("Billing period not found")
-        return period
-    return await get_current_period(db, org_id)
-
 
 async def _get_or_create_plan_row(
     db: AsyncSession, org_id: int, period_id: int,
@@ -243,7 +226,7 @@ async def get_or_create_plan(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
 ) -> ForecastPlanResponse:
     """Get existing plan for a period, or create a new draft."""
-    period = await _resolve_period(db, org_id, period_start)
+    period = await resolve_period(db, org_id, period_start)
     plan = await _get_or_create_plan_row(db, org_id, period.id)
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
@@ -257,7 +240,7 @@ async def populate_from_sources(
 
     Only adds items for categories not already in the plan.
     """
-    period = await _resolve_period(db, org_id, period_start)
+    period = await resolve_period(db, org_id, period_start)
     plan = await _get_or_create_plan_row(db, org_id, period.id)
     _require_draft(plan)
     await db.refresh(plan, ["billing_period", "items"])
@@ -295,11 +278,11 @@ async def populate_from_sources(
         total = Decimal("0")
         d = r.next_due_date
         while d < p_start and d <= p_end:
-            d = _advance_date(d, r.frequency)
+            d = advance_date(d, r.frequency)
         while d <= p_end:
             total += r.amount
             prev = d
-            d = _advance_date(d, r.frequency)
+            d = advance_date(d, r.frequency)
             if d <= prev:
                 break
 
@@ -570,8 +553,8 @@ async def copy_from_period(
     source_period_start: datetime.date,
 ) -> ForecastPlanResponse:
     """Copy plan items from a previous period to the target period."""
-    target_period = await _resolve_period(db, org_id, target_period_start)
-    source_period = await _resolve_period(db, org_id, source_period_start)
+    target_period = await resolve_period(db, org_id, target_period_start)
+    source_period = await resolve_period(db, org_id, source_period_start)
 
     # Get source plan
     source_result = await db.execute(

@@ -8,13 +8,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
-import type { Budget, Category } from "@/lib/types";
-
-interface BillingPeriod {
-  id: number;
-  start_date: string;
-  end_date: string | null;
-}
+import type { BillingPeriod, Budget, Category } from "@/lib/types";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
@@ -256,7 +250,6 @@ export default function BudgetsPage() {
             <div className="divide-y divide-border-subtle">
               {budgets.map((b) => {
                 const overBudget = b.percent_used > 100;
-                const budgetedCatIds = new Set(budgets.map((x) => x.category_id));
                 const transferTargets = masterCategories.filter((c) => c.id !== b.category_id);
                 return (
                   <div key={b.id} className="px-6 py-3">

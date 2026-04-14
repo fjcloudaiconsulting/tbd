@@ -7,7 +7,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
-import { card, cardHeader, cardTitle, error as errorCls, success as successCls, pageTitle } from "@/lib/styles";
+import { btnSecondary, card, cardHeader, cardTitle, error as errorCls, success as successCls, pageTitle } from "@/lib/styles";
 import type { RecurringTransaction } from "@/lib/types";
 
 const FREQ_LABELS: Record<string, string> = {
@@ -83,7 +83,7 @@ export default function RecurringPage() {
     <AppShell>
       <div className="mb-8 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Recurring Transactions</h1>
-        <button onClick={handleGenerate} className="rounded-md border border-border px-4 py-2 text-sm text-text-secondary hover:bg-surface-raised">
+        <button onClick={handleGenerate} className={btnSecondary}>
           Generate Due
         </button>
       </div>

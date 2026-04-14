@@ -1,9 +1,10 @@
 import re
 import secrets
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, Cookie, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, Cookie, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +33,7 @@ from app.security import (
     hash_password,
     verify_password,
 )
+from app.rate_limit import limiter
 from app.services.email_service import send_password_reset_email, send_verification_email
 
 GOOGLE_OAUTH_TIMEOUT = httpx.Timeout(10.0)
@@ -197,8 +199,9 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 async def login(
-    body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
+    request: Request, body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
 ):
     # Accept username or email
     result = await db.execute(
@@ -300,14 +303,20 @@ async def logout(response: Response):
 
 
 @router.post("/forgot-password")
-async def forgot_password(body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def forgot_password(
+    request: Request,
+    body: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     """Send a password reset email. Always returns 200 to prevent email enumeration."""
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
     if user and user.is_active:
         token = create_password_reset_token(user.id)
-        await send_password_reset_email(user.email, token)
+        background_tasks.add_task(send_password_reset_email, user.email, token)
 
     return {"detail": "If that email exists, a reset link has been sent"}
 
@@ -332,7 +341,17 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
             detail="Invalid or expired reset token",
         )
 
+    # Reject tokens issued before the last password change
+    if user.password_changed_at:
+        token_iat = datetime.fromtimestamp(payload.get("iat", 0), tz=timezone.utc)
+        if token_iat < user.password_changed_at:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired reset token",
+            )
+
     user.password_hash = hash_password(body.new_password)
+    user.password_changed_at = datetime.now(timezone.utc)
     await db.commit()
     return {"detail": "Password has been reset"}
 

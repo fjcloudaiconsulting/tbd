@@ -13,18 +13,30 @@ _ACCESS_RE = re.compile(
 )
 
 
+# Paths excluded from access logs (health checks flood logs in production)
+_SILENT_PATHS = {"/health", "/ready"}
+
+
 def _parse_uvicorn_access(logger: object, method_name: str, event_dict: dict) -> dict:
-    """Parse uvicorn access log into structured fields."""
+    """Parse uvicorn access log into structured fields.
+
+    Suppresses health check requests to keep logs readable in production
+    where DO pings /health every 15 seconds.
+    """
     if event_dict.get("logger") != "uvicorn.access":
         return event_dict
 
     msg = event_dict.get("event", "")
     match = _ACCESS_RE.match(str(msg))
     if match:
+        path = match.group("path")
+        if path in _SILENT_PATHS:
+            raise structlog.DropEvent
+
         event_dict["event"] = "request"
         event_dict["remote_addr"] = match.group("remote")
         event_dict["method"] = match.group("method")
-        event_dict["path"] = match.group("path")
+        event_dict["path"] = path
         event_dict["status"] = int(match.group("status"))
 
     return event_dict

@@ -12,7 +12,7 @@ import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pa
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import CategorySelect from "@/components/ui/CategorySelect";
-import type { Account, Budget, Category, Transaction } from "@/lib/types";
+import type { Account, BillingPeriod, Budget, Category, Transaction } from "@/lib/types";
 
 interface Forecast {
   period_start: string;
@@ -28,12 +28,6 @@ interface Forecast {
   forecast_expense: string;
   forecast_net: string;
   categories: { category_id: number; category_name: string; executed: string; pending: string; recurring: string; forecast: string }[];
-}
-
-interface BillingPeriod {
-  id: number;
-  start_date: string;
-  end_date: string | null;
 }
 
 const PAGE_SIZE = 10;
