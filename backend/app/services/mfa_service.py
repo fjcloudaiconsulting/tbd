@@ -26,7 +26,7 @@ def _get_fernet() -> Fernet:
         raise MfaConfigError("MFA_ENCRYPTION_KEY is not configured")
     try:
         return Fernet(key.encode())
-    except (ValueError, Exception) as exc:
+    except (ValueError, TypeError) as exc:
         raise MfaConfigError(f"MFA_ENCRYPTION_KEY is malformed: {exc}") from exc
 
 

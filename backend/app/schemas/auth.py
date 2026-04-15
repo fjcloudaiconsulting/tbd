@@ -91,7 +91,7 @@ class MfaVerifyRequest(BaseModel):
 
 class MfaRecoveryRequest(BaseModel):
     mfa_token: str = Field(max_length=2048)
-    code: str = Field(max_length=20)
+    code: str = Field(min_length=1, max_length=20)
 
 
 class MfaEmailCodeRequest(BaseModel):

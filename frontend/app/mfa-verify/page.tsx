@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, setAccessToken } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
@@ -21,8 +21,12 @@ export default function MfaVerifyPage() {
   const [emailToken, setEmailToken] = useState<string | null>(null);
   const [emailSending, setEmailSending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const searchParams = useSearchParams();
 
-  const mfaToken = typeof window !== "undefined" ? sessionStorage.getItem("mfa_token") : null;
+  // Support mfa_token from sessionStorage (password login) or query param (Google SSO redirect)
+  const mfaToken = typeof window !== "undefined"
+    ? (sessionStorage.getItem("mfa_token") || searchParams.get("mfa_token"))
+    : null;
 
   useEffect(() => {
     if (!loading && user) { router.replace("/dashboard"); return; }
@@ -39,8 +43,7 @@ export default function MfaVerifyPage() {
   async function completeLogin(data: TokenResponse) {
     setAccessToken(data.access_token);
     sessionStorage.removeItem("mfa_token");
-    router.push("/dashboard");
-    // Force a full page load so AuthProvider picks up the new token
+    // Full page load so AuthProvider picks up the new token via refresh
     window.location.href = "/dashboard";
   }
 

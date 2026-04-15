@@ -1,3 +1,4 @@
+import hmac as _hmac
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -79,7 +80,6 @@ def create_mfa_email_token(user_id: int, code: str) -> str:
     Uses HMAC-SHA256 keyed with jwt_secret_key so the code hash cannot be
     brute-forced offline even though JWT payloads are readable.
     """
-    import hmac as _hmac
     expire = datetime.now(timezone.utc) + timedelta(minutes=10)
     code_hmac = _hmac.new(
         settings.jwt_secret_key.encode(), code.encode(), "sha256"

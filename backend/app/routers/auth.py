@@ -1,6 +1,7 @@
 import re
 import secrets
-from datetime import datetime, timezone
+import hmac as _hmac
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
@@ -669,8 +670,6 @@ async def mfa_email_verify(
     db: AsyncSession = Depends(get_db),
 ):
     """Verify an email-based MFA code to complete authentication."""
-    import hmac as _hmac
-
     user = await _resolve_mfa_user(body.mfa_token, db)
 
     # Validate the email_token and extract the code HMAC
@@ -824,8 +823,16 @@ async def google_callback(
         await db.commit()
         await db.refresh(user)
 
-    # Issue tokens
+    # Issue tokens (or MFA challenge if enabled)
     await db.refresh(user, ["organization"])
+
+    if user.mfa_enabled:
+        mfa_token = create_mfa_challenge_token(user.id)
+        return Response(
+            status_code=302,
+            headers={"Location": f"{app_settings.app_url}/mfa-verify?mfa_token={mfa_token}"},
+        )
+
     access_token = create_access_token(user.id, user.org_id, user.role.value)
     refresh_token = create_refresh_token(user.id)
 
