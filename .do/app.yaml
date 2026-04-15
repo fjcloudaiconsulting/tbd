@@ -5,7 +5,7 @@ services:
     github:
       repo: flamarion/pfv
       branch: main
-      deploy_on_push: true
+      deploy_on_push: false
     source_dir: backend
     dockerfile_path: backend/Dockerfile
     http_port: 8000
@@ -17,19 +17,18 @@ services:
       period_seconds: 15
       timeout_seconds: 5
       failure_threshold: 3
-    routes:
-      - path: /api
-      - path: /health
-      - path: /ready
     envs:
       - key: DATABASE_URL
-        value: "placeholder-set-via-doctl"
+        value: "placeholder-set-in-do-console"
         type: SECRET
       - key: REDIS_URL
-        value: "placeholder-set-via-doctl"
+        value: "placeholder-set-in-do-console"
         type: SECRET
       - key: JWT_SECRET_KEY
-        value: "placeholder-set-via-doctl"
+        value: "placeholder-set-in-do-console"
+        type: SECRET
+      - key: MFA_ENCRYPTION_KEY
+        value: "placeholder-set-in-do-console"
         type: SECRET
       - key: APP_ENV
         value: "production"
@@ -41,19 +40,19 @@ services:
         value: "placeholder-update-after-deploy"
       - key: COOKIE_SECURE
         value: "true"
+      - key: APP_URL
+        value: "placeholder-update-after-deploy"
 
   - name: frontend
     github:
       repo: flamarion/pfv
       branch: main
-      deploy_on_push: true
+      deploy_on_push: false
     source_dir: frontend
     dockerfile_path: frontend/Dockerfile
     http_port: 3000
     instance_count: 1
     instance_size_slug: basic-xxs
-    routes:
-      - path: /
     envs:
       - key: NEXT_PUBLIC_API_URL
         value: ""
