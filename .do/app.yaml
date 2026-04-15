@@ -1,11 +1,38 @@
 name: pfv
 region: ams
+features:
+  - buildpack-stack=ubuntu-22
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: backend
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /health
+      component:
+        name: backend
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /ready
+      component:
+        name: backend
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /
+      component:
+        name: frontend
 services:
   - name: backend
     github:
       repo: flamarion/pfv
       branch: main
-      deploy_on_push: true
+      deploy_on_push: false
     source_dir: backend
     dockerfile_path: backend/Dockerfile
     http_port: 8000
@@ -17,28 +44,16 @@ services:
       period_seconds: 15
       timeout_seconds: 5
       failure_threshold: 3
-    routes:
-      - path: /api
-      - path: /health
-      - path: /ready
+    # Secrets (DATABASE_URL, REDIS_URL, JWT_SECRET_KEY, MFA_ENCRYPTION_KEY)
+    # are configured in DO console and inherited by preview apps.
+    # Only non-secret env vars are listed here.
     envs:
-      - key: DATABASE_URL
-        value: "placeholder-set-via-doctl"
-        type: SECRET
-      - key: REDIS_URL
-        value: "placeholder-set-via-doctl"
-        type: SECRET
-      - key: JWT_SECRET_KEY
-        value: "placeholder-set-via-doctl"
-        type: SECRET
       - key: APP_ENV
         value: "production"
       - key: APP_NAME
         value: "PFV2"
       - key: LOG_LEVEL
         value: "INFO"
-      - key: BACKEND_CORS_ORIGINS
-        value: "placeholder-update-after-deploy"
       - key: COOKIE_SECURE
         value: "true"
 
@@ -46,14 +61,12 @@ services:
     github:
       repo: flamarion/pfv
       branch: main
-      deploy_on_push: true
+      deploy_on_push: false
     source_dir: frontend
     dockerfile_path: frontend/Dockerfile
     http_port: 3000
     instance_count: 1
     instance_size_slug: basic-xxs
-    routes:
-      - path: /
     envs:
       - key: NEXT_PUBLIC_API_URL
         value: ""

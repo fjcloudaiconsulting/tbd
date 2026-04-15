@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -8,7 +9,7 @@ import { input, label, btnPrimary, card, cardTitle, error as errorCls, success a
 import type { User } from "@/lib/types";
 
 export default function ProfilePage() {
-  const { user, login, refreshMe } = useAuth();
+  const { user, refreshMe } = useAuth();
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -30,13 +31,6 @@ export default function ProfilePage() {
   const [profileErr, setProfileErr] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
 
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [pwdMsg, setPwdMsg] = useState("");
-  const [pwdErr, setPwdErr] = useState("");
-  const [savingPwd, setSavingPwd] = useState(false);
-
   async function handleProfileSubmit(e: FormEvent) {
     e.preventDefault();
     setProfileMsg(""); setProfileErr(""); setSavingProfile(true);
@@ -55,24 +49,6 @@ export default function ProfilePage() {
       setProfileMsg("Profile updated");
     } catch (err) { setProfileErr(extractErrorMessage(err)); }
     finally { setSavingProfile(false); }
-  }
-
-  async function handlePasswordSubmit(e: FormEvent) {
-    e.preventDefault();
-    setPwdMsg(""); setPwdErr("");
-    if (newPassword !== confirmPassword) { setPwdErr("New passwords do not match"); return; }
-    setSavingPwd(true);
-    try {
-      await apiFetch("/api/v1/users/me/password", {
-        method: "POST",
-        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
-      });
-      setPwdMsg("Password changed. Signing in with new credentials...");
-      await login(user!.username, newPassword);
-      setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
-      setPwdMsg("Password changed successfully");
-    } catch (err) { setPwdErr(extractErrorMessage(err)); }
-    finally { setSavingPwd(false); }
   }
 
   const displayName = [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.username || "";
@@ -135,26 +111,11 @@ export default function ProfilePage() {
         </div>
 
         <div className={`${card} p-6`}>
-          <h2 className={`mb-5 ${cardTitle}`}>Change Password</h2>
-          <form onSubmit={handlePasswordSubmit} className="space-y-4">
-            {pwdMsg && <div className={successCls}>{pwdMsg}</div>}
-            {pwdErr && <div className={errorCls}>{pwdErr}</div>}
-            <div>
-              <label htmlFor="pwd-current" className={label}>Current Password</label>
-              <input id="pwd-current" type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={input} autoComplete="current-password" />
-            </div>
-            <div>
-              <label htmlFor="pwd-new" className={label}>New Password</label>
-              <input id="pwd-new" type="password" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={input} autoComplete="new-password" />
-            </div>
-            <div>
-              <label htmlFor="pwd-confirm" className={label}>Confirm New Password</label>
-              <input id="pwd-confirm" type="password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={input} autoComplete="new-password" />
-            </div>
-            <button type="submit" disabled={savingPwd} className={btnPrimary}>
-              {savingPwd ? "Changing..." : "Change Password"}
-            </button>
-          </form>
+          <h2 className={`mb-3 ${cardTitle}`}>Security</h2>
+          <p className="mb-3 text-sm text-text-muted">Manage your password, two-factor authentication, and recovery codes.</p>
+          <Link href="/settings/security" className="text-sm font-medium text-accent hover:text-accent-hover">
+            Manage security settings &rarr;
+          </Link>
         </div>
       </div>
     </AppShell>

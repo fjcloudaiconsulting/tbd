@@ -12,3 +12,6 @@ structlog==25.1.0
 python-dateutil==2.9.0
 httpx==0.28.1
 slowapi==0.1.9
+pyotp==2.9.0
+qrcode[pil]==8.0
+cryptography==44.0.3

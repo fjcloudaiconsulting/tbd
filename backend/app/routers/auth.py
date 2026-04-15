@@ -1,6 +1,7 @@
 import re
 import secrets
-from datetime import datetime, timezone
+import hmac as _hmac
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
@@ -11,11 +12,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
+from app.models.settings import OrgSetting
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import Organization, Role, User
 from app.schemas.auth import (
     ForgotPasswordRequest,
     LoginRequest,
+    MfaChallengeResponse,
+    MfaDisableRequest,
+    MfaEmailCodeRequest,
+    MfaEmailVerifyRequest,
+    MfaEnableRequest,
+    MfaEnableResponse,
+    MfaRecoveryRequest,
+    MfaRegenerateRequest,
+    MfaSetupResponse,
+    MfaVerifyRequest,
     RegisterRequest,
     ResetPasswordRequest,
     TokenResponse,
@@ -27,6 +39,8 @@ from app.config import settings as app_settings
 from app.security import (
     create_access_token,
     create_email_verification_token,
+    create_mfa_challenge_token,
+    create_mfa_email_token,
     create_password_reset_token,
     create_refresh_token,
     decode_token,
@@ -34,7 +48,19 @@ from app.security import (
     verify_password,
 )
 from app.rate_limit import limiter
-from app.services.email_service import send_password_reset_email, send_verification_email
+from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
+from app.services.mfa_service import (
+    MfaConfigError,
+    decrypt_secret,
+    encrypt_secret,
+    generate_qr_base64,
+    generate_recovery_codes,
+    generate_totp_secret,
+    get_totp_uri,
+    hash_recovery_code,
+    verify_recovery_code,
+    verify_totp,
+)
 
 GOOGLE_OAUTH_TIMEOUT = httpx.Timeout(10.0)
 
@@ -57,6 +83,7 @@ def _user_response(user: User, org: Organization) -> UserResponse:
         billing_cycle_day=org.billing_cycle_day,
         is_superadmin=user.is_superadmin,
         is_active=user.is_active,
+        mfa_enabled=user.mfa_enabled,
     )
 
 
@@ -198,7 +225,7 @@ async def register(
     return _user_response(user, org)
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login")
 @limiter.limit("10/minute")
 async def login(
     request: Request, body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
@@ -222,6 +249,11 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated",
         )
+
+    # If MFA is enabled, return a challenge token instead of access tokens
+    if user.mfa_enabled:
+        mfa_token = create_mfa_challenge_token(user.id)
+        return MfaChallengeResponse(mfa_token=mfa_token)
 
     access_token = create_access_token(user.id, user.org_id, user.role.value)
     refresh_token = create_refresh_token(user.id)
@@ -268,8 +300,41 @@ async def refresh(
             detail="User not found or inactive",
         )
 
+    # Enforce absolute session lifetime
+    session_created_at = payload.get("session_created_at")
+    if session_created_at:
+        session_start = datetime.fromtimestamp(session_created_at, tz=timezone.utc)
+
+        # Check org-level override first, fall back to system default
+        max_days = app_settings.session_lifetime_days
+        org_setting = await db.scalar(
+            select(OrgSetting.value).where(
+                OrgSetting.org_id == user.org_id,
+                OrgSetting.key == "session_lifetime_days",
+            )
+        )
+        if org_setting:
+            try:
+                max_days = int(org_setting)
+            except ValueError:
+                pass
+
+        if datetime.now(timezone.utc) - session_start > timedelta(days=max_days):
+            response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session expired — please sign in again",
+            )
+
+    # Carry forward session_created_at from the original login
+    original_session = (
+        datetime.fromtimestamp(session_created_at, tz=timezone.utc)
+        if session_created_at
+        else None
+    )
+
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    new_refresh_token = create_refresh_token(user.id)
+    new_refresh_token = create_refresh_token(user.id, session_created_at=original_session)
 
     response.set_cookie(
         key="refresh_token",
@@ -396,6 +461,234 @@ async def resend_verification(
     token = create_email_verification_token(current_user.id)
     await send_verification_email(current_user.email, token)
     return {"detail": "Verification email sent"}
+
+
+# ── MFA ─────────────────────────────────────────────────────────────────────
+
+
+async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> User:
+    """Validate an MFA challenge token and return the associated user."""
+    payload = decode_token(mfa_token)
+    if payload is None or payload.get("type") != "mfa_challenge":
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+    user_id = int(payload["sub"])
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+    # Reject if MFA was disabled after the challenge token was issued
+    if not user.mfa_enabled:
+        raise HTTPException(status_code=401, detail="MFA is no longer enabled for this account")
+    return user
+
+
+def _issue_tokens(user: User, response: Response) -> TokenResponse:
+    """Issue access + refresh tokens and set the refresh cookie."""
+    access_token = create_access_token(user.id, user.org_id, user.role.value)
+    refresh_token = create_refresh_token(user.id)
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=app_settings.cookie_secure,
+        samesite="lax",
+        max_age=7 * 24 * 60 * 60,
+        path="/api/v1/auth/refresh",
+    )
+    return TokenResponse(access_token=access_token)
+
+
+@router.post("/mfa/setup", response_model=MfaSetupResponse)
+async def mfa_setup(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start MFA enrollment — generate TOTP secret and QR code."""
+    if current_user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is already enabled")
+
+    secret = generate_totp_secret()
+    uri = get_totp_uri(secret, current_user.email)
+    qr_code = generate_qr_base64(uri)
+
+    # Store encrypted secret (not yet enabled)
+    try:
+        current_user.totp_secret = encrypt_secret(secret)
+    except MfaConfigError:
+        raise HTTPException(status_code=503, detail="MFA is not available — encryption not configured")
+    await db.commit()
+
+    return MfaSetupResponse(qr_code=qr_code, secret=secret, uri=uri)
+
+
+@router.post("/mfa/enable", response_model=MfaEnableResponse)
+async def mfa_enable(
+    body: MfaEnableRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm MFA setup with a TOTP code, activate MFA, return recovery codes."""
+    if current_user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is already enabled")
+    if not current_user.totp_secret:
+        raise HTTPException(status_code=400, detail="Call /mfa/setup first")
+
+    try:
+        secret = decrypt_secret(current_user.totp_secret)
+    except (ValueError, MfaConfigError):
+        raise HTTPException(status_code=503, detail="MFA configuration error — contact support")
+    if not verify_totp(secret, body.code):
+        raise HTTPException(status_code=400, detail="Invalid TOTP code")
+
+    codes = generate_recovery_codes()
+    current_user.mfa_enabled = True
+    current_user.recovery_codes = ",".join(hash_recovery_code(c) for c in codes)
+    await db.commit()
+
+    return MfaEnableResponse(recovery_codes=codes)
+
+
+@router.post("/mfa/disable")
+async def mfa_disable(
+    body: MfaDisableRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Disable MFA. Requires password confirmation."""
+    if not current_user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    if not verify_password(body.password, current_user.password_hash):
+        raise HTTPException(status_code=403, detail="Invalid password")
+
+    current_user.mfa_enabled = False
+    current_user.totp_secret = None
+    current_user.recovery_codes = None
+    await db.commit()
+
+    return {"detail": "MFA disabled"}
+
+
+@router.post("/mfa/recovery-codes", response_model=MfaEnableResponse)
+async def mfa_regenerate_codes(
+    body: MfaRegenerateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Regenerate recovery codes. Requires password confirmation."""
+    if not current_user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    if not verify_password(body.password, current_user.password_hash):
+        raise HTTPException(status_code=403, detail="Invalid password")
+
+    codes = generate_recovery_codes()
+    current_user.recovery_codes = ",".join(hash_recovery_code(c) for c in codes)
+    await db.commit()
+
+    return MfaEnableResponse(recovery_codes=codes)
+
+
+@router.post("/mfa/verify", response_model=TokenResponse)
+@limiter.limit("10/minute")
+async def mfa_verify(
+    request: Request,
+    body: MfaVerifyRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify TOTP code during login to complete authentication."""
+    user = await _resolve_mfa_user(body.mfa_token, db)
+
+    if not user.totp_secret:
+        raise HTTPException(status_code=400, detail="MFA not configured")
+
+    try:
+        secret = decrypt_secret(user.totp_secret)
+    except (ValueError, MfaConfigError):
+        raise HTTPException(status_code=503, detail="MFA configuration error — contact support")
+    if not verify_totp(secret, body.code):
+        raise HTTPException(status_code=401, detail="Invalid TOTP code")
+
+    return _issue_tokens(user, response)
+
+
+@router.post("/mfa/recovery", response_model=TokenResponse)
+@limiter.limit("10/minute")
+async def mfa_recovery(
+    request: Request,
+    body: MfaRecoveryRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Use a recovery code during login to complete authentication."""
+    user = await _resolve_mfa_user(body.mfa_token, db)
+
+    if not user.recovery_codes:
+        raise HTTPException(status_code=400, detail="No recovery codes available")
+
+    hashed_codes = user.recovery_codes.split(",")
+    idx = verify_recovery_code(body.code, hashed_codes)
+    if idx is None:
+        raise HTTPException(status_code=401, detail="Invalid recovery code")
+
+    # Remove the used code
+    hashed_codes.pop(idx)
+    user.recovery_codes = ",".join(hashed_codes) if hashed_codes else None
+    await db.commit()
+
+    return _issue_tokens(user, response)
+
+
+@router.post("/mfa/email-code")
+@limiter.limit("3/minute")
+async def mfa_email_code(
+    request: Request,
+    body: MfaEmailCodeRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a one-time code to the user's email as MFA fallback."""
+    user = await _resolve_mfa_user(body.mfa_token, db)
+
+    # Generate 6-digit numeric code
+    code = f"{secrets.randbelow(1000000):06d}"
+
+    # Store as a JWT so we don't need DB state
+    email_token = create_mfa_email_token(user.id, code)
+
+    background_tasks.add_task(send_mfa_email_code, user.email, code)
+
+    # Return the email token — frontend stores it to verify later
+    return {"detail": "Code sent", "email_token": email_token}
+
+
+@router.post("/mfa/email-verify", response_model=TokenResponse)
+@limiter.limit("10/minute")
+async def mfa_email_verify(
+    request: Request,
+    body: MfaEmailVerifyRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify an email-based MFA code to complete authentication."""
+    user = await _resolve_mfa_user(body.mfa_token, db)
+
+    # Validate the email_token and extract the code HMAC
+    email_payload = decode_token(body.email_token)
+    if email_payload is None or email_payload.get("type") != "mfa_email":
+        raise HTTPException(status_code=401, detail="Invalid or expired email code")
+
+    # Ensure the email token belongs to the same user
+    if int(email_payload["sub"]) != user.id:
+        raise HTTPException(status_code=401, detail="Invalid or expired email code")
+
+    # Verify the code matches using HMAC (keyed hash, not brute-forceable)
+    expected_hmac = _hmac.new(
+        app_settings.jwt_secret_key.encode(), body.code.encode(), "sha256"
+    ).hexdigest()
+    if not _hmac.compare_digest(expected_hmac, email_payload.get("code_hmac", "")):
+        raise HTTPException(status_code=401, detail="Invalid code")
+
+    return _issue_tokens(user, response)
 
 
 # ── Google SSO ───────────────────────────────────────────────────────────────
@@ -530,8 +823,16 @@ async def google_callback(
         await db.commit()
         await db.refresh(user)
 
-    # Issue tokens
+    # Issue tokens (or MFA challenge if enabled)
     await db.refresh(user, ["organization"])
+
+    if user.mfa_enabled:
+        mfa_token = create_mfa_challenge_token(user.id)
+        return Response(
+            status_code=302,
+            headers={"Location": f"{app_settings.app_url}/mfa-verify?mfa_token={mfa_token}"},
+        )
+
     access_token = create_access_token(user.id, user.org_id, user.role.value)
     refresh_token = create_refresh_token(user.id)
 

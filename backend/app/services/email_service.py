@@ -68,6 +68,19 @@ async def send_password_reset_email(to: str, token: str) -> bool:
     return await send_email(to, subject, body_html, body_text)
 
 
+async def send_mfa_email_code(to: str, code: str) -> bool:
+    """Send a one-time MFA verification code via email."""
+    subject = "PFV2 — Your Login Verification Code"
+    body_html = f"""
+    <h2>Your Verification Code</h2>
+    <p>Use this code to complete your sign-in:</p>
+    <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#c8a951;font-family:monospace;">{code}</p>
+    <p>This code expires in 10 minutes. If you didn't try to sign in, you can ignore this email.</p>
+    """
+    body_text = f"Your PFV2 verification code: {code}\n\nThis code expires in 10 minutes."
+    return await send_email(to, subject, body_html, body_text)
+
+
 async def send_verification_email(to: str, token: str) -> bool:
     """Send an email verification link."""
     verify_url = f"{settings.app_url}/verify-email?token={token}"

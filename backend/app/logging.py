@@ -17,26 +17,34 @@ _ACCESS_RE = re.compile(
 _SILENT_PATHS = {"/health", "/ready"}
 
 
-def _parse_uvicorn_access(logger: object, method_name: str, event_dict: dict) -> dict:
-    """Parse uvicorn access log into structured fields.
+class _DropHealthCheck(logging.Filter):
+    """Logging filter that silently drops health check access log records.
 
-    Suppresses health check requests to keep logs readable in production
-    where DO pings /health every 15 seconds.
+    Applied directly to the uvicorn.access logger so the record never
+    reaches the formatter — avoids structlog.DropEvent issues in the
+    ProcessorFormatter chain.
     """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        match = _ACCESS_RE.match(msg)
+        if match and match.group("path") in _SILENT_PATHS:
+            return False
+        return True
+
+
+def _parse_uvicorn_access(logger: object, method_name: str, event_dict: dict) -> dict:
+    """Parse uvicorn access log into structured fields."""
     if event_dict.get("logger") != "uvicorn.access":
         return event_dict
 
     msg = event_dict.get("event", "")
     match = _ACCESS_RE.match(str(msg))
     if match:
-        path = match.group("path")
-        if path in _SILENT_PATHS:
-            raise structlog.DropEvent
-
         event_dict["event"] = "request"
         event_dict["remote_addr"] = match.group("remote")
         event_dict["method"] = match.group("method")
-        event_dict["path"] = path
+        event_dict["path"] = match.group("path")
         event_dict["status"] = int(match.group("status"))
 
     return event_dict
@@ -91,3 +99,6 @@ def setup_logging() -> None:
         uv_logger.handlers.clear()
         uv_logger.addHandler(handler)
         uv_logger.propagate = False
+
+    # Drop health check records before they reach the formatter chain
+    logging.getLogger("uvicorn.access").addFilter(_DropHealthCheck())

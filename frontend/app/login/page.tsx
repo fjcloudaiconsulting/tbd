@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useAuth } from "@/components/auth/AuthProvider";
+import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { apiFetch } from "@/lib/api";
 import { input, label, btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
@@ -29,6 +29,11 @@ export default function LoginPage() {
       await login(loginId, password);
       router.push("/dashboard");
     } catch (err) {
+      if (err instanceof MfaRequiredError) {
+        sessionStorage.setItem("mfa_token", err.mfaToken);
+        router.push("/mfa-verify");
+        return;
+      }
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setSubmitting(false);
