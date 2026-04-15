@@ -32,10 +32,11 @@ async def send_email(
         return True
 
     # Production: send via Mailgun HTTP API
+    api_host = "api.eu.mailgun.net" if settings.mailgun_region == "eu" else "api.mailgun.net"
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             response = await client.post(
-                f"https://api.mailgun.net/v3/{settings.mailgun_domain}/messages",
+                f"https://{api_host}/v3/{settings.mailgun_domain}/messages",
                 auth=("api", settings.mailgun_api_key),
                 data={
                     "from": settings.email_from,
