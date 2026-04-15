@@ -14,3 +14,4 @@ jobs:
           from_pr_preview: "true"
           ignore_not_found: "true"
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          app_name: pfv
