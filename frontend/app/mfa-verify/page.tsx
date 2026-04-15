@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiFetch, setAccessToken } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -11,6 +11,18 @@ import type { TokenResponse } from "@/lib/types";
 type Mode = "totp" | "recovery" | "email";
 
 export default function MfaVerifyPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
+      </div>
+    }>
+      <MfaVerifyContent />
+    </Suspense>
+  );
+}
+
+function MfaVerifyContent() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const [mode, setMode] = useState<Mode>("totp");
