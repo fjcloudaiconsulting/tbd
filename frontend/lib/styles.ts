@@ -13,6 +13,9 @@ export const btnSecondary =
 export const btnDanger =
   "text-xs text-text-muted hover:text-danger";
 
+export const btnWarning =
+  "rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50";
+
 export const btnLink =
   "text-xs text-text-muted hover:text-accent";
 
