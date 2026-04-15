@@ -542,7 +542,7 @@ export default function ForecastPlansPage() {
 
           {/* Planned vs Actual chart */}
           {chartData.length > 0 && (
-            <div className={`${card} p-5`}>
+            <div className={`${card} p-5 overflow-hidden`}>
               <h2 className={`${cardTitle} mb-4`}>
                 Planned vs Actual (Expenses)
               </h2>
@@ -551,7 +551,7 @@ export default function ForecastPlansPage() {
                   <BarChart
                     data={chartData}
                     layout="vertical"
-                    margin={{ left: 0, right: 0, top: 0, bottom: 0 }}
+                    margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
                   >
                     <XAxis type="number" hide />
                     <YAxis
