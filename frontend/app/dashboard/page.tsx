@@ -558,7 +558,7 @@ export default function DashboardPage() {
                     </ResponsiveContainer>
                   </div>
                   <div className="flex-1 space-y-1.5">
-                    {donutData.map((d, i) => (
+                    {donutData.slice(0, 10).map((d, i) => (
                       <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
                         className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-accent-dim" : ""}`}>
                         <div className="flex items-center gap-2">
@@ -568,6 +568,9 @@ export default function DashboardPage() {
                         <span className="text-xs tabular-nums text-text-muted">{formatAmount(d.value)}</span>
                       </button>
                     ))}
+                    {donutData.length > 10 && (
+                      <p className="px-1.5 text-[10px] text-text-muted">+{donutData.length - 10} more — click chart to filter</p>
+                    )}
                   </div>
                 </div>
               ) : (
