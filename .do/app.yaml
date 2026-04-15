@@ -1,5 +1,32 @@
 name: pfv
 region: ams
+features:
+  - buildpack-stack=ubuntu-22
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: backend
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /health
+      component:
+        name: backend
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /ready
+      component:
+        name: backend
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /
+      component:
+        name: frontend
 services:
   - name: backend
     github:
