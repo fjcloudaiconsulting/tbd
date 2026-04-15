@@ -560,7 +560,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Budget progress */}
-            <div className={card}>
+            <div className={`${card} overflow-hidden`}>
               <div className={`flex items-center justify-between ${cardHeader}`}>
                 <h2 className={cardTitle}>Budget Progress</h2>
                 <Link href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</Link>
@@ -574,11 +574,14 @@ export default function DashboardPage() {
                       spent: Number(b.spent),
                       remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
                       pct: b.percent_used,
-                    }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
+                    }))} layout="vertical" margin={{ left: 0, right: 20, top: 0, bottom: 0 }}>
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                       <Tooltip
-                        formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? <span style={{ color: "#ef4444" }}>Spent</span> : <span style={{ color: "#4ade80" }}>Remaining</span>]}
+                        formatter={(v, name) => [
+                          formatAmount(Number(v)),
+                          name === "spent" ? <span style={{ color: "#f87171" }}>Spent</span> : <span style={{ color: "#4ade80" }}>Remaining</span>,
+                        ]}
                         contentStyle={{ fontSize: "11px" }}
                       />
                       <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
@@ -590,8 +593,10 @@ export default function DashboardPage() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-                <div className="flex gap-3 px-4 pb-3 text-[10px] text-text-muted">
+                <div className="flex flex-wrap gap-3 px-4 pb-3 text-[10px] text-text-muted">
                   <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Spent</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f59e0b" }} /> &gt;80%</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over budget</span>
                   <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#e8ebf0" }} /> Remaining</span>
                 </div>
                 </>
@@ -602,8 +607,8 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {/* Forecast comparison — executed vs forecast per category */}
-            <div className={`${card} p-5`}>
+            {/* Forecast comparison — planned vs actual per category */}
+            <div className={`${card} overflow-hidden p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Forecast by Category</h2>
               {forecast && forecast.categories.length > 0 ? (
                 <div style={{ height: Math.max(Math.min(forecast.categories.length, 8) * 32, 100) }}>
@@ -611,22 +616,27 @@ export default function DashboardPage() {
                     <BarChart
                       data={forecast.categories.slice(0, 8).map((c) => ({
                         name: c.category_name.length > 12 ? c.category_name.slice(0, 12) + "…" : c.category_name,
-                        executed: Number(c.executed),
-                        pending: Number(c.pending),
-                        recurring: Number(c.recurring),
+                        planned: Number(c.forecast),
+                        actual: Number(c.executed),
                       }))}
                       layout="vertical"
-                      margin={{ left: 0, right: 0, top: 0, bottom: 0 }}
+                      margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
                     >
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
                       <Tooltip
-                        formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? <span style={{ color: "#4ade80" }}>Executed</span> : name === "pending" ? <span style={{ color: "#D4A64A" }}>Pending</span> : <span style={{ color: "#5FA8D3" }}>Recurring</span>]}
+                        formatter={(v, name) => [
+                          formatAmount(Number(v)),
+                          name === "planned" ? <span style={{ color: "#D4A64A" }}>Planned</span> : <span style={{ color: "#4ade80" }}>Actual</span>,
+                        ]}
                         contentStyle={{ fontSize: "11px" }}
                       />
-                      <Bar dataKey="executed" stackId="a" fill="#4ade80" radius={[3, 0, 0, 3]} animationDuration={600} />
-                      <Bar dataKey="pending" stackId="a" fill="#D4A64A" animationDuration={600} />
-                      <Bar dataKey="recurring" stackId="a" fill="#5FA8D3" radius={[0, 3, 3, 0]} animationDuration={600} />
+                      <Bar dataKey="planned" fill="#D4A64A" radius={[4, 4, 4, 4]} animationDuration={600} />
+                      <Bar dataKey="actual" fill="#4ade80" radius={[4, 4, 4, 4]} animationDuration={600}>
+                        {forecast.categories.slice(0, 8).map((c, i) => (
+                          <Cell key={i} fill={Number(c.executed) > Number(c.forecast) ? "#f87171" : "#4ade80"} />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -634,9 +644,9 @@ export default function DashboardPage() {
                 <p className="text-sm text-text-muted py-6 text-center">No forecast data</p>
               )}
               <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-success" /> Executed</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Pending</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#5FA8D3" }} /> Recurring</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Planned</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#4ade80" }} /> Under plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over plan</span>
               </div>
             </div>
           </div>
