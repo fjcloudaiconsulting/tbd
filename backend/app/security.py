@@ -28,13 +28,22 @@ def create_access_token(subject: int, org_id: int, role: str) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(subject: int) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
-        days=settings.jwt_refresh_token_expire_days
-    )
+def create_refresh_token(
+    subject: int,
+    session_created_at: datetime | None = None,
+) -> str:
+    """Create a refresh token.
+
+    session_created_at tracks when the original login happened. It is set
+    on first login and carried forward on every refresh so the backend can
+    enforce an absolute session lifetime regardless of activity.
+    """
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(days=settings.jwt_refresh_token_expire_days)
     payload = {
         "sub": str(subject),
         "type": "refresh",
+        "session_created_at": (session_created_at or now).timestamp(),
         "exp": expire,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)

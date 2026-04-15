@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
+from app.models.settings import OrgSetting
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import Organization, Role, User
 from app.schemas.auth import (
@@ -298,8 +299,41 @@ async def refresh(
             detail="User not found or inactive",
         )
 
+    # Enforce absolute session lifetime
+    session_created_at = payload.get("session_created_at")
+    if session_created_at:
+        session_start = datetime.fromtimestamp(session_created_at, tz=timezone.utc)
+
+        # Check org-level override first, fall back to system default
+        max_days = app_settings.session_lifetime_days
+        org_setting = await db.scalar(
+            select(OrgSetting.value).where(
+                OrgSetting.org_id == user.org_id,
+                OrgSetting.key == "session_lifetime_days",
+            )
+        )
+        if org_setting:
+            try:
+                max_days = int(org_setting)
+            except ValueError:
+                pass
+
+        if datetime.now(timezone.utc) - session_start > timedelta(days=max_days):
+            response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session expired — please sign in again",
+            )
+
+    # Carry forward session_created_at from the original login
+    original_session = (
+        datetime.fromtimestamp(session_created_at, tz=timezone.utc)
+        if session_created_at
+        else None
+    )
+
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    new_refresh_token = create_refresh_token(user.id)
+    new_refresh_token = create_refresh_token(user.id, session_created_at=original_session)
 
     response.set_cookie(
         key="refresh_token",

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 7
     jwt_algorithm: str = "HS256"
+    session_lifetime_days: int = 30  # absolute max session duration
 
     # Cookies — True in production (HTTPS), False in dev (HTTP)
     cookie_secure: bool = True

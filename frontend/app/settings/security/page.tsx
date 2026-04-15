@@ -1,9 +1,10 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { isAdmin } from "@/lib/auth";
 import {
   input,
   label,
@@ -71,6 +72,40 @@ export default function SecurityPage() {
   const [regenerating, setRegenerating] = useState(false);
   const [showRegen, setShowRegen] = useState(false);
   const [regenCodes, setRegenCodes] = useState<string[]>([]);
+
+  // ── Session Lifetime ──────────────────────────────────────────────────
+  const [sessionDays, setSessionDays] = useState("30");
+  const [sessionMsg, setSessionMsg] = useState("");
+  const [sessionErr, setSessionErr] = useState("");
+  const [savingSession, setSavingSession] = useState(false);
+  const admin = user ? isAdmin(user) : false;
+
+  useEffect(() => {
+    if (!admin) return;
+    apiFetch<{ key: string; value: string }[]>("/api/v1/settings")
+      .then((settings) => {
+        const s = settings.find((s) => s.key === "session_lifetime_days");
+        if (s) setSessionDays(s.value);
+      })
+      .catch(() => {});
+  }, [admin]);
+
+  async function handleSessionSubmit(e: FormEvent) {
+    e.preventDefault();
+    setSessionMsg(""); setSessionErr(""); setSavingSession(true);
+    const days = parseInt(sessionDays, 10);
+    if (isNaN(days) || days < 1 || days > 365) {
+      setSessionErr("Must be between 1 and 365 days"); setSavingSession(false); return;
+    }
+    try {
+      await apiFetch("/api/v1/settings", {
+        method: "PUT",
+        body: JSON.stringify({ key: "session_lifetime_days", value: String(days) }),
+      });
+      setSessionMsg("Session lifetime updated");
+    } catch (err) { setSessionErr(extractErrorMessage(err)); }
+    finally { setSavingSession(false); }
+  }
 
   async function handleSetup() {
     setMfaErr(""); setMfaLoading(true);
@@ -383,6 +418,36 @@ export default function SecurityPage() {
             <p className="text-sm text-text-muted">
               If you can&apos;t access your authenticator app or recovery codes, a verification code can be sent to <span className="font-medium text-text-primary">{user?.email}</span>.
             </p>
+          </div>
+        )}
+
+        {/* ── Session Lifetime (admin only) ────────────────────────────── */}
+        {admin && (
+          <div className={`${card} p-6`}>
+            <h2 className={`mb-5 ${cardTitle}`}>Session Lifetime</h2>
+            <p className="mb-4 text-sm text-text-muted">
+              Maximum number of days a user can stay signed in before being required to re-authenticate. Applies to all users in your organization.
+            </p>
+            <form onSubmit={handleSessionSubmit} className="space-y-4">
+              {sessionMsg && <div className={successCls}>{sessionMsg}</div>}
+              {sessionErr && <div className={errorCls}>{sessionErr}</div>}
+              <div>
+                <label htmlFor="session-days" className={label}>Maximum Session Duration (days)</label>
+                <input
+                  id="session-days"
+                  type="number"
+                  min={1}
+                  max={365}
+                  required
+                  value={sessionDays}
+                  onChange={(e) => setSessionDays(e.target.value)}
+                  className={`${input} max-w-[200px]`}
+                />
+              </div>
+              <button type="submit" disabled={savingSession} className={btnPrimary}>
+                {savingSession ? "Saving..." : "Save"}
+              </button>
+            </form>
           </div>
         )}
       </div>
