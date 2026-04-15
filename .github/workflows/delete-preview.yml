@@ -7,11 +7,23 @@ on:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+    env:
+      APP_NAME: pfv-preview-pr-${{ github.event.pull_request.number }}
     steps:
-      - name: Delete preview app
-        uses: digitalocean/app_action/delete@v2
-        with:
-          from_pr_preview: "true"
-          ignore_not_found: "true"
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-          app_name: pfv
+      - name: Find and delete preview app
+        run: |
+          APP_ID=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+            "https://api.digitalocean.com/v2/apps" \
+            | jq -r ".apps[]? | select(.spec.name == \"$APP_NAME\") | .id // empty")
+
+          if [ -z "$APP_ID" ]; then
+            echo "No preview app found for $APP_NAME — nothing to delete"
+            exit 0
+          fi
+
+          echo "Deleting preview app $APP_NAME ($APP_ID)..."
+          curl -s -X DELETE \
+            -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+            "https://api.digitalocean.com/v2/apps/$APP_ID"
+          echo "Deleted."

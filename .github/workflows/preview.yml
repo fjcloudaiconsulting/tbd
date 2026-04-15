@@ -12,116 +12,182 @@ permissions:
 jobs:
   preview:
     runs-on: ubuntu-latest
+    env:
+      APP_NAME: pfv-preview-pr-${{ github.event.pull_request.number }}
+      PROJECT_ID: 5c404689-358b-42c5-a8e2-f48a304d8298
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create preview app spec
+      - name: Check if preview app exists
+        id: check
         run: |
-          cat > /tmp/preview-spec.yaml << 'SPEC'
-          name: pfv
-          region: ams
-          features:
-            - buildpack-stack=ubuntu-22
-          ingress:
-            rules:
-              - match:
-                  path:
-                    prefix: /api
-                component:
-                  name: backend
-                  preserve_path_prefix: true
-              - match:
-                  path:
-                    prefix: /health
-                component:
-                  name: backend
-                  preserve_path_prefix: true
-              - match:
-                  path:
-                    prefix: /ready
-                component:
-                  name: backend
-                  preserve_path_prefix: true
-              - match:
-                  path:
-                    prefix: /
-                component:
-                  name: frontend
-          services:
-            - name: backend
-              github:
-                repo: flamarion/pfv
-                branch: main
-                deploy_on_push: false
-              source_dir: backend
-              dockerfile_path: backend/Dockerfile
-              http_port: 8000
-              instance_count: 1
-              instance_size_slug: basic-xxs
-              health_check:
-                http_path: /health
-                initial_delay_seconds: 30
-                period_seconds: 15
-                timeout_seconds: 5
-                failure_threshold: 3
-              envs:
-                - key: DATABASE_URL
-                  value: "${{ secrets.PREVIEW_DATABASE_URL }}"
-                  type: SECRET
-                - key: REDIS_URL
-                  value: ""
-                - key: JWT_SECRET_KEY
-                  value: "${{ secrets.PREVIEW_JWT_SECRET_KEY }}"
-                  type: SECRET
-                - key: MFA_ENCRYPTION_KEY
-                  value: "${{ secrets.PREVIEW_MFA_ENCRYPTION_KEY }}"
-                  type: SECRET
-                - key: APP_ENV
-                  value: "production"
-                - key: APP_NAME
-                  value: "PFV2-Preview"
-                - key: LOG_LEVEL
-                  value: "INFO"
-                - key: COOKIE_SECURE
-                  value: "true"
-                - key: BACKEND_CORS_ORIGINS
-                  value: "*"
-                - key: APP_URL
-                  value: "https://preview.example.com"
-            - name: frontend
-              github:
-                repo: flamarion/pfv
-                branch: main
-                deploy_on_push: false
-              source_dir: frontend
-              dockerfile_path: frontend/Dockerfile
-              http_port: 3000
-              instance_count: 1
-              instance_size_slug: basic-xxs
-              envs:
-                - key: NEXT_PUBLIC_API_URL
-                  value: ""
-                - key: HOSTNAME
-                  value: "0.0.0.0"
-          SPEC
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+            "https://api.digitalocean.com/v2/apps?with_projects=true" \
+            | head -1)
 
-      - name: Deploy preview app
+          APP_ID=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+            "https://api.digitalocean.com/v2/apps" \
+            | jq -r ".apps[]? | select(.spec.name == \"$APP_NAME\") | .id // empty")
+
+          if [ -n "$APP_ID" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update preview app
         id: deploy
-        uses: digitalocean/app_action/deploy@v2
-        with:
-          deploy_pr_preview: "true"
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-          app_name: pfv
-          app_spec_location: /tmp/preview-spec.yaml
-          project_id: 5c404689-358b-42c5-a8e2-f48a304d8298
+        run: |
+          SPEC=$(cat <<SPECEOF
+          {
+            "spec": {
+              "name": "$APP_NAME",
+              "region": "ams",
+              "features": ["buildpack-stack=ubuntu-22"],
+              "ingress": {
+                "rules": [
+                  {"match": {"path": {"prefix": "/api"}}, "component": {"name": "backend", "preserve_path_prefix": true}},
+                  {"match": {"path": {"prefix": "/health"}}, "component": {"name": "backend", "preserve_path_prefix": true}},
+                  {"match": {"path": {"prefix": "/ready"}}, "component": {"name": "backend", "preserve_path_prefix": true}},
+                  {"match": {"path": {"prefix": "/"}}, "component": {"name": "frontend"}}
+                ]
+              },
+              "services": [
+                {
+                  "name": "backend",
+                  "github": {
+                    "repo": "flamarion/pfv",
+                    "branch": "${{ github.head_ref }}",
+                    "deploy_on_push": false
+                  },
+                  "source_dir": "backend",
+                  "dockerfile_path": "backend/Dockerfile",
+                  "http_port": 8000,
+                  "instance_count": 1,
+                  "instance_size_slug": "basic-xxs",
+                  "health_check": {
+                    "http_path": "/health",
+                    "initial_delay_seconds": 30,
+                    "period_seconds": 15,
+                    "timeout_seconds": 5,
+                    "failure_threshold": 3
+                  },
+                  "envs": [
+                    {"key": "DATABASE_URL", "value": "${{ secrets.PREVIEW_DATABASE_URL }}", "type": "SECRET", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "REDIS_URL", "value": "", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "JWT_SECRET_KEY", "value": "${{ secrets.PREVIEW_JWT_SECRET_KEY }}", "type": "SECRET", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "MFA_ENCRYPTION_KEY", "value": "${{ secrets.PREVIEW_MFA_ENCRYPTION_KEY }}", "type": "SECRET", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "APP_ENV", "value": "production", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "APP_NAME", "value": "PFV2-Preview", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "LOG_LEVEL", "value": "INFO", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "COOKIE_SECURE", "value": "true", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "BACKEND_CORS_ORIGINS", "value": "*", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "APP_URL", "value": "https://preview.example.com", "scope": "RUN_AND_BUILD_TIME"}
+                  ]
+                },
+                {
+                  "name": "frontend",
+                  "github": {
+                    "repo": "flamarion/pfv",
+                    "branch": "${{ github.head_ref }}",
+                    "deploy_on_push": false
+                  },
+                  "source_dir": "frontend",
+                  "dockerfile_path": "frontend/Dockerfile",
+                  "http_port": 3000,
+                  "instance_count": 1,
+                  "instance_size_slug": "basic-xxs",
+                  "envs": [
+                    {"key": "NEXT_PUBLIC_API_URL", "value": "", "scope": "RUN_AND_BUILD_TIME"},
+                    {"key": "HOSTNAME", "value": "0.0.0.0", "scope": "RUN_AND_BUILD_TIME"}
+                  ]
+                }
+              ]
+            },
+            "project_id": "$PROJECT_ID"
+          }
+          SPECEOF
+          )
+
+          if [ "${{ steps.check.outputs.exists }}" = "true" ]; then
+            # Update existing preview app
+            APP_ID="${{ steps.check.outputs.app_id }}"
+            RESPONSE=$(curl -s -X PUT \
+              -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "$SPEC" \
+              "https://api.digitalocean.com/v2/apps/$APP_ID")
+          else
+            # Create new preview app
+            RESPONSE=$(curl -s -X POST \
+              -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "$SPEC" \
+              "https://api.digitalocean.com/v2/apps")
+          fi
+
+          APP_ID=$(echo "$RESPONSE" | jq -r '.app.id // empty')
+          LIVE_URL=$(echo "$RESPONSE" | jq -r '.app.live_url // .app.default_ingress // empty')
+
+          if [ -z "$APP_ID" ]; then
+            echo "Error creating/updating app:"
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
+
+          echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
+          echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
+          echo "Preview app: $APP_ID at $LIVE_URL"
+
+      - name: Wait for deployment
+        run: |
+          APP_ID="${{ steps.deploy.outputs.app_id }}"
+          echo "Waiting for deployment to complete..."
+          for i in $(seq 1 40); do
+            PHASE=$(curl -s \
+              -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+              "https://api.digitalocean.com/v2/apps/$APP_ID" \
+              | jq -r '.app.last_deployment_active_at // .app.in_progress_deployment.phase // "UNKNOWN"')
+
+            IN_PROGRESS=$(curl -s \
+              -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+              "https://api.digitalocean.com/v2/apps/$APP_ID" \
+              | jq -r '.app.in_progress_deployment.phase // "NONE"')
+
+            echo "  Deployment phase: $IN_PROGRESS"
+
+            if [ "$IN_PROGRESS" = "NONE" ] || [ "$IN_PROGRESS" = "null" ]; then
+              echo "Deployment complete!"
+              break
+            fi
+
+            if [ "$IN_PROGRESS" = "ERROR" ]; then
+              echo "Deployment failed!"
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+      - name: Get live URL
+        id: url
+        run: |
+          APP_ID="${{ steps.deploy.outputs.app_id }}"
+          LIVE_URL=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+            "https://api.digitalocean.com/v2/apps/$APP_ID" \
+            | jq -r '.app.live_url // .app.default_ingress // "unknown"')
+          echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
 
       - name: Comment with preview URL
         uses: actions/github-script@v7
         with:
           script: |
-            const app = JSON.parse('${{ steps.deploy.outputs.app }}');
-            const url = app.live_url;
+            const url = '${{ steps.url.outputs.live_url }}';
             const body = [
               `**Preview deployed** to ${url}`,
               '',
