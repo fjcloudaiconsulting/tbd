@@ -584,7 +584,13 @@ export default function DashboardPage() {
                         ]}
                         contentStyle={{ fontSize: "11px" }}
                       />
-                      <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
+                      <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}
+                        cursor="pointer"
+                        onClick={(_, idx) => {
+                          const name = budgets.slice(0, 6)[idx]?.category_name;
+                          if (name) setChartFilter(chartFilter === name ? null : name);
+                        }}
+                      >
                         {budgets.slice(0, 6).map((b, i) => (
                           <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
                         ))}
@@ -631,7 +637,13 @@ export default function DashboardPage() {
                         ]}
                         contentStyle={{ fontSize: "11px" }}
                       />
-                      <Bar dataKey="planned" fill="#D4A64A" radius={[4, 4, 4, 4]} animationDuration={600} />
+                      <Bar dataKey="planned" fill="#D4A64A" radius={[4, 4, 4, 4]} animationDuration={600}
+                        cursor="pointer"
+                        onClick={(_, idx) => {
+                          const name = forecast?.categories[idx]?.category_name;
+                          if (name) setChartFilter(chartFilter === name ? null : name);
+                        }}
+                      />
                       <Bar dataKey="actual" fill="#4ade80" radius={[4, 4, 4, 4]} animationDuration={600}>
                         {forecast.categories.slice(0, 8).map((c, i) => (
                           <Cell key={i} fill={Number(c.executed) > Number(c.forecast) ? "#f87171" : "#4ade80"} />

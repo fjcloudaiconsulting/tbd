@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -17,7 +18,20 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 const PAGE_SIZE = 20;
 
 export default function TransactionsPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
+      </div>
+    }>
+      <TransactionsPageContent />
+    </Suspense>
+  );
+}
+
+function TransactionsPageContent() {
   const { user, loading } = useAuth();
+  const searchParams = useSearchParams();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -107,6 +121,17 @@ export default function TransactionsPage() {
   useEffect(() => {
     if (!loading && user) loadRefs().catch(() => {});
   }, [loading, user, loadRefs]);
+
+  // Apply ?category= URL param once categories are loaded
+  useEffect(() => {
+    const categoryName = searchParams.get("category");
+    if (categoryName && categories.length > 0) {
+      const match = categories.find(
+        (c) => c.name.toLowerCase() === categoryName.toLowerCase()
+      );
+      if (match) setFilterCategory(match.id);
+    }
+  }, [categories, searchParams]);
 
   useEffect(() => {
     if (!loading && user) {

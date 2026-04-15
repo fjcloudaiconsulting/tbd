@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -13,6 +14,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
+  const router = useRouter();
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
@@ -228,7 +230,13 @@ export default function BudgetsPage() {
                       ]}
                       contentStyle={{ fontSize: "11px" }}
                     />
-                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
+                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}
+                      cursor="pointer"
+                      onClick={(data) => {
+                        const name = data?.name || data?.payload?.name;
+                        if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                      }}
+                    >
                       {budgets.map((b, i) => (
                         <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
                       ))}

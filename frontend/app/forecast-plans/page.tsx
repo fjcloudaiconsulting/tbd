@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -39,6 +40,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 export default function ForecastPlansPage() {
   const { user, loading } = useAuth();
+  const router = useRouter();
   const [plan, setPlan] = useState<ForecastPlan | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
@@ -588,6 +590,11 @@ export default function ForecastPlansPage() {
                       fill="#D4A64A"
                       radius={[4, 4, 4, 4]}
                       animationDuration={600}
+                      cursor="pointer"
+                      onClick={(data) => {
+                        const name = data?.name || data?.payload?.name;
+                        if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                      }}
                     />
                     <Bar
                       dataKey="actual"
