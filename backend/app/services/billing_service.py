@@ -67,8 +67,11 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
                     BillingPeriod.start_date == start,
                 )
             )
-        if period is not None:
-            await db.refresh(period)
+            if period is None:
+                raise RuntimeError(
+                    f"Billing period for org {org_id} vanished after IntegrityError"
+                )
+        await db.refresh(period)
 
     return period
 

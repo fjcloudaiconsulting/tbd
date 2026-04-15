@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,4 +91,5 @@ async def change_password(
         )
 
     current_user.password_hash = hash_password(body.new_password)
+    current_user.password_changed_at = datetime.now(timezone.utc)
     await db.commit()
