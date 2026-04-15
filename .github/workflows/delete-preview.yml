@@ -1,6 +1,4 @@
-# Delete Preview — DISABLED (preview deployments are disabled)
-
-name: Delete Preview (disabled)
+name: Delete Preview
 
 on:
   pull_request:
@@ -8,7 +6,6 @@ on:
 
 jobs:
   cleanup:
-    if: false  # Disabled — re-enable when preview deployments are active
     runs-on: ubuntu-latest
     steps:
       - name: Delete preview app

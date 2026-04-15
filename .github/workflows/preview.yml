@@ -1,15 +1,4 @@
-# Preview Deployment — DISABLED
-#
-# DO App Platform requires plaintext secrets when creating new apps, but
-# the deploy action clones encrypted secrets from the production app.
-# To enable previews, store the following as GitHub Actions secrets:
-#   PREVIEW_DATABASE_URL, PREVIEW_REDIS_URL, PREVIEW_JWT_SECRET_KEY,
-#   PREVIEW_MFA_ENCRYPTION_KEY
-# Then uncomment the workflow below and template the secrets into the spec.
-#
-# For now, test feature branches locally or deploy to production after merge.
-
-name: Preview Deployment (disabled)
+name: Preview Deployment
 
 on:
   pull_request:
@@ -22,15 +11,156 @@ permissions:
 
 jobs:
   preview:
-    if: false  # Disabled — see comment above
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Create preview app spec
+        run: |
+          cat > /tmp/preview-spec.yaml << 'SPEC'
+          name: pfv
+          region: ams
+          features:
+            - buildpack-stack=ubuntu-22
+          ingress:
+            rules:
+              - match:
+                  path:
+                    prefix: /api
+                component:
+                  name: backend
+                  preserve_path_prefix: true
+              - match:
+                  path:
+                    prefix: /health
+                component:
+                  name: backend
+                  preserve_path_prefix: true
+              - match:
+                  path:
+                    prefix: /ready
+                component:
+                  name: backend
+                  preserve_path_prefix: true
+              - match:
+                  path:
+                    prefix: /
+                component:
+                  name: frontend
+          services:
+            - name: backend
+              github:
+                repo: flamarion/pfv
+                branch: main
+                deploy_on_push: false
+              source_dir: backend
+              dockerfile_path: backend/Dockerfile
+              http_port: 8000
+              instance_count: 1
+              instance_size_slug: basic-xxs
+              health_check:
+                http_path: /health
+                initial_delay_seconds: 30
+                period_seconds: 15
+                timeout_seconds: 5
+                failure_threshold: 3
+              envs:
+                - key: DATABASE_URL
+                  value: "${{ secrets.PREVIEW_DATABASE_URL }}"
+                  type: SECRET
+                - key: REDIS_URL
+                  value: ""
+                - key: JWT_SECRET_KEY
+                  value: "${{ secrets.PREVIEW_JWT_SECRET_KEY }}"
+                  type: SECRET
+                - key: MFA_ENCRYPTION_KEY
+                  value: "${{ secrets.PREVIEW_MFA_ENCRYPTION_KEY }}"
+                  type: SECRET
+                - key: APP_ENV
+                  value: "production"
+                - key: APP_NAME
+                  value: "PFV2-Preview"
+                - key: LOG_LEVEL
+                  value: "INFO"
+                - key: COOKIE_SECURE
+                  value: "true"
+                - key: BACKEND_CORS_ORIGINS
+                  value: "*"
+                - key: APP_URL
+                  value: "https://preview.example.com"
+            - name: frontend
+              github:
+                repo: flamarion/pfv
+                branch: main
+                deploy_on_push: false
+              source_dir: frontend
+              dockerfile_path: frontend/Dockerfile
+              http_port: 3000
+              instance_count: 1
+              instance_size_slug: basic-xxs
+              envs:
+                - key: NEXT_PUBLIC_API_URL
+                  value: ""
+                - key: HOSTNAME
+                  value: "0.0.0.0"
+          SPEC
+
       - name: Deploy preview app
+        id: deploy
         uses: digitalocean/app_action/deploy@v2
         with:
           deploy_pr_preview: "true"
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           app_name: pfv
+          app_spec_location: /tmp/preview-spec.yaml
           project_id: 5c404689-358b-42c5-a8e2-f48a304d8298
+
+      - name: Comment with preview URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const app = JSON.parse('${{ steps.deploy.outputs.app }}');
+            const url = app.live_url;
+            const body = [
+              `**Preview deployed** to ${url}`,
+              '',
+              `Commit: \`${context.sha.slice(0, 7)}\``,
+              `This preview will be deleted when the PR is closed.`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('Preview deployed')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                comment_id: existing.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }
+
+      - name: Comment on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `**Preview deployment failed.** [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`,
+            });
