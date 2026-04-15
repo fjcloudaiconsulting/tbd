@@ -5,6 +5,7 @@ import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
+import { MfaRequiredError } from "@/components/auth/AuthProvider";
 import {
   input,
   label,
@@ -43,7 +44,17 @@ export default function SecurityPage() {
         body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
       });
       setPwdMsg("Password changed. Signing in with new credentials...");
-      await login(user!.username, newPassword);
+      try {
+        await login(user!.username, newPassword);
+      } catch (loginErr) {
+        // MFA users will get MfaRequiredError on re-login — password still changed
+        if (loginErr instanceof MfaRequiredError) {
+          // Password changed successfully, but re-login needs MFA.
+          // Just show success — the existing session is still valid.
+        } else {
+          throw loginErr;
+        }
+      }
       setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
       setPwdMsg("Password changed successfully");
     } catch (err) { setPwdErr(extractErrorMessage(err)); }
@@ -155,7 +166,7 @@ export default function SecurityPage() {
     a.href = url;
     a.download = "pfv2-recovery-codes.txt";
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   async function handleDisable(e: FormEvent) {
