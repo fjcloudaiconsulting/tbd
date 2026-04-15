@@ -225,7 +225,7 @@ async def register(
     return _user_response(user, org)
 
 
-@router.post("/login")
+@router.post("/login", response_model=TokenResponse | MfaChallengeResponse)
 @limiter.limit("10/minute")
 async def login(
     request: Request, body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)

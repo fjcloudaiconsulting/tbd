@@ -30,3 +30,6 @@ mysql_data/
 *.sqlite
 *.db
 *.log
+
+# Claude stuff
+.claude/

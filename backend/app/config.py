@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Email (Mailgun)
     mailgun_api_key: str = ""
     mailgun_domain: str = ""
+    mailgun_region: str = ""  # "eu" for EU endpoint, empty for US
     email_from: str = "PFV2 <noreply@pfv.app>"
     app_url: str = "http://localhost"  # used for email links
 
