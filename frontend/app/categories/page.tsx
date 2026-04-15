@@ -7,6 +7,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Category } from "@/lib/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import {
   Wallet, Home, Zap, UtensilsCrossed, Car, HeartPulse,
   Scissors, Gamepad2, Target, CreditCard, Gift, HelpCircle, Tag,
@@ -57,6 +58,7 @@ export default function CategoriesPage() {
   const [newMasterName, setNewMasterName] = useState("");
   const [newMasterType, setNewMasterType] = useState<"income" | "expense" | "both">("expense");
   const [newMasterDesc, setNewMasterDesc] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     const data = await apiFetch<Category[]>("/api/v1/categories");
@@ -145,7 +147,7 @@ export default function CategoriesPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Delete this category?")) return;
+    setConfirmDeleteId(null);
     setError("");
     try {
       await apiFetch(`/api/v1/categories/${id}`, { method: "DELETE" });
@@ -231,7 +233,7 @@ export default function CategoriesPage() {
                       {addingToMaster === master.id ? "Cancel" : "+ Add Sub"}
                     </button>
                     <button onClick={() => { setEditingCatId(master.id); setEditCatName(master.name); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                    <button onClick={() => handleDelete(master.id)} aria-label={`Delete ${master.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                    <button onClick={() => setConfirmDeleteId(master.id)} aria-label={`Delete ${master.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                   </div>
                 </div>
 
@@ -274,7 +276,7 @@ export default function CategoriesPage() {
                               </div>
                               <div className="flex gap-2">
                                 <button onClick={() => { setEditingCatId(sub.id); setEditCatName(sub.name); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                                <button onClick={() => handleDelete(sub.id)} aria-label={`Delete ${sub.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                                <button onClick={() => setConfirmDeleteId(sub.id)} aria-label={`Delete ${sub.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                               </div>
                             </>
                           )}
@@ -296,6 +298,15 @@ export default function CategoriesPage() {
           )}
         </div>
       )}
+      <ConfirmModal
+        open={confirmDeleteId !== null}
+        title="Delete Category"
+        message="Delete this category?"
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </AppShell>
   );
 }

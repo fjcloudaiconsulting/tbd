@@ -10,6 +10,7 @@ import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 
 
 
@@ -64,6 +65,7 @@ export default function TransactionsPage() {
   const [formRecurring, setFormRecurring] = useState(false);
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const loadRefs = useCallback(async () => {
     const [accts, cats, pers] = await Promise.all([
@@ -182,7 +184,7 @@ export default function TransactionsPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Delete this transaction?")) return;
+    setConfirmDeleteId(null);
     setError("");
     try {
       await apiFetch(`/api/v1/transactions/${id}`, { method: "DELETE" });
@@ -557,7 +559,7 @@ export default function TransactionsPage() {
                     </span>
                     <span className="col-span-1 flex justify-end gap-2">
                       {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
-                      <button onClick={() => handleDelete(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                      <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                     </span>
                   </div>
                 );
@@ -588,6 +590,15 @@ export default function TransactionsPage() {
           )}
         </>
       )}
+      <ConfirmModal
+        open={confirmDeleteId !== null}
+        title="Delete Transaction"
+        message="Delete this transaction?"
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </AppShell>
   );
 }

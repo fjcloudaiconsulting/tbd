@@ -9,6 +9,7 @@ import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
@@ -31,6 +32,7 @@ export default function BudgetsPage() {
   const [transferringId, setTransferringId] = useState<number | null>(null);
   const [transferCategoryId, setTransferCategoryId] = useState<number | "">("");
   const [transferAmount, setTransferAmount] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
@@ -99,7 +101,7 @@ export default function BudgetsPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Remove this budget?")) return;
+    setConfirmDeleteId(null);
     try {
       await apiFetch(`/api/v1/budgets/${id}`, { method: "DELETE" });
       await loadBudgets();
@@ -293,7 +295,7 @@ export default function BudgetsPage() {
                           <div className="flex gap-2">
                             <button onClick={() => { setTransferringId(b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="text-xs text-text-muted hover:text-accent">Transfer</button>
                             <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                            <button onClick={() => handleDelete(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
+                            <button onClick={() => setConfirmDeleteId(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
                           </div>
                         </div>
                       </div>
@@ -310,6 +312,15 @@ export default function BudgetsPage() {
           </div>
         </div>
       )}
+      <ConfirmModal
+        open={confirmDeleteId !== null}
+        title="Remove Budget"
+        message="Remove this budget? This cannot be undone."
+        confirmLabel="Remove"
+        variant="danger"
+        onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </AppShell>
   );
 }
