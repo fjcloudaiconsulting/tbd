@@ -56,6 +56,8 @@ services:
         value: "INFO"
       - key: COOKIE_SECURE
         value: "true"
+      - key: MAILGUN_REGION
+        value: "eu"
 
   - name: frontend
     github:
