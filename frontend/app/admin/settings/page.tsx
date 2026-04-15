@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
@@ -20,6 +21,14 @@ export default function SettingsPage() {
   const [successMsg, setSuccessMsg] = useState("");
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
+
+  // Confirm modal
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    message: string;
+    variant: "warning" | "danger";
+    action: () => void;
+  } | null>(null);
 
   // Billing
   const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
@@ -77,12 +86,18 @@ export default function SettingsPage() {
   }
 
   async function handleDelete(settingKey: string) {
-    if (!confirm(`Delete setting "${settingKey}"?`)) return;
-    setError("");
-    try {
-      await apiFetch(`/api/v1/settings/${encodeURIComponent(settingKey)}`, { method: "DELETE" });
-      await reload();
-    } catch (err) { setError(extractErrorMessage(err)); }
+    setConfirmAction({
+      title: "Delete Setting",
+      message: `Delete setting "${settingKey}"?`,
+      variant: "danger",
+      action: async () => {
+        setError("");
+        try {
+          await apiFetch(`/api/v1/settings/${encodeURIComponent(settingKey)}`, { method: "DELETE" });
+          await reload();
+        } catch (err) { setError(extractErrorMessage(err)); }
+      },
+    });
   }
 
   if (loading || !admin) {
@@ -124,15 +139,21 @@ export default function SettingsPage() {
           <div className="flex flex-wrap items-end gap-4">
             <button
               disabled={closingPeriod}
-              onClick={async () => {
-                if (!confirm("Close the current billing period?\n\nA new period will start tomorrow. Budgets for the new period will need to be set.")) return;
-                setClosingPeriod(true); setError(""); setSuccessMsg("");
-                try {
-                  const newP = await apiFetch<{ id: number; start_date: string; end_date: string | null }>("/api/v1/settings/billing-period/close", { method: "POST" });
-                  if (newP) setCurrentPeriod(newP);
-                  setSuccessMsg("Period closed. New period started.");
-                } catch (err) { setError(extractErrorMessage(err)); }
-                finally { setClosingPeriod(false); }
+              onClick={() => {
+                setConfirmAction({
+                  title: "Close Billing Period",
+                  message: "Close the current billing period?\n\nA new period will start tomorrow. Budgets for the new period will need to be set.",
+                  variant: "warning",
+                  action: async () => {
+                    setClosingPeriod(true); setError(""); setSuccessMsg("");
+                    try {
+                      const newP = await apiFetch<{ id: number; start_date: string; end_date: string | null }>("/api/v1/settings/billing-period/close", { method: "POST" });
+                      if (newP) setCurrentPeriod(newP);
+                      setSuccessMsg("Period closed. New period started.");
+                    } catch (err) { setError(extractErrorMessage(err)); }
+                    finally { setClosingPeriod(false); }
+                  },
+                });
               }}
               className={btnPrimary}
             >
@@ -224,6 +245,15 @@ export default function SettingsPage() {
           </div>
         </details>
       </div>
+      <ConfirmModal
+        open={confirmAction !== null}
+        title={confirmAction?.title ?? ""}
+        message={confirmAction?.message ?? ""}
+        confirmLabel="Confirm"
+        variant={confirmAction?.variant ?? "default"}
+        onConfirm={() => { confirmAction?.action(); setConfirmAction(null); }}
+        onCancel={() => setConfirmAction(null)}
+      />
     </AppShell>
   );
 }

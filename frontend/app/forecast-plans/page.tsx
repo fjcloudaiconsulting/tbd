@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
@@ -59,6 +60,14 @@ export default function ForecastPlansPage() {
   const [viewFilter, setViewFilter] = useState<"all" | "income" | "expense">(
     "all"
   );
+
+  // Confirm modal
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    message: string;
+    variant: "warning" | "danger";
+    action: () => void;
+  } | null>(null);
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
@@ -202,73 +211,80 @@ export default function ForecastPlansPage() {
   }
 
   async function handleDeleteItem(itemId: number) {
-    if (!plan || !confirm("Remove this plan item?")) return;
-    setError("");
-    try {
-      const p = await apiFetch<ForecastPlan>(
-        `/api/v1/forecast-plans/${plan.id}/items/${itemId}`,
-        { method: "DELETE" }
-      );
-      setPlan(p);
-    } catch (err) {
-      setError(extractErrorMessage(err));
-    }
+    if (!plan) return;
+    setConfirmAction({
+      title: "Remove Plan Item",
+      message: "Remove this plan item?",
+      variant: "danger",
+      action: async () => {
+        setError("");
+        try {
+          const p = await apiFetch<ForecastPlan>(
+            `/api/v1/forecast-plans/${plan.id}/items/${itemId}`,
+            { method: "DELETE" }
+          );
+          setPlan(p);
+        } catch (err) { setError(extractErrorMessage(err)); }
+      },
+    });
   }
 
   async function handleActivate() {
-    if (
-      !plan ||
-      !confirm(
-        "Finalize this plan? It will become read-only. You can revert to draft later if needed."
-      )
-    )
-      return;
-    setError("");
-    try {
-      const p = await apiFetch<ForecastPlan>(
-        `/api/v1/forecast-plans/${plan.id}/activate`,
-        { method: "POST" }
-      );
-      setPlan(p);
-    } catch (err) {
-      setError(extractErrorMessage(err));
-    }
+    if (!plan) return;
+    setConfirmAction({
+      title: "Finalize Plan",
+      message: "Finalize this plan? It will become read-only. You can revert to draft later if needed.",
+      variant: "warning",
+      action: async () => {
+        setError("");
+        try {
+          const p = await apiFetch<ForecastPlan>(
+            `/api/v1/forecast-plans/${plan.id}/activate`,
+            { method: "POST" }
+          );
+          setPlan(p);
+        } catch (err) { setError(extractErrorMessage(err)); }
+      },
+    });
   }
 
   async function handleRevertToDraft() {
-    if (!plan || !confirm("Revert to draft? This will unlock the plan for editing."))
-      return;
-    setError("");
-    try {
-      const p = await apiFetch<ForecastPlan>(
-        `/api/v1/forecast-plans/${plan.id}/revert`,
-        { method: "POST" }
-      );
-      setPlan(p);
-    } catch (err) {
-      setError(extractErrorMessage(err));
-    }
+    if (!plan) return;
+    setConfirmAction({
+      title: "Revert to Draft",
+      message: "Revert to draft? This will unlock the plan for editing.",
+      variant: "warning",
+      action: async () => {
+        setError("");
+        try {
+          const p = await apiFetch<ForecastPlan>(
+            `/api/v1/forecast-plans/${plan.id}/revert`,
+            { method: "POST" }
+          );
+          setPlan(p);
+        } catch (err) { setError(extractErrorMessage(err)); }
+      },
+    });
   }
 
   async function handleDiscard() {
-    if (
-      !plan ||
-      !confirm(
-        "Discard this plan? All items will be removed and the plan will reset to an empty draft."
-      )
-    )
-      return;
-    setError("");
-    try {
-      const p = await apiFetch<ForecastPlan>(
-        `/api/v1/forecast-plans/${plan.id}/discard`,
-        { method: "POST" }
-      );
-      setPlan(p);
-      setShowForm(false);
-    } catch (err) {
-      setError(extractErrorMessage(err));
-    }
+    if (!plan) return;
+    setConfirmAction({
+      title: "Discard Plan",
+      message: "Discard this plan? All items will be removed and the plan will reset to an empty draft.",
+      variant: "danger",
+      action: async () => {
+        setError("");
+        try {
+          const p = await apiFetch<ForecastPlan>(
+            `/api/v1/forecast-plans/${plan.id}/discard`,
+            { method: "POST" }
+          );
+          setPlan(p);
+          setShowForm(false);
+        } catch (err) { setError(extractErrorMessage(err)); }
+      },
+    });
   }
 
   // Chart data
@@ -681,6 +697,15 @@ export default function ForecastPlansPage() {
           )}
         </div>
       )}
+      <ConfirmModal
+        open={confirmAction !== null}
+        title={confirmAction?.title ?? ""}
+        message={confirmAction?.message ?? ""}
+        confirmLabel="Confirm"
+        variant={confirmAction?.variant ?? "default"}
+        onConfirm={() => { confirmAction?.action(); setConfirmAction(null); }}
+        onCancel={() => setConfirmAction(null)}
+      />
     </AppShell>
   );
 }
