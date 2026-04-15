@@ -63,6 +63,7 @@ export default function DashboardPage() {
   const [formRecurring, setFormRecurring] = useState(false);
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
+  const [formTransferCatId, setFormTransferCatId] = useState<number | "">("");
 
   const [chartFilter, setChartFilter] = useState<string | null>(null);
   const [dashSortField, setDashSortField] = useState<"date" | "description" | "amount">("date");
@@ -151,6 +152,7 @@ export default function DashboardPage() {
             amount: formAmount,
             status: formStatus,
             date: formDate,
+            ...(formTransferCatId !== "" && { category_id: formTransferCatId }),
           }),
         });
       } else {
@@ -187,6 +189,7 @@ export default function DashboardPage() {
       setFormType("expense");
       setFormStatus("settled");
       setFormToAccountId("");
+      setFormTransferCatId("");
       setFormRecurring(false);
       setFormAutoSettle(false);
       setFormDate(todayISO());
@@ -228,8 +231,8 @@ export default function DashboardPage() {
   );
   const currencies = Object.entries(balanceByCurrency);
 
-  // Accounts with balance != 0 for individual tiles
-  const accountsWithBalance = activeAccounts.filter((a) => Number(a.balance) !== 0);
+  // All active accounts for individual tiles
+  const accountsWithBalance = activeAccounts;
 
   // Precompute tx map for O(1) linked lookups
   const txMap = new Map(allTransactions.map((tx) => [tx.id, tx]));
@@ -348,6 +351,19 @@ export default function DashboardPage() {
                   <div>
                     <label htmlFor="da-category" className={label}>Category</label>
                     <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+                  </div>
+                )}
+                {formMode === "transfer" && (
+                  <div>
+                    <label className={label}>Category (optional)</label>
+                    <CategorySelect
+                      id="da-transfer-cat"
+                      categories={categories}
+                      value={formTransferCatId}
+                      onChange={setFormTransferCatId}
+                      className={input}
+                    />
+                    <p className="mt-1 text-[10px] text-text-muted">Defaults to Transfer. Override to track in budgets.</p>
                   </div>
                 )}
                 <div>
@@ -697,7 +713,7 @@ export default function DashboardPage() {
                         {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                       </span>
                       {!isTransfer && (
-                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); await loadRefs(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
                           {tx.status}
                         </button>
                       )}

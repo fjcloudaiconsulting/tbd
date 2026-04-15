@@ -275,41 +275,38 @@ export default function BudgetsPage() {
                         <button onClick={() => handleUpdate(b.id)} className="text-xs text-accent hover:text-accent-hover">Save</button>
                         <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
                       </div>
-                    ) : transferringId === b.id ? (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-text-primary">{b.category_name}</span>
-                          <span className="text-xs text-text-muted">— transfer to:</span>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`min-w-0 flex-1 basis-40 ${input}`}>
-                            <option value="">Select target category</option>
-                            {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{budgetedCatIds.has(c.id) ? " (has budget)" : ""}</option>)}
-                          </select>
-                          <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
-                            className={`w-28 ${input}`}
-                            onKeyDown={(e) => { if (e.key === "Enter" && transferCategoryId && transferAmount) handleTransfer(b.id); if (e.key === "Escape") setTransferringId(null); }} />
-                          <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="text-xs text-accent hover:text-accent-hover disabled:opacity-50">Transfer</button>
-                          <button onClick={() => setTransferringId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
-                        </div>
-                      </div>
                     ) : (
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-text-primary">{b.category_name}</span>
-                        <div className="flex items-center gap-4">
-                          <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
-                            {formatAmount(b.spent)} / {formatAmount(b.amount)}
-                          </span>
-                          <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
-                            {b.percent_used}%
-                          </span>
-                          <div className="flex gap-2">
-                            <button onClick={() => { setTransferringId(b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="text-xs text-text-muted hover:text-accent">Transfer</button>
-                            <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                            <button onClick={() => setConfirmDeleteId(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-text-primary">{b.category_name}</span>
+                          <div className="flex items-center gap-4">
+                            <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
+                              {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                            </span>
+                            <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
+                              {b.percent_used}%
+                            </span>
+                            <div className="flex gap-2">
+                              <button onClick={() => { setTransferringId(transferringId === b.id ? null : b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="text-xs text-text-muted hover:text-accent">Transfer</button>
+                              <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                              <button onClick={() => setConfirmDeleteId(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                        {transferringId === b.id && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`min-w-0 flex-1 basis-40 ${input}`}>
+                              <option value="">Select target category</option>
+                              {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{budgetedCatIds.has(c.id) ? " (has budget)" : ""}</option>)}
+                            </select>
+                            <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
+                              className={`w-28 ${input}`}
+                              onKeyDown={(e) => { if (e.key === "Enter" && transferCategoryId && transferAmount) handleTransfer(b.id); if (e.key === "Escape") setTransferringId(null); }} />
+                            <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="text-xs text-accent hover:text-accent-hover disabled:opacity-50">Transfer</button>
+                            <button onClick={() => setTransferringId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 );
