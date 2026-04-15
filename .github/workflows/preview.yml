@@ -140,26 +140,38 @@ jobs:
         id: wait
         run: |
           APP_ID="${{ steps.deploy.outputs.app_id }}"
-          echo "Waiting for deployment..."
+          echo "Waiting for deployment to start and complete..."
+
+          # Give DO a moment to register the new deployment
+          sleep 10
+
           for i in $(seq 1 60); do
             DATA=$(curl -s \
               -H "Authorization: Bearer $DO_TOKEN" \
               "https://api.digitalocean.com/v2/apps/$APP_ID")
 
-            PHASE=$(echo "$DATA" | jq -r '.app.in_progress_deployment.phase // "NONE"')
+            IN_PROGRESS=$(echo "$DATA" | jq -r '.app.in_progress_deployment.phase // "NONE"')
+            ACTIVE_PHASE=$(echo "$DATA" | jq -r '.app.active_deployment.phase // "NONE"')
             LIVE_URL=$(echo "$DATA" | jq -r '.app.live_url // .app.default_ingress // empty')
 
-            echo "  Phase: $PHASE | URL: $LIVE_URL"
+            echo "  [$i/60] in_progress=$IN_PROGRESS active=$ACTIVE_PHASE url=$LIVE_URL"
 
-            if [ "$PHASE" = "NONE" ] || [ "$PHASE" = "null" ]; then
-              echo "Deployment complete!"
-              echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
-              exit 0
+            # Deployment is done when there's no in-progress AND active is ACTIVE AND we have a URL
+            if [ "$IN_PROGRESS" = "NONE" ] || [ "$IN_PROGRESS" = "null" ]; then
+              if [ "$ACTIVE_PHASE" = "ACTIVE" ] && [ -n "$LIVE_URL" ]; then
+                echo "Deployment complete!"
+                echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # Active deployment failed or URL not ready yet — check if error
+              if [ "$ACTIVE_PHASE" = "ERROR" ]; then
+                echo "::error::Deployment failed"
+                exit 1
+              fi
             fi
 
-            if [ "$PHASE" = "ERROR" ]; then
-              echo "::error::Deployment failed"
-              echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
+            if [ "$IN_PROGRESS" = "ERROR" ]; then
+              echo "::error::Deployment failed during build/deploy"
               exit 1
             fi
 
