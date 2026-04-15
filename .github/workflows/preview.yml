@@ -111,10 +111,12 @@ jobs:
 
           if [ "${{ steps.check.outputs.exists }}" = "true" ]; then
             APP_ID="${{ steps.check.outputs.app_id }}"
+            # Remove project_id for update requests (only valid on create)
+            UPDATE_SPEC=$(echo "$SPEC" | jq 'del(.project_id)')
             RESPONSE=$(curl -s -X PUT \
               -H "Authorization: Bearer $DO_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "$SPEC" \
+              -d "$UPDATE_SPEC" \
               "https://api.digitalocean.com/v2/apps/$APP_ID")
           else
             RESPONSE=$(curl -s -X POST \
