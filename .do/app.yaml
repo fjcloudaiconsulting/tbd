@@ -44,31 +44,18 @@ services:
       period_seconds: 15
       timeout_seconds: 5
       failure_threshold: 3
+    # Secrets (DATABASE_URL, REDIS_URL, JWT_SECRET_KEY, MFA_ENCRYPTION_KEY)
+    # are configured in DO console and inherited by preview apps.
+    # Only non-secret env vars are listed here.
     envs:
-      - key: DATABASE_URL
-        value: "placeholder-set-in-do-console"
-        type: SECRET
-      - key: REDIS_URL
-        value: "placeholder-set-in-do-console"
-        type: SECRET
-      - key: JWT_SECRET_KEY
-        value: "placeholder-set-in-do-console"
-        type: SECRET
-      - key: MFA_ENCRYPTION_KEY
-        value: "placeholder-set-in-do-console"
-        type: SECRET
       - key: APP_ENV
         value: "production"
       - key: APP_NAME
         value: "PFV2"
       - key: LOG_LEVEL
         value: "INFO"
-      - key: BACKEND_CORS_ORIGINS
-        value: "placeholder-update-after-deploy"
       - key: COOKIE_SECURE
         value: "true"
-      - key: APP_URL
-        value: "placeholder-update-after-deploy"
 
   - name: frontend
     github:
