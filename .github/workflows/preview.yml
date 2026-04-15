@@ -15,6 +15,7 @@ jobs:
     env:
       APP_NAME: pfv-preview-pr-${{ github.event.pull_request.number }}
       PROJECT_ID: 5c404689-358b-42c5-a8e2-f48a304d8298
+      DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,13 +23,8 @@ jobs:
       - name: Check if preview app exists
         id: check
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
-            "https://api.digitalocean.com/v2/apps?with_projects=true" \
-            | head -1)
-
           APP_ID=$(curl -s \
-            -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+            -H "Authorization: Bearer $DO_TOKEN" \
             "https://api.digitalocean.com/v2/apps" \
             | jq -r ".apps[]? | select(.spec.name == \"$APP_NAME\") | .id // empty")
 
@@ -74,7 +70,7 @@ jobs:
                     "initial_delay_seconds": 30,
                     "period_seconds": 15,
                     "timeout_seconds": 5,
-                    "failure_threshold": 3
+                    "failure_threshold": 5
                   },
                   "envs": [
                     {"key": "DATABASE_URL", "value": "${{ secrets.PREVIEW_DATABASE_URL }}", "type": "SECRET", "scope": "RUN_AND_BUILD_TIME"},
@@ -86,7 +82,7 @@ jobs:
                     {"key": "LOG_LEVEL", "value": "INFO", "scope": "RUN_AND_BUILD_TIME"},
                     {"key": "COOKIE_SECURE", "value": "true", "scope": "RUN_AND_BUILD_TIME"},
                     {"key": "BACKEND_CORS_ORIGINS", "value": "*", "scope": "RUN_AND_BUILD_TIME"},
-                    {"key": "APP_URL", "value": "https://preview.example.com", "scope": "RUN_AND_BUILD_TIME"}
+                    {"key": "APP_URL", "value": "https://placeholder.ondigitalocean.app", "scope": "RUN_AND_BUILD_TIME"}
                   ]
                 },
                 {
@@ -114,25 +110,21 @@ jobs:
           )
 
           if [ "${{ steps.check.outputs.exists }}" = "true" ]; then
-            # Update existing preview app
             APP_ID="${{ steps.check.outputs.app_id }}"
             RESPONSE=$(curl -s -X PUT \
-              -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+              -H "Authorization: Bearer $DO_TOKEN" \
               -H "Content-Type: application/json" \
               -d "$SPEC" \
               "https://api.digitalocean.com/v2/apps/$APP_ID")
           else
-            # Create new preview app
             RESPONSE=$(curl -s -X POST \
-              -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+              -H "Authorization: Bearer $DO_TOKEN" \
               -H "Content-Type: application/json" \
               -d "$SPEC" \
               "https://api.digitalocean.com/v2/apps")
           fi
 
           APP_ID=$(echo "$RESPONSE" | jq -r '.app.id // empty')
-          LIVE_URL=$(echo "$RESPONSE" | jq -r '.app.live_url // .app.default_ingress // empty')
-
           if [ -z "$APP_ID" ]; then
             echo "Error creating/updating app:"
             echo "$RESPONSE" | jq .
@@ -140,54 +132,77 @@ jobs:
           fi
 
           echo "app_id=$APP_ID" >> "$GITHUB_OUTPUT"
-          echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
-          echo "Preview app: $APP_ID at $LIVE_URL"
+          echo "Preview app ID: $APP_ID"
 
-      - name: Wait for deployment
+      - name: Wait for deployment to complete
+        id: wait
         run: |
           APP_ID="${{ steps.deploy.outputs.app_id }}"
-          echo "Waiting for deployment to complete..."
-          for i in $(seq 1 40); do
-            PHASE=$(curl -s \
-              -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
-              "https://api.digitalocean.com/v2/apps/$APP_ID" \
-              | jq -r '.app.last_deployment_active_at // .app.in_progress_deployment.phase // "UNKNOWN"')
+          echo "Waiting for deployment..."
+          for i in $(seq 1 60); do
+            DATA=$(curl -s \
+              -H "Authorization: Bearer $DO_TOKEN" \
+              "https://api.digitalocean.com/v2/apps/$APP_ID")
 
-            IN_PROGRESS=$(curl -s \
-              -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
-              "https://api.digitalocean.com/v2/apps/$APP_ID" \
-              | jq -r '.app.in_progress_deployment.phase // "NONE"')
+            PHASE=$(echo "$DATA" | jq -r '.app.in_progress_deployment.phase // "NONE"')
+            LIVE_URL=$(echo "$DATA" | jq -r '.app.live_url // .app.default_ingress // empty')
 
-            echo "  Deployment phase: $IN_PROGRESS"
+            echo "  Phase: $PHASE | URL: $LIVE_URL"
 
-            if [ "$IN_PROGRESS" = "NONE" ] || [ "$IN_PROGRESS" = "null" ]; then
+            if [ "$PHASE" = "NONE" ] || [ "$PHASE" = "null" ]; then
               echo "Deployment complete!"
-              break
+              echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
 
-            if [ "$IN_PROGRESS" = "ERROR" ]; then
-              echo "Deployment failed!"
+            if [ "$PHASE" = "ERROR" ]; then
+              echo "::error::Deployment failed"
+              echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
               exit 1
             fi
 
             sleep 15
           done
+          echo "::error::Deployment timed out after 15 minutes"
+          exit 1
 
-      - name: Get live URL
-        id: url
+      - name: Update APP_URL to match preview URL
+        if: success()
         run: |
           APP_ID="${{ steps.deploy.outputs.app_id }}"
-          LIVE_URL=$(curl -s \
-            -H "Authorization: Bearer ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" \
+          LIVE_URL="${{ steps.wait.outputs.live_url }}"
+
+          if [ -z "$LIVE_URL" ] || [ "$LIVE_URL" = "null" ]; then
+            echo "No live URL available, skipping APP_URL update"
+            exit 0
+          fi
+
+          # Get current spec and update APP_URL
+          CURRENT_SPEC=$(curl -s \
+            -H "Authorization: Bearer $DO_TOKEN" \
             "https://api.digitalocean.com/v2/apps/$APP_ID" \
-            | jq -r '.app.live_url // .app.default_ingress // "unknown"')
-          echo "live_url=$LIVE_URL" >> "$GITHUB_OUTPUT"
+            | jq '.app.spec')
+
+          UPDATED_SPEC=$(echo "$CURRENT_SPEC" | jq --arg url "$LIVE_URL" '
+            .services[0].envs |= map(
+              if .key == "APP_URL" then .value = $url else . end
+            )')
+
+          curl -s -X PUT \
+            -H "Authorization: Bearer $DO_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"spec\": $UPDATED_SPEC}" \
+            "https://api.digitalocean.com/v2/apps/$APP_ID" > /dev/null
+
+          echo "Updated APP_URL to $LIVE_URL"
 
       - name: Comment with preview URL
+        if: success()
         uses: actions/github-script@v7
         with:
           script: |
-            const url = '${{ steps.url.outputs.live_url }}';
+            const url = '${{ steps.wait.outputs.live_url }}';
+            if (!url) return;
             const body = [
               `**Preview deployed** to ${url}`,
               '',
