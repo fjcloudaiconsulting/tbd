@@ -320,8 +320,6 @@ The app is deployed on DO App Platform (Amsterdam region) with managed MySQL and
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | `deploy.yml` | Push to `main` | Deploys to production via `digitalocean/app_action/deploy@v2` |
-| `preview.yml` | PR opened/updated | Creates ephemeral preview app, posts URL as PR comment |
-| `delete-preview.yml` | PR closed | Cleans up preview app |
 
 **Required GitHub repository secret:**
 

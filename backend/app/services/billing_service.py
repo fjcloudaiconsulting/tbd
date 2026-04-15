@@ -11,6 +11,7 @@ period, but the user has full control over when to close.
 import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import BillingPeriod
@@ -56,7 +57,20 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
 
         period = BillingPeriod(org_id=org_id, start_date=start)
         db.add(period)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            period = await db.scalar(
+                select(BillingPeriod).where(
+                    BillingPeriod.org_id == org_id,
+                    BillingPeriod.start_date == start,
+                )
+            )
+            if period is None:
+                raise RuntimeError(
+                    f"Billing period for org {org_id} vanished after IntegrityError"
+                )
         await db.refresh(period)
 
     return period
