@@ -102,7 +102,7 @@ export default function RecurringPage() {
       ) : (
         <div className="space-y-6">
           {/* Active */}
-          <div className={card}>
+          <div className={`${card} overflow-x-auto`}>
             <div className={cardHeader}>
               <h2 className={cardTitle}>Active ({activeItems.length})</h2>
             </div>
@@ -136,7 +136,7 @@ export default function RecurringPage() {
 
           {/* Paused */}
           {pausedItems.length > 0 && (
-            <div className={card}>
+            <div className={`${card} overflow-x-auto`}>
               <div className={cardHeader}>
                 <h2 className={cardTitle}>Paused ({pausedItems.length})</h2>
               </div>

@@ -461,7 +461,7 @@ export default function TransactionsPage() {
         <Spinner />
       ) : (
         <>
-          <div className={card}>
+          <div className={`${card} overflow-x-auto`}>
             <div className="border-b border-border px-6 py-3">
               <div className="grid grid-cols-12 gap-4 text-xs font-medium uppercase tracking-wider text-text-muted">
                 {([
