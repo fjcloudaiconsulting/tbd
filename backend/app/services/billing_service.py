@@ -67,7 +67,8 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
                     BillingPeriod.start_date == start,
                 )
             )
-        await db.refresh(period)
+        if period is not None:
+            await db.refresh(period)
 
     return period
 

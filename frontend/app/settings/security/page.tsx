@@ -2,10 +2,9 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
-import { useAuth } from "@/components/auth/AuthProvider";
+import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
-import { MfaRequiredError } from "@/components/auth/AuthProvider";
 import {
   input,
   label,
