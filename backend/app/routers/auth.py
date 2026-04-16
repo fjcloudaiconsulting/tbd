@@ -408,7 +408,7 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
 
     # Reject tokens issued before the last password change
     if user.password_changed_at:
-        token_iat = datetime.fromtimestamp(payload.get("iat", 0), tz=timezone.utc)
+        token_iat = datetime.fromtimestamp(payload.get("iat", 0), tz=timezone.utc).replace(tzinfo=None)
         if token_iat < user.password_changed_at:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
