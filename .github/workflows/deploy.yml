@@ -3,6 +3,13 @@ name: Deploy to Production
 on:
   push:
     branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "nginx/**"
+      - ".do/**"
+      - "docker-compose*.yml"
+      - "Dockerfile*"
 
 permissions:
   contents: read
