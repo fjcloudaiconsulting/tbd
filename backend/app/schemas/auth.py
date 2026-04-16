@@ -41,6 +41,9 @@ class UserResponse(BaseModel):
     is_superadmin: bool
     is_active: bool
     mfa_enabled: bool = False
+    subscription_status: str | None = None
+    subscription_plan: str | None = None
+    trial_end: str | None = None
 
     model_config = {"from_attributes": True}
 

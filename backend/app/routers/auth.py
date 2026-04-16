@@ -15,6 +15,8 @@ from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.settings import OrgSetting
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import Organization, Role, User
+from app.models.subscription import Subscription, Plan
+from app.services import subscription_service
 from app.schemas.auth import (
     ForgotPasswordRequest,
     LoginRequest,
@@ -67,7 +69,7 @@ GOOGLE_OAUTH_TIMEOUT = httpx.Timeout(10.0)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
-def _user_response(user: User, org: Organization) -> UserResponse:
+def _user_response(user: User, org: Organization, sub: Subscription | None = None, plan: Plan | None = None) -> UserResponse:
     return UserResponse(
         id=user.id,
         username=user.username,
@@ -84,6 +86,9 @@ def _user_response(user: User, org: Organization) -> UserResponse:
         is_superadmin=user.is_superadmin,
         is_active=user.is_active,
         mfa_enabled=user.mfa_enabled,
+        subscription_status=sub.status.value if sub else None,
+        subscription_plan=plan.slug if plan else None,
+        trial_end=sub.trial_end.isoformat() if sub and sub.trial_end else None,
     )
 
 
@@ -217,6 +222,9 @@ async def register(
         )
     await db.refresh(user)
     await db.refresh(org)
+
+    # Create trial subscription for the new org
+    await subscription_service.create_trial(db, org.id)
 
     # Send verification email in background — don't block registration
     token = create_email_verification_token(user.id)
@@ -355,7 +363,9 @@ async def me(
     db: AsyncSession = Depends(get_db),
 ):
     await db.refresh(current_user, ["organization"])
-    return _user_response(current_user, current_user.organization)
+    pair = await subscription_service.get_subscription_with_plan(db, current_user.org_id)
+    sub, plan = pair if pair else (None, None)
+    return _user_response(current_user, current_user.organization, sub, plan)
 
 
 @router.post("/logout")
