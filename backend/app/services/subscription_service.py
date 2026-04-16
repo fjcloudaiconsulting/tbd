@@ -12,8 +12,9 @@ from app.models.subscription import (
     Subscription,
     SubscriptionStatus,
 )
-from app.models.user import User
+from app.models.user import Organization, User
 from app.services.exceptions import NotFoundError, ValidationError
+from app.services.email_service import send_trial_expiring_email
 
 
 async def get_default_plan(db: AsyncSession) -> Plan:
@@ -82,6 +83,23 @@ async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | No
 
     if sub.status != SubscriptionStatus.TRIALING:
         return sub
+
+    # Send trial expiring email at 3 days and 1 day remaining
+    if sub.trial_end:
+        days_left = (sub.trial_end - datetime.date.today()).days
+        if days_left in (3, 1):
+            # Fetch org owner email to send notification
+            owner = await db.scalar(
+                select(User).where(
+                    User.org_id == org_id, User.role == "owner", User.is_active == True
+                )
+            )
+            if owner:
+                org = await db.scalar(
+                    select(Organization).where(Organization.id == org_id)
+                )
+                org_name = org.name if org else "your organization"
+                await send_trial_expiring_email(owner.email, days_left, org_name)
 
     if sub.trial_end and sub.trial_end < datetime.date.today():
         # Trial expired — downgrade to free plan

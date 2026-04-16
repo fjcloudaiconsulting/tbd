@@ -103,6 +103,20 @@ async def update_plan(
         raise HTTPException(status_code=404, detail="Plan not found")
 
     update_data = body.model_dump(exclude_unset=True)
+
+    # Prevent deactivation via PUT — must use DELETE which checks org count
+    if "is_active" in update_data and not update_data["is_active"]:
+        org_count = await db.scalar(
+            select(func.count()).select_from(Subscription).where(
+                Subscription.plan_id == plan_id
+            )
+        )
+        if org_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot deactivate plan — {org_count} organization(s) are currently on it",
+            )
+
     for field, value in update_data.items():
         setattr(plan, field, value)
 

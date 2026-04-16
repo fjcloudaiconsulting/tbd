@@ -140,7 +140,7 @@ export default function SystemPlansPage() {
   function handleDelete(plan: PlanWithCount) {
     setConfirmAction({
       title: "Deactivate Plan",
-      message: `Deactivate "${plan.name}"? Organizations currently on this plan will not be affected.`,
+      message: `Deactivate "${plan.name}"? This will fail if any organizations are currently on this plan.`,
       variant: "danger",
       action: async () => {
         setError("");

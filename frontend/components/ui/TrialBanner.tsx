@@ -15,9 +15,10 @@ export default function TrialBanner({ user }: Props) {
   // Calculate days left for trial
   let daysLeft = 0;
   if (subscription_status === "trialing" && trial_end) {
-    const end = new Date(trial_end + "T23:59:59");
-    const now = new Date();
-    daysLeft = Math.max(0, Math.ceil((end.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)));
+    // Parse as UTC to avoid timezone drift; trial_end is a date string (YYYY-MM-DD)
+    const endMs = Date.parse(trial_end + "T23:59:59Z");
+    const nowMs = Date.now();
+    daysLeft = Math.max(0, Math.floor((endMs - nowMs) / 86_400_000));
   }
 
   // Trial active — plenty of time

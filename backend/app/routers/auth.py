@@ -364,6 +364,8 @@ async def me(
     db: AsyncSession = Depends(get_db),
 ):
     await db.refresh(current_user, ["organization"])
+    # Reconcile trial expiry so user context stays in sync with /subscriptions
+    await subscription_service.check_trial_expiry(db, current_user.org_id)
     pair = await subscription_service.get_subscription_with_plan(db, current_user.org_id)
     sub, plan = pair if pair else (None, None)
     return _user_response(current_user, current_user.organization, sub, plan)
@@ -833,6 +835,10 @@ async def google_callback(
         db.add(user)
         await db.commit()
         await db.refresh(user)
+
+        # Create trial subscription for the new org (same as register)
+        await subscription_service.create_trial(db, org.id)
+        await db.commit()
 
     # Issue tokens (or MFA challenge if enabled)
     await db.refresh(user, ["organization"])

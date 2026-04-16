@@ -109,8 +109,8 @@ export default function BillingPage() {
 
   let trialDaysLeft = 0;
   if (isTrialing && sub?.trial_end) {
-    const end = new Date(sub.trial_end + "T23:59:59");
-    trialDaysLeft = Math.max(0, Math.ceil((end.getTime() - Date.now()) / 86400000));
+    const endMs = Date.parse(sub.trial_end + "T23:59:59Z");
+    trialDaysLeft = Math.max(0, Math.floor((endMs - Date.now()) / 86_400_000));
   }
 
   return (

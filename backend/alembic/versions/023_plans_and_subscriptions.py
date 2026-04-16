@@ -117,3 +117,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("subscriptions")
     op.drop_table("plans")
+    # Clean up enum types (PostgreSQL requires explicit drop; MySQL ignores)
+    sa.Enum(name="subscriptionstatus").drop(op.get_bind(), checkfirst=True)
+    sa.Enum(name="billinginterval").drop(op.get_bind(), checkfirst=True)

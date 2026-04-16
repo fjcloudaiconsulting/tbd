@@ -45,8 +45,8 @@ class PlanUpdate(BaseModel):
     sort_order: int | None = None
     price_monthly: Decimal | None = Field(default=None, ge=0)
     price_yearly: Decimal | None = Field(default=None, ge=0)
-    max_users: int | None = None
-    retention_days: int | None = None
+    max_users: int | None = Field(default=None, ge=1)
+    retention_days: int | None = Field(default=None, ge=1)
     ai_budget_enabled: bool | None = None
     ai_forecast_enabled: bool | None = None
     ai_smart_plan_enabled: bool | None = None
