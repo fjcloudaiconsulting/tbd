@@ -3,6 +3,13 @@ name: Release
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - "**/*.md"
+      - ".github/workflows/**"
+      - ".superpowers/**"
+      - "LICENSE"
 
 permissions:
   contents: write
