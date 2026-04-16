@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import AppShell from "@/components/AppShell";
+import SettingsLayout from "@/components/SettingsLayout";
 import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
@@ -15,7 +15,6 @@ import {
   cardTitle,
   error as errorCls,
   success as successCls,
-  pageTitle,
 } from "@/lib/styles";
 import type { MfaSetupResponse, MfaEnableResponse } from "@/lib/types";
 
@@ -201,8 +200,7 @@ export default function SecurityPage() {
   const mfaEnabled = user?.mfa_enabled ?? false;
 
   return (
-    <AppShell>
-      <h1 className={pageTitle}>Security</h1>
+    <SettingsLayout activeTab="/settings/security">
 
       <div className="max-w-lg space-y-6">
         {/* ── Change Password ──────────────────────────────────────────── */}
@@ -461,6 +459,6 @@ export default function SecurityPage() {
           </div>
         )}
       </div>
-    </AppShell>
+    </SettingsLayout>
   );
 }

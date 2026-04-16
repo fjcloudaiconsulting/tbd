@@ -162,11 +162,11 @@ export default function BillingPage() {
               </div>
               <div className="text-right">
                 <div className="text-2xl font-bold text-text-primary">
-                  {currentPlan && currentPlan.price_monthly > 0 ? (
+                  {currentPlan && Number(currentPlan.price_monthly) > 0 ? (
                     <>
                       €{sub?.billing_interval === "yearly"
-                        ? (currentPlan.price_yearly / 12).toFixed(2)
-                        : currentPlan.price_monthly.toFixed(2)}
+                        ? (Number(currentPlan.price_yearly) / 12).toFixed(2)
+                        : Number(currentPlan.price_monthly).toFixed(2)}
                       <span className="text-sm font-normal text-text-muted">/mo</span>
                     </>
                   ) : (
@@ -230,12 +230,12 @@ export default function BillingPage() {
                     </div>
                     <div className="mb-4">
                       <span className="text-xl font-bold text-text-primary">
-                        €{plan.price_monthly.toFixed(2)}
+                        €{Number(plan.price_monthly).toFixed(2)}
                       </span>
                       <span className="text-sm text-text-muted">/mo</span>
-                      {plan.price_yearly > 0 && (
+                      {Number(plan.price_yearly) > 0 && (
                         <p className="text-[11px] text-text-muted">
-                          or €{plan.price_yearly.toFixed(2)}/yr (save 20%)
+                          or €{Number(plan.price_yearly).toFixed(2)}/yr (save 20%)
                         </p>
                       )}
                     </div>
@@ -261,9 +261,9 @@ export default function BillingPage() {
                     ) : (
                       <button
                         onClick={() => handleChangePlan(plan.slug, sub?.billing_interval ?? "monthly")}
-                        className={plan.price_monthly > (currentPlan?.price_monthly ?? 0) ? btnPrimary : btnSecondary}
+                        className={Number(plan.price_monthly) > Number(currentPlan?.price_monthly ?? 0) ? btnPrimary : btnSecondary}
                       >
-                        {plan.price_monthly > (currentPlan?.price_monthly ?? 0) ? "Upgrade" : "Downgrade"}
+                        {Number(plan.price_monthly) > Number(currentPlan?.price_monthly ?? 0) ? "Upgrade" : "Downgrade"}
                       </button>
                     )}
                   </div>
@@ -274,7 +274,7 @@ export default function BillingPage() {
         </div>
 
         {/* Cancel */}
-        {sub && sub.status !== "canceled" && currentPlan && currentPlan.price_monthly > 0 && (
+        {sub && sub.status !== "canceled" && currentPlan && Number(currentPlan.price_monthly) > 0 && (
           <div className="text-right">
             <button onClick={handleCancel} className="text-xs text-text-muted hover:text-danger">
               Cancel subscription
