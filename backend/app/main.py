@@ -7,10 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.config import settings as app_settings
-from app.database import engine
+from app.database import async_session, engine
+from app.models.subscription import Subscription
+from app.models.user import Organization
+from app.services import subscription_service
 from app.logging import setup_logging
 from app.rate_limit import limiter
 from app.routers import account_types, accounts, auth, budgets, categories, forecast, forecast_plans, import_router, plans, recurring, settings, subscriptions, transactions, users
@@ -20,6 +23,22 @@ from app.services.exceptions import ConflictError, NotFoundError, ValidationErro
 setup_logging()
 
 logger = structlog.stdlib.get_logger()
+
+
+async def _backfill_subscriptions() -> None:
+    """Create trial subscriptions for any orgs that don't have one yet."""
+    async with async_session() as db:
+        result = await db.execute(
+            select(Organization.id).where(
+                ~Organization.id.in_(select(Subscription.org_id))
+            )
+        )
+        org_ids = [row[0] for row in result.all()]
+        for org_id in org_ids:
+            await subscription_service.create_trial(db, org_id)
+        if org_ids:
+            await db.commit()
+            await logger.ainfo("backfilled subscriptions", count=len(org_ids))
 
 
 def _run_migrations() -> None:
@@ -37,6 +56,7 @@ def _run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _run_migrations()
+    await _backfill_subscriptions()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
     await engine.dispose()
