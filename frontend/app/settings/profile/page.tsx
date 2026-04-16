@@ -3,10 +3,10 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-export default function AdminSettingsRedirect() {
+export default function SettingsProfileRedirect() {
   const router = useRouter();
   useEffect(() => {
-    router.replace("/settings/organization");
+    router.replace("/profile");
   }, [router]);
   return null;
 }
