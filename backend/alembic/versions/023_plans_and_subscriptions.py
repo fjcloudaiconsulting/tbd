@@ -20,7 +20,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("name", sa.String(100), nullable=False),
         sa.Column("slug", sa.String(50), nullable=False),
-        sa.Column("description", sa.Text(), nullable=False, server_default=""),
+        sa.Column("description", sa.Text(), nullable=False),
         sa.Column("is_custom", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="1"),
         sa.Column("sort_order", sa.Integer(), nullable=False, server_default="0"),

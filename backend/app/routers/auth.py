@@ -225,6 +225,7 @@ async def register(
 
     # Create trial subscription for the new org
     await subscription_service.create_trial(db, org.id)
+    await db.commit()
 
     # Send verification email in background — don't block registration
     token = create_email_verification_token(user.id)
