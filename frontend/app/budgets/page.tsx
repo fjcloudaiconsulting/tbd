@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -9,9 +10,11 @@ import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
+  const router = useRouter();
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
@@ -31,6 +34,7 @@ export default function BudgetsPage() {
   const [transferringId, setTransferringId] = useState<number | null>(null);
   const [transferCategoryId, setTransferCategoryId] = useState<number | "">("");
   const [transferAmount, setTransferAmount] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
@@ -99,7 +103,7 @@ export default function BudgetsPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Remove this budget?")) return;
+    setConfirmDeleteId(null);
     try {
       await apiFetch(`/api/v1/budgets/${id}`, { method: "DELETE" });
       await loadBudgets();
@@ -220,10 +224,21 @@ export default function BudgetsPage() {
                     <XAxis type="number" hide />
                     <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                     <Tooltip
-                      formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? <span style={{ color: "#ef4444" }}>Spent</span> : name === "remaining" ? <span style={{ color: "#4ade80" }}>Remaining</span> : <span style={{ color: "#ef4444" }}>Over budget</span>]}
+                      formatter={(v, name) => [
+                        formatAmount(Number(v)),
+                        name === "spent" ? <span style={{ color: "#f87171" }}>Spent</span>
+                          : name === "over" ? <span style={{ color: "#f87171" }}>Over budget</span>
+                          : <span style={{ color: "#4ade80" }}>Remaining</span>,
+                      ]}
                       contentStyle={{ fontSize: "11px" }}
                     />
-                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
+                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}
+                      cursor="pointer"
+                      onClick={(data) => {
+                        const name = data?.name || data?.payload?.name;
+                        if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                      }}
+                    >
                       {budgets.map((b, i) => (
                         <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
                       ))}
@@ -262,41 +277,38 @@ export default function BudgetsPage() {
                         <button onClick={() => handleUpdate(b.id)} className="text-xs text-accent hover:text-accent-hover">Save</button>
                         <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
                       </div>
-                    ) : transferringId === b.id ? (
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-text-primary">{b.category_name}</span>
-                          <span className="text-xs text-text-muted">— transfer to:</span>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`min-w-0 flex-1 basis-40 ${input}`}>
-                            <option value="">Select target category</option>
-                            {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{budgetedCatIds.has(c.id) ? " (has budget)" : ""}</option>)}
-                          </select>
-                          <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
-                            className={`w-28 ${input}`}
-                            onKeyDown={(e) => { if (e.key === "Enter" && transferCategoryId && transferAmount) handleTransfer(b.id); if (e.key === "Escape") setTransferringId(null); }} />
-                          <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="text-xs text-accent hover:text-accent-hover disabled:opacity-50">Transfer</button>
-                          <button onClick={() => setTransferringId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
-                        </div>
-                      </div>
                     ) : (
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-text-primary">{b.category_name}</span>
-                        <div className="flex items-center gap-4">
-                          <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
-                            {formatAmount(b.spent)} / {formatAmount(b.amount)}
-                          </span>
-                          <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
-                            {b.percent_used}%
-                          </span>
-                          <div className="flex gap-2">
-                            <button onClick={() => { setTransferringId(b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="text-xs text-text-muted hover:text-accent">Transfer</button>
-                            <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                            <button onClick={() => handleDelete(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
+                      <>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-text-primary">{b.category_name}</span>
+                          <div className="flex items-center gap-4">
+                            <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
+                              {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                            </span>
+                            <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
+                              {b.percent_used}%
+                            </span>
+                            <div className="flex gap-2">
+                              <button onClick={() => { setTransferringId(transferringId === b.id ? null : b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="text-xs text-text-muted hover:text-accent">Transfer</button>
+                              <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
+                              <button onClick={() => setConfirmDeleteId(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                        {transferringId === b.id && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`min-w-0 flex-1 basis-40 ${input}`}>
+                              <option value="">Select target category</option>
+                              {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{budgetedCatIds.has(c.id) ? " (has budget)" : ""}</option>)}
+                            </select>
+                            <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
+                              className={`w-28 ${input}`}
+                              onKeyDown={(e) => { if (e.key === "Enter" && transferCategoryId && transferAmount) handleTransfer(b.id); if (e.key === "Escape") setTransferringId(null); }} />
+                            <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="text-xs text-accent hover:text-accent-hover disabled:opacity-50">Transfer</button>
+                            <button onClick={() => setTransferringId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 );
@@ -310,6 +322,15 @@ export default function BudgetsPage() {
           </div>
         </div>
       )}
+      <ConfirmModal
+        open={confirmDeleteId !== null}
+        title="Remove Budget"
+        message="Remove this budget? This cannot be undone."
+        confirmLabel="Remove"
+        variant="danger"
+        onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </AppShell>
   );
 }

@@ -5,6 +5,7 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import AppShell from "@/components/AppShell";
+import CategorySelect from "@/components/ui/CategorySelect";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type {
   Account,
@@ -294,20 +295,18 @@ function ImportPageContent() {
                       <td className="px-4 py-2 capitalize text-text-secondary">{previewRow.type}</td>
                       <td className="px-4 py-2">
                         {!rowState.skip && !rowState.is_transfer && (
-                          <select
+                          <CategorySelect
+                            id={`cat-${previewRow.row_number}`}
+                            categories={catOptions}
                             value={rowState.category_id ?? ""}
-                            onChange={(e) =>
+                            onChange={(id) =>
                               updateRow(previewRow.row_number, {
-                                category_id: e.target.value === "" ? null : Number(e.target.value),
+                                category_id: id === "" ? null : id,
                               })
                             }
-                            className={input + " !w-40"}
-                          >
-                            <option value="">Default</option>
-                            {catOptions.map((c) => (
-                              <option key={c.id} value={c.id}>{c.name}</option>
-                            ))}
-                          </select>
+                            filterType={previewRow.type === "income" ? "income" : "expense"}
+                            className={input + " !w-48"}
+                          />
                         )}
                       </td>
                       <td className="px-4 py-2">

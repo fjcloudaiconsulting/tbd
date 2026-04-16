@@ -93,6 +93,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [userExpanded, setUserExpanded] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
@@ -121,12 +122,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {/* Mobile overlay backdrop */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />
+      )}
+
       {/* Dark sidebar — fixed height, never scrolls */}
-      <aside className="flex h-screen w-56 flex-col bg-sidebar-bg shrink-0">
-        <div className="px-5 pt-5 pb-6">
+      <aside className={`fixed inset-y-0 left-0 z-50 flex w-56 flex-col bg-sidebar-bg transition-transform duration-200 lg:relative lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+        <div className="flex items-center justify-between px-5 pt-5 pb-6">
           <Link href="/dashboard" className="font-display text-lg font-semibold text-sidebar-text-bright">
             PFV2
           </Link>
+          <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="rounded-md p-1 text-sidebar-muted hover:text-sidebar-text-bright lg:hidden">
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
 
         <nav className="flex-1 overflow-y-auto space-y-0.5 px-3">
@@ -134,6 +145,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Link
               key={item.href}
               href={item.href}
+              onClick={() => setSidebarOpen(false)}
               className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors ${
                 isActive(item.href)
                   ? "bg-sidebar-active-bg text-sidebar-active-text"
@@ -156,6 +168,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.href}
                   href={item.href}
+                  onClick={() => setSidebarOpen(false)}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors ${
                     isActive(item.href)
                       ? "bg-sidebar-active-bg text-sidebar-active-text"
@@ -198,6 +211,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg border border-sidebar-border bg-sidebar-bg py-1 shadow-xl">
               <Link
                 href="/profile"
+                onClick={() => setSidebarOpen(false)}
                 className="flex items-center gap-2.5 px-3.5 py-2 text-[13px] text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-bright"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -207,6 +221,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               </Link>
               <Link
                 href="/settings/security"
+                onClick={() => setSidebarOpen(false)}
                 className="flex items-center gap-2.5 px-3.5 py-2 text-[13px] text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-bright"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -230,11 +245,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-end border-b border-border bg-surface px-8">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface px-4 sm:px-8">
+          <button onClick={() => setSidebarOpen(true)} className="rounded-md p-2 text-text-muted hover:text-text-primary lg:hidden" aria-label="Open menu">
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+            </svg>
+          </button>
+          <div className="lg:hidden" />
           <ThemeToggle />
         </header>
-        <main className="flex-1 overflow-auto p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
-        <footer className="border-t border-border bg-surface px-8 py-4">
+        <main className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
+        <footer className="border-t border-border bg-surface px-4 sm:px-8 py-4">
           <div className="flex items-center justify-between text-xs text-text-muted">
             <span>PFV2 — Personal Finance</span>
             <span>&copy; {new Date().getFullYear()}</span>

@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -10,13 +11,27 @@ import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 
 
 
 const PAGE_SIZE = 20;
 
 export default function TransactionsPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex min-h-screen items-center justify-center">
+        <Spinner />
+      </div>
+    }>
+      <TransactionsPageContent />
+    </Suspense>
+  );
+}
+
+function TransactionsPageContent() {
   const { user, loading } = useAuth();
+  const searchParams = useSearchParams();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -55,6 +70,7 @@ export default function TransactionsPage() {
   const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
   const [formAccountId, setFormAccountId] = useState<number | "">("");
   const [formToAccountId, setFormToAccountId] = useState<number | "">("");
+  const [formTransferCatId, setFormTransferCatId] = useState<number | "">("");
   const [formCategoryId, setFormCategoryId] = useState<number | "">("");
   const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
@@ -64,6 +80,7 @@ export default function TransactionsPage() {
   const [formRecurring, setFormRecurring] = useState(false);
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const loadRefs = useCallback(async () => {
     const [accts, cats, pers] = await Promise.all([
@@ -106,6 +123,17 @@ export default function TransactionsPage() {
     if (!loading && user) loadRefs().catch(() => {});
   }, [loading, user, loadRefs]);
 
+  // Apply ?category= URL param once categories are loaded
+  useEffect(() => {
+    const categoryName = searchParams.get("category");
+    if (categoryName && categories.length > 0) {
+      const match = categories.find(
+        (c) => c.name.toLowerCase() === categoryName.toLowerCase()
+      );
+      if (match) setFilterCategory(match.id);
+    }
+  }, [categories, searchParams]);
+
   useEffect(() => {
     if (!loading && user) {
       setFetching(true);
@@ -134,6 +162,7 @@ export default function TransactionsPage() {
             amount: formAmount,
             status: formStatus,
             date: formDate,
+            ...(formTransferCatId !== "" ? { category_id: formTransferCatId } : {}),
           }),
         });
       } else {
@@ -171,6 +200,7 @@ export default function TransactionsPage() {
       setFormType("expense");
       setFormStatus("settled");
       setFormToAccountId("");
+      setFormTransferCatId("");
       setFormRecurring(false);
       setFormAutoSettle(false);
       setFormDate(todayISO());
@@ -182,7 +212,7 @@ export default function TransactionsPage() {
   }
 
   async function handleDelete(id: number) {
-    if (!confirm("Delete this transaction?")) return;
+    setConfirmDeleteId(null);
     setError("");
     try {
       await apiFetch(`/api/v1/transactions/${id}`, { method: "DELETE" });
@@ -332,6 +362,13 @@ export default function TransactionsPage() {
                 <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
               </div>
             )}
+            {formMode === "transfer" && (
+              <div>
+                <label className={label}>Category (optional)</label>
+                <CategorySelect id="tx-transfer-cat" categories={categories} value={formTransferCatId} onChange={setFormTransferCatId} className={input} />
+                <p className="mt-1 text-[10px] text-text-muted">Defaults to Transfer. Override to track in budgets.</p>
+              </div>
+            )}
             <div>
               <label htmlFor="tx-desc" className={label}>Description</label>
               <input id="tx-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Auto: Transfer from X to Y" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
@@ -461,7 +498,7 @@ export default function TransactionsPage() {
         <Spinner />
       ) : (
         <>
-          <div className={card}>
+          <div className={`${card} overflow-x-auto`}>
             <div className="border-b border-border px-6 py-3">
               <div className="grid grid-cols-12 gap-4 text-xs font-medium uppercase tracking-wider text-text-muted">
                 {([
@@ -557,7 +594,7 @@ export default function TransactionsPage() {
                     </span>
                     <span className="col-span-1 flex justify-end gap-2">
                       {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
-                      <button onClick={() => handleDelete(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                      <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                     </span>
                   </div>
                 );
@@ -588,6 +625,15 @@ export default function TransactionsPage() {
           )}
         </>
       )}
+      <ConfirmModal
+        open={confirmDeleteId !== null}
+        title="Delete Transaction"
+        message="Delete this transaction?"
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </AppShell>
   );
 }

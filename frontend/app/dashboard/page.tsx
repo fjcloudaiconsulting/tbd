@@ -63,6 +63,7 @@ export default function DashboardPage() {
   const [formRecurring, setFormRecurring] = useState(false);
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
+  const [formTransferCatId, setFormTransferCatId] = useState<number | "">("");
 
   const [chartFilter, setChartFilter] = useState<string | null>(null);
   const [dashSortField, setDashSortField] = useState<"date" | "description" | "amount">("date");
@@ -151,6 +152,7 @@ export default function DashboardPage() {
             amount: formAmount,
             status: formStatus,
             date: formDate,
+            ...(formTransferCatId !== "" ? { category_id: formTransferCatId } : {}),
           }),
         });
       } else {
@@ -187,6 +189,7 @@ export default function DashboardPage() {
       setFormType("expense");
       setFormStatus("settled");
       setFormToAccountId("");
+      setFormTransferCatId("");
       setFormRecurring(false);
       setFormAutoSettle(false);
       setFormDate(todayISO());
@@ -228,8 +231,8 @@ export default function DashboardPage() {
   );
   const currencies = Object.entries(balanceByCurrency);
 
-  // Accounts with balance != 0 for individual tiles
-  const accountsWithBalance = activeAccounts.filter((a) => Number(a.balance) !== 0);
+  // All active accounts for individual tiles
+  const accountsWithBalance = activeAccounts;
 
   // Precompute tx map for O(1) linked lookups
   const txMap = new Map(allTransactions.map((tx) => [tx.id, tx]));
@@ -348,6 +351,19 @@ export default function DashboardPage() {
                   <div>
                     <label htmlFor="da-category" className={label}>Category</label>
                     <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+                  </div>
+                )}
+                {formMode === "transfer" && (
+                  <div>
+                    <label className={label}>Category (optional)</label>
+                    <CategorySelect
+                      id="da-transfer-cat"
+                      categories={categories}
+                      value={formTransferCatId}
+                      onChange={setFormTransferCatId}
+                      className={input}
+                    />
+                    <p className="mt-1 text-[10px] text-text-muted">Defaults to Transfer. Override to track in budgets.</p>
                   </div>
                 )}
                 <div>
@@ -542,7 +558,7 @@ export default function DashboardPage() {
                     </ResponsiveContainer>
                   </div>
                   <div className="flex-1 space-y-1.5">
-                    {donutData.map((d, i) => (
+                    {donutData.slice(0, 10).map((d, i) => (
                       <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
                         className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-accent-dim" : ""}`}>
                         <div className="flex items-center gap-2">
@@ -552,6 +568,9 @@ export default function DashboardPage() {
                         <span className="text-xs tabular-nums text-text-muted">{formatAmount(d.value)}</span>
                       </button>
                     ))}
+                    {donutData.length > 10 && (
+                      <p className="px-1.5 text-[10px] text-text-muted">+{donutData.length - 10} more — click chart to filter</p>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -560,7 +579,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Budget progress */}
-            <div className={card}>
+            <div className={`${card} overflow-hidden`}>
               <div className={`flex items-center justify-between ${cardHeader}`}>
                 <h2 className={cardTitle}>Budget Progress</h2>
                 <Link href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</Link>
@@ -574,14 +593,23 @@ export default function DashboardPage() {
                       spent: Number(b.spent),
                       remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
                       pct: b.percent_used,
-                    }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
+                    }))} layout="vertical" margin={{ left: 0, right: 20, top: 0, bottom: 0 }}>
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
                       <Tooltip
-                        formatter={(v, name) => [formatAmount(Number(v)), name === "spent" ? <span style={{ color: "#ef4444" }}>Spent</span> : <span style={{ color: "#4ade80" }}>Remaining</span>]}
+                        formatter={(v, name) => [
+                          formatAmount(Number(v)),
+                          name === "spent" ? <span style={{ color: "#f87171" }}>Spent</span> : <span style={{ color: "#4ade80" }}>Remaining</span>,
+                        ]}
                         contentStyle={{ fontSize: "11px" }}
                       />
-                      <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}>
+                      <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}
+                        cursor="pointer"
+                        onClick={(_, idx) => {
+                          const name = budgets.slice(0, 6)[idx]?.category_name;
+                          if (name) setChartFilter(chartFilter === name ? null : name);
+                        }}
+                      >
                         {budgets.slice(0, 6).map((b, i) => (
                           <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
                         ))}
@@ -590,8 +618,10 @@ export default function DashboardPage() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-                <div className="flex gap-3 px-4 pb-3 text-[10px] text-text-muted">
+                <div className="flex flex-wrap gap-3 px-4 pb-3 text-[10px] text-text-muted">
                   <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Spent</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f59e0b" }} /> &gt;80%</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over budget</span>
                   <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#e8ebf0" }} /> Remaining</span>
                 </div>
                 </>
@@ -602,8 +632,8 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {/* Forecast comparison — executed vs forecast per category */}
-            <div className={`${card} p-5`}>
+            {/* Forecast comparison — planned vs actual per category */}
+            <div className={`${card} overflow-hidden p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Forecast by Category</h2>
               {forecast && forecast.categories.length > 0 ? (
                 <div style={{ height: Math.max(Math.min(forecast.categories.length, 8) * 32, 100) }}>
@@ -611,22 +641,33 @@ export default function DashboardPage() {
                     <BarChart
                       data={forecast.categories.slice(0, 8).map((c) => ({
                         name: c.category_name.length > 12 ? c.category_name.slice(0, 12) + "…" : c.category_name,
-                        executed: Number(c.executed),
-                        pending: Number(c.pending),
-                        recurring: Number(c.recurring),
+                        planned: Number(c.forecast),
+                        actual: Number(c.executed),
                       }))}
                       layout="vertical"
-                      margin={{ left: 0, right: 0, top: 0, bottom: 0 }}
+                      margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
                     >
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
                       <Tooltip
-                        formatter={(v, name) => [formatAmount(Number(v)), name === "executed" ? <span style={{ color: "#4ade80" }}>Executed</span> : name === "pending" ? <span style={{ color: "#D4A64A" }}>Pending</span> : <span style={{ color: "#5FA8D3" }}>Recurring</span>]}
+                        formatter={(v, name) => [
+                          formatAmount(Number(v)),
+                          name === "planned" ? <span style={{ color: "#D4A64A" }}>Planned</span> : <span style={{ color: "#4ade80" }}>Actual</span>,
+                        ]}
                         contentStyle={{ fontSize: "11px" }}
                       />
-                      <Bar dataKey="executed" stackId="a" fill="#4ade80" radius={[3, 0, 0, 3]} animationDuration={600} />
-                      <Bar dataKey="pending" stackId="a" fill="#D4A64A" animationDuration={600} />
-                      <Bar dataKey="recurring" stackId="a" fill="#5FA8D3" radius={[0, 3, 3, 0]} animationDuration={600} />
+                      <Bar dataKey="planned" fill="#D4A64A" radius={[4, 4, 4, 4]} animationDuration={600}
+                        cursor="pointer"
+                        onClick={(_, idx) => {
+                          const name = forecast?.categories[idx]?.category_name;
+                          if (name) setChartFilter(chartFilter === name ? null : name);
+                        }}
+                      />
+                      <Bar dataKey="actual" fill="#4ade80" radius={[4, 4, 4, 4]} animationDuration={600}>
+                        {forecast.categories.slice(0, 8).map((c, i) => (
+                          <Cell key={i} fill={Number(c.executed) > Number(c.forecast) ? "#f87171" : "#4ade80"} />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -634,9 +675,9 @@ export default function DashboardPage() {
                 <p className="text-sm text-text-muted py-6 text-center">No forecast data</p>
               )}
               <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-success" /> Executed</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Pending</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#5FA8D3" }} /> Recurring</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Planned</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#4ade80" }} /> Under plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over plan</span>
               </div>
             </div>
           </div>
@@ -675,7 +716,7 @@ export default function DashboardPage() {
                         {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                       </span>
                       {!isTransfer && (
-                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); await loadRefs(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
                           {tx.status}
                         </button>
                       )}

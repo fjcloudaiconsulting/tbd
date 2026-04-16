@@ -8,6 +8,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Account, AccountType } from "@/lib/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 
 export default function AccountsPage() {
   const { user, loading } = useAuth();
@@ -33,6 +34,8 @@ export default function AccountsPage() {
   const selectedType = accountTypes.find((t) => t.id === acctTypeId) ?? null;
 
   const [error, setError] = useState("");
+  const [confirmDeleteTypeId, setConfirmDeleteTypeId] = useState<number | null>(null);
+  const [confirmDeleteAcctId, setConfirmDeleteAcctId] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     const [types, accts] = await Promise.all([
@@ -68,7 +71,7 @@ export default function AccountsPage() {
   }
 
   async function handleDeleteType(id: number) {
-    if (!confirm("Delete this account type?")) return;
+    setConfirmDeleteTypeId(null);
     setError("");
     try {
       await apiFetch(`/api/v1/account-types/${id}`, { method: "DELETE" });
@@ -94,7 +97,7 @@ export default function AccountsPage() {
   }
 
   async function handleDeleteAccount(id: number) {
-    if (!confirm("Delete this account?")) return;
+    setConfirmDeleteAcctId(null);
     setError("");
     try {
       await apiFetch(`/api/v1/accounts/${id}`, { method: "DELETE" });
@@ -176,7 +179,7 @@ export default function AccountsPage() {
                           {!at.is_system && (
                             <>
                               <button onClick={() => { setEditingTypeId(at.id); setEditingTypeName(at.name); }} aria-label={`Edit ${at.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                              <button onClick={() => handleDeleteType(at.id)} aria-label={`Delete ${at.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                              <button onClick={() => setConfirmDeleteTypeId(at.id)} aria-label={`Delete ${at.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                             </>
                           )}
                         </div>
@@ -267,7 +270,7 @@ export default function AccountsPage() {
                         <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="text-xs text-text-muted hover:text-text-secondary">
                           {a.is_active ? "Deactivate" : "Activate"}
                         </button>
-                        <button onClick={() => handleDeleteAccount(a.id)} aria-label={`Delete ${a.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                        <button onClick={() => setConfirmDeleteAcctId(a.id)} aria-label={`Delete ${a.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
                       </div>
                     </div>
                   </div>
@@ -282,6 +285,24 @@ export default function AccountsPage() {
           </div>
         </div>
       )}
+      <ConfirmModal
+        open={confirmDeleteTypeId !== null}
+        title="Delete Account Type"
+        message="Delete this account type?"
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => { if (confirmDeleteTypeId !== null) handleDeleteType(confirmDeleteTypeId); }}
+        onCancel={() => setConfirmDeleteTypeId(null)}
+      />
+      <ConfirmModal
+        open={confirmDeleteAcctId !== null}
+        title="Delete Account"
+        message="Delete this account?"
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={() => { if (confirmDeleteAcctId !== null) handleDeleteAccount(confirmDeleteAcctId); }}
+        onCancel={() => setConfirmDeleteAcctId(null)}
+      />
     </AppShell>
   );
 }

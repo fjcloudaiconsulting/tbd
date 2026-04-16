@@ -1,5 +1,7 @@
 # Contributing to PFV2
 
+This guide covers everything you need to develop, test, and deploy PFV2. Start with Quick Start if you're setting up for the first time, then refer to the architecture and API sections as needed.
+
 ## Prerequisites
 
 - Docker & Docker Compose
