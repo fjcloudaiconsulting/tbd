@@ -536,8 +536,8 @@ export default function DashboardPage() {
                 </button>
               )}
               {donutData.length > 0 ? (
-                <div className="flex items-center gap-4">
-                  <div className="w-40 h-40">
+                <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
+                  <div className="h-40 w-40 shrink-0">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
                         <Pie
@@ -557,7 +557,7 @@ export default function DashboardPage() {
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
-                  <div className="flex-1 space-y-1.5">
+                  <div className="w-full space-y-1.5 sm:flex-1">
                     {donutData.slice(0, 10).map((d, i) => (
                       <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
                         className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-accent-dim" : ""}`}>

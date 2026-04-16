@@ -181,7 +181,7 @@ export default function RecurringPage() {
       <ConfirmModal
         open={confirmDeleteId !== null}
         title="Delete Recurring Template"
-        message="Permanently delete this recurring template?\n\nAny remaining pending future transactions will also be removed.\nSettled transactions are preserved."
+        message={"Permanently delete this recurring template?\n\nAny remaining pending future transactions will also be removed.\nSettled transactions are preserved."}
         confirmLabel="Delete"
         variant="danger"
         onConfirm={() => { if (confirmDeleteId !== null) { doDelete(confirmDeleteId); } setConfirmDeleteId(null); }}
