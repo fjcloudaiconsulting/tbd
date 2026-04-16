@@ -8,6 +8,7 @@ from app.models.budget import Budget
 from app.models.billing import BillingPeriod
 from app.models.settings import OrgSetting
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus, ForecastItemType, ItemSource
+from app.models.subscription import Plan, Subscription, SubscriptionStatus, BillingInterval
 
 __all__ = [
     "Base",
@@ -30,4 +31,8 @@ __all__ = [
     "PlanStatus",
     "ForecastItemType",
     "ItemSource",
+    "Plan",
+    "Subscription",
+    "SubscriptionStatus",
+    "BillingInterval",
 ]
