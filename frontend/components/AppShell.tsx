@@ -133,7 +133,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <Link href="/dashboard" className="font-display text-lg font-semibold text-sidebar-text-bright">
             PFV2
           </Link>
-          <button onClick={() => setSidebarOpen(false)} className="rounded-md p-1 text-sidebar-muted hover:text-sidebar-text-bright lg:hidden">
+          <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="rounded-md p-1 text-sidebar-muted hover:text-sidebar-text-bright lg:hidden">
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
             </svg>

@@ -226,7 +226,9 @@ export default function BudgetsPage() {
                     <Tooltip
                       formatter={(v, name) => [
                         formatAmount(Number(v)),
-                        name === "spent" ? <span style={{ color: "#f87171" }}>Spent</span> : <span style={{ color: "#4ade80" }}>Remaining</span>,
+                        name === "spent" ? <span style={{ color: "#f87171" }}>Spent</span>
+                          : name === "over" ? <span style={{ color: "#f87171" }}>Over budget</span>
+                          : <span style={{ color: "#4ade80" }}>Remaining</span>,
                       ]}
                       contentStyle={{ fontSize: "11px" }}
                     />

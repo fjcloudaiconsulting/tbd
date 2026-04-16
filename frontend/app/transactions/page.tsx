@@ -21,7 +21,7 @@ export default function TransactionsPage() {
   return (
     <Suspense fallback={
       <div className="flex min-h-screen items-center justify-center">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
+        <Spinner />
       </div>
     }>
       <TransactionsPageContent />
@@ -70,6 +70,7 @@ function TransactionsPageContent() {
   const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
   const [formAccountId, setFormAccountId] = useState<number | "">("");
   const [formToAccountId, setFormToAccountId] = useState<number | "">("");
+  const [formTransferCatId, setFormTransferCatId] = useState<number | "">("");
   const [formCategoryId, setFormCategoryId] = useState<number | "">("");
   const [formDescription, setFormDescription] = useState("");
   const [formAmount, setFormAmount] = useState("");
@@ -161,6 +162,7 @@ function TransactionsPageContent() {
             amount: formAmount,
             status: formStatus,
             date: formDate,
+            ...(formTransferCatId !== "" ? { category_id: formTransferCatId } : {}),
           }),
         });
       } else {
@@ -198,6 +200,7 @@ function TransactionsPageContent() {
       setFormType("expense");
       setFormStatus("settled");
       setFormToAccountId("");
+      setFormTransferCatId("");
       setFormRecurring(false);
       setFormAutoSettle(false);
       setFormDate(todayISO());
@@ -357,6 +360,13 @@ function TransactionsPageContent() {
               <div>
                 <label htmlFor="tx-category" className={label}>Category</label>
                 <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+              </div>
+            )}
+            {formMode === "transfer" && (
+              <div>
+                <label className={label}>Category (optional)</label>
+                <CategorySelect id="tx-transfer-cat" categories={categories} value={formTransferCatId} onChange={setFormTransferCatId} className={input} />
+                <p className="mt-1 text-[10px] text-text-muted">Defaults to Transfer. Override to track in budgets.</p>
               </div>
             )}
             <div>

@@ -152,7 +152,7 @@ export default function DashboardPage() {
             amount: formAmount,
             status: formStatus,
             date: formDate,
-            ...(formTransferCatId !== "" && { category_id: formTransferCatId }),
+            ...(formTransferCatId !== "" ? { category_id: formTransferCatId } : {}),
           }),
         });
       } else {
