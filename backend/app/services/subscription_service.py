@@ -1,11 +1,14 @@
 """Subscription service — trial lifecycle, plan changes, feature enforcement."""
 
+import asyncio
 import datetime
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.settings import OrgSetting
 from app.models.subscription import (
     BillingInterval,
     Plan,
@@ -15,6 +18,8 @@ from app.models.subscription import (
 from app.models.user import Organization, User
 from app.services.exceptions import NotFoundError, ValidationError
 from app.services.email_service import send_trial_expiring_email
+
+logger = structlog.stdlib.get_logger()
 
 
 async def get_default_plan(db: AsyncSession) -> Plan:
@@ -75,6 +80,14 @@ async def get_subscription_with_plan(
     return row[0], row[1]
 
 
+async def _send_trial_email_safe(email: str, days_left: int, org_name: str) -> None:
+    """Send trial reminder in background; swallow errors to avoid unhandled task exceptions."""
+    try:
+        await send_trial_expiring_email(email, days_left, org_name)
+    except Exception:
+        await logger.awarning("trial_reminder_email_failed", email=email, days_left=days_left)
+
+
 async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | None:
     """Check if trial has expired and downgrade if needed. Returns updated subscription."""
     sub = await get_subscription(db, org_id)
@@ -84,22 +97,33 @@ async def check_trial_expiry(db: AsyncSession, org_id: int) -> Subscription | No
     if sub.status != SubscriptionStatus.TRIALING:
         return sub
 
-    # Send trial expiring email at 3 days and 1 day remaining
+    # Send trial expiring email at 3 days and 1 day remaining (idempotent, background)
     if sub.trial_end:
         days_left = (sub.trial_end - datetime.date.today()).days
         if days_left in (3, 1):
-            # Fetch org owner email to send notification
-            owner = await db.scalar(
-                select(User).where(
-                    User.org_id == org_id, User.role == "owner", User.is_active == True
+            sentinel_key = f"trial_reminder_{days_left}d_sent"
+            already_sent = await db.scalar(
+                select(OrgSetting).where(
+                    OrgSetting.org_id == org_id, OrgSetting.key == sentinel_key
                 )
             )
-            if owner:
-                org = await db.scalar(
-                    select(Organization).where(Organization.id == org_id)
+            if not already_sent:
+                # Mark as sent first to prevent duplicates from concurrent requests
+                db.add(OrgSetting(org_id=org_id, key=sentinel_key, value="1"))
+                await db.commit()
+
+                owner = await db.scalar(
+                    select(User).where(
+                        User.org_id == org_id, User.role == "owner", User.is_active == True
+                    )
                 )
-                org_name = org.name if org else "your organization"
-                await send_trial_expiring_email(owner.email, days_left, org_name)
+                if owner:
+                    org = await db.scalar(
+                        select(Organization).where(Organization.id == org_id)
+                    )
+                    org_name = org.name if org else "your organization"
+                    # Fire and forget — don't block the request on email delivery
+                    asyncio.create_task(_send_trial_email_safe(owner.email, days_left, org_name))
 
     if sub.trial_end and sub.trial_end < datetime.date.today():
         # Trial expired — downgrade to free plan
