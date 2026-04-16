@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # CORS
     backend_cors_origins: str = "http://localhost:3000"
 
+    # Billing
+    default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
+    trial_duration_days: int = 14
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.backend_cors_origins.split(",")]
