@@ -94,3 +94,22 @@ async def send_verification_email(to: str, token: str) -> bool:
     """
     body_text = f"Verify your email: {verify_url}"
     return await send_email(to, subject, body_html, body_text)
+
+
+async def send_trial_expiring_email(to: str, days_left: int, org_name: str) -> bool:
+    """Send a trial expiring notification."""
+    upgrade_url = f"{settings.app_url}/settings/billing"
+    subject = f"PFV2 — Your trial ends in {days_left} day{'s' if days_left != 1 else ''}"
+    body_html = f"""
+    <h2>Your Trial Is Ending Soon</h2>
+    <p>Hi! Your <strong>{org_name}</strong> trial ends in <strong>{days_left} day{'s' if days_left != 1 else ''}</strong>.</p>
+    <p>After the trial, your account will switch to the Free plan with limited features.</p>
+    <p><a href="{upgrade_url}">Upgrade to Pro</a> to keep all your features.</p>
+    <p style="color: #666; font-size: 12px;">No charge will be applied during beta — upgrading simply reserves your spot.</p>
+    """
+    body_text = (
+        f"Your {org_name} trial ends in {days_left} day{'s' if days_left != 1 else ''}.\n"
+        f"Upgrade at: {upgrade_url}\n"
+        "No charge during beta."
+    )
+    return await send_email(to, subject, body_html, body_text)
