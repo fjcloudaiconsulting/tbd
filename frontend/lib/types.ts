@@ -14,6 +14,9 @@ export interface User {
   is_superadmin: boolean;
   is_active: boolean;
   mfa_enabled: boolean;
+  subscription_status: SubscriptionStatus | null;
+  subscription_plan: string | null;
+  trial_end: string | null;
 }
 
 export interface TokenResponse {
@@ -206,4 +209,35 @@ export interface ImportConfirmResponse {
   skipped_count: number;
   error_count: number;
   errors: ImportRowError[];
+}
+
+export interface Plan {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  is_custom: boolean;
+  is_active: boolean;
+  sort_order: number;
+  price_monthly: number;
+  price_yearly: number;
+  max_users: number | null;
+  retention_days: number | null;
+  ai_budget_enabled: boolean;
+  ai_forecast_enabled: boolean;
+  ai_smart_plan_enabled: boolean;
+}
+
+export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled";
+
+export interface SubscriptionDetail {
+  id: number;
+  org_id: number;
+  plan: Plan;
+  status: SubscriptionStatus;
+  billing_interval: "monthly" | "yearly";
+  trial_start: string | null;
+  trial_end: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
 }
