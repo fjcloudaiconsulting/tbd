@@ -207,7 +207,7 @@ export default function OrganizationSettingsPage() {
                   <button
                     onClick={handleClosePeriod}
                     disabled={closingPeriod}
-                    className={btnPrimary}
+                    className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
                   >
                     {closingPeriod ? "Closing..." : "Close Period"}
                   </button>
@@ -215,7 +215,7 @@ export default function OrganizationSettingsPage() {
               </div>
             )}
 
-            <form onSubmit={handleSaveCycle} className="flex items-end gap-3">
+            <form onSubmit={handleSaveCycle} className="flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-3">
               <div>
                 <label className={label}>Billing cycle day</label>
                 <input
@@ -224,10 +224,10 @@ export default function OrganizationSettingsPage() {
                   max={28}
                   value={billingCycleDay}
                   onChange={(e) => setBillingCycleDay(Number(e.target.value))}
-                  className={`${input} w-24`}
+                  className={`${input} w-full sm:w-24`}
                 />
               </div>
-              <button type="submit" disabled={savingCycle} className={btnPrimary}>
+              <button type="submit" disabled={savingCycle} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                 {savingCycle ? "Saving..." : "Save"}
               </button>
             </form>
@@ -240,61 +240,63 @@ export default function OrganizationSettingsPage() {
             <h2 className={cardTitle}>Advanced Configuration</h2>
           </div>
           <div className="p-6 space-y-4">
-            <form onSubmit={handleAdd} className="flex items-end gap-3">
-              <div>
+            <form onSubmit={handleAdd} className="flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-3">
+              <div className="flex-1">
                 <label className={label}>Key</label>
-                <input value={key} onChange={(e) => setKey(e.target.value)} className={input} placeholder="key" />
+                <input value={key} onChange={(e) => setKey(e.target.value)} className={`${input} w-full`} placeholder="key" />
               </div>
-              <div>
+              <div className="flex-1">
                 <label className={label}>Value</label>
-                <input value={value} onChange={(e) => setValue(e.target.value)} className={input} placeholder="value" />
+                <input value={value} onChange={(e) => setValue(e.target.value)} className={`${input} w-full`} placeholder="value" />
               </div>
-              <button type="submit" className={btnPrimary}>Add</button>
+              <button type="submit" className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Add</button>
             </form>
 
             {settings.length > 0 && (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border text-left text-xs uppercase text-text-muted">
-                    <th className="pb-2">Key</th>
-                    <th className="pb-2">Value</th>
-                    <th className="pb-2" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {settings.map((s) => (
-                    <tr key={s.key} className="border-b border-border">
-                      <td className="py-2 text-text-primary">{s.key}</td>
-                      <td className="py-2">
-                        {editingKey === s.key ? (
-                          <input
-                            value={editingValue}
-                            onChange={(e) => setEditingValue(e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && handleUpdate(s.key)}
-                            className={`${input} w-48`}
-                            autoFocus
-                          />
-                        ) : (
-                          <span className="text-text-secondary">{s.value}</span>
-                        )}
-                      </td>
-                      <td className="py-2 text-right space-x-2">
-                        {editingKey === s.key ? (
-                          <>
-                            <button onClick={() => handleUpdate(s.key)} className="text-xs text-accent hover:underline">Save</button>
-                            <button onClick={() => setEditingKey(null)} className="text-xs text-text-muted hover:underline">Cancel</button>
-                          </>
-                        ) : (
-                          <>
-                            <button onClick={() => { setEditingKey(s.key); setEditingValue(s.value); }} className="text-xs text-accent hover:underline">Edit</button>
-                            <button onClick={() => handleDelete(s.key)} className="text-xs text-danger hover:underline">Delete</button>
-                          </>
-                        )}
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[640px] text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-xs uppercase text-text-muted">
+                      <th className="pb-2">Key</th>
+                      <th className="pb-2">Value</th>
+                      <th className="pb-2" />
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {settings.map((s) => (
+                      <tr key={s.key} className="border-b border-border">
+                        <td className="py-2 text-text-primary">{s.key}</td>
+                        <td className="py-2">
+                          {editingKey === s.key ? (
+                            <input
+                              value={editingValue}
+                              onChange={(e) => setEditingValue(e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && handleUpdate(s.key)}
+                              className={`${input} w-48`}
+                              autoFocus
+                            />
+                          ) : (
+                            <span className="text-text-secondary">{s.value}</span>
+                          )}
+                        </td>
+                        <td className="py-2 text-right space-x-2">
+                          {editingKey === s.key ? (
+                            <>
+                              <button onClick={() => handleUpdate(s.key)} className="text-xs text-accent hover:underline">Save</button>
+                              <button onClick={() => setEditingKey(null)} className="text-xs text-text-muted hover:underline">Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button onClick={() => { setEditingKey(s.key); setEditingValue(s.value); }} className="text-xs text-accent hover:underline">Edit</button>
+                              <button onClick={() => handleDelete(s.key)} className="text-xs text-danger hover:underline">Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>

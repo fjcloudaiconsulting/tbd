@@ -36,12 +36,12 @@ export default function SettingsLayout({ children, activeTab }: { children: Reac
   return (
     <AppShell>
       <h1 className={pageTitle}>Settings</h1>
-      <div className="mb-6 flex gap-0 border-b border-border">
+      <nav className="mb-6 flex gap-0 overflow-x-auto border-b border-border -mx-4 px-4 sm:mx-0 sm:px-0">
         {visibleTabs.map((tab) => (
           <Link
             key={tab.href}
             href={tab.href}
-            className={`px-5 py-3 text-sm font-medium transition-colors ${
+            className={`whitespace-nowrap px-5 py-3 text-sm font-medium transition-colors ${
               activeTab === tab.href
                 ? "border-b-2 border-accent text-accent"
                 : "text-text-muted hover:text-text-primary"
@@ -50,7 +50,7 @@ export default function SettingsLayout({ children, activeTab }: { children: Reac
             {tab.label}
           </Link>
         ))}
-      </div>
+      </nav>
       {children}
     </AppShell>
   );

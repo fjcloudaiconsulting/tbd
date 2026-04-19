@@ -178,7 +178,7 @@ export default function BillingPage() {
             </div>
 
             {currentPlan && (
-              <div className="mt-6 grid grid-cols-3 gap-4 border-t border-border pt-4">
+              <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3 border-t border-border pt-4">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Users</p>
                   <p className="text-sm font-medium text-text-primary">
@@ -261,7 +261,7 @@ export default function BillingPage() {
                     ) : (
                       <button
                         onClick={() => handleChangePlan(plan.slug, sub?.billing_interval ?? "monthly")}
-                        className={Number(plan.price_monthly) > Number(currentPlan?.price_monthly ?? 0) ? btnPrimary : btnSecondary}
+                        className={`w-full sm:w-auto min-h-[44px] sm:min-h-0 ${Number(plan.price_monthly) > Number(currentPlan?.price_monthly ?? 0) ? btnPrimary : btnSecondary}`}
                       >
                         {Number(plan.price_monthly) > Number(currentPlan?.price_monthly ?? 0) ? "Upgrade" : "Downgrade"}
                       </button>
