@@ -450,9 +450,9 @@ export default function ForecastPlansPage() {
         <div className={`mb-6 ${card} p-6`}>
           <form
             onSubmit={handleAddItem}
-            className="flex flex-wrap items-end gap-4"
+            className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4"
           >
-            <div className="w-32">
+            <div className="w-full sm:w-32">
               <label htmlFor="fp-type" className={label}>
                 Type
               </label>
@@ -468,7 +468,7 @@ export default function ForecastPlansPage() {
                 <option value="income">Income</option>
               </select>
             </div>
-            <div className="min-w-[200px] flex-1">
+            <div className="w-full sm:min-w-[200px] sm:flex-1">
               <label htmlFor="fp-cat" className={label}>
                 Category
               </label>
@@ -491,7 +491,7 @@ export default function ForecastPlansPage() {
                 ))}
               </select>
             </div>
-            <div className="w-40">
+            <div className="w-full sm:w-40">
               <label htmlFor="fp-amount" className={label}>
                 Planned Amount
               </label>
@@ -507,7 +507,10 @@ export default function ForecastPlansPage() {
                 className={input}
               />
             </div>
-            <button type="submit" className={btnPrimary}>
+            <button
+              type="submit"
+              className={`${btnPrimary} w-full min-h-[44px] sm:w-auto sm:min-h-0`}
+            >
               Add
             </button>
           </form>
@@ -743,116 +746,136 @@ function ItemSection({
   setEditAmount: (v: string) => void;
 }) {
   const colTemplate = readOnly
-    ? "grid-cols-[1fr_100px_100px_100px_80px]"
-    : "grid-cols-[1fr_100px_100px_100px_80px_100px]";
+    ? "grid-cols-[1fr_100px] md:grid-cols-[1fr_100px_100px_100px_80px]"
+    : "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px_80px_100px]";
 
   return (
     <div className={card}>
       <div className={cardHeader}>
         <h2 className={cardTitle}>{title}</h2>
       </div>
-      {/* Header row */}
-      <div
-        className={`grid ${colTemplate} gap-2 px-6 py-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted`}
-      >
-        <span>Category</span>
-        <span className="text-right">Planned</span>
-        <span className="text-right">Actual</span>
-        <span className="text-right">Variance</span>
-        <span className="text-center">Source</span>
-        {!readOnly && <span className="text-right">Actions</span>}
-      </div>
-      <div className="divide-y divide-border-subtle">
-        {items.map((item) => {
-          const variance = Number(item.variance);
-          const isOver =
-            item.type === "expense" ? variance > 0 : variance < 0;
-          return (
-            <div
-              key={item.id}
-              className={`grid ${colTemplate} items-center gap-2 px-6 py-2.5`}
-            >
-              {!readOnly && editingId === item.id ? (
-                <>
-                  <span className="text-sm text-text-primary">
-                    {item.category_name}
-                  </span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    value={editAmount}
-                    onChange={(e) => setEditAmount(e.target.value)}
-                    className={`text-right ${input}`}
-                    autoFocus
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") onSaveEdit(item.id);
-                      if (e.key === "Escape") onCancelEdit();
-                    }}
-                  />
-                  <span className="text-right text-sm tabular-nums text-text-secondary">
-                    {formatAmount(item.actual_amount)}
-                  </span>
-                  <span />
-                  <span />
-                  <div className="flex justify-end gap-2">
-                    <button
-                      onClick={() => onSaveEdit(item.id)}
-                      className="text-xs text-accent hover:text-accent-hover"
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={onCancelEdit}
-                      className="text-xs text-text-muted hover:text-text-secondary"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <span className="text-sm text-text-primary">
-                    {item.category_name}
-                  </span>
-                  <span className="text-right text-sm tabular-nums text-text-primary">
-                    {formatAmount(item.planned_amount)}
-                  </span>
-                  <span className="text-right text-sm tabular-nums text-text-secondary">
-                    {formatAmount(item.actual_amount)}
-                  </span>
-                  <span
-                    className={`text-right text-sm tabular-nums font-medium ${
-                      isOver ? "text-danger" : "text-success"
-                    }`}
-                  >
-                    {variance > 0 ? "+" : ""}
-                    {formatAmount(variance)}
-                  </span>
-                  <span className="text-center text-[11px] text-text-muted">
-                    {SOURCE_LABELS[item.source] ?? item.source}
-                  </span>
-                  {!readOnly && (
-                    <div className="flex justify-end gap-2">
-                      <button
-                        onClick={() => onStartEdit(item)}
-                        className={btnLink}
+      <div className="overflow-x-auto">
+        <div className="min-w-[320px]">
+          {/* Header row */}
+          <div
+            className={`grid ${colTemplate} gap-2 px-6 py-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted`}
+          >
+            <span>Category</span>
+            <span className="text-right">Planned</span>
+            <span className="hidden text-right md:block">Actual</span>
+            <span className="hidden text-right md:block">Variance</span>
+            <span className="hidden text-center md:block">Source</span>
+            {!readOnly && <span className="text-right">Actions</span>}
+          </div>
+          <div className="divide-y divide-border-subtle">
+            {items.map((item) => {
+              const variance = Number(item.variance);
+              const isOver =
+                item.type === "expense" ? variance > 0 : variance < 0;
+              return (
+                <div
+                  key={item.id}
+                  className={`grid ${colTemplate} items-center gap-2 px-6 py-2.5`}
+                >
+                  {!readOnly && editingId === item.id ? (
+                    <>
+                      <div className="text-sm text-text-primary">
+                        {item.category_name}
+                        <div className="md:hidden mt-1 text-xs text-text-muted">
+                          Actual {formatAmount(item.actual_amount)}
+                        </div>
+                      </div>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        value={editAmount}
+                        onChange={(e) => setEditAmount(e.target.value)}
+                        className={`text-right ${input}`}
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") onSaveEdit(item.id);
+                          if (e.key === "Escape") onCancelEdit();
+                        }}
+                      />
+                      <span className="hidden text-right text-sm tabular-nums text-text-secondary md:block">
+                        {formatAmount(item.actual_amount)}
+                      </span>
+                      <span className="hidden md:block" />
+                      <span className="hidden md:block" />
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => onSaveEdit(item.id)}
+                          className="text-xs text-accent hover:text-accent-hover"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={onCancelEdit}
+                          className="text-xs text-text-muted hover:text-text-secondary"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-sm text-text-primary">
+                        {item.category_name}
+                        <div className="md:hidden mt-1 text-xs text-text-muted">
+                          Actual {formatAmount(item.actual_amount)} · Variance{" "}
+                          <span
+                            className={`font-medium ${
+                              isOver ? "text-danger" : "text-success"
+                            }`}
+                          >
+                            {variance > 0 ? "+" : ""}
+                            {formatAmount(variance)}
+                          </span>
+                          {" · "}
+                          {SOURCE_LABELS[item.source] ?? item.source}
+                        </div>
+                      </div>
+                      <span className="text-right text-sm tabular-nums text-text-primary">
+                        {formatAmount(item.planned_amount)}
+                      </span>
+                      <span className="hidden text-right text-sm tabular-nums text-text-secondary md:block">
+                        {formatAmount(item.actual_amount)}
+                      </span>
+                      <span
+                        className={`hidden text-right text-sm tabular-nums font-medium md:block ${
+                          isOver ? "text-danger" : "text-success"
+                        }`}
                       >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => onDelete(item.id)}
-                        className={btnDanger}
-                      >
-                        Remove
-                      </button>
-                    </div>
+                        {variance > 0 ? "+" : ""}
+                        {formatAmount(variance)}
+                      </span>
+                      <span className="hidden text-center text-[11px] text-text-muted md:block">
+                        {SOURCE_LABELS[item.source] ?? item.source}
+                      </span>
+                      {!readOnly && (
+                        <div className="flex justify-end gap-2">
+                          <button
+                            onClick={() => onStartEdit(item)}
+                            className={btnLink}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => onDelete(item.id)}
+                            className={btnDanger}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      )}
+                    </>
                   )}
-                </>
-              )}
-            </div>
-          );
-        })}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
