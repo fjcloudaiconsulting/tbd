@@ -77,7 +77,7 @@ export default function ConfirmModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       onClick={onCancel}
     >
       <div
@@ -85,16 +85,16 @@ export default function ConfirmModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-modal-title"
-        className="mx-4 w-full max-w-md rounded-lg border border-border bg-surface p-6 shadow-xl"
+        className="w-full max-w-md max-w-[calc(100vw-2rem)] max-h-[90vh] overflow-y-auto rounded-lg border border-border bg-surface p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 id="confirm-modal-title" className="text-lg font-semibold text-text-primary">{title}</h3>
         <p className="mt-2 whitespace-pre-line text-sm text-text-secondary">{message}</p>
-        <div className="mt-6 flex justify-end gap-3">
-          <button ref={cancelRef} onClick={onCancel} className={btnSecondary}>
+        <div className="mt-6 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+          <button ref={cancelRef} onClick={onCancel} className={`${btnSecondary} w-full sm:w-auto min-h-[44px]`}>
             {cancelLabel}
           </button>
-          <button ref={confirmRef} onClick={onConfirm} className={variantClasses[variant]}>
+          <button ref={confirmRef} onClick={onConfirm} className={`${variantClasses[variant]} w-full sm:w-auto min-h-[44px]`}>
             {confirmLabel}
           </button>
         </div>
