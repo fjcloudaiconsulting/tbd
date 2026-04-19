@@ -33,3 +33,11 @@ mysql_data/
 
 # Claude stuff
 .claude/
+.superpowers/
+.playwright-mcp/
+
+# Local test fixtures and scratch
+mock/
+*.png
+!frontend/public/**/*.png
+frontend/tsconfig.tsbuildinfo
