@@ -422,67 +422,67 @@ function TransactionsPageContent() {
       )}
 
       {/* Search + Preset filters */}
-      <div className="mb-3 flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[200px]">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
+        <div className="w-full sm:flex-1 sm:min-w-[200px]">
           <label htmlFor="f-search" className="sr-only">Search transactions</label>
           <input id="f-search" type="text" placeholder="Search descriptions..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className={input} />
         </div>
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           {[
             { label: "Today", fn: () => { const d = todayISO(); setFilterDateFrom(d); setFilterDateTo(d); } },
             { label: "This Week", fn: () => { const now = new Date(); const day = now.getDay(); const diff = day === 0 ? 6 : day - 1; const mon = new Date(now); mon.setDate(now.getDate() - diff); setFilterDateFrom(formatLocalDate(mon)); setFilterDateTo(todayISO()); } },
             { label: "This Month", fn: () => { const now = new Date(); setFilterDateFrom(formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 1))); setFilterDateTo(todayISO()); } },
             { label: "All", fn: () => { setFilterDateFrom(""); setFilterDateTo(""); } },
           ].map((p) => (
-            <button key={p.label} type="button" onClick={p.fn} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised">
+            <button key={p.label} type="button" onClick={p.fn} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised min-h-[44px] sm:min-h-0">
               {p.label}
             </button>
           ))}
         </div>
       </div>
-      <div className="mb-4 flex flex-wrap gap-3">
-        <div>
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-3">
+        <div className="w-full sm:w-auto">
           <label htmlFor="f-account" className="sr-only">Filter by account</label>
-          <select id="f-account" value={filterAccount} onChange={(e) => setFilterAccount(e.target.value === "" ? "" : Number(e.target.value))} className={`w-40 ${input}`}>
+          <select id="f-account" value={filterAccount} onChange={(e) => setFilterAccount(e.target.value === "" ? "" : Number(e.target.value))} className={`w-full sm:w-40 ${input}`}>
             <option value="">All accounts</option>
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label htmlFor="f-category" className="sr-only">Filter by category</label>
-          <select id="f-category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value === "" ? "" : Number(e.target.value))} className={`w-40 ${input}`}>
+          <select id="f-category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value === "" ? "" : Number(e.target.value))} className={`w-full sm:w-40 ${input}`}>
             <option value="">All categories</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label htmlFor="f-type" className="sr-only">Filter by type</label>
-          <select id="f-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className={`w-32 ${input}`}>
+          <select id="f-type" value={filterType} onChange={(e) => setFilterType(e.target.value)} className={`w-full sm:w-32 ${input}`}>
             <option value="">All types</option>
             <option value="income">Income</option>
             <option value="expense">Expense</option>
           </select>
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label htmlFor="f-status" className="sr-only">Filter by status</label>
-          <select id="f-status" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={`w-32 ${input}`}>
+          <select id="f-status" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className={`w-full sm:w-32 ${input}`}>
             <option value="">All statuses</option>
             <option value="settled">Settled</option>
             <option value="pending">Pending</option>
           </select>
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label htmlFor="f-from" className="sr-only">From date</label>
-          <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className={`w-32 ${input}`} placeholder="From" />
+          <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className={`w-full sm:w-32 ${input}`} placeholder="From" />
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label htmlFor="f-to" className="sr-only">To date</label>
-          <input id="f-to" type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className={`w-32 ${input}`} placeholder="To" />
+          <input id="f-to" type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className={`w-full sm:w-32 ${input}`} placeholder="To" />
         </div>
         {periods.length > 0 && (
-          <div>
+          <div className="w-full sm:w-auto">
             <label htmlFor="f-period" className="sr-only">Billing period</label>
-            <select id="f-period" value={filterPeriod} onChange={(e) => { setFilterPeriod(e.target.value); if (e.target.value) { setFilterDateFrom(""); setFilterDateTo(""); } }} className={`w-40 ${input}`}>
+            <select id="f-period" value={filterPeriod} onChange={(e) => { setFilterPeriod(e.target.value); if (e.target.value) { setFilterDateFrom(""); setFilterDateTo(""); } }} className={`w-full sm:w-40 ${input}`}>
               <option value="">All periods</option>
               {periods.map((p) => (
                 <option key={p.id} value={String(p.id)}>
@@ -498,8 +498,8 @@ function TransactionsPageContent() {
         <Spinner />
       ) : (
         <>
-          <div className={`${card} overflow-x-auto`}>
-            <div className="border-b border-border px-6 py-3">
+          <div className={`${card} md:overflow-x-auto`}>
+            <div className="hidden md:block border-b border-border px-6 py-3">
               <div className="grid grid-cols-12 gap-4 text-xs font-medium uppercase tracking-wider text-text-muted">
                 {([
                   { field: "date" as const, label: "Date", span: "col-span-2", align: "" },
@@ -516,100 +516,233 @@ function TransactionsPageContent() {
                 <span className="col-span-1" />
               </div>
             </div>
-            <div className="divide-y divide-border-subtle">
-              {(() => {
-                // Precompute tx map for O(1) lookups
-                const txMap = new Map(transactions.map((t) => [t.id, t]));
-                // Deduplicate transfers: keep the lower id (expense side)
-                const hiddenIds = new Set<number>();
-                for (const t of transactions) {
-                  if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
-                    hiddenIds.add(t.id);
-                  }
+            {(() => {
+              // Precompute tx map for O(1) lookups
+              const txMap = new Map(transactions.map((t) => [t.id, t]));
+              // Deduplicate transfers: keep the lower id (expense side)
+              const hiddenIds = new Set<number>();
+              for (const t of transactions) {
+                if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
+                  hiddenIds.add(t.id);
                 }
-                return sortedTransactions.filter((t) => !hiddenIds.has(t.id)).map((tx) => {
-                const isTransfer = tx.linked_transaction_id !== null;
-                const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
-                return editingId === tx.id ? (
-                  <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
-                    <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
-                    <span className="col-span-2"><input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
-                    <span className="col-span-2">
-                      <select aria-label="Account" value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
-                        {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
-                      </select>
-                    </span>
-                    <span className="col-span-2">
-                      <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
-                    </span>
-                    <span className="col-span-1">
-                      <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
-                        <option value="settled">Settled</option>
-                        <option value="pending">Pending</option>
-                      </select>
-                    </span>
-                    <span className="col-span-1 flex gap-1">
-                      <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] w-14 ${input}`}>
-                        <option value="expense">-</option>
-                        <option value="income">+</option>
-                      </select>
-                      <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm w-20 ${input}`} />
-                    </span>
-                    <span className="col-span-2 flex justify-end gap-2">
-                      <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>
-                      <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
-                    </span>
-                  </div>
-                ) : (
-                  <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
-                    <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
-                    <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
-                    <span className="col-span-2 text-sm text-text-secondary">
-                      {isTransfer && linkedTx
-                        ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
-                        : tx.account_name}
-                    </span>
-                    <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
-                    <span className="col-span-1 text-center">
-                      {isTransfer ? (
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
-                          {tx.status}
-                        </span>
+              }
+              const visibleTxs = sortedTransactions.filter((t) => !hiddenIds.has(t.id));
+              return (
+                <>
+                  {/* Desktop/tablet grid rows (md+) */}
+                  <div className="hidden md:block divide-y divide-border-subtle">
+                    {visibleTxs.map((tx) => {
+                      const isTransfer = tx.linked_transaction_id !== null;
+                      const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                      return editingId === tx.id ? (
+                        <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
+                          <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
+                          <span className="col-span-2"><input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
+                          <span className="col-span-2">
+                            <select aria-label="Account" value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
+                              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
+                            </select>
+                          </span>
+                          <span className="col-span-2">
+                            <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
+                          </span>
+                          <span className="col-span-1">
+                            <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
+                              <option value="settled">Settled</option>
+                              <option value="pending">Pending</option>
+                            </select>
+                          </span>
+                          <span className="col-span-1 flex gap-1">
+                            <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] w-14 ${input}`}>
+                              <option value="expense">-</option>
+                              <option value="income">+</option>
+                            </select>
+                            <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm w-20 ${input}`} />
+                          </span>
+                          <span className="col-span-2 flex justify-end gap-2">
+                            <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>
+                            <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                          </span>
+                        </div>
                       ) : (
-                        <button
-                          onClick={() => handleToggleStatus(tx)}
-                          aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                            tx.status === "settled"
-                              ? "bg-success-dim text-success"
-                              : "bg-surface-overlay text-text-muted"
-                          }`}
-                        >
-                          {tx.status}
-                        </button>
-                      )}
-                    </span>
-                    <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                      {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
-                    </span>
-                    <span className="col-span-1 flex justify-end gap-2">
-                      {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
-                      <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
-                    </span>
+                        <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
+                          <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
+                          <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
+                          <span className="col-span-2 text-sm text-text-secondary">
+                            {isTransfer && linkedTx
+                              ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+                              : tx.account_name}
+                          </span>
+                          <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
+                          <span className="col-span-1 text-center">
+                            {isTransfer ? (
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                                {tx.status}
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleToggleStatus(tx)}
+                                aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                  tx.status === "settled"
+                                    ? "bg-success-dim text-success"
+                                    : "bg-surface-overlay text-text-muted"
+                                }`}
+                              >
+                                {tx.status}
+                              </button>
+                            )}
+                          </span>
+                          <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                            {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                          </span>
+                          <span className="col-span-1 flex justify-end gap-2">
+                            {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
+                            <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {transactions.length === 0 && (
+                      <div className="px-6 py-8 text-center text-sm text-text-muted">
+                        {activeAccounts.length === 0
+                          ? "Create an account first."
+                          : categories.length === 0
+                            ? "Create a category first."
+                            : "No transactions match your filters."}
+                      </div>
+                    )}
                   </div>
-                );
-                });
-              })()}
-              {transactions.length === 0 && (
-                <div className="px-6 py-8 text-center text-sm text-text-muted">
-                  {activeAccounts.length === 0
-                    ? "Create an account first."
-                    : categories.length === 0
-                      ? "Create a category first."
-                      : "No transactions match your filters."}
-                </div>
-              )}
-            </div>
+
+                  {/* Mobile card layout (below md) */}
+                  <div className="md:hidden flex flex-col gap-3 p-3">
+                    {visibleTxs.map((tx) => {
+                      const isTransfer = tx.linked_transaction_id !== null;
+                      const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                      if (editingId === tx.id) {
+                        return (
+                          <article key={tx.id} className="flex flex-col gap-3 rounded-lg border border-border bg-surface-raised p-4 shadow-sm">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className={label}>Date</label>
+                                <input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} />
+                              </div>
+                              <div>
+                                <label className={label}>Description</label>
+                                <input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} />
+                              </div>
+                              <div>
+                                <label className={label}>Account</label>
+                                <select aria-label="Account" value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
+                                  {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label className={label}>Category</label>
+                                <CategorySelect aria-label="Category" id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
+                              </div>
+                              <div>
+                                <label className={label}>Status</label>
+                                <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-sm ${input}`}>
+                                  <option value="settled">Settled</option>
+                                  <option value="pending">Pending</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className={label}>Type</label>
+                                <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-sm ${input}`}>
+                                  <option value="expense">Expense</option>
+                                  <option value="income">Income</option>
+                                </select>
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className={label}>Amount</label>
+                                <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm ${input}`} />
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+                              <button onClick={handleSaveEdit} className="min-h-[44px] px-4 rounded-md bg-accent text-accent-text text-sm font-medium">Save</button>
+                              <button onClick={() => setEditingId(null)} className="min-h-[44px] px-4 rounded-md border border-border text-sm text-text-secondary">Cancel</button>
+                            </div>
+                          </article>
+                        );
+                      }
+                      return (
+                        <article
+                          key={tx.id}
+                          className={`flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm ${tx.status === "pending" ? "opacity-60" : ""}`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-medium text-text-primary">
+                                {tx.description}
+                              </div>
+                              <div className="mt-0.5 text-xs text-text-muted tabular-nums">
+                                {tx.date} · {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : tx.account_name}
+                              </div>
+                            </div>
+                            <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                              {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            {tx.category_name && (
+                              <div className="text-xs text-text-secondary truncate">
+                                {tx.category_name}
+                              </div>
+                            )}
+                            {isTransfer ? (
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                                {tx.status}
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleToggleStatus(tx)}
+                                aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                  tx.status === "settled"
+                                    ? "bg-success-dim text-success"
+                                    : "bg-surface-overlay text-text-muted"
+                                }`}
+                              >
+                                {tx.status}
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+                            {!isTransfer && (
+                              <button
+                                onClick={() => startEdit(tx)}
+                                aria-label={`Edit: ${tx.description}`}
+                                className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary"
+                              >
+                                Edit
+                              </button>
+                            )}
+                            <button
+                              onClick={() => setConfirmDeleteId(tx.id)}
+                              aria-label={`Delete: ${tx.description}`}
+                              className="min-h-[44px] px-3 rounded-md border border-border text-sm text-danger"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                    {transactions.length === 0 && (
+                      <div className="px-4 py-8 text-center text-sm text-text-muted">
+                        {activeAccounts.length === 0
+                          ? "Create an account first."
+                          : categories.length === 0
+                            ? "Create a category first."
+                            : "No transactions match your filters."}
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           {(page > 0 || hasMore) && (
