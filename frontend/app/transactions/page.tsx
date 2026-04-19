@@ -603,7 +603,7 @@ function TransactionsPageContent() {
                         </div>
                       );
                     })}
-                    {transactions.length === 0 && (
+                    {visibleTxs.length === 0 && (
                       <div className="px-6 py-8 text-center text-sm text-text-muted">
                         {activeAccounts.length === 0
                           ? "Create an account first."
@@ -685,21 +685,21 @@ function TransactionsPageContent() {
                               {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                             </div>
                           </div>
-                          <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
                             {tx.category_name && (
                               <div className="text-xs text-text-secondary truncate">
                                 {tx.category_name}
                               </div>
                             )}
                             {isTransfer ? (
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                              <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
                                 {tx.status}
                               </span>
                             ) : (
                               <button
                                 onClick={() => handleToggleStatus(tx)}
                                 aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
-                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${
                                   tx.status === "settled"
                                     ? "bg-success-dim text-success"
                                     : "bg-surface-overlay text-text-muted"
@@ -730,7 +730,7 @@ function TransactionsPageContent() {
                         </article>
                       );
                     })}
-                    {transactions.length === 0 && (
+                    {visibleTxs.length === 0 && (
                       <div className="px-4 py-8 text-center text-sm text-text-muted">
                         {activeAccounts.length === 0
                           ? "Create an account first."
