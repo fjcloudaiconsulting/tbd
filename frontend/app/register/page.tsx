@@ -129,12 +129,12 @@ export default function RegisterPage() {
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <div className={errorCls}>{error}</div>}
-          <div className="flex gap-3">
-            <div className="flex-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
               <label htmlFor="reg-firstname" className={label}>First Name</label>
               <input id="reg-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} autoComplete="given-name" placeholder="John" />
             </div>
-            <div className="flex-1">
+            <div>
               <label htmlFor="reg-lastname" className={label}>Last Name</label>
               <input id="reg-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} autoComplete="family-name" placeholder="Doe" />
             </div>
