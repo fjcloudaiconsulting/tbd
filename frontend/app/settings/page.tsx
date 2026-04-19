@@ -79,12 +79,12 @@ export default function SettingsProfilePage() {
           <form onSubmit={handleProfileSubmit} className="space-y-4">
             {profileMsg && <div className={successCls}>{profileMsg}</div>}
             {profileErr && <div className={errorCls}>{profileErr}</div>}
-            <div className="flex gap-3">
-              <div className="flex-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
                 <label htmlFor="profile-firstname" className={label}>First Name</label>
                 <input id="profile-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} placeholder="John" />
               </div>
-              <div className="flex-1">
+              <div>
                 <label htmlFor="profile-lastname" className={label}>Last Name</label>
                 <input id="profile-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} placeholder="Doe" />
               </div>
@@ -101,7 +101,7 @@ export default function SettingsProfilePage() {
               <label htmlFor="profile-phone" className={label}>Phone</label>
               <input id="profile-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} className={input} placeholder="+1 234 567 8900" />
             </div>
-            <button type="submit" disabled={savingProfile} className={btnPrimary}>
+            <button type="submit" disabled={savingProfile} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
               {savingProfile ? "Saving..." : "Save Changes"}
             </button>
           </form>

@@ -221,7 +221,7 @@ export default function SecurityPage() {
               <label htmlFor="pwd-confirm" className={label}>Confirm New Password</label>
               <input id="pwd-confirm" type="password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={input} autoComplete="new-password" />
             </div>
-            <button type="submit" disabled={savingPwd} className={btnPrimary}>
+            <button type="submit" disabled={savingPwd} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
               {savingPwd ? "Changing..." : "Change Password"}
             </button>
           </form>
@@ -240,7 +240,7 @@ export default function SecurityPage() {
               <p className="mb-4 text-sm text-text-muted">
                 Add an extra layer of security to your account by requiring a verification code when you sign in.
               </p>
-              <button onClick={handleSetup} disabled={mfaLoading} className={btnPrimary}>
+              <button onClick={handleSetup} disabled={mfaLoading} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                 {mfaLoading ? "Setting up..." : "Set Up Two-Factor Authentication"}
               </button>
             </div>
@@ -256,7 +256,7 @@ export default function SecurityPage() {
                 <img
                   src={`data:image/png;base64,${setupData.qr_code}`}
                   alt="TOTP QR Code"
-                  className="h-48 w-48"
+                  className="h-48 w-48 max-w-full"
                 />
               </div>
               <details className="text-sm">
@@ -267,11 +267,11 @@ export default function SecurityPage() {
                   {setupData.secret}
                 </code>
               </details>
-              <div className="flex gap-3">
-                <button onClick={() => { setMfaStep("idle"); setSetupData(null); }} className={btnSecondary}>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <button onClick={() => { setMfaStep("idle"); setSetupData(null); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                   Cancel
                 </button>
-                <button onClick={() => setMfaStep("verify")} className={btnPrimary}>
+                <button onClick={() => setMfaStep("verify")} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                   Continue
                 </button>
               </div>
@@ -300,11 +300,11 @@ export default function SecurityPage() {
                   autoFocus
                 />
               </div>
-              <div className="flex gap-3">
-                <button type="button" onClick={() => setMfaStep("qr")} className={btnSecondary}>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <button type="button" onClick={() => setMfaStep("qr")} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                   Back
                 </button>
-                <button type="submit" disabled={mfaLoading || totpCode.length !== 6} className={btnPrimary}>
+                <button type="submit" disabled={mfaLoading || totpCode.length !== 6} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                   {mfaLoading ? "Verifying..." : "Verify & Enable"}
                 </button>
               </div>
@@ -320,7 +320,7 @@ export default function SecurityPage() {
               <p className="text-sm text-text-muted">
                 If you lose access to your authenticator app, you can use these codes to sign in. Each code can only be used once.
               </p>
-              <div className="grid grid-cols-2 gap-2 rounded-lg bg-surface-raised p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-surface-raised p-4">
                 {recoveryCodes.map((code, i) => (
                   <code key={i} className="text-sm text-text-primary font-mono">
                     {i + 1}. {code}
@@ -353,7 +353,7 @@ export default function SecurityPage() {
 
               {/* Regenerate recovery codes */}
               {!showRegen && regenCodes.length === 0 && (
-                <button onClick={() => setShowRegen(true)} className={btnSecondary}>
+                <button onClick={() => setShowRegen(true)} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                   Regenerate Recovery Codes
                 </button>
               )}
@@ -365,9 +365,9 @@ export default function SecurityPage() {
                     <label htmlFor="regen-pwd" className={label}>Confirm Password</label>
                     <input id="regen-pwd" type="password" required value={regenPassword} onChange={(e) => setRegenPassword(e.target.value)} className={input} />
                   </div>
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => { setShowRegen(false); setRegenPassword(""); }} className={btnSecondary}>Cancel</button>
-                    <button type="submit" disabled={regenerating} className={btnPrimary}>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <button type="button" onClick={() => { setShowRegen(false); setRegenPassword(""); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Cancel</button>
+                    <button type="submit" disabled={regenerating} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                       {regenerating ? "Generating..." : "Regenerate"}
                     </button>
                   </div>
@@ -376,7 +376,7 @@ export default function SecurityPage() {
               {regenCodes.length > 0 && (
                 <div className="space-y-3">
                   <p className="text-sm font-medium text-text-primary">New Recovery Codes</p>
-                  <div className="grid grid-cols-2 gap-2 rounded-lg bg-surface-raised p-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-surface-raised p-4">
                     {regenCodes.map((code, i) => (
                       <code key={i} className="text-sm text-text-primary font-mono">
                         {i + 1}. {code}
@@ -395,7 +395,7 @@ export default function SecurityPage() {
               {/* Disable MFA */}
               <div className="border-t border-border pt-4">
                 {!showDisable ? (
-                  <button onClick={() => setShowDisable(true)} className={btnDanger}>
+                  <button onClick={() => setShowDisable(true)} className={`${btnDanger} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                     Disable Two-Factor Authentication
                   </button>
                 ) : (
@@ -406,9 +406,9 @@ export default function SecurityPage() {
                       <label htmlFor="disable-pwd" className={label}>Password</label>
                       <input id="disable-pwd" type="password" required value={disablePassword} onChange={(e) => setDisablePassword(e.target.value)} className={input} />
                     </div>
-                    <div className="flex gap-2">
-                      <button type="button" onClick={() => { setShowDisable(false); setDisablePassword(""); }} className={btnSecondary}>Cancel</button>
-                      <button type="submit" disabled={disabling} className={`${btnPrimary} !bg-danger hover:!bg-danger/80`}>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <button type="button" onClick={() => { setShowDisable(false); setDisablePassword(""); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Cancel</button>
+                      <button type="submit" disabled={disabling} className={`${btnPrimary} !bg-danger hover:!bg-danger/80 w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                         {disabling ? "Disabling..." : "Disable MFA"}
                       </button>
                     </div>
@@ -449,10 +449,10 @@ export default function SecurityPage() {
                   required
                   value={sessionDays}
                   onChange={(e) => setSessionDays(e.target.value)}
-                  className={`${input} max-w-[200px]`}
+                  className={`${input} w-full sm:max-w-[200px]`}
                 />
               </div>
-              <button type="submit" disabled={savingSession} className={btnPrimary}>
+              <button type="submit" disabled={savingSession} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                 {savingSession ? "Saving..." : "Save"}
               </button>
             </form>

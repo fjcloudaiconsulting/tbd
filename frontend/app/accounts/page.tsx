@@ -150,36 +150,38 @@ export default function AccountsPage() {
               <h2 className={cardTitle}>Account Types</h2>
             </div>
             <div className="p-6">
-              <form onSubmit={handleAddType} className="mb-5 flex gap-2">
-                <div className="flex-1">
+              <form onSubmit={handleAddType} className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-center">
+                <div className="w-full sm:flex-1">
                   <label htmlFor="type-name" className="sr-only">New type name</label>
                   <input id="type-name" type="text" required placeholder="New type name" value={typeName} onChange={(e) => setTypeName(e.target.value)} className={input} />
                 </div>
-                <button type="submit" className={btnPrimary}>Add</button>
+                <button type="submit" className={`w-full min-h-[44px] sm:w-auto sm:min-h-0 ${btnPrimary}`}>Add</button>
               </form>
               <div className="space-y-1">
                 {accountTypes.map((at) => (
-                  <div key={at.id} className="group flex items-center justify-between rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised">
+                  <div key={at.id} className="group flex flex-col gap-2 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised sm:flex-row sm:items-center sm:justify-between">
                     {editingTypeId === at.id ? (
-                      <div className="flex flex-1 gap-2">
+                      <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
                         <label htmlFor={`edit-type-${at.id}`} className="sr-only">Edit type name</label>
-                        <input id={`edit-type-${at.id}`} type="text" value={editingTypeName} onChange={(e) => setEditingTypeName(e.target.value)} className={`flex-1 ${input}`} autoFocus
+                        <input id={`edit-type-${at.id}`} type="text" value={editingTypeName} onChange={(e) => setEditingTypeName(e.target.value)} className={`w-full sm:flex-1 ${input}`} autoFocus
                           onKeyDown={(e) => { if (e.key === "Enter") handleUpdateType(at.id); if (e.key === "Escape") setEditingTypeId(null); }} />
-                        <button onClick={() => handleUpdateType(at.id)} className="text-sm text-accent hover:text-accent-hover">Save</button>
-                        <button onClick={() => setEditingTypeId(null)} className="text-sm text-text-muted hover:text-text-secondary">Cancel</button>
+                        <div className="flex flex-wrap gap-2">
+                          <button onClick={() => handleUpdateType(at.id)} className="min-h-[44px] text-sm text-accent hover:text-accent-hover sm:min-h-0">Save</button>
+                          <button onClick={() => setEditingTypeId(null)} className="min-h-[44px] text-sm text-text-muted hover:text-text-secondary sm:min-h-0">Cancel</button>
+                        </div>
                       </div>
                     ) : (
                       <>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-text-primary">{at.name}</span>
-                          {at.is_system && <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">system</span>}
-                          <span className="text-xs text-text-muted" title={`${at.account_count} account(s)`}>{at.account_count}</span>
+                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                          <span className="truncate text-sm text-text-primary">{at.name}</span>
+                          {at.is_system && <span className="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">system</span>}
+                          <span className="shrink-0 text-xs text-text-muted" title={`${at.account_count} account(s)`}>{at.account_count}</span>
                         </div>
-                        <div className="flex gap-3">
+                        <div className="flex flex-wrap gap-3">
                           {!at.is_system && (
                             <>
-                              <button onClick={() => { setEditingTypeId(at.id); setEditingTypeName(at.name); }} aria-label={`Edit ${at.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                              <button onClick={() => setConfirmDeleteTypeId(at.id)} aria-label={`Delete ${at.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                              <button onClick={() => { setEditingTypeId(at.id); setEditingTypeName(at.name); }} aria-label={`Edit ${at.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-accent sm:min-h-0">Edit</button>
+                              <button onClick={() => setConfirmDeleteTypeId(at.id)} aria-label={`Delete ${at.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-danger sm:min-h-0">Delete</button>
                             </>
                           )}
                         </div>
@@ -216,14 +218,14 @@ export default function AccountsPage() {
                       {accountTypes.map((at) => <option key={at.id} value={at.id}>{at.name}</option>)}
                     </select>
                   </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div className="w-full sm:flex-1">
                       <label htmlFor="acct-balance" className={label}>Initial balance</label>
                       <input id="acct-balance" type="number" step="0.01" value={acctBalance} onChange={(e) => setAcctBalance(e.target.value)} className={input} />
                     </div>
-                    <div className="w-20">
+                    <div className="w-full sm:w-20">
                       <label htmlFor="acct-currency" className={label}>Currency</label>
-                      <input id="acct-currency" type="text" maxLength={3} value={acctCurrency} onChange={(e) => setAcctCurrency(e.target.value.toUpperCase())} className={`text-center ${input}`} />
+                      <input id="acct-currency" type="text" maxLength={3} value={acctCurrency} onChange={(e) => setAcctCurrency(e.target.value.toUpperCase())} className={`sm:text-center ${input}`} />
                     </div>
                   </div>
                   {selectedType?.slug === "credit_card" && (
@@ -232,48 +234,52 @@ export default function AccountsPage() {
                       <input id="acct-close" type="number" min={1} max={28} value={acctCloseDay} onChange={(e) => setAcctCloseDay(e.target.value)} className={`w-24 ${input}`} placeholder="15" />
                     </div>
                   )}
-                  <button type="submit" className={btnPrimary}>Create Account</button>
+                  <button type="submit" className={`w-full min-h-[44px] sm:w-auto sm:min-h-0 ${btnPrimary}`}>Create Account</button>
                 </form>
               )}
               <div className="space-y-1">
                 {accounts.map((a) => editAcctId === a.id ? (
-                  <div key={a.id} className="flex items-center gap-3 rounded-md bg-surface-raised px-3 py-2.5">
-                    <input aria-label="Account name" type="text" value={editAcctName} onChange={(e) => setEditAcctName(e.target.value)} className={`flex-1 text-sm ${input}`}
+                  <div key={a.id} className="flex flex-col gap-2 rounded-md bg-surface-raised px-3 py-2.5 sm:flex-row sm:items-center sm:gap-3">
+                    <input aria-label="Account name" type="text" value={editAcctName} onChange={(e) => setEditAcctName(e.target.value)} className={`w-full text-sm sm:flex-1 ${input}`}
                       onKeyDown={(e) => { if (e.key === "Enter") handleSaveAcct(); if (e.key === "Escape") setEditAcctId(null); }} autoFocus />
                     {a.account_type_slug === "credit_card" && (
-                      <input aria-label="Close day" type="number" min={1} max={28} value={editAcctCloseDay} onChange={(e) => setEditAcctCloseDay(e.target.value)} placeholder="Close day" className={`w-24 text-sm ${input}`} />
+                      <input aria-label="Close day" type="number" min={1} max={28} value={editAcctCloseDay} onChange={(e) => setEditAcctCloseDay(e.target.value)} placeholder="Close day" className={`w-full text-sm sm:w-24 ${input}`} />
                     )}
-                    <button onClick={handleSaveAcct} className="text-xs text-accent hover:text-accent-hover">Save</button>
-                    <button onClick={() => setEditAcctId(null)} className="text-xs text-text-muted">Cancel</button>
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={handleSaveAcct} className="min-h-[44px] text-xs text-accent hover:text-accent-hover sm:min-h-0">Save</button>
+                      <button onClick={() => setEditAcctId(null)} className="min-h-[44px] text-xs text-text-muted sm:min-h-0">Cancel</button>
+                    </div>
                   </div>
                 ) : (
-                  <div key={a.id} className={`flex items-center justify-between rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised ${!a.is_active ? "opacity-40" : ""}`}>
-                    <div>
-                      <span className="text-sm font-medium text-text-primary">{a.name}</span>
-                      <span className="ml-2 text-xs text-text-muted">{a.account_type_name}</span>
-                      {a.is_default && <span className="ml-1 text-xs text-accent">· default</span>}
-                      {a.close_day && <span className="ml-1 text-xs text-text-muted">· closes day {a.close_day}</span>}
-                      {!a.is_active && <span className="ml-2 text-xs text-danger">inactive</span>}
+                  <article key={a.id} className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:flex-row md:items-center md:justify-between ${!a.is_active ? "opacity-40" : ""}`}>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="truncate text-sm font-medium text-text-primary">{a.name}</span>
+                        <span className="text-xs text-text-muted">{a.account_type_name}</span>
+                        {a.is_default && <span className="text-xs text-accent">· default</span>}
+                        {a.close_day && <span className="text-xs text-text-muted">· closes day {a.close_day}</span>}
+                        {!a.is_active && <span className="text-xs text-danger">inactive</span>}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4">
+                    <div className="flex shrink-0 items-center gap-4 md:ml-auto">
                       <span className="text-sm tabular-nums text-text-primary">
                         {formatAmount(a.balance)}{" "}
                         <span className="text-text-muted">{a.currency}</span>
                       </span>
-                      <div className="flex gap-3">
-                        <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                        {!a.is_default && a.is_active && (
-                          <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="text-xs text-text-muted hover:text-accent">
-                            Default
-                          </button>
-                        )}
-                        <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="text-xs text-text-muted hover:text-text-secondary">
-                          {a.is_active ? "Deactivate" : "Activate"}
-                        </button>
-                        <button onClick={() => setConfirmDeleteAcctId(a.id)} aria-label={`Delete ${a.name}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
-                      </div>
                     </div>
-                  </div>
+                    <div className="flex flex-wrap gap-3">
+                      <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
+                      {!a.is_default && a.is_active && (
+                        <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">
+                          Default
+                        </button>
+                      )}
+                      <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-text-secondary md:min-h-0">
+                        {a.is_active ? "Deactivate" : "Activate"}
+                      </button>
+                      <button onClick={() => setConfirmDeleteAcctId(a.id)} aria-label={`Delete ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-danger md:min-h-0">Delete</button>
+                    </div>
+                  </article>
                 ))}
                 {accounts.length === 0 && (
                   <p className="py-4 text-center text-sm text-text-muted">

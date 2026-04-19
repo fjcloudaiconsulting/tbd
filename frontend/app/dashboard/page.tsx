@@ -322,7 +322,7 @@ export default function DashboardPage() {
                   <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
                 </div>
               </div>
-              <form onSubmit={handleQuickAdd} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <form onSubmit={handleQuickAdd} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div>
                   <label htmlFor="da-account" className={label}>{formMode === "transfer" ? "From" : "Account"}</label>
                   <select id="da-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
@@ -438,7 +438,7 @@ export default function DashboardPage() {
             {/* Executed */}
             <div className={`${card} p-5`}>
               <h2 className={`mb-4 ${cardTitle}`}>Executed</h2>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
                   <p className="mt-1 text-xl font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
@@ -461,7 +461,7 @@ export default function DashboardPage() {
               <h2 className={`mb-4 ${cardTitle}`}>Forecast</h2>
               {forecast ? (
                 <>
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div>
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
                       <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_income)}</p>
@@ -493,10 +493,10 @@ export default function DashboardPage() {
             const defaultAcct = accountsWithBalance.find((a) => a.is_default);
             const others = accountsWithBalance.filter((a) => !a.is_default);
             return (
-              <div className="flex gap-3 overflow-x-auto pb-1">
+              <div className="grid grid-cols-1 gap-3 sm:flex sm:gap-3 sm:overflow-x-auto sm:pb-1">
                 {/* Primary account — wider */}
                 {defaultAcct && (
-                  <div className={`${card} px-5 py-3 shrink-0`} style={{ minWidth: "220px" }}>
+                  <div className={`${card} px-5 py-3 sm:shrink-0 sm:min-w-[220px]`}>
                     <div className="flex items-center gap-2">
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">{defaultAcct.name}</p>
                       <span className="rounded bg-accent-dim px-1.5 py-0.5 text-[9px] font-semibold text-accent">PRIMARY</span>
@@ -512,7 +512,7 @@ export default function DashboardPage() {
                   const pending = pendingByAccount[acct.id] || 0;
                   const isCreditCard = acct.account_type_slug === "credit_card";
                   return (
-                    <div key={acct.id} className={`${card} px-4 py-3 shrink-0`} style={{ minWidth: "150px" }}>
+                    <div key={acct.id} className={`${card} px-4 py-3 sm:shrink-0 sm:min-w-[150px]`}>
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
                       <p className="mt-1 text-base font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
                       {isCreditCard && pending !== 0 && (
