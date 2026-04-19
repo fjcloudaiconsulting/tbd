@@ -85,7 +85,7 @@ export default function ConfirmModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-modal-title"
-        className="w-full max-w-md max-w-[calc(100vw-2rem)] max-h-[90vh] overflow-y-auto rounded-lg border border-border bg-surface p-6 shadow-xl"
+        className="w-full max-w-[min(28rem,calc(100vw-2rem))] max-h-[90vh] overflow-y-auto rounded-lg border border-border bg-surface p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 id="confirm-modal-title" className="text-lg font-semibold text-text-primary">{title}</h3>

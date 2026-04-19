@@ -189,7 +189,7 @@ export default function SystemPlansPage() {
                 disabled={!!editing}
               />
             </div>
-            <div className="col-span-2">
+            <div className="sm:col-span-2">
               <label className={label}>Description</label>
               <input value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
             </div>
