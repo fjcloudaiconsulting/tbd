@@ -113,7 +113,8 @@ export default function RecurringPage() {
             <div className={cardHeader}>
               <h2 className={cardTitle}>Active ({activeItems.length})</h2>
             </div>
-            <div className="divide-y divide-border-subtle">
+            {/* Desktop/tablet grid rows (md+) */}
+            <div className="hidden md:block divide-y divide-border-subtle">
               {activeItems.map((r) => (
                 <div key={r.id} className="grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised">
                   <span className="col-span-3 text-sm text-text-primary">
@@ -139,6 +140,59 @@ export default function RecurringPage() {
                 </div>
               )}
             </div>
+            {/* Mobile card layout (below md) */}
+            <div className="md:hidden flex flex-col gap-3 p-3">
+              {activeItems.map((r) => (
+                <article
+                  key={r.id}
+                  className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium text-text-primary">
+                        {r.description}
+                        {r.auto_settle && <span className="ml-1.5 rounded bg-success-dim px-1.5 py-0.5 text-[10px] font-medium text-success">auto</span>}
+                      </div>
+                      <div className="mt-0.5 text-xs text-text-muted tabular-nums">
+                        Next: {r.next_due_date} &middot; {r.account_name}
+                      </div>
+                    </div>
+                    <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${r.type === "income" ? "text-success" : "text-danger"}`}>
+                      {r.type === "income" ? "+" : "-"}{formatAmount(r.amount)}
+                    </div>
+                  </div>
+                  {r.category_name && (
+                    <div className="text-xs text-text-secondary truncate">
+                      {r.category_name}
+                    </div>
+                  )}
+                  <div className="text-xs text-text-muted">
+                    {FREQ_LABELS[r.frequency] ?? r.frequency}
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+                    <button
+                      onClick={() => handleStop(r)}
+                      aria-label={`Stop: ${r.description}`}
+                      className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary"
+                    >
+                      Stop
+                    </button>
+                    <button
+                      onClick={() => handleDelete(r.id)}
+                      aria-label={`Delete: ${r.description}`}
+                      className="min-h-[44px] px-3 rounded-md border border-border text-sm text-danger"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </article>
+              ))}
+              {activeItems.length === 0 && (
+                <div className="px-4 py-8 text-center text-sm text-text-muted">
+                  No active recurring transactions.
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Paused */}
@@ -147,7 +201,8 @@ export default function RecurringPage() {
               <div className={cardHeader}>
                 <h2 className={cardTitle}>Paused ({pausedItems.length})</h2>
               </div>
-              <div className="divide-y divide-border-subtle">
+              {/* Desktop/tablet grid rows (md+) */}
+              <div className="hidden md:block divide-y divide-border-subtle">
                 {pausedItems.map((r) => (
                   <div key={r.id} className="grid grid-cols-12 items-center gap-4 px-6 py-3 opacity-50 transition-colors hover:bg-surface-raised">
                     <span className="col-span-3 text-sm text-text-primary">{r.description}</span>
@@ -163,6 +218,53 @@ export default function RecurringPage() {
                       <button onClick={() => handleDelete(r.id)} className="text-xs text-text-muted hover:text-danger">Delete</button>
                     </span>
                   </div>
+                ))}
+              </div>
+              {/* Mobile card layout (below md) */}
+              <div className="md:hidden flex flex-col gap-3 p-3">
+                {pausedItems.map((r) => (
+                  <article
+                    key={r.id}
+                    className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm opacity-60"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium text-text-primary">
+                          {r.description}
+                        </div>
+                        <div className="mt-0.5 text-xs text-text-muted tabular-nums">
+                          Next: {r.next_due_date} &middot; {r.account_name}
+                        </div>
+                      </div>
+                      <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${r.type === "income" ? "text-success" : "text-danger"}`}>
+                        {r.type === "income" ? "+" : "-"}{formatAmount(r.amount)}
+                      </div>
+                    </div>
+                    {r.category_name && (
+                      <div className="text-xs text-text-secondary truncate">
+                        {r.category_name}
+                      </div>
+                    )}
+                    <div className="text-xs text-text-muted">
+                      {FREQ_LABELS[r.frequency] ?? r.frequency}
+                    </div>
+                    <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+                      <button
+                        onClick={() => handleResume(r)}
+                        aria-label={`Resume: ${r.description}`}
+                        className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary"
+                      >
+                        Resume
+                      </button>
+                      <button
+                        onClick={() => handleDelete(r.id)}
+                        aria-label={`Delete: ${r.description}`}
+                        className="min-h-[44px] px-3 rounded-md border border-border text-sm text-danger"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </article>
                 ))}
               </div>
             </div>
