@@ -133,10 +133,10 @@ export default function BudgetsPage() {
 
   return (
     <AppShell>
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h1 className={`${pageTitle} mb-0`}>Budgets</h1>
         {availableCategories.length > 0 && (
-          <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
+          <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} min-h-[44px] sm:min-h-0`}>
             {showForm ? "Cancel" : "+ Add Budget"}
           </button>
         )}
@@ -144,7 +144,7 @@ export default function BudgetsPage() {
 
       {/* Period navigation */}
       {periods.length > 0 && (
-        <div className="mb-5 flex items-center gap-3">
+        <div className="mb-5 flex flex-wrap items-center gap-3">
           <button onClick={() => setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
           </button>
@@ -165,19 +165,19 @@ export default function BudgetsPage() {
 
       {showForm && (
         <div className={`mb-6 ${card} p-6`}>
-          <form onSubmit={handleAdd} className="flex flex-wrap gap-4 items-end">
-            <div className="flex-1 min-w-[200px]">
+          <form onSubmit={handleAdd} className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
+            <div className="w-full sm:flex-1 sm:min-w-[200px]">
               <label htmlFor="b-cat" className={label}>Category</label>
               <select id="b-cat" required value={formCategoryId} onChange={(e) => setFormCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                 <option value="">Select category</option>
                 {availableCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
-            <div className="w-40">
+            <div className="w-full sm:w-40">
               <label htmlFor="b-amount" className={label}>Monthly limit</label>
               <input id="b-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
             </div>
-            <button type="submit" className={btnPrimary}>Add</button>
+            <button type="submit" className={`${btnPrimary} min-h-[44px] sm:min-h-0`}>Add</button>
           </form>
         </div>
       )}
@@ -188,7 +188,7 @@ export default function BudgetsPage() {
         <div className="space-y-6">
           {/* Summary */}
           {budgets.length > 0 && (
-            <div className="flex gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <div className={`flex-1 ${card} p-5`}>
                 <p className={cardTitle}>Total Budget</p>
                 <p className="mt-1 text-2xl font-semibold tabular-nums text-text-primary">{formatAmount(totalBudget)}</p>
@@ -269,43 +269,52 @@ export default function BudgetsPage() {
                 return (
                   <div key={b.id} className="px-6 py-3">
                     {editingId === b.id ? (
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-medium text-text-primary flex-1">{b.category_name}</span>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                        <span className="text-sm font-medium text-text-primary sm:flex-1">{b.category_name}</span>
                         <input type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)}
-                          className={`w-32 ${input}`} autoFocus
+                          className={`w-full sm:w-32 ${input}`} autoFocus
                           onKeyDown={(e) => { if (e.key === "Enter") handleUpdate(b.id); if (e.key === "Escape") setEditingId(null); }} />
-                        <button onClick={() => handleUpdate(b.id)} className="text-xs text-accent hover:text-accent-hover">Save</button>
-                        <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                        <div className="flex flex-wrap gap-2">
+                          <button onClick={() => handleUpdate(b.id)} className="min-h-[44px] text-xs text-accent hover:text-accent-hover sm:min-h-0">Save</button>
+                          <button onClick={() => setEditingId(null)} className="min-h-[44px] text-xs text-text-muted hover:text-text-secondary sm:min-h-0">Cancel</button>
+                        </div>
                       </div>
                     ) : (
                       <>
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-text-primary">{b.category_name}</span>
-                          <div className="flex items-center gap-4">
-                            <span className={`text-sm tabular-nums ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
+                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                          <div className="flex items-center">
+                            <span className="text-sm text-text-primary">{b.category_name}</span>
+                            <span className={`ml-auto text-sm tabular-nums md:hidden ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
+                              {formatAmount(b.spent)} / {formatAmount(b.amount)}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 md:gap-4">
+                            <span className={`hidden text-sm tabular-nums md:inline ${overBudget ? "text-danger font-medium" : "text-text-secondary"}`}>
                               {formatAmount(b.spent)} / {formatAmount(b.amount)}
                             </span>
                             <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
                               {b.percent_used}%
                             </span>
-                            <div className="flex gap-2">
-                              <button onClick={() => { setTransferringId(transferringId === b.id ? null : b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="text-xs text-text-muted hover:text-accent">Transfer</button>
-                              <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="text-xs text-text-muted hover:text-accent">Edit</button>
-                              <button onClick={() => setConfirmDeleteId(b.id)} className="text-xs text-text-muted hover:text-danger">Remove</button>
+                            <div className="flex flex-wrap gap-2 ml-auto md:ml-0">
+                              <button onClick={() => { setTransferringId(transferringId === b.id ? null : b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Transfer</button>
+                              <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
+                              <button onClick={() => setConfirmDeleteId(b.id)} className="min-h-[44px] text-xs text-text-muted hover:text-danger md:min-h-0">Remove</button>
                             </div>
                           </div>
                         </div>
                         {transferringId === b.id && (
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`min-w-0 flex-1 basis-40 ${input}`}>
+                          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                            <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`w-full min-w-0 sm:flex-1 sm:basis-40 ${input}`}>
                               <option value="">Select target category</option>
                               {transferTargets.map((c) => <option key={c.id} value={c.id}>{c.name}{budgetedCatIds.has(c.id) ? " (has budget)" : ""}</option>)}
                             </select>
                             <input type="number" step="0.01" min="0.01" max={Number(b.amount)} placeholder="Amount" value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)}
-                              className={`w-28 ${input}`}
+                              className={`w-full sm:w-28 ${input}`}
                               onKeyDown={(e) => { if (e.key === "Enter" && transferCategoryId && transferAmount) handleTransfer(b.id); if (e.key === "Escape") setTransferringId(null); }} />
-                            <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="text-xs text-accent hover:text-accent-hover disabled:opacity-50">Transfer</button>
-                            <button onClick={() => setTransferringId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                            <div className="flex flex-wrap gap-2">
+                              <button onClick={() => handleTransfer(b.id)} disabled={!transferCategoryId || !transferAmount} className="min-h-[44px] text-xs text-accent hover:text-accent-hover disabled:opacity-50 sm:min-h-0">Transfer</button>
+                              <button onClick={() => setTransferringId(null)} className="min-h-[44px] text-xs text-text-muted hover:text-text-secondary sm:min-h-0">Cancel</button>
+                            </div>
                           </div>
                         )}
                       </>
