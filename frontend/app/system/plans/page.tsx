@@ -160,9 +160,9 @@ export default function SystemPlansPage() {
 
   return (
     <AppShell>
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-col gap-2 mb-8 sm:flex-row sm:items-center sm:justify-between">
         <h1 className={pageTitle + " mb-0"}>Plan Management</h1>
-        <button onClick={openCreate} className={btnPrimary}>+ New Plan</button>
+        <button onClick={openCreate} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>+ New Plan</button>
       </div>
 
       {error && <p className={`${errorCls} mb-4`}>{error}</p>}
@@ -173,7 +173,7 @@ export default function SystemPlansPage() {
           <div className={cardHeader}>
             <h2 className={cardTitle}>{editing ? `Edit: ${editing.name}` : "New Plan"}</h2>
           </div>
-          <form onSubmit={handleSubmit} className="p-6 grid grid-cols-2 gap-4">
+          <form onSubmit={handleSubmit} className="p-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className={label}>Name</label>
               <input value={formName} onChange={(e) => setFormName(e.target.value)} className={input} required />
@@ -217,23 +217,23 @@ export default function SystemPlansPage() {
               <input type="checkbox" id="is_custom" checked={formIsCustom} onChange={(e) => setFormIsCustom(e.target.checked)} />
               <label htmlFor="is_custom" className="text-sm text-text-secondary">Custom plan</label>
             </div>
-            <div className="col-span-2 flex gap-3 pt-2">
-              <button type="submit" className={btnPrimary}>{editing ? "Save" : "Create"}</button>
+            <div className="col-span-1 sm:col-span-2 flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end sm:gap-3">
               <button
                 type="button"
                 onClick={() => { setEditing(null); setCreating(false); resetForm(); }}
-                className={btnSecondary}
+                className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
               >
                 Cancel
               </button>
+              <button type="submit" className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>{editing ? "Save" : "Create"}</button>
             </div>
           </form>
         </div>
       )}
 
-      <div className={card}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+      <div className={`${card} w-full`}>
+        <div className="w-full overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-border text-left">
                 <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">Plan</th>
