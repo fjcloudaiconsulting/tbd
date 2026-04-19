@@ -195,7 +195,7 @@ function ImportPageContent() {
             <button
               onClick={handleUpload}
               disabled={!file || accountId === "" || loading}
-              className={btnPrimary}
+              className={btnPrimary + " min-h-[44px] w-full sm:min-h-0 sm:w-auto"}
             >
               {loading ? "Parsing..." : "Upload & Preview"}
             </button>
@@ -208,7 +208,7 @@ function ImportPageContent() {
         <div className="space-y-4">
           {/* Summary bar */}
           <div className={card}>
-            <div className="flex flex-wrap items-center gap-4 px-6 py-4 text-sm">
+            <div className="flex flex-col gap-3 px-6 py-4 text-sm sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
               <span className="font-medium text-text-primary">{preview.file_name}</span>
               <span className="text-text-muted">{preview.total_rows} transactions</span>
               {preview.duplicate_count > 0 && (
@@ -245,7 +245,7 @@ function ImportPageContent() {
 
           {/* Preview table */}
           <div className={card + " overflow-x-auto"}>
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">Skip</th>
@@ -352,25 +352,25 @@ function ImportPageContent() {
           </div>
 
           {/* Actions */}
-          <div className="flex items-center gap-4">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:gap-4">
+            {skipCount > 0 && (
+              <span className="text-sm text-text-muted sm:order-3">{skipCount} skipped</span>
+            )}
+            <button
+              onClick={() => { setStep("upload"); setPreview(null); setFile(null); }}
+              className={btnSecondary + " min-h-[44px] w-full sm:order-2 sm:min-h-0 sm:w-auto"}
+            >
+              Start Over
+            </button>
             <button
               onClick={handleConfirm}
               disabled={defaultCategoryId === "" || activeRows.length === 0 || loading}
-              className={btnPrimary}
+              className={btnPrimary + " min-h-[44px] w-full sm:order-1 sm:min-h-0 sm:w-auto"}
             >
               {loading
                 ? "Importing..."
                 : `Import ${activeRows.length} transaction${activeRows.length === 1 ? "" : "s"}`}
             </button>
-            <button
-              onClick={() => { setStep("upload"); setPreview(null); setFile(null); }}
-              className={btnSecondary}
-            >
-              Start Over
-            </button>
-            {skipCount > 0 && (
-              <span className="text-sm text-text-muted">{skipCount} skipped</span>
-            )}
           </div>
         </div>
       )}
@@ -399,15 +399,18 @@ function ImportPageContent() {
               </div>
             )}
           </div>
-          <div className="flex gap-4 border-t border-border px-6 py-4">
-            <button onClick={() => router.push("/transactions")} className={btnPrimary}>
-              View Transactions
-            </button>
+          <div className="flex flex-col-reverse gap-2 border-t border-border px-6 py-4 sm:flex-row sm:gap-4">
             <button
               onClick={() => { setStep("upload"); setPreview(null); setResults(null); setFile(null); }}
-              className={btnSecondary}
+              className={btnSecondary + " min-h-[44px] w-full sm:order-2 sm:min-h-0 sm:w-auto"}
             >
               Import Another File
+            </button>
+            <button
+              onClick={() => router.push("/transactions")}
+              className={btnPrimary + " min-h-[44px] w-full sm:order-1 sm:min-h-0 sm:w-auto"}
+            >
+              View Transactions
             </button>
           </div>
         </div>
