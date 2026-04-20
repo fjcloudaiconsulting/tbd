@@ -272,6 +272,89 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
     await db.commit()
 
 
+async def bulk_delete_transactions(
+    db: AsyncSession, org_id: int, ids: list[int]
+) -> tuple[int, list[int]]:
+    """Delete multiple transactions in one atomic commit.
+
+    Returns (deleted_count, skipped_ids). Cross-org IDs are silently
+    skipped. Transfer-pair halves cascade: deleting one half also deletes
+    the linked half. Balance reverts applied per transaction for settled rows.
+    """
+    if not ids:
+        return (0, [])
+
+    # Dedupe input — caller may select both halves of a transfer
+    requested = list(dict.fromkeys(ids))
+
+    # Fetch all requested transactions scoped to this org
+    result = await db.execute(
+        select(Transaction).where(
+            Transaction.id.in_(requested),
+            Transaction.org_id == org_id,
+        )
+    )
+    found = list(result.scalars().all())
+    found_ids = {tx.id for tx in found}
+    skipped_ids = [i for i in requested if i not in found_ids]
+
+    # Expand transfer pairs — collect linked IDs not already in the list
+    linked_ids_to_fetch = {
+        tx.linked_transaction_id
+        for tx in found
+        if tx.linked_transaction_id is not None
+        and tx.linked_transaction_id not in found_ids
+    }
+    if linked_ids_to_fetch:
+        linked_result = await db.execute(
+            select(Transaction).where(
+                Transaction.id.in_(linked_ids_to_fetch),
+                Transaction.org_id == org_id,
+            )
+        )
+        found.extend(linked_result.scalars().all())
+
+    # Track accounts we've already loaded to avoid re-fetching in the loop
+    accounts_cache: dict[int, Account] = {}
+
+    async def _get_account(account_id: int) -> Account | None:
+        if account_id in accounts_cache:
+            return accounts_cache[account_id]
+        acct_result = await db.execute(
+            select(Account).where(
+                Account.id == account_id, Account.org_id == org_id
+            )
+        )
+        acct = acct_result.scalar_one_or_none()
+        if acct is not None:
+            accounts_cache[account_id] = acct
+        return acct
+
+    # Revert balances for settled rows, then delete
+    deleted_ids: set[int] = set()
+    for tx in found:
+        if tx.id in deleted_ids:
+            continue
+        if tx.status == TransactionStatus.SETTLED and tx.type != TransactionType.TRANSFER:
+            acct = await _get_account(tx.account_id)
+            if acct is not None:
+                revert_balance(acct, tx.amount, tx.type)
+        elif tx.status == TransactionStatus.SETTLED and tx.type == TransactionType.TRANSFER:
+            # Transfer pair: revert both halves independently. Each half is
+            # its own row with its own account + amount + type, so per-row
+            # revert is correct.
+            acct = await _get_account(tx.account_id)
+            if acct is not None:
+                # Transfer half stored as income on to-account or expense on
+                # from-account. revert_balance handles both via tx.type.
+                revert_balance(acct, tx.amount, tx.type)
+        await db.delete(tx)
+        deleted_ids.add(tx.id)
+
+    await db.commit()
+    return (len(deleted_ids), skipped_ids)
+
+
 async def create_transfer(
     db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:
