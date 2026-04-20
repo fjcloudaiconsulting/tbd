@@ -741,6 +741,13 @@ function TransactionsPageContent() {
                           className={`flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm ${tx.status === "pending" ? "opacity-60" : ""}`}
                         >
                           <div className="flex items-start justify-between gap-2">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select transaction ${tx.id}`}
+                              checked={selectedIds.has(tx.id)}
+                              onChange={() => toggleOne(tx.id)}
+                              className="mt-0.5 h-5 w-5 shrink-0"
+                            />
                             <div className="min-w-0 flex-1">
                               <div className="truncate text-sm font-medium text-text-primary">
                                 {tx.description}
