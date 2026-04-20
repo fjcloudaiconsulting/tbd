@@ -151,6 +151,16 @@ function TransactionsPageContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page]);
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && selectedIds.size > 0 && !confirmBulkDelete) {
+        clearSelection();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedIds.size, confirmBulkDelete]);
+
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);
     setFormCategoryId("");
@@ -718,8 +728,8 @@ function TransactionsPageContent() {
                             {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                           </span>
                           <span className="col-span-1 flex justify-end gap-2">
-                            {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} className="text-xs text-text-muted hover:text-accent">Edit</button>}
-                            <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                            {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>}
+                            <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
                           </span>
                         </div>
                       );
@@ -842,7 +852,8 @@ function TransactionsPageContent() {
                               <button
                                 onClick={() => startEdit(tx)}
                                 aria-label={`Edit: ${tx.description}`}
-                                className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary"
+                                disabled={bulkDeleting}
+                                className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 Edit
                               </button>
@@ -850,7 +861,8 @@ function TransactionsPageContent() {
                             <button
                               onClick={() => setConfirmDeleteId(tx.id)}
                               aria-label={`Delete: ${tx.description}`}
-                              className="min-h-[44px] px-3 rounded-md border border-border text-sm text-danger"
+                              disabled={bulkDeleting}
+                              className="min-h-[44px] px-3 rounded-md border border-border text-sm text-danger disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                               Delete
                             </button>

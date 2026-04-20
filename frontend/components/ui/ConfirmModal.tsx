@@ -48,7 +48,7 @@ export default function ConfirmModal({
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { onCancel(); return; }
+      if (e.key === "Escape") { e.stopPropagation(); onCancel(); return; }
       if (e.key === "Tab") {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
           'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
