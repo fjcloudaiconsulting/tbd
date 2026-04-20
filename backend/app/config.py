@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -43,6 +44,18 @@ class Settings(BaseSettings):
     # Billing
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
     trial_duration_days: int = 14
+
+    @field_validator("jwt_secret_key")
+    @classmethod
+    def _validate_jwt_secret(cls, v: str) -> str:
+        if v == "change-me-generate-a-real-secret":
+            raise ValueError(
+                "JWT_SECRET_KEY must be set to a real secret, not the placeholder. "
+                "Generate one via: python -c 'import secrets; print(secrets.token_urlsafe(64))'"
+            )
+        if len(v) < 32:
+            raise ValueError("JWT_SECRET_KEY must be at least 32 characters")
+        return v
 
     @property
     def cors_origins(self) -> list[str]:

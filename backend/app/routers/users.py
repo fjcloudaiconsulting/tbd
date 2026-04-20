@@ -90,6 +90,8 @@ async def change_password(
             detail="Current password is incorrect",
         )
 
+    now = datetime.now(timezone.utc)
     current_user.password_hash = hash_password(body.new_password)
-    current_user.password_changed_at = datetime.now(timezone.utc)
+    current_user.password_changed_at = now
+    current_user.sessions_invalidated_at = now
     await db.commit()

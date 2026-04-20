@@ -53,6 +53,9 @@ class User(Base):
     is_superadmin: Mapped[bool] = mapped_column(default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    sessions_invalidated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
     totp_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)
     recovery_codes: Mapped[str | None] = mapped_column(Text, nullable=True)

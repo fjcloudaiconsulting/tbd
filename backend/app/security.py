@@ -5,6 +5,7 @@ import bcrypt
 import jwt
 
 from app.config import settings
+from app.models.user import User
 
 
 def hash_password(password: str) -> str:
@@ -16,14 +17,14 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(subject: int, org_id: int, role: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.jwt_access_token_expire_minutes
-    )
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=settings.jwt_access_token_expire_minutes)
     payload = {
         "sub": str(subject),
         "org_id": org_id,
         "role": role,
         "type": "access",
+        "iat": int(now.timestamp()),
         "exp": expire,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
@@ -45,6 +46,7 @@ def create_refresh_token(
         "sub": str(subject),
         "type": "refresh",
         "session_created_at": (session_created_at or now).timestamp(),
+        "iat": int(now.timestamp()),
         "exp": expire,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
@@ -111,3 +113,24 @@ def decode_token(token: str) -> dict | None:
         )
     except jwt.PyJWTError:
         return None
+
+
+def token_cutoff(user: User) -> datetime:
+    """Earliest iat that is still valid for this user.
+
+    Tokens issued before this timestamp are rejected. Updated on logout,
+    password reset, and password change.
+    """
+    ts = []
+    if user.password_changed_at is not None:
+        # password_changed_at is stored as a naive datetime (no tz) in MySQL
+        if user.password_changed_at.tzinfo is None:
+            ts.append(user.password_changed_at.replace(tzinfo=timezone.utc))
+        else:
+            ts.append(user.password_changed_at)
+    if user.sessions_invalidated_at is not None:
+        if user.sessions_invalidated_at.tzinfo is None:
+            ts.append(user.sessions_invalidated_at.replace(tzinfo=timezone.utc))
+        else:
+            ts.append(user.sessions_invalidated_at)
+    return max(ts) if ts else datetime.min.replace(tzinfo=timezone.utc)

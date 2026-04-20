@@ -9,7 +9,7 @@ class TransactionCreate(BaseModel):
     account_id: int
     category_id: int
     description: str = Field(max_length=255)
-    amount: Decimal = Field(gt=0)
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     type: Literal["income", "expense"]
     status: Literal["settled", "pending"] = "settled"
     date: datetime.date
@@ -27,7 +27,7 @@ class TransferCreate(BaseModel):
     to_account_id: int
     category_id: Optional[int] = None
     description: str = Field(default="", max_length=255)
-    amount: Decimal = Field(gt=0)
+    amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     status: Literal["settled", "pending"] = "settled"
     date: datetime.date
 
@@ -36,7 +36,7 @@ class TransactionUpdate(BaseModel):
     account_id: Optional[int] = None
     category_id: Optional[int] = None
     description: Optional[str] = None
-    amount: Optional[Decimal] = Field(default=None, gt=0)
+    amount: Optional[Decimal] = Field(default=None, gt=0, max_digits=12, decimal_places=2)
     type: Optional[Literal["income", "expense"]] = None
     status: Optional[Literal["settled", "pending"]] = None
     date: Optional[datetime.date] = None
