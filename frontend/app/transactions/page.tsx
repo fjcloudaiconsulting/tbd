@@ -288,7 +288,7 @@ function TransactionsPageContent() {
       await loadTransactions(page);
       if (res.skipped_ids.length > 0) {
         setError(
-          `Deleted ${res.deleted_count} of ${res.requested_count} transactions. ${res.skipped_ids.length} were already gone.`,
+          `Deleted ${res.deleted_count} of ${res.requested_count} transactions. ${res.skipped_ids.length} ${res.skipped_ids.length === 1 ? "was" : "were"} already gone.`,
         );
       }
     } catch (err) {

@@ -329,6 +329,13 @@ async def bulk_delete_transactions(
         for aid in account_ids_to_lock:
             accounts[aid] = await get_account_for_update(db, aid, org_id)
 
+        # Break linked-transfer FK cycles before deletion so SQLAlchemy can flush
+        # the deletes without hitting a circular dependency error
+        for tx in found:
+            if tx.linked_transaction_id is not None:
+                tx.linked_transaction_id = None
+        await db.flush()
+
         # Revert balances for settled rows, then delete every row
         for tx in found:
             if tx.status == TransactionStatus.SETTLED:
