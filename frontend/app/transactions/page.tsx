@@ -260,6 +260,34 @@ function TransactionsPageContent() {
     }
   }
 
+  async function handleBulkDelete() {
+    setConfirmBulkDelete(false);
+    setError("");
+    setBulkDeleting(true);
+    try {
+      const body = { ids: Array.from(selectedIds) };
+      const res = await apiFetch<{
+        requested_count: number;
+        deleted_count: number;
+        skipped_ids: number[];
+      }>("/api/v1/transactions/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      clearSelection();
+      await loadTransactions(page);
+      if (res.skipped_ids.length > 0) {
+        setError(
+          `Deleted ${res.deleted_count} of ${res.requested_count} transactions. ${res.skipped_ids.length} were already gone.`,
+        );
+      }
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   function startEdit(tx: Transaction) {
     setEditingId(tx.id);
     setEditDesc(tx.description);
@@ -344,6 +372,31 @@ function TransactionsPageContent() {
 
   return (
     <AppShell>
+      {selectedIds.size > 0 && (
+        <div className="sticky top-0 z-20 -mx-4 sm:-mx-8 mb-4 flex items-center justify-between gap-3 border-b border-border bg-surface-raised/95 px-4 sm:px-8 py-3 backdrop-blur">
+          <span className="text-sm font-medium" aria-live="polite">
+            {selectedIds.size} selected
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className={btnSecondary}
+              onClick={clearSelection}
+              disabled={bulkDeleting}
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              className="inline-flex min-h-[44px] items-center rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
+              onClick={() => setConfirmBulkDelete(true)}
+              disabled={bulkDeleting}
+            >
+              {bulkDeleting ? "Deleting…" : "Delete selected"}
+            </button>
+          </div>
+        </div>
+      )}
       <div className="mb-8 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Transactions</h1>
         <div className="flex items-center gap-2">
@@ -841,6 +894,15 @@ function TransactionsPageContent() {
         variant="danger"
         onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
         onCancel={() => setConfirmDeleteId(null)}
+      />
+      <ConfirmModal
+        open={confirmBulkDelete}
+        title="Delete transactions"
+        message={`Delete ${selectedIds.size} selected transaction${selectedIds.size === 1 ? "" : "s"}? This cannot be undone. Balances will be adjusted for settled transactions.`}
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleBulkDelete}
+        onCancel={() => setConfirmBulkDelete(false)}
       />
     </AppShell>
   );
