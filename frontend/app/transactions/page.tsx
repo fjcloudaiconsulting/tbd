@@ -81,6 +81,9 @@ function TransactionsPageContent() {
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   const loadRefs = useCallback(async () => {
     const [accts, cats, pers] = await Promise.all([
@@ -142,6 +145,11 @@ function TransactionsPageContent() {
   }, [loading, user, loadTransactions, page]);
 
   useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
+
+  useEffect(() => {
+    clearSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page]);
 
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);
@@ -209,6 +217,36 @@ function TransactionsPageContent() {
     } catch (err) {
       setError(extractErrorMessage(err));
     }
+  }
+
+  const allPageSelected =
+    transactions.length > 0 && transactions.every((t) => selectedIds.has(t.id));
+  const somePageSelected =
+    transactions.some((t) => selectedIds.has(t.id)) && !allPageSelected;
+
+  function toggleOne(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function togglePage() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        transactions.forEach((t) => next.delete(t.id));
+      } else {
+        transactions.forEach((t) => next.add(t.id));
+      }
+      return next;
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
   }
 
   async function handleDelete(id: number) {
@@ -501,9 +539,21 @@ function TransactionsPageContent() {
           <div className={`${card} md:overflow-x-auto`}>
             <div className="hidden md:block border-b border-border px-6 py-3">
               <div className="grid grid-cols-12 gap-4 text-xs font-medium uppercase tracking-wider text-text-muted">
+                <div className="col-span-1 flex items-center">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all on page"
+                    checked={allPageSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = somePageSelected;
+                    }}
+                    onChange={togglePage}
+                    className="h-4 w-4"
+                  />
+                </div>
                 {([
                   { field: "date" as const, label: "Date", span: "col-span-2", align: "" },
-                  { field: "description" as const, label: "Description", span: "col-span-3", align: "" },
+                  { field: "description" as const, label: "Description", span: "col-span-2", align: "" },
                   { field: "account_name" as const, label: "Account", span: "col-span-2", align: "" },
                   { field: "category_name" as const, label: "Category", span: "col-span-2", align: "" },
                   { field: "status" as const, label: "Status", span: "col-span-1", align: "text-center" },
@@ -536,6 +586,15 @@ function TransactionsPageContent() {
                       const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                       return editingId === tx.id ? (
                         <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
+                          <span className="col-span-1 flex items-center">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select transaction ${tx.id}`}
+                              checked={selectedIds.has(tx.id)}
+                              onChange={() => toggleOne(tx.id)}
+                              className="h-4 w-4"
+                            />
+                          </span>
                           <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
                           <span className="col-span-2"><input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
                           <span className="col-span-2">
@@ -559,15 +618,24 @@ function TransactionsPageContent() {
                             </select>
                             <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm w-20 ${input}`} />
                           </span>
-                          <span className="col-span-2 flex justify-end gap-2">
+                          <span className="col-span-1 flex justify-end gap-2">
                             <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>
                             <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
                           </span>
                         </div>
                       ) : (
                         <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
+                          <span className="col-span-1 flex items-center">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select transaction ${tx.id}`}
+                              checked={selectedIds.has(tx.id)}
+                              onChange={() => toggleOne(tx.id)}
+                              className="h-4 w-4"
+                            />
+                          </span>
                           <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
-                          <span className="col-span-3 text-sm text-text-primary">{tx.description}</span>
+                          <span className="col-span-2 text-sm text-text-primary">{tx.description}</span>
                           <span className="col-span-2 text-sm text-text-secondary">
                             {isTransfer && linkedTx
                               ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
