@@ -289,12 +289,17 @@ async def bulk_delete_transactions(
     # Dedupe input — caller may select both halves of a transfer
     requested = list(dict.fromkeys(ids))
 
-    # Fetch all requested transactions scoped to this org
+    # Fetch all requested transactions scoped to this org. Lock the rows
+    # FOR UPDATE (ordered by id) so a concurrent delete of the same rows
+    # waits on us instead of producing stale-rowcount errors at flush time.
     result = await db.execute(
-        select(Transaction).where(
+        select(Transaction)
+        .where(
             Transaction.id.in_(requested),
             Transaction.org_id == org_id,
         )
+        .order_by(Transaction.id)
+        .with_for_update()
     )
     found = list(result.scalars().all())
     found_ids = {tx.id for tx in found}
@@ -309,10 +314,13 @@ async def bulk_delete_transactions(
     }
     if linked_ids_to_fetch:
         linked_result = await db.execute(
-            select(Transaction).where(
+            select(Transaction)
+            .where(
                 Transaction.id.in_(linked_ids_to_fetch),
                 Transaction.org_id == org_id,
             )
+            .order_by(Transaction.id)
+            .with_for_update()
         )
         found.extend(linked_result.scalars().all())
 

@@ -153,13 +153,18 @@ function TransactionsPageContent() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && selectedIds.size > 0 && !confirmBulkDelete) {
+      if (
+        e.key === "Escape" &&
+        selectedIds.size > 0 &&
+        !confirmBulkDelete &&
+        !bulkDeleting
+      ) {
         clearSelection();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedIds.size, confirmBulkDelete]);
+  }, [selectedIds.size, confirmBulkDelete, bulkDeleting]);
 
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);
@@ -229,10 +234,22 @@ function TransactionsPageContent() {
     }
   }
 
+  // Selection state operates on the VISIBLE rows only (transfer pairs are
+  // rendered as a single row — the hidden half cascades server-side). Using
+  // visibleTxs here keeps allPageSelected / togglePage consistent with what
+  // the user actually sees.
+  const selectionHiddenIds = new Set<number>();
+  for (const t of transactions) {
+    if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
+      selectionHiddenIds.add(t.id);
+    }
+  }
+  const selectableTxs = transactions.filter((t) => !selectionHiddenIds.has(t.id));
+
   const allPageSelected =
-    transactions.length > 0 && transactions.every((t) => selectedIds.has(t.id));
+    selectableTxs.length > 0 && selectableTxs.every((t) => selectedIds.has(t.id));
   const somePageSelected =
-    transactions.some((t) => selectedIds.has(t.id)) && !allPageSelected;
+    selectableTxs.some((t) => selectedIds.has(t.id)) && !allPageSelected;
 
   function toggleOne(id: number) {
     setSelectedIds((prev) => {
@@ -247,9 +264,9 @@ function TransactionsPageContent() {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (allPageSelected) {
-        transactions.forEach((t) => next.delete(t.id));
+        selectableTxs.forEach((t) => next.delete(t.id));
       } else {
-        transactions.forEach((t) => next.add(t.id));
+        selectableTxs.forEach((t) => next.add(t.id));
       }
       return next;
     });
@@ -630,16 +647,11 @@ function TransactionsPageContent() {
               </div>
             </div>
             {(() => {
-              // Precompute tx map for O(1) lookups
+              // Precompute tx map for O(1) lookups. The dedupe set is hoisted
+              // above (selectionHiddenIds) so the selection helpers see the
+              // same hidden-half rule as the render.
               const txMap = new Map(transactions.map((t) => [t.id, t]));
-              // Deduplicate transfers: keep the lower id (expense side)
-              const hiddenIds = new Set<number>();
-              for (const t of transactions) {
-                if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
-                  hiddenIds.add(t.id);
-                }
-              }
-              const visibleTxs = sortedTransactions.filter((t) => !hiddenIds.has(t.id));
+              const visibleTxs = sortedTransactions.filter((t) => !selectionHiddenIds.has(t.id));
               return (
                 <>
                   {/* Desktop/tablet grid rows (md+) */}
@@ -887,11 +899,11 @@ function TransactionsPageContent() {
 
           {(page > 0 || hasMore) && (
             <div className="mt-4 flex items-center justify-between">
-              <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40">
+              <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0 || bulkDeleting} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40">
                 Previous
               </button>
               <span className="text-xs text-text-muted">Page {page + 1}</span>
-              <button onClick={() => setPage(page + 1)} disabled={!hasMore} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40">
+              <button onClick={() => setPage(page + 1)} disabled={!hasMore || bulkDeleting} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40">
                 Next
               </button>
             </div>

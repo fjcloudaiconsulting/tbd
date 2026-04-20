@@ -110,11 +110,12 @@ async def bulk_delete_transactions(
     Cross-org IDs are silently skipped. Transfer-pair halves cascade.
     Cap: 500 IDs per request (enforced by Pydantic).
     """
+    unique_ids = list(dict.fromkeys(body.ids))
     deleted_count, skipped_ids = await svc.bulk_delete_transactions(
-        db, current_user.org_id, body.ids
+        db, current_user.org_id, unique_ids
     )
     return BulkDeleteResponse(
-        requested_count=len(body.ids),
+        requested_count=len(unique_ids),
         deleted_count=deleted_count,
         skipped_ids=skipped_ids,
     )
