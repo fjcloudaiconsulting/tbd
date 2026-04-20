@@ -8,6 +8,8 @@ from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.transaction import (
+    BulkDeleteRequest,
+    BulkDeleteResponse,
     TransactionCreate,
     TransactionResponse,
     TransactionUpdate,
@@ -95,3 +97,24 @@ async def delete_transaction(
     db: AsyncSession = Depends(get_db),
 ):
     await svc.delete_transaction(db, current_user.org_id, transaction_id)
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteResponse)
+async def bulk_delete_transactions(
+    body: BulkDeleteRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete multiple transactions atomically.
+
+    Cross-org IDs are silently skipped. Transfer-pair halves cascade.
+    Cap: 500 IDs per request (enforced by Pydantic).
+    """
+    deleted_count, skipped_ids = await svc.bulk_delete_transactions(
+        db, current_user.org_id, body.ids
+    )
+    return BulkDeleteResponse(
+        requested_count=len(body.ids),
+        deleted_count=deleted_count,
+        skipped_ids=skipped_ids,
+    )
