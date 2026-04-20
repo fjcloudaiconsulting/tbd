@@ -66,3 +66,22 @@ class TransactionResponse(BaseModel):
     is_imported: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class BulkDeleteRequest(BaseModel):
+    """Body for POST /api/v1/transactions/bulk-delete."""
+
+    ids: list[int] = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Transaction IDs to delete. Cross-org IDs are silently ignored. Transfer-pair halves cascade.",
+    )
+
+
+class BulkDeleteResponse(BaseModel):
+    """Result of a bulk delete."""
+
+    requested_count: int
+    deleted_count: int
+    skipped_ids: list[int]  # IDs that were requested but not found in this org
