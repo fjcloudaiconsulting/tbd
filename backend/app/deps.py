@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -5,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.user import User
-from app.security import decode_token
+from app.security import decode_token, token_cutoff
 
 bearer_scheme = HTTPBearer()
 
@@ -30,5 +32,15 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
+
+    # Reject tokens issued before the session cutoff (logout / password change)
+    iat = payload.get("iat")
+    if iat is not None:
+        token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
+        if token_issued_at < token_cutoff(user):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been invalidated",
+            )
 
     return user

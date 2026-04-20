@@ -47,6 +47,7 @@ from app.security import (
     create_refresh_token,
     decode_token,
     hash_password,
+    token_cutoff,
     verify_password,
 )
 from app.rate_limit import limiter
@@ -309,6 +310,16 @@ async def refresh(
             detail="User not found or inactive",
         )
 
+    # Reject refresh tokens issued before the session cutoff (logout / password change)
+    iat = payload.get("iat")
+    if iat is not None:
+        token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
+        if token_issued_at < token_cutoff(user):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been invalidated",
+            )
+
     # Enforce absolute session lifetime
     session_created_at = payload.get("session_created_at")
     if session_created_at:
@@ -372,7 +383,13 @@ async def me(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    current_user.sessions_invalidated_at = datetime.now(timezone.utc)
+    await db.commit()
     response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
     return {"detail": "Logged out"}
 
@@ -428,8 +445,10 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
                 detail="Invalid or expired reset token",
             )
 
+    now = datetime.now(timezone.utc)
     user.password_hash = hash_password(body.new_password)
-    user.password_changed_at = datetime.now(timezone.utc)
+    user.password_changed_at = now
+    user.sessions_invalidated_at = now
     await db.commit()
     return {"detail": "Password has been reset"}
 
