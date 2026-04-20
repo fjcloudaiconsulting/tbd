@@ -1,6 +1,6 @@
 """add sessions_invalidated_at to users
 
-Revision ID: f19715b7e00c
+Revision ID: 024
 Revises: 023
 Create Date: 2026-04-20 14:12:28.664801
 

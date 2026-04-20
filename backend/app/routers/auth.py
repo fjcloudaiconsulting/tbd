@@ -384,12 +384,29 @@ async def me(
 
 @router.post("/logout")
 async def logout(
+    request: Request,
     response: Response,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    current_user.sessions_invalidated_at = datetime.now(timezone.utc)
-    await db.commit()
+    # Best-effort server-side invalidation: if the caller still has a valid
+    # access token, mark their sessions invalidated so the refresh token and
+    # any sibling access tokens are killed. Regardless of auth state, always
+    # clear the refresh cookie so the browser stops sending it.
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token:
+        try:
+            payload = decode_token(token)
+            user_id = payload.get("sub")
+            if user_id is not None:
+                result = await db.execute(select(User).where(User.id == int(user_id)))
+                user = result.scalar_one_or_none()
+                if user is not None:
+                    user.sessions_invalidated_at = datetime.now(timezone.utc)
+                    await db.commit()
+        except Exception:
+            # Missing/expired/malformed token: still clear the cookie below.
+            pass
     response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
     return {"detail": "Logged out"}
 

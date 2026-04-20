@@ -5,6 +5,7 @@ import bcrypt
 import jwt
 
 from app.config import settings
+from app.models.user import User
 
 
 def hash_password(password: str) -> str:
@@ -114,7 +115,7 @@ def decode_token(token: str) -> dict | None:
         return None
 
 
-def token_cutoff(user) -> datetime:
+def token_cutoff(user: User) -> datetime:
     """Earliest iat that is still valid for this user.
 
     Tokens issued before this timestamp are rejected. Updated on logout,
