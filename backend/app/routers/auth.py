@@ -18,6 +18,9 @@ from app.models.user import Organization, Role, User
 from app.models.subscription import Subscription, Plan
 from app.services import subscription_service
 from app.schemas.auth import (
+    USERNAME_MAX_LENGTH,
+    USERNAME_MIN_LENGTH,
+    USERNAME_PATTERN,
     ForgotPasswordRequest,
     LoginRequest,
     MfaChallengeResponse,
@@ -169,7 +172,11 @@ async def auth_status(db: AsyncSession = Depends(get_db)):
 @limiter.limit("20/minute")
 async def check_username(
     request: Request,
-    username: str = Query(min_length=1),
+    username: str = Query(
+        min_length=USERNAME_MIN_LENGTH,
+        max_length=USERNAME_MAX_LENGTH,
+        pattern=USERNAME_PATTERN,
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """Check if a username is available and suggest alternatives."""
@@ -873,8 +880,14 @@ async def google_callback(
     if not email:
         raise HTTPException(status_code=400, detail="Google account has no email")
 
-    # Only trust email_verified if Google explicitly says so
-    google_verified = google_user.get("verified_email", False)
+    # Only trust Google's verification flag if it's explicitly present.
+    # The userinfo payload may expose this as either `verified_email`
+    # (OAuth2 v2 endpoint) or `email_verified` (OIDC userinfo) — accept
+    # both, default to False otherwise.
+    raw = google_user.get("verified_email")
+    if raw is None:
+        raw = google_user.get("email_verified", False)
+    google_verified = bool(raw)
     if not google_verified:
         # Refuse SSO for unverified Google accounts. Prevents an attacker
         # who created an unverified Google account at the victim's email
@@ -898,7 +911,8 @@ async def google_callback(
         # Existing user — login
         if not user.is_active:
             raise HTTPException(status_code=403, detail="Account is deactivated")
-        if google_verified and not user.email_verified:
+        # google_verified is guaranteed True by the guard above.
+        if not user.email_verified:
             user.email_verified = True
             await db.commit()
     else:
@@ -921,7 +935,7 @@ async def google_callback(
             last_name=last_name,
             avatar_url=google_user.get("picture"),
             password_hash=hash_password(secrets.token_urlsafe(32)),
-            email_verified=google_verified,
+            email_verified=True,  # guaranteed by the verified_email guard
             role=Role.OWNER,
             is_superadmin=is_first_user,
         )
