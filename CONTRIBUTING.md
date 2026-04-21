@@ -101,6 +101,7 @@ backend/app/
 ├── deps.py                  # FastAPI dependencies: get_db, get_current_user
 ├── logging.py               # structlog JSON logging + health check filter
 ├── rate_limit.py            # slowapi rate limiter (shared instance)
+├── redis_client.py          # Async Redis/Valkey singleton (MFA nonce today)
 ├── models/                  # SQLAlchemy ORM models
 │   ├── user.py              #   User, Organization, Role enum
 │   ├── account.py           #   Account, AccountType
@@ -161,7 +162,9 @@ frontend/
 │   ├── forgot-password/     #   Request password reset
 │   ├── reset-password/      #   Complete password reset
 │   ├── verify-email/        #   Email verification
-│   └── auth/google/callback/ # Google SSO callback
+│   ├── auth/google/callback/ # Google SSO callback
+│   ├── privacy/             #   Privacy Policy (public, GDPR-compliant)
+│   └── terms/               #   Terms of Service (public)
 ├── components/
 │   ├── AppShell.tsx         #   Sidebar + header + footer layout
 │   ├── auth/AuthProvider.tsx #  Auth context, login/logout/refresh
@@ -170,7 +173,9 @@ frontend/
     ├── api.ts               #   Typed fetch wrapper with silent token refresh
     ├── types.ts             #   Shared TypeScript interfaces
     ├── styles.ts            #   Tailwind class constants
-    └── auth.ts              #   isAdmin() helper
+    ├── auth.ts              #   isAdmin() helper
+    ├── logger.ts            #   Client+server structured JSON logger
+    └── validation.ts        #   Shared client-side validation rules (kept in sync with backend/app/schemas)
 ```
 
 ### Key Design Decisions
@@ -205,11 +210,18 @@ frontend/
 
 ### Rate Limiting
 
+All limits are per client IP via slowapi's `get_remote_address`. In-memory storage is fine while the backend runs single-replica on DO App Platform; a Redis-backed store is deferred to the K8s migration.
+
 | Endpoint | Limit |
 |----------|-------|
 | `POST /api/v1/auth/login` | 10/minute |
+| `POST /api/v1/auth/register` | 5/hour |
+| `GET /api/v1/auth/check-username` | 20/minute |
+| `POST /api/v1/auth/verify-email` | 10/minute |
+| `POST /api/v1/auth/resend-verification` | 3/hour |
 | `POST /api/v1/auth/forgot-password` | 5/minute |
 | `POST /api/v1/auth/mfa/verify` | 10/minute |
+| `POST /api/v1/auth/mfa/recovery` | 10/minute |
 | `POST /api/v1/auth/mfa/email-code` | 3/minute |
 | `POST /api/v1/auth/mfa/email-verify` | 10/minute |
 
@@ -272,13 +284,17 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ## Database Migrations
 
-Migrations auto-run on backend startup in development. In production, they run as part of the container entrypoint before the app starts.
+Migrations run in one of three ways depending on environment:
+
+- **Development** (`./pfv start`): the backend lifespan calls `_run_migrations()` on startup. Convenient for a single-container local stack.
+- **Local prod simulation** (`./pfv prod`): a one-shot `migrate` service defined in `docker-compose.prod.yml` runs `alembic upgrade head` and exits; the backend then starts with `APP_ENV=production` which skips the startup migration.
+- **Production (DO App Platform)**: a dedicated `PRE_DEPLOY` job defined in `.do/app.yaml` runs `alembic upgrade head` before any backend replica starts. The backend skips the startup migration because `APP_ENV=production`. **Operator note:** secrets (especially `DATABASE_URL`) must be configured against the `migrate` job component in the DO console — App Platform does not auto-inherit secrets across components.
 
 ```bash
 # Create a new migration
 docker compose exec backend alembic revision -m "description"
 
-# Run pending migrations manually
+# Run pending migrations manually (dev)
 ./pfv migrate
 
 # Check current migration state
