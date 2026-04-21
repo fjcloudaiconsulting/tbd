@@ -74,3 +74,26 @@ services:
         value: ""
       - key: HOSTNAME
         value: "0.0.0.0"
+
+# Pre-deploy job: run Alembic migrations exactly once before any backend
+# replica starts. The backend lifespan skips migrations when APP_ENV is
+# production so we never run them twice (prod path is: this job only).
+#
+# DATABASE_URL and other secrets MUST be configured against this job in the
+# DO console the same way they are for the backend service — App Platform
+# does not auto-inherit secrets across components.
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    github:
+      repo: flamarion/pfv
+      branch: main
+      deploy_on_push: false
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: alembic upgrade head
+    envs:
+      - key: APP_ENV
+        value: "production"

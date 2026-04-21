@@ -1,4 +1,5 @@
 import hmac as _hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -76,23 +77,34 @@ def create_mfa_challenge_token(user_id: int) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_mfa_email_token(user_id: int, code: str) -> str:
+MFA_EMAIL_TOKEN_TTL_SECONDS = 10 * 60
+
+
+def create_mfa_email_token(user_id: int, code: str) -> tuple[str, str]:
     """Create a short-lived token containing an MFA email code (10 minutes).
 
     Uses HMAC-SHA256 keyed with jwt_secret_key so the code hash cannot be
     brute-forced offline even though JWT payloads are readable.
+
+    Returns (token, jti). The caller stores the jti in Redis (key with the
+    same TTL) and deletes it on first successful verify to enforce
+    single-use semantics. Without Redis bookkeeping the token is replayable
+    within its TTL.
     """
-    expire = datetime.now(timezone.utc) + timedelta(minutes=10)
+    expire = datetime.now(timezone.utc) + timedelta(seconds=MFA_EMAIL_TOKEN_TTL_SECONDS)
     code_hmac = _hmac.new(
         settings.jwt_secret_key.encode(), code.encode(), "sha256"
     ).hexdigest()
+    jti = secrets.token_urlsafe(16)
     payload = {
         "sub": str(user_id),
         "type": "mfa_email",
         "code_hmac": code_hmac,
+        "jti": jti,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return token, jti
 
 
 def create_email_verification_token(user_id: int) -> str:

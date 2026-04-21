@@ -10,6 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select, text
 
 from app.config import settings as app_settings
+from app import redis_client
 from app.database import async_session, engine
 from app.models.subscription import Subscription
 from app.models.user import Organization
@@ -55,10 +56,16 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _run_migrations()
+    # In production, migrations run via the App Platform PRE_DEPLOY job
+    # (see .do/app.yaml) or the docker-compose.prod.yml `migrate` one-shot.
+    # Skipping here avoids duplicate runs when the backend scales to >1
+    # replica on K8s and keeps the single-responsibility-per-process boundary.
+    if app_settings.app_env != "production":
+        _run_migrations()
     await _backfill_subscriptions()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
+    await redis_client.close_client()
     await engine.dispose()
     await logger.ainfo("shutdown complete")
 
