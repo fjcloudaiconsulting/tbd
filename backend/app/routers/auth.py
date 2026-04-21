@@ -746,32 +746,34 @@ async def mfa_email_verify(
     if int(email_payload["sub"]) != user.id:
         raise HTTPException(status_code=401, detail="Invalid or expired email code")
 
-    # Single-use enforcement (pentest L1). Atomically consume the jti in
-    # Redis; if the DEL returns 0 the token was already used or was never
-    # issued by this instance. In production this is a hard requirement;
-    # without Redis we'd silently allow replay.
+    # Legacy tokens (pre-jti) are rejected so users re-request under the
+    # new single-use flow.
     jti = email_payload.get("jti")
     redis = redis_client.get_client()
-    if redis is not None:
-        if jti is None:
-            # Legacy token issued before jti was added — reject so users
-            # re-request a code under the new flow.
-            raise HTTPException(status_code=401, detail="Invalid or expired email code")
-        consumed = await redis.delete(f"mfa_email_jti:{jti}")
-        if not consumed:
-            raise HTTPException(status_code=401, detail="Invalid or expired email code")
-    elif app_settings.app_env == "production":
+    if redis is None and app_settings.app_env == "production":
         raise HTTPException(
             status_code=503,
             detail="MFA email flow temporarily unavailable",
         )
+    if redis is not None and jti is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired email code")
 
-    # Verify the code matches using HMAC (keyed hash, not brute-forceable)
+    # Verify the code matches using HMAC (keyed hash, not brute-forceable).
+    # Must happen BEFORE consuming the nonce — otherwise a typo burns the
+    # token and forces a resend (one-attempt-only regression).
     expected_hmac = _hmac.new(
         app_settings.jwt_secret_key.encode(), body.code.encode(), "sha256"
     ).hexdigest()
     if not _hmac.compare_digest(expected_hmac, email_payload.get("code_hmac", "")):
         raise HTTPException(status_code=401, detail="Invalid code")
+
+    # Only consume the jti after the code is proven valid. Atomic DEL:
+    # if it returns 0 the token was already used (replay attempt) → 401.
+    # Rate limit (10/min) backs this up against concurrent racing.
+    if redis is not None:
+        consumed = await redis.delete(f"mfa_email_jti:{jti}")
+        if not consumed:
+            raise HTTPException(status_code=401, detail="Invalid or expired email code")
 
     return _issue_tokens(user, response)
 
