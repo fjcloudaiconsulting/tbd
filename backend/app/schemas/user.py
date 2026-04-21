@@ -1,8 +1,21 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.schemas.auth import (
+    USERNAME_MAX_LENGTH,
+    USERNAME_MIN_LENGTH,
+    USERNAME_PATTERN,
+)
+
 
 class ProfileUpdate(BaseModel):
-    username: str | None = Field(default=None, min_length=1, max_length=64)
+    # Same rules as RegisterRequest — a signed-in user must not be able to
+    # bypass server-side invariants by renaming through PUT /users/me.
+    username: str | None = Field(
+        default=None,
+        min_length=USERNAME_MIN_LENGTH,
+        max_length=USERNAME_MAX_LENGTH,
+        pattern=USERNAME_PATTERN,
+    )
     email: EmailStr | None = None
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)

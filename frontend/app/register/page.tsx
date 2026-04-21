@@ -7,6 +7,13 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, btnSecondary, error as errorCls, success } from "@/lib/styles";
+import {
+  USERNAME_MAX_LENGTH,
+  USERNAME_MIN_LENGTH,
+  USERNAME_PATTERN,
+  USERNAME_PATTERN_RE,
+  USERNAME_RULE_HINT,
+} from "@/lib/validation";
 
 interface UsernameCheck {
   available: boolean;
@@ -44,10 +51,15 @@ export default function RegisterPage() {
     if (slug) setUsername(slug);
   }, [firstName, lastName, usernameManual]);
 
-  // Check username availability (debounced, cancels stale requests)
+  // Check username availability (debounced, cancels stale requests).
+  // We only call the endpoint when the value satisfies the server rules —
+  // otherwise /check-username returns 422 and confuses the UI.
   const checkRef = useRef(0);
   const checkUsername = useCallback(async (name: string) => {
-    if (name.length < 2) { setUsernameStatus(""); return; }
+    if (name.length < USERNAME_MIN_LENGTH || !USERNAME_PATTERN_RE.test(name)) {
+      setUsernameStatus("");
+      return;
+    }
     const id = ++checkRef.current;
     setUsernameStatus("checking");
     try {
@@ -141,7 +153,19 @@ export default function RegisterPage() {
           </div>
           <div>
             <label htmlFor="reg-username" className={label}>Username</label>
-            <input id="reg-username" type="text" required value={username} onChange={(e) => { setUsername(e.target.value); setUsernameManual(true); }} className={input} autoComplete="username" />
+            <input
+              id="reg-username"
+              type="text"
+              required
+              minLength={USERNAME_MIN_LENGTH}
+              maxLength={USERNAME_MAX_LENGTH}
+              pattern={USERNAME_PATTERN}
+              title={USERNAME_RULE_HINT}
+              value={username}
+              onChange={(e) => { setUsername(e.target.value); setUsernameManual(true); }}
+              className={input}
+              autoComplete="username"
+            />
             {usernameStatus === "checking" && <p className="mt-1 text-xs text-text-muted">Checking...</p>}
             {usernameStatus === "available" && <p className="mt-1 text-xs text-success">Available</p>}
             {usernameStatus === "taken" && (
@@ -150,6 +174,9 @@ export default function RegisterPage() {
                   <> — try <button type="button" onClick={() => { setUsername(usernameSuggestion); setUsernameManual(true); }} className="text-accent underline">{usernameSuggestion}</button></>
                 )}
               </p>
+            )}
+            {!usernameStatus && (
+              <p className="mt-1 text-xs text-text-muted">{USERNAME_RULE_HINT}</p>
             )}
           </div>
           <div>
