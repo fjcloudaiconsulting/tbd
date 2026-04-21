@@ -168,6 +168,17 @@ export default function RegisterPage() {
             <label htmlFor="reg-password2" className={label}>Confirm Password</label>
             <input id="reg-password2" type="password" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
           </div>
+          <p className="text-xs text-text-muted">
+            By creating an account you agree to our{" "}
+            <Link href="/terms" className="underline hover:text-text-primary">
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link href="/privacy" className="underline hover:text-text-primary">
+              Privacy Policy
+            </Link>
+            .
+          </p>
           <button type="submit" disabled={submitting || usernameStatus === "taken"} className={`w-full ${btnPrimary}`}>
             {submitting ? "Creating account..." : "Create Account"}
           </button>
