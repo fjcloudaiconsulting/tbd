@@ -38,7 +38,9 @@ from app.schemas.auth import (
     VerifyEmailRequest,
 )
 from app.config import settings as app_settings
+from app import redis_client
 from app.security import (
+    MFA_EMAIL_TOKEN_TTL_SECONDS,
     create_access_token,
     create_email_verification_token,
     create_mfa_challenge_token,
@@ -701,8 +703,22 @@ async def mfa_email_code(
     # Generate 6-digit numeric code
     code = f"{secrets.randbelow(1000000):06d}"
 
-    # Store as a JWT so we don't need DB state
-    email_token = create_mfa_email_token(user.id, code)
+    # Store as a JWT so we don't need DB state. The jti is recorded in
+    # Redis so /mfa/email-verify can enforce single-use (pentest L1).
+    email_token, jti = create_mfa_email_token(user.id, code)
+
+    redis = redis_client.get_client()
+    if redis is not None:
+        await redis.set(
+            f"mfa_email_jti:{jti}", str(user.id), ex=MFA_EMAIL_TOKEN_TTL_SECONDS
+        )
+    elif app_settings.app_env == "production":
+        # In prod we must have Redis; empty REDIS_URL means the single-use
+        # guarantee is disabled — refuse to issue a token.
+        raise HTTPException(
+            status_code=503,
+            detail="MFA email flow temporarily unavailable",
+        )
 
     background_tasks.add_task(send_mfa_email_code, user.email, code)
 
@@ -729,6 +745,26 @@ async def mfa_email_verify(
     # Ensure the email token belongs to the same user
     if int(email_payload["sub"]) != user.id:
         raise HTTPException(status_code=401, detail="Invalid or expired email code")
+
+    # Single-use enforcement (pentest L1). Atomically consume the jti in
+    # Redis; if the DEL returns 0 the token was already used or was never
+    # issued by this instance. In production this is a hard requirement;
+    # without Redis we'd silently allow replay.
+    jti = email_payload.get("jti")
+    redis = redis_client.get_client()
+    if redis is not None:
+        if jti is None:
+            # Legacy token issued before jti was added — reject so users
+            # re-request a code under the new flow.
+            raise HTTPException(status_code=401, detail="Invalid or expired email code")
+        consumed = await redis.delete(f"mfa_email_jti:{jti}")
+        if not consumed:
+            raise HTTPException(status_code=401, detail="Invalid or expired email code")
+    elif app_settings.app_env == "production":
+        raise HTTPException(
+            status_code=503,
+            detail="MFA email flow temporarily unavailable",
+        )
 
     # Verify the code matches using HMAC (keyed hash, not brute-forceable)
     expected_hmac = _hmac.new(
