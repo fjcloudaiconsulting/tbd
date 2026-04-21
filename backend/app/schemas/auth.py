@@ -2,7 +2,10 @@ from pydantic import BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+    # Letters, digits, dot, underscore, hyphen. No whitespace, no punctuation,
+    # no unicode, no null bytes. 3-64 chars. Existing shorter/looser names
+    # stay — the check only runs on new signups.
+    username: str = Field(min_length=3, max_length=64, pattern=r"^[a-zA-Z0-9._-]+$")
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     first_name: str | None = Field(default=None, max_length=100)

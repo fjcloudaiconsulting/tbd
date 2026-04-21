@@ -166,7 +166,9 @@ async def auth_status(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/check-username", response_model=UsernameCheckResponse)
+@limiter.limit("20/minute")
 async def check_username(
+    request: Request,
     username: str = Query(min_length=1),
     db: AsyncSession = Depends(get_db),
 ):
@@ -181,7 +183,9 @@ async def check_username(
 
 
 @router.post("/register", response_model=UserResponse, status_code=201)
+@limiter.limit("5/hour")
 async def register(
+    request: Request,
     body: RegisterRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
@@ -476,7 +480,8 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
 
 
 @router.post("/verify-email")
-async def verify_email(body: VerifyEmailRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def verify_email(request: Request, body: VerifyEmailRequest, db: AsyncSession = Depends(get_db)):
     """Verify email address using a verification token."""
     payload = decode_token(body.token)
     if payload is None or payload.get("type") != "email_verify":
@@ -501,7 +506,9 @@ async def verify_email(body: VerifyEmailRequest, db: AsyncSession = Depends(get_
 
 
 @router.post("/resend-verification")
+@limiter.limit("3/hour")
 async def resend_verification(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -868,6 +875,18 @@ async def google_callback(
 
     # Only trust email_verified if Google explicitly says so
     google_verified = google_user.get("verified_email", False)
+    if not google_verified:
+        # Refuse SSO for unverified Google accounts. Prevents an attacker
+        # who created an unverified Google account at the victim's email
+        # from silently merging with an existing password-based user, and
+        # prevents new registrations under unverified addresses.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Google has not verified this email. Verify it with Google "
+                "or sign in with a password."
+            ),
+        )
     first_name = google_user.get("given_name", "")
     last_name = google_user.get("family_name", "")
 
