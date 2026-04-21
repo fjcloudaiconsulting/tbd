@@ -72,7 +72,27 @@ export async function apiFetch<T>(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new ApiResponseError(res.status, body.detail || "Request failed");
+    let message: string;
+    if (Array.isArray(body.detail)) {
+      // FastAPI 422 validation error: detail is a list of
+      // { loc, msg, type, ... } objects. Flatten to "field: message"
+      // per entry so users see something useful instead of
+      // "[object Object]".
+      message = body.detail
+        .map((e: { loc?: unknown[]; msg?: string }) => {
+          const field = Array.isArray(e.loc)
+            ? e.loc.filter((p) => p !== "body" && typeof p === "string").join(".")
+            : "";
+          const msg = e.msg ?? "Invalid input";
+          return field ? `${field}: ${msg}` : msg;
+        })
+        .join("; ");
+    } else if (typeof body.detail === "string") {
+      message = body.detail;
+    } else {
+      message = "Request failed";
+    }
+    throw new ApiResponseError(res.status, message);
   }
 
   // 204 No Content

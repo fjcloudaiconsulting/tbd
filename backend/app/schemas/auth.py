@@ -1,8 +1,22 @@
 from pydantic import BaseModel, EmailStr, Field
 
+# Single source of truth for username rules. Re-used by `RegisterRequest`
+# below and by the `/check-username` Query constraint so the two stay
+# consistent — no more "available now, rejected on submit" UX drift.
+USERNAME_PATTERN = r"^[a-zA-Z0-9._-]+$"
+USERNAME_MIN_LENGTH = 3
+USERNAME_MAX_LENGTH = 64
+
 
 class RegisterRequest(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+    # Letters, digits, dot, underscore, hyphen. No whitespace or other
+    # punctuation, no unicode, no null bytes. 3-64 chars. Existing
+    # shorter/looser names stay — the check only runs on new signups.
+    username: str = Field(
+        min_length=USERNAME_MIN_LENGTH,
+        max_length=USERNAME_MAX_LENGTH,
+        pattern=USERNAME_PATTERN,
+    )
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     first_name: str | None = Field(default=None, max_length=100)

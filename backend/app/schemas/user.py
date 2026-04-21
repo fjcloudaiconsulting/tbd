@@ -2,6 +2,12 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class ProfileUpdate(BaseModel):
+    # Base bounds only (DoS protection). The 3-char minimum and pattern
+    # enforced at /register are applied in the PUT /users/me handler
+    # *only when the value actually changes* — legacy users with a
+    # grandfathered 1- or 2-char name must still be able to update
+    # their other profile fields (email, phone, name) without hitting
+    # the strict rule.
     username: str | None = Field(default=None, min_length=1, max_length=64)
     email: EmailStr | None = None
     first_name: str | None = Field(default=None, max_length=100)

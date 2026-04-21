@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -7,9 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
-from app.schemas.auth import UserResponse
+from app.schemas.auth import (
+    USERNAME_MAX_LENGTH,
+    USERNAME_MIN_LENGTH,
+    USERNAME_PATTERN,
+    UserResponse,
+)
 from app.schemas.user import PasswordChange, ProfileUpdate
 from app.security import hash_password, verify_password
+
+_USERNAME_RE = re.compile(USERNAME_PATTERN)
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
@@ -41,6 +49,22 @@ async def update_profile(
     db: AsyncSession = Depends(get_db),
 ):
     if body.username is not None and body.username != current_user.username:
+        # Enforce the stricter /register rules only on actual changes so
+        # legacy users with a grandfathered short/looser username can
+        # still update their other profile fields.
+        if (
+            len(body.username) < USERNAME_MIN_LENGTH
+            or len(body.username) > USERNAME_MAX_LENGTH
+            or not _USERNAME_RE.match(body.username)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Username must be {USERNAME_MIN_LENGTH}-{USERNAME_MAX_LENGTH} "
+                    "characters: letters, digits, dot, underscore, or hyphen only."
+                ),
+            )
+
         existing = await db.execute(
             select(User).where(User.username == body.username)
         )

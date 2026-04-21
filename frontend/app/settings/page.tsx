@@ -34,15 +34,25 @@ export default function SettingsProfilePage() {
     e.preventDefault();
     setProfileMsg(""); setProfileErr(""); setSavingProfile(true);
     try {
+      // Only send fields that actually changed. Keeps legacy users with
+      // grandfathered 1-2 char usernames able to save email/phone/name
+      // without sending their username through the stricter validator.
+      const payload: Record<string, string | null> = {};
+      const normalize = (v: string) => v || null;
+      if (normalize(firstName) !== (user?.first_name ?? null)) payload.first_name = normalize(firstName);
+      if (normalize(lastName) !== (user?.last_name ?? null)) payload.last_name = normalize(lastName);
+      if (username !== user?.username) payload.username = username;
+      if (email !== user?.email) payload.email = email;
+      if (normalize(phone) !== (user?.phone ?? null)) payload.phone = normalize(phone);
+
+      if (Object.keys(payload).length === 0) {
+        setProfileMsg("No changes to save");
+        return;
+      }
+
       await apiFetch<User>("/api/v1/users/me", {
         method: "PUT",
-        body: JSON.stringify({
-          first_name: firstName || null,
-          last_name: lastName || null,
-          username,
-          email,
-          phone: phone || null,
-        }),
+        body: JSON.stringify(payload),
       });
       await refreshMe();
       setProfileMsg("Profile updated");

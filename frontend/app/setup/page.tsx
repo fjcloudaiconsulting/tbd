@@ -5,6 +5,12 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
+import {
+  USERNAME_MAX_LENGTH,
+  USERNAME_MIN_LENGTH,
+  USERNAME_PATTERN,
+  USERNAME_RULE_HINT,
+} from "@/lib/validation";
 
 export default function SetupPage() {
   const { needsSetup, loading, register, login } = useAuth();
@@ -59,7 +65,21 @@ export default function SetupPage() {
             {error && <div className={errorCls}>{error}</div>}
             <div>
               <label htmlFor="setup-username" className={label}>Username</label>
-              <input id="setup-username" type="text" required value={username} onChange={(e) => setUsername(e.target.value)} className={input} autoComplete="username" autoFocus />
+              <input
+                id="setup-username"
+                type="text"
+                required
+                minLength={USERNAME_MIN_LENGTH}
+                maxLength={USERNAME_MAX_LENGTH}
+                pattern={USERNAME_PATTERN}
+                title={USERNAME_RULE_HINT}
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className={input}
+                autoComplete="username"
+                autoFocus
+              />
+              <p className="mt-1 text-xs text-text-muted">{USERNAME_RULE_HINT}</p>
             </div>
             <div>
               <label htmlFor="setup-email" className={label}>Email</label>
