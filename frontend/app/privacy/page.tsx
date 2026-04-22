@@ -1,10 +1,11 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
+import BackLink from "@/components/ui/BackLink";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — PFV2",
-  description: "How PFV2 collects, uses, and protects your personal data.",
+  title: "The Better Decision: Privacy Policy",
+  description: "How The Better Decision collects, uses, and protects your personal data.",
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";
@@ -15,12 +16,7 @@ export default function PrivacyPolicyPage() {
       <ThemeToggle className="absolute right-6 top-6" />
       <article className="mx-auto max-w-2xl">
         <header className="mb-10">
-          <Link
-            href="/login"
-            className="text-sm text-text-muted hover:text-text-primary"
-          >
-            ← Back
-          </Link>
+          <BackLink />
           <h1 className="mt-6 font-display text-3xl font-semibold text-text-primary">
             Privacy Policy
           </h1>
@@ -32,7 +28,7 @@ export default function PrivacyPolicyPage() {
         <div className="space-y-8 text-text-primary [&_h2]:font-display [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mb-3 [&_h2]:mt-8 [&_p]:text-sm [&_p]:leading-relaxed [&_p]:text-text-secondary [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:text-sm [&_ul]:leading-relaxed [&_ul]:text-text-secondary [&_li]:mt-1">
           <section>
             <p>
-              PFV2 (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is a personal finance
+              The Better Decision (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is a personal finance
               application operated by Flamarion Jorge. We care about your
               privacy and keep what we collect to the minimum needed to run
               the service. This policy explains what we collect, why, how
@@ -42,7 +38,7 @@ export default function PrivacyPolicyPage() {
 
           <section>
             <h2>1. What we collect</h2>
-            <p>When you create an account and use PFV2, we collect:</p>
+            <p>When you create an account and use The Better Decision, we collect:</p>
             <ul>
               <li>
                 <strong>Identity:</strong> username, email, first/last name,
@@ -103,25 +99,25 @@ export default function PrivacyPolicyPage() {
             <h2>3. Third parties we share with</h2>
             <p>
               We share data only with service providers strictly necessary
-              to run PFV2:
+              to run The Better Decision:
             </p>
             <ul>
               <li>
-                <strong>DigitalOcean</strong> (hosting) — stores your data at
+                <strong>DigitalOcean</strong> (hosting): stores your data at
                 rest in managed MySQL in the ams3 region (EU).
               </li>
               <li>
-                <strong>Cloudflare</strong> (CDN / edge) — handles TLS
+                <strong>Cloudflare</strong> (CDN / edge): handles TLS
                 termination, DDoS protection, and edge routing.
               </li>
               <li>
-                <strong>Mailgun</strong> (EU region) — sends transactional
+                <strong>Mailgun</strong> (EU region): sends transactional
                 emails. We send only what&rsquo;s needed (your email
                 address, the subject line, and the email body).
               </li>
               <li>
                 <strong>Google</strong> (optional, if you choose
-                &ldquo;Sign in with Google&rdquo;) — we receive your email,
+                &ldquo;Sign in with Google&rdquo;): we receive your email,
                 name, and profile picture from Google after you authorize
                 the sign-in.
               </li>
@@ -157,26 +153,26 @@ export default function PrivacyPolicyPage() {
             </p>
             <ul>
               <li>
-                <strong>Access</strong> — request a copy of your data.
+                <strong>Access</strong>: request a copy of your data.
               </li>
               <li>
-                <strong>Rectification</strong> — fix anything inaccurate.
+                <strong>Rectification</strong>: fix anything inaccurate.
                 Most of this is self-serve inside the app.
               </li>
               <li>
-                <strong>Erasure</strong> — delete your account and all data
+                <strong>Erasure</strong>: delete your account and all data
                 associated with your organization.
               </li>
               <li>
-                <strong>Portability</strong> — export your data in a
+                <strong>Portability</strong>: export your data in a
                 machine-readable format.
               </li>
               <li>
-                <strong>Restriction / Objection</strong> — ask us to stop
+                <strong>Restriction / Objection</strong>: ask us to stop
                 or limit specific processing.
               </li>
               <li>
-                <strong>Complaint</strong> — lodge a complaint with your
+                <strong>Complaint</strong>: lodge a complaint with your
                 national data-protection authority (in the Netherlands, the
                 Autoriteit Persoonsgegevens).
               </li>
@@ -228,7 +224,7 @@ export default function PrivacyPolicyPage() {
           <section>
             <h2>8. Children</h2>
             <p>
-              PFV2 is not intended for children under 16. We do not knowingly
+              The Better Decision is not intended for children under 16. We do not knowingly
               collect personal data from children.
             </p>
           </section>

@@ -1,6 +1,6 @@
-# Contributing to PFV2
+# Contributing to The Better Decision
 
-This guide covers everything you need to develop, test, and deploy PFV2. Start with Quick Start if you're setting up for the first time, then refer to the architecture and API sections as needed.
+This guide covers everything you need to develop, test, and deploy The Better Decision. Start with Quick Start if you're setting up for the first time, then refer to the architecture and API sections as needed.
 
 ## Prerequisites
 
@@ -247,7 +247,7 @@ All other endpoints require a Bearer access token via `get_current_user` depende
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `APP_ENV` | `development` | `development` or `production` |
-| `APP_NAME` | `PFV2` | App name (used in TOTP issuer, emails) |
+| `APP_NAME` | `The Better Decision` | App name (used in TOTP issuer, emails) |
 | `LOG_LEVEL` | `INFO` | Python log level |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token lifetime |
 | `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token (idle timeout) |
@@ -257,7 +257,7 @@ All other endpoints require a Bearer access token via `get_current_user` depende
 | `MFA_ENCRYPTION_KEY` | _(empty)_ | Fernet key for TOTP secret encryption |
 | `MAILGUN_API_KEY` | _(empty)_ | Mailgun API key (emails logged if empty) |
 | `MAILGUN_DOMAIN` | _(empty)_ | Mailgun sending domain |
-| `EMAIL_FROM` | `PFV2 <noreply@pfv.app>` | From address for emails |
+| `EMAIL_FROM` | `The Better Decision <noreply@thebetterdecision.com>` | From address for emails |
 | `APP_URL` | `http://localhost` | Public URL (used in email links) |
 | `GOOGLE_CLIENT_ID` | _(empty)_ | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | _(empty)_ | Google OAuth client secret |

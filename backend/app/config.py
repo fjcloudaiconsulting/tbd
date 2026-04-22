@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # App
-    app_name: str = "PFV2"
+    app_name: str = "The Better Decision"
     app_env: str = "development"
     log_level: str = "INFO"
 
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     mailgun_api_key: str = ""
     mailgun_domain: str = ""
     mailgun_region: str = ""  # "eu" for EU endpoint, empty for US
-    email_from: str = "PFV2 <noreply@pfv.app>"
+    email_from: str = "The Better Decision <noreply@thebetterdecision.com>"
     app_url: str = "http://localhost"  # used for email links
 
     # MFA

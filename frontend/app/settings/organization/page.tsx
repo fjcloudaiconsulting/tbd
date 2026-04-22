@@ -197,10 +197,10 @@ export default function OrganizationSettingsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-text-primary">
-                    Current: {currentPeriod.start_date} — {currentPeriod.end_date ?? "open"}
+                    Current: {currentPeriod.start_date} to {currentPeriod.end_date ?? "open"}
                   </p>
                   <p className="text-xs text-text-muted">
-                    {currentPeriod.end_date ? "Closed" : "Open — transactions are being recorded"}
+                    {currentPeriod.end_date ? "Closed" : "Open, transactions are being recorded"}
                   </p>
                 </div>
                 {!currentPeriod.end_date && (

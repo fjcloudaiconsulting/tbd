@@ -1,4 +1,4 @@
-# PFV2
+# The Better Decision
 
 Personal finance management for people who actually want to understand where their money goes.
 

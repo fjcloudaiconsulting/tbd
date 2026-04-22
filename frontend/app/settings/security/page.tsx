@@ -153,7 +153,7 @@ export default function SecurityPage() {
   }
 
   function downloadCodes(codes: string[]) {
-    const text = "PFV2 Recovery Codes\n" +
+    const text = "The Better Decision: Recovery Codes\n" +
       "===================\n\n" +
       "Store these codes in a safe place.\n" +
       "Each code can only be used once.\n\n" +
@@ -162,7 +162,7 @@ export default function SecurityPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "pfv2-recovery-codes.txt";
+    a.download = "the-better-decision-recovery-codes.txt";
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
