@@ -23,6 +23,15 @@ export default function LandingPageBody() {
     }
   }, [user, loading, needsSetup, router]);
 
+  // Render a blank shell while auth state resolves OR while we're about to
+  // redirect (logged-in user / needs-setup install). Prevents the public
+  // landing from flashing before router.replace() fires. Anonymous visitors
+  // hit the return below immediately since loading === false and both user
+  // and needsSetup are null.
+  if (loading || user || needsSetup) {
+    return <div className="min-h-screen bg-bg" aria-busy="true" />;
+  }
+
   return (
     <div className="min-h-screen bg-bg text-text-primary">
       <TopNav />

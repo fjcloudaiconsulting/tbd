@@ -15,10 +15,9 @@ export default function LandingFooter() {
           <Link href="/terms" className="hover:text-text-primary">
             Terms
           </Link>
-          {/* TODO: /help 404s until roadmap L5.3 ships. Left linked intentionally so we don't have to edit the footer again; acceptable short-lived gap. */}
-          <Link href="/help" className="hover:text-text-primary">
-            Help
-          </Link>
+          {/* Help link intentionally omitted until roadmap L5.3 ships a
+              /help page. Visitors with questions can use the contact
+              email below in the meantime. */}
           <a
             href="mailto:hello@thebetterdecision.com"
             className="hover:text-text-primary"
