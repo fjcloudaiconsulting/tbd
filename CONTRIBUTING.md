@@ -257,7 +257,7 @@ All other endpoints require a Bearer access token via `get_current_user` depende
 | `MFA_ENCRYPTION_KEY` | _(empty)_ | Fernet key for TOTP secret encryption |
 | `MAILGUN_API_KEY` | _(empty)_ | Mailgun API key (emails logged if empty) |
 | `MAILGUN_DOMAIN` | _(empty)_ | Mailgun sending domain |
-| `EMAIL_FROM` | `The Better Decision <noreply@pfv.app>` | From address for emails |
+| `EMAIL_FROM` | `The Better Decision <noreply@thebetterdecision.com>` | From address for emails |
 | `APP_URL` | `http://localhost` | Public URL (used in email links) |
 | `GOOGLE_CLIENT_ID` | _(empty)_ | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | _(empty)_ | Google OAuth client secret |

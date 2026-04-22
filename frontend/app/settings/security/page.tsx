@@ -162,7 +162,7 @@ export default function SecurityPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "pfv2-recovery-codes.txt";
+    a.download = "the-better-decision-recovery-codes.txt";
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
