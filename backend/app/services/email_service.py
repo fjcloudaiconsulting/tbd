@@ -57,7 +57,7 @@ async def send_email(
 async def send_password_reset_email(to: str, token: str) -> bool:
     """Send a password reset email with a link containing the reset token."""
     reset_url = f"{settings.app_url}/reset-password?token={token}"
-    subject = "The Better Decision — reset your password"
+    subject = "The Better Decision: reset your password"
     body_html = f"""
     <h2>Reset Your Password</h2>
     <p>You requested a password reset for your account.</p>
@@ -71,7 +71,7 @@ async def send_password_reset_email(to: str, token: str) -> bool:
 
 async def send_mfa_email_code(to: str, code: str) -> bool:
     """Send a one-time MFA verification code via email."""
-    subject = "The Better Decision — your login code"
+    subject = "The Better Decision: your login code"
     body_html = f"""
     <h2>Your Verification Code</h2>
     <p>Use this code to complete your sign-in:</p>
@@ -85,7 +85,7 @@ async def send_mfa_email_code(to: str, code: str) -> bool:
 async def send_verification_email(to: str, token: str) -> bool:
     """Send an email verification link."""
     verify_url = f"{settings.app_url}/verify-email?token={token}"
-    subject = "The Better Decision — verify your email"
+    subject = "The Better Decision: verify your email"
     body_html = f"""
     <h2>Verify Your Email</h2>
     <p>Welcome to The Better Decision! Please verify your email address.</p>
@@ -99,13 +99,13 @@ async def send_verification_email(to: str, token: str) -> bool:
 async def send_trial_expiring_email(to: str, days_left: int, org_name: str) -> bool:
     """Send a trial expiring notification."""
     upgrade_url = f"{settings.app_url}/settings/billing"
-    subject = f"The Better Decision — your trial ends in {days_left} day{'s' if days_left != 1 else ''}"
+    subject = f"The Better Decision: your trial ends in {days_left} day{'s' if days_left != 1 else ''}"
     body_html = f"""
     <h2>Your Trial Is Ending Soon</h2>
     <p>Hi! Your <strong>{org_name}</strong> trial ends in <strong>{days_left} day{'s' if days_left != 1 else ''}</strong>.</p>
     <p>After the trial, your account will switch to the Free plan with limited features.</p>
     <p><a href="{upgrade_url}">Upgrade to Pro</a> to keep all your features.</p>
-    <p style="color: #666; font-size: 12px;">No charge will be applied during beta — upgrading simply reserves your spot.</p>
+    <p style="color: #666; font-size: 12px;">No charge will be applied during beta. Upgrading simply reserves your spot.</p>
     """
     body_text = (
         f"Your {org_name} trial ends in {days_left} day{'s' if days_left != 1 else ''}.\n"

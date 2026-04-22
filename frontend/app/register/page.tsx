@@ -171,7 +171,7 @@ export default function RegisterPage() {
             {usernameStatus === "taken" && (
               <p className="mt-1 text-xs text-danger">
                 Taken{usernameSuggestion && (
-                  <> — try <button type="button" onClick={() => { setUsername(usernameSuggestion); setUsernameManual(true); }} className="text-accent underline">{usernameSuggestion}</button></>
+                  <>, try <button type="button" onClick={() => { setUsername(usernameSuggestion); setUsernameManual(true); }} className="text-accent underline">{usernameSuggestion}</button></>
                 )}
               </p>
             )}

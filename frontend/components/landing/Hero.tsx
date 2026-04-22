@@ -16,8 +16,8 @@ export default function Hero() {
           </h1>
           <p className="mt-6 max-w-lg text-base leading-relaxed text-text-secondary lg:text-lg">
             The Better Decision is a finance app for normal people. Know
-            what you have, what&rsquo;s coming, and where it goes —
-            without the spreadsheet fatigue.
+            what you have, what&rsquo;s coming, and where it goes. No
+            spreadsheet fatigue.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Link

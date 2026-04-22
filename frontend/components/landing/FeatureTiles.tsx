@@ -5,7 +5,7 @@ const tiles = [
   },
   {
     title: "Plan what's coming",
-    sub: "Budgets, forecasts, and recurring transactions — so surprises stay rare.",
+    sub: "Budgets, forecasts, and recurring transactions, so surprises stay rare.",
   },
   {
     title: "Shared, if you want",

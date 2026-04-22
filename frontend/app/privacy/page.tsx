@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — The Better Decision",
+  title: "The Better Decision: Privacy Policy",
   description: "How The Better Decision collects, uses, and protects your personal data.",
 };
 
@@ -107,21 +107,21 @@ export default function PrivacyPolicyPage() {
             </p>
             <ul>
               <li>
-                <strong>DigitalOcean</strong> (hosting) — stores your data at
+                <strong>DigitalOcean</strong> (hosting): stores your data at
                 rest in managed MySQL in the ams3 region (EU).
               </li>
               <li>
-                <strong>Cloudflare</strong> (CDN / edge) — handles TLS
+                <strong>Cloudflare</strong> (CDN / edge): handles TLS
                 termination, DDoS protection, and edge routing.
               </li>
               <li>
-                <strong>Mailgun</strong> (EU region) — sends transactional
+                <strong>Mailgun</strong> (EU region): sends transactional
                 emails. We send only what&rsquo;s needed (your email
                 address, the subject line, and the email body).
               </li>
               <li>
                 <strong>Google</strong> (optional, if you choose
-                &ldquo;Sign in with Google&rdquo;) — we receive your email,
+                &ldquo;Sign in with Google&rdquo;): we receive your email,
                 name, and profile picture from Google after you authorize
                 the sign-in.
               </li>
@@ -157,26 +157,26 @@ export default function PrivacyPolicyPage() {
             </p>
             <ul>
               <li>
-                <strong>Access</strong> — request a copy of your data.
+                <strong>Access</strong>: request a copy of your data.
               </li>
               <li>
-                <strong>Rectification</strong> — fix anything inaccurate.
+                <strong>Rectification</strong>: fix anything inaccurate.
                 Most of this is self-serve inside the app.
               </li>
               <li>
-                <strong>Erasure</strong> — delete your account and all data
+                <strong>Erasure</strong>: delete your account and all data
                 associated with your organization.
               </li>
               <li>
-                <strong>Portability</strong> — export your data in a
+                <strong>Portability</strong>: export your data in a
                 machine-readable format.
               </li>
               <li>
-                <strong>Restriction / Objection</strong> — ask us to stop
+                <strong>Restriction / Objection</strong>: ask us to stop
                 or limit specific processing.
               </li>
               <li>
-                <strong>Complaint</strong> — lodge a complaint with your
+                <strong>Complaint</strong>: lodge a complaint with your
                 national data-protection authority (in the Netherlands, the
                 Autoriteit Persoonsgegevens).
               </li>

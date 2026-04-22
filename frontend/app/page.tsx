@@ -2,11 +2,11 @@ import type { Metadata } from "next";
 import LandingPageBody from "@/components/landing/LandingPageBody";
 
 export const metadata: Metadata = {
-  title: "The Better Decision — know your money, plan what's next",
+  title: "The Better Decision: know your money, plan what's next",
   description:
-    "A finance app for normal people. Know what you have, what's coming, and where it goes — without the spreadsheet fatigue.",
+    "A finance app for normal people. Know what you have, what's coming, and where it goes. No spreadsheet fatigue.",
   openGraph: {
-    title: "The Better Decision — know your money, plan what's next",
+    title: "The Better Decision: know your money, plan what's next",
     description:
       "A finance app for normal people. Know what you have, what's coming, and where it goes.",
     type: "website",

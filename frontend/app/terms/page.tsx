@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 
 export const metadata: Metadata = {
-  title: "Terms of Service — The Better Decision",
+  title: "The Better Decision: Terms of Service",
   description: "The agreement between you and The Better Decision when you use the service.",
 };
 

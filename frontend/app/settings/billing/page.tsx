@@ -122,7 +122,7 @@ export default function BillingPage() {
         {/* Beta Notice */}
         <div className="rounded-lg border border-accent/30 bg-accent/5 p-4">
           <p className="text-sm text-accent">
-            The Better Decision is in beta — no charges will be applied. Subscription management is fully functional for testing.
+            The Better Decision is in beta. No charges will be applied. Subscription management is fully functional for testing.
           </p>
         </div>
 
@@ -151,7 +151,7 @@ export default function BillingPage() {
                 </div>
                 {isTrialing && (
                   <p className="text-sm text-text-muted">
-                    Trial ends {sub?.trial_end} — {trialDaysLeft} day{trialDaysLeft !== 1 ? "s" : ""} remaining
+                    Trial ends {sub?.trial_end}, {trialDaysLeft} day{trialDaysLeft !== 1 ? "s" : ""} remaining
                   </p>
                 )}
                 {isCanceled && sub?.current_period_end && (
