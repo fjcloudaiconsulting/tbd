@@ -55,8 +55,8 @@ export default function LoginPage() {
 
       <div className="w-full max-w-sm">
         <div className="mb-10 text-center">
-          <h1 className="font-display text-3xl font-semibold text-text-primary">PFV2</h1>
-          <p className="mt-1.5 text-sm text-text-muted">Personal Finance</p>
+          <h1 className="font-display text-3xl font-semibold text-text-primary">The Better Decision</h1>
+          <p className="mt-1.5 text-sm text-text-muted">Sign in</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <div className={errorCls}>{error}</div>}

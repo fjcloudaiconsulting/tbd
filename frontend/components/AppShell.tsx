@@ -131,7 +131,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <aside className={`fixed inset-y-0 left-0 z-50 flex w-56 flex-col bg-sidebar-bg transition-transform duration-200 lg:relative lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
         <div className="flex items-center justify-between px-5 pt-5 pb-6">
           <Link href="/dashboard" className="font-display text-lg font-semibold text-sidebar-text-bright">
-            PFV2
+            TBD
           </Link>
           <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="rounded-md p-1 text-sidebar-muted hover:text-sidebar-text-bright lg:hidden">
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -251,7 +251,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
         <footer className="border-t border-border bg-surface px-4 sm:px-8 py-4">
           <div className="flex items-center justify-between text-xs text-text-muted">
-            <span>PFV2 — Personal Finance</span>
+            <span>The Better Decision</span>
             <span>&copy; {new Date().getFullYear()}</span>
           </div>
         </footer>

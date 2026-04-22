@@ -3,8 +3,8 @@ import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 
 export const metadata: Metadata = {
-  title: "Terms of Service — PFV2",
-  description: "The agreement between you and PFV2 when you use the service.",
+  title: "Terms of Service — The Better Decision",
+  description: "The agreement between you and The Better Decision when you use the service.",
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";
@@ -32,8 +32,8 @@ export default function TermsOfServicePage() {
         <div className="space-y-8 text-text-primary [&_h2]:font-display [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mb-3 [&_h2]:mt-8 [&_p]:text-sm [&_p]:leading-relaxed [&_p]:text-text-secondary [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:text-sm [&_ul]:leading-relaxed [&_ul]:text-text-secondary [&_li]:mt-1">
           <section>
             <p>
-              Welcome to PFV2. These Terms of Service (&ldquo;Terms&rdquo;)
-              govern your use of the PFV2 personal finance application
+              Welcome to The Better Decision. These Terms of Service (&ldquo;Terms&rdquo;)
+              govern your use of The Better Decision personal finance application
               operated by Flamarion Jorge. By creating an account or using
               the service you agree to these Terms.
             </p>
@@ -42,13 +42,13 @@ export default function TermsOfServicePage() {
           <section>
             <h2>1. The service</h2>
             <p>
-              PFV2 lets you track personal or small-organization finances:
+              The Better Decision lets you track personal or small-organization finances:
               accounts, transactions, budgets, forecasts, recurring items,
               and related tooling. It&rsquo;s a bookkeeping and planning
               tool, not a bank, broker, or financial advisor.
             </p>
             <p>
-              <strong>Beta notice.</strong> PFV2 is in an early stage.
+              <strong>Beta notice.</strong> The Better Decision is in an early stage.
               Features may change, data models may evolve, and we may need
               to reset or migrate parts of the service. We will give
               reasonable notice and make best-effort data preservation
@@ -138,7 +138,7 @@ export default function TermsOfServicePage() {
           <section>
             <h2>6. Not financial advice</h2>
             <p>
-              PFV2 displays numbers, forecasts, and categorizations based on
+              The Better Decision displays numbers, forecasts, and categorizations based on
               the data you enter. Forecasts are estimates, not predictions.
               Nothing in the app is investment advice, legal advice, tax
               advice, or a substitute for a qualified professional.
@@ -149,7 +149,7 @@ export default function TermsOfServicePage() {
           <section>
             <h2>7. Third parties and integrations</h2>
             <p>
-              PFV2 integrates with third-party services (Google for sign-in,
+              The Better Decision integrates with third-party services (Google for sign-in,
               Mailgun for email, Cloudflare for edge, DigitalOcean for
               hosting). Your use of those integrations is additionally
               governed by the third party&rsquo;s terms. We are not
@@ -161,7 +161,7 @@ export default function TermsOfServicePage() {
           <section>
             <h2>8. Intellectual property</h2>
             <p>
-              The PFV2 application, including its code, design, and
+              The Better Decision application, including its code, design, and
               trademarks, belongs to us. These Terms do not grant you any
               rights beyond the license to use the service for its intended
               purpose.

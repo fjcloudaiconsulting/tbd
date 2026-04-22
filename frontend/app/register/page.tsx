@@ -137,7 +137,7 @@ export default function RegisterPage() {
       <div className="w-full max-w-sm">
         <div className="mb-10 text-center">
           <h1 className="font-display text-3xl font-semibold text-text-primary">Create Account</h1>
-          <p className="mt-1.5 text-sm text-text-muted">Join PFV2</p>
+          <p className="mt-1.5 text-sm text-text-muted">Join The Better Decision</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <div className={errorCls}>{error}</div>}

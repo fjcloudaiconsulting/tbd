@@ -4,7 +4,7 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PFV2 — Personal Finance",
+  title: "The Better Decision",
   description: "Personal finance management",
 };
 

@@ -122,7 +122,7 @@ export default function BillingPage() {
         {/* Beta Notice */}
         <div className="rounded-lg border border-accent/30 bg-accent/5 p-4">
           <p className="text-sm text-accent">
-            PFV2 is in beta — no charges will be applied. Subscription management is fully functional for testing.
+            The Better Decision is in beta — no charges will be applied. Subscription management is fully functional for testing.
           </p>
         </div>
 

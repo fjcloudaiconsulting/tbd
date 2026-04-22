@@ -153,7 +153,7 @@ export default function SecurityPage() {
   }
 
   function downloadCodes(codes: string[]) {
-    const text = "PFV2 Recovery Codes\n" +
+    const text = "The Better Decision — Recovery Codes\n" +
       "===================\n\n" +
       "Store these codes in a safe place.\n" +
       "Each code can only be used once.\n\n" +

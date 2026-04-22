@@ -57,10 +57,10 @@ async def send_email(
 async def send_password_reset_email(to: str, token: str) -> bool:
     """Send a password reset email with a link containing the reset token."""
     reset_url = f"{settings.app_url}/reset-password?token={token}"
-    subject = "PFV2 — Reset Your Password"
+    subject = "The Better Decision — reset your password"
     body_html = f"""
     <h2>Reset Your Password</h2>
-    <p>You requested a password reset for your PFV2 account.</p>
+    <p>You requested a password reset for your The Better Decision account.</p>
     <p><a href="{reset_url}" style="display:inline-block;padding:12px 24px;background:#c8a951;color:#1a1a2e;text-decoration:none;border-radius:6px;font-weight:bold;">Reset Password</a></p>
     <p>Or copy this link: <code>{reset_url}</code></p>
     <p>This link expires in 1 hour. If you didn't request this, ignore this email.</p>
@@ -71,24 +71,24 @@ async def send_password_reset_email(to: str, token: str) -> bool:
 
 async def send_mfa_email_code(to: str, code: str) -> bool:
     """Send a one-time MFA verification code via email."""
-    subject = "PFV2 — Your Login Verification Code"
+    subject = "The Better Decision — your login code"
     body_html = f"""
     <h2>Your Verification Code</h2>
     <p>Use this code to complete your sign-in:</p>
     <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#c8a951;font-family:monospace;">{code}</p>
     <p>This code expires in 10 minutes. If you didn't try to sign in, you can ignore this email.</p>
     """
-    body_text = f"Your PFV2 verification code: {code}\n\nThis code expires in 10 minutes."
+    body_text = f"Your verification code: {code}\n\nThis code expires in 10 minutes."
     return await send_email(to, subject, body_html, body_text)
 
 
 async def send_verification_email(to: str, token: str) -> bool:
     """Send an email verification link."""
     verify_url = f"{settings.app_url}/verify-email?token={token}"
-    subject = "PFV2 — Verify Your Email"
+    subject = "The Better Decision — verify your email"
     body_html = f"""
     <h2>Verify Your Email</h2>
-    <p>Welcome to PFV2! Please verify your email address.</p>
+    <p>Welcome to The Better Decision! Please verify your email address.</p>
     <p><a href="{verify_url}" style="display:inline-block;padding:12px 24px;background:#c8a951;color:#1a1a2e;text-decoration:none;border-radius:6px;font-weight:bold;">Verify Email</a></p>
     <p>Or copy this link: <code>{verify_url}</code></p>
     """
@@ -99,7 +99,7 @@ async def send_verification_email(to: str, token: str) -> bool:
 async def send_trial_expiring_email(to: str, days_left: int, org_name: str) -> bool:
     """Send a trial expiring notification."""
     upgrade_url = f"{settings.app_url}/settings/billing"
-    subject = f"PFV2 — Your trial ends in {days_left} day{'s' if days_left != 1 else ''}"
+    subject = f"The Better Decision — your trial ends in {days_left} day{'s' if days_left != 1 else ''}"
     body_html = f"""
     <h2>Your Trial Is Ending Soon</h2>
     <p>Hi! Your <strong>{org_name}</strong> trial ends in <strong>{days_left} day{'s' if days_left != 1 else ''}</strong>.</p>

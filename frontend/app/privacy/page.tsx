@@ -3,8 +3,8 @@ import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy — PFV2",
-  description: "How PFV2 collects, uses, and protects your personal data.",
+  title: "Privacy Policy — The Better Decision",
+  description: "How The Better Decision collects, uses, and protects your personal data.",
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";
@@ -32,7 +32,7 @@ export default function PrivacyPolicyPage() {
         <div className="space-y-8 text-text-primary [&_h2]:font-display [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mb-3 [&_h2]:mt-8 [&_p]:text-sm [&_p]:leading-relaxed [&_p]:text-text-secondary [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:text-sm [&_ul]:leading-relaxed [&_ul]:text-text-secondary [&_li]:mt-1">
           <section>
             <p>
-              PFV2 (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is a personal finance
+              The Better Decision (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is a personal finance
               application operated by Flamarion Jorge. We care about your
               privacy and keep what we collect to the minimum needed to run
               the service. This policy explains what we collect, why, how
@@ -42,7 +42,7 @@ export default function PrivacyPolicyPage() {
 
           <section>
             <h2>1. What we collect</h2>
-            <p>When you create an account and use PFV2, we collect:</p>
+            <p>When you create an account and use The Better Decision, we collect:</p>
             <ul>
               <li>
                 <strong>Identity:</strong> username, email, first/last name,
@@ -103,7 +103,7 @@ export default function PrivacyPolicyPage() {
             <h2>3. Third parties we share with</h2>
             <p>
               We share data only with service providers strictly necessary
-              to run PFV2:
+              to run The Better Decision:
             </p>
             <ul>
               <li>
@@ -228,7 +228,7 @@ export default function PrivacyPolicyPage() {
           <section>
             <h2>8. Children</h2>
             <p>
-              PFV2 is not intended for children under 16. We do not knowingly
+              The Better Decision is not intended for children under 16. We do not knowingly
               collect personal data from children.
             </p>
           </section>
