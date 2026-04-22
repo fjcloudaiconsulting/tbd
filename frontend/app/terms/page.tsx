@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
+import BackLink from "@/components/ui/BackLink";
 
 export const metadata: Metadata = {
   title: "The Better Decision: Terms of Service",
@@ -15,12 +16,7 @@ export default function TermsOfServicePage() {
       <ThemeToggle className="absolute right-6 top-6" />
       <article className="mx-auto max-w-2xl">
         <header className="mb-10">
-          <Link
-            href="/login"
-            className="text-sm text-text-muted hover:text-text-primary"
-          >
-            ← Back
-          </Link>
+          <BackLink />
           <h1 className="mt-6 font-display text-3xl font-semibold text-text-primary">
             Terms of Service
           </h1>
