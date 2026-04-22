@@ -51,7 +51,7 @@ services:
       - key: APP_ENV
         value: "production"
       - key: APP_NAME
-        value: "PFV2"
+        value: "The Better Decision"
       - key: LOG_LEVEL
         value: "INFO"
       - key: COOKIE_SECURE
