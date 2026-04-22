@@ -60,7 +60,7 @@ async def send_password_reset_email(to: str, token: str) -> bool:
     subject = "The Better Decision — reset your password"
     body_html = f"""
     <h2>Reset Your Password</h2>
-    <p>You requested a password reset for your The Better Decision account.</p>
+    <p>You requested a password reset for your account.</p>
     <p><a href="{reset_url}" style="display:inline-block;padding:12px 24px;background:#c8a951;color:#1a1a2e;text-decoration:none;border-radius:6px;font-weight:bold;">Reset Password</a></p>
     <p>Or copy this link: <code>{reset_url}</code></p>
     <p>This link expires in 1 hour. If you didn't request this, ignore this email.</p>
