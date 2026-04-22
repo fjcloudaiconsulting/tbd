@@ -15,7 +15,7 @@ export default function HeroDashboard() {
         {[70, 55, 80, 45, 30, 65, 40, 75, 50, 60, 35, 70].map((h, i) => (
           <div
             key={i}
-            className={`flex-1 rounded-sm ${i === 4 || i === 6 || i === 10 ? "bg-danger/80" : "bg-accent/80"}`}
+            className={`flex-1 rounded-sm ${i === 4 || i === 6 || i === 10 ? "bg-danger/80" : "bg-success/80"}`}
             style={{ height: `${h}px` }}
           />
         ))}
@@ -56,7 +56,7 @@ function BudgetRow({
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-border">
         <div
-          className={`h-full ${over ? "bg-danger" : "bg-accent"}`}
+          className={`h-full ${over ? "bg-danger" : "bg-success"}`}
           style={{ width: `${Math.min(percent, 100)}%` }}
         />
       </div>
