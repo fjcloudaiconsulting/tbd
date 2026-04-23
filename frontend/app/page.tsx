@@ -1,6 +1,12 @@
 import type { Metadata } from "next";
 import LandingPageBody from "@/components/landing/LandingPageBody";
-import { siteDescription, siteName, siteTagline, siteUrl } from "@/lib/site";
+import {
+  pageSocialMeta,
+  siteDescription,
+  siteName,
+  siteTagline,
+  siteUrl,
+} from "@/lib/site";
 
 const pageTitle = `${siteName}: ${siteTagline}`;
 
@@ -12,16 +18,11 @@ export const metadata: Metadata = {
   alternates: {
     canonical: "/",
   },
-  openGraph: {
-    url: "/",
+  ...pageSocialMeta({
     title: pageTitle,
     description: siteDescription,
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: pageTitle,
-    description: siteDescription,
-  },
+    path: "/",
+  }),
 };
 
 const jsonLd = {
