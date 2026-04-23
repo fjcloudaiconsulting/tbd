@@ -1,5 +1,10 @@
 import type { Metadata } from "next";
-import LandingPageBody from "@/components/landing/LandingPageBody";
+import FeatureTiles from "@/components/landing/FeatureTiles";
+import Hero from "@/components/landing/Hero";
+import LandingAuthRedirect from "@/components/landing/LandingAuthRedirect";
+import LandingFooter from "@/components/landing/LandingFooter";
+import SecondCta from "@/components/landing/SecondCta";
+import TopNav from "@/components/landing/TopNav";
 import {
   pageSocialMeta,
   siteDescription,
@@ -42,6 +47,10 @@ const jsonLd = {
   },
 };
 
+// Server component — renders the landing content in the initial HTML so
+// crawlers and no-JS visitors receive it directly. LandingAuthRedirect
+// is a client island that redirects authenticated visitors to /dashboard
+// (or /setup) after hydration.
 export default function LandingPage() {
   return (
     <>
@@ -49,7 +58,16 @@ export default function LandingPage() {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
-      <LandingPageBody />
+      <LandingAuthRedirect />
+      <div className="min-h-screen bg-bg text-text-primary">
+        <TopNav />
+        <main>
+          <Hero />
+          <FeatureTiles />
+          <SecondCta />
+        </main>
+        <LandingFooter />
+      </div>
     </>
   );
 }
