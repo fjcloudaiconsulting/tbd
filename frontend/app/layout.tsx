@@ -1,11 +1,32 @@
 import type { Metadata } from "next";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { siteDescription, siteName, siteTagline, siteUrl } from "@/lib/site";
 import "./globals.css";
 
+// Structural social-graph defaults only. Each public page must declare its
+// own openGraph.{url,title,description} and twitter.{title,description} so
+// unfurls of /login, /register, /privacy, /terms do not show landing copy.
 export const metadata: Metadata = {
-  title: "The Better Decision",
-  description: "Personal finance management",
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: `${siteName}: ${siteTagline}`,
+    template: `%s · ${siteName}`,
+  },
+  description: siteDescription,
+  applicationName: siteName,
+  openGraph: {
+    type: "website",
+    siteName,
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary_large_image",
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default function RootLayout({

@@ -3,9 +3,22 @@ import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
 
+import { pageSocialMeta, siteName } from "@/lib/site";
+
+const description =
+  "The agreement between you and The Better Decision when you use the service.";
+
 export const metadata: Metadata = {
-  title: "The Better Decision: Terms of Service",
-  description: "The agreement between you and The Better Decision when you use the service.",
+  title: "Terms of Service",
+  description,
+  alternates: {
+    canonical: "/terms",
+  },
+  ...pageSocialMeta({
+    title: `Terms of Service · ${siteName}`,
+    description,
+    path: "/terms",
+  }),
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";

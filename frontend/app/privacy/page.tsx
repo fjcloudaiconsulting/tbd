@@ -3,9 +3,22 @@ import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
 
+import { pageSocialMeta, siteName } from "@/lib/site";
+
+const description =
+  "How The Better Decision collects, uses, and protects your personal data.";
+
 export const metadata: Metadata = {
-  title: "The Better Decision: Privacy Policy",
-  description: "How The Better Decision collects, uses, and protects your personal data.",
+  title: "Privacy Policy",
+  description,
+  alternates: {
+    canonical: "/privacy",
+  },
+  ...pageSocialMeta({
+    title: `Privacy Policy · ${siteName}`,
+    description,
+    path: "/privacy",
+  }),
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";
