@@ -34,12 +34,16 @@ async def _compute_spent(
 
     # Use settled_date for budget computation — transactions count against
     # the billing period in which they settled, not when the purchase happened.
+    # Transfer halves are persisted as type=expense with a non-null
+    # linked_transaction_id; excluding them keeps budget spent aligned with
+    # the dashboard donut when a transfer is tagged under a budgeted category.
     q = select(func.coalesce(func.sum(Transaction.amount), 0)).where(
         Transaction.org_id == org_id,
         Transaction.category_id.in_(all_cat_ids),
         Transaction.type == TransactionType.EXPENSE,
         Transaction.status == TransactionStatus.SETTLED,
         Transaction.settled_date >= period_start,
+        Transaction.linked_transaction_id.is_(None),
     )
     # If period is still open (no end_date), include all from start_date onward
     if period_end is not None:

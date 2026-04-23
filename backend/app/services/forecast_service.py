@@ -59,6 +59,11 @@ async def compute_forecast(
     # ── Executed (settled) — uses settled_date for period assignment ─────
     # Transactions count against the period in which they settled,
     # not when the purchase happened (important for CC late settlements).
+    #
+    # Transfer halves are persisted as type=income/expense with a non-null
+    # linked_transaction_id; excluding them keeps executed/pending totals
+    # aligned with the dashboard client-side aggregates and with how users
+    # think about real income vs. real spending.
     executed_income = await db.scalar(
         select(func.coalesce(func.sum(Transaction.amount), 0)).where(
             Transaction.org_id == org_id,
@@ -66,6 +71,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= p_end,
+            Transaction.linked_transaction_id.is_(None),
         )
     ) or Decimal("0")
 
@@ -76,6 +82,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= p_end,
+            Transaction.linked_transaction_id.is_(None),
         )
     ) or Decimal("0")
 
@@ -87,6 +94,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.PENDING,
             Transaction.date >= p_start,
             Transaction.date <= p_end,
+            Transaction.linked_transaction_id.is_(None),
         )
     ) or Decimal("0")
 
@@ -97,6 +105,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.PENDING,
             Transaction.date >= p_start,
             Transaction.date <= p_end,
+            Transaction.linked_transaction_id.is_(None),
         )
     ) or Decimal("0")
 
@@ -125,7 +134,9 @@ async def compute_forecast(
             d = advance_date(d, r.frequency)
 
     # ── Per-category breakdown ────────────────────────────────────────────
-    # Executed by category (uses settled_date for period assignment)
+    # Executed by category (uses settled_date for period assignment).
+    # Exclude transfer halves so Forecast by Category matches the
+    # dashboard donut.
     cat_exec_result = await db.execute(
         select(
             Transaction.category_id,
@@ -136,6 +147,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= p_end,
+            Transaction.linked_transaction_id.is_(None),
         ).group_by(Transaction.category_id)
     )
     cat_executed = {row[0]: Decimal(str(row[1])) for row in cat_exec_result.all()}
@@ -151,6 +163,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.PENDING,
             Transaction.date >= p_start,
             Transaction.date <= p_end,
+            Transaction.linked_transaction_id.is_(None),
         ).group_by(Transaction.category_id)
     )
     cat_pending = {row[0]: Decimal(str(row[1])) for row in cat_pend_result.all()}
