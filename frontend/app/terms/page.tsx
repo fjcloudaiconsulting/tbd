@@ -4,8 +4,11 @@ import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
 
 export const metadata: Metadata = {
-  title: "The Better Decision: Terms of Service",
+  title: "Terms of Service",
   description: "The agreement between you and The Better Decision when you use the service.",
+  alternates: {
+    canonical: "/terms",
+  },
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";

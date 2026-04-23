@@ -4,8 +4,11 @@ import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
 
 export const metadata: Metadata = {
-  title: "The Better Decision: Privacy Policy",
+  title: "Privacy Policy",
   description: "How The Better Decision collects, uses, and protects your personal data.",
+  alternates: {
+    canonical: "/privacy",
+  },
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";

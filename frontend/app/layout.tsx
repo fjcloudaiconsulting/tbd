@@ -1,11 +1,34 @@
 import type { Metadata } from "next";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { siteDescription, siteName, siteTagline, siteUrl } from "@/lib/site";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "The Better Decision",
-  description: "Personal finance management",
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: `${siteName}: ${siteTagline}`,
+    template: `%s · ${siteName}`,
+  },
+  description: siteDescription,
+  applicationName: siteName,
+  openGraph: {
+    type: "website",
+    siteName,
+    locale: "en_US",
+    url: "/",
+    title: `${siteName}: ${siteTagline}`,
+    description: siteDescription,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${siteName}: ${siteTagline}`,
+    description: siteDescription,
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default function RootLayout({
