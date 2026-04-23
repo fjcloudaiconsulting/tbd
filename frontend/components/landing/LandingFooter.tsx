@@ -1,12 +1,12 @@
 import Link from "next/link";
+import CurrentYear from "@/components/ui/CurrentYear";
 
 export default function LandingFooter() {
-  const year = new Date().getFullYear();
   return (
     <footer className="border-t border-border">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-8 text-xs text-text-muted lg:flex-row lg:items-center lg:justify-between lg:px-10">
         <div>
-          © {year} The Better Decision
+          © <CurrentYear /> The Better Decision
         </div>
         <div className="flex flex-wrap items-center gap-5">
           <Link href="/privacy" className="hover:text-text-primary">
