@@ -237,9 +237,12 @@ export default function DashboardPage() {
   // Precompute tx map for O(1) linked lookups
   const txMap = new Map(allTransactions.map((tx) => [tx.id, tx]));
 
-  // Totals from ALL period transactions (not just the paginated page)
-  const totalIncome = allTransactions.filter((tx) => tx.type === "income" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
-  const totalExpense = allTransactions.filter((tx) => tx.type === "expense" && tx.status === "settled").reduce((s, tx) => s + Number(tx.amount), 0);
+  // Totals from ALL period transactions (not just the paginated page).
+  // Transfer halves are persisted as type=income/expense with a non-null
+  // linked_transaction_id pointing at the counterpart; exclude them so
+  // internal transfers don't inflate either the income or expense tile.
+  const totalIncome = allTransactions.filter((tx) => tx.type === "income" && tx.status === "settled" && tx.linked_transaction_id == null).reduce((s, tx) => s + Number(tx.amount), 0);
+  const totalExpense = allTransactions.filter((tx) => tx.type === "expense" && tx.status === "settled" && tx.linked_transaction_id == null).reduce((s, tx) => s + Number(tx.amount), 0);
 
   // Pending totals per account from all period transactions
   const pendingByAccount = allTransactions
@@ -250,9 +253,11 @@ export default function DashboardPage() {
       return acc;
     }, {});
 
-  // Spending by category from all period transactions
+  // Spending by category from all period transactions. Transfer expense
+  // halves carry linked_transaction_id; excluding them here stops transfers
+  // from polluting the Spending by Category donut.
   const spendingByCategory = allTransactions
-    .filter((tx) => tx.type === "expense" && tx.status === "settled")
+    .filter((tx) => tx.type === "expense" && tx.status === "settled" && tx.linked_transaction_id == null)
     .reduce<Record<string, number>>((acc, tx) => {
       acc[tx.category_name] = (acc[tx.category_name] || 0) + Number(tx.amount);
       return acc;
