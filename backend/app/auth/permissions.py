@@ -20,6 +20,7 @@ from app.models.user import User
 # Every permission the platform knows about. Adding a new one is a
 # one-line edit here plus the corresponding gate at its call site.
 Permission = Literal[
+    "admin.view",
     "plans.manage",
 ]
 
@@ -27,6 +28,7 @@ Permission = Literal[
 # Canonical set — useful when iterating or seeding L4.8's eventual DB
 # migration.
 ALL_PERMISSIONS: frozenset[Permission] = frozenset({
+    "admin.view",
     "plans.manage",
 })
 
