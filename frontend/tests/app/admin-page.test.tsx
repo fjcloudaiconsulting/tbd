@@ -20,11 +20,13 @@ vi.mock("@/components/auth/AuthProvider", () => ({
   useAuth: vi.fn(),
 }));
 
-vi.mock("@/lib/api", () => ({
-  apiFetch: vi.fn(),
-  extractErrorMessage: (err: unknown, fallback = "Failed") =>
-    err instanceof Error ? err.message : fallback,
-}));
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return {
+    ...actual,
+    apiFetch: vi.fn(),
+  };
+});
 
 
 function makeUser(isSuperadmin: boolean) {

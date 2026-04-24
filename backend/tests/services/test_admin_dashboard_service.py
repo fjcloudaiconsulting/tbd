@@ -33,11 +33,30 @@ class ExecuteRaisesSession:
         raise RuntimeError("db unavailable")
 
 
+class SlowExecuteSession:
+    async def execute(self, _statement):
+        await asyncio.sleep(0.01)
+
+
+class SlowRedisClient:
+    async def ping(self):
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_probe_db_returns_error_name_when_query_raises() -> None:
     result = await _probe_db(ExecuteRaisesSession())
 
     assert result == {"ok": False, "error": "RuntimeError"}
+
+
+@pytest.mark.asyncio
+async def test_probe_db_reports_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(admin_dashboard_service, "PROBE_TIMEOUT_SECONDS", 0.001)
+
+    result = await _probe_db(SlowExecuteSession())
+
+    assert result == {"ok": False, "error": "timeout"}
 
 
 @pytest.mark.asyncio
@@ -47,6 +66,20 @@ async def test_probe_redis_reports_not_configured_when_client_missing(monkeypatc
     result = await _probe_redis()
 
     assert result == {"ok": False, "error": "not_configured"}
+
+
+@pytest.mark.asyncio
+async def test_probe_redis_reports_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(
+        admin_dashboard_service,
+        "get_redis_client",
+        lambda: SlowRedisClient(),
+    )
+    monkeypatch.setattr(admin_dashboard_service, "PROBE_TIMEOUT_SECONDS", 0.001)
+
+    result = await _probe_redis()
+
+    assert result == {"ok": False, "error": "timeout"}
 
 
 @pytest.mark.asyncio
