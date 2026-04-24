@@ -1,3 +1,4 @@
+import base64
 from base64 import urlsafe_b64encode
 
 import pyotp
@@ -79,7 +80,7 @@ def test_verify_totp_accepts_current_code() -> None:
 
 def test_generate_qr_base64_returns_png_bytes() -> None:
     png_base64 = generate_qr_base64("otpauth://totp/Test?secret=ABC123")
-    decoded = __import__("base64").b64decode(png_base64)
+    decoded = base64.b64decode(png_base64)
 
     assert decoded.startswith(b"\x89PNG\r\n\x1a\n")
 

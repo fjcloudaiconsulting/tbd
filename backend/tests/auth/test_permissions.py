@@ -25,11 +25,6 @@ def make_user(**overrides) -> User:
     base.update(overrides)
     return User(**base)
 
-
-async def override_get_current_user() -> AsyncIterator[User]:
-    yield make_user()
-
-
 def make_client(user: User) -> TestClient:
     app = FastAPI()
 

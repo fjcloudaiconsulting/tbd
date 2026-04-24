@@ -32,6 +32,10 @@ describe("apiFetch", () => {
     setAccessToken(null);
   });
 
+  afterAll(() => {
+    dispatchEventSpy.mockRestore();
+  });
+
   it("adds auth and JSON headers for string request bodies", async () => {
     setAccessToken("access-123");
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));

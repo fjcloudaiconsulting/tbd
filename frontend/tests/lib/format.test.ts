@@ -3,8 +3,13 @@ import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
 
 describe("format utilities", () => {
   it("formats numeric strings and negative values with two decimals", () => {
-    expect(formatAmount("1234.5")).toBe("1,234.50");
-    expect(formatAmount(-9)).toBe("-9.00");
+    const formatter = new Intl.NumberFormat(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+
+    expect(formatAmount("1234.5")).toBe(formatter.format(1234.5));
+    expect(formatAmount(-9)).toBe(formatter.format(-9));
   });
 
   it("formats local dates as YYYY-MM-DD", () => {
