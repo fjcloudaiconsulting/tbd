@@ -40,7 +40,7 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips", "*"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--proxy-headers", "--forwarded-allow-ips", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,127.0.0.1,::1"]
     volumes: []  # Override dev volume mounts — immutable container
 
   frontend:
