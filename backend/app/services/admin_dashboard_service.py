@@ -66,31 +66,37 @@ async def build_dashboard_payload(db: AsyncSession) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     seven_days_ago = now - timedelta(days=7)
 
-    # KPI reads first, independent of health. If any of these blow up
-    # the DB is broken badly enough that we want a 500 — the endpoint's
-    # purpose is moot if COUNT() doesn't work.
-    total_orgs, total_users, active_subs, signups_7d = await asyncio.gather(
-        db.scalar(select(func.count()).select_from(Organization)),
-        db.scalar(select(func.count()).select_from(User)),
-        db.scalar(
-            select(func.count())
-            .select_from(Subscription)
-            .where(
-                Subscription.status.in_(
-                    (SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE)
-                )
+    # KPI reads are sequential, not gathered: SQLAlchemy's AsyncSession
+    # is explicitly NOT safe for concurrent use across tasks, so firing
+    # four db.scalar() calls on the same session via asyncio.gather can
+    # corrupt session/connection state under load. The counts are trivial
+    # (four indexed COUNTs); four sequential round-trips is still
+    # sub-millisecond territory on this dataset. If this ever grows to
+    # matter, collapse into a single SELECT with scalar subqueries rather
+    # than reintroducing concurrent session access.
+    total_orgs = await db.scalar(select(func.count()).select_from(Organization))
+    total_users = await db.scalar(select(func.count()).select_from(User))
+    active_subs = await db.scalar(
+        select(func.count())
+        .select_from(Subscription)
+        .where(
+            Subscription.status.in_(
+                (SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE)
             )
-        ),
-        db.scalar(
-            select(func.count())
-            .select_from(User)
-            .where(User.created_at >= seven_days_ago)
-        ),
+        )
+    )
+    signups_7d = await db.scalar(
+        select(func.count())
+        .select_from(User)
+        .where(User.created_at >= seven_days_ago)
     )
 
-    # Health probes gathered independently. Each coroutine catches its
-    # own exceptions so one hanging dependency can't tank the whole
-    # response — at worst the corresponding cell renders `ok: false`.
+    # Probes CAN run concurrently: _probe_db touches the shared session
+    # but _probe_redis uses an independent Redis client. Gathering only
+    # these two does not violate the AsyncSession single-task rule.
+    # Each coroutine catches its own exceptions so one hanging dependency
+    # can't tank the whole response — at worst the corresponding cell
+    # renders `ok: false`.
     db_health, redis_health = await asyncio.gather(_probe_db(db), _probe_redis())
 
     return {

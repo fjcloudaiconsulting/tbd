@@ -91,6 +91,12 @@ export default function AdminDashboardPage() {
     };
   }, [authLoading, user]);
 
+  // Match the guard pattern used by /system/plans: render nothing until
+  // auth has settled AND the user is confirmed superadmin. Prevents a
+  // non-superadmin from briefly seeing the admin page shell before the
+  // effect above redirects them to /dashboard.
+  if (authLoading || !user?.is_superadmin) return null;
+
   return (
     <AppShell>
       <div className="space-y-6">
