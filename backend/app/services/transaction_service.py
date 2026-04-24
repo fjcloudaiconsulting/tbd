@@ -159,6 +159,7 @@ async def update_transaction(
         select(Transaction)
         .options(*_load_opts())
         .where(Transaction.id == transaction_id, Transaction.org_id == org_id)
+        .with_for_update()
     )
     tx = result.scalar_one_or_none()
     if tx is None:
@@ -518,6 +519,7 @@ async def reconcile_account(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.INCOME,
             Transaction.status == TransactionStatus.SETTLED,
+            Transaction.linked_transaction_id.is_(None),
         )
     )
     expense = await db.scalar(
@@ -526,6 +528,7 @@ async def reconcile_account(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.SETTLED,
+            Transaction.linked_transaction_id.is_(None),
         )
     )
     computed = income - expense

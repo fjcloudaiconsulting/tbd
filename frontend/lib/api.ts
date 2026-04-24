@@ -68,6 +68,22 @@ export async function apiFetch<T>(
         credentials: "include",
       });
     }
+
+    // If still 401 after refresh attempt, the session is dead. Clear the
+    // in-memory token and notify AuthProvider so AppShell can redirect to
+    // /login. Skip for credential-check endpoints where 401 means bad input,
+    // not an expired session.
+    if (res.status === 401) {
+      const isCredCheck =
+        path.startsWith("/api/v1/auth/login") ||
+        path.startsWith("/api/v1/auth/mfa/verify");
+      if (!isCredCheck) {
+        accessToken = null;
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event("auth:unauthenticated"));
+        }
+      }
+    }
   }
 
   if (!res.ok) {
