@@ -15,7 +15,7 @@ from app.deps import get_current_user
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.settings import OrgSetting
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
-from app.models.user import Organization, Role, User
+from app.models.user import AVATAR_URL_MAX_LENGTH, Organization, Role, User
 from app.models.subscription import Subscription, Plan
 from app.services import subscription_service
 from app.schemas.auth import (
@@ -796,6 +796,24 @@ async def mfa_email_verify(
 # ── Google SSO ───────────────────────────────────────────────────────────────
 
 
+def _safe_avatar_url(url: str | None) -> str | None:
+    """Accept a Google avatar URL only if it fits the column.
+
+    Google profile pictures routinely run 900+ chars and the column is
+    sized for AVATAR_URL_MAX_LENGTH, but outlier URLs do exist in the
+    wild. Dropping to None on overflow keeps the commit from crashing and
+    lets the user upload their own avatar later via profile edit — strictly
+    better than storing a truncated, broken URL. Sharing the cap with the
+    ProfileUpdate schema means a client can also round-trip whatever we
+    stored through PUT /users/me without hitting a 422.
+    """
+    if not url:
+        return None
+    if len(url) > AVATAR_URL_MAX_LENGTH:
+        return None
+    return url
+
+
 def _validate_google_config() -> None:
     """Raise 501 if Google SSO is not fully configured."""
     if not app_settings.google_client_id or not app_settings.google_client_secret:
@@ -930,7 +948,7 @@ async def google_callback(
         if not user.last_name and last_name:
             user.last_name = last_name
             mutated = True
-        picture = google_user.get("picture")
+        picture = _safe_avatar_url(google_user.get("picture"))
         if not user.avatar_url and picture:
             user.avatar_url = picture
             mutated = True
@@ -954,7 +972,7 @@ async def google_callback(
             email=email,
             first_name=first_name,
             last_name=last_name,
-            avatar_url=google_user.get("picture"),
+            avatar_url=_safe_avatar_url(google_user.get("picture")),
             password_hash=hash_password(secrets.token_urlsafe(32)),
             email_verified=True,  # guaranteed by the verified_email guard
             role=Role.OWNER,
