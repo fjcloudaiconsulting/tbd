@@ -69,10 +69,15 @@ async def validate_category(db: AsyncSession, category_id: int, org_id: int) -> 
 
 
 async def get_account_for_update(db: AsyncSession, account_id: int, org_id: int) -> Account:
+    # populate_existing=True: every FOR UPDATE in this codebase MUST repopulate
+    # the ORM identity-map entry so callers see the locked row state, not
+    # stale attributes left over from a prior unlocked read (e.g. a
+    # selectinload of Transaction.account before this call).
     result = await db.execute(
         select(Account)
         .where(Account.id == account_id, Account.org_id == org_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     acct = result.scalar_one_or_none()
     if acct is None:
@@ -159,6 +164,8 @@ async def update_transaction(
         select(Transaction)
         .options(*_load_opts())
         .where(Transaction.id == transaction_id, Transaction.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     tx = result.scalar_one_or_none()
     if tx is None:
@@ -232,24 +239,44 @@ def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:
 
 
 async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> None:
-    result = await db.execute(
+    # Unlocked pre-read to discover any transfer pair, then acquire tx-row
+    # locks in one FOR UPDATE query ordered by ascending id. This matches
+    # the order update_transaction and bulk_delete_transactions use, so
+    # concurrent deletes of opposite halves — or any delete racing a bulk
+    # delete — can't lock the halves in opposite orders and deadlock.
+    preview = await db.scalar(
         select(Transaction).where(
             Transaction.id == transaction_id, Transaction.org_id == org_id
         )
     )
-    tx = result.scalar_one_or_none()
-    if tx is None:
+    if preview is None:
         raise NotFoundError("Transaction")
 
-    # Collect linked transaction (transfer pair) if any
-    linked_tx = None
-    if tx.linked_transaction_id:
-        linked_result = await db.execute(
-            select(Transaction).where(
-                Transaction.id == tx.linked_transaction_id, Transaction.org_id == org_id
-            )
-        )
-        linked_tx = linked_result.scalar_one_or_none()
+    ids_to_lock = [transaction_id]
+    if preview.linked_transaction_id is not None:
+        ids_to_lock.append(preview.linked_transaction_id)
+    ids_to_lock.sort()
+
+    # populate_existing=True refreshes the preview's ORM instances with the
+    # locked DB state so we revert balances from the current row values, not
+    # the pre-lock snapshot (status/account_id/amount may have just changed).
+    locked = await db.execute(
+        select(Transaction)
+        .where(Transaction.id.in_(ids_to_lock), Transaction.org_id == org_id)
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    rows = {r.id: r for r in locked.scalars().all()}
+    tx = rows.get(transaction_id)
+    if tx is None:
+        # Raced with another delete between preview and lock.
+        raise NotFoundError("Transaction")
+    linked_tx = (
+        rows.get(tx.linked_transaction_id)
+        if tx.linked_transaction_id is not None
+        else None
+    )
 
     async with db.begin_nested():
         # For transfers, lock both accounts in deterministic order
@@ -289,40 +316,41 @@ async def bulk_delete_transactions(
     # Dedupe input — caller may select both halves of a transfer
     requested = list(dict.fromkeys(ids))
 
-    # Fetch all requested transactions scoped to this org. Lock the rows
-    # FOR UPDATE (ordered by id) so a concurrent delete of the same rows
-    # waits on us instead of producing stale-rowcount errors at flush time.
+    # Unlocked preview to collect the full set of ids, including any
+    # transfer halves linked to the requested rows. Locking everything in
+    # a single FOR UPDATE query ordered by ascending id keeps the lock
+    # acquisition order strictly ascending across the whole set — same
+    # pattern as delete_transaction — so two bulk deletes (or a bulk delete
+    # racing a single delete) touching opposite halves of a transfer can't
+    # lock them in opposite orders and deadlock.
+    preview_result = await db.execute(
+        select(Transaction).where(
+            Transaction.id.in_(requested), Transaction.org_id == org_id
+        )
+    )
+    preview = list(preview_result.scalars().all())
+    all_ids_to_lock = {tx.id for tx in preview} | {
+        tx.linked_transaction_id
+        for tx in preview
+        if tx.linked_transaction_id is not None
+    }
+
+    if not all_ids_to_lock:
+        return (0, list(requested))
+
+    # populate_existing=True refreshes the preview's ORM instances with the
+    # locked DB state — otherwise SQLAlchemy returns the identity-map copy
+    # and we'd revert balances from stale status/account_id/amount values.
     result = await db.execute(
         select(Transaction)
-        .where(
-            Transaction.id.in_(requested),
-            Transaction.org_id == org_id,
-        )
+        .where(Transaction.id.in_(all_ids_to_lock), Transaction.org_id == org_id)
         .order_by(Transaction.id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     found = list(result.scalars().all())
     found_ids = {tx.id for tx in found}
     skipped_ids = [i for i in requested if i not in found_ids]
-
-    # Expand transfer pairs — collect linked IDs not already in the list
-    linked_ids_to_fetch = {
-        tx.linked_transaction_id
-        for tx in found
-        if tx.linked_transaction_id is not None
-        and tx.linked_transaction_id not in found_ids
-    }
-    if linked_ids_to_fetch:
-        linked_result = await db.execute(
-            select(Transaction)
-            .where(
-                Transaction.id.in_(linked_ids_to_fetch),
-                Transaction.org_id == org_id,
-            )
-            .order_by(Transaction.id)
-            .with_for_update()
-        )
-        found.extend(linked_result.scalars().all())
 
     # Collect distinct account IDs that will need a balance revert
     account_ids_to_lock = sorted({

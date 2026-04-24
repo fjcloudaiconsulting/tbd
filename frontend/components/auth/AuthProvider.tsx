@@ -79,6 +79,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     restore();
   }, [fetchMe]);
 
+  // Listen for terminal 401s dispatched by apiFetch so we clear React state
+  // and AppShell can redirect the user to /login instead of spinning forever.
+  useEffect(() => {
+    const handler = () => {
+      setUser(null);
+      setAccessToken(null);
+    };
+    window.addEventListener("auth:unauthenticated", handler);
+    return () => window.removeEventListener("auth:unauthenticated", handler);
+  }, []);
+
   const login = async (loginId: string, password: string) => {
     const data = await apiFetch<TokenResponse | MfaChallengeResponse>("/api/v1/auth/login", {
       method: "POST",

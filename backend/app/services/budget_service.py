@@ -177,11 +177,14 @@ async def transfer_budget(
     """
     from sqlalchemy.exc import IntegrityError
 
-    # Lock source budget for update to prevent concurrent over-allocation
+    # Lock source budget for update to prevent concurrent over-allocation.
+    # populate_existing=True enforces the codebase invariant that every FOR
+    # UPDATE refreshes the ORM identity-map entry with the locked row state.
     result = await db.execute(
         select(Budget)
         .where(Budget.id == from_budget_id, Budget.org_id == org_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     source = result.scalar_one_or_none()
     if source is None:
@@ -225,9 +228,14 @@ async def transfer_budget(
             await db.flush()
         except IntegrityError:
             await db.rollback()
-            # Re-lock source and re-fetch target after race
+            # Re-lock source and re-fetch target after race. populate_existing
+            # is required: rollback expires attributes but keeps the instance
+            # in the identity map, so the re-lock must actively repopulate.
             result = await db.execute(
-                select(Budget).where(Budget.id == from_budget_id, Budget.org_id == org_id).with_for_update()
+                select(Budget)
+                .where(Budget.id == from_budget_id, Budget.org_id == org_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
             source = result.scalar_one()
             if amount > source.amount:

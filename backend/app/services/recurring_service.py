@@ -185,7 +185,9 @@ async def generate_due_transactions(db: AsyncSession, org_id: int) -> int:
     Returns the number of transactions generated."""
     today = datetime.date.today()
 
-    # Lock rows to prevent duplicate generation from concurrent requests
+    # Lock rows to prevent duplicate generation from concurrent requests.
+    # populate_existing=True upholds the codebase invariant that every FOR
+    # UPDATE refreshes the ORM identity-map entry with the locked row state.
     result = await db.execute(
         select(RecurringTransaction)
         .where(
@@ -194,6 +196,7 @@ async def generate_due_transactions(db: AsyncSession, org_id: int) -> int:
             RecurringTransaction.next_due_date <= today,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     due_items = list(result.scalars().all())
     generated = 0
