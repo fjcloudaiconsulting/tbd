@@ -796,6 +796,26 @@ async def mfa_email_verify(
 # ── Google SSO ───────────────────────────────────────────────────────────────
 
 
+# Keep in sync with User.avatar_url column width (VARCHAR(2048), migration 025).
+_AVATAR_URL_MAX = 2048
+
+
+def _safe_avatar_url(url: str | None) -> str | None:
+    """Accept a Google avatar URL only if it fits the column.
+
+    Google profile pictures routinely run 900+ chars and the column is now
+    sized for 2048, but outlier URLs do exist in the wild. Dropping to None
+    on overflow keeps the commit from crashing and lets the user upload
+    their own avatar later via profile edit — strictly better than storing
+    a truncated, broken URL.
+    """
+    if not url:
+        return None
+    if len(url) > _AVATAR_URL_MAX:
+        return None
+    return url
+
+
 def _validate_google_config() -> None:
     """Raise 501 if Google SSO is not fully configured."""
     if not app_settings.google_client_id or not app_settings.google_client_secret:
@@ -930,7 +950,7 @@ async def google_callback(
         if not user.last_name and last_name:
             user.last_name = last_name
             mutated = True
-        picture = google_user.get("picture")
+        picture = _safe_avatar_url(google_user.get("picture"))
         if not user.avatar_url and picture:
             user.avatar_url = picture
             mutated = True
@@ -954,7 +974,7 @@ async def google_callback(
             email=email,
             first_name=first_name,
             last_name=last_name,
-            avatar_url=google_user.get("picture"),
+            avatar_url=_safe_avatar_url(google_user.get("picture")),
             password_hash=hash_password(secrets.token_urlsafe(32)),
             email_verified=True,  # guaranteed by the verified_email guard
             role=Role.OWNER,

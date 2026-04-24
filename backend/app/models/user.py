@@ -42,7 +42,7 @@ class User(Base):
     first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     role: Mapped[Role] = mapped_column(
