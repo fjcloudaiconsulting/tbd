@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { AuthProvider, MfaRequiredError, useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, setAccessToken } from "@/lib/api";
@@ -192,6 +192,33 @@ describe("AuthProvider", () => {
     );
 
     fireEvent.click(screen.getByText("Logout"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent("none"),
+    );
+
+    expect(setAccessTokenMock).toHaveBeenLastCalledWith(null);
+  });
+
+  it("clears user state when apiFetch dispatches auth:unauthenticated", async () => {
+    apiFetchMock
+      .mockResolvedValueOnce({ needs_setup: false })
+      .mockResolvedValueOnce({ access_token: "restored-token" })
+      .mockResolvedValueOnce(TEST_USER);
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+
+    act(() => {
+      window.dispatchEvent(new Event("auth:unauthenticated"));
+    });
 
     await waitFor(() =>
       expect(screen.getByTestId("user")).toHaveTextContent("none"),
