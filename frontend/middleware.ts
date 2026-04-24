@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
  */
 
 const SENSITIVE_PARAMS = new Set([
-  "token", "code", "access_token", "refresh_token", "key", "secret", "password",
+  "token", "code", "access_token", "refresh_token", "mfa_token", "key", "secret", "password",
 ]);
 
 function sanitizeQuery(search: string): string | undefined {
