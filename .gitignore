@@ -35,7 +35,11 @@ mysql_data/
 .claude/
 .superpowers/
 .playwright-mcp/
-docs/superpowers/
+# docs/ is intentionally kept out of the repo until we start a real user-
+# facing documentation / manual effort. Design decision records and
+# planning artifacts live in ~/.claude/projects/<slug>/specs/ (local).
+# When a dedicated docs effort starts, remove or scope this line.
+docs/
 
 # Local test fixtures and scratch
 mock/
