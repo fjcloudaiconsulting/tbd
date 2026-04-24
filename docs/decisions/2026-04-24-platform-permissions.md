@@ -139,7 +139,7 @@ def require_permission(
 ```
 
 - `has_permission` is the pure predicate, used for in-handler conditional branching only (e.g. shaping a response field based on permission).
-- `require_permission` is a FastAPI dependency factory. It composes with `get_current_user` so 401 (missing / invalid token) stays upstream and 403 (authenticated but insufficient) is the only code path that emerges from the permission check itself.
+- `require_permission` is a FastAPI dependency factory. It composes with `get_current_user`: `get_current_user` returns 401 for invalid or expired bearer tokens, and missing `Authorization` headers are rejected upstream by FastAPI's `HTTPBearer` with 403. `require_permission` preserves that upstream behaviour and only adds 403 `Forbidden` for authenticated users lacking permission. (The app-wide `HTTPBearer` → 403-on-missing-header behaviour is pre-existing and not changed by this refactor; if we later want strict 401 for anonymous, that's a separate auth-layer change to `get_current_user`.)
 - The inner dependency returns `User` on success, so call sites that genuinely need the user can inject it directly and avoid double-declaring `get_current_user`.
 - Evaluation order inside `has_permission` is fixed: `is_superadmin` short-circuits first, then `_platform_roles` + `ROLE_PERMISSIONS`. Unknown roles contribute no permissions; unknown permission strings (passed dynamically) deny by default.
 - The inner dependency's `__name__` is overridden to `require_permission_<permission_with_dots_as_underscores>` so FastAPI's dependency tree stays readable under introspection.
@@ -264,14 +264,16 @@ No automated test harness exists anywhere in the project today. Verification for
 
     | Endpoint | superadmin | non-superadmin | anonymous |
     |---|---|---|---|
-    | `GET /api/v1/plans` | 200 | 200 (intentionally open) | 401 |
-    | `GET /api/v1/plans/all` | 200 | 403 | 401 |
-    | `GET /api/v1/plans/{id}` | 200 | 403 | 401 |
-    | `POST /api/v1/plans` | 201 | 403 | 401 |
-    | `PUT /api/v1/plans/{id}` | 200 | 403 | 401 |
-    | `DELETE /api/v1/plans/{id}` | 204 | 403 | 401 |
+    | `GET /api/v1/plans` | 200 | 200 (intentionally open) | 403 |
+    | `GET /api/v1/plans/all` | 200 | 403 | 403 |
+    | `GET /api/v1/plans/{id}` | 200 | 403 | 403 |
+    | `POST /api/v1/plans` | 201 | 403 | 403 |
+    | `PUT /api/v1/plans/{id}` | 200 | 403 | 403 |
+    | `DELETE /api/v1/plans/{id}` | 204 | 403 | 403 |
 
-4. **401 vs 403 spot-check.** The same endpoint with no token returns 401 (from `get_current_user` upstream); with a valid non-superadmin token returns 403 (from `require_permission`). Distinction preserved end-to-end.
+    Anonymous callers return 403 (not 401) because FastAPI's `HTTPBearer` intercepts the missing header before `get_current_user` runs — pre-existing app-wide behaviour, not introduced by this refactor.
+
+4. **401 vs 403 spot-check.** The same endpoint with an **invalid or expired** bearer token returns 401 (from `get_current_user` decode failure); with a valid non-superadmin token returns 403 (from `require_permission`). Distinction preserved end-to-end for the authenticated-but-bad-token vs authenticated-but-insufficient-permission cases.
 
 ## Rollout
 
