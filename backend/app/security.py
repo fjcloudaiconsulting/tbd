@@ -107,11 +107,19 @@ def create_mfa_email_token(user_id: int, code: str) -> tuple[str, str]:
     return token, jti
 
 
-def create_email_verification_token(user_id: int) -> str:
-    """Create a token for email verification (24 hours)."""
+def create_email_verification_token(user_id: int, email: str) -> str:
+    """Create a token for email verification (24 hours).
+
+    The email is baked into the token so a token issued for one address
+    can't be used to verify a different address if the user changes
+    their email between issuance and click (S-P2-1). The /verify-email
+    handler rejects the token if the email claim does not match the
+    user's current email.
+    """
     expire = datetime.now(timezone.utc) + timedelta(hours=24)
     payload = {
         "sub": str(user_id),
+        "email": email,
         "type": "email_verify",
         "exp": expire,
     }

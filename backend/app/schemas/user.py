@@ -16,6 +16,11 @@ class ProfileUpdate(BaseModel):
     last_name: str | None = Field(default=None, max_length=100)
     phone: str | None = Field(default=None, max_length=20)
     avatar_url: str | None = Field(default=None, max_length=AVATAR_URL_MAX_LENGTH)
+    # Required by the PUT /users/me handler when `email` is being changed.
+    # Not required for any other profile field. See S-P1-2 — changing
+    # email without re-auth is a takeover-persistence vector when a
+    # session is compromised.
+    current_password: str | None = Field(default=None, max_length=128)
 
     @field_validator("avatar_url")
     @classmethod
