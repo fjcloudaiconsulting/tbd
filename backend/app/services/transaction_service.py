@@ -69,10 +69,15 @@ async def validate_category(db: AsyncSession, category_id: int, org_id: int) -> 
 
 
 async def get_account_for_update(db: AsyncSession, account_id: int, org_id: int) -> Account:
+    # populate_existing=True: every FOR UPDATE in this codebase MUST repopulate
+    # the ORM identity-map entry so callers see the locked row state, not
+    # stale attributes left over from a prior unlocked read (e.g. a
+    # selectinload of Transaction.account before this call).
     result = await db.execute(
         select(Account)
         .where(Account.id == account_id, Account.org_id == org_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     acct = result.scalar_one_or_none()
     if acct is None:
@@ -160,6 +165,7 @@ async def update_transaction(
         .options(*_load_opts())
         .where(Transaction.id == transaction_id, Transaction.org_id == org_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     tx = result.scalar_one_or_none()
     if tx is None:
@@ -251,11 +257,15 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
         ids_to_lock.append(preview.linked_transaction_id)
     ids_to_lock.sort()
 
+    # populate_existing=True refreshes the preview's ORM instances with the
+    # locked DB state so we revert balances from the current row values, not
+    # the pre-lock snapshot (status/account_id/amount may have just changed).
     locked = await db.execute(
         select(Transaction)
         .where(Transaction.id.in_(ids_to_lock), Transaction.org_id == org_id)
         .order_by(Transaction.id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     rows = {r.id: r for r in locked.scalars().all()}
     tx = rows.get(transaction_id)
@@ -328,11 +338,15 @@ async def bulk_delete_transactions(
     if not all_ids_to_lock:
         return (0, list(requested))
 
+    # populate_existing=True refreshes the preview's ORM instances with the
+    # locked DB state — otherwise SQLAlchemy returns the identity-map copy
+    # and we'd revert balances from stale status/account_id/amount values.
     result = await db.execute(
         select(Transaction)
         .where(Transaction.id.in_(all_ids_to_lock), Transaction.org_id == org_id)
         .order_by(Transaction.id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     found = list(result.scalars().all())
     found_ids = {tx.id for tx in found}
