@@ -37,6 +37,22 @@ def test_parse_csv_supports_semicolon_and_comma_variants() -> None:
     assert len(comma_rows) == 1
     assert comma_rows[0].description == "Dinner, with friends"
     assert comma_rows[0].amount == Decimal("45.50")
+    assert comma_rows[0].counterparty == "Restaurant"
+    assert comma_rows[0].transaction_type == "Payment terminal"
+    assert comma_rows[0].raw_data["Name / Description"] == "Dinner, with friends"
+
+
+def test_parse_csv_strips_utf8_bom_and_accepts_optional_columns() -> None:
+    content = """\ufeffDate;Name / Description;Debit/credit;Amount (EUR);Resulting balance;Tag
+20260406;Rent;Debit;1200,00;3100,00;housing
+"""
+
+    rows = parse_csv(content)
+
+    assert len(rows) == 1
+    assert rows[0].description == "Rent"
+    assert rows[0].amount == Decimal("1200.00")
+    assert rows[0].raw_data["Tag"] == "housing"
 
 
 def test_parse_csv_raises_on_missing_required_columns() -> None:
@@ -50,6 +66,29 @@ def test_parse_csv_surfaces_empty_description_with_row_number() -> None:
 """
 
     with pytest.raises(ParseError, match="Empty description") as exc:
+        parse_csv(content)
+
+    assert exc.value.row_number == 1
+
+
+def test_parse_csv_rejects_empty_files() -> None:
+    with pytest.raises(ParseError, match="CSV file is empty or has no header row"):
+        parse_csv("")
+
+
+def test_parse_csv_rejects_files_with_header_only() -> None:
+    with pytest.raises(ParseError, match="CSV file contains no transaction rows"):
+        parse_csv(
+            "Date;Name / Description;Debit/credit;Amount (EUR)\n"
+        )
+
+
+def test_parse_csv_wraps_invalid_amount_errors_with_row_number() -> None:
+    content = """Date;Name / Description;Debit/credit;Amount (EUR)
+20260406;Groceries;Debit;not-a-number
+"""
+
+    with pytest.raises(ParseError, match="Cannot parse amount") as exc:
         parse_csv(content)
 
     assert exc.value.row_number == 1
