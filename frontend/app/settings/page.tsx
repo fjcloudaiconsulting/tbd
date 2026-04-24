@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import SettingsLayout from "@/components/SettingsLayout";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -15,6 +16,11 @@ export default function SettingsProfilePage() {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  // Only consulted when the email is being changed. Backend rejects
+  // email changes that lack a correct current password — this mirrors
+  // the /me/password endpoint's re-auth requirement and closes the
+  // email-change account-takeover chain (S-P1-2).
+  const [currentPassword, setCurrentPassword] = useState("");
 
   useEffect(() => {
     if (user) {
@@ -29,6 +35,8 @@ export default function SettingsProfilePage() {
   const [profileMsg, setProfileMsg] = useState("");
   const [profileErr, setProfileErr] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
+
+  const emailChanging = email !== (user?.email ?? "");
 
   async function handleProfileSubmit(e: FormEvent) {
     e.preventDefault();
@@ -50,12 +58,30 @@ export default function SettingsProfilePage() {
         return;
       }
 
+      if ("email" in payload) {
+        if (!currentPassword) {
+          setProfileErr(
+            "Enter your current password to change your email. If you signed in with Google and never set one, reset your password first.",
+          );
+          return;
+        }
+        payload.current_password = currentPassword;
+      }
+
       await apiFetch<User>("/api/v1/users/me", {
         method: "PUT",
         body: JSON.stringify(payload),
       });
       await refreshMe();
-      setProfileMsg("Profile updated");
+      setCurrentPassword("");
+      // Nudge the user toward the next step — changing email logs every
+      // session out and leaves email_verified=false until they click
+      // the new verification link.
+      setProfileMsg(
+        "email" in payload
+          ? "Profile updated. Check your new inbox for a verification link — you'll need to sign in again."
+          : "Profile updated",
+      );
     } catch (err) { setProfileErr(extractErrorMessage(err)); }
     finally { setSavingProfile(false); }
   }
@@ -107,6 +133,29 @@ export default function SettingsProfilePage() {
               <label htmlFor="profile-email" className={label}>Email</label>
               <input id="profile-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={input} />
             </div>
+            {emailChanging && (
+              <div>
+                <label htmlFor="profile-current-password" className={label}>
+                  Current password <span className="text-xs text-text-muted">(required to change email)</span>
+                </label>
+                <input
+                  id="profile-current-password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className={input}
+                />
+                <p className="mt-1 text-xs text-text-muted">
+                  Signed in with Google and never set a password?{" "}
+                  <Link href="/forgot-password" className="text-accent hover:underline">
+                    Reset it first
+                  </Link>
+                  , then come back to change your email.
+                </p>
+              </div>
+            )}
             <div>
               <label htmlFor="profile-phone" className={label}>Phone</label>
               <input id="profile-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} className={input} placeholder="+1 234 567 8900" />
