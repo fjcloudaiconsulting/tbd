@@ -123,13 +123,28 @@ export default function DashboardPage() {
   }, [monthFrom, monthTo]);
 
   useEffect(() => {
-    if (!loading && user) loadRefs().catch(() => {});
+    if (!loading && user) {
+      // Previously `.catch(() => {})` — any failure here (backend 500,
+      // network blip) left the dashboard with stale or missing
+      // reference data and no visible error, the user's only clue
+      // being widgets that silently fail to populate. Surface it
+      // through the existing error banner instead.
+      loadRefs().catch((err) => {
+        setError(extractErrorMessage(err, "Failed to load dashboard data"));
+      });
+    }
   }, [loading, user, loadRefs]);
 
   useEffect(() => {
     if (!loading && user) {
       setFetching(true);
-      loadTransactions(page).catch(() => setFetching(false));
+      // Same class of bug as the loadRefs catch above: a failed
+      // transaction fetch used to clear the spinner and vanish. Now
+      // the error surfaces alongside the rest of the load failures.
+      loadTransactions(page).catch((err) => {
+        setError(extractErrorMessage(err, "Failed to load transactions"));
+        setFetching(false);
+      });
     }
   }, [loading, user, loadTransactions, page]);
 
