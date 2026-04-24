@@ -233,22 +233,27 @@ def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:
 
 
 async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> None:
+    # Lock the tx row before any account lock so we share the same ordering
+    # as update_transaction and bulk_delete_transactions. Mixed orderings
+    # would deadlock under concurrent update+delete on the same tx.
     result = await db.execute(
-        select(Transaction).where(
-            Transaction.id == transaction_id, Transaction.org_id == org_id
-        )
+        select(Transaction)
+        .where(Transaction.id == transaction_id, Transaction.org_id == org_id)
+        .with_for_update()
     )
     tx = result.scalar_one_or_none()
     if tx is None:
         raise NotFoundError("Transaction")
 
-    # Collect linked transaction (transfer pair) if any
+    # Collect linked transaction (transfer pair) if any, also locked.
     linked_tx = None
     if tx.linked_transaction_id:
         linked_result = await db.execute(
-            select(Transaction).where(
+            select(Transaction)
+            .where(
                 Transaction.id == tx.linked_transaction_id, Transaction.org_id == org_id
             )
+            .with_for_update()
         )
         linked_tx = linked_result.scalar_one_or_none()
 
@@ -519,7 +524,6 @@ async def reconcile_account(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.INCOME,
             Transaction.status == TransactionStatus.SETTLED,
-            Transaction.linked_transaction_id.is_(None),
         )
     )
     expense = await db.scalar(
@@ -528,7 +532,6 @@ async def reconcile_account(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.SETTLED,
-            Transaction.linked_transaction_id.is_(None),
         )
     )
     computed = income - expense
