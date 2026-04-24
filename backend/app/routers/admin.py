@@ -1,8 +1,9 @@
 """Admin surface — superadmin-only operator dashboards.
 
-L4.2 ships the home page (`/dashboard`). Subsequent L4.x PRs (org
+L4.2 ships the home page: backend `GET /api/v1/admin/dashboard`
+feeding the frontend route `/admin`. Subsequent L4.x PRs (org
 management, user management, audit log, etc.) add siblings under
-this router's prefix.
+this router's `/api/v1/admin/*` prefix.
 """
 
 from fastapi import APIRouter, Depends
