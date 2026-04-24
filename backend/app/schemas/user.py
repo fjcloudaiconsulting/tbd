@@ -1,5 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.models.user import AVATAR_URL_MAX_LENGTH
+
 
 class ProfileUpdate(BaseModel):
     # Base bounds only (DoS protection). The 3-char minimum and pattern
@@ -13,7 +15,7 @@ class ProfileUpdate(BaseModel):
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
     phone: str | None = Field(default=None, max_length=20)
-    avatar_url: str | None = Field(default=None, max_length=500)
+    avatar_url: str | None = Field(default=None, max_length=AVATAR_URL_MAX_LENGTH)
 
     @field_validator("avatar_url")
     @classmethod

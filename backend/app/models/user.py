@@ -8,6 +8,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 
+# Single source of truth for the avatar_url length ceiling. The DB column,
+# the ProfileUpdate schema, and the Google SSO guard all import this so a
+# future bump only happens in one place (plus an Alembic ALTER migration).
+AVATAR_URL_MAX_LENGTH = 2048
+
+
 class Role(str, enum.Enum):
     OWNER = "owner"
     ADMIN = "admin"
@@ -42,7 +48,9 @@ class User(Base):
     first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    avatar_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(
+        String(AVATAR_URL_MAX_LENGTH), nullable=True
+    )
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
     password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     role: Mapped[Role] = mapped_column(

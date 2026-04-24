@@ -15,7 +15,7 @@ from app.deps import get_current_user
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.settings import OrgSetting
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
-from app.models.user import Organization, Role, User
+from app.models.user import AVATAR_URL_MAX_LENGTH, Organization, Role, User
 from app.models.subscription import Subscription, Plan
 from app.services import subscription_service
 from app.schemas.auth import (
@@ -796,22 +796,20 @@ async def mfa_email_verify(
 # ── Google SSO ───────────────────────────────────────────────────────────────
 
 
-# Keep in sync with User.avatar_url column width (VARCHAR(2048), migration 025).
-_AVATAR_URL_MAX = 2048
-
-
 def _safe_avatar_url(url: str | None) -> str | None:
     """Accept a Google avatar URL only if it fits the column.
 
-    Google profile pictures routinely run 900+ chars and the column is now
-    sized for 2048, but outlier URLs do exist in the wild. Dropping to None
-    on overflow keeps the commit from crashing and lets the user upload
-    their own avatar later via profile edit — strictly better than storing
-    a truncated, broken URL.
+    Google profile pictures routinely run 900+ chars and the column is
+    sized for AVATAR_URL_MAX_LENGTH, but outlier URLs do exist in the
+    wild. Dropping to None on overflow keeps the commit from crashing and
+    lets the user upload their own avatar later via profile edit — strictly
+    better than storing a truncated, broken URL. Sharing the cap with the
+    ProfileUpdate schema means a client can also round-trip whatever we
+    stored through PUT /users/me without hitting a 422.
     """
     if not url:
         return None
-    if len(url) > _AVATAR_URL_MAX:
+    if len(url) > AVATAR_URL_MAX_LENGTH:
         return None
     return url
 
