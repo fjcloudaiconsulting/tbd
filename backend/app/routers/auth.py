@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, Cookie, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -834,19 +835,22 @@ async def google_login(response: Response):
 async def google_callback(
     code: str,
     state: str,
-    response: Response,
     db: AsyncSession = Depends(get_db),
     oauth_state: str | None = Cookie(default=None),
 ):
-    """Handle Google OAuth callback — exchange code for tokens, create or login user."""
+    """Handle Google OAuth callback — exchange code for tokens, create or login user.
+
+    IMPORTANT: this handler returns a RedirectResponse directly, so all cookie
+    writes (set_cookie / delete_cookie) MUST be applied to the returned response
+    object. FastAPI does not merge cookies set on an injected Response parameter
+    into a directly-returned Response — they would be silently dropped, which
+    is what previously broke the refresh-cookie round-trip for SSO logins.
+    """
     _validate_google_config()
 
     # Validate CSRF state
     if not oauth_state or oauth_state != state:
         raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF")
-
-    # Clear the state cookie
-    response.delete_cookie("oauth_state", path="/api/v1/auth/google")
 
     # Exchange authorization code for tokens
     try:
@@ -912,8 +916,25 @@ async def google_callback(
         if not user.is_active:
             raise HTTPException(status_code=403, detail="Account is deactivated")
         # google_verified is guaranteed True by the guard above.
+        mutated = False
         if not user.email_verified:
             user.email_verified = True
+            mutated = True
+        # Backfill profile fields from Google only when ours are empty so
+        # we never overwrite values the user has edited themselves. Useful
+        # when a password-registered user later links via Google and our
+        # side never had the name/avatar populated.
+        if not user.first_name and first_name:
+            user.first_name = first_name
+            mutated = True
+        if not user.last_name and last_name:
+            user.last_name = last_name
+            mutated = True
+        picture = google_user.get("picture")
+        if not user.avatar_url and picture:
+            user.avatar_url = picture
+            mutated = True
+        if mutated:
             await db.commit()
     else:
         # New user — register with Google profile
@@ -952,15 +973,27 @@ async def google_callback(
 
     if user.mfa_enabled:
         mfa_token = create_mfa_challenge_token(user.id)
-        return Response(
+        resp = RedirectResponse(
+            url=f"{app_settings.app_url}/mfa-verify?mfa_token={mfa_token}",
             status_code=302,
-            headers={"Location": f"{app_settings.app_url}/mfa-verify?mfa_token={mfa_token}"},
         )
+        resp.delete_cookie("oauth_state", path="/api/v1/auth/google")
+        return resp
 
     access_token = create_access_token(user.id, user.org_id, user.role.value)
     refresh_token = create_refresh_token(user.id)
 
-    response.set_cookie(
+    # Redirect to frontend with the access token in the URL fragment. The
+    # fragment stays client-side (not sent to servers, not logged), while
+    # the refresh token is set as an HttpOnly cookie so apiFetch can use
+    # it on /auth/refresh. Both cookies MUST be set on this returned
+    # response — see the handler docstring for the FastAPI caveat.
+    resp = RedirectResponse(
+        url=f"{app_settings.app_url}/auth/google/callback#token={access_token}",
+        status_code=302,
+    )
+    resp.delete_cookie("oauth_state", path="/api/v1/auth/google")
+    resp.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
@@ -969,10 +1002,4 @@ async def google_callback(
         max_age=7 * 24 * 60 * 60,
         path="/api/v1/auth/refresh",
     )
-
-    # Redirect to frontend with token in URL fragment (not query string)
-    # Fragments are not sent to the server, preventing leaks in logs/Referer headers
-    return Response(
-        status_code=302,
-        headers={"Location": f"{app_settings.app_url}/auth/google/callback#token={access_token}"},
-    )
+    return resp
