@@ -1,7 +1,7 @@
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +15,8 @@ from app.schemas.auth import (
     UserResponse,
 )
 from app.schemas.user import PasswordChange, ProfileUpdate
-from app.security import hash_password, verify_password
+from app.security import create_email_verification_token, hash_password, verify_password
+from app.services.email_service import send_verification_email
 
 _USERNAME_RE = re.compile(USERNAME_PATTERN)
 
@@ -45,6 +46,7 @@ def _user_response(user: User) -> UserResponse:
 @router.put("/me", response_model=UserResponse)
 async def update_profile(
     body: ProfileUpdate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -75,7 +77,20 @@ async def update_profile(
             )
         current_user.username = body.username
 
-    if body.email is not None and body.email != current_user.email:
+    email_changing = (
+        body.email is not None and body.email != current_user.email
+    )
+    if email_changing:
+        # Closes S-P1-2: without re-auth, a session-only compromise could
+        # swap the recovery channel to an attacker-controlled inbox and
+        # convert a transient hijack into persistent account takeover.
+        if not body.current_password or not verify_password(
+            body.current_password, current_user.password_hash
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is required and must be correct to change email",
+            )
         existing = await db.execute(
             select(User).where(User.email == body.email)
         )
@@ -84,7 +99,24 @@ async def update_profile(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Email already taken",
             )
-        current_user.email = body.email
+        # Capture the new email now (body.email survives the pydantic
+        # validation; current_user.email is still the old one until the
+        # assignment below).
+        new_email = body.email
+        current_user.email = new_email
+        # New address is unverified by definition; force the user back
+        # through the verify-email flow before any trust is granted.
+        current_user.email_verified = False
+        # Kill every existing access/refresh token. If an attacker
+        # already holds one and happened to get the current password,
+        # the change is still logged out globally and a real user
+        # re-authenticates from scratch.
+        current_user.sessions_invalidated_at = datetime.now(timezone.utc)
+        # Issue a fresh verification token bound to the new email
+        # (S-P2-1) and deliver it in the background so the handler
+        # does not block on SMTP.
+        token = create_email_verification_token(current_user.id, new_email)
+        background_tasks.add_task(send_verification_email, new_email, token)
 
     sent = body.model_fields_set
     if "first_name" in sent:

@@ -243,7 +243,7 @@ async def register(
     await db.commit()
 
     # Send verification email in background — don't block registration
-    token = create_email_verification_token(user.id)
+    token = create_email_verification_token(user.id, user.email)
     background_tasks.add_task(send_verification_email, user.email, token)
 
     return _user_response(user, org)
@@ -508,6 +508,19 @@ async def verify_email(request: Request, body: VerifyEmailRequest, db: AsyncSess
             detail="Invalid or expired verification token",
         )
 
+    # S-P2-1: the token binds the email it was issued for. Reject any
+    # token whose email no longer matches the user's current address —
+    # that means the user changed email after the token was issued and
+    # this link would otherwise verify a stale address. A token without
+    # an `email` claim is a pre-migration token and is rejected outright
+    # so the new binding is always enforced.
+    token_email = payload.get("email")
+    if not token_email or token_email != user.email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification token",
+        )
+
     user.email_verified = True
     await db.commit()
     return {"detail": "Email verified"}
@@ -524,7 +537,7 @@ async def resend_verification(
     if current_user.email_verified:
         return {"detail": "Email already verified"}
 
-    token = create_email_verification_token(current_user.id)
+    token = create_email_verification_token(current_user.id, current_user.email)
     await send_verification_email(current_user.email, token)
     return {"detail": "Verification email sent"}
 
