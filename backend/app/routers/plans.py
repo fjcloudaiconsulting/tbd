@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.permissions import require_permission
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.subscription import Plan, Subscription
@@ -9,14 +10,6 @@ from app.models.user import User
 from app.schemas.subscription import PlanCreate, PlanResponse, PlanUpdate
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
-
-
-def _require_superadmin(user: User) -> None:
-    if not user.is_superadmin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Superadmin access required",
-        )
 
 
 @router.get("", response_model=list[PlanResponse])
@@ -31,25 +24,28 @@ async def list_plans(
     return result.scalars().all()
 
 
-@router.get("/all", response_model=list[PlanResponse])
+@router.get(
+    "/all",
+    response_model=list[PlanResponse],
+    dependencies=[Depends(require_permission("plans.manage"))],
+)
 async def list_all_plans(
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all plans including inactive. Superadmin only."""
-    _require_superadmin(current_user)
+    """List all plans including inactive. Requires plans.manage."""
     result = await db.execute(select(Plan).order_by(Plan.sort_order))
     return result.scalars().all()
 
 
-@router.get("/{plan_id}")
+@router.get(
+    "/{plan_id}",
+    dependencies=[Depends(require_permission("plans.manage"))],
+)
 async def get_plan(
     plan_id: int,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a single plan with org count. Superadmin only."""
-    _require_superadmin(current_user)
+    """Get a single plan with org count. Requires plans.manage."""
     result = await db.execute(select(Plan).where(Plan.id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -67,15 +63,17 @@ async def get_plan(
     }
 
 
-@router.post("", response_model=PlanResponse, status_code=201)
+@router.post(
+    "",
+    response_model=PlanResponse,
+    status_code=201,
+    dependencies=[Depends(require_permission("plans.manage"))],
+)
 async def create_plan(
     body: PlanCreate,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new plan. Superadmin only."""
-    _require_superadmin(current_user)
-
+    """Create a new plan. Requires plans.manage."""
     existing = await db.execute(select(Plan).where(Plan.slug == body.slug))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Plan slug already exists")
@@ -87,16 +85,17 @@ async def create_plan(
     return plan
 
 
-@router.put("/{plan_id}", response_model=PlanResponse)
+@router.put(
+    "/{plan_id}",
+    response_model=PlanResponse,
+    dependencies=[Depends(require_permission("plans.manage"))],
+)
 async def update_plan(
     plan_id: int,
     body: PlanUpdate,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update a plan. Superadmin only."""
-    _require_superadmin(current_user)
-
+    """Update a plan. Requires plans.manage."""
     result = await db.execute(select(Plan).where(Plan.id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
@@ -125,15 +124,16 @@ async def update_plan(
     return plan
 
 
-@router.delete("/{plan_id}", status_code=204)
+@router.delete(
+    "/{plan_id}",
+    status_code=204,
+    dependencies=[Depends(require_permission("plans.manage"))],
+)
 async def delete_plan(
     plan_id: int,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-delete (deactivate) a plan. Superadmin only. Cannot delete if orgs are on it."""
-    _require_superadmin(current_user)
-
+    """Soft-delete (deactivate) a plan. Requires plans.manage. Cannot delete if orgs are on it."""
     result = await db.execute(select(Plan).where(Plan.id == plan_id))
     plan = result.scalar_one_or_none()
     if plan is None:
