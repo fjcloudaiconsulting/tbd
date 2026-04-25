@@ -11,6 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+RUN chmod +x /app/entrypoint.sh
+
 RUN addgroup --system --gid 1001 backend && \
     adduser --system --uid 1001 backend
 USER backend
@@ -18,6 +20,12 @@ USER backend
 ENV PYTHONPATH=/app
 
 EXPOSE 8000
+
+# entrypoint.sh runs `alembic upgrade head` before exec'ing the CMD. This
+# makes migrations a property of the image itself rather than the orchestrator
+# spec — so PR migrations always run on the next deploy, even if .do/app.yaml
+# was never re-synced and even if APP_ENV=production.
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # --proxy-headers makes uvicorn parse X-Forwarded-For / X-Forwarded-Proto
 # so request.client.host becomes the real client IP (slowapi.get_remote_

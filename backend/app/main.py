@@ -1,4 +1,3 @@
-import subprocess
 from contextlib import asynccontextmanager
 
 import structlog
@@ -42,26 +41,10 @@ async def _backfill_subscriptions() -> None:
             await logger.ainfo("backfilled subscriptions", count=len(org_ids))
 
 
-def _run_migrations() -> None:
-    """Run Alembic migrations on startup. Idempotent — alembic upgrade head
-    is a no-op when already at the latest revision."""
-    result = subprocess.run(
-        ["alembic", "upgrade", "head"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Migration failed: {result.stderr}")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # In production, migrations run via the App Platform PRE_DEPLOY job
-    # (see .do/app.yaml) or the docker-compose.prod.yml `migrate` one-shot.
-    # Skipping here avoids duplicate runs when the backend scales to >1
-    # replica on K8s and keeps the single-responsibility-per-process boundary.
-    if app_settings.app_env != "production":
-        _run_migrations()
+    # Migrations are run by backend/entrypoint.sh before this process starts,
+    # so the schema is guaranteed to be at head by the time we get here.
     await _backfill_subscriptions()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
