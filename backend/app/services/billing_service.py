@@ -180,12 +180,24 @@ async def close_period(db: AsyncSession, org_id: int, close_date: datetime.date 
 
     current.end_date = close_date
 
-    # Open new period starting the day after close
-    new_period = BillingPeriod(
-        org_id=org_id,
-        start_date=close_date + datetime.timedelta(days=1),
+    new_start = close_date + datetime.timedelta(days=1)
+
+    # If a future stub already exists at new_start (created by ensure_future_periods),
+    # revive it as the open period instead of inserting a duplicate that would trip
+    # the (org_id, start_date) unique constraint.
+    existing = await db.scalar(
+        select(BillingPeriod).where(
+            BillingPeriod.org_id == org_id,
+            BillingPeriod.start_date == new_start,
+        )
     )
-    db.add(new_period)
+    if existing is not None:
+        existing.end_date = None
+        new_period = existing
+    else:
+        new_period = BillingPeriod(org_id=org_id, start_date=new_start)
+        db.add(new_period)
+
     await db.commit()
     await db.refresh(new_period)
     return new_period
