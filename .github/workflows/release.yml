@@ -3,86 +3,27 @@ name: Release
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - "**/*.md"
-      - ".github/workflows/**"
-      - ".superpowers/**"
-      - ".gitignore"
-      - "LICENSE"
 
 permissions:
   contents: write
+  issues: read
+  pull-requests: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Get latest tag
-        id: latest_tag
-        run: |
-          tag=$(git tag --list 'v*' --sort=-v:refname | head -n1)
-          if [ -z "$tag" ]; then
-            echo "tag=v0.0.0" >> "$GITHUB_OUTPUT"
-            echo "No existing tags, starting from v0.0.0"
-          else
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
-            echo "Latest tag: $tag"
-          fi
-
-      - name: Determine next version
-        id: next_version
-        run: |
-          current="${{ steps.latest_tag.outputs.tag }}"
-          current="${current#v}"
-          IFS='.' read -r major minor patch <<< "$current"
-
-          # Get commits since last tag (or all commits if no tag)
-          if git rev-parse "v${current}" >/dev/null 2>&1; then
-            commits=$(git log "v${current}..HEAD" --oneline)
-          else
-            commits=$(git log --oneline -20)
-          fi
-
-          echo "Commits since last release:"
-          echo "$commits"
-
-          # Determine bump type from conventional commits
-          if echo "$commits" | grep -qiE '^[a-f0-9]+ .*BREAKING CHANGE|^[a-f0-9]+ [a-z]+!:'; then
-            major=$((major + 1)); minor=0; patch=0
-            bump="major"
-          elif echo "$commits" | grep -qiE '^[a-f0-9]+ feat'; then
-            minor=$((minor + 1)); patch=0
-            bump="minor"
-          else
-            patch=$((patch + 1))
-            bump="patch"
-          fi
-
-          version="v${major}.${minor}.${patch}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "bump=$bump" >> "$GITHUB_OUTPUT"
-          echo "Bump: $bump -> $version"
-
-      - name: Create release
+      - name: Semantic Release
+        uses: cycjimmy/semantic-release-action@v6
+        with:
+          semantic_version: 24
+          extra_plugins: |
+            conventional-changelog-conventionalcommits@8
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version="${{ steps.next_version.outputs.version }}"
-          previous="${{ steps.latest_tag.outputs.tag }}"
-
-          if [ "$previous" = "v0.0.0" ]; then
-            notes_flag="--generate-notes"
-          else
-            notes_flag="--generate-notes --notes-start-tag $previous"
-          fi
-
-          gh release create "$version" \
-            --title "$version" \
-            --target main \
-            $notes_flag
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
