@@ -25,13 +25,16 @@ jobs:
         uses: digitalocean/app_action/deploy@v2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-          # NOTE: Do NOT set `app_name` here. The v2 action's createSpec
-          # logic (deploy/main.go) takes EITHER app_name OR
-          # app_spec_location: when both are set, it fetches the live
-          # spec by name and ignores the file. Repo edits to .do/app.yaml
-          # (PRE_DEPLOY jobs, health_check blocks, ingress rules) then
+          # NOTE: Do NOT add `app_name` here. The v2 action's createSpec
+          # logic (deploy/main.go) takes EITHER `app_name` OR
+          # `app_spec_location`: with both set, it fetches the live spec
+          # by name and ignores the file. Edits to .do/app.yaml then
           # silently never reach App Platform — that is the bug that let
-          # migration 025 sit un-applied for hours after PR #79 merged.
-          # Using app_spec_location alone makes the action read the file
-          # and pick up the app via the `name:` field at the top of it.
+          # PR #79's migration sit un-applied for hours after merge.
+          # With only `app_spec_location`, the action reads the file and
+          # picks up the app via its top-level `name:` field. .do/app.yaml
+          # MUST list every secret with its encrypted EV[...] value, since
+          # any SECRET not declared in this file gets removed from the
+          # live app on push (we hit that exact failure mode 2026-04-25,
+          # backend crashlooped on a placeholder JWT_SECRET_KEY).
           app_spec_location: .do/app.yaml

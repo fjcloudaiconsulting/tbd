@@ -27,6 +27,28 @@ ingress:
           prefix: /
       component:
         name: frontend
+
+# ---------------------------------------------------------------------------
+# About the encrypted `EV[...]` secret values below
+#
+# App Platform encrypts SECRET-typed env values with this app's per-app key
+# the moment they're saved (via console or `doctl apps update --spec`) and
+# thereafter only ever surfaces the encrypted blob — even `doctl apps spec
+# get` returns the `EV[...]` form, never plaintext. The blob is unreadable
+# outside DO and is safe to commit.
+#
+# We MUST commit them here because the deploy workflow now uses
+# `app_spec_location: .do/app.yaml` to push this file as the authoritative
+# spec on every deploy: any SECRET that is not listed here will be removed
+# from the live app on the next deploy. (We hit that exact failure mode on
+# 2026-04-25 — JWT_SECRET_KEY dropped to its placeholder default and the
+# backend crashlooped on import.)
+#
+# To re-issue from scratch (new app, rotated app key), run
+#   doctl apps spec get <app-id> --format yaml
+# and copy the fresh `value: EV[...]` blocks back here.
+# ---------------------------------------------------------------------------
+
 services:
   - name: backend
     github:
@@ -44,20 +66,62 @@ services:
       period_seconds: 15
       timeout_seconds: 5
       failure_threshold: 3
-    # Secrets (DATABASE_URL, REDIS_URL, JWT_SECRET_KEY, MFA_ENCRYPTION_KEY)
-    # are configured in DO console and inherited by preview apps.
-    # Only non-secret env vars are listed here.
     envs:
       - key: APP_ENV
+        scope: RUN_AND_BUILD_TIME
         value: "production"
       - key: APP_NAME
+        scope: RUN_AND_BUILD_TIME
         value: "The Better Decision"
       - key: LOG_LEVEL
+        scope: RUN_AND_BUILD_TIME
         value: "INFO"
+      - key: APP_URL
+        scope: RUN_AND_BUILD_TIME
+        value: "https://app.thebetterdecision.com"
+      - key: BACKEND_CORS_ORIGINS
+        scope: RUN_AND_BUILD_TIME
+        value: "https://app.thebetterdecision.com"
       - key: COOKIE_SECURE
+        scope: RUN_AND_BUILD_TIME
         value: "true"
+      - key: MAILGUN_DOMAIN
+        scope: RUN_AND_BUILD_TIME
+        value: "m.thebetterdecision.com"
       - key: MAILGUN_REGION
+        scope: RUN_AND_BUILD_TIME
         value: "eu"
+      - key: EMAIL_FROM
+        scope: RUN_AND_BUILD_TIME
+        value: "PFV2 <noreply@m.thebetterdecision.com>"
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:6hfpzR8vLg+7V8xAKnnPxKCH31YvJ/wq:zBRFCBWk4LU+PgCsbCyXe3B28BtGpFeQ+KHldE7sFKA9XXlkkM94KQVsAVtlqwShSj29XHQ8JJzACa3Q+bX5nmrByRe4JGPlMDUC2iV5gcGb074vQntKdL2/0RIGhycbbbczpJUZubF3vh910KhN8toTPIS0bwpIvxHSvd8coPcI]
+      - key: REDIS_URL
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:A9gqCkOiw6t/7SnDUDSu4bqfD79Lwx7D:Gpukt1xW3kxOGnnI919j4lGoKjUM/RGOIfdtne26gHTGi0TAIqp1p7eklyrJ38JOAoY1Gs/Hb9K3fw7JIYxUTCaBovrZ0ppe0W8s0+v4m0uRHTRbSZ3UAn+5rwZ63G+mZTZEEZbNerchwFe2FltrHn4VgYk=]
+      - key: JWT_SECRET_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:yu+iyIxbSwoJpe7aEGuEBSJ8judQo26F:Ogb2sdGetlKniX5UaHeObIhPiYej4c4W1fccXr1By5mIGy1LI4dn8R6NPR1CGfnUAo5fslDt7qV48MNdMnGwk1A9qlp8GxCcKD2fdYcm7f8=]
+      - key: MFA_ENCRYPTION_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:ggw+koUI35JWzQb6g8N8GJ/psPs70qhS:e7BxGsGJdq35DlsFdA1CfTJrUFPwMa8kJDm5dQJkWNB2+vlwy3nkwEmdRnaYpy3DMurH67d7yKFsc1Z5]
+      - key: MAILGUN_API_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:YrGhlsSeOARimCuO/Ws+dktoGW5NdFGD:wlcljc+wVhxlddlau+C6+r6EKYHgeVJPgd/i8rQS+gh+scfsqz5g8D1b+TJHwR6CvhbXKGeasrpgUJa/r/rsF48w]
+      - key: GOOGLE_CLIENT_ID
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:cm+BD5dShSJwOjWL6YP2bSTVBZoT6u0W:t9oLM3W4BX6xhaUeU6zco2OrPU7enUX1EiYLDi/+yO9WC/8cfcutDlnARlQ8cd1wNsW3JMYj5rr1gHRE+VFpFL7YOph3eznAh1O3Q67jXvAi6pPt/Ok8Ug==]
+      - key: GOOGLE_CLIENT_SECRET
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:0/mRRuaUvDyJhFpbWK3g+TsqoYrBID+l:sddkvCmWoQSm6qU7/b9Q3QCWTFFWJ5i2Oj9nSOv6tyVlM7CQe0jC22lgJxKPq+pgJUlI]
 
   - name: frontend
     github:
@@ -80,8 +144,10 @@ services:
       failure_threshold: 3
     envs:
       - key: NEXT_PUBLIC_API_URL
+        scope: RUN_AND_BUILD_TIME
         value: ""
       - key: HOSTNAME
+        scope: RUN_AND_BUILD_TIME
         value: "0.0.0.0"
 
 # Pre-deploy job: run Alembic migrations exactly once before any backend
@@ -90,14 +156,9 @@ services:
 # long migration never causes the backend's serving probe to fail. The
 # k8s/ Helm chart uses a matching initContainer in templates/backend.yaml.
 #
-# About the encrypted DATABASE_URL value: App Platform's `EV[...]` blobs
-# are encrypted with this app's per-app key, so the plaintext is unreadable
-# outside DO. They are safe to commit and are the only way to keep the
-# spec self-contained — App Platform does not auto-inherit secrets across
-# components, so a brand-new PRE_DEPLOY job otherwise has no DATABASE_URL
-# and fails on first deploy. To re-issue from scratch (e.g., new app),
-# `doctl apps spec get <app-id>` will surface fresh `EV[...]` references
-# you can paste in.
+# DATABASE_URL is bound here directly (App Platform does not auto-inherit
+# secrets across components). Same encrypted reference the backend service
+# uses above; same "safe to commit" reasoning.
 jobs:
   - name: migrate
     kind: PRE_DEPLOY
