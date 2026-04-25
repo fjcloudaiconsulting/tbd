@@ -178,9 +178,10 @@ async def close_period(db: AsyncSession, org_id: int, close_date: datetime.date 
     if close_date < current.start_date:
         raise ValidationError("Close date cannot be before the period start date")
 
-    current.end_date = close_date
-
     new_start = close_date + datetime.timedelta(days=1)
+    current_id = current.id
+
+    current.end_date = close_date
 
     # If a future stub already exists at new_start (created by ensure_future_periods),
     # revive it as the open period instead of inserting a duplicate that would trip
@@ -198,6 +199,31 @@ async def close_period(db: AsyncSession, org_id: int, close_date: datetime.date 
         new_period = BillingPeriod(org_id=org_id, start_date=new_start)
         db.add(new_period)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Race: a concurrent request inserted (org_id, new_start) between our
+        # SELECT and our INSERT. Roll back, re-fetch the winning row, revive it,
+        # and re-apply the close on the previous period — making close_period
+        # idempotent under concurrency (mirrors get_current_period/ensure_future_periods).
+        await db.rollback()
+        current = await db.scalar(
+            select(BillingPeriod).where(BillingPeriod.id == current_id)
+        )
+        if current is not None and current.end_date is None:
+            current.end_date = close_date
+        new_period = await db.scalar(
+            select(BillingPeriod).where(
+                BillingPeriod.org_id == org_id,
+                BillingPeriod.start_date == new_start,
+            )
+        )
+        if new_period is None:
+            raise RuntimeError(
+                f"Billing period at {new_start} vanished after IntegrityError"
+            )
+        new_period.end_date = None
+        await db.commit()
+
     await db.refresh(new_period)
     return new_period
