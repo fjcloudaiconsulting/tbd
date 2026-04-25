@@ -19,6 +19,13 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8000
 
+# Migrations run as a true init step (App Platform PRE_DEPLOY job in
+# .do/app.yaml; initContainer in k8s/templates/backend.yaml) — NOT in the
+# serving process startup path. Putting `alembic upgrade head` in the
+# entrypoint would gate uvicorn's port-bind on migration time, so any
+# migration that exceeds the orchestrator's probe budget would look like
+# a hung container and be rolled back even though it's progressing fine.
+
 # --proxy-headers makes uvicorn parse X-Forwarded-For / X-Forwarded-Proto
 # so request.client.host becomes the real client IP (slowapi.get_remote_
 # address feeds off it — without this the rate limit is effectively global

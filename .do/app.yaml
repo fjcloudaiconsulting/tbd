@@ -69,6 +69,15 @@ services:
     http_port: 3000
     instance_count: 1
     instance_size_slug: basic-xxs
+    # The probe hits frontend:3000/health directly (not via the ingress) so
+    # the /health prefix being routed to backend at the ingress layer is
+    # irrelevant here. app/health/route.ts returns 200 once Next.js is up.
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 30
+      period_seconds: 15
+      timeout_seconds: 5
+      failure_threshold: 3
     envs:
       - key: NEXT_PUBLIC_API_URL
         value: ""
@@ -76,12 +85,16 @@ services:
         value: "0.0.0.0"
 
 # Pre-deploy job: run Alembic migrations exactly once before any backend
-# replica starts. The backend lifespan skips migrations when APP_ENV is
-# production so we never run them twice (prod path is: this job only).
+# replica starts. This is the canonical "init container" pattern for App
+# Platform — the new revision is held back until the job exits 0, so a
+# long migration never causes the backend's serving probe to fail. The
+# k8s/ Helm chart uses a matching initContainer in templates/backend.yaml.
 #
-# DATABASE_URL and other secrets MUST be configured against this job in the
-# DO console the same way they are for the backend service — App Platform
-# does not auto-inherit secrets across components.
+# DATABASE_URL (and any other secrets the migration touches) MUST be bound
+# to this job in the DO console — App Platform does not auto-inherit
+# secrets across components, and the workflow now syncs this spec on every
+# deploy via app_spec_location, so a missing secret here is a hard fail
+# rather than a silent no-op.
 jobs:
   - name: migrate
     kind: PRE_DEPLOY

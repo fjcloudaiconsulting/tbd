@@ -56,10 +56,12 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # In production, migrations run via the App Platform PRE_DEPLOY job
-    # (see .do/app.yaml) or the docker-compose.prod.yml `migrate` one-shot.
-    # Skipping here avoids duplicate runs when the backend scales to >1
-    # replica on K8s and keeps the single-responsibility-per-process boundary.
+    # Production runs migrations as a true init step (App Platform
+    # PRE_DEPLOY job in .do/app.yaml; initContainer in k8s/templates/
+    # backend.yaml) so they don't gate uvicorn's port-bind. Dev runs them
+    # inline because the dev orchestrator (docker-compose) has no PRE_DEPLOY
+    # equivalent — the alternative is a manual `./pfv migrate` after every
+    # rebuild.
     if app_settings.app_env != "production":
         _run_migrations()
     await _backfill_subscriptions()
