@@ -90,11 +90,14 @@ services:
 # long migration never causes the backend's serving probe to fail. The
 # k8s/ Helm chart uses a matching initContainer in templates/backend.yaml.
 #
-# DATABASE_URL (and any other secrets the migration touches) MUST be bound
-# to this job in the DO console — App Platform does not auto-inherit
-# secrets across components, and the workflow now syncs this spec on every
-# deploy via app_spec_location, so a missing secret here is a hard fail
-# rather than a silent no-op.
+# About the encrypted DATABASE_URL value: App Platform's `EV[...]` blobs
+# are encrypted with this app's per-app key, so the plaintext is unreadable
+# outside DO. They are safe to commit and are the only way to keep the
+# spec self-contained — App Platform does not auto-inherit secrets across
+# components, so a brand-new PRE_DEPLOY job otherwise has no DATABASE_URL
+# and fails on first deploy. To re-issue from scratch (e.g., new app),
+# `doctl apps spec get <app-id>` will surface fresh `EV[...]` references
+# you can paste in.
 jobs:
   - name: migrate
     kind: PRE_DEPLOY
@@ -109,4 +112,9 @@ jobs:
     run_command: alembic upgrade head
     envs:
       - key: APP_ENV
+        scope: RUN_AND_BUILD_TIME
         value: "production"
+      - key: DATABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:6hfpzR8vLg+7V8xAKnnPxKCH31YvJ/wq:zBRFCBWk4LU+PgCsbCyXe3B28BtGpFeQ+KHldE7sFKA9XXlkkM94KQVsAVtlqwShSj29XHQ8JJzACa3Q+bX5nmrByRe4JGPlMDUC2iV5gcGb074vQntKdL2/0RIGhycbbbczpJUZubF3vh910KhN8toTPIS0bwpIvxHSvd8coPcI]
