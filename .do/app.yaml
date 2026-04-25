@@ -83,3 +83,30 @@ services:
         value: ""
       - key: HOSTNAME
         value: "0.0.0.0"
+
+# Pre-deploy job: run Alembic migrations exactly once before any backend
+# replica starts. This is the canonical "init container" pattern for App
+# Platform — the new revision is held back until the job exits 0, so a
+# long migration never causes the backend's serving probe to fail. The
+# k8s/ Helm chart uses a matching initContainer in templates/backend.yaml.
+#
+# DATABASE_URL (and any other secrets the migration touches) MUST be bound
+# to this job in the DO console — App Platform does not auto-inherit
+# secrets across components, and the workflow now syncs this spec on every
+# deploy via app_spec_location, so a missing secret here is a hard fail
+# rather than a silent no-op.
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    github:
+      repo: flamarion/pfv
+      branch: main
+      deploy_on_push: false
+    source_dir: backend
+    dockerfile_path: backend/Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: alembic upgrade head
+    envs:
+      - key: APP_ENV
+        value: "production"

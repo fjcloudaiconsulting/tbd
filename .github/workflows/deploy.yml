@@ -26,3 +26,9 @@ jobs:
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
           app_name: pfv
+          # Push the repo's spec on every deploy. Without this the action
+          # only triggers a redeploy of whatever spec is already live, so
+          # spec edits in PRs (PRE_DEPLOY jobs, health_check blocks,
+          # ingress rules) never reach App Platform — the silent drift
+          # that let migration 025 sit un-applied through PR #79.
+          app_spec_location: .do/app.yaml

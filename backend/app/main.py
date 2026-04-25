@@ -1,3 +1,4 @@
+import subprocess
 from contextlib import asynccontextmanager
 
 import structlog
@@ -41,10 +42,28 @@ async def _backfill_subscriptions() -> None:
             await logger.ainfo("backfilled subscriptions", count=len(org_ids))
 
 
+def _run_migrations() -> None:
+    """Run Alembic migrations on startup. Idempotent — alembic upgrade head
+    is a no-op when already at the latest revision."""
+    result = subprocess.run(
+        ["alembic", "upgrade", "head"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Migration failed: {result.stderr}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Migrations are run by backend/entrypoint.sh before this process starts,
-    # so the schema is guaranteed to be at head by the time we get here.
+    # Production runs migrations as a true init step (App Platform
+    # PRE_DEPLOY job in .do/app.yaml; initContainer in k8s/templates/
+    # backend.yaml) so they don't gate uvicorn's port-bind. Dev runs them
+    # inline because the dev orchestrator (docker-compose) has no PRE_DEPLOY
+    # equivalent — the alternative is a manual `./pfv migrate` after every
+    # rebuild.
+    if app_settings.app_env != "production":
+        _run_migrations()
     await _backfill_subscriptions()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
