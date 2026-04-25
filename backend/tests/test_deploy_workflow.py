@@ -59,6 +59,23 @@ def test_migrate_job_binds_database_url():
     )
 
 
+def test_app_spec_declares_custom_domain():
+    """The `app_spec_location` workflow path strips anything not in the
+    file — same trap as missing SECRET envs. Without the `domains:` block
+    the custom domain falls off the live app, Cloudflare's origin TLS
+    handshake fails, and the public site goes dark even though backend
+    and frontend components are healthy. (Hit on PR #89 merge,
+    2026-04-25.)"""
+    spec = APP_SPEC.read_text()
+    assert "domain: app.thebetterdecision.com" in spec, (
+        "Spec must declare app.thebetterdecision.com as a domain — "
+        "anything not in this file is removed from the live app on push."
+    )
+    assert "type: PRIMARY" in spec, (
+        "Custom domain must be marked PRIMARY for ingress routing."
+    )
+
+
 def test_backend_service_declares_all_required_secrets():
     """Every SECRET the backend reads at boot MUST appear in the backend
     service block. Missing-from-spec equals removed-from-live on push,

@@ -1,5 +1,14 @@
 name: pfv
 region: ams
+# Custom domain MUST stay declared here. With `app_spec_location` driving
+# every deploy, anything missing from this file is removed from the live
+# app on push — same failure mode as missing SECRET envs. Stripping the
+# domain breaks Cloudflare's origin TLS handshake and takes the public
+# site down even when the components are healthy (we hit that on the
+# 2026-04-25 PR #89 merge).
+domains:
+  - domain: app.thebetterdecision.com
+    type: PRIMARY
 features:
   - buildpack-stack=ubuntu-22
 ingress:
