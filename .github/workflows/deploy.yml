@@ -25,10 +25,13 @@ jobs:
         uses: digitalocean/app_action/deploy@v2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-          app_name: pfv
-          # Push the repo's spec on every deploy. Without this the action
-          # only triggers a redeploy of whatever spec is already live, so
-          # spec edits in PRs (PRE_DEPLOY jobs, health_check blocks,
-          # ingress rules) never reach App Platform — the silent drift
-          # that let migration 025 sit un-applied through PR #79.
+          # NOTE: Do NOT set `app_name` here. The v2 action's createSpec
+          # logic (deploy/main.go) takes EITHER app_name OR
+          # app_spec_location: when both are set, it fetches the live
+          # spec by name and ignores the file. Repo edits to .do/app.yaml
+          # (PRE_DEPLOY jobs, health_check blocks, ingress rules) then
+          # silently never reach App Platform — that is the bug that let
+          # migration 025 sit un-applied for hours after PR #79 merged.
+          # Using app_spec_location alone makes the action read the file
+          # and pick up the app via the `name:` field at the top of it.
           app_spec_location: .do/app.yaml
