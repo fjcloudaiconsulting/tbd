@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import SettingsLayout from "@/components/SettingsLayout";
 import Spinner from "@/components/ui/Spinner";
@@ -37,7 +37,15 @@ export default function OrganizationSettingsPage() {
     variant: "warning" | "danger";
     action: () => void;
   } | null>(null);
-  const [billingCycleDay, setBillingCycleDay] = useState<string>("");
+  // Initial value falls back to AuthContext.user.billing_cycle_day so a slow or
+  // failed GET /billing-cycle never leaves the field unusably blank.
+  const [billingCycleDay, setBillingCycleDay] = useState<string>(
+    user?.billing_cycle_day != null ? String(user.billing_cycle_day) : ""
+  );
+  // True once the admin has typed; the mount-time GET response is dropped if
+  // this is set, so a slow response can't overwrite an in-progress edit or
+  // resurrect a stale value right after a fast Save.
+  const userEditedCycleDayRef = useRef(false);
   const [savingCycle, setSavingCycle] = useState(false);
   const [currentPeriod, setCurrentPeriod] = useState<{
     id: number;
@@ -82,8 +90,16 @@ export default function OrganizationSettingsPage() {
         "/api/v1/settings/billing-period"
       ).then(setCurrentPeriod).catch(() => {});
       apiFetch<{ billing_cycle_day: number }>("/api/v1/settings/billing-cycle")
-        .then((r) => setBillingCycleDay(String(r.billing_cycle_day)))
-        .catch(() => {});
+        .then((r) => {
+          if (!userEditedCycleDayRef.current) {
+            setBillingCycleDay(String(r.billing_cycle_day));
+          }
+        })
+        .catch(() => {
+          // Swallow: the AuthContext fallback in the initial state is already
+          // a usable value. If that's also missing, the field stays empty and
+          // client-side validation will guide the admin on Save.
+        });
     }
   }, [admin, reload]);
 
@@ -101,6 +117,9 @@ export default function OrganizationSettingsPage() {
         method: "PUT",
         body: JSON.stringify({ billing_cycle_day: day }),
       });
+      // Server now matches local state — clear the dirty flag so a future GET
+      // (e.g., on revisit) can re-sync without being treated as a stale overwrite.
+      userEditedCycleDayRef.current = false;
       const period = await apiFetch<{ id: number; start_date: string; end_date: string | null }>(
         "/api/v1/settings/billing-period"
       );
@@ -250,7 +269,10 @@ export default function OrganizationSettingsPage() {
                   min={1}
                   max={28}
                   value={billingCycleDay}
-                  onChange={(e) => setBillingCycleDay(e.target.value)}
+                  onChange={(e) => {
+                    userEditedCycleDayRef.current = true;
+                    setBillingCycleDay(e.target.value);
+                  }}
                   className={`${input} w-full sm:w-24`}
                 />
               </div>
