@@ -65,6 +65,20 @@ export default function OrganizationSettingsPage() {
     if (!loading && !admin) router.replace("/settings");
   }, [loading, admin, router]);
 
+  // AuthProvider hydrates `user` asynchronously, so the state initializer
+  // typically locks the field at "" before user.billing_cycle_day exists.
+  // Once it lands, seed the field — but only if the admin hasn't started
+  // editing and an authoritative GET response hasn't already filled the
+  // field. This is the failed-GET fallback the initializer alone can't
+  // provide.
+  useEffect(() => {
+    if (user?.billing_cycle_day == null) return;
+    if (userEditedCycleDayRef.current) return;
+    setBillingCycleDay((current) =>
+      current === "" ? String(user.billing_cycle_day) : current
+    );
+  }, [user?.billing_cycle_day]);
+
   const reload = useCallback(async () => {
     try {
       const data = await apiFetch<OrgSetting[]>("/api/v1/settings");
@@ -87,9 +101,10 @@ export default function OrganizationSettingsPage() {
           }
         })
         .catch(() => {
-          // Swallow: the AuthContext fallback in the initial state is already
-          // a usable value. If that's also missing, the field stays empty and
-          // client-side validation will guide the admin on Save.
+          // Swallow: the AuthContext-seeding effect above leaves a usable
+          // (possibly stale) value in place when GET fails. If user is also
+          // unavailable, the field stays empty and client-side validation
+          // will guide the admin on Save.
         });
     }
   }, [admin, reload]);
