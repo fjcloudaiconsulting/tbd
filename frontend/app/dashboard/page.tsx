@@ -6,7 +6,7 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
+import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
 
 
@@ -73,14 +73,9 @@ export default function DashboardPage() {
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   // For open periods, compute expected end from billing cycle day
-  const cycleDay = billingCycleDay;
-  let monthTo = selectedPeriod?.end_date ?? "";
-  if (!monthTo && monthFrom) {
-    const start = new Date(monthFrom + "T00:00:00");
-    const nextMonth = new Date(start.getFullYear(), start.getMonth() + 1, cycleDay);
-    nextMonth.setDate(nextMonth.getDate() - 1);
-    monthTo = formatLocalDate(nextMonth);
-  }
+  const monthTo =
+    selectedPeriod?.end_date
+    ?? (monthFrom ? projectedPeriodEnd(monthFrom, billingCycleDay) ?? "" : "");
 
   const loadRefs = useCallback(async () => {
     const [accts, cats, bds, per, plist, bc] = await Promise.all([

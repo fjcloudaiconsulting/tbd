@@ -1,12 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import SettingsLayout from "@/components/SettingsLayout";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
 import {
   input,
@@ -37,7 +38,15 @@ export default function OrganizationSettingsPage() {
     variant: "warning" | "danger";
     action: () => void;
   } | null>(null);
-  const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
+  // Initial value falls back to AuthContext.user.billing_cycle_day so a slow or
+  // failed GET /billing-cycle never leaves the field unusably blank.
+  const [billingCycleDay, setBillingCycleDay] = useState<string>(
+    user?.billing_cycle_day != null ? String(user.billing_cycle_day) : ""
+  );
+  // True once the admin has typed; the mount-time GET response is dropped if
+  // this is set, so a slow response can't overwrite an in-progress edit or
+  // resurrect a stale value right after a fast Save.
+  const userEditedCycleDayRef = useRef(false);
   const [savingCycle, setSavingCycle] = useState(false);
   const [currentPeriod, setCurrentPeriod] = useState<{
     id: number;
@@ -48,9 +57,27 @@ export default function OrganizationSettingsPage() {
 
   const admin = user ? isAdmin(user) : false;
 
+  const currentPeriodEndDisplay = currentPeriod
+    ? currentPeriod.end_date ?? projectedPeriodEnd(currentPeriod.start_date, Number(billingCycleDay))
+    : null;
+
   useEffect(() => {
     if (!loading && !admin) router.replace("/settings");
   }, [loading, admin, router]);
+
+  // AuthProvider hydrates `user` asynchronously, so the state initializer
+  // typically locks the field at "" before user.billing_cycle_day exists.
+  // Once it lands, seed the field — but only if the admin hasn't started
+  // editing and an authoritative GET response hasn't already filled the
+  // field. This is the failed-GET fallback the initializer alone can't
+  // provide.
+  useEffect(() => {
+    if (user?.billing_cycle_day == null) return;
+    if (userEditedCycleDayRef.current) return;
+    setBillingCycleDay((current) =>
+      current === "" ? String(user.billing_cycle_day) : current
+    );
+  }, [user?.billing_cycle_day]);
 
   const reload = useCallback(async () => {
     try {
@@ -67,18 +94,42 @@ export default function OrganizationSettingsPage() {
       apiFetch<{ id: number; start_date: string; end_date: string | null }>(
         "/api/v1/settings/billing-period"
       ).then(setCurrentPeriod).catch(() => {});
+      apiFetch<{ billing_cycle_day: number }>("/api/v1/settings/billing-cycle")
+        .then((r) => {
+          if (!userEditedCycleDayRef.current) {
+            setBillingCycleDay(String(r.billing_cycle_day));
+          }
+        })
+        .catch(() => {
+          // Swallow: the AuthContext-seeding effect above leaves a usable
+          // (possibly stale) value in place when GET fails. If user is also
+          // unavailable, the field stays empty and client-side validation
+          // will guide the admin on Save.
+        });
     }
   }, [admin, reload]);
 
   async function handleSaveCycle(e: FormEvent) {
     e.preventDefault();
-    setSavingCycle(true);
     setError("");
+    const day = Number(billingCycleDay);
+    if (!Number.isInteger(day) || day < 1 || day > 28) {
+      setError("Billing cycle day must be a whole number between 1 and 28");
+      return;
+    }
+    setSavingCycle(true);
     try {
       await apiFetch("/api/v1/settings/billing-cycle", {
         method: "PUT",
-        body: JSON.stringify({ billing_cycle_day: billingCycleDay }),
+        body: JSON.stringify({ billing_cycle_day: day }),
       });
+      // Server now matches local state — clear the dirty flag so a future GET
+      // (e.g., on revisit) can re-sync without being treated as a stale overwrite.
+      userEditedCycleDayRef.current = false;
+      const period = await apiFetch<{ id: number; start_date: string; end_date: string | null }>(
+        "/api/v1/settings/billing-period"
+      );
+      setCurrentPeriod(period);
       setSuccessMsg("Billing cycle updated");
       setTimeout(() => setSuccessMsg(""), 3000);
     } catch (err) {
@@ -197,7 +248,8 @@ export default function OrganizationSettingsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-text-primary">
-                    Current: {currentPeriod.start_date} to {currentPeriod.end_date ?? "open"}
+                    Current: {currentPeriod.start_date}
+                    {currentPeriodEndDisplay ? ` — ${currentPeriodEndDisplay}` : " — open"}
                   </p>
                   <p className="text-xs text-text-muted">
                     {currentPeriod.end_date ? "Closed" : "Open, transactions are being recorded"}
@@ -223,7 +275,10 @@ export default function OrganizationSettingsPage() {
                   min={1}
                   max={28}
                   value={billingCycleDay}
-                  onChange={(e) => setBillingCycleDay(Number(e.target.value))}
+                  onChange={(e) => {
+                    userEditedCycleDayRef.current = true;
+                    setBillingCycleDay(e.target.value);
+                  }}
                   className={`${input} w-full sm:w-24`}
                 />
               </div>
