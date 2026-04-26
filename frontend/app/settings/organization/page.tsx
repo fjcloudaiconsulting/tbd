@@ -7,6 +7,7 @@ import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
 import {
   input,
@@ -56,19 +57,9 @@ export default function OrganizationSettingsPage() {
 
   const admin = user ? isAdmin(user) : false;
 
-  const currentPeriodEndDisplay = (() => {
-    if (!currentPeriod) return null;
-    if (currentPeriod.end_date) return currentPeriod.end_date;
-    const day = Number(billingCycleDay);
-    if (!Number.isInteger(day) || day < 1 || day > 28) return null;
-    const start = new Date(currentPeriod.start_date + "T00:00:00");
-    const next = new Date(start.getFullYear(), start.getMonth() + 1, day);
-    next.setDate(next.getDate() - 1);
-    const yyyy = next.getFullYear();
-    const mm = String(next.getMonth() + 1).padStart(2, "0");
-    const dd = String(next.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  })();
+  const currentPeriodEndDisplay = currentPeriod
+    ? currentPeriod.end_date ?? projectedPeriodEnd(currentPeriod.start_date, Number(billingCycleDay))
+    : null;
 
   useEffect(() => {
     if (!loading && !admin) router.replace("/settings");
