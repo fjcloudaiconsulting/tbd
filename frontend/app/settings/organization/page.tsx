@@ -37,7 +37,7 @@ export default function OrganizationSettingsPage() {
     variant: "warning" | "danger";
     action: () => void;
   } | null>(null);
-  const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
+  const [billingCycleDay, setBillingCycleDay] = useState<string>("");
   const [savingCycle, setSavingCycle] = useState(false);
   const [currentPeriod, setCurrentPeriod] = useState<{
     id: number;
@@ -47,6 +47,20 @@ export default function OrganizationSettingsPage() {
   const [closingPeriod, setClosingPeriod] = useState(false);
 
   const admin = user ? isAdmin(user) : false;
+
+  const currentPeriodEndDisplay = (() => {
+    if (!currentPeriod) return null;
+    if (currentPeriod.end_date) return currentPeriod.end_date;
+    const day = Number(billingCycleDay);
+    if (!Number.isInteger(day) || day < 1 || day > 28) return null;
+    const start = new Date(currentPeriod.start_date + "T00:00:00");
+    const next = new Date(start.getFullYear(), start.getMonth() + 1, day);
+    next.setDate(next.getDate() - 1);
+    const yyyy = next.getFullYear();
+    const mm = String(next.getMonth() + 1).padStart(2, "0");
+    const dd = String(next.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  })();
 
   useEffect(() => {
     if (!loading && !admin) router.replace("/settings");
@@ -67,18 +81,30 @@ export default function OrganizationSettingsPage() {
       apiFetch<{ id: number; start_date: string; end_date: string | null }>(
         "/api/v1/settings/billing-period"
       ).then(setCurrentPeriod).catch(() => {});
+      apiFetch<{ billing_cycle_day: number }>("/api/v1/settings/billing-cycle")
+        .then((r) => setBillingCycleDay(String(r.billing_cycle_day)))
+        .catch(() => {});
     }
   }, [admin, reload]);
 
   async function handleSaveCycle(e: FormEvent) {
     e.preventDefault();
-    setSavingCycle(true);
     setError("");
+    const day = Number(billingCycleDay);
+    if (!Number.isInteger(day) || day < 1 || day > 28) {
+      setError("Billing cycle day must be a whole number between 1 and 28");
+      return;
+    }
+    setSavingCycle(true);
     try {
       await apiFetch("/api/v1/settings/billing-cycle", {
         method: "PUT",
-        body: JSON.stringify({ billing_cycle_day: billingCycleDay }),
+        body: JSON.stringify({ billing_cycle_day: day }),
       });
+      const period = await apiFetch<{ id: number; start_date: string; end_date: string | null }>(
+        "/api/v1/settings/billing-period"
+      );
+      setCurrentPeriod(period);
       setSuccessMsg("Billing cycle updated");
       setTimeout(() => setSuccessMsg(""), 3000);
     } catch (err) {
@@ -197,7 +223,8 @@ export default function OrganizationSettingsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-text-primary">
-                    Current: {currentPeriod.start_date} to {currentPeriod.end_date ?? "open"}
+                    Current: {currentPeriod.start_date}
+                    {currentPeriodEndDisplay ? ` — ${currentPeriodEndDisplay}` : " — open"}
                   </p>
                   <p className="text-xs text-text-muted">
                     {currentPeriod.end_date ? "Closed" : "Open, transactions are being recorded"}
@@ -223,7 +250,7 @@ export default function OrganizationSettingsPage() {
                   min={1}
                   max={28}
                   value={billingCycleDay}
-                  onChange={(e) => setBillingCycleDay(Number(e.target.value))}
+                  onChange={(e) => setBillingCycleDay(e.target.value)}
                   className={`${input} w-full sm:w-24`}
                 />
               </div>
