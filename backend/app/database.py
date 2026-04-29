@@ -20,10 +20,16 @@ def _build_connect_args() -> dict:
     return {}
 
 
+# DO's network layer silently drops idle TCP to managed MySQL after ~10 min,
+# but the server-side wait_timeout is 8 hours — so without pre_ping the pool
+# hands out dead sockets and the next query fails with "Lost connection
+# during query" (error 2013). Recycle well below the network idle threshold.
 engine = create_async_engine(
     settings.database_url,
     echo=False,
     connect_args=_build_connect_args(),
+    pool_pre_ping=True,
+    pool_recycle=1800,
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
