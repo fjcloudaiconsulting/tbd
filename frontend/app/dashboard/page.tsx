@@ -14,20 +14,30 @@ import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveCo
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, BillingPeriod, Budget, Category, Transaction } from "@/lib/types";
 
-interface Forecast {
+interface ForecastPlanItem {
+  id: number;
+  plan_id: number;
+  category_id: number;
+  category_name: string;
+  parent_id: number | null;
+  type: "income" | "expense";
+  planned_amount: string;
+  source: "manual" | "recurring" | "history";
+  actual_amount: string;
+  variance: string;
+}
+
+interface ForecastPlan {
+  id: number;
+  billing_period_id: number;
   period_start: string;
-  period_end: string;
-  executed_income: string;
-  executed_expense: string;
-  executed_net: string;
-  pending_income: string;
-  pending_expense: string;
-  recurring_income: string;
-  recurring_expense: string;
-  forecast_income: string;
-  forecast_expense: string;
-  forecast_net: string;
-  categories: { category_id: number; category_name: string; executed: string; pending: string; recurring: string; forecast: string }[];
+  period_end: string | null;
+  status: "draft" | "active";
+  total_planned_income: string;
+  total_planned_expense: string;
+  total_actual_income: string;
+  total_actual_expense: string;
+  items: ForecastPlanItem[];
 }
 
 const PAGE_SIZE = 10;
@@ -43,7 +53,7 @@ export default function DashboardPage() {
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
   const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
   const [periodIdx, setPeriodIdx] = useState(0);
-  const [forecast, setForecast] = useState<Forecast | null>(null);
+  const [forecast, setForecast] = useState<ForecastPlan | null>(null);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -100,20 +110,21 @@ export default function DashboardPage() {
 
   const loadTransactions = useCallback(async (p: number) => {
     const budgetUrl = monthFrom ? `/api/v1/budgets?period_start=${monthFrom}` : "/api/v1/budgets";
-    const forecastUrl = monthFrom ? `/api/v1/forecast?period_start=${monthFrom}` : "/api/v1/forecast";
+    const forecastUrl = monthFrom ? `/api/v1/forecast-plans/current?period_start=${monthFrom}` : "/api/v1/forecast-plans/current";
     const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
     const [pageData, allData, bds, fc] = await Promise.all([
       apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&${dateFilter}`),
       p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&${dateFilter}`) : null,
       p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
-      p === 0 ? apiFetch<Forecast>(forecastUrl) : null,
+      p === 0 ? apiFetch<ForecastPlan | null>(forecastUrl) : null,
     ]);
     const page_txs = pageData ?? [];
     setHasMore(page_txs.length > PAGE_SIZE);
     setTransactions(page_txs.slice(0, PAGE_SIZE));
     if (allData) setAllTransactions(allData);
     if (bds) setBudgets(bds);
-    if (fc) setForecast(fc);
+    // null is a valid response (no plan yet) — set state so empty-state UI renders.
+    if (p === 0) setForecast(fc ?? null);
     setFetching(false);
   }, [monthFrom, monthTo]);
 
@@ -474,31 +485,39 @@ export default function DashboardPage() {
             {/* Forecast */}
             <div className={`${card} p-5`}>
               <h2 className={`mb-4 ${cardTitle}`}>Forecast</h2>
-              {forecast ? (
-                <>
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
-                      <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_income)}</p>
-                      {Number(forecast.pending_income) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.pending_income)} pending</p>}
-                      {Number(forecast.recurring_income) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.recurring_income)} recurring</p>}
+              {forecast ? (() => {
+                const plannedIncome = Number(forecast.total_planned_income);
+                const plannedExpense = Number(forecast.total_planned_expense);
+                const actualIncome = Number(forecast.total_actual_income);
+                const actualExpense = Number(forecast.total_actual_expense);
+                const plannedNet = plannedIncome - plannedExpense;
+                return (
+                  <>
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income (planned)</p>
+                        <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(plannedIncome)}</p>
+                        {actualIncome > 0 && <p className="text-[10px] text-text-muted">{formatAmount(actualIncome)} actual</p>}
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses (planned)</p>
+                        <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(plannedExpense)}</p>
+                        {actualExpense > 0 && <p className="text-[10px] text-text-muted">{formatAmount(actualExpense)} actual</p>}
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
-                      <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(forecast.forecast_expense)}</p>
-                      {Number(forecast.pending_expense) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.pending_expense)} pending</p>}
-                      {Number(forecast.recurring_expense) > 0 && <p className="text-[10px] text-text-muted">+{formatAmount(forecast.recurring_expense)} recurring</p>}
+                    <div className="mt-4 pt-3 border-t border-border-subtle">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Projected Net</p>
+                      <p className={`mt-1 font-display text-2xl tabular-nums ${plannedNet >= 0 ? "text-accent" : "text-danger"}`}>
+                        {plannedNet >= 0 ? "+" : ""}{formatAmount(plannedNet)}
+                      </p>
                     </div>
-                  </div>
-                  <div className="mt-4 pt-3 border-t border-border-subtle">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Projected Net</p>
-                    <p className={`mt-1 font-display text-2xl tabular-nums ${Number(forecast.forecast_net) >= 0 ? "text-accent" : "text-danger"}`}>
-                      {Number(forecast.forecast_net) >= 0 ? "+" : ""}{formatAmount(forecast.forecast_net)}
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <p className="text-sm text-text-muted py-4">No forecast data</p>
+                  </>
+                );
+              })() : (
+                <div className="py-4 text-center">
+                  <p className="text-sm text-text-muted mb-2">No forecast for this period yet.</p>
+                  <Link href="/forecast-plans" className="text-sm text-accent hover:text-accent-hover">Set up a forecast →</Link>
+                </div>
               )}
             </div>
           </div>
@@ -650,45 +669,53 @@ export default function DashboardPage() {
             {/* Forecast comparison — planned vs actual per category */}
             <div className={`${card} overflow-hidden p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Forecast by Category</h2>
-              {forecast && forecast.categories.length > 0 ? (
-                <div style={{ height: Math.max(Math.min(forecast.categories.length, 8) * 32, 100) }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={forecast.categories.slice(0, 8).map((c) => ({
-                        name: c.category_name.length > 12 ? c.category_name.slice(0, 12) + "…" : c.category_name,
-                        planned: Number(c.forecast),
-                        actual: Number(c.executed),
-                      }))}
-                      layout="vertical"
-                      margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
-                    >
-                      <XAxis type="number" hide />
-                      <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
-                      <Tooltip
-                        formatter={(v, name) => [
-                          formatAmount(Number(v)),
-                          name === "planned" ? <span style={{ color: "#D4A64A" }}>Planned</span> : <span style={{ color: "#4ade80" }}>Actual</span>,
-                        ]}
-                        contentStyle={{ fontSize: "11px" }}
-                      />
-                      <Bar dataKey="planned" fill="#D4A64A" radius={[4, 4, 4, 4]} animationDuration={600}
-                        cursor="pointer"
-                        onClick={(_, idx) => {
-                          const name = forecast?.categories[idx]?.category_name;
-                          if (name) setChartFilter(chartFilter === name ? null : name);
-                        }}
-                      />
-                      <Bar dataKey="actual" fill="#4ade80" radius={[4, 4, 4, 4]} animationDuration={600}>
-                        {forecast.categories.slice(0, 8).map((c, i) => (
-                          <Cell key={i} fill={Number(c.executed) > Number(c.forecast) ? "#f87171" : "#4ade80"} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <p className="text-sm text-text-muted py-6 text-center">No forecast data</p>
-              )}
+              {(() => {
+                const expenseItems = forecast?.items.filter((it) => it.type === "expense") ?? [];
+                if (forecast && expenseItems.length > 0) {
+                  return (
+                    <div style={{ height: Math.max(Math.min(expenseItems.length, 8) * 32, 100) }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={expenseItems.slice(0, 8).map((it) => ({
+                            name: it.category_name.length > 12 ? it.category_name.slice(0, 12) + "…" : it.category_name,
+                            planned: Number(it.planned_amount),
+                            actual: Number(it.actual_amount),
+                          }))}
+                          layout="vertical"
+                          margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
+                        >
+                          <XAxis type="number" hide />
+                          <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
+                          <Tooltip
+                            formatter={(v, name) => [
+                              formatAmount(Number(v)),
+                              name === "planned" ? <span style={{ color: "#D4A64A" }}>Planned</span> : <span style={{ color: "#4ade80" }}>Actual</span>,
+                            ]}
+                            contentStyle={{ fontSize: "11px" }}
+                          />
+                          <Bar dataKey="planned" fill="#D4A64A" radius={[4, 4, 4, 4]} animationDuration={600}
+                            cursor="pointer"
+                            onClick={(_, idx) => {
+                              const name = expenseItems[idx]?.category_name;
+                              if (name) setChartFilter(chartFilter === name ? null : name);
+                            }}
+                          />
+                          <Bar dataKey="actual" fill="#4ade80" radius={[4, 4, 4, 4]} animationDuration={600}>
+                            {expenseItems.slice(0, 8).map((it, i) => (
+                              <Cell key={i} fill={Number(it.actual_amount) > Number(it.planned_amount) ? "#f87171" : "#4ade80"} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  );
+                }
+                return (
+                  <p className="text-sm text-text-muted py-6 text-center">
+                    No forecast yet. <Link href="/forecast-plans" className="text-accent">Set one up</Link>.
+                  </p>
+                );
+              })()}
               <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Planned</span>
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#4ade80" }} /> Under plan</span>

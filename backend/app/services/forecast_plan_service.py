@@ -240,6 +240,30 @@ async def get_or_create_plan(
     return await _build_response(db, org_id, plan)
 
 
+async def get_plan_for_period(
+    db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
+) -> ForecastPlanResponse | None:
+    """Read-only: return the plan for a period, or None if none exists.
+
+    Unlike get_or_create_plan, this does NOT auto-create a draft when no
+    plan is present. The Dashboard reads through this so that visiting it
+    doesn't pollute the database with empty drafts. The Forecasts page
+    keeps using get_or_create_plan because users land there to set one up.
+    """
+    period = await resolve_period(db, org_id, period_start)
+    result = await db.execute(
+        select(ForecastPlan).where(
+            ForecastPlan.org_id == org_id,
+            ForecastPlan.billing_period_id == period.id,
+        )
+    )
+    plan = result.scalar_one_or_none()
+    if plan is None:
+        return None
+    await db.refresh(plan, ["billing_period", "items"])
+    return await _build_response(db, org_id, plan)
+
+
 async def populate_from_sources(
     db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
 ) -> ForecastPlanResponse:

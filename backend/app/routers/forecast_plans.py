@@ -27,6 +27,18 @@ async def get_plan(
     return await svc.get_or_create_plan(db, current_user.org_id, period_start=period_start)
 
 
+@router.get("/current", response_model=ForecastPlanResponse | None)
+async def get_current_plan(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    period_start: datetime.date | None = Query(default=None),
+):
+    """Read-only fetch — returns the plan for the period or null. Never
+    creates a draft as a side effect. The Dashboard uses this so loading
+    it doesn't auto-spawn empty plans in the DB."""
+    return await svc.get_plan_for_period(db, current_user.org_id, period_start=period_start)
+
+
 @router.post("/populate", response_model=ForecastPlanResponse)
 async def populate_plan(
     current_user: User = Depends(get_current_user),
