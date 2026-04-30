@@ -273,6 +273,39 @@ async def test_list_orgs_paginates_and_returns_metadata(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_list_orgs_is_not_n_plus_one(session_factory):
+    """Pin the design intent: list_orgs must serve a paged result in a
+    bounded number of SQL round-trips, not one fetch per row. Five
+    orgs at limit=10 should not balloon the cursor count."""
+    for i in range(5):
+        await _seed_full_org(session_factory, name=f"Org{i}")
+
+    queries: list[str] = []
+
+    async with session_factory() as db:
+        bind = db.get_bind()
+        sync_engine = bind.sync_engine if hasattr(bind, "sync_engine") else bind
+
+        @event.listens_for(sync_engine, "before_cursor_execute")
+        def _capture(conn, cursor, statement, params, context, executemany):  # noqa: ARG001
+            stripped = statement.strip().split()[0].upper()
+            if stripped in {"SELECT", "WITH"}:
+                queries.append(statement)
+
+        try:
+            page = await admin_orgs_service.list_orgs(db, limit=10, offset=0)
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", _capture)
+
+        assert len(page["items"]) == 5
+        # 5 orgs at the previous N+1 implementation = 1 (count) + 1
+        # (orgs) + 5 * 5 (sub, plan, user, active_user, newest) = 27.
+        # Tighten the bound to something a single grouped query can
+        # comfortably stay under.
+        assert len(queries) < 10, f"Too many SELECTs: {len(queries)} → {queries}"
+
+
+@pytest.mark.asyncio
 async def test_list_orgs_search_filters_by_name(session_factory):
     await _seed_full_org(session_factory, name="Acme")
     await _seed_full_org(session_factory, name="Beta")

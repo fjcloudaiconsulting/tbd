@@ -58,62 +58,81 @@ async def list_orgs(
 ) -> dict:
     """Paginated org list for the admin table.
 
-    `last_user_created_at` is a soft proxy ("Newest member") for
-    activity until L4.7 audit log lands.
+    Served by a single SELECT with LEFT JOIN to subscriptions/plans
+    plus correlated user-count subqueries — bounded query cost
+    regardless of page size. `last_user_created_at` is a soft proxy
+    ("Newest member") for activity until L4.7 audit log lands.
     """
-    base = select(Organization)
-    if q:
-        base = base.where(Organization.name.ilike(f"%{q}%"))
+    user_count_sq = (
+        select(func.count())
+        .select_from(User)
+        .where(User.org_id == Organization.id)
+        .correlate(Organization)
+        .scalar_subquery()
+    )
+    active_user_count_sq = (
+        select(func.count())
+        .select_from(User)
+        .where(User.org_id == Organization.id, User.is_active.is_(True))
+        .correlate(Organization)
+        .scalar_subquery()
+    )
+    newest_member_sq = (
+        select(func.max(User.created_at))
+        .where(User.org_id == Organization.id)
+        .correlate(Organization)
+        .scalar_subquery()
+    )
 
-    total = await db.scalar(
-        select(func.count()).select_from(base.subquery())
-    ) or 0
+    stmt = (
+        select(
+            Organization.id,
+            Organization.name,
+            Organization.created_at,
+            Subscription.status,
+            Subscription.trial_end,
+            Plan.slug,
+            user_count_sq.label("user_count"),
+            active_user_count_sq.label("active_user_count"),
+            newest_member_sq.label("last_user_created_at"),
+        )
+        .select_from(Organization)
+        .outerjoin(Subscription, Subscription.org_id == Organization.id)
+        .outerjoin(Plan, Plan.id == Subscription.plan_id)
+    )
+    if q:
+        stmt = stmt.where(Organization.name.ilike(f"%{q}%"))
+
+    total_stmt = select(func.count()).select_from(Organization)
+    if q:
+        total_stmt = total_stmt.where(Organization.name.ilike(f"%{q}%"))
+    total = (await db.scalar(total_stmt)) or 0
 
     rows = (
         await db.execute(
-            base.order_by(Organization.created_at.desc())
+            stmt.order_by(Organization.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
-    ).scalars().all()
+    ).all()
 
-    items: list[dict] = []
-    for org in rows:
-        sub = (
-            await db.execute(
-                select(Subscription).where(Subscription.org_id == org.id)
-            )
-        ).scalar_one_or_none()
-        plan = None
-        if sub is not None:
-            plan = (
-                await db.execute(select(Plan).where(Plan.id == sub.plan_id))
-            ).scalar_one_or_none()
-        user_count = await db.scalar(
-            select(func.count()).select_from(User).where(User.org_id == org.id)
-        ) or 0
-        active_user_count = await db.scalar(
-            select(func.count())
-            .select_from(User)
-            .where(User.org_id == org.id, User.is_active.is_(True))
-        ) or 0
-        last_user_created_at = await db.scalar(
-            select(func.max(User.created_at)).where(User.org_id == org.id)
-        )
-
-        items.append({
-            "id": org.id,
-            "name": org.name,
-            "plan_slug": plan.slug if plan else None,
-            "subscription_status": sub.status.value if sub else None,
-            "trial_end": sub.trial_end.isoformat() if sub and sub.trial_end else None,
-            "user_count": user_count,
-            "active_user_count": active_user_count,
-            "created_at": org.created_at.isoformat() if org.created_at else None,
+    items = [
+        {
+            "id": row.id,
+            "name": row.name,
+            "plan_slug": row.slug,
+            "subscription_status": row.status.value if row.status else None,
+            "trial_end": row.trial_end.isoformat() if row.trial_end else None,
+            "user_count": row.user_count or 0,
+            "active_user_count": row.active_user_count or 0,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
             "last_user_created_at": (
-                last_user_created_at.isoformat() if last_user_created_at else None
+                row.last_user_created_at.isoformat()
+                if row.last_user_created_at else None
             ),
-        })
+        }
+        for row in rows
+    ]
 
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 

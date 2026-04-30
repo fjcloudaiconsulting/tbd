@@ -51,6 +51,12 @@ type OrgDetail = {
   counts: { transactions: number; accounts: number; budgets: number; forecast_plans: number };
 };
 
+type PlanOption = {
+  id: number;
+  slug: string;
+  name: string;
+};
+
 const STATUS_OPTIONS = ["trialing", "active", "past_due", "canceled"];
 
 export default function AdminOrgDetailPage() {
@@ -65,6 +71,9 @@ export default function AdminOrgDetailPage() {
   // Subscription edit state
   const [subStatus, setSubStatus] = useState<string>("");
   const [subTrialEnd, setSubTrialEnd] = useState<string>("");
+  const [subPlanId, setSubPlanId] = useState<string>("");
+  const [subPeriodEnd, setSubPeriodEnd] = useState<string>("");
+  const [plans, setPlans] = useState<PlanOption[]>([]);
 
   // Delete confirmation
   const [confirmName, setConfirmName] = useState("");
@@ -83,11 +92,17 @@ export default function AdminOrgDetailPage() {
 
   async function refresh() {
     try {
-      const d = await apiFetch<OrgDetail>(`/api/v1/admin/orgs/${orgId}`);
+      const [d, planList] = await Promise.all([
+        apiFetch<OrgDetail>(`/api/v1/admin/orgs/${orgId}`),
+        apiFetch<PlanOption[]>("/api/v1/plans"),
+      ]);
       setDetail(d);
+      setPlans(planList ?? []);
       const sub = d.subscription as Subscription;
       setSubStatus(sub.status ?? "");
       setSubTrialEnd(sub.trial_end ?? "");
+      setSubPlanId(sub.plan_id ? String(sub.plan_id) : "");
+      setSubPeriodEnd(sub.current_period_end ?? "");
     } catch (err) {
       setError(extractErrorMessage(err, "Failed to load"));
     }
@@ -108,6 +123,12 @@ export default function AdminOrgDetailPage() {
       const sub = detail?.subscription as Subscription;
       if (subStatus && subStatus !== sub.status) body.status = subStatus;
       if (subTrialEnd && subTrialEnd !== sub.trial_end) body.trial_end = subTrialEnd;
+      if (subPlanId && Number(subPlanId) !== sub.plan_id) {
+        body.plan_id = Number(subPlanId);
+      }
+      if (subPeriodEnd && subPeriodEnd !== sub.current_period_end) {
+        body.current_period_end = subPeriodEnd;
+      }
       if (Object.keys(body).length === 0) {
         setInfo("No changes.");
         return;
@@ -203,7 +224,20 @@ export default function AdminOrgDetailPage() {
             </dd>
           </dl>
 
-          <form onSubmit={saveSubscription} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <form onSubmit={saveSubscription} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+            <div>
+              <label htmlFor="sub-plan" className={label}>Plan</label>
+              <select
+                id="sub-plan"
+                value={subPlanId}
+                onChange={(e) => setSubPlanId(e.target.value)}
+                className={input}
+              >
+                {plans.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
             <div>
               <label htmlFor="sub-status" className={label}>Status</label>
               <select
@@ -227,7 +261,19 @@ export default function AdminOrgDetailPage() {
                 className={input}
               />
             </div>
-            <button type="submit" className={btnPrimary}>Save</button>
+            <div>
+              <label htmlFor="sub-period-end" className={label}>Period end</label>
+              <input
+                id="sub-period-end"
+                type="date"
+                value={subPeriodEnd}
+                onChange={(e) => setSubPeriodEnd(e.target.value)}
+                className={input}
+              />
+            </div>
+            <div className="lg:col-span-4">
+              <button type="submit" className={btnPrimary}>Save</button>
+            </div>
           </form>
         </div>
       </section>

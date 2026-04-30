@@ -64,7 +64,11 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
   });
 
   it("disables the delete button until the org name is typed exactly", async () => {
-    apiFetchMock.mockResolvedValueOnce(DETAIL as never);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs/42")) return Promise.resolve(DETAIL);
+      if (url === "/api/v1/plans") return Promise.resolve([{ id: 1, slug: "free", name: "Free" }]);
+      return Promise.resolve(undefined);
+    }) as never);
     render(<AdminOrgDetailPage />);
 
     const deleteBtn = await screen.findByRole("button", { name: /Delete organization/i });
@@ -78,10 +82,56 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
     expect(deleteBtn).not.toBeDisabled();
   });
 
+  it("posts plan_id and current_period_end when admin changes them", async () => {
+    apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
+      if (url.startsWith("/api/v1/admin/orgs/42/subscription") && opts?.method === "PUT") {
+        return Promise.resolve({ before: {}, after: {} });
+      }
+      if (url.startsWith("/api/v1/admin/orgs/42")) return Promise.resolve(DETAIL);
+      if (url === "/api/v1/plans") {
+        return Promise.resolve([
+          { id: 1, slug: "free", name: "Free" },
+          { id: 2, slug: "pro", name: "Pro" },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<AdminOrgDetailPage />);
+
+    await screen.findByRole("heading", { name: "Acme" });
+    fireEvent.change(screen.getByLabelText(/^Plan$/i), {
+      target: { value: "2" },
+    });
+    fireEvent.change(screen.getByLabelText(/Period end/i), {
+      target: { value: "2026-12-31" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/orgs/42/subscription",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({
+            plan_id: 2,
+            current_period_end: "2026-12-31",
+          }),
+        }),
+      );
+    });
+  });
+
   it("posts the confirm_name and routes back to /admin/orgs after delete", async () => {
-    apiFetchMock
-      .mockResolvedValueOnce(DETAIL as never)
-      .mockResolvedValueOnce({ deleted: { organizations: 1 } } as never);
+    apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
+      if (url.startsWith("/api/v1/admin/orgs/42") && (!opts || opts.method !== "DELETE")) {
+        return Promise.resolve(DETAIL);
+      }
+      if (url === "/api/v1/plans") return Promise.resolve([{ id: 1, slug: "free", name: "Free" }]);
+      if (url === "/api/v1/admin/orgs/42" && opts?.method === "DELETE") {
+        return Promise.resolve({ deleted: { organizations: 1 } });
+      }
+      return Promise.resolve(undefined);
+    }) as never);
     render(<AdminOrgDetailPage />);
 
     await screen.findByRole("heading", { name: "Acme" });

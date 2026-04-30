@@ -135,8 +135,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const superadmin = checkSuperadmin(user);
 
+  // All hrefs that could potentially match the current pathname.
+  // Used to break ties: when both `/admin` and `/admin/orgs` would
+  // match the path `/admin/orgs` under a naive prefix check, only
+  // the longest match wins so the parent doesn't double-highlight.
+  const allHrefs = [...navItems, ...systemItems].map((i) => i.href);
   function isActive(href: string) {
-    return pathname === href || pathname.startsWith(href + "/");
+    if (pathname === href) return true;
+    if (!pathname.startsWith(href + "/")) return false;
+    const longerMatch = allHrefs.some(
+      (other) =>
+        other !== href &&
+        other.length > href.length &&
+        (pathname === other || pathname.startsWith(other + "/")),
+    );
+    return !longerMatch;
   }
 
   return (
