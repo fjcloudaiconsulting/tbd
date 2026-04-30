@@ -9,6 +9,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
+import MembersSection from "@/components/settings/MembersSection";
 import {
   input,
   label,
@@ -356,6 +357,15 @@ export default function OrganizationSettingsPage() {
           </div>
         </div>
       </div>
+
+      {user && (
+        <div className="mt-6">
+          <MembersSection
+            currentUserId={user.id}
+            currentRole={user.role as "owner" | "admin" | "member"}
+          />
+        </div>
+      )}
 
       <ConfirmModal
         open={!!confirmAction}
