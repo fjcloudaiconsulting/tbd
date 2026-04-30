@@ -7,7 +7,7 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount, formatLocalDate, todayISO } from "@/lib/format";
+import { formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
@@ -318,7 +318,7 @@ function TransactionsPageContent() {
   function startEdit(tx: Transaction) {
     setEditingId(tx.id);
     setEditDesc(tx.description);
-    setEditAmount(String(tx.amount));
+    setEditAmount(toEditAmount(tx.amount));
     setEditType(tx.type);
     setEditStatus(tx.status);
     setEditDate(tx.date);
@@ -635,9 +635,9 @@ function TransactionsPageContent() {
                   { field: "date" as const, label: "Date", span: "col-span-2", align: "" },
                   { field: "description" as const, label: "Description", span: "col-span-2", align: "" },
                   { field: "account_name" as const, label: "Account", span: "col-span-2", align: "" },
-                  { field: "category_name" as const, label: "Category", span: "col-span-2", align: "" },
+                  { field: "category_name" as const, label: "Category", span: "col-span-1", align: "" },
                   { field: "status" as const, label: "Status", span: "col-span-1", align: "text-center" },
-                  { field: "amount" as const, label: "Amount", span: "col-span-1", align: "text-right" },
+                  { field: "amount" as const, label: "Amount", span: "col-span-2", align: "text-right" },
                 ]).map((col) => (
                   <button key={col.field} onClick={() => toggleSort(col.field)} className={`${col.span} ${col.align} hover:text-text-primary transition-colors`}>
                     {col.label}{sortField === col.field ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
@@ -670,14 +670,14 @@ function TransactionsPageContent() {
                               className="h-4 w-4"
                             />
                           </span>
-                          <span className="col-span-2"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} /></span>
+                          <span className="col-span-2 min-w-0"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm w-full ${input}`} /></span>
                           <span className="col-span-2"><input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
                           <span className="col-span-2">
                             <select aria-label="Account" value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
                               {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
                             </select>
                           </span>
-                          <span className="col-span-2">
+                          <span className="col-span-1 min-w-0">
                             <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
                           </span>
                           <span className="col-span-1">
@@ -686,12 +686,12 @@ function TransactionsPageContent() {
                               <option value="pending">Pending</option>
                             </select>
                           </span>
-                          <span className="col-span-1 flex gap-1">
-                            <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] w-14 ${input}`}>
+                          <span className="col-span-2 flex gap-1 min-w-0">
+                            <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] !w-14 shrink-0 ${input}`}>
                               <option value="expense">-</option>
                               <option value="income">+</option>
                             </select>
-                            <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm w-20 ${input}`} />
+                            <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm flex-1 min-w-0 ${input}`} />
                           </span>
                           <span className="col-span-1 flex justify-end gap-2">
                             <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>
@@ -711,12 +711,12 @@ function TransactionsPageContent() {
                           </span>
                           <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
                           <span className="col-span-2 text-sm text-text-primary">{tx.description}</span>
-                          <span className="col-span-2 text-sm text-text-secondary">
+                          <span className="col-span-2 text-sm text-text-secondary truncate">
                             {isTransfer && linkedTx
                               ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
                               : tx.account_name}
                           </span>
-                          <span className="col-span-2 text-sm text-text-secondary">{tx.category_name}</span>
+                          <span className="col-span-1 text-sm text-text-secondary truncate">{tx.category_name}</span>
                           <span className="col-span-1 text-center">
                             {isTransfer ? (
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
@@ -736,7 +736,7 @@ function TransactionsPageContent() {
                               </button>
                             )}
                           </span>
-                          <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                          <span className={`col-span-2 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                             {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                           </span>
                           <span className="col-span-1 flex justify-end gap-2">
