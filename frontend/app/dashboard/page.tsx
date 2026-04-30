@@ -85,6 +85,15 @@ export default function DashboardPage() {
   // calendar-month fallback that the backend won't recognize.
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
   const realPeriodStart: string | null = selectedPeriod?.start_date ?? null;
+  // Period-state booleans drive empty-state copy and CTAs across the
+  // Forecast and Budget tiles. Current = open period (no end_date).
+  // Past = closed and ended before today. Future = scheduled stub
+  // whose start is still ahead. Past + future both warrant different
+  // CTAs (or none) than current — same scope rule as the Budgets page.
+  const _today = todayISO();
+  const isCurrentSelectedPeriod = selectedPeriod?.end_date === null;
+  const isPastSelectedPeriod = !!(selectedPeriod?.end_date && selectedPeriod.end_date < _today);
+  const isFutureSelectedPeriod = !!(selectedPeriod && selectedPeriod.start_date > _today);
   // monthFrom drives transaction date filters (which don't go through
   // resolve_period), so the calendar fallback is fine there.
   const monthFrom = realPeriodStart ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
@@ -532,8 +541,18 @@ export default function DashboardPage() {
                 );
               })() : (
                 <div className="py-4 text-center">
-                  <p className="text-sm text-text-muted mb-2">No forecast for this period.</p>
-                  <Link href="/forecast-plans" className="text-sm text-accent hover:text-accent-hover">Set one up →</Link>
+                  {isPastSelectedPeriod ? (
+                    <p className="text-sm text-text-muted">No forecast was set for this period.</p>
+                  ) : (
+                    <>
+                      <p className="text-sm text-text-muted mb-2">
+                        {isFutureSelectedPeriod ? "No forecast for this future period." : "No forecast for this period."}
+                      </p>
+                      <Link href="/forecast-plans" className="text-sm text-accent hover:text-accent-hover">
+                        {isFutureSelectedPeriod ? "Plan ahead →" : "Set one up →"}
+                      </Link>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -678,7 +697,12 @@ export default function DashboardPage() {
                 </>
               ) : (
                 <div className="px-5 py-6 text-center text-sm text-text-muted">
-                  No budgets for this period. <Link href="/budgets" className="text-accent">Add one</Link>
+                  {isPastSelectedPeriod
+                    ? <>No budgets were set for this period.</>
+                    : isFutureSelectedPeriod
+                      ? <>Future budgets live in Forecasts. <Link href="/forecast-plans" className="text-accent">Plan ahead →</Link></>
+                      : <>No budgets for this period. <Link href="/budgets" className="text-accent">Add one</Link></>
+                  }
                 </div>
               )}
             </div>
@@ -729,7 +753,12 @@ export default function DashboardPage() {
                 }
                 return (
                   <p className="text-sm text-text-muted py-6 text-center">
-                    No forecast for this period. <Link href="/forecast-plans" className="text-accent">Set one up</Link>.
+                    {isPastSelectedPeriod
+                      ? <>No forecast was set for this period.</>
+                      : isFutureSelectedPeriod
+                        ? <>No forecast for this future period. <Link href="/forecast-plans" className="text-accent">Plan ahead</Link>.</>
+                        : <>No forecast for this period. <Link href="/forecast-plans" className="text-accent">Set one up</Link>.</>
+                    }
                   </p>
                 );
               })()}
