@@ -90,6 +90,12 @@ export default function LoginPageBody() {
               <p>{error}</p>
               {unverifiedLogin && (
                 <div className="mt-2">
+                  <p className="text-xs text-text-muted">
+                    For{" "}
+                    <span className="font-medium text-text-secondary">
+                      {unverifiedLogin}
+                    </span>
+                  </p>
                   {resendState === "sent" ? (
                     <p className="text-xs text-text-muted">
                       Verification email sent. Check your inbox.

@@ -89,6 +89,36 @@ describe("LoginPageBody — email-not-verified flow", () => {
     });
   });
 
+  it("shows the login the resend action targets, even if the user edits the input", async () => {
+    loginMock.mockRejectedValue(
+      new ApiResponseError(
+        403,
+        "Please verify your email to sign in.",
+        "email_not_verified",
+        { code: "email_not_verified", message: "Please verify your email to sign in." },
+      ),
+    );
+
+    render(<LoginPageBody />);
+
+    const idInput = screen.getByLabelText(/Email or Username/i) as HTMLInputElement;
+    const pwInput = screen.getByLabelText(/Password/i) as HTMLInputElement;
+
+    fireEvent.change(idInput, { target: { value: "alice" } });
+    fireEvent.change(pwInput, { target: { value: "S3cret-Pass!" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
+
+    await screen.findByRole("button", { name: /Resend verification email/i });
+
+    // The targeted login is rendered visibly next to the resend button.
+    expect(screen.getByText("alice")).toBeTruthy();
+
+    // User edits the input after the error fires; the displayed target stays "alice".
+    fireEvent.change(idInput, { target: { value: "bob" } });
+    expect(screen.getByText("alice")).toBeTruthy();
+    expect(screen.queryByText("bob")).toBeNull();
+  });
+
   it("does not show the resend button for non-email-verification errors", async () => {
     loginMock.mockRejectedValue(
       new ApiResponseError(401, "Invalid credentials"),
