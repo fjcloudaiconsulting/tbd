@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.budget import Budget
 from app.models.category import Category
+from app.models.forecast_plan import ForecastItemType, ForecastPlan
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
 from app.services.billing_service import get_current_period, resolve_period
@@ -276,3 +277,59 @@ async def delete_budget(db: AsyncSession, org_id: int, budget_id: int) -> None:
         raise NotFoundError("Budget")
     await db.delete(budget)
     await db.commit()
+
+
+async def create_budgets_from_forecast(
+    db: AsyncSession, org_id: int,
+) -> list[BudgetResponse]:
+    """Copy expense items from the current period's forecast plan into
+    Budget rows for the same period. Categories that already have a
+    budget are skipped — calling this twice is a no-op on the second
+    call.
+
+    Raises ValidationError if no plan exists for the current period;
+    the user is expected to create or copy one on the Forecasts page
+    first. Returns the full budget list for the period.
+    """
+    period = await get_current_period(db, org_id)
+
+    plan_result = await db.execute(
+        select(ForecastPlan).where(
+            ForecastPlan.org_id == org_id,
+            ForecastPlan.billing_period_id == period.id,
+        )
+    )
+    plan = plan_result.scalar_one_or_none()
+    if plan is None:
+        raise ValidationError(
+            "No forecast plan exists for the current period. "
+            "Create one on the Forecasts page first."
+        )
+    await db.refresh(plan, ["items"])
+
+    existing_result = await db.execute(
+        select(Budget.category_id).where(
+            Budget.org_id == org_id,
+            Budget.period_start == period.start_date,
+        )
+    )
+    existing_cat_ids = {row[0] for row in existing_result.all()}
+
+    new_items = [
+        item for item in plan.items
+        if item.type == ForecastItemType.EXPENSE
+        and item.category_id not in existing_cat_ids
+    ]
+
+    for item in new_items:
+        db.add(Budget(
+            org_id=org_id,
+            category_id=item.category_id,
+            amount=item.planned_amount,
+            period_start=period.start_date,
+            period_end=period.end_date,
+        ))
+    if new_items:
+        await db.commit()
+
+    return await list_budgets(db, org_id, period_start=period.start_date)
