@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
@@ -205,7 +206,19 @@ export default function BudgetsPage() {
         </div>
       )}
 
-      {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+      {error && (
+        <div className={`mb-6 ${errorCls}`}>
+          {error}
+          {error.toLowerCase().includes("no forecast plan") && (
+            <>
+              {" "}
+              <Link href="/forecast-plans" className="underline hover:no-underline">
+                Go to Forecasts →
+              </Link>
+            </>
+          )}
+        </div>
+      )}
 
       {showForm && isCurrentPeriod && (
         <div className={`mb-6 ${card} p-6`}>
@@ -371,7 +384,7 @@ export default function BudgetsPage() {
               {budgets.length === 0 && (
                 <div className="px-6 py-8 text-center text-sm text-text-muted">
                   {isCurrentPeriod
-                    ? <>No budgets set. Click &quot;+ Add Budget&quot; to allocate spending limits for your categories.</>
+                    ? <>No budgets set. Use <strong>+ Add Budget</strong> to add one, or <strong>From Forecast</strong> to seed them from your plan.</>
                     : <>No budgets were set for this period.</>
                   }
                 </div>

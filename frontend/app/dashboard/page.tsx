@@ -532,8 +532,8 @@ export default function DashboardPage() {
                 );
               })() : (
                 <div className="py-4 text-center">
-                  <p className="text-sm text-text-muted mb-2">No forecast for this period yet.</p>
-                  <Link href="/forecast-plans" className="text-sm text-accent hover:text-accent-hover">Set up a forecast →</Link>
+                  <p className="text-sm text-text-muted mb-2">No forecast for this period.</p>
+                  <Link href="/forecast-plans" className="text-sm text-accent hover:text-accent-hover">Set one up →</Link>
                 </div>
               )}
             </div>
@@ -678,7 +678,7 @@ export default function DashboardPage() {
                 </>
               ) : (
                 <div className="px-5 py-6 text-center text-sm text-text-muted">
-                  No budgets set. <Link href="/budgets" className="text-accent">Add one</Link>
+                  No budgets for this period. <Link href="/budgets" className="text-accent">Add one</Link>
                 </div>
               )}
             </div>
@@ -729,7 +729,7 @@ export default function DashboardPage() {
                 }
                 return (
                   <p className="text-sm text-text-muted py-6 text-center">
-                    No forecast yet. <Link href="/forecast-plans" className="text-accent">Set one up</Link>.
+                    No forecast for this period. <Link href="/forecast-plans" className="text-accent">Set one up</Link>.
                   </p>
                 );
               })()}
