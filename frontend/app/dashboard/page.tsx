@@ -79,9 +79,15 @@ export default function DashboardPage() {
   const [dashSortField, setDashSortField] = useState<"date" | "description" | "amount">("date");
   const [dashSortDir, setDashSortDir] = useState<"asc" | "desc">("desc");
 
-  // Selected period (navigate with arrows)
+  // Selected period (navigate with arrows). On first paint before
+  // loadRefs() finishes this is null — distinguish that from "we have a
+  // real period" so we don't query period-scoped endpoints with a
+  // calendar-month fallback that the backend won't recognize.
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
-  const monthFrom = selectedPeriod?.start_date ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const realPeriodStart: string | null = selectedPeriod?.start_date ?? null;
+  // monthFrom drives transaction date filters (which don't go through
+  // resolve_period), so the calendar fallback is fine there.
+  const monthFrom = realPeriodStart ?? formatLocalDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   // For open periods, compute expected end from billing cycle day
   const monthTo =
     selectedPeriod?.end_date
@@ -109,8 +115,13 @@ export default function DashboardPage() {
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
-    const budgetUrl = monthFrom ? `/api/v1/budgets?period_start=${monthFrom}` : "/api/v1/budgets";
-    const forecastUrl = monthFrom ? `/api/v1/forecast-plans/current?period_start=${monthFrom}` : "/api/v1/forecast-plans/current";
+    // Omit period_start until refs have loaded a real billing period.
+    // /api/v1/budgets and /api/v1/forecast-plans/current both resolve to
+    // the current open period when period_start is absent — and the
+    // strict resolver rejects calendar-month dates that don't match a
+    // BillingPeriod row (salary-cycle orgs start mid-month).
+    const budgetUrl = realPeriodStart ? `/api/v1/budgets?period_start=${realPeriodStart}` : "/api/v1/budgets";
+    const forecastUrl = realPeriodStart ? `/api/v1/forecast-plans/current?period_start=${realPeriodStart}` : "/api/v1/forecast-plans/current";
     const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
     const [pageData, allData, bds, fc] = await Promise.all([
       apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&${dateFilter}`),
@@ -125,8 +136,11 @@ export default function DashboardPage() {
     if (bds) setBudgets(bds);
     // null is a valid response (no plan yet) — set state so empty-state UI renders.
     if (p === 0) setForecast(fc ?? null);
+    // Successful reload — clear any stale error from a prior failed attempt
+    // (e.g. the brief window before realPeriodStart was loaded).
+    setError("");
     setFetching(false);
-  }, [monthFrom, monthTo]);
+  }, [monthFrom, monthTo, realPeriodStart]);
 
   useEffect(() => {
     if (!loading && user) {
@@ -506,7 +520,7 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="mt-4 pt-3 border-t border-border-subtle">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Projected Net</p>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Planned Net</p>
                       <p className={`mt-1 font-display text-2xl tabular-nums ${plannedNet >= 0 ? "text-accent" : "text-danger"}`}>
                         {plannedNet >= 0 ? "+" : ""}{formatAmount(plannedNet)}
                       </p>
