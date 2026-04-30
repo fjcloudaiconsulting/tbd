@@ -76,6 +76,19 @@ export default function BudgetsPage() {
   const budgetedCatIds = new Set(budgets.map((b) => b.category_id));
   const availableCategories = masterCategories.filter((c) => !budgetedCatIds.has(c.id));
 
+  async function handleFromForecast() {
+    setError("");
+    try {
+      const updated = await apiFetch<Budget[]>("/api/v1/budgets/from-forecast", { method: "POST" });
+      setBudgets(updated ?? []);
+    } catch (err) {
+      // Most common case: no plan exists for the current period — the
+      // backend's ValidationError message tells the user to create one
+      // on the Forecasts page first.
+      setError(extractErrorMessage(err));
+    }
+  }
+
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
     setError("");
@@ -135,11 +148,21 @@ export default function BudgetsPage() {
     <AppShell>
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h1 className={`${pageTitle} mb-0`}>Budgets</h1>
-        {availableCategories.length > 0 && (
-          <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} min-h-[44px] sm:min-h-0`}>
-            {showForm ? "Cancel" : "+ Add Budget"}
-          </button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {isCurrentPeriod && (
+            <button
+              onClick={handleFromForecast}
+              className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
+            >
+              From Forecast
+            </button>
+          )}
+          {availableCategories.length > 0 && (
+            <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} min-h-[44px] sm:min-h-0`}>
+              {showForm ? "Cancel" : "+ Add Budget"}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Period navigation */}
