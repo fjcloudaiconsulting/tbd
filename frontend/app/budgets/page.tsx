@@ -71,6 +71,18 @@ export default function BudgetsPage() {
     }
   }, [loading, user, loadBudgets]);
 
+  // C+ plan: all mutations are current-period-only. If the user
+  // navigates to a past period mid-edit, drop any open form/state so
+  // they can't submit against a closed period.
+  useEffect(() => {
+    if (!isCurrentPeriod) {
+      setShowForm(false);
+      setEditingId(null);
+      setTransferringId(null);
+      setConfirmDeleteId(null);
+    }
+  }, [isCurrentPeriod]);
+
   // Master categories that don't have a budget yet
   const masterCategories = categories.filter((c) => c.parent_id === null && c.type === "expense");
   const budgetedCatIds = new Set(budgets.map((b) => b.category_id));
@@ -157,7 +169,7 @@ export default function BudgetsPage() {
               From Forecast
             </button>
           )}
-          {availableCategories.length > 0 && (
+          {isCurrentPeriod && availableCategories.length > 0 && (
             <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} min-h-[44px] sm:min-h-0`}>
               {showForm ? "Cancel" : "+ Add Budget"}
             </button>
@@ -181,6 +193,12 @@ export default function BudgetsPage() {
           {!isCurrentPeriod && (
             <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) setPeriodIdx(idx); }} className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised">Today</button>
           )}
+        </div>
+      )}
+
+      {!isCurrentPeriod && periods.length > 0 && (
+        <div className="mb-5 rounded-md border border-border-subtle bg-surface-raised px-4 py-3 text-sm text-text-secondary">
+          This period is closed — read-only.
         </div>
       )}
 
@@ -318,11 +336,13 @@ export default function BudgetsPage() {
                             <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
                               {b.percent_used}%
                             </span>
-                            <div className="flex flex-wrap gap-2 ml-auto md:ml-0">
-                              <button onClick={() => { setTransferringId(transferringId === b.id ? null : b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Transfer</button>
-                              <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
-                              <button onClick={() => setConfirmDeleteId(b.id)} className="min-h-[44px] text-xs text-text-muted hover:text-danger md:min-h-0">Remove</button>
-                            </div>
+                            {isCurrentPeriod && (
+                              <div className="flex flex-wrap gap-2 ml-auto md:ml-0">
+                                <button onClick={() => { setTransferringId(transferringId === b.id ? null : b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Transfer</button>
+                                <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
+                                <button onClick={() => setConfirmDeleteId(b.id)} className="min-h-[44px] text-xs text-text-muted hover:text-danger md:min-h-0">Remove</button>
+                              </div>
+                            )}
                           </div>
                         </div>
                         {transferringId === b.id && (
@@ -347,7 +367,10 @@ export default function BudgetsPage() {
               })}
               {budgets.length === 0 && (
                 <div className="px-6 py-8 text-center text-sm text-text-muted">
-                  No budgets set. Click &quot;+ Add Budget&quot; to allocate spending limits for your categories.
+                  {isCurrentPeriod
+                    ? <>No budgets set. Click &quot;+ Add Budget&quot; to allocate spending limits for your categories.</>
+                    : <>No budgets were set for this period.</>
+                  }
                 </div>
               )}
             </div>
