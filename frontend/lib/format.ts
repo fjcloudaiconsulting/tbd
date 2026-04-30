@@ -5,6 +5,15 @@ export function formatAmount(value: number | string): string {
   });
 }
 
+// Plain "DDDD.DD" string for seeding `<input type="number">` controlled
+// values. The runtime shape of `Transaction.amount` is the JSON-string
+// from a Pydantic Decimal (`"19.99"`), but the TypeScript type lies and
+// claims `number`; either way, going through `Number(...).toFixed(2)`
+// produces a clean two-decimal string the input can render exactly.
+export function toEditAmount(value: number | string): string {
+  return Number(value).toFixed(2);
+}
+
 export function formatLocalDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
