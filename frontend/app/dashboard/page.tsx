@@ -136,9 +136,6 @@ export default function DashboardPage() {
     if (bds) setBudgets(bds);
     // null is a valid response (no plan yet) — set state so empty-state UI renders.
     if (p === 0) setForecast(fc ?? null);
-    // Successful reload — clear any stale error from a prior failed attempt
-    // (e.g. the brief window before realPeriodStart was loaded).
-    setError("");
     setFetching(false);
   }, [monthFrom, monthTo, realPeriodStart]);
 
@@ -156,7 +153,13 @@ export default function DashboardPage() {
   }, [loading, user, loadRefs]);
 
   useEffect(() => {
-    if (!loading && user) {
+    // Gate the period-scoped load on a real billing period being in
+    // state. Two reasons: (a) the pre-refs request would race the real
+    // one and could overwrite transactions/forecast/budgets state with
+    // a calendar-fallback window if it resolved out of order; (b) it
+    // would always fail anyway against the strict resolve_period for
+    // salary-cycle orgs whose period doesn't start on the 1st.
+    if (!loading && user && realPeriodStart) {
       setFetching(true);
       // Same class of bug as the loadRefs catch above: a failed
       // transaction fetch used to clear the spinner and vanish. Now
@@ -166,7 +169,7 @@ export default function DashboardPage() {
         setFetching(false);
       });
     }
-  }, [loading, user, loadTransactions, page]);
+  }, [loading, user, loadTransactions, page, realPeriodStart]);
 
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);
