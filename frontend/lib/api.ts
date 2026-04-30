@@ -89,6 +89,7 @@ export async function apiFetch<T>(
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     let message: string;
+    let code: string | undefined;
     if (Array.isArray(body.detail)) {
       // FastAPI 422 validation error: detail is a list of
       // { loc, msg, type, ... } objects. Flatten to "field: message"
@@ -105,10 +106,21 @@ export async function apiFetch<T>(
         .join("; ");
     } else if (typeof body.detail === "string") {
       message = body.detail;
+    } else if (
+      body.detail &&
+      typeof body.detail === "object" &&
+      typeof (body.detail as { message?: unknown }).message === "string"
+    ) {
+      // Structured error: backend returns { detail: { code, message } }.
+      // Used for the L1.8 email-verified gate so the login screen can
+      // distinguish unverified from deactivated without string matching.
+      const d = body.detail as { code?: unknown; message: string };
+      message = d.message;
+      if (typeof d.code === "string") code = d.code;
     } else {
       message = "Request failed";
     }
-    throw new ApiResponseError(res.status, message);
+    throw new ApiResponseError(res.status, message, code, body.detail);
   }
 
   // 204 No Content
@@ -126,7 +138,9 @@ export function extractErrorMessage(err: unknown, fallback = "Failed"): string {
 export class ApiResponseError extends Error {
   constructor(
     public status: number,
-    message: string
+    message: string,
+    public code?: string,
+    public detail?: unknown
   ) {
     super(message);
     this.name = "ApiResponseError";

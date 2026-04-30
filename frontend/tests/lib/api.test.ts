@@ -130,6 +130,34 @@ describe("apiFetch", () => {
 
     expect(result).toBeUndefined();
   });
+
+  it("surfaces structured detail on the thrown ApiResponseError", async () => {
+    // L1.8: backend returns { detail: { code, message } } for the
+    // email-verified gate so the login screen can branch without
+    // string-matching the message.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: {
+            code: "email_not_verified",
+            message: "Please verify your email to sign in.",
+          },
+        },
+        { status: 403 },
+      ),
+    );
+
+    await expect(apiFetch("/api/v1/auth/login", { method: "POST" })).rejects.toMatchObject({
+      name: "ApiResponseError",
+      status: 403,
+      code: "email_not_verified",
+      message: "Please verify your email to sign in.",
+      detail: {
+        code: "email_not_verified",
+        message: "Please verify your email to sign in.",
+      },
+    });
+  });
 });
 
 
