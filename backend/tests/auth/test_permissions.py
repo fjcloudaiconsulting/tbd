@@ -45,7 +45,12 @@ def make_client(user: User) -> TestClient:
 
 
 def test_all_permissions_contains_known_platform_permissions() -> None:
-    assert ALL_PERMISSIONS == frozenset({"admin.view", "plans.manage"})
+    assert ALL_PERMISSIONS == frozenset({
+        "admin.view",
+        "plans.manage",
+        "orgs.view",
+        "orgs.manage",
+    })
 
 
 def test_has_permission_grants_everything_to_superadmins() -> None:

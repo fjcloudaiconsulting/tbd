@@ -22,6 +22,8 @@ from app.models.user import User
 Permission = Literal[
     "admin.view",
     "plans.manage",
+    "orgs.view",
+    "orgs.manage",
 ]
 
 
@@ -30,6 +32,8 @@ Permission = Literal[
 ALL_PERMISSIONS: frozenset[Permission] = frozenset({
     "admin.view",
     "plans.manage",
+    "orgs.view",
+    "orgs.manage",
 })
 
 
