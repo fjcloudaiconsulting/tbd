@@ -96,6 +96,27 @@ async def send_verification_email(to: str, token: str) -> bool:
     return await send_email(to, subject, body_html, body_text)
 
 
+async def send_invitation_email(
+    to: str, *, inviter_name: str, org_name: str, accept_url: str
+) -> bool:
+    """Send an org-membership invitation link."""
+    subject = f"{inviter_name} invited you to {org_name} on The Better Decision"
+    body_html = f"""
+    <h2>You're Invited</h2>
+    <p><strong>{inviter_name}</strong> invited you to join <strong>{org_name}</strong>
+    on The Better Decision.</p>
+    <p><a href="{accept_url}" style="display:inline-block;padding:12px 24px;background:#c8a951;color:#1a1a2e;text-decoration:none;border-radius:6px;font-weight:bold;">Accept Invitation</a></p>
+    <p>Or copy this link: <code>{accept_url}</code></p>
+    <p style="color: #666; font-size: 12px;">This invitation expires in 7 days.</p>
+    """
+    body_text = (
+        f"{inviter_name} invited you to {org_name} on The Better Decision.\n"
+        f"Accept here: {accept_url}\n"
+        "This invitation expires in 7 days."
+    )
+    return await send_email(to, subject, body_html, body_text)
+
+
 async def send_trial_expiring_email(to: str, days_left: int, org_name: str) -> bool:
     """Send a trial expiring notification."""
     upgrade_url = f"{settings.app_url}/settings/billing"
