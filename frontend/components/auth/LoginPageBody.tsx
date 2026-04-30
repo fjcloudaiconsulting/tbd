@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { apiFetch } from "@/lib/api";
+import { ApiResponseError, apiFetch } from "@/lib/api";
 import { input, label, btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
+
+type ResendState = "idle" | "sending" | "sent" | "failed";
 
 export default function LoginPageBody() {
   const { user, login, loading, needsSetup } = useAuth();
@@ -15,6 +17,11 @@ export default function LoginPageBody() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Snapshotted at the moment the email-not-verified error fires so the
+  // resend button targets the same login the user actually tried, even
+  // if they edit the input afterward.
+  const [unverifiedLogin, setUnverifiedLogin] = useState<string | null>(null);
+  const [resendState, setResendState] = useState<ResendState>("idle");
 
   useEffect(() => {
     if (!loading && needsSetup) router.replace("/setup");
@@ -24,6 +31,8 @@ export default function LoginPageBody() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    setUnverifiedLogin(null);
+    setResendState("idle");
     setSubmitting(true);
     try {
       await login(loginId, password);
@@ -34,9 +43,26 @@ export default function LoginPageBody() {
         router.push("/mfa-verify");
         return;
       }
+      if (err instanceof ApiResponseError && err.code === "email_not_verified") {
+        setUnverifiedLogin(loginId);
+      }
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleResendVerification() {
+    if (!unverifiedLogin) return;
+    setResendState("sending");
+    try {
+      await apiFetch("/api/v1/auth/resend-verification-public", {
+        method: "POST",
+        body: JSON.stringify({ login: unverifiedLogin }),
+      });
+      setResendState("sent");
+    } catch {
+      setResendState("failed");
     }
   }
 
@@ -59,7 +85,33 @@ export default function LoginPageBody() {
           <p className="mt-1.5 text-sm text-text-muted">Sign in</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
-          {error && <div className={errorCls}>{error}</div>}
+          {error && (
+            <div className={errorCls} role="alert">
+              <p>{error}</p>
+              {unverifiedLogin && (
+                <div className="mt-2">
+                  {resendState === "sent" ? (
+                    <p className="text-xs text-text-muted">
+                      Verification email sent. Check your inbox.
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleResendVerification}
+                      disabled={resendState === "sending"}
+                      className="text-xs font-medium text-accent hover:text-accent-hover disabled:opacity-50"
+                    >
+                      {resendState === "sending"
+                        ? "Sending..."
+                        : resendState === "failed"
+                          ? "Send failed — try again"
+                          : "Resend verification email"}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           <div>
             <label htmlFor="login-id" className={label}>Email or Username</label>
             <input id="login-id" type="text" required value={loginId} onChange={(e) => setLoginId(e.target.value)} className={input} autoComplete="username" placeholder="you@example.com" />

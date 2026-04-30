@@ -35,6 +35,7 @@ from app.schemas.auth import (
     MfaSetupResponse,
     MfaVerifyRequest,
     RegisterRequest,
+    ResendVerificationPublicRequest,
     ResetPasswordRequest,
     TokenResponse,
     UsernameCheckResponse,
@@ -272,6 +273,15 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated",
+        )
+
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "email_not_verified",
+                "message": "Please verify your email to sign in.",
+            },
         )
 
     # If MFA is enabled, return a challenge token instead of access tokens
@@ -540,6 +550,33 @@ async def resend_verification(
     token = create_email_verification_token(current_user.id, current_user.email)
     await send_verification_email(current_user.email, token)
     return {"detail": "Verification email sent"}
+
+
+@router.post("/resend-verification-public")
+@limiter.limit("3/hour")
+async def resend_verification_public(
+    request: Request,
+    body: ResendVerificationPublicRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Unauthenticated resend used by the login screen when an unverified
+    user is blocked by the email gate (L1.8). Returns the same response
+    shape regardless of whether the login matches a real, active,
+    unverified user — no enumeration."""
+    GENERIC_OK = {
+        "detail": "If that account exists and is unverified, a new email has been sent."
+    }
+
+    result = await db.execute(
+        select(User).where(or_(User.username == body.login, User.email == body.login))
+    )
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active or user.email_verified:
+        return GENERIC_OK
+
+    token = create_email_verification_token(user.id, user.email)
+    await send_verification_email(user.email, token)
+    return GENERIC_OK
 
 
 # ── MFA ─────────────────────────────────────────────────────────────────────

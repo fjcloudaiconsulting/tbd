@@ -29,6 +29,10 @@ class LoginRequest(BaseModel):
     password: str = Field(max_length=128)
 
 
+class ResendVerificationPublicRequest(BaseModel):
+    login: str = Field(min_length=1, max_length=120)
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
