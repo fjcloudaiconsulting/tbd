@@ -155,6 +155,43 @@ async def test_skips_categories_that_already_have_a_budget(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_handles_concurrent_insert_race(session_factory, monkeypatch):
+    """Race scenario: another request inserted a budget for one of the
+    plan's categories AFTER our existing-check ran but BEFORE our
+    commit. The per-row savepoint catches the unique-constraint
+    violation; the function returns the period's budget list without
+    raising and other plan items still get inserted.
+
+    Simulated by monkey-patching the existing-check to return empty so
+    the function attempts to insert a category that already has a
+    budget — exactly the read/write skew the savepoint defends against.
+    """
+    seed = await _seed(session_factory, with_plan=True)
+
+    # Pre-insert a budget for groceries (the "concurrent caller's" win).
+    async with session_factory() as db:
+        db.add(Budget(
+            org_id=seed["org_id"], category_id=seed["cats"]["groceries"],
+            amount=Decimal("400"), period_start=seed["period_start"], period_end=None,
+        ))
+        await db.commit()
+
+    async def stale_existing(*args, **kwargs):
+        return set()
+    monkeypatch.setattr(budget_service, "_get_existing_budget_cat_ids", stale_existing)
+
+    async with session_factory() as db:
+        result = await budget_service.create_budgets_from_forecast(db, seed["org_id"])
+
+    by_cat = {r.category_id: r for r in result}
+    # Pre-existing groceries budget preserved (NOT overwritten by the plan's $400 — same
+    # number here, but the row is the original one).
+    assert by_cat[seed["cats"]["groceries"]].amount == Decimal("400")
+    # Rent newly inserted from the plan despite the savepoint rollback on groceries.
+    assert by_cat[seed["cats"]["rent"]].amount == Decimal("1500")
+
+
+@pytest.mark.asyncio
 async def test_idempotent_on_repeat_call(session_factory):
     seed = await _seed(session_factory, with_plan=True)
 

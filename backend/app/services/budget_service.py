@@ -279,6 +279,25 @@ async def delete_budget(db: AsyncSession, org_id: int, budget_id: int) -> None:
     await db.commit()
 
 
+async def _get_existing_budget_cat_ids(
+    db: AsyncSession, org_id: int, period_start: datetime.date,
+) -> set[int]:
+    """Set of category_ids that already have a budget for the given period.
+
+    Extracted so the race-handling regression test can monkey-patch this
+    to simulate a stale read window (a concurrent caller inserted between
+    our check and our commit). In production this is always called once
+    inside create_budgets_from_forecast.
+    """
+    result = await db.execute(
+        select(Budget.category_id).where(
+            Budget.org_id == org_id,
+            Budget.period_start == period_start,
+        )
+    )
+    return {row[0] for row in result.all()}
+
+
 async def create_budgets_from_forecast(
     db: AsyncSession, org_id: int,
 ) -> list[BudgetResponse]:
@@ -307,13 +326,7 @@ async def create_budgets_from_forecast(
         )
     await db.refresh(plan, ["items"])
 
-    existing_result = await db.execute(
-        select(Budget.category_id).where(
-            Budget.org_id == org_id,
-            Budget.period_start == period.start_date,
-        )
-    )
-    existing_cat_ids = {row[0] for row in existing_result.all()}
+    existing_cat_ids = await _get_existing_budget_cat_ids(db, org_id, period.start_date)
 
     new_items = [
         item for item in plan.items
@@ -321,15 +334,31 @@ async def create_budgets_from_forecast(
         and item.category_id not in existing_cat_ids
     ]
 
+    # Per-row savepoint so a concurrent caller that inserted the same
+    # (org, category, period) row between our existing-check and our
+    # commit only fails THAT row — not the whole batch. The DB's
+    # uq_budget_org_cat_period constraint catches the duplicate; we
+    # treat the IntegrityError as "the other request already did this
+    # work" and move on. Same pattern as _get_or_create_plan_row in
+    # forecast_plan_service.
+    from sqlalchemy.exc import IntegrityError
+    inserted_any = False
     for item in new_items:
-        db.add(Budget(
-            org_id=org_id,
-            category_id=item.category_id,
-            amount=item.planned_amount,
-            period_start=period.start_date,
-            period_end=period.end_date,
-        ))
-    if new_items:
+        try:
+            async with db.begin_nested():
+                db.add(Budget(
+                    org_id=org_id,
+                    category_id=item.category_id,
+                    amount=item.planned_amount,
+                    period_start=period.start_date,
+                    period_end=period.end_date,
+                ))
+                await db.flush()
+            inserted_any = True
+        except IntegrityError:
+            # Concurrent insert beat us to this category — fine, skip.
+            pass
+    if inserted_any:
         await db.commit()
 
     return await list_budgets(db, org_id, period_start=period.start_date)
