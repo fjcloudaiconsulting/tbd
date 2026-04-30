@@ -6,7 +6,7 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount } from "@/lib/format";
+import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
@@ -46,7 +46,10 @@ export default function BudgetsPage() {
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
     setCategories(c ?? []);
-    const pl = p ?? [];
+    // Drop future stubs created by Forecasts /ensure-future. The Budget
+    // page is current-period control + past read-only review only.
+    const today = todayISO();
+    const pl = (p ?? []).filter((bp) => bp.start_date <= today);
     setPeriods(pl);
     // Default to current period (open = no end_date), not index 0
     const currentIdx = pl.findIndex((bp) => bp.end_date === null);
@@ -204,7 +207,7 @@ export default function BudgetsPage() {
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
 
-      {showForm && (
+      {showForm && isCurrentPeriod && (
         <div className={`mb-6 ${card} p-6`}>
           <form onSubmit={handleAdd} className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
             <div className="w-full sm:flex-1 sm:min-w-[200px]">
@@ -309,7 +312,7 @@ export default function BudgetsPage() {
                 const transferTargets = masterCategories.filter((c) => c.id !== b.category_id);
                 return (
                   <div key={b.id} className="px-6 py-3">
-                    {editingId === b.id ? (
+                    {editingId === b.id && isCurrentPeriod ? (
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                         <span className="text-sm font-medium text-text-primary sm:flex-1">{b.category_name}</span>
                         <input type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)}
@@ -345,7 +348,7 @@ export default function BudgetsPage() {
                             )}
                           </div>
                         </div>
-                        {transferringId === b.id && (
+                        {transferringId === b.id && isCurrentPeriod && (
                           <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                             <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`w-full min-w-0 sm:flex-1 sm:basis-40 ${input}`}>
                               <option value="">Select target category</option>
@@ -378,7 +381,7 @@ export default function BudgetsPage() {
         </div>
       )}
       <ConfirmModal
-        open={confirmDeleteId !== null}
+        open={isCurrentPeriod && confirmDeleteId !== null}
         title="Remove Budget"
         message="Remove this budget? This cannot be undone."
         confirmLabel="Remove"
