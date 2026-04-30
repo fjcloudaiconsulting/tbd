@@ -9,6 +9,7 @@ from app.models.billing import BillingPeriod
 from app.models.settings import OrgSetting
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus, ForecastItemType, ItemSource
 from app.models.subscription import Plan, Subscription, SubscriptionStatus, BillingInterval
+from app.models.invitation import Invitation
 
 __all__ = [
     "Base",
@@ -35,4 +36,5 @@ __all__ = [
     "Subscription",
     "SubscriptionStatus",
     "BillingInterval",
+    "Invitation",
 ]

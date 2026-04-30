@@ -126,6 +126,24 @@ def create_email_verification_token(user_id: int, email: str) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
+def create_invitation_token(invitation_id: int, email: str) -> str:
+    """Create a token for an org-membership invitation (7 days).
+
+    Email is baked in so a token issued for one address can't be reused
+    against a different address if an admin retypes the email — the
+    accept endpoint rejects the token if the email claim doesn't match
+    the row.
+    """
+    expire = datetime.now(timezone.utc) + timedelta(days=7)
+    payload = {
+        "sub": str(invitation_id),
+        "email": email,
+        "type": "invitation",
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
 def decode_token(token: str) -> dict | None:
     try:
         return jwt.decode(
