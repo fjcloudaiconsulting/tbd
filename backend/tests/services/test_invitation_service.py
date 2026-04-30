@@ -16,7 +16,7 @@ from app.models.invitation import Invitation
 from app.models.user import Organization, Role, User
 from app.security import create_invitation_token, hash_password, verify_password
 from app.services import invitation_service
-from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError as SvcValidationError
 
 
 @pytest_asyncio.fixture
@@ -145,6 +145,46 @@ async def test_create_invitation_rejects_duplicate_pending(session_factory):
             await invitation_service.create_invitation(
                 db, org_id=org_id, created_by=owner_id,
                 email="dup@acme.io", role=Role.MEMBER,
+            )
+
+
+@pytest.mark.asyncio
+async def test_create_invitation_db_unique_loser_surfaces_as_conflict(session_factory):
+    """Defense in depth — pre-check guards the happy path, the DB
+    UNIQUE(org_id, open_email) catches the concurrent loser. Bypass
+    the pre-check (simulating two requests that both passed it) and
+    confirm the DB integrity error becomes a 409, not a 500."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    async with session_factory() as db:
+        await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id,
+            email="race@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        real_execute = db.execute
+        call_count = {"n": 0}
+
+        class _NullResult:
+            def scalar_one_or_none(self):
+                return None
+
+        async def fake_execute(stmt):
+            call_count["n"] += 1
+            # 3rd execute in create_invitation is the pending-row
+            # lookup — bypass it so the duplicate insert flows to the
+            # DB UNIQUE constraint.
+            if call_count["n"] == 3:
+                return _NullResult()
+            return await real_execute(stmt)
+
+        db.execute = fake_execute  # type: ignore[assignment]
+
+        with pytest.raises(ConflictError, match="already invited"):
+            await invitation_service.create_invitation(
+                db, org_id=org_id, created_by=owner_id,
+                email="race@acme.io", role=Role.MEMBER,
             )
 
 
@@ -428,6 +468,54 @@ async def test_accept_rejects_username_already_taken(session_factory):
         with pytest.raises(ConflictError, match="username"):
             await invitation_service.accept_invitation(
                 db, token=token, username="taken", password="strong-pw-12345",
+            )
+
+
+@pytest.mark.asyncio
+async def test_accept_reactivates_legacy_user_with_short_username(session_factory):
+    """Username strict pattern (min_length=3) was added in PR #70 with
+    a legacy-grandfathering rule: existing accounts keep shorter
+    names. Reactivation must NOT re-validate the existing username
+    against today's strict regex — the user can't change it via this
+    flow anyway."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    existing_id = await _add_user(
+        session_factory, org_id=org_id, username="ab",  # 2 chars — legacy
+        email="legacy@acme.io", role=Role.MEMBER, is_active=False,
+    )
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id,
+            email="legacy@acme.io", role=Role.ADMIN,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    async with session_factory() as db:
+        user = await invitation_service.accept_invitation(
+            db, token=token, username="ab", password="brand-new-pw-1234",
+        )
+        await db.commit()
+        assert user.id == existing_id
+        assert user.username == "ab"
+        assert user.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_accept_rejects_invalid_username_for_new_user(session_factory):
+    """For new-user accepts only, the service enforces the strict
+    username constraints from RegisterRequest (length + pattern)."""
+    org_id, owner_id = await _seed_org_with_owner(session_factory)
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id,
+            email="bad@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    async with session_factory() as db:
+        with pytest.raises(SvcValidationError):
+            await invitation_service.accept_invitation(
+                db, token=token, username="ab", password="strong-pw-1234",
             )
 
 

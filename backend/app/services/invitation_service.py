@@ -20,12 +20,20 @@ from __future__ import annotations
 import datetime
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+import re
 
 from app.models.invitation import Invitation
 from app.models.user import Organization, Role, User
+from app.schemas.auth import (
+    USERNAME_MAX_LENGTH,
+    USERNAME_MIN_LENGTH,
+    USERNAME_PATTERN,
+)
 from app.security import decode_token, hash_password
-from app.services.exceptions import ConflictError, NotFoundError
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
 class InvitationUnavailable(Exception):
@@ -111,7 +119,15 @@ async def create_invitation(
         expires_at=now + INVITATION_TTL,
     )
     db.add(inv)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as e:
+        # Lost the race — another request committed an invite for this
+        # (org, email) between our pre-check and flush. The
+        # `UNIQUE(org_id, open_email)` constraint is the source of
+        # truth; surface as the same 409 the pre-check would have.
+        await db.rollback()
+        raise ConflictError("This email is already invited") from e
     # Hydrate server-default fields (created_at) so the caller can
     # serialize the row before commit without triggering a lazy load
     # under prod's async engine.
@@ -275,8 +291,21 @@ async def accept_invitation(
         # racing membership change could land here.
         raise InvitationUnavailable()
 
-    # New user. Username uniqueness is a DB constraint — let the flush
-    # raise IntegrityError, then surface as ConflictError.
+    # New user — enforce the strict username constraints from
+    # RegisterRequest. Reactivation skips this check (existing legacy
+    # usernames keep working; the user can't change it via this flow).
+    if (
+        len(username) < USERNAME_MIN_LENGTH
+        or len(username) > USERNAME_MAX_LENGTH
+        or not re.fullmatch(USERNAME_PATTERN, username)
+    ):
+        raise ValidationError(
+            f"Username must be {USERNAME_MIN_LENGTH}-{USERNAME_MAX_LENGTH} chars "
+            "and contain only letters, digits, dot, underscore, hyphen.",
+        )
+
+    # Username uniqueness is a DB constraint — let the flush raise
+    # IntegrityError, then surface as ConflictError.
     user = User(
         org_id=inv.org_id,
         username=username,

@@ -6,11 +6,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
-from app.schemas.auth import (
-    USERNAME_MAX_LENGTH,
-    USERNAME_MIN_LENGTH,
-    USERNAME_PATTERN,
-)
+from app.schemas.auth import USERNAME_MAX_LENGTH
 
 
 class InvitationCreateRequest(BaseModel):
@@ -20,11 +16,11 @@ class InvitationCreateRequest(BaseModel):
 
 class InvitationAcceptRequest(BaseModel):
     token: str = Field(min_length=1)
-    username: str = Field(
-        min_length=USERNAME_MIN_LENGTH,
-        max_length=USERNAME_MAX_LENGTH,
-        pattern=USERNAME_PATTERN,
-    )
+    # Lenient at the request layer so reactivation doesn't reject a
+    # legacy username that pre-dates the strict regex (introduced in
+    # PR #70). Strict validation is applied in `invitation_service`
+    # only when creating a NEW user.
+    username: str = Field(min_length=1, max_length=USERNAME_MAX_LENGTH)
     password: str = Field(min_length=8, max_length=128)
 
 

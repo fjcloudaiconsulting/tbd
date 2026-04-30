@@ -112,9 +112,9 @@ export default function MembersSection({
       <header className={cardHeader}>
         <h2 className={cardTitle}>Members</h2>
       </header>
-
+      <div className="px-6 py-5 space-y-6">
       {error && (
-        <div className={`${errorCls} mb-4`} role="alert">
+        <div className={errorCls} role="alert">
           {error}
         </div>
       )}
@@ -161,7 +161,7 @@ export default function MembersSection({
 
       {isAdmin && (
         <>
-          <h3 className="mt-6 mb-2 text-sm font-semibold text-text-primary">
+          <h3 className="text-sm font-semibold text-text-primary">
             Pending invitations
           </h3>
           {invitations.length === 0 ? (
@@ -191,7 +191,7 @@ export default function MembersSection({
 
           <form
             onSubmit={handleInvite}
-            className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-end"
+            className="flex flex-col gap-3 sm:flex-row sm:items-end"
           >
             <div className="flex-1">
               <label htmlFor="invite-email" className={label}>
@@ -233,6 +233,7 @@ export default function MembersSection({
           </form>
         </>
       )}
+      </div>
     </section>
   );
 }
