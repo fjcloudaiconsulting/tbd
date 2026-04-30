@@ -40,7 +40,7 @@ async def _seed_org_with_owner(
     *,
     name: str = "Acme",
     owner_username: str = "owner",
-    owner_email: str = "owner@acme.test",
+    owner_email: str = "owner@acme.io",
 ) -> tuple[int, int]:
     """Create an org with one OWNER user. Returns (org_id, owner_user_id)."""
     async with factory() as db:
@@ -98,18 +98,18 @@ async def test_create_invitation_happy_path(session_factory):
             db,
             org_id=org_id,
             created_by=owner_id,
-            email="newmember@acme.test",
+            email="newmember@acme.io",
             role=Role.MEMBER,
         )
         await db.commit()
         assert inv.id is not None
-        assert inv.email == "newmember@acme.test"
+        assert inv.email == "newmember@acme.io"
         assert inv.role == Role.MEMBER
         assert inv.org_id == org_id
         assert inv.created_by == owner_id
         assert inv.accepted_at is None
         assert inv.revoked_at is None
-        assert inv.open_email == "newmember@acme.test"
+        assert inv.open_email == "newmember@acme.io"
         # 7-day default expiry
         delta = inv.expires_at - datetime.datetime.utcnow()
         assert datetime.timedelta(days=6, hours=23) < delta < datetime.timedelta(days=7, hours=1)
@@ -137,26 +137,26 @@ async def test_create_invitation_rejects_duplicate_pending(session_factory):
     async with session_factory() as db:
         await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="dup@acme.test", role=Role.MEMBER,
+            email="dup@acme.io", role=Role.MEMBER,
         )
         await db.commit()
     async with session_factory() as db:
         with pytest.raises(ConflictError, match="already invited"):
             await invitation_service.create_invitation(
                 db, org_id=org_id, created_by=owner_id,
-                email="dup@acme.test", role=Role.MEMBER,
+                email="dup@acme.io", role=Role.MEMBER,
             )
 
 
 @pytest.mark.asyncio
 async def test_create_invitation_rejects_existing_active_member(session_factory):
     org_id, owner_id = await _seed_org_with_owner(session_factory)
-    await _add_user(session_factory, org_id=org_id, username="bob", email="bob@acme.test")
+    await _add_user(session_factory, org_id=org_id, username="bob", email="bob@acme.io")
     async with session_factory() as db:
         with pytest.raises(ConflictError, match="already a member"):
             await invitation_service.create_invitation(
                 db, org_id=org_id, created_by=owner_id,
-                email="bob@acme.test", role=Role.MEMBER,
+                email="bob@acme.io", role=Role.MEMBER,
             )
 
 
@@ -165,15 +165,15 @@ async def test_create_invitation_allows_reactivation_of_soft_deleted_user(sessio
     org_id, owner_id = await _seed_org_with_owner(session_factory)
     await _add_user(
         session_factory, org_id=org_id, username="carol",
-        email="carol@acme.test", is_active=False,
+        email="carol@acme.io", is_active=False,
     )
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="carol@acme.test", role=Role.ADMIN,
+            email="carol@acme.io", role=Role.ADMIN,
         )
         await db.commit()
-        assert inv.email == "carol@acme.test"
+        assert inv.email == "carol@acme.io"
         assert inv.role == Role.ADMIN
 
 
@@ -186,15 +186,15 @@ async def test_list_pending_invitations_excludes_accepted_and_revoked(session_fa
     async with session_factory() as db:
         a = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="a@acme.test", role=Role.MEMBER,
+            email="a@acme.io", role=Role.MEMBER,
         )
         b = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="b@acme.test", role=Role.ADMIN,
+            email="b@acme.io", role=Role.ADMIN,
         )
         c = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="c@acme.test", role=Role.MEMBER,
+            email="c@acme.io", role=Role.MEMBER,
         )
         # Manually flip b → revoked, c → accepted.
         b.open_email = None
@@ -204,7 +204,7 @@ async def test_list_pending_invitations_excludes_accepted_and_revoked(session_fa
         await db.commit()
     async with session_factory() as db:
         pending = await invitation_service.list_pending_invitations(db, org_id=org_id)
-        assert [inv.email for inv in pending] == ["a@acme.test"]
+        assert [inv.email for inv in pending] == ["a@acme.io"]
 
 
 @pytest.mark.asyncio
@@ -213,7 +213,7 @@ async def test_revoke_invitation_marks_revoked_and_frees_open_email(session_fact
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="r@acme.test", role=Role.MEMBER,
+            email="r@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         inv_id = inv.id
@@ -228,7 +228,7 @@ async def test_revoke_invitation_marks_revoked_and_frees_open_email(session_fact
     async with session_factory() as db:
         fresh = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="r@acme.test", role=Role.MEMBER,
+            email="r@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         assert fresh.id != inv_id
@@ -240,7 +240,7 @@ async def test_revoke_invitation_404_when_not_in_org(session_factory):
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="x@acme.test", role=Role.MEMBER,
+            email="x@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         inv_id = inv.id
@@ -258,7 +258,7 @@ async def test_create_invitation_clears_expired_open_invite_blocking_reuse(sessi
     async with session_factory() as db:
         first = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="late@acme.test", role=Role.MEMBER,
+            email="late@acme.io", role=Role.MEMBER,
         )
         # Time-warp the first row past its expires_at
         first.expires_at = datetime.datetime.utcnow() - datetime.timedelta(days=1)
@@ -268,7 +268,7 @@ async def test_create_invitation_clears_expired_open_invite_blocking_reuse(sessi
         # cleanup nulls open_email on the expired row.
         second = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="late@acme.test", role=Role.MEMBER,
+            email="late@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         assert second.id is not None
@@ -276,13 +276,13 @@ async def test_create_invitation_clears_expired_open_invite_blocking_reuse(sessi
         rows = (
             await db.execute(
                 select(Invitation).where(
-                    Invitation.org_id == org_id, Invitation.email == "late@acme.test"
+                    Invitation.org_id == org_id, Invitation.email == "late@acme.io"
                 ).order_by(Invitation.id)
             )
         ).scalars().all()
         assert len(rows) == 2
         assert rows[0].open_email is None  # expired-cleared
-        assert rows[1].open_email == "late@acme.test"  # new pending
+        assert rows[1].open_email == "late@acme.io"  # new pending
 
 
 # ── preview / accept ───────────────────────────────────────────────────────
@@ -294,14 +294,14 @@ async def test_preview_returns_org_email_and_role_for_pending(session_factory):
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="invitee@acme.test", role=Role.MEMBER,
+            email="invitee@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         token = create_invitation_token(inv.id, inv.email)
     async with session_factory() as db:
         preview = await invitation_service.preview_invitation(db, token=token)
         assert preview["org_name"] == "Acme"
-        assert preview["email"] == "invitee@acme.test"
+        assert preview["email"] == "invitee@acme.io"
         assert preview["role"] == "member"
         assert preview["is_reactivation"] is False
         assert preview.get("existing_username") is None
@@ -312,12 +312,12 @@ async def test_preview_flags_reactivation_when_soft_deleted_user_in_org(session_
     org_id, owner_id = await _seed_org_with_owner(session_factory)
     await _add_user(
         session_factory, org_id=org_id, username="reuser",
-        email="reuser@acme.test", is_active=False,
+        email="reuser@acme.io", is_active=False,
     )
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="reuser@acme.test", role=Role.MEMBER,
+            email="reuser@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         token = create_invitation_token(inv.id, inv.email)
@@ -333,7 +333,7 @@ async def test_preview_rejects_revoked_or_expired(session_factory):
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="x@acme.test", role=Role.MEMBER,
+            email="x@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         token = create_invitation_token(inv.id, inv.email)
@@ -359,7 +359,7 @@ async def test_accept_creates_new_user_and_marks_accepted(session_factory):
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="newbie@acme.test", role=Role.MEMBER,
+            email="newbie@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         token = create_invitation_token(inv.id, inv.email)
@@ -368,7 +368,7 @@ async def test_accept_creates_new_user_and_marks_accepted(session_factory):
             db, token=token, username="newbie", password="strong-pw-12345",
         )
         await db.commit()
-        assert user.email == "newbie@acme.test"
+        assert user.email == "newbie@acme.io"
         assert user.username == "newbie"
         assert user.org_id == org_id
         assert user.role == Role.MEMBER
@@ -388,12 +388,12 @@ async def test_accept_reactivates_existing_soft_deleted_user(session_factory):
     org_id, owner_id = await _seed_org_with_owner(session_factory)
     existing_id = await _add_user(
         session_factory, org_id=org_id, username="dora",
-        email="dora@acme.test", role=Role.MEMBER, is_active=False,
+        email="dora@acme.io", role=Role.MEMBER, is_active=False,
     )
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="dora@acme.test", role=Role.ADMIN,
+            email="dora@acme.io", role=Role.ADMIN,
         )
         await db.commit()
         token = create_invitation_token(inv.id, inv.email)
@@ -416,11 +416,11 @@ async def test_accept_reactivates_existing_soft_deleted_user(session_factory):
 @pytest.mark.asyncio
 async def test_accept_rejects_username_already_taken(session_factory):
     org_id, owner_id = await _seed_org_with_owner(session_factory)
-    await _add_user(session_factory, org_id=org_id, username="taken", email="other@acme.test")
+    await _add_user(session_factory, org_id=org_id, username="taken", email="other@acme.io")
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="another@acme.test", role=Role.MEMBER,
+            email="another@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         token = create_invitation_token(inv.id, inv.email)
@@ -437,7 +437,7 @@ async def test_accept_rejects_revoked_token(session_factory):
     async with session_factory() as db:
         inv = await invitation_service.create_invitation(
             db, org_id=org_id, created_by=owner_id,
-            email="revoked@acme.test", role=Role.MEMBER,
+            email="revoked@acme.io", role=Role.MEMBER,
         )
         await db.commit()
         token = create_invitation_token(inv.id, inv.email)
@@ -462,16 +462,16 @@ async def test_list_members_returns_active_users_in_org(session_factory):
         session_factory,
         name="Beta",
         owner_username="beta_owner",
-        owner_email="beta_owner@beta.test",
+        owner_email="beta_owner@beta.io",
     )
-    await _add_user(session_factory, org_id=org_id, username="alice", email="a@acme.test")
+    await _add_user(session_factory, org_id=org_id, username="alice", email="a@acme.io")
     await _add_user(
         session_factory, org_id=org_id, username="ghost",
-        email="g@acme.test", is_active=False,
+        email="g@acme.io", is_active=False,
     )
     await _add_user(
         session_factory, org_id=other_org_id, username="cross",
-        email="c@other.test",
+        email="c@other.io",
     )
     async with session_factory() as db:
         members = await invitation_service.list_members(db, org_id=org_id)
@@ -483,7 +483,7 @@ async def test_list_members_returns_active_users_in_org(session_factory):
 async def test_remove_member_soft_deletes_and_invalidates_sessions(session_factory):
     org_id, owner_id = await _seed_org_with_owner(session_factory)
     target_id = await _add_user(
-        session_factory, org_id=org_id, username="vic", email="v@acme.test",
+        session_factory, org_id=org_id, username="vic", email="v@acme.io",
     )
     async with session_factory() as db:
         owner = (
@@ -515,7 +515,7 @@ async def test_remove_member_admin_cannot_remove_owner(session_factory):
     org_id, owner_id = await _seed_org_with_owner(session_factory)
     admin_id = await _add_user(
         session_factory, org_id=org_id, username="admin1",
-        email="admin1@acme.test", role=Role.ADMIN,
+        email="admin1@acme.io", role=Role.ADMIN,
     )
     async with session_factory() as db:
         admin = (
@@ -532,7 +532,7 @@ async def test_remove_member_blocks_removing_last_owner(session_factory):
     org_id, owner_id = await _seed_org_with_owner(session_factory)
     second_owner_id = await _add_user(
         session_factory, org_id=org_id, username="owner2",
-        email="owner2@acme.test", role=Role.OWNER,
+        email="owner2@acme.io", role=Role.OWNER,
     )
     async with session_factory() as db:
         first = (
@@ -554,7 +554,7 @@ async def test_remove_member_blocks_removing_last_owner(session_factory):
         # Promote a second admin to the only-active owner-ish path:
         member_id = await _add_user(
             session_factory, org_id=org_id, username="admin2",
-            email="admin2@acme.test", role=Role.ADMIN,
+            email="admin2@acme.io", role=Role.ADMIN,
         )
         admin = (
             await db.execute(select(User).where(User.id == member_id))

@@ -112,6 +112,10 @@ async def create_invitation(
     )
     db.add(inv)
     await db.flush()
+    # Hydrate server-default fields (created_at) so the caller can
+    # serialize the row before commit without triggering a lazy load
+    # under prod's async engine.
+    await db.refresh(inv)
     return inv
 
 
