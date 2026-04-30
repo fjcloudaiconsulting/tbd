@@ -125,7 +125,13 @@ async def _compute_actuals_batch(
 
     all_cat_ids = list(cat_to_master.keys())
 
-    # Single query: sum by (category_id, type) for all relevant categories
+    # Single query: sum by (category_id, type) for all relevant categories.
+    # Match budget_service rules so plan actuals and budget spent agree:
+    #   - settled_date for period assignment (transactions count when they
+    #     settle, not when purchased — a card swipe on Apr 28 that settles
+    #     May 2 belongs to May, same as the budget treats it).
+    #   - linked_transaction_id IS NULL excludes transfer halves so a
+    #     budgeted category isn't inflated by an account-to-account move.
     q = select(
         Transaction.category_id,
         Transaction.type,
@@ -134,11 +140,12 @@ async def _compute_actuals_batch(
         Transaction.org_id == org_id,
         Transaction.category_id.in_(all_cat_ids),
         Transaction.status == TransactionStatus.SETTLED,
-        Transaction.date >= period_start,
+        Transaction.settled_date >= period_start,
         Transaction.type.in_(["income", "expense"]),
+        Transaction.linked_transaction_id.is_(None),
     )
     if period_end is not None:
-        q = q.where(Transaction.date <= period_end)
+        q = q.where(Transaction.settled_date <= period_end)
     q = q.group_by(Transaction.category_id, Transaction.type)
 
     result = await db.execute(q)
