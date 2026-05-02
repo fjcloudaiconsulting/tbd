@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import Role, User
-from app.schemas.subscription import ChangePlanRequest, SubscriptionResponse
+from app.schemas.subscription import ChangePlanRequest, PlanResponse, SubscriptionResponse
 from app.services import subscription_service
 
 router = APIRouter(prefix="/api/v1/subscriptions", tags=["subscriptions"])
@@ -22,22 +22,8 @@ def _sub_response(sub, plan) -> dict:
     return {
         "id": sub.id,
         "org_id": sub.org_id,
-        "plan": {
-            "id": plan.id,
-            "name": plan.name,
-            "slug": plan.slug,
-            "description": plan.description,
-            "is_custom": plan.is_custom,
-            "is_active": plan.is_active,
-            "sort_order": plan.sort_order,
-            "price_monthly": float(plan.price_monthly),
-            "price_yearly": float(plan.price_yearly),
-            "max_users": plan.max_users,
-            "retention_days": plan.retention_days,
-            "ai_budget_enabled": plan.ai_budget_enabled,
-            "ai_forecast_enabled": plan.ai_forecast_enabled,
-            "ai_smart_plan_enabled": plan.ai_smart_plan_enabled,
-        },
+        # PlanResponse handles features + CLEANUP-029 derived ai_*_enabled fields.
+        "plan": PlanResponse.model_validate(plan).model_dump(),
         "status": sub.status.value,
         "billing_interval": sub.billing_interval.value,
         "trial_start": sub.trial_start.isoformat() if sub.trial_start else None,

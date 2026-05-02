@@ -8,6 +8,7 @@ from app.deps import get_current_user
 from app.models.subscription import Plan, Subscription
 from app.models.user import User
 from app.schemas.subscription import PlanCreate, PlanResponse, PlanUpdate
+from app.services.plan_service import canonicalize_features
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
 
@@ -78,7 +79,9 @@ async def create_plan(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Plan slug already exists")
 
-    plan = Plan(**body.model_dump())
+    payload = body.model_dump()
+    payload["features"] = canonicalize_features(payload.get("features") or {})
+    plan = Plan(**payload)
     db.add(plan)
     await db.commit()
     await db.refresh(plan)
@@ -115,6 +118,11 @@ async def update_plan(
                 status_code=409,
                 detail=f"Cannot deactivate plan — {org_count} organization(s) are currently on it",
             )
+
+    if "features" in update_data:
+        update_data["features"] = canonicalize_features(
+            update_data["features"] or {}, existing=plan.features
+        )
 
     for field, value in update_data.items():
         setattr(plan, field, value)
