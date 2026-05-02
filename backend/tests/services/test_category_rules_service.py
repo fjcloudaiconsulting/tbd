@@ -60,6 +60,23 @@ from app.services.category_rules_service import (
         # ── Documented trade-offs (low real-world hit rate; not fixing in this PR) ───
         ("PAY DAY LOAN", "DAY LOAN"),                  # I-2: leading "PAY" stripped even when part of name
         ("BRANDIBANXX99ABCDEFGHIJ12345", "BRANDIBAN"), # I-3: glued IBAN-tail IS stripped (regex matches mid-word)
+        # ── Trailing company-form suffixes (architect Path B) ────────────────
+        ("KPN B.V.", "KPN"),
+        ("KPN B V", "KPN"),
+        ("KPN BV", "KPN"),
+        ("ODIDO NETHERLANDS B.V.", "ODIDO NETHERLANDS"),
+        ("FRANK ENERGIE B V", "FRANK ENERGIE"),
+        ("AMERICAN EXPRESS EUROPE S.A.", "AMERICAN EXPRESS EUROPE"),
+        ("REMOTE B V", "REMOTE"),
+        ("ACME GMBH", "ACME"),
+        ("WIDGET LTD", "WIDGET"),
+        ("FOO INC", "FOO"),
+        # Iterative: stacked suffixes
+        ("WIDGET B V LTD", "WIDGET"),
+        # Trailing-only: leading "B V" preserved (don't strip mid-name)
+        ("B V REPAIR SHOP", "B V REPAIR SHOP"),
+        # Mid-name preservation
+        ("INC POWER STORE", "INC POWER STORE"),
     ],
 )
 def test_normalize_description(raw: str, expected: str) -> None:

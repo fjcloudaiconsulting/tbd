@@ -64,16 +64,23 @@ def upgrade() -> None:
         # Telecoms
         ("VODAFONE", "phone"), ("NOS", "phone"), ("MEO", "phone"),
         ("ORANGE", "phone"), ("T MOBILE", "phone"), ("TELEKOM", "phone"),
+        ("KPN", "phone"),                    # NL: KPN telecom
+        ("ODIDO", "phone"),                  # NL: formerly T-Mobile NL
         # Utilities
         ("EDP", "electricity"), ("ENDESA", "electricity"), ("IBERDROLA", "electricity"),
         ("EON", "electricity"), ("BRITISH GAS", "gas_utility"),
         # Restaurants & food delivery
         ("UBER EATS", "fast_food"), ("DELIVEROO", "fast_food"), ("GLOVO", "fast_food"),
         ("JUSTEAT", "fast_food"), ("WOLT", "fast_food"),
+        ("THUISBEZORGD", "fast_food"),       # NL: Dutch JustEat
+        # Groceries (NL additions appended; existing entries above unchanged)
+        ("JUMBO", "groceries"),              # NL: top Dutch supermarket
         # General
         # Apple, Google, Amazon (AMZN MKTP / AMAZON) are too ambiguous
         # to default to a single category and were dropped from the seed.
         ("IKEA", "home_repairs"),
+        ("AYVENS", "car_payments"),          # car leasing (formerly ALD Automotive)
+        ("FRANK ENERGIE", "electricity"),    # NL: renewable electricity
     ]
     op.bulk_insert(
         merchant_dict,

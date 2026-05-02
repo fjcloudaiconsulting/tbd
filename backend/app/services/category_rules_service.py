@@ -45,6 +45,25 @@ _MULTI_SPACE = re.compile(r"\s+")
 
 _LEADING_STOPWORDS = {"TRANSFER", "PAYMENT", "DEBIT", "CREDIT", "TXN", "TX"}
 
+# Trailing company-form suffixes. Stripped iteratively from the END of the
+# token sequence after punctuation collapse, so "B.V.", "B V", and "BV"
+# all behave consistently. Architect-cautioned: trailing-only — never strip
+# these in the middle of a merchant name.
+_TRAILING_COMPANY_FORMS: tuple[tuple[str, ...], ...] = (
+    ("B", "V"),     # NL: B.V. / B V
+    ("N", "V"),     # NL: N.V. / N V
+    ("S", "A"),     # PT/ES/IT: S.A. / S A
+    ("BV",),
+    ("NV",),
+    ("SA",),
+    ("BVBA",),      # BE: B.V.B.A.
+    ("GMBH",),      # DE
+    ("AG",),        # CH/DE: Aktiengesellschaft
+    ("INC",),
+    ("LLC",),
+    ("LTD",),
+)
+
 
 def _strip_accents(s: str) -> str:
     """NFKD decompose + drop combining marks → fold accents to ASCII letters.
@@ -76,7 +95,8 @@ def normalize_description(raw: str) -> str:
       4. Replace non-alphanumeric runs with a single space; collapse runs.
       5. Drop a residual leading stopword (e.g. `TRANSFER` left over after `SEPA TRANSFER ...`).
       6. Drop trailing pure-digit tokens (date residue, terminal IDs the regex missed).
-      7. Fallback: if cleanup yielded < 3 chars, return cleaned-uppercase original.
+      7. Strip trailing company-form suffixes (B.V. / N.V. / S.A. / BV / GMBH / INC / LLC / LTD ...).
+      8. Fallback: if cleanup yielded < 3 chars, return cleaned-uppercase original.
     """
     if not raw:
         return ""
@@ -117,6 +137,20 @@ def normalize_description(raw: str) -> str:
     # different merchants in the rules dictionary.
     while tokens and tokens[-1].isdigit() and len(tokens[-1]) >= 4:
         tokens.pop()
+
+    # Step 7 — strip trailing company-form suffixes (iteratively, so "FOO B V"
+    # and "FOO INC LLC" both collapse to "FOO"). TRAILING-ONLY by construction:
+    # we only inspect ``tokens[-len(form):]``, never mid-sequence.
+    while tokens:
+        stripped = False
+        for form in _TRAILING_COMPANY_FORMS:
+            n = len(form)
+            if len(tokens) >= n and tuple(tokens[-n:]) == form:
+                tokens = tokens[:-n]
+                stripped = True
+                break
+        if not stripped:
+            break
 
     candidate = " ".join(tokens).strip()
     if len(candidate) < 3:
