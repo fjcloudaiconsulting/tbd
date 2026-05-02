@@ -61,6 +61,7 @@ services:
       - ./frontend/components:/app/components
       - ./frontend/lib:/app/lib
       - ./frontend/public:/app/public
+      - ./frontend/tests:/app/tests
 
   nginx:
     image: nginx:alpine
