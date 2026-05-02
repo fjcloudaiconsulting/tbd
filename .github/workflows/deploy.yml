@@ -4,12 +4,17 @@ on:
   push:
     branches: [main]
     paths:
+      # Application code that ships to prod. Any change here may need a redeploy.
       - "backend/**"
       - "frontend/**"
       - "nginx/**"
+      # Prod app spec on DO App Platform. Source of truth for prod runtime config.
       - ".do/**"
-      - "docker-compose*.yml"
+      # Image-build inputs. The Dockerfiles are referenced from .do/app.yaml.
       - "Dockerfile*"
+      # NOTE: docker-compose*.yml is intentionally NOT in this list — it's
+      # local-dev only; prod uses .do/app.yaml. PR #105's two test-mount
+      # tweaks to docker-compose.yml triggered redundant prod deploys.
 
 permissions:
   contents: read

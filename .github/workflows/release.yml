@@ -3,6 +3,17 @@ name: Release
 on:
   push:
     branches: [main]
+    # Only fire when the change might actually warrant a release. Chore /
+    # docs / workflow / dev-tooling commits don't ship to users, so running
+    # semantic-release for them is wasted CI minutes (the no-op release
+    # noise on every merge is what prompted this filter, 2026-05-02).
+    # Mirror deploy.yml's allowlist so the two stay in sync.
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "nginx/**"
+      - ".do/**"
+      - "Dockerfile*"
 
 permissions:
   contents: write
