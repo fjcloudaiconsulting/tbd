@@ -6,6 +6,14 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from typing import Literal
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.category import Category
+from app.models.category_rule import CategoryRule
+from app.models.merchant_dictionary import MerchantDictionaryEntry
 
 # URL scheme prefix (HTTP / HTTPS) — stripped before bank-noise so `HTTPS://AMAZON…` collapses cleanly.
 _URL_SCHEME = re.compile(r"^\s*HTTPS?://", re.IGNORECASE)
@@ -137,3 +145,58 @@ def should_skip_learning(obj) -> bool:
     if getattr(obj, "is_transfer", False):
         return True
     return False
+
+
+InferSource = Literal["org_rule", "shared_dictionary", "default"]
+
+
+async def infer_category(
+    db: AsyncSession, *, org_id: int, description: str
+) -> tuple[int | None, InferSource]:
+    """Resolve (category_id, source) for a transaction description.
+
+    Lookup order (architect-locked):
+      1. Org-local ``category_rules`` keyed by (org_id, normalized_token).
+      2. Shared ``merchant_dictionary`` token → resolve ``category_slug``
+         against this org's ``categories`` (is_system=True, slug=...).
+      3. Default — return (None, "default").
+
+    A future LLM tier (LAI.1) will slot between (2) and (3) once we have
+    rule-coverage data — not in this PR.
+    """
+    token = normalize_description(description)
+    if not token:
+        return None, "default"
+
+    # Tier 1 — org rule
+    result = await db.execute(
+        select(CategoryRule.category_id).where(
+            CategoryRule.org_id == org_id,
+            CategoryRule.normalized_token == token,
+        )
+    )
+    cat_id = result.scalar_one_or_none()
+    if cat_id is not None:
+        return cat_id, "org_rule"
+
+    # Tier 2 — shared dictionary → resolve slug → org's category id
+    result = await db.execute(
+        select(MerchantDictionaryEntry.category_slug).where(
+            MerchantDictionaryEntry.normalized_token == token
+        )
+    )
+    slug = result.scalar_one_or_none()
+    if slug:
+        result = await db.execute(
+            select(Category.id).where(
+                Category.org_id == org_id,
+                Category.slug == slug,
+                Category.is_system.is_(True),
+            )
+        )
+        org_cat_id = result.scalar_one_or_none()
+        if org_cat_id is not None:
+            return org_cat_id, "shared_dictionary"
+
+    # Tier 3 — default
+    return None, "default"
