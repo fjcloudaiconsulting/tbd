@@ -100,10 +100,12 @@ function ImportPageContent() {
           description: r.description,
           amount: r.amount,
           type: r.type,
-          category_id: null,
+          category_id: r.suggested_category_id ?? null,
           skip: r.is_duplicate, // pre-skip duplicates
           is_transfer: false,
           transfer_account_id: null,
+          suggested_category_id: r.suggested_category_id ?? null,
+          suggestion_source: r.suggestion_source ?? null,
         })),
       );
       setStep("preview");
@@ -295,18 +297,36 @@ function ImportPageContent() {
                       <td className="px-4 py-2 capitalize text-text-secondary">{previewRow.type}</td>
                       <td className="px-4 py-2">
                         {!rowState.skip && !rowState.is_transfer && (
-                          <CategorySelect
-                            id={`cat-${previewRow.row_number}`}
-                            categories={catOptions}
-                            value={rowState.category_id ?? ""}
-                            onChange={(id) =>
-                              updateRow(previewRow.row_number, {
-                                category_id: id === "" ? null : id,
-                              })
-                            }
-                            filterType={previewRow.type === "income" ? "income" : "expense"}
-                            className={input + " !w-48"}
-                          />
+                          <div className="flex items-center">
+                            <CategorySelect
+                              id={`cat-${previewRow.row_number}`}
+                              categories={catOptions}
+                              value={rowState.category_id ?? ""}
+                              onChange={(id) =>
+                                updateRow(previewRow.row_number, {
+                                  category_id: id === "" ? null : id,
+                                })
+                              }
+                              filterType={previewRow.type === "income" ? "income" : "expense"}
+                              className={input + " !w-48"}
+                            />
+                            {previewRow.suggestion_source === "org_rule" && (
+                              <span
+                                className="ml-2 text-xs text-text-muted"
+                                data-testid="suggestion-badge"
+                              >
+                                Auto · org rule
+                              </span>
+                            )}
+                            {previewRow.suggestion_source === "shared_dictionary" && (
+                              <span
+                                className="ml-2 text-xs text-text-muted"
+                                data-testid="suggestion-badge"
+                              >
+                                Auto · shared
+                              </span>
+                            )}
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-2">
