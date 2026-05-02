@@ -56,7 +56,7 @@ class Plan(Base):
     max_users: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     retention_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     features: Mapped[dict] = mapped_column(
-        JSON, nullable=False, server_default="(JSON_OBJECT())"
+        JSON, nullable=False, default=dict
     )
 
     created_at: Mapped[datetime] = mapped_column(
