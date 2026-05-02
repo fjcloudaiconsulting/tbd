@@ -41,7 +41,7 @@ def upgrade() -> None:
         sa.Column("normalized_token", sa.String(64), nullable=False, unique=True),
         sa.Column("category_slug", sa.String(64), nullable=False),
         sa.Column("vote_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("is_seed", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("is_seed", sa.Boolean(), nullable=False, server_default="0"),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
     )
@@ -83,7 +83,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("merchant_dictionary")
-    op.drop_index("ix_category_rules_category_id", table_name="category_rules")
-    op.drop_index("ix_category_rules_org_id", table_name="category_rules")
     op.drop_table("category_rules")
-    op.execute("DROP TYPE IF EXISTS rulesource")
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        sa.Enum(name="rulesource").drop(bind, checkfirst=True)
