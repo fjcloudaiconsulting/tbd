@@ -6,13 +6,6 @@ on:
       - "backend/**"
       - "frontend/**"
       - ".github/workflows/test.yml"
-  push:
-    branches:
-      - main
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - ".github/workflows/test.yml"
   workflow_dispatch:
 
 permissions:
