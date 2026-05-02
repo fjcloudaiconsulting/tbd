@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
@@ -163,8 +164,23 @@ function ImportPageContent() {
 
       {errorMsg && <div className={errorCls}>{errorMsg}</div>}
 
+      {categories?.length === 0 && (
+        <div className={`${card} p-10 text-center`}>
+          <p className="text-text-secondary">No categories yet.</p>
+          <p className="mt-2 text-sm text-text-muted">
+            Add at least one category before importing transactions.
+          </p>
+          <Link
+            href="/categories"
+            className={btnPrimary + " mt-4 inline-flex min-h-[44px] items-center sm:min-h-0"}
+          >
+            Go to Categories
+          </Link>
+        </div>
+      )}
+
       {/* ── Step 1: Upload ──────────────────────────────────────────────── */}
-      {step === "upload" && (
+      {step === "upload" && categories && categories.length > 0 && (
         <div className={card}>
           <div className={cardHeader}>
             <h2 className={cardTitle}>Upload CSV File</h2>
@@ -206,7 +222,7 @@ function ImportPageContent() {
       )}
 
       {/* ── Step 2: Preview ─────────────────────────────────────────────── */}
-      {step === "preview" && preview && (
+      {step === "preview" && preview && categories && categories.length > 0 && (
         <div className="space-y-4">
           {/* Summary bar */}
           <div className={card}>
