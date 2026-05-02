@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -54,14 +55,8 @@ class Plan(Base):
     # Feature limits — null means unlimited
     max_users: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     retention_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    ai_budget_enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
-    ai_forecast_enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
-    ai_smart_plan_enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
+    features: Mapped[dict] = mapped_column(
+        JSON, nullable=False, server_default="(JSON_OBJECT())"
     )
 
     created_at: Mapped[datetime] = mapped_column(
