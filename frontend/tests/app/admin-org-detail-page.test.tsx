@@ -48,6 +48,16 @@ const DETAIL = {
   counts: { transactions: 5, accounts: 1, budgets: 0, forecast_plans: 0 },
 };
 
+const FEATURE_STATE = {
+  plan: { id: 1, name: "Free", slug: "free" },
+  features: [
+    { key: "ai.budget", plan_default: true, effective: true, override: null },
+    { key: "ai.forecast", plan_default: false, effective: false, override: null },
+    { key: "ai.smart_plan", plan_default: false, effective: false, override: null },
+    { key: "ai.autocategorize", plan_default: false, effective: false, override: null },
+  ],
+};
+
 
 describe("AdminOrgDetailPage — Danger zone gating", () => {
   const apiFetchMock = vi.mocked(apiFetch);
@@ -65,6 +75,7 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
 
   it("disables the delete button until the org name is typed exactly", async () => {
     apiFetchMock.mockImplementation(((url: string) => {
+      if (url === `/api/v1/admin/orgs/42/feature-state`) return Promise.resolve(FEATURE_STATE);
       if (url.startsWith("/api/v1/admin/orgs/42")) return Promise.resolve(DETAIL);
       if (url === "/api/v1/plans") return Promise.resolve([{ id: 1, slug: "free", name: "Free" }]);
       return Promise.resolve(undefined);
@@ -82,11 +93,12 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
     expect(deleteBtn).not.toBeDisabled();
   });
 
-  it("posts plan_id and current_period_end when admin changes them", async () => {
+  it("posts current_period_end when admin changes the date and saves", async () => {
     apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
       if (url.startsWith("/api/v1/admin/orgs/42/subscription") && opts?.method === "PUT") {
         return Promise.resolve({ before: {}, after: {} });
       }
+      if (url === `/api/v1/admin/orgs/42/feature-state`) return Promise.resolve(FEATURE_STATE);
       if (url.startsWith("/api/v1/admin/orgs/42")) return Promise.resolve(DETAIL);
       if (url === "/api/v1/plans") {
         return Promise.resolve([
@@ -99,9 +111,6 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
     render(<AdminOrgDetailPage />);
 
     await screen.findByRole("heading", { name: "Acme" });
-    fireEvent.change(screen.getByLabelText(/^Plan$/i), {
-      target: { value: "2" },
-    });
     fireEvent.change(screen.getByLabelText(/Period end/i), {
       target: { value: "2026-12-31" },
     });
@@ -113,7 +122,6 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
         expect.objectContaining({
           method: "PUT",
           body: JSON.stringify({
-            plan_id: 2,
             current_period_end: "2026-12-31",
           }),
         }),
@@ -121,8 +129,116 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
     });
   });
 
+  it("Change plan modal posts plan_id to subscription endpoint", async () => {
+    apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
+      if (url.startsWith("/api/v1/admin/orgs/42/subscription") && opts?.method === "PUT") {
+        return Promise.resolve({ before: {}, after: {} });
+      }
+      if (url === `/api/v1/admin/orgs/42/feature-state`) return Promise.resolve(FEATURE_STATE);
+      if (url.startsWith("/api/v1/admin/orgs/42")) return Promise.resolve(DETAIL);
+      if (url === "/api/v1/plans") {
+        return Promise.resolve([
+          { id: 1, slug: "free", name: "Free" },
+          { id: 2, slug: "pro", name: "Pro" },
+        ]);
+      }
+      if (url === "/api/v1/plans/all") {
+        return Promise.resolve([
+          { id: 1, slug: "free", name: "Free" },
+          { id: 2, slug: "pro", name: "Pro" },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<AdminOrgDetailPage />);
+
+    await screen.findByRole("heading", { name: "Acme" });
+    fireEvent.click(screen.getByRole("button", { name: /Change plan/i }));
+
+    // Modal opens; wait for the modal heading to confirm it mounted, then for
+    // the Pro option to load (modal fetches /api/v1/plans/all asynchronously).
+    await screen.findByRole("heading", { name: /Change plan/i });
+    await screen.findByRole("option", { name: /Pro \(pro\)/i });
+
+    // Pick the Pro plan via the modal's select. The page also has a Status
+    // <select>, so grab all comboboxes and pick the modal's (rendered last).
+    const comboboxes = screen.getAllByRole("combobox");
+    const planSelect = comboboxes[comboboxes.length - 1];
+    fireEvent.change(planSelect, { target: { value: "2" } });
+
+    // Submit: there are now two "Save" buttons (the page's + the modal's).
+    // The modal's submit button is the last one rendered.
+    const saveButtons = screen.getAllByRole("button", { name: /^Save$/i });
+    fireEvent.click(saveButtons[saveButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/orgs/42/subscription",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ plan_id: 2 }),
+        }),
+      );
+    });
+  });
+
+  it("renders Change plan button", async () => {
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === `/api/v1/admin/orgs/42/feature-state`) return Promise.resolve(FEATURE_STATE);
+      if (url.startsWith("/api/v1/admin/orgs/42")) return Promise.resolve(DETAIL);
+      if (url === "/api/v1/plans") return Promise.resolve([{ id: 1, slug: "free", name: "Free" }]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<AdminOrgDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Change plan/i })).toBeInTheDocument();
+    });
+  });
+
+  it("FeatureOverridesCard renders feature-state rows with override metadata", async () => {
+    const featureStateWithOverride = {
+      plan: { id: 1, name: "Free", slug: "free" },
+      features: [
+        { key: "ai.budget", plan_default: true, effective: true, override: null },
+        {
+          key: "ai.forecast",
+          plan_default: false,
+          effective: true,
+          override: {
+            feature_key: "ai.forecast",
+            value: true,
+            set_by: 1,
+            set_by_email: "root@platform.io",
+            set_at: "2026-05-01T10:00:00Z",
+            expires_at: null,
+            note: "manual grant",
+            is_expired: false,
+          },
+        },
+        { key: "ai.smart_plan", plan_default: false, effective: false, override: null },
+        { key: "ai.autocategorize", plan_default: false, effective: false, override: null },
+      ],
+    };
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === `/api/v1/admin/orgs/42/feature-state`) return Promise.resolve(featureStateWithOverride);
+      if (url.startsWith("/api/v1/admin/orgs/42")) return Promise.resolve(DETAIL);
+      if (url === "/api/v1/plans") return Promise.resolve([{ id: 1, slug: "free", name: "Free" }]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<AdminOrgDetailPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI Budget Rebalancing/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/AI Smart Forecast/i)).toBeInTheDocument();
+    // Override metadata for the row that has set_by_email.
+    expect(screen.getByText(/set by root@platform\.io/i)).toBeInTheDocument();
+  });
+
   it("posts the confirm_name and routes back to /admin/orgs after delete", async () => {
     apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
+      if (url === `/api/v1/admin/orgs/42/feature-state`) return Promise.resolve(FEATURE_STATE);
       if (url.startsWith("/api/v1/admin/orgs/42") && (!opts || opts.method !== "DELETE")) {
         return Promise.resolve(DETAIL);
       }

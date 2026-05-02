@@ -4,8 +4,10 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import DuplicatePlanModal from "@/components/system/DuplicatePlanModal";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { FEATURE_LABELS } from "@/lib/feature-catalog";
 import {
   input,
   label,
@@ -18,7 +20,16 @@ import {
   success as successCls,
   pageTitle,
 } from "@/lib/styles";
-import type { Plan } from "@/lib/types";
+import type { FeatureKey, Plan, PlanFeatures } from "@/lib/types";
+
+const DEFAULT_FEATURES: PlanFeatures = {
+  "ai.budget": false,
+  "ai.forecast": false,
+  "ai.smart_plan": false,
+  "ai.autocategorize": false,
+};
+
+const FEATURE_KEYS = Object.keys(FEATURE_LABELS) as FeatureKey[];
 
 interface PlanWithCount extends Plan {
   org_count?: number;
@@ -32,6 +43,7 @@ export default function SystemPlansPage() {
   const [successMsg, setSuccessMsg] = useState("");
   const [editing, setEditing] = useState<PlanWithCount | null>(null);
   const [creating, setCreating] = useState(false);
+  const [duplicateSource, setDuplicateSource] = useState<PlanWithCount | null>(null);
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
     message: string;
@@ -48,6 +60,7 @@ export default function SystemPlansPage() {
   const [formRetentionDays, setFormRetentionDays] = useState("");
   const [formIsCustom, setFormIsCustom] = useState(false);
   const [formSortOrder, setFormSortOrder] = useState("0");
+  const [formFeatures, setFormFeatures] = useState<PlanFeatures>({ ...DEFAULT_FEATURES });
 
   useEffect(() => {
     if (!loading && (!user || !user.is_superadmin)) router.replace("/dashboard");
@@ -76,6 +89,7 @@ export default function SystemPlansPage() {
     setFormRetentionDays("");
     setFormIsCustom(false);
     setFormSortOrder("0");
+    setFormFeatures({ ...DEFAULT_FEATURES });
   }
 
   function openEdit(plan: PlanWithCount) {
@@ -90,6 +104,7 @@ export default function SystemPlansPage() {
     setFormRetentionDays(plan.retention_days != null ? String(plan.retention_days) : "");
     setFormIsCustom(plan.is_custom);
     setFormSortOrder(String(plan.sort_order));
+    setFormFeatures({ ...DEFAULT_FEATURES, ...(plan.features ?? {}) });
   }
 
   function openCreate() {
@@ -101,9 +116,8 @@ export default function SystemPlansPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
-    const body = {
+    const common = {
       name: formName,
-      slug: formSlug,
       description: formDescription,
       price_monthly: parseFloat(formPriceMonthly) || 0,
       price_yearly: parseFloat(formPriceYearly) || 0,
@@ -111,19 +125,21 @@ export default function SystemPlansPage() {
       retention_days: formRetentionDays ? parseInt(formRetentionDays) : null,
       is_custom: formIsCustom,
       sort_order: parseInt(formSortOrder) || 0,
+      features: formFeatures,
     };
 
     try {
       if (editing) {
+        // PlanUpdate forbids extra fields and has no `slug` field — omit it on edit.
         await apiFetch(`/api/v1/plans/${editing.id}`, {
           method: "PUT",
-          body: JSON.stringify(body),
+          body: JSON.stringify(common),
         });
         setSuccessMsg("Plan updated");
       } else {
         await apiFetch("/api/v1/plans", {
           method: "POST",
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...common, slug: formSlug }),
         });
         setSuccessMsg("Plan created");
       }
@@ -217,6 +233,32 @@ export default function SystemPlansPage() {
               <input type="checkbox" id="is_custom" checked={formIsCustom} onChange={(e) => setFormIsCustom(e.target.checked)} />
               <label htmlFor="is_custom" className="text-sm text-text-secondary">Custom plan</label>
             </div>
+            <div className="col-span-1 sm:col-span-2 mt-2 border-t border-border pt-4">
+              <h3 className="mb-3 text-sm font-semibold text-text-primary">Features</h3>
+              <div className="flex flex-col gap-3">
+                {FEATURE_KEYS.map((key) => {
+                  const meta = FEATURE_LABELS[key];
+                  const inputId = `feature-${key}`;
+                  return (
+                    <div key={key} className="flex items-start gap-3">
+                      <input
+                        type="checkbox"
+                        id={inputId}
+                        className="mt-1"
+                        checked={formFeatures[key] ?? false}
+                        onChange={(e) =>
+                          setFormFeatures((prev) => ({ ...prev, [key]: e.target.checked }))
+                        }
+                      />
+                      <label htmlFor={inputId} className="flex flex-col text-sm">
+                        <span className="font-medium text-text-primary">{meta.label}</span>
+                        <span className="text-xs text-text-muted">{meta.description}</span>
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
             <div className="col-span-1 sm:col-span-2 flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end sm:gap-3">
               <button
                 type="button"
@@ -268,6 +310,7 @@ export default function SystemPlansPage() {
                   </td>
                   <td className="px-4 py-3 text-right space-x-2">
                     <button onClick={() => openEdit(plan)} className="text-xs text-accent hover:underline">Edit</button>
+                    <button onClick={() => setDuplicateSource(plan)} className="text-xs text-accent hover:underline">Duplicate</button>
                     {plan.is_active && (
                       <button onClick={() => handleDelete(plan)} className="text-xs text-text-muted hover:text-danger">Deactivate</button>
                     )}
@@ -290,6 +333,18 @@ export default function SystemPlansPage() {
         }}
         onCancel={() => setConfirmAction(null)}
       />
+
+      {duplicateSource && (
+        <DuplicatePlanModal
+          source={duplicateSource}
+          onClose={() => setDuplicateSource(null)}
+          onDuplicated={() => {
+            setSuccessMsg("Plan duplicated");
+            setTimeout(() => setSuccessMsg(""), 3000);
+            void loadPlans();
+          }}
+        />
+      )}
     </AppShell>
   );
 }

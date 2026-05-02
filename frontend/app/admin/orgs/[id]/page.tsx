@@ -6,10 +6,13 @@ import { useParams, useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
+import ChangePlanModal from "@/components/admin/ChangePlanModal";
+import FeatureOverridesCard from "@/components/admin/FeatureOverridesCard";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isSuperadmin } from "@/lib/auth";
 import {
   btnPrimary,
+  btnSecondary,
   card,
   cardHeader,
   cardTitle,
@@ -71,9 +74,11 @@ export default function AdminOrgDetailPage() {
   // Subscription edit state
   const [subStatus, setSubStatus] = useState<string>("");
   const [subTrialEnd, setSubTrialEnd] = useState<string>("");
-  const [subPlanId, setSubPlanId] = useState<string>("");
   const [subPeriodEnd, setSubPeriodEnd] = useState<string>("");
   const [plans, setPlans] = useState<PlanOption[]>([]);
+
+  // Change-plan modal
+  const [showChangePlan, setShowChangePlan] = useState(false);
 
   // Delete confirmation
   const [confirmName, setConfirmName] = useState("");
@@ -101,7 +106,6 @@ export default function AdminOrgDetailPage() {
       const sub = d.subscription as Subscription;
       setSubStatus(sub.status ?? "");
       setSubTrialEnd(sub.trial_end ?? "");
-      setSubPlanId(sub.plan_id ? String(sub.plan_id) : "");
       setSubPeriodEnd(sub.current_period_end ?? "");
     } catch (err) {
       setError(extractErrorMessage(err, "Failed to load"));
@@ -123,9 +127,6 @@ export default function AdminOrgDetailPage() {
       const sub = detail?.subscription as Subscription;
       if (subStatus && subStatus !== sub.status) body.status = subStatus;
       if (subTrialEnd && subTrialEnd !== sub.trial_end) body.trial_end = subTrialEnd;
-      if (subPlanId && Number(subPlanId) !== sub.plan_id) {
-        body.plan_id = Number(subPlanId);
-      }
       if (subPeriodEnd && subPeriodEnd !== sub.current_period_end) {
         body.current_period_end = subPeriodEnd;
       }
@@ -182,6 +183,8 @@ export default function AdminOrgDetailPage() {
 
   const sub = detail.subscription as Subscription;
   const confirmMatches = confirmName === detail.name;
+  const currentPlanName =
+    plans.find((p) => p.slug === sub.plan_slug)?.name ?? sub.plan_slug ?? "—";
 
   return (
     <AppShell>
@@ -224,20 +227,20 @@ export default function AdminOrgDetailPage() {
             </dd>
           </dl>
 
-          <form onSubmit={saveSubscription} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
-            <div>
-              <label htmlFor="sub-plan" className={label}>Plan</label>
-              <select
-                id="sub-plan"
-                value={subPlanId}
-                onChange={(e) => setSubPlanId(e.target.value)}
-                className={input}
-              >
-                {plans.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-            </div>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-text-secondary">
+              Plan: <strong className="text-text-primary">{currentPlanName}</strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowChangePlan(true)}
+              className={btnSecondary}
+            >
+              Change plan
+            </button>
+          </div>
+
+          <form onSubmit={saveSubscription} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 lg:items-end">
             <div>
               <label htmlFor="sub-status" className={label}>Status</label>
               <select
@@ -271,12 +274,24 @@ export default function AdminOrgDetailPage() {
                 className={input}
               />
             </div>
-            <div className="lg:col-span-4">
+            <div className="lg:col-span-3">
               <button type="submit" className={btnPrimary}>Save</button>
             </div>
           </form>
         </div>
       </section>
+
+      {showChangePlan && (
+        <ChangePlanModal
+          orgId={detail.id}
+          currentPlanSlug={sub.plan_slug ?? ""}
+          onClose={() => setShowChangePlan(false)}
+          onChanged={async () => { await refresh(); }}
+        />
+      )}
+
+      {/* Feature overrides card */}
+      <FeatureOverridesCard orgId={detail.id} />
 
       {/* Members card */}
       <section className={`${card} mb-6`}>

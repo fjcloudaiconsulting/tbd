@@ -24,6 +24,7 @@ from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category
 from app.models.category_rule import CategoryRule
+from app.models.feature_override import OrgFeatureOverride
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem
 from app.models.invitation import Invitation
 from app.models.recurring import RecurringTransaction
@@ -328,6 +329,16 @@ async def delete_org_cascade(
 
     counts["settings"] = (
         await db.execute(delete(OrgSetting).where(OrgSetting.org_id == org_id))
+    ).rowcount or 0
+
+    # L4.11: per-org feature overrides. set_by FKs to users with
+    # ON DELETE SET NULL, but the override row is org-scoped — wipe
+    # before users so the count reflects every override the org owned
+    # (rather than depending on FK semantics to nulls vs. cascades).
+    counts["org_feature_overrides"] = (
+        await db.execute(
+            delete(OrgFeatureOverride).where(OrgFeatureOverride.org_id == org_id)
+        )
     ).rowcount or 0
 
     counts["users"] = (
