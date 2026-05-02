@@ -3,12 +3,24 @@
 Asserts that plans.features after upgrade contains canonical alias-key
 booleans for every seeded plan, and that the stored value is a JSON
 object (not a JSON string scalar).
+
+Skipped unless PFV_RUN_MYSQL_TESTS=1 because this exercises real MySQL
+(JSON_TYPE, post-upgrade dataset). The default DATABASE_URL is MySQL
+even in environments where no MySQL service is running, so the explicit
+opt-in flag is the only reliable signal.
 """
+import os
+
 from sqlalchemy import select, text
 import pytest
 
 from app.database import get_db
 from app.models.subscription import Plan
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("PFV_RUN_MYSQL_TESTS") != "1",
+    reason="MySQL-only migration test; set PFV_RUN_MYSQL_TESTS=1 to run.",
+)
 
 
 @pytest.mark.asyncio

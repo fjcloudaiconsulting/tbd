@@ -18,7 +18,28 @@ multiple times in production:
 """
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+
+def _find_repo_root(start: Path) -> Path:
+    """Walk upward from `start` until a directory containing both
+    `.github/workflows/deploy.yml` and `.do/app.yaml` is found.
+
+    `Path(__file__).parents[2]` worked when these tests ran from a host
+    checkout but resolved to `/` inside the backend container (where the
+    test file lives at `/app/tests/test_deploy_workflow.py`). Walking
+    upward is robust to either layout.
+    """
+    for candidate in [start, *start.parents]:
+        if (candidate / ".github" / "workflows" / "deploy.yml").exists() and (
+            candidate / ".do" / "app.yaml"
+        ).exists():
+            return candidate
+    raise RuntimeError(
+        "Could not locate repo root containing .github/workflows/deploy.yml "
+        "and .do/app.yaml. Run these tests from a checked-out repo."
+    )
+
+
+REPO_ROOT = _find_repo_root(Path(__file__).resolve())
 DEPLOY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "deploy.yml"
 APP_SPEC = REPO_ROOT / ".do" / "app.yaml"
 
