@@ -12,6 +12,8 @@ exists. FK / SQL diagnostics never bleed into 500 bodies — generic
 message client-side, full detail server-side.
 """
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -165,8 +167,6 @@ def _validate_feature_key(key: str) -> None:
 
 async def _override_to_response(row: OrgFeatureOverride, db: AsyncSession) -> dict:
     """Resolve set_by_email by joining to users."""
-    from datetime import datetime
-
     email = None
     if row.set_by is not None:
         email = await db.scalar(select(User.email).where(User.id == row.set_by))
@@ -199,6 +199,15 @@ async def set_feature_override(
     except ValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
+    org_exists = await db.scalar(
+        select(Organization.id).where(Organization.id == org_id)
+    )
+    if org_exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found",
+        )
+
     existing = await db.scalar(
         select(OrgFeatureOverride).where(
             OrgFeatureOverride.org_id == org_id,
@@ -223,6 +232,7 @@ async def set_feature_override(
             else:
                 existing.value = body.value
                 existing.set_by = user.id
+                existing.set_at = datetime.utcnow()
                 existing.expires_at = body.expires_at
                 existing.note = body.note
                 row = existing
@@ -267,6 +277,15 @@ async def revoke_feature_override(
     except ValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
+    org_exists = await db.scalar(
+        select(Organization.id).where(Organization.id == org_id)
+    )
+    if org_exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found",
+        )
+
     existing = await db.scalar(
         select(OrgFeatureOverride).where(
             OrgFeatureOverride.org_id == org_id,
@@ -309,8 +328,6 @@ async def get_feature_state(
     # 404 explicit on missing target org. Resolver fail-closed (all-False)
     # is for product feature gates against the auth user's own org;
     # admin reads have a different contract.
-    from datetime import datetime
-
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found")

@@ -307,3 +307,81 @@ async def test_delete_requires_orgs_manage(session_factory):
             f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
         )
     assert res.status_code == 403
+
+
+# ── Missing-org / set_at refresh (review fixes) ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_put_returns_404_for_missing_org(session_factory):
+    """A nonexistent target org_id must surface as 404, not as the
+    FK-collision 409 "Override changed concurrently" message."""
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.put(
+            "/api/v1/admin/orgs/999999/feature-overrides/ai.budget",
+            json={"value": True},
+        )
+    assert res.status_code == 404
+    assert "Organization not found" in res.json().get("detail", "")
+
+
+@pytest.mark.asyncio
+async def test_delete_returns_404_for_missing_org(session_factory):
+    """DELETE on a nonexistent org should also 404 with the explicit
+    'Organization not found' message (not the override-not-found one)."""
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.delete(
+            "/api/v1/admin/orgs/999999/feature-overrides/ai.budget",
+        )
+    assert res.status_code == 404
+    assert "Organization not found" in res.json().get("detail", "")
+
+
+@pytest.mark.asyncio
+async def test_put_refreshes_set_at_on_update(session_factory):
+    """Updating an existing override must advance set_at so the UI
+    can show 'last set at' rather than the original grant time."""
+    from datetime import datetime
+    from sqlalchemy import select as _select
+
+    from app.models.feature_override import OrgFeatureOverride
+
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    past = datetime(2026, 1, 1, 0, 0, 0)
+
+    with TestClient(app) as client:
+        first = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
+            json={"value": True},
+        )
+        assert first.status_code == 200
+
+    # Force the seeded row's set_at into the past so the second PUT
+    # has something concrete to advance past.
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                _select(OrgFeatureOverride).where(
+                    OrgFeatureOverride.org_id == seed["target_id"],
+                    OrgFeatureOverride.feature_key == "ai.budget",
+                )
+            )
+        ).scalar_one()
+        row.set_at = past
+        await db.commit()
+
+    with TestClient(app) as client:
+        second = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
+            json={"value": False},
+        )
+    assert second.status_code == 200
+    new_set_at = second.json()["set_at"]
+    # ISO-8601 is lexicographically ordered, so a string compare suffices,
+    # but parsing is more explicit.
+    assert datetime.fromisoformat(new_set_at) > past
