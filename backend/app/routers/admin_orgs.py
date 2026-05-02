@@ -23,11 +23,12 @@ from app.auth.permissions import require_permission
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.feature_override import OrgFeatureOverride
-from app.models.subscription import SubscriptionStatus
-from app.models.user import User
+from app.models.subscription import Plan, Subscription, SubscriptionStatus
+from app.models.user import Organization, User
 from app.schemas.admin_orgs import OrgDeleteRequest, SubscriptionUpdateRequest
 from app.schemas.feature_override import FeatureOverrideUpsert, OrgFeatureOverrideResponse
-from app.services import admin_orgs_service
+from app.schemas.feature_state import FeatureStateResponse
+from app.services import admin_orgs_service, feature_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 logger = structlog.stdlib.get_logger()
@@ -291,3 +292,75 @@ async def revoke_feature_override(
         actor_email=user.email,
     )
     return Response(status_code=204)
+
+
+# ── Feature state composite (T16) ────────────────────────────────────────
+
+
+@router.get(
+    "/{org_id}/feature-state",
+    response_model=FeatureStateResponse,
+)
+async def get_feature_state(
+    org_id: int,
+    user: User = Depends(require_permission("orgs.view")),
+    db: AsyncSession = Depends(get_db),
+):
+    # 404 explicit on missing target org. Resolver fail-closed (all-False)
+    # is for product feature gates against the auth user's own org;
+    # admin reads have a different contract.
+    from datetime import datetime
+
+    org = await db.scalar(select(Organization).where(Organization.id == org_id))
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    plan_features = await feature_service._fetch_plan_features(db, org_id)
+
+    plan_row = await db.execute(
+        select(Plan.id, Plan.name, Plan.slug)
+        .join(Subscription, Subscription.plan_id == Plan.id)
+        .where(Subscription.org_id == org_id)
+    )
+    plan_data = plan_row.first()
+    plan_summary = (
+        {"id": plan_data.id, "name": plan_data.name, "slug": plan_data.slug}
+        if plan_data else None
+    )
+
+    # All overrides (active + expired) joined to setter email.
+    rows = await db.execute(
+        select(OrgFeatureOverride, User.email)
+        .outerjoin(User, User.id == OrgFeatureOverride.set_by)
+        .where(OrgFeatureOverride.org_id == org_id)
+    )
+    now = datetime.utcnow()
+    overrides_by_key: dict[str, dict] = {}
+    for row, email in rows.all():
+        if row.feature_key not in ALL_FEATURE_KEYS:
+            continue  # defensive filter
+        is_expired = row.expires_at is not None and row.expires_at <= now
+        overrides_by_key[row.feature_key] = {
+            "feature_key": row.feature_key,
+            "value": row.value,
+            "set_by": row.set_by,
+            "set_by_email": email,
+            "set_at": row.set_at.isoformat() if row.set_at else None,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "note": row.note,
+            "is_expired": is_expired,
+        }
+
+    feature_rows = []
+    for key in sorted(ALL_FEATURE_KEYS):
+        plan_default = plan_features.get(key, False)
+        ovr = overrides_by_key.get(key)
+        effective = ovr["value"] if (ovr and not ovr["is_expired"]) else plan_default
+        feature_rows.append({
+            "key": key,
+            "plan_default": plan_default,
+            "effective": effective,
+            "override": ovr,
+        })
+
+    return {"plan": plan_summary, "features": feature_rows}
