@@ -229,6 +229,9 @@ export interface Plan {
   price_yearly: number;
   max_users: number | null;
   retention_days: number | null;
+  features: PlanFeatures;
+
+  // CLEANUP-029: remove the three fields below when migration 029 ships.
   ai_budget_enabled: boolean;
   ai_forecast_enabled: boolean;
   ai_smart_plan_enabled: boolean;
@@ -246,4 +249,42 @@ export interface SubscriptionDetail {
   trial_end: string | null;
   current_period_start: string | null;
   current_period_end: string | null;
+}
+
+// L4.11 feature entitlements -------------------------------------------------
+
+export type FeatureKey =
+  | "ai.budget"
+  | "ai.forecast"
+  | "ai.smart_plan"
+  | "ai.autocategorize";
+
+export interface PlanFeatures {
+  "ai.budget": boolean;
+  "ai.forecast": boolean;
+  "ai.smart_plan": boolean;
+  "ai.autocategorize": boolean;
+}
+
+export interface OrgFeatureOverride {
+  feature_key: FeatureKey;
+  value: boolean;
+  set_by: number | null;
+  set_by_email: string | null;
+  set_at: string;          // ISO 8601 UTC
+  expires_at: string | null;  // ISO 8601 UTC
+  note: string | null;
+  is_expired: boolean;
+}
+
+export interface FeatureStateRow {
+  key: FeatureKey;
+  plan_default: boolean;
+  effective: boolean;
+  override: OrgFeatureOverride | null;
+}
+
+export interface FeatureStateResponse {
+  plan: { id: number; name: string; slug: string } | null;
+  features: FeatureStateRow[];
 }
