@@ -274,3 +274,52 @@ async def test_learn_failure_does_not_fail_the_import(
 
     assert result.imported_count == 1
     assert result.error_count == 0  # learn failure does NOT surface as a row error
+
+
+async def test_default_category_fallthrough_records_miss(
+    db_session: AsyncSession,
+) -> None:
+    """The architect-mandated metric: when a row has NO suggestion AND the user
+    leaves category_id None (relying on default_category_id), we must still
+    record the missed normalized token. This was a pre-merge review fix.
+    """
+    seed = await _seed(db_session, share=False)
+    body = ImportConfirmRequest(
+        account_id=seed["account_id"],
+        default_category_id=seed["restaurants_id"],
+        rows=[
+            ImportConfirmRow(
+                row_number=1, date=datetime.date(2026, 5, 1),
+                description="POS NOVEL CAFE *0001", amount=Decimal("4.00"),
+                type="expense",
+                category_id=None,                       # user did NOT pick
+                suggested_category_id=None,             # no suggestion
+                suggestion_source="default",
+            ),
+        ],
+    )
+
+    with patch.object(
+        import_service.logger, "ainfo", new_callable=AsyncMock
+    ) as mock_log:
+        result = await import_service.execute_import(
+            db_session, org_id=seed["org_id"], body=body,
+        )
+
+    assert result.imported_count == 1
+    miss_calls = [
+        c for c in mock_log.call_args_list
+        if c.args and c.args[0] == "smart_rules.miss"
+    ]
+    assert len(miss_calls) == 1
+    assert miss_calls[0].kwargs["normalized_token"]  # non-empty
+
+    aggregate_calls = [
+        c for c in mock_log.call_args_list
+        if c.args and c.args[0] == "smart_rules.import_executed"
+    ]
+    assert len(aggregate_calls) == 1
+    agg = aggregate_calls[0].kwargs
+    assert agg["miss_count"] == 1
+    assert agg["learned_count"] == 0  # user didn't pick → no learn
+    assert agg["source_split"]["default"] == 1

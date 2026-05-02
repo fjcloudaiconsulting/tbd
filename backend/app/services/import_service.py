@@ -260,8 +260,15 @@ async def execute_import(
                         accepted_count += 1
                     elif row.suggested_category_id is not None:
                         overridden_count += 1
+
+                # Metric collection — fires for EVERY imported non-transfer
+                # row, including default-category fallthroughs (row.category_id
+                # is None and the user relied on default_category_id). This
+                # is the architect-mandated signal for "uncategorizable on
+                # import" and must NOT be gated on row.category_id.
+                if not should_skip_learning(row):
                     source_split[row.suggestion_source or "default"] += 1
-                    if row.suggestion_source == "default":
+                    if row.suggestion_source in ("default", None):
                         token = normalize_description(row.description)
                         if token:
                             miss_tokens.add(token)
