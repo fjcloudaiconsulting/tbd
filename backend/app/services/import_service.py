@@ -4,10 +4,13 @@ Parsing/validation is separate from persistence so a background worker
 can replace the synchronous confirm path later without a rewrite.
 """
 
+from collections import Counter
+
 import structlog
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.settings import OrgSetting
 from app.models.transaction import Transaction
 from app.schemas.import_schemas import (
     ImportConfirmRequest,
@@ -18,6 +21,13 @@ from app.schemas.import_schemas import (
 )
 from app.schemas.transaction import TransactionCreate, TransferCreate
 from app.services import transaction_service
+from app.services.category_rules_service import (
+    bump_shared_vote,
+    infer_category,
+    learn_from_choice,
+    normalize_description,
+    should_skip_learning,
+)
 from app.services.exceptions import ValidationError
 from app.services.import_parser import ParsedRow
 
@@ -72,6 +82,14 @@ async def build_preview(
             and row.transaction_type.lower() in _TRANSFER_TYPES
         )
 
+        # ── Smart-rules suggestion (skipped for transfers) ──
+        suggested_category_id: int | None = None
+        suggestion_source: str | None = None
+        if not is_transfer:
+            suggested_category_id, suggestion_source = await infer_category(
+                db, org_id=org_id, description=row.description
+            )
+
         if is_dup:
             duplicate_count += 1
         if is_transfer:
@@ -89,8 +107,23 @@ async def build_preview(
                 is_duplicate=is_dup,
                 duplicate_transaction_id=dup_id,
                 is_potential_transfer=is_transfer,
+                suggested_category_id=suggested_category_id,
+                suggestion_source=suggestion_source,
             )
         )
+
+    # ── Aggregate smart-rules metric (architect-mandated; one event per preview) ──
+    source_split = Counter((r.suggestion_source or "skipped") for r in preview_rows)
+    suggested_count = sum(
+        1 for r in preview_rows if r.suggested_category_id is not None
+    )
+    await logger.ainfo(
+        "smart_rules.preview_built",
+        org_id=org_id,
+        rows_total=len(preview_rows),
+        suggested_count=suggested_count,
+        source_split=dict(source_split),
+    )
 
     return ImportPreviewResponse(
         rows=preview_rows,
@@ -115,6 +148,21 @@ async def execute_import(
     imported_count = 0
     skipped_count = 0
     errors: list[ImportRowError] = []
+
+    # ── Smart-rules learning: fetch share flag once, init aggregate counters ──
+    share_flag = (await db.execute(
+        select(OrgSetting.value).where(
+            OrgSetting.org_id == org_id,
+            OrgSetting.key == "share_merchant_data",
+        )
+    )).scalar_one_or_none()
+    share_merchant_data = (share_flag == "true")
+
+    learned_count = 0
+    accepted_count = 0
+    overridden_count = 0
+    source_split: Counter[str] = Counter()
+    miss_tokens: set[str] = set()
 
     for row in body.rows:
         if row.skip:
@@ -162,6 +210,69 @@ async def execute_import(
                     db, org_id, tx_body, is_imported=True
                 )
 
+                # ── Learn from the user's category choice ────────────────
+                # Skip transfers (the transfer branch above never reaches
+                # this block) and rows with no category at all. The double
+                # commit (create_transaction commits the txn, this block
+                # commits the rule + vote separately) is intentional —
+                # keeps a learn-failure from rolling back the imported
+                # transaction.
+                if row.category_id is not None and not should_skip_learning(row):
+                    accepted = (
+                        row.suggested_category_id is not None
+                        and row.suggested_category_id == row.category_id
+                    )
+                    source = "user_pick" if accepted else "user_edit"
+                    # Learning is best-effort: a failure here must NOT
+                    # bubble out as a row error. The transaction itself
+                    # has already committed (see create_transaction
+                    # above) — the row is imported regardless.
+                    try:
+                        await learn_from_choice(
+                            db,
+                            org_id=org_id,
+                            description=row.description,
+                            category_id=row.category_id,
+                            source=source,
+                        )
+                        if (
+                            accepted and share_merchant_data
+                            and row.suggestion_source == "shared_dictionary"
+                        ):
+                            await bump_shared_vote(db, description=row.description)
+                        await db.commit()
+                    except Exception as exc:
+                        await db.rollback()
+                        await logger.awarning(
+                            "smart_rules.learn_failed",
+                            org_id=org_id,
+                            op="execute_import",
+                            row_number=row.row_number,
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
+
+                    # Counters always update — the user's choice was
+                    # registered against an imported row, even if the
+                    # rule write failed and got logged above.
+                    learned_count += 1
+                    if accepted:
+                        accepted_count += 1
+                    elif row.suggested_category_id is not None:
+                        overridden_count += 1
+
+                # Metric collection — fires for EVERY imported non-transfer
+                # row, including default-category fallthroughs (row.category_id
+                # is None and the user relied on default_category_id). This
+                # is the architect-mandated signal for "uncategorizable on
+                # import" and must NOT be gated on row.category_id.
+                if not should_skip_learning(row):
+                    source_split[row.suggestion_source or "default"] += 1
+                    if row.suggestion_source in ("default", None):
+                        token = normalize_description(row.description)
+                        if token:
+                            miss_tokens.add(token)
+
             imported_count += 1
 
         except Exception as exc:
@@ -172,6 +283,25 @@ async def execute_import(
                 error=str(exc),
             )
             errors.append(ImportRowError(row_number=row.row_number, error=str(exc)))
+
+    # ── Aggregate smart-rules metric (architect-mandated; one per import) ──
+    await logger.ainfo(
+        "smart_rules.import_executed",
+        org_id=org_id,
+        rows_total=len(body.rows),
+        imported_count=imported_count,
+        learned_count=learned_count,
+        accepted_count=accepted_count,
+        overridden_count=overridden_count,
+        source_split=dict(source_split),
+        miss_count=len(miss_tokens),
+    )
+    # Per-UNIQUE-token miss events (set-dedup is load-bearing — emitting
+    # per-row would flood the metric with duplicates of the same merchant).
+    for token in miss_tokens:
+        await logger.ainfo(
+            "smart_rules.miss", org_id=org_id, normalized_token=token,
+        )
 
     return ImportConfirmResponse(
         imported_count=imported_count,

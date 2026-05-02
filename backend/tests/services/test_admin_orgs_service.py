@@ -23,6 +23,8 @@ from app.models.account import Account, AccountType
 from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category, CategoryType
+from app.models.category_rule import CategoryRule, RuleSource
+from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.forecast_plan import (
     ForecastItemType,
     ForecastPlan,
@@ -188,7 +190,17 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             created_by=owner.id,
             expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=7),
         )
-        db.add_all([plan_item, invite])
+        # Smart-rules row — category_rules.category_id FKs to categories.id,
+        # so the cascade must wipe these before the bulk DELETE on categories.
+        rule = CategoryRule(
+            org_id=org.id,
+            normalized_token=f"TEST{name.upper()}",
+            raw_description_seen=f"POS {name} *0001",
+            category_id=master.id,
+            match_count=1,
+            source=RuleSource.USER_PICK,
+        )
+        db.add_all([plan_item, invite, rule])
         await db.commit()
 
         return {"org_id": org.id, "owner_id": owner.id}
@@ -209,6 +221,14 @@ async def test_delete_org_cascade_removes_all_children_and_keeps_other_org(
     target = await _seed_full_org(session_factory, name="Target")
     keep = await _seed_full_org(session_factory, name="Keep")
 
+    # Shared dictionary is org-agnostic — must survive org deletion.
+    async with session_factory() as db:
+        db.add(MerchantDictionaryEntry(
+            normalized_token="LIDL", category_slug="groceries",
+            is_seed=True, vote_count=0,
+        ))
+        await db.commit()
+
     async with session_factory() as db:
         result = await admin_orgs_service.delete_org_cascade(
             db, org_id=target["org_id"],
@@ -220,12 +240,13 @@ async def test_delete_org_cascade_removes_all_children_and_keeps_other_org(
     assert result["users"] == 2
     assert result["transactions"] == 1
     assert result["categories"] == 2  # master + sub
+    assert result["category_rules"] == 1
     # Order isn't asserted — just that every table reports.
     expected_tables = {
         "transactions", "forecast_plan_items", "budgets", "invitations",
         "recurring_transactions", "forecast_plans", "billing_periods",
-        "accounts", "account_types", "categories", "settings", "users",
-        "subscriptions", "organizations",
+        "accounts", "account_types", "category_rules", "categories",
+        "settings", "users", "subscriptions", "organizations",
     }
     assert expected_tables <= set(result.keys())
 
@@ -237,11 +258,19 @@ async def test_delete_org_cascade_removes_all_children_and_keeps_other_org(
         assert await _count(db, Category, org_id=target["org_id"]) == 0
         assert await _count(db, Subscription, org_id=target["org_id"]) == 0
         assert await _count(db, Invitation, org_id=target["org_id"]) == 0
+        assert await _count(db, CategoryRule, org_id=target["org_id"]) == 0
         # Sibling org survives intact.
         assert await _count(db, Organization, id=keep["org_id"]) == 1
         assert await _count(db, User, org_id=keep["org_id"]) == 2
         assert await _count(db, Transaction, org_id=keep["org_id"]) == 1
         assert await _count(db, Category, org_id=keep["org_id"]) == 2
+        assert await _count(db, CategoryRule, org_id=keep["org_id"]) == 1
+        # merchant_dictionary is shared (no org_id) — must NOT be touched.
+        from sqlalchemy import func
+        md_count = await db.scalar(
+            select(func.count()).select_from(MerchantDictionaryEntry)
+        )
+        assert md_count == 1
 
 
 @pytest.mark.asyncio

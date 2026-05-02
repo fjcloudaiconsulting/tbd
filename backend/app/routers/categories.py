@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.category import Category, CategoryType
+from app.models.category_rule import CategoryRule
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.category import CategoryCreate, CategoryResponse, CategoryUpdate
@@ -168,6 +169,13 @@ async def delete_category(
         db, Transaction,
         [Transaction.category_id == cat.id, Transaction.org_id == current_user.org_id],
         "transaction", "category",
+    )
+
+    # Learned auto-categorization rules reference this category. They're
+    # invisible to the user and become invalid once the category is gone —
+    # delete them silently rather than blocking the category delete.
+    await db.execute(
+        delete(CategoryRule).where(CategoryRule.category_id == cat.id)
     )
 
     await db.delete(cat)

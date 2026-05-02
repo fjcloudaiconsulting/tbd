@@ -10,6 +10,8 @@ from app.models.settings import OrgSetting
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus, ForecastItemType, ItemSource
 from app.models.subscription import Plan, Subscription, SubscriptionStatus, BillingInterval
 from app.models.invitation import Invitation
+from app.models.category_rule import CategoryRule, RuleSource
+from app.models.merchant_dictionary import MerchantDictionaryEntry
 
 __all__ = [
     "Base",
@@ -37,4 +39,7 @@ __all__ = [
     "SubscriptionStatus",
     "BillingInterval",
     "Invitation",
+    "CategoryRule",
+    "RuleSource",
+    "MerchantDictionaryEntry",
 ]

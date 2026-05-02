@@ -23,6 +23,7 @@ from app.models.account import Account, AccountType
 from app.models.billing import BillingPeriod
 from app.models.budget import Budget
 from app.models.category import Category
+from app.models.category_rule import CategoryRule
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem
 from app.models.invitation import Invitation
 from app.models.recurring import RecurringTransaction
@@ -306,6 +307,14 @@ async def delete_org_cascade(
 
     counts["account_types"] = (
         await db.execute(delete(AccountType).where(AccountType.org_id == org_id))
+    ).rowcount or 0
+
+    # category_rules.category_id FKs to categories.id, so it must be
+    # deleted before the bulk DELETE on categories below or MySQL's
+    # strict FK refuses. (merchant_dictionary is shared across orgs
+    # and has no org_id — it must survive org deletion.)
+    counts["category_rules"] = (
+        await db.execute(delete(CategoryRule).where(CategoryRule.org_id == org_id))
     ).rowcount or 0
 
     # Categories self-reference via parent_id. Break the link before

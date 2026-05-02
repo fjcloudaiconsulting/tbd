@@ -159,6 +159,8 @@ export interface ForecastPlan {
 
 // ── Import ──────────────────────────────────────────────────────────────────
 
+export type SuggestionSource = "org_rule" | "shared_dictionary" | "default";
+
 export interface ImportPreviewRow {
   row_number: number;
   date: string;
@@ -170,6 +172,8 @@ export interface ImportPreviewRow {
   is_duplicate: boolean;
   duplicate_transaction_id: number | null;
   is_potential_transfer: boolean;
+  suggested_category_id?: number | null;
+  suggestion_source?: SuggestionSource | null;
 }
 
 export interface ImportPreviewResponse {
@@ -191,6 +195,8 @@ export interface ImportConfirmRow {
   skip: boolean;
   is_transfer: boolean;
   transfer_account_id: number | null;
+  suggested_category_id?: number | null;
+  suggestion_source?: SuggestionSource | null;
 }
 
 export interface ImportConfirmRequest {

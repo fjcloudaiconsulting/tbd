@@ -13,6 +13,7 @@ instead of HTTPException — callers map these to the appropriate response.
 import datetime
 from decimal import Decimal
 
+import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,7 +22,10 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate, TransferCreate
+from app.services.category_rules_service import learn_from_choice
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+
+logger = structlog.get_logger()
 
 
 # ── Response helpers ──────────────────────────────────────────────────────────
@@ -151,6 +155,33 @@ async def create_transaction(
 
     await db.commit()
 
+    # Learn from the explicit category pick on MANUAL creates only.
+    # Imports own their own learning in execute_import (Task 7), with
+    # accept-vs-override awareness. Adding a learn here would double-write
+    # and clobber user_pick semantics.
+    #
+    # Learning is best-effort: a failure here must NOT surface as a 500
+    # to the caller — the user's transaction is already committed above.
+    if not is_imported:
+        try:
+            await learn_from_choice(
+                db,
+                org_id=org_id,
+                description=body.description,
+                category_id=body.category_id,
+                source="user_edit",
+            )
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            await logger.awarning(
+                "smart_rules.learn_failed",
+                org_id=org_id,
+                op="create_transaction",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
     result = await db.execute(
         select(Transaction).options(*_load_opts()).where(Transaction.id == tx.id)
     )
@@ -184,6 +215,7 @@ async def update_transaction(
     old_amount = tx.amount
     old_type = tx.type
     old_status = tx.status
+    old_category_id = tx.category_id
 
     new_account_id = body.account_id if body.account_id is not None else old_account_id
     new_status = TransactionStatus(body.status) if body.status is not None else old_status
@@ -220,6 +252,31 @@ async def update_transaction(
             apply_balance(new_account, tx.amount, tx.type)
 
     await db.commit()
+
+    # Learn only when the category actually changed and the row is not a transfer.
+    # Transfers raise ConflictError above, so by here tx.linked_transaction_id is None.
+    #
+    # Learning is best-effort: a failure here must NOT surface as a 500
+    # to the caller — the user's edit is already committed above.
+    if body.category_id is not None and body.category_id != old_category_id:
+        try:
+            await learn_from_choice(
+                db,
+                org_id=org_id,
+                description=tx.description,
+                category_id=body.category_id,
+                source="user_edit",
+            )
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            await logger.awarning(
+                "smart_rules.learn_failed",
+                org_id=org_id,
+                op="update_transaction",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
 
     result = await db.execute(
         select(Transaction).options(*_load_opts()).where(Transaction.id == tx.id)
