@@ -10,6 +10,7 @@ import structlog
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.settings import OrgSetting
 from app.models.transaction import Transaction
 from app.schemas.import_schemas import (
     ImportConfirmRequest,
@@ -20,7 +21,13 @@ from app.schemas.import_schemas import (
 )
 from app.schemas.transaction import TransactionCreate, TransferCreate
 from app.services import transaction_service
-from app.services.category_rules_service import infer_category
+from app.services.category_rules_service import (
+    bump_shared_vote,
+    infer_category,
+    learn_from_choice,
+    normalize_description,
+    should_skip_learning,
+)
 from app.services.exceptions import ValidationError
 from app.services.import_parser import ParsedRow
 
@@ -142,6 +149,21 @@ async def execute_import(
     skipped_count = 0
     errors: list[ImportRowError] = []
 
+    # ── Smart-rules learning: fetch share flag once, init aggregate counters ──
+    share_flag = (await db.execute(
+        select(OrgSetting.value).where(
+            OrgSetting.org_id == org_id,
+            OrgSetting.key == "share_merchant_data",
+        )
+    )).scalar_one_or_none()
+    share_merchant_data = (share_flag == "true")
+
+    learned_count = 0
+    accepted_count = 0
+    overridden_count = 0
+    source_split: Counter[str] = Counter()
+    miss_tokens: set[str] = set()
+
     for row in body.rows:
         if row.skip:
             skipped_count += 1
@@ -188,6 +210,44 @@ async def execute_import(
                     db, org_id, tx_body, is_imported=True
                 )
 
+                # ── Learn from the user's category choice ────────────────
+                # Skip transfers (the transfer branch above never reaches
+                # this block) and rows with no category at all. The double
+                # commit (create_transaction commits the txn, this block
+                # commits the rule + vote separately) is intentional —
+                # keeps a learn-failure from rolling back the imported
+                # transaction.
+                if row.category_id is not None and not should_skip_learning(row):
+                    accepted = (
+                        row.suggested_category_id is not None
+                        and row.suggested_category_id == row.category_id
+                    )
+                    source = "user_pick" if accepted else "user_edit"
+                    await learn_from_choice(
+                        db,
+                        org_id=org_id,
+                        description=row.description,
+                        category_id=row.category_id,
+                        source=source,
+                    )
+                    if (
+                        accepted and share_merchant_data
+                        and row.suggestion_source == "shared_dictionary"
+                    ):
+                        await bump_shared_vote(db, description=row.description)
+                    await db.commit()
+
+                    learned_count += 1
+                    if accepted:
+                        accepted_count += 1
+                    elif row.suggested_category_id is not None:
+                        overridden_count += 1
+                    source_split[row.suggestion_source or "default"] += 1
+                    if row.suggestion_source == "default":
+                        token = normalize_description(row.description)
+                        if token:
+                            miss_tokens.add(token)
+
             imported_count += 1
 
         except Exception as exc:
@@ -198,6 +258,25 @@ async def execute_import(
                 error=str(exc),
             )
             errors.append(ImportRowError(row_number=row.row_number, error=str(exc)))
+
+    # ── Aggregate smart-rules metric (architect-mandated; one per import) ──
+    await logger.ainfo(
+        "smart_rules.import_executed",
+        org_id=org_id,
+        rows_total=len(body.rows),
+        imported_count=imported_count,
+        learned_count=learned_count,
+        accepted_count=accepted_count,
+        overridden_count=overridden_count,
+        source_split=dict(source_split),
+        miss_count=len(miss_tokens),
+    )
+    # Per-UNIQUE-token miss events (set-dedup is load-bearing — emitting
+    # per-row would flood the metric with duplicates of the same merchant).
+    for token in miss_tokens:
+        await logger.ainfo(
+            "smart_rules.miss", org_id=org_id, normalized_token=token,
+        )
 
     return ImportConfirmResponse(
         imported_count=imported_count,
