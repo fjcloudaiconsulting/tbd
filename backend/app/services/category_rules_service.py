@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
-from app.models.category_rule import CategoryRule
+from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 
 # URL scheme prefix (HTTP / HTTPS) — stripped before bank-noise so `HTTPS://AMAZON…` collapses cleanly.
@@ -200,3 +200,72 @@ async def infer_category(
 
     # Tier 3 — default
     return None, "default"
+
+
+async def learn_from_choice(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    description: str,
+    category_id: int,
+    source: str,
+) -> None:
+    """Upsert into category_rules. Caller controls the transaction (no commit here).
+
+    Behaviour (architect-locked, do NOT add conservative-overwrite logic):
+      - First write for (org_id, normalized_token): insert with match_count=1.
+      - Subsequent writes: overwrite category_id, source, and raw_description_seen.
+        Increment match_count. Most-recent-wins.
+      - Empty normalized token: no-op.
+
+    Why most-recent-wins: rules come from EXPLICIT user picks/edits, not
+    probabilistic AI inference. When the user says "Spotify is Entertainment,"
+    we obey, even if a previous high-match-count rule said otherwise. The
+    metric scaffold (smart_rules.import_executed) lets us measure whether
+    sticky-bad-rule churn is a real problem; if so, we add policy then.
+    """
+    token = normalize_description(description)
+    if not token:
+        return
+
+    result = await db.execute(
+        select(CategoryRule).where(
+            CategoryRule.org_id == org_id,
+            CategoryRule.normalized_token == token,
+        )
+    )
+    rule = result.scalar_one_or_none()
+    if rule is None:
+        db.add(CategoryRule(
+            org_id=org_id,
+            normalized_token=token,
+            raw_description_seen=description[:255],
+            category_id=category_id,
+            match_count=1,
+            source=RuleSource(source),
+        ))
+        return
+
+    rule.category_id = category_id
+    rule.source = RuleSource(source)
+    rule.raw_description_seen = description[:255]
+    rule.match_count = (rule.match_count or 0) + 1
+
+
+async def bump_shared_vote(db: AsyncSession, *, description: str) -> None:
+    """Increment vote_count on the matching shared-dictionary entry, if any.
+
+    No-op if the normalized token isn't in the dictionary — we don't promote
+    new tokens automatically in this PR; promotion is a future feature.
+    Caller controls the transaction.
+    """
+    token = normalize_description(description)
+    if not token:
+        return
+    entry = (await db.execute(
+        select(MerchantDictionaryEntry).where(
+            MerchantDictionaryEntry.normalized_token == token
+        )
+    )).scalar_one_or_none()
+    if entry is not None:
+        entry.vote_count = (entry.vote_count or 0) + 1

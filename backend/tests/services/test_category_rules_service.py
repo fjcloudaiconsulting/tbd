@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -14,7 +14,9 @@ from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.user import Organization
 from app.services.category_rules_service import (
+    bump_shared_vote,
     infer_category,
+    learn_from_choice,
     normalize_description,
     should_skip_learning,
 )
@@ -194,3 +196,117 @@ async def test_infer_category_default_when_slug_not_in_org(db_session: AsyncSess
     )
     assert cat_id is None
     assert source == "default"
+
+
+async def test_learn_from_choice_inserts_new_rule(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    await learn_from_choice(
+        db_session,
+        org_id=seeded_org["org_id"],
+        description="POS LIDL *0001",
+        category_id=seeded_org["groceries_id"],
+        source="user_pick",
+    )
+    await db_session.commit()
+
+    rule = (await db_session.execute(
+        select(CategoryRule).where(
+            CategoryRule.org_id == seeded_org["org_id"],
+            CategoryRule.normalized_token == "LIDL",
+        )
+    )).scalar_one()
+    assert rule.category_id == seeded_org["groceries_id"]
+    assert rule.match_count == 1
+    assert rule.source == RuleSource.USER_PICK
+    assert rule.raw_description_seen == "POS LIDL *0001"
+
+
+async def test_learn_from_choice_upserts_with_new_category(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    """Most-recent-wins: a second call with a different category overwrites + bumps count."""
+    await learn_from_choice(
+        db_session, org_id=seeded_org["org_id"],
+        description="POS LIDL *0001", category_id=seeded_org["groceries_id"],
+        source="user_pick",
+    )
+    await db_session.commit()
+
+    await learn_from_choice(
+        db_session, org_id=seeded_org["org_id"],
+        description="POS LIDL *0002", category_id=seeded_org["restaurants_id"],
+        source="user_edit",
+    )
+    await db_session.commit()
+
+    rule = (await db_session.execute(
+        select(CategoryRule).where(CategoryRule.normalized_token == "LIDL")
+    )).scalar_one()
+    assert rule.category_id == seeded_org["restaurants_id"]
+    assert rule.match_count == 2
+    assert rule.source == RuleSource.USER_EDIT
+    assert rule.raw_description_seen == "POS LIDL *0002"
+
+
+async def test_learn_from_choice_idempotent_on_same_category(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    """Three identical learns → match_count=3, no other rows."""
+    for _ in range(3):
+        await learn_from_choice(
+            db_session, org_id=seeded_org["org_id"],
+            description="POS LIDL *0001", category_id=seeded_org["groceries_id"],
+            source="user_pick",
+        )
+        await db_session.commit()
+
+    rules = (await db_session.execute(select(CategoryRule))).scalars().all()
+    assert len(rules) == 1
+    assert rules[0].match_count == 3
+    assert rules[0].category_id == seeded_org["groceries_id"]
+
+
+async def test_learn_from_choice_empty_token_is_noop(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    """Description that normalizes to empty/<3-char fallback that's still empty → don't write."""
+    await learn_from_choice(
+        db_session, org_id=seeded_org["org_id"],
+        description="   ", category_id=seeded_org["groceries_id"],
+        source="user_pick",
+    )
+    await db_session.commit()
+    rules = (await db_session.execute(select(CategoryRule))).scalars().all()
+    assert rules == []
+
+
+async def test_bump_shared_vote_increments_existing_entry(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    db_session.add(MerchantDictionaryEntry(
+        normalized_token="LIDL", category_slug="groceries", is_seed=True, vote_count=0,
+    ))
+    await db_session.commit()
+
+    await bump_shared_vote(db_session, description="POS LIDL *9999")
+    await db_session.commit()
+
+    entry = (await db_session.execute(
+        select(MerchantDictionaryEntry).where(
+            MerchantDictionaryEntry.normalized_token == "LIDL"
+        )
+    )).scalar_one()
+    assert entry.vote_count == 1
+
+
+async def test_bump_shared_vote_noop_when_token_missing(
+    db_session: AsyncSession, seeded_org: dict
+) -> None:
+    """Token isn't in the dictionary → silent no-op (we don't auto-promote here)."""
+    await bump_shared_vote(db_session, description="POS NOVEL CAFE *0001")
+    await db_session.commit()
+    entries = (await db_session.execute(
+        select(MerchantDictionaryEntry)
+    )).scalars().all()
+    assert entries == []
