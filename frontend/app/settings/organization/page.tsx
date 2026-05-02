@@ -10,6 +10,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
 import MembersSection from "@/components/settings/MembersSection";
+import SmartRulesSection from "@/components/settings/SmartRulesSection";
 import {
   input,
   label,
@@ -359,11 +360,12 @@ export default function OrganizationSettingsPage() {
       </div>
 
       {user && (
-        <div className="mt-6">
+        <div className="mt-6 space-y-6">
           <MembersSection
             currentUserId={user.id}
             currentRole={user.role as "owner" | "admin" | "member"}
           />
+          <SmartRulesSection />
         </div>
       )}
 
