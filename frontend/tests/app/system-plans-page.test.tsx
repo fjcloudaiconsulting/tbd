@@ -93,6 +93,43 @@ describe("/system/plans page — Features section + Duplicate", () => {
     expect(screen.getByText("AI Auto-Categorization")).toBeInTheDocument();
   });
 
+  it("Edit Save sends features without slug", async () => {
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/plans/all") return Promise.resolve([PRO_PLAN]);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<SystemPlansPage />);
+
+    const editButton = await screen.findByRole("button", { name: /^Edit$/i });
+    fireEvent.click(editButton);
+
+    // Wait for the editor to render the feature checkboxes.
+    await screen.findByText("AI Auto-Categorization");
+
+    // Toggle ai.autocategorize. The checkbox has id="feature-ai.autocategorize".
+    const autocatCheckbox = document.getElementById("feature-ai.autocategorize") as HTMLInputElement;
+    expect(autocatCheckbox).toBeTruthy();
+    fireEvent.click(autocatCheckbox);
+
+    // Click the form's Save button.
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => {
+      const editCall = apiFetchMock.mock.calls.find(
+        ([url, opts]) =>
+          typeof url === "string" &&
+          url.includes("/api/v1/plans/1") &&
+          (opts as RequestInit | undefined)?.method === "PUT",
+      );
+      expect(editCall).toBeDefined();
+      const body = JSON.parse((editCall![1] as RequestInit).body as string);
+      expect(body).not.toHaveProperty("slug");
+      expect(body).toHaveProperty("features");
+      expect(body.features["ai.autocategorize"]).toBe(true);
+    });
+  });
+
   it("Duplicate row action opens the Duplicate plan modal", async () => {
     apiFetchMock.mockImplementation(((url: string) => {
       if (url === "/api/v1/plans/all") return Promise.resolve([PRO_PLAN]);

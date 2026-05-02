@@ -116,9 +116,8 @@ export default function SystemPlansPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
-    const body = {
+    const common = {
       name: formName,
-      slug: formSlug,
       description: formDescription,
       price_monthly: parseFloat(formPriceMonthly) || 0,
       price_yearly: parseFloat(formPriceYearly) || 0,
@@ -131,15 +130,16 @@ export default function SystemPlansPage() {
 
     try {
       if (editing) {
+        // PlanUpdate forbids extra fields and has no `slug` field — omit it on edit.
         await apiFetch(`/api/v1/plans/${editing.id}`, {
           method: "PUT",
-          body: JSON.stringify(body),
+          body: JSON.stringify(common),
         });
         setSuccessMsg("Plan updated");
       } else {
         await apiFetch("/api/v1/plans", {
           method: "POST",
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...common, slug: formSlug }),
         });
         setSuccessMsg("Plan created");
       }
