@@ -7,7 +7,7 @@ from app.database import get_db
 from app.deps import get_current_user
 from app.models.subscription import Plan, Subscription
 from app.models.user import User
-from app.schemas.subscription import PlanCreate, PlanResponse, PlanUpdate
+from app.schemas.subscription import PlanCreate, PlanDuplicateRequest, PlanResponse, PlanUpdate
 from app.services.plan_service import canonicalize_features
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
@@ -160,3 +160,44 @@ async def delete_plan(
 
     plan.is_active = False
     await db.commit()
+
+
+@router.post(
+    "/{plan_id}/duplicate",
+    response_model=PlanResponse,
+    status_code=201,
+    dependencies=[Depends(require_permission("plans.manage"))],
+)
+async def duplicate_plan(
+    plan_id: int,
+    body: PlanDuplicateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Clone a plan with is_custom=True. Reject 409 on slug conflict."""
+    src = (await db.execute(select(Plan).where(Plan.id == plan_id))).scalar_one_or_none()
+    if src is None:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    slug_taken = await db.scalar(select(Plan.id).where(Plan.slug == body.slug))
+    if slug_taken is not None:
+        raise HTTPException(status_code=409, detail="Plan slug already exists")
+
+    clone = Plan(
+        name=body.name,
+        slug=body.slug,
+        description=src.description,
+        is_custom=True,
+        is_active=True,
+        sort_order=src.sort_order,
+        price_monthly=src.price_monthly,
+        price_yearly=src.price_yearly,
+        max_users=src.max_users,
+        retention_days=src.retention_days,
+        # Re-canonicalize so the clone always has the full closed-set keys
+        # even if the source somehow drifted.
+        features=canonicalize_features(src.features or {}),
+    )
+    db.add(clone)
+    await db.commit()
+    await db.refresh(clone)
+    return clone
