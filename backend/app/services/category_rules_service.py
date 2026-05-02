@@ -10,6 +10,9 @@ import unicodedata
 # URL scheme prefix (HTTP / HTTPS) — stripped before bank-noise so `HTTPS://AMAZON…` collapses cleanly.
 _URL_SCHEME = re.compile(r"^\s*HTTPS?://", re.IGNORECASE)
 
+# Masked card numbers appearing at the front: "****0001", "*1234", "**5678 ".
+_LEADING_MASKED_CARD = re.compile(r"^\s*\*+\s*\d{2,}\s+", re.IGNORECASE)
+
 # Bank-noise that appears at the front of the descriptor.
 _LEADING_NOISE = re.compile(
     r"^\s*(POS|CARD\s*PAYMENT|CARD|PAY|SEPA(?:\s+TRANSFER)?|DEB|CARTAO)\s+",
@@ -73,8 +76,11 @@ def normalize_description(raw: str) -> str:
     if not s:
         return ""
 
-    # Step 2 — URL scheme then bank-noise (one pass each; descriptors don't stack these).
+    # Step 2a — strip leading URL scheme if present.
     s = _URL_SCHEME.sub("", s, count=1)
+    # Step 2b — strip leading masked-card prefix (e.g. "****0001 ").
+    s = _LEADING_MASKED_CARD.sub("", s, count=1)
+    # Step 2c — strip leading bank-noise (POS / CARD / PAY / SEPA / DEB / CARTAO).
     s = _LEADING_NOISE.sub("", s, count=1)
 
     # Step 3 — iterate trailing markers until stable.
@@ -96,8 +102,12 @@ def normalize_description(raw: str) -> str:
     if tokens and tokens[0] in _LEADING_STOPWORDS:
         tokens = tokens[1:]
 
-    # Step 6 — strip trailing pure-digit tokens.
-    while tokens and tokens[-1].isdigit():
+    # Step 6 — strip trailing pure-digit tokens that look like date/terminal-id residue
+    # (4+ digits). Keep 1-3 digit tokens because they're often brand suffixes
+    # like "STORE 24" or "SUPER 8". Architect note (sticky-bad-token risk):
+    # collapsing "STORE 24" and "STORE" into one token would merge two
+    # different merchants in the rules dictionary.
+    while tokens and tokens[-1].isdigit() and len(tokens[-1]) >= 4:
         tokens.pop()
 
     candidate = " ".join(tokens).strip()

@@ -27,12 +27,30 @@ from app.services.category_rules_service import normalize_description
         ("POS LIDL *1234 *ABCD", "LIDL"),                   # double terminal id
         ("UBER 2026-04-12 2026-04-13", "UBER"),             # double date
         ("MERCADONA 20260412", "MERCADONA"),                # date without dashes
-        ("E-LECLERC 24H STATION 042", "E LECLERC 24H STATION"),  # brand-internal digits
+        ("E-LECLERC 24H STATION 042", "E LECLERC 24H STATION 042"),  # 3-digit trailing token kept (brand-suffix safe; see I-1)
         # ── Fallbacks ────────────────────────────────────────────────────────
         ("", ""),                  # empty → empty
         ("X", "X"),                # < 3 chars after cleanup → fallback returns cleaned uppercase
         ("**", ""),                # only noise → empty
+        # ── Brand suffix preservation (architect/I-1 sticky-bad-token risk) ───
+        ("STORE 24", "STORE 24"),                      # 2-digit brand suffix kept
+        ("SUPER 8", "SUPER 8"),                        # 1-digit brand suffix kept
+        ("WORTEN 24H STATION", "WORTEN 24H STATION"),  # alphanumeric token kept
+        # ── Masked card prefix (architect/I-4) ──────────────────────────────
+        ("****0001 STARBUCKS", "STARBUCKS"),
+        ("**1234 LIDL LISBOA *9999", "LIDL LISBOA"),   # masked prefix + trailing *id
+        # ── Documented trade-offs (low real-world hit rate; not fixing in this PR) ───
+        ("PAY DAY LOAN", "DAY LOAN"),                  # I-2: leading "PAY" stripped even when part of name
+        ("BRANDIBANXX99ABCDEFGHIJ12345", "BRANDIBAN"), # I-3: glued IBAN-tail IS stripped (regex matches mid-word)
     ],
 )
 def test_normalize_description(raw: str, expected: str) -> None:
     assert normalize_description(raw) == expected
+
+
+def test_normalize_description_handles_none() -> None:
+    """raw=None must not crash; returns "" gracefully.
+
+    DB rows can have NULL descriptions; callers shouldn't have to defend.
+    """
+    assert normalize_description(None) == ""  # type: ignore[arg-type]
