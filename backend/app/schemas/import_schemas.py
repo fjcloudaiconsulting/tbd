@@ -23,6 +23,8 @@ class ImportPreviewRow(BaseModel):
     is_duplicate: bool = False
     duplicate_transaction_id: int | None = None
     is_potential_transfer: bool = False
+    suggested_category_id: int | None = None
+    suggestion_source: Literal["org_rule", "shared_dictionary", "default"] | None = None
 
 
 class ImportPreviewResponse(BaseModel):
@@ -51,6 +53,8 @@ class ImportConfirmRow(BaseModel):
     skip: bool = False
     is_transfer: bool = False
     transfer_account_id: int | None = None  # required when is_transfer=True
+    suggested_category_id: int | None = None  # echoed back from preview for accept-vs-override detection
+    suggestion_source: Literal["org_rule", "shared_dictionary", "default"] | None = None
 
 
 class ImportConfirmRequest(BaseModel):

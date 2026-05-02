@@ -4,6 +4,8 @@ Parsing/validation is separate from persistence so a background worker
 can replace the synchronous confirm path later without a rewrite.
 """
 
+from collections import Counter
+
 import structlog
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +20,7 @@ from app.schemas.import_schemas import (
 )
 from app.schemas.transaction import TransactionCreate, TransferCreate
 from app.services import transaction_service
+from app.services.category_rules_service import infer_category
 from app.services.exceptions import ValidationError
 from app.services.import_parser import ParsedRow
 
@@ -72,6 +75,14 @@ async def build_preview(
             and row.transaction_type.lower() in _TRANSFER_TYPES
         )
 
+        # ── Smart-rules suggestion (skipped for transfers) ──
+        suggested_category_id: int | None = None
+        suggestion_source: str | None = None
+        if not is_transfer:
+            suggested_category_id, suggestion_source = await infer_category(
+                db, org_id=org_id, description=row.description
+            )
+
         if is_dup:
             duplicate_count += 1
         if is_transfer:
@@ -89,8 +100,23 @@ async def build_preview(
                 is_duplicate=is_dup,
                 duplicate_transaction_id=dup_id,
                 is_potential_transfer=is_transfer,
+                suggested_category_id=suggested_category_id,
+                suggestion_source=suggestion_source,
             )
         )
+
+    # ── Aggregate smart-rules metric (architect-mandated; one event per preview) ──
+    source_split = Counter((r.suggestion_source or "skipped") for r in preview_rows)
+    suggested_count = sum(
+        1 for r in preview_rows if r.suggested_category_id is not None
+    )
+    await logger.ainfo(
+        "smart_rules.preview_built",
+        org_id=org_id,
+        rows_total=len(preview_rows),
+        suggested_count=suggested_count,
+        source_split=dict(source_split),
+    )
 
     return ImportPreviewResponse(
         rows=preview_rows,
