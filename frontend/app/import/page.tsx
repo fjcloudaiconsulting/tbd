@@ -7,6 +7,7 @@ import useSWR from "swr";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import AppShell from "@/components/AppShell";
 import CategorySelect from "@/components/ui/CategorySelect";
+import Spinner from "@/components/ui/Spinner";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type {
   Account,
@@ -163,6 +164,12 @@ function ImportPageContent() {
       </div>
 
       {errorMsg && <div className={errorCls}>{errorMsg}</div>}
+
+      {categories === undefined && (
+        <div className={card}>
+          <Spinner />
+        </div>
+      )}
 
       {categories?.length === 0 && (
         <div className={`${card} p-10 text-center`}>
