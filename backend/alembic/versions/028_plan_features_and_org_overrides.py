@@ -26,7 +26,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 1. Add plans.features JSON column with default {}.
     op.add_column(
         "plans",
         sa.Column(
@@ -37,9 +36,8 @@ def upgrade() -> None:
         ),
     )
 
-    # 2. Backfill features from legacy ai_* columns. Pass the dict directly;
-    #    sa.JSON serializes it as a JSON object. Do NOT json.dumps() — that
-    #    stores a quoted string scalar.
+    # Pass the dict directly; sa.JSON serializes it as a JSON object.
+    # Do NOT json.dumps() — that stores a quoted string scalar.
     plans_t = table(
         "plans",
         column("id", sa.Integer),
@@ -70,7 +68,6 @@ def upgrade() -> None:
             .values(features=features)
         )
 
-    # 3. Create org_feature_overrides table.
     op.create_table(
         "org_feature_overrides",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
