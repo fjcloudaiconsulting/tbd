@@ -12,7 +12,7 @@ exists. FK / SQL diagnostics never bleed into 500 bodies — generic
 message client-side, full detail server-side.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -248,3 +248,46 @@ async def set_feature_override(
     )
 
     return await _override_to_response(row, db)
+
+
+@router.delete(
+    "/{org_id}/feature-overrides/{feature_key}",
+    status_code=204,
+)
+async def revoke_feature_override(
+    org_id: int,
+    feature_key: str,
+    user: User = Depends(require_permission("orgs.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    # 400 if key isn't in the catalog (matches PUT translation).
+    try:
+        _validate_feature_key(feature_key)
+    except ValidationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    existing = await db.scalar(
+        select(OrgFeatureOverride).where(
+            OrgFeatureOverride.org_id == org_id,
+            OrgFeatureOverride.feature_key == feature_key,
+        )
+    )
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"FeatureOverride {org_id}/{feature_key} not found",
+        )
+
+    old_value = existing.value
+    await db.delete(existing)
+    await db.commit()
+
+    log.info(
+        "admin.org.feature.revoked",
+        target_org_id=org_id,
+        feature_key=feature_key,
+        old_value=old_value,
+        actor_user_id=user.id,
+        actor_email=user.email,
+    )
+    return Response(status_code=204)

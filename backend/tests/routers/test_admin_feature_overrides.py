@@ -242,3 +242,68 @@ async def test_put_requires_orgs_manage(session_factory):
             json={"value": True},
         )
     assert res.status_code == 403
+
+
+# ── DELETE ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_revokes_existing_override(session_factory):
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        put_res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
+            json={"value": True},
+        )
+        assert put_res.status_code == 200
+
+        with patch("app.routers.admin_orgs.log") as mock_log:
+            del_res = client.delete(
+                f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
+            )
+
+    assert del_res.status_code == 204
+    assert del_res.content == b""
+
+    mock_log.info.assert_called_once()
+    args, kwargs = mock_log.info.call_args
+    assert args[0] == "admin.org.feature.revoked"
+    assert kwargs["target_org_id"] == seed["target_id"]
+    assert kwargs["feature_key"] == "ai.budget"
+    assert kwargs["old_value"] is True
+    assert kwargs["actor_user_id"] == seed["admin_user_id"]
+    assert kwargs["actor_email"] == seed["admin_email"]
+
+
+@pytest.mark.asyncio
+async def test_delete_returns_404_when_no_override(session_factory):
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.delete(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
+        )
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_unknown_key_returns_400(session_factory):
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.delete(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.totally_made_up",
+        )
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_requires_orgs_manage(session_factory):
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _plain_user_resolver())
+    with TestClient(app) as client:
+        res = client.delete(
+            f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
+        )
+    assert res.status_code == 403
