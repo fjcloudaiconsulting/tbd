@@ -23,7 +23,7 @@ from app.services.category_rules_service import normalize_description
         ("SEPA SPOTIFY AB IT60X0542811101000000123456", "SPOTIFY AB"),  # IBAN tail
         ("HTTPS://AMAZON.ES/REF=ABC", "AMAZON ES REF"),     # URL-ish
         ("CONTINENTE LISBOA *4521", "CONTINENTE LISBOA"),
-        ("CAFÉ DELTA LISBOA", "CAF DELTA LISBOA"),          # accent stripped
+        ("CAFÉ DELTA LISBOA", "CAFE DELTA LISBOA"),         # accent folded (NFKD), not dropped
         ("POS LIDL *1234 *ABCD", "LIDL"),                   # double terminal id
         ("UBER 2026-04-12 2026-04-13", "UBER"),             # double date
         ("MERCADONA 20260412", "MERCADONA"),                # date without dashes

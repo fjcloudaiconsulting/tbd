@@ -36,14 +36,16 @@ _LEADING_STOPWORDS = {"TRANSFER", "PAYMENT", "DEBIT", "CREDIT", "TXN", "TX"}
 
 
 def _strip_accents(s: str) -> str:
-    """ASCII-strict drop of non-ASCII codepoints.
+    """NFKD decompose + drop combining marks → fold accents to ASCII letters.
 
-    Note: this DROPS non-ASCII characters rather than folding them
-    (CAFÉ → CAF, not CAFE). The spec's accent-test case asserts the drop
-    behavior — folding `É`→`E` and keeping it bleeds noise into rules
-    on mixed-locale descriptors, so we drop instead.
+    Why fold and not drop: bank descriptors for the same merchant vary in encoding
+    (e.g. `CAFÉ DELTA` in one bank, `CAFE DELTA` in another). Folding maps them
+    to the same token; dropping would fracture coverage. Architectural decision
+    captured in project_architect_review_2026_05_02.md.
     """
-    return s.encode("ascii", "ignore").decode("ascii")
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c)
+    )
 
 
 def _fallback(raw: str) -> str:
