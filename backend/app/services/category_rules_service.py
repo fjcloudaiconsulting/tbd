@@ -114,3 +114,26 @@ def normalize_description(raw: str) -> str:
     if len(candidate) < 3:
         return _fallback(raw)
     return candidate
+
+
+def should_skip_learning(obj) -> bool:
+    """True for any object representing a transfer.
+
+    Duck-typed:
+      - ORM Transaction → uses ``linked_transaction_id`` (non-None means it's
+        paired with another leg, i.e. a transfer).
+      - ImportPreviewRow / ImportConfirmRow → uses ``is_transfer``.
+
+    Either attribute being truthy short-circuits to True. Objects with neither
+    attribute return False.
+
+    Why: transfers don't have a meaningful merchant — they're inter-account
+    movement. Learning a rule from a transfer would map "TRANSFER TO SAVINGS"
+    to whatever category the user picked for accounting purposes, which would
+    then mis-categorize legitimate same-merchant payments later.
+    """
+    if getattr(obj, "linked_transaction_id", None) is not None:
+        return True
+    if getattr(obj, "is_transfer", False):
+        return True
+    return False

@@ -1,7 +1,12 @@
 """Service-layer tests for L3.10 — smart rules / auto-categorization."""
 import pytest
 
-from app.services.category_rules_service import normalize_description
+from types import SimpleNamespace
+
+from app.services.category_rules_service import (
+    normalize_description,
+    should_skip_learning,
+)
 
 
 @pytest.mark.parametrize(
@@ -54,3 +59,21 @@ def test_normalize_description_handles_none() -> None:
     DB rows can have NULL descriptions; callers shouldn't have to defend.
     """
     assert normalize_description(None) == ""  # type: ignore[arg-type]
+
+
+def test_should_skip_learning_skips_transfer_via_linked_id() -> None:
+    """ORM Transaction with linked_transaction_id set is a transfer leg."""
+    tx = SimpleNamespace(linked_transaction_id=42, type="expense")
+    assert should_skip_learning(tx) is True
+
+
+def test_should_skip_learning_skips_preview_row_marked_transfer() -> None:
+    """ImportConfirmRow with is_transfer=True must skip."""
+    row = SimpleNamespace(linked_transaction_id=None, is_transfer=True)
+    assert should_skip_learning(row) is True
+
+
+def test_should_skip_learning_keeps_regular_transaction() -> None:
+    """Neither linked nor flagged → learn."""
+    tx = SimpleNamespace(linked_transaction_id=None, type="expense", is_transfer=False)
+    assert should_skip_learning(tx) is False
