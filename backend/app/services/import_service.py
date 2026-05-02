@@ -223,20 +223,38 @@ async def execute_import(
                         and row.suggested_category_id == row.category_id
                     )
                     source = "user_pick" if accepted else "user_edit"
-                    await learn_from_choice(
-                        db,
-                        org_id=org_id,
-                        description=row.description,
-                        category_id=row.category_id,
-                        source=source,
-                    )
-                    if (
-                        accepted and share_merchant_data
-                        and row.suggestion_source == "shared_dictionary"
-                    ):
-                        await bump_shared_vote(db, description=row.description)
-                    await db.commit()
+                    # Learning is best-effort: a failure here must NOT
+                    # bubble out as a row error. The transaction itself
+                    # has already committed (see create_transaction
+                    # above) — the row is imported regardless.
+                    try:
+                        await learn_from_choice(
+                            db,
+                            org_id=org_id,
+                            description=row.description,
+                            category_id=row.category_id,
+                            source=source,
+                        )
+                        if (
+                            accepted and share_merchant_data
+                            and row.suggestion_source == "shared_dictionary"
+                        ):
+                            await bump_shared_vote(db, description=row.description)
+                        await db.commit()
+                    except Exception as exc:
+                        await db.rollback()
+                        await logger.awarning(
+                            "smart_rules.learn_failed",
+                            org_id=org_id,
+                            op="execute_import",
+                            row_number=row.row_number,
+                            error=str(exc),
+                            error_type=type(exc).__name__,
+                        )
 
+                    # Counters always update — the user's choice was
+                    # registered against an imported row, even if the
+                    # rule write failed and got logged above.
                     learned_count += 1
                     if accepted:
                         accepted_count += 1

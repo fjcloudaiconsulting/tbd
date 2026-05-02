@@ -8,7 +8,7 @@ import re
 import unicodedata
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
@@ -253,19 +253,20 @@ async def learn_from_choice(
 
 
 async def bump_shared_vote(db: AsyncSession, *, description: str) -> None:
-    """Increment vote_count on the matching shared-dictionary entry, if any.
+    """Atomically increment vote_count on the matching shared-dictionary entry.
 
-    No-op if the normalized token isn't in the dictionary — we don't promote
-    new tokens automatically in this PR; promotion is a future feature.
-    Caller controls the transaction.
+    No-op if the normalized token isn't in the dictionary — promotion of
+    new tokens is a future feature. Caller controls the transaction.
+
+    Uses ``UPDATE ... SET vote_count = vote_count + 1`` so concurrent imports
+    from different orgs don't lose increments under repeatable-read isolation
+    (the previous read-modify-write pattern would clobber peers under load).
     """
     token = normalize_description(description)
     if not token:
         return
-    entry = (await db.execute(
-        select(MerchantDictionaryEntry).where(
-            MerchantDictionaryEntry.normalized_token == token
-        )
-    )).scalar_one_or_none()
-    if entry is not None:
-        entry.vote_count = (entry.vote_count or 0) + 1
+    await db.execute(
+        update(MerchantDictionaryEntry)
+        .where(MerchantDictionaryEntry.normalized_token == token)
+        .values(vote_count=MerchantDictionaryEntry.vote_count + 1)
+    )

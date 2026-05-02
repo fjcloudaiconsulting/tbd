@@ -244,3 +244,33 @@ async def test_aggregate_metric_emitted_with_correct_shape(db_session: AsyncSess
     miss_kwargs = miss_calls[0].kwargs
     assert miss_kwargs["org_id"] == seed["org_id"]
     assert miss_kwargs["normalized_token"]  # non-empty (will be "NOVEL CAFE")
+
+
+async def test_learn_failure_does_not_fail_the_import(
+    db_session: AsyncSession,
+) -> None:
+    """If learn_from_choice raises, the imported transaction is preserved
+    and the failure is logged (not propagated to the caller)."""
+    seed = await _seed(db_session, share=False)
+    body = ImportConfirmRequest(
+        account_id=seed["account_id"],
+        default_category_id=seed["restaurants_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=datetime.date(2026, 5, 1),
+            description="POS LIDL *9999", amount=Decimal("12.50"), type="expense",
+            category_id=seed["groceries_id"],
+            suggested_category_id=seed["groceries_id"],
+            suggestion_source="shared_dictionary",
+        )],
+    )
+
+    with patch(
+        "app.services.import_service.learn_from_choice",
+        new=AsyncMock(side_effect=RuntimeError("simulated learn failure")),
+    ):
+        result = await import_service.execute_import(
+            db_session, org_id=seed["org_id"], body=body,
+        )
+
+    assert result.imported_count == 1
+    assert result.error_count == 0  # learn failure does NOT surface as a row error

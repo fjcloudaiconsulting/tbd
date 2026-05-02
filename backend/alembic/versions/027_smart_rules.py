@@ -53,12 +53,14 @@ def upgrade() -> None:
         ("ALDI", "groceries"), ("TESCO", "groceries"), ("SAINSBURYS", "groceries"),
         ("ALBERT HEIJN", "groceries"), ("EDEKA", "groceries"), ("REWE", "groceries"),
         # Transportation
+        # MB Way is a generic P2P/merchant payments app — too ambiguous
+        # to default to transit, omitted intentionally.
         ("BOLT", "public_transit"), ("FREE NOW", "public_transit"), ("UBER", "public_transit"),
-        ("MB WAY", "public_transit"), ("VIA VERDE", "parking_tolls"), ("RENFE", "public_transit"),
+        ("VIA VERDE", "parking_tolls"), ("RENFE", "public_transit"),
         ("DEUTSCHE BAHN", "public_transit"), ("NS", "public_transit"), ("SNCF", "public_transit"),
-        # Streaming -> "internet" is the closest seeded slug for now
-        ("SPOTIFY", "internet"), ("NETFLIX", "internet"), ("DISNEY", "internet"),
-        ("HBO", "internet"), ("PRIME VIDEO", "internet"),
+        # Streaming
+        ("SPOTIFY", "streaming"), ("NETFLIX", "streaming"), ("DISNEY", "streaming"),
+        ("HBO", "streaming"), ("PRIME VIDEO", "streaming"),
         # Telecoms
         ("VODAFONE", "phone"), ("NOS", "phone"), ("MEO", "phone"),
         ("ORANGE", "phone"), ("T MOBILE", "phone"), ("TELEKOM", "phone"),
@@ -69,8 +71,9 @@ def upgrade() -> None:
         ("UBER EATS", "fast_food"), ("DELIVEROO", "fast_food"), ("GLOVO", "fast_food"),
         ("JUSTEAT", "fast_food"), ("WOLT", "fast_food"),
         # General
-        ("AMZN MKTP", "groceries"), ("AMAZON", "groceries"),
-        ("IKEA", "home_repairs"), ("APPLE", "internet"), ("GOOGLE", "internet"),
+        # Apple, Google, Amazon (AMZN MKTP / AMAZON) are too ambiguous
+        # to default to a single category and were dropped from the seed.
+        ("IKEA", "home_repairs"),
     ]
     op.bulk_insert(
         merchant_dict,
