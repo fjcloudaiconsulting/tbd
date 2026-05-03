@@ -18,6 +18,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
 from app.services.billing_service import get_current_period, resolve_period
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.transaction_filters import reportable_transaction_filter
 
 
 async def _compute_spent(
@@ -44,7 +45,7 @@ async def _compute_spent(
         Transaction.type == TransactionType.EXPENSE,
         Transaction.status == TransactionStatus.SETTLED,
         Transaction.settled_date >= period_start,
-        Transaction.linked_transaction_id.is_(None),
+        reportable_transaction_filter(),
     )
     # If period is still open (no end_date), include all from start_date onward
     if period_end is not None:
