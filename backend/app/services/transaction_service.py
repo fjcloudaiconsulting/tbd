@@ -606,6 +606,47 @@ async def find_match_candidates(
     return rows
 
 
+async def find_duplicate_of_linked_leg(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    account_id: int,
+    amount: Decimal,
+    type: TransactionType,
+    date: datetime.date,
+    currency: str,
+) -> list[Transaction]:
+    """Returns up to 10 already-linked rows on the SAME account that match the
+    CSV row's (type, amount, currency) within ±3 days. Used by import preview
+    to flag bank rows that duplicate a synthetic leg created via Op-3.
+
+    Ordered by abs(date_diff) ASC, id ASC.
+    """
+    window_start = date - datetime.timedelta(days=3)
+    window_end = date + datetime.timedelta(days=3)
+
+    q = (
+        select(Transaction)
+        .options(*_load_opts())
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.account_id == account_id,
+            Transaction.type == type,
+            Transaction.amount == amount,
+            Transaction.linked_transaction_id.is_not(None),
+            Transaction.date >= window_start,
+            Transaction.date <= window_end,
+            Account.currency == currency,
+        )
+        .limit(10)
+    )
+    result = await db.execute(q)
+    rows = list(result.scalars().all())
+    rows.sort(key=lambda r: (abs((r.date - date).days), r.id))
+    return rows
+
+
 async def create_transfer(
     db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:

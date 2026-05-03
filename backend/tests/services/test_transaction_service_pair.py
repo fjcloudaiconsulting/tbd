@@ -312,3 +312,62 @@ async def test_find_match_candidates_orders_by_date_proximity_then_id(db_session
     assert candidates[1].date == date(2026, 5, 2)
     assert candidates[2].date == date(2026, 4, 29)
     assert candidates[0].id < candidates[1].id
+
+
+async def test_find_duplicate_of_linked_leg_matches_same_account_within_window(db_session):
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+    candidates = await transaction_service.find_duplicate_of_linked_leg(
+        db_session, expense.org_id,
+        account_id=expense.account_id,
+        amount=expense.amount,
+        type=expense.type,
+        date=expense.date,
+        currency="EUR",
+    )
+    assert len(candidates) == 1
+    assert candidates[0].id == expense.id
+
+
+async def test_find_duplicate_of_linked_leg_excludes_other_accounts(db_session):
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+    # Look on the income leg's account but search for an expense type — won't match
+    candidates = await transaction_service.find_duplicate_of_linked_leg(
+        db_session, expense.org_id,
+        account_id=income.account_id,
+        amount=expense.amount,
+        type=TransactionType.EXPENSE,  # type filter excludes income leg
+        date=expense.date,
+        currency="EUR",
+    )
+    assert candidates == []
+
+
+async def test_find_duplicate_of_linked_leg_excludes_un_linked_rows(db_session):
+    """Un-linked rows must not match (those are detector-2 territory)."""
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    acct = Account(org_id=org.id, name="A", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add(acct)
+    cat = Category(org_id=org.id, name="C", slug="c", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+    plain = Transaction(
+        org_id=org.id, account_id=acct.id, category_id=cat.id,
+        description="x", amount=Decimal("50"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add(plain)
+    await db_session.commit()
+    candidates = await transaction_service.find_duplicate_of_linked_leg(
+        db_session, org.id,
+        account_id=acct.id, amount=Decimal("50"),
+        type=TransactionType.EXPENSE, date=date(2026, 5, 1), currency="EUR",
+    )
+    assert candidates == []
