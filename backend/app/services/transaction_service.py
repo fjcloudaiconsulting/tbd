@@ -24,6 +24,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate, TransferCreate
 from app.services.category_rules_service import learn_from_choice
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.transaction_filters import is_reportable_transaction
 
 logger = structlog.get_logger()
 
@@ -218,22 +219,57 @@ async def create_transaction(
 async def update_transaction(
     db: AsyncSession, org_id: int, transaction_id: int, body: TransactionUpdate
 ) -> Transaction:
-    result = await db.execute(
+    """F2 policy: per-leg edits on linked rows under invariant guards. Amount
+    mirrors atomically. Type and linked_transaction_id immutable on linked rows.
+    See spec §5.3 (`~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-03-transfers-between-accounts-design.md`).
+    """
+    # 1. Pre-read to discover partner (unlocked) and lock both in sorted ID order
+    preview = await db.scalar(
+        select(Transaction).where(
+            Transaction.id == transaction_id, Transaction.org_id == org_id
+        )
+    )
+    if preview is None:
+        raise NotFoundError("Transaction")
+
+    ids_to_lock = [transaction_id]
+    if preview.linked_transaction_id is not None:
+        ids_to_lock.append(preview.linked_transaction_id)
+    ids_to_lock.sort()
+
+    locked = await db.execute(
         select(Transaction)
         .options(*_load_opts())
-        .where(Transaction.id == transaction_id, Transaction.org_id == org_id)
+        .where(Transaction.id.in_(ids_to_lock), Transaction.org_id == org_id)
+        .order_by(Transaction.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    tx = result.scalar_one_or_none()
+    rows = {r.id: r for r in locked.scalars().all()}
+    tx = rows.get(transaction_id)
     if tx is None:
         raise NotFoundError("Transaction")
+    partner = rows.get(tx.linked_transaction_id) if tx.linked_transaction_id is not None else None
 
-    if tx.linked_transaction_id is not None:
-        raise ConflictError("Cannot edit a transfer transaction. Delete and recreate it instead.")
+    # 2. Linked-row schema-level guards
+    if partner is not None:
+        if body.type is not None:
+            raise ValidationError("Type is immutable on transfer legs")
+        if body.account_id is not None:
+            new_acct = await db.scalar(
+                select(Account).where(
+                    Account.id == body.account_id, Account.org_id == org_id
+                )
+            )
+            if new_acct is None:
+                raise ValidationError("Account not found")
+            if new_acct.id == partner.account_id:
+                raise ValidationError("Account must differ from partner's account")
+            if new_acct.currency != partner.account.currency:
+                raise ValidationError("New account currency must match partner's currency")
 
-    # Validate references regardless of status
-    if body.account_id is not None and body.account_id != tx.account_id:
+    # Validate references regardless of linked status
+    if body.account_id is not None and body.account_id != tx.account_id and partner is None:
         await validate_account(db, body.account_id, org_id)
     if body.category_id is not None:
         await validate_category(db, body.category_id, org_id)
@@ -247,20 +283,30 @@ async def update_transaction(
     new_account_id = body.account_id if body.account_id is not None else old_account_id
     new_status = TransactionStatus(body.status) if body.status is not None else old_status
 
-    async with db.begin_nested():
-        # Revert old balance if it was settled
-        if old_status == TransactionStatus.SETTLED:
-            if new_account_id == old_account_id:
-                account = await get_account_for_update(db, old_account_id, org_id)
-                revert_balance(account, old_amount, old_type)
-            else:
-                first_id, second_id = sorted([old_account_id, new_account_id])
-                first = await get_account_for_update(db, first_id, org_id)
-                second = await get_account_for_update(db, second_id, org_id)
-                old_account = first if old_account_id == first_id else second
-                revert_balance(old_account, old_amount, old_type)
+    # 3. Lock affected accounts in sorted ID order
+    account_ids_to_lock: set[int] = set()
+    if old_status == TransactionStatus.SETTLED or new_status == TransactionStatus.SETTLED:
+        account_ids_to_lock.add(old_account_id)
+        account_ids_to_lock.add(new_account_id)
+    if partner is not None and body.amount is not None:
+        if partner.status == TransactionStatus.SETTLED:
+            account_ids_to_lock.add(partner.account_id)
+    accounts: dict[int, Account] = {}
+    for aid in sorted(account_ids_to_lock):
+        accounts[aid] = await get_account_for_update(db, aid, org_id)
 
-        # Apply field updates
+    amount_was_changed = body.amount is not None
+    pre_edit_amount = old_amount  # for telemetry
+
+    async with db.begin_nested():
+        # 4a: revert this leg if currently SETTLED
+        if old_status == TransactionStatus.SETTLED:
+            revert_balance(accounts[old_account_id], old_amount, old_type)
+        # 4b: revert partner if linked + amount-change + partner currently SETTLED
+        if partner is not None and amount_was_changed and partner.status == TransactionStatus.SETTLED:
+            revert_balance(accounts[partner.account_id], partner.amount, partner.type)
+
+        # 4c: apply per-leg field updates
         _apply_field_updates(tx, body)
         if body.category_id is not None:
             tx.category_id = body.category_id
@@ -268,24 +314,68 @@ async def update_transaction(
             tx.account_id = body.account_id
         if body.status is not None:
             tx.status = new_status
-            if new_status == TransactionStatus.SETTLED and old_status != TransactionStatus.SETTLED:
+        # settled_date semantics (§5.2):
+        # - status pending → settled_date = None
+        # - status settled with body.settled_date → use it
+        # - transition to settled with no settled_date → today
+        if body.status is not None and new_status == TransactionStatus.PENDING:
+            tx.settled_date = None
+        elif new_status == TransactionStatus.SETTLED:
+            if body.settled_date is not None:
+                tx.settled_date = body.settled_date
+            elif old_status != TransactionStatus.SETTLED:
                 tx.settled_date = datetime.date.today()
-            elif new_status == TransactionStatus.PENDING and old_status == TransactionStatus.SETTLED:
-                tx.settled_date = None
+        elif body.settled_date is not None:
+            # Status unchanged but settled_date provided
+            if tx.status == TransactionStatus.SETTLED:
+                tx.settled_date = body.settled_date
 
-        # Apply new balance if now settled
-        if new_status == TransactionStatus.SETTLED:
-            new_account = await get_account_for_update(db, tx.account_id, org_id)
-            apply_balance(new_account, tx.amount, tx.type)
+        # 4d: amount mirror to partner
+        if partner is not None and amount_was_changed:
+            partner.amount = body.amount
+
+        # 4e: apply this leg with new state if SETTLED
+        if tx.status == TransactionStatus.SETTLED:
+            apply_balance(accounts[tx.account_id], tx.amount, tx.type)
+        # 4f: apply partner with new state if linked + amount change + partner SETTLED
+        if partner is not None and amount_was_changed and partner.status == TransactionStatus.SETTLED:
+            apply_balance(accounts[partner.account_id], partner.amount, partner.type)
+
+        await db.flush()
+
+        # 5. Post-update invariant re-check (only when linked)
+        if partner is not None:
+            if tx.org_id != partner.org_id:
+                raise ValidationError("Pair org mismatch after edit")
+            if tx.account_id == partner.account_id:
+                raise ValidationError("Pair on same account after edit")
+            if abs(tx.amount) != abs(partner.amount):
+                raise ValidationError("Pair amount mismatch after edit")
+            if {tx.type, partner.type} != {TransactionType.EXPENSE, TransactionType.INCOME}:
+                raise ValidationError("Pair must have opposite types after edit")
+            if tx.account.currency != partner.account.currency:
+                raise ValidationError("Pair currencies differ after edit")
+
+        if amount_was_changed and partner is not None:
+            await logger.ainfo(
+                "transfers.edit_mirrored",
+                org_id=org_id,
+                edited_id=tx.id,
+                partner_id=partner.id,
+                old_amount=str(pre_edit_amount),
+                new_amount=str(tx.amount),
+            )
 
     await db.commit()
 
-    # Learn only when the category actually changed and the row is not a transfer.
-    # Transfers raise ConflictError above, so by here tx.linked_transaction_id is None.
-    #
-    # Learning is best-effort: a failure here must NOT surface as a 500
-    # to the caller — the user's edit is already committed above.
-    if body.category_id is not None and body.category_id != old_category_id:
+    # Category-learning gate: only learn from reportable rows (not transfer legs).
+    # Wrapped in is_reportable_transaction(tx) — flips from previous "transfers
+    # raise ConflictError above" assumption now that linked rows are editable.
+    if (
+        is_reportable_transaction(tx)
+        and body.category_id is not None
+        and body.category_id != old_category_id
+    ):
         try:
             await learn_from_choice(
                 db,
