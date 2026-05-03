@@ -199,3 +199,96 @@ async def test_edit_unlinked_row_still_works(db_session):
     result = await transaction_service.update_transaction(db_session, org.id, plain.id, body)
     assert result.description == "updated"
     assert result.amount == Decimal("75")
+
+
+async def test_edit_raises_conflict_when_link_appears_after_preview(db_session):
+    """Synthetic race: row's linked_transaction_id points at a partner not in the
+    locked set. Simulates a concurrent pair landing between unlocked preview
+    and locked SELECT. Must raise ConflictError, not silently bypass guards.
+    """
+    from app.services.exceptions import ConflictError
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    acct = Account(org_id=org.id, name="A", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add(acct)
+    cat = Category(org_id=org.id, name="C", slug="c", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+
+    tx = Transaction(
+        org_id=org.id, account_id=acct.id, category_id=cat.id,
+        description="x", amount=Decimal("10"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add(tx)
+    await db_session.commit()
+
+    # Patch the unlocked preview path so it returns an unlinked snapshot,
+    # while the actual DB row gets a stale linked_transaction_id pointing at
+    # a non-existent partner. The locked SELECT then returns a tx with a
+    # linked_transaction_id that isn't in the lock set.
+    from sqlalchemy import text as _sql_text, update as _sql_update
+    # Set a stale link to a non-existent partner id. Disable FK enforcement
+    # for the synthetic write since prod rows would never satisfy FK either
+    # in this race window — the partner row exists but isn't in our lock set.
+    fake_partner_id = tx.id + 9999
+    await db_session.execute(_sql_text("PRAGMA foreign_keys=OFF"))
+    await db_session.execute(
+        _sql_update(Transaction).where(Transaction.id == tx.id).values(linked_transaction_id=fake_partner_id)
+    )
+    await db_session.commit()
+    await db_session.execute(_sql_text("PRAGMA foreign_keys=ON"))
+
+    with pytest.raises(ConflictError):
+        await transaction_service.update_transaction(
+            db_session, org.id, tx.id, TransactionUpdate(amount=Decimal("20"))
+        )
+
+
+async def test_edit_raises_conflict_on_bidirectional_link_violation(db_session):
+    """If the partner's linked_transaction_id doesn't point back to tx, the
+    pair is corrupted. Edits must raise ConflictError, not proceed.
+    """
+    from app.services.exceptions import ConflictError
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="Src", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    dst = Account(org_id=org.id, name="Dst", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="C", slug="c", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+
+    expense = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="x", amount=Decimal("10"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    income = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="x", amount=Decimal("10"),
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add_all([expense, income])
+    await db_session.flush()
+    # Asymmetric link: expense thinks income is its partner, but income's link
+    # points elsewhere (None to simulate a corrupted half-pair).
+    expense.linked_transaction_id = income.id
+    income.linked_transaction_id = None
+    await db_session.commit()
+
+    with pytest.raises(ConflictError):
+        await transaction_service.update_transaction(
+            db_session, org.id, expense.id, TransactionUpdate(amount=Decimal("20"))
+        )

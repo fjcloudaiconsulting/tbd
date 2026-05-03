@@ -249,7 +249,19 @@ async def update_transaction(
     tx = rows.get(transaction_id)
     if tx is None:
         raise NotFoundError("Transaction")
+
+    # Race detection: the unlocked preview saw an unlinked row, but a concurrent
+    # pair_existing_transactions may have linked it. If the locked tx now has a
+    # linked_transaction_id that wasn't in our lock set, our partner-aware guards
+    # would silently skip — corrupting the pair.
+    if tx.linked_transaction_id is not None and tx.linked_transaction_id not in rows:
+        raise ConflictError("Transaction state changed; refresh and retry")
+
     partner = rows.get(tx.linked_transaction_id) if tx.linked_transaction_id is not None else None
+
+    # Bidirectional integrity: the link must be symmetric.
+    if partner is not None and partner.linked_transaction_id != tx.id:
+        raise ConflictError("Transfer pair link integrity violated; refresh and retry")
 
     # 2. Linked-row schema-level guards
     if partner is not None:
