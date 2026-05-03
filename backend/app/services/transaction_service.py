@@ -500,12 +500,15 @@ async def _link_pair(
         raise ValidationError("Transfer legs must be on different accounts")
     if abs(expense_tx.amount) != abs(income_tx.amount):
         raise ValidationError("Transfer legs must have equal absolute amounts")
-    # Already-linked check: allow only when neither row is linked, OR they're
-    # already linked to each other (idempotent re-pair).
-    if expense_tx.linked_transaction_id is not None and expense_tx.linked_transaction_id != (income_tx.id or 0):
-        raise ValidationError("Expense leg is already linked to a different transaction")
-    if income_tx.linked_transaction_id is not None and income_tx.linked_transaction_id != (expense_tx.id or 0):
-        raise ValidationError("Income leg is already linked to a different transaction")
+    # Invariant 7 (strict): neither row may already be linked before pairing.
+    # _link_pair is the single creator of linked_transaction_id and refuses to
+    # operate on rows that already carry one, even self-referentially. Callers
+    # that need to re-link an existing pair must unpair it first via
+    # unpair_transactions.
+    if expense_tx.linked_transaction_id is not None:
+        raise ValidationError("Expense leg is already linked")
+    if income_tx.linked_transaction_id is not None:
+        raise ValidationError("Income leg is already linked")
     # Currency check. Requires .account relationship to be loaded.
     expense_account = expense_tx.__dict__.get("account")
     income_account = income_tx.__dict__.get("account")

@@ -47,6 +47,10 @@ services:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
       - ./backend/tests:/app/tests
+      # Read-only mounts so test_deploy_workflow.py can locate
+      # repo-root .github/workflows/deploy.yml and .do/app.yaml.
+      - ./.github:/app/.github:ro
+      - ./.do:/app/.do:ro
 
   frontend:
     build:

@@ -50,5 +50,5 @@ mock/
 !frontend/public/**/*.png
 frontend/tsconfig.tsbuildinfo
 
-# Codex 
+# Codex
 AGENTS.md
