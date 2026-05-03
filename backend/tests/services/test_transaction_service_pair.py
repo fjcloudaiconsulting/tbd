@@ -554,3 +554,126 @@ async def test_pair_existing_transactions_does_not_change_balances(db_session):
     await db_session.refresh(dst)
     assert src.balance == src_balance_before
     assert dst.balance == dst_balance_before
+
+
+async def test_convert_and_create_leg_creates_partner_with_mirrored_status(db_session):
+    """Source SETTLED → partner SETTLED."""
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="Src", account_type_id=at.id, balance=Decimal("500"), currency="EUR")
+    dst = Account(org_id=org.id, name="Dst", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="Other", slug="other", type=CategoryType.BOTH, is_system=True)
+    transfer_cat = Category(org_id=org.id, name="Transfer", slug="transfer", type=CategoryType.BOTH, is_system=True)
+    db_session.add_all([cat, transfer_cat])
+    await db_session.flush()
+
+    source_row = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="orig", amount=Decimal("75"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add(source_row)
+    await db_session.commit()
+
+    expense_tx, income_tx = await transaction_service.convert_and_create_leg(
+        db_session, org.id, source_row.id, destination_account_id=dst.id,
+    )
+    assert expense_tx.id == source_row.id
+    assert income_tx.account_id == dst.id
+    assert income_tx.type == TransactionType.INCOME
+    assert income_tx.amount == Decimal("75")
+    assert income_tx.status == TransactionStatus.SETTLED
+    assert expense_tx.linked_transaction_id == income_tx.id
+    assert income_tx.linked_transaction_id == expense_tx.id
+    # Balance applied to dst only (src already had its balance from the source row).
+    await db_session.refresh(dst)
+    assert dst.balance == Decimal("75")
+
+
+async def test_convert_and_create_leg_pending_source_creates_pending_partner(db_session):
+    """Source PENDING → partner PENDING; no balance change on dst."""
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="Src", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    dst = Account(org_id=org.id, name="Dst", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="Other", slug="other", type=CategoryType.BOTH, is_system=True)
+    transfer_cat = Category(org_id=org.id, name="Transfer", slug="transfer", type=CategoryType.BOTH, is_system=True)
+    db_session.add_all([cat, transfer_cat])
+    await db_session.flush()
+
+    source_row = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="orig", amount=Decimal("50"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
+        date=date(2026, 5, 1),
+    )
+    db_session.add(source_row)
+    await db_session.commit()
+
+    expense_tx, income_tx = await transaction_service.convert_and_create_leg(
+        db_session, org.id, source_row.id, destination_account_id=dst.id,
+    )
+    assert income_tx.status == TransactionStatus.PENDING
+    assert income_tx.settled_date is None
+    await db_session.refresh(dst)
+    assert dst.balance == Decimal("0")  # no balance application on PENDING
+
+
+async def test_convert_and_create_leg_rejects_currency_mismatch(db_session):
+    from app.services.exceptions import ValidationError
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="EUR", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    dst = Account(org_id=org.id, name="USD", account_type_id=at.id, balance=Decimal("0"), currency="USD")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="C", slug="c", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+
+    source_row = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="x", amount=Decimal("10"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add(source_row)
+    await db_session.commit()
+
+    with pytest.raises(ValidationError):
+        await transaction_service.convert_and_create_leg(
+            db_session, org.id, source_row.id, destination_account_id=dst.id,
+        )
+
+
+async def test_convert_and_create_leg_rejects_already_linked_source(db_session):
+    from app.services.exceptions import ValidationError
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+
+    # Create a third account in the same org as a candidate destination
+    at = AccountType(org_id=expense.org_id, name="Other", slug="other", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    third = Account(org_id=expense.org_id, name="Third", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add(third)
+    await db_session.commit()
+
+    with pytest.raises(ValidationError):
+        await transaction_service.convert_and_create_leg(
+            db_session, expense.org_id, expense.id, destination_account_id=third.id,
+        )

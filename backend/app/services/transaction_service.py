@@ -706,6 +706,121 @@ async def pair_existing_transactions(
     return expense_tx, income_tx
 
 
+async def convert_and_create_leg(
+    db: AsyncSession,
+    org_id: int,
+    source_tx_id: int,
+    *,
+    destination_account_id: int,
+    recategorize: bool = True,
+    transfer_category_id: int | None = None,
+) -> tuple[Transaction, Transaction]:
+    """Convert an un-linked source row into a transfer leg by creating the
+    matching partner leg on the destination account, then linking the pair.
+
+    Owns transaction scope. See pair_existing_transactions for the locking
+    discipline. Source may be SETTLED or PENDING; partner mirrors source
+    status. Same-currency only.
+    """
+    # Pre-read source and destination account (no lock yet, just to check
+    # existence + collect ids for sorted-order lock acquisition).
+    source = await db.scalar(
+        select(Transaction).where(
+            Transaction.id == source_tx_id, Transaction.org_id == org_id
+        )
+    )
+    if source is None:
+        raise NotFoundError("Transaction")
+    if source.linked_transaction_id is not None:
+        raise ValidationError("Source row is already a transfer leg")
+    if source.recurring_id is not None:
+        raise ValidationError("Recurring rows cannot be converted to transfer legs")
+    if source.account_id == destination_account_id:
+        raise ValidationError("Source and destination accounts must differ")
+
+    src_account = await db.scalar(
+        select(Account).where(Account.id == source.account_id, Account.org_id == org_id)
+    )
+    dst_account = await db.scalar(
+        select(Account).where(Account.id == destination_account_id, Account.org_id == org_id)
+    )
+    if dst_account is None:
+        raise NotFoundError("Account")
+    if src_account.currency != dst_account.currency:
+        raise ValidationError("Source and destination accounts must have the same currency")
+
+    # Acquire account locks in sorted ID order (deadlock prevention).
+    first_id, second_id = sorted([source.account_id, destination_account_id])
+    first_acct = await get_account_for_update(db, first_id, org_id)
+    second_acct = await get_account_for_update(db, second_id, org_id)
+    dst_locked = first_acct if destination_account_id == first_id else second_acct
+
+    # Lock the source row with FOR UPDATE; refresh with eager-loaded relationships.
+    locked = await db.execute(
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.id == source.id, Transaction.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    source = locked.scalar_one()
+
+    # Determine partner type by mirroring source.
+    partner_type = (
+        TransactionType.INCOME if source.type == TransactionType.EXPENSE
+        else TransactionType.EXPENSE
+    )
+
+    async with db.begin_nested():
+        partner = Transaction(
+            org_id=org_id,
+            account_id=destination_account_id,
+            category_id=source.category_id,
+            description=source.description,
+            amount=source.amount,
+            type=partner_type,
+            status=source.status,
+            date=source.date,
+            settled_date=source.settled_date,
+            is_imported=False,
+        )
+        db.add(partner)
+        await db.flush()
+
+        # Apply balance to destination only when SETTLED.
+        if partner.status == TransactionStatus.SETTLED:
+            apply_balance(dst_locked, partner.amount, partner_type)
+
+        # Determine which leg is expense vs income for _link_pair.
+        if source.type == TransactionType.EXPENSE:
+            expense_tx, income_tx = source, partner
+        else:
+            expense_tx, income_tx = partner, source
+
+        # Re-fetch partner with .account loaded so _link_pair's currency check
+        # uses the eager path. Source already has it from _load_opts above.
+        await db.refresh(partner, attribute_names=["account"])
+
+        await _link_pair(
+            db,
+            expense_tx=expense_tx,
+            income_tx=income_tx,
+            recategorize=recategorize,
+            transfer_category_id=transfer_category_id,
+        )
+    await db.commit()
+
+    await logger.ainfo(
+        "transfers.linked",
+        org_id=org_id,
+        expense_id=expense_tx.id,
+        income_id=income_tx.id,
+        source="convert_create",
+        recategorized=recategorize,
+    )
+    return expense_tx, income_tx
+
+
 async def create_transfer(
     db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:
