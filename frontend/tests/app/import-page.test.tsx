@@ -429,6 +429,8 @@ describe("ImportPage transfer pill column", () => {
     const apiFetchMock = vi.mocked(apiFetch);
     apiFetchMock.mockResolvedValueOnce({
       imported_count: 2,
+      paired_count: 0,
+      dropped_duplicate_count: 0,
       skipped_count: 1,
       error_count: 0,
       errors: [],
@@ -460,5 +462,37 @@ describe("ImportPage transfer pill column", () => {
     expect(body.rows[2].action).toBe("drop_as_duplicate");
     expect(body.rows[2].duplicate_of_transaction_id).toBe(303);
     expect(body.rows[2].pair_with_transaction_id).toBeNull();
+  });
+
+  it("results page surfaces paired_count and dropped_duplicate_count", async () => {
+    const preview = basePreview([baseRow({ row_number: 1 })]);
+
+    await renderAndPreview(preview);
+
+    // Provide a default category so the confirm button is enabled.
+    const selects = document.querySelectorAll("select");
+    const defaultCatSelect = selects[selects.length - 1] as HTMLSelectElement;
+    fireEvent.change(defaultCatSelect, { target: { value: "5" } });
+
+    // Stub the confirm response with non-zero paired/dropped counters.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockResolvedValueOnce({
+      imported_count: 3,
+      paired_count: 2,
+      dropped_duplicate_count: 1,
+      skipped_count: 0,
+      error_count: 0,
+      errors: [],
+    } as never);
+
+    const confirmBtn = screen.getByRole("button", { name: /import 1 transaction/i });
+    fireEvent.click(confirmBtn);
+
+    // Results step renders the new counter rows.
+    await screen.findByText(/import complete/i);
+    expect(screen.getByText(/2 paired as transfers/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 dropped as duplicate of existing transfer leg/i),
+    ).toBeInTheDocument();
   });
 });

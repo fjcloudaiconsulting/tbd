@@ -766,6 +766,16 @@ function ImportPageContent() {
             <p className="text-success">
               {results.imported_count} transaction{results.imported_count === 1 ? "" : "s"} imported
             </p>
+            {results.paired_count > 0 && (
+              <p className="text-text-muted">
+                {results.paired_count} paired as transfer{results.paired_count === 1 ? "" : "s"}
+              </p>
+            )}
+            {results.dropped_duplicate_count > 0 && (
+              <p className="text-text-muted">
+                {results.dropped_duplicate_count} dropped as duplicate of existing transfer leg
+              </p>
+            )}
             {results.skipped_count > 0 && (
               <p className="text-text-muted">{results.skipped_count} skipped</p>
             )}
