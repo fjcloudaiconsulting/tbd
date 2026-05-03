@@ -26,11 +26,15 @@ interface Props {
   value: number | "";
   onChange: (id: number | "") => void;
   filterType?: "income" | "expense";
+  typeFilter?: "INCOME" | "EXPENSE";
   className?: string;
   "aria-label"?: string;
 }
 
-export default function CategorySelect({ id, categories, value, onChange, filterType, className = "", "aria-label": ariaLabel }: Props) {
+export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel }: Props) {
+  // Normalize uppercase `typeFilter` (transfers callers) to internal lowercase
+  // so it joins the existing filterType machinery without divergent code paths.
+  const effectiveFilterType = filterType ?? (typeFilter === "INCOME" ? "income" : typeFilter === "EXPENSE" ? "expense" : undefined);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(-1);
@@ -46,11 +50,11 @@ export default function CategorySelect({ id, categories, value, onChange, filter
       if (c.parent_id !== null) pIds.add(c.parent_id);
     }
     const items = categories.filter((c) => {
-      if (filterType && c.type !== filterType && c.type !== "both") return false;
+      if (effectiveFilterType && c.type !== effectiveFilterType && c.type !== "both") return false;
       return c.parent_id !== null || !pIds.has(c.id);
     });
     return { selectable: items, parentIds: pIds };
-  }, [categories, filterType]);
+  }, [categories, effectiveFilterType]);
 
   const q = query.toLowerCase();
   const filtered = useMemo(() =>

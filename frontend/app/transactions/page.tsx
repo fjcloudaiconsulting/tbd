@@ -7,11 +7,14 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
+import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
+import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
+import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
 
 
 
@@ -84,6 +87,15 @@ function TransactionsPageContent() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  // Transfer modals
+  const [linkModalLegs, setLinkModalLegs] = useState<{ expense: Transaction; income: Transaction } | null>(null);
+  const [markModalSource, setMarkModalSource] = useState<Transaction | null>(null);
+  const [unpairModalLegs, setUnpairModalLegs] = useState<{ expense: Transaction; income: Transaction } | null>(null);
+  // Partner row for the currently-edited linked transaction. Hydrated from
+  // the visible list when possible, otherwise fetched on demand. Used to
+  // filter the Account select and to render the mirror-amount notice.
+  const [editPartner, setEditPartner] = useState<Transaction | null>(null);
 
   const loadRefs = useCallback(async () => {
     const [accts, cats, pers] = await Promise.all([
@@ -315,7 +327,25 @@ function TransactionsPageContent() {
     }
   }
 
-  function startEdit(tx: Transaction) {
+  async function openUnpairModal(tx: Transaction) {
+    if (!tx.linked_transaction_id) return;
+    let partner: Transaction | null =
+      transactions.find((t) => t.id === tx.linked_transaction_id) ?? null;
+    if (!partner) {
+      try {
+        partner = (await apiFetch<Transaction>(`/api/v1/transactions/${tx.linked_transaction_id}`)) ?? null;
+      } catch (err) {
+        setError(extractErrorMessage(err));
+        return;
+      }
+    }
+    if (!partner) return;
+    const expense = tx.type === "expense" ? tx : partner;
+    const income = tx.type === "income" ? tx : partner;
+    setUnpairModalLegs({ expense, income });
+  }
+
+  async function startEdit(tx: Transaction) {
     setEditingId(tx.id);
     setEditDesc(tx.description);
     setEditAmount(toEditAmount(tx.amount));
@@ -324,6 +354,28 @@ function TransactionsPageContent() {
     setEditDate(tx.date);
     setEditAccountId(tx.account_id);
     setEditCategoryId(tx.category_id);
+    // Hydrate partner for linked rows so the Account select can filter
+    // currency-compatible options and the mirror-amount notice can render.
+    if (tx.linked_transaction_id) {
+      const visible = transactions.find((t) => t.id === tx.linked_transaction_id);
+      if (visible) {
+        setEditPartner(visible);
+      } else {
+        try {
+          const fetched = await apiFetch<Transaction>(`/api/v1/transactions/${tx.linked_transaction_id}`);
+          setEditPartner(fetched ?? null);
+        } catch {
+          setEditPartner(null);
+        }
+      }
+    } else {
+      setEditPartner(null);
+    }
+  }
+
+  function closeEdit() {
+    setEditingId(null);
+    setEditPartner(null);
   }
 
   async function handleSaveEdit() {
@@ -331,19 +383,23 @@ function TransactionsPageContent() {
     if (!editDesc.trim()) { setError("Description is required"); return; }
     setError("");
     try {
+      const isLinked = editPartner !== null;
+      const body: Record<string, unknown> = {
+        description: editDesc,
+        amount: editAmount,
+        status: editStatus,
+        date: editDate,
+        account_id: editAccountId,
+        category_id: editCategoryId,
+      };
+      if (!isLinked) {
+        body.type = editType;
+      }
       await apiFetch(`/api/v1/transactions/${editingId}`, {
         method: "PUT",
-        body: JSON.stringify({
-          description: editDesc,
-          amount: editAmount,
-          type: editType,
-          status: editStatus,
-          date: editDate,
-          account_id: editAccountId,
-          category_id: editCategoryId,
-        }),
+        body: JSON.stringify(body),
       });
-      setEditingId(null);
+      closeEdit();
       await loadTransactions(page);
     } catch (err) {
       setError(extractErrorMessage(err));
@@ -397,6 +453,58 @@ function TransactionsPageContent() {
     setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
   }
 
+  // Bulk "Link as transfer" validation. Server is the source of truth;
+  // this is advisory only so we can disable the button + show a tooltip.
+  function evaluateLinkSelection(): {
+    visible: boolean;
+    enabled: boolean;
+    reason: string | null;
+    expense: Transaction | null;
+    income: Transaction | null;
+  } {
+    const ids = Array.from(selectedIds);
+    if (ids.length !== 2) {
+      return { visible: false, enabled: false, reason: null, expense: null, income: null };
+    }
+    const rows = ids
+      .map((id) => transactions.find((t) => t.id === id))
+      .filter((t): t is Transaction => Boolean(t));
+    if (rows.length !== 2) {
+      return { visible: false, enabled: false, reason: null, expense: null, income: null };
+    }
+    const [a, b] = rows;
+    if (a.linked_transaction_id !== null || b.linked_transaction_id !== null) {
+      return { visible: false, enabled: false, reason: null, expense: null, income: null };
+    }
+    // 2 un-linked rows → button is visible from here on; enabled depends on rules.
+    if (a.type === b.type) {
+      const reason =
+        a.type === "expense"
+          ? "Both selected rows are expenses"
+          : "Both selected rows are incomes";
+      return { visible: true, enabled: false, reason, expense: null, income: null };
+    }
+    if (!equalsAmount(String(a.amount), String(b.amount))) {
+      return { visible: true, enabled: false, reason: "Amounts differ", expense: null, income: null };
+    }
+    if (a.account_id === b.account_id) {
+      return { visible: true, enabled: false, reason: "Same account", expense: null, income: null };
+    }
+    const acctA = accounts.find((x) => x.id === a.account_id);
+    const acctB = accounts.find((x) => x.id === b.account_id);
+    if (!acctA || !acctB) {
+      return { visible: true, enabled: false, reason: "Account not found", expense: null, income: null };
+    }
+    if (acctA.currency !== acctB.currency) {
+      return { visible: true, enabled: false, reason: "Different currencies", expense: null, income: null };
+    }
+    const expense = a.type === "expense" ? a : b;
+    const income = a.type === "income" ? a : b;
+    return { visible: true, enabled: true, reason: null, expense, income };
+  }
+
+  const linkSelection = evaluateLinkSelection();
+
   return (
     <AppShell>
       {selectedIds.size > 0 && (
@@ -413,6 +521,21 @@ function TransactionsPageContent() {
             >
               Clear
             </button>
+            {linkSelection.visible && (
+              <button
+                type="button"
+                className={btnSecondary}
+                title={linkSelection.reason ?? "Link the two selected rows as a transfer"}
+                disabled={!linkSelection.enabled || bulkDeleting}
+                onClick={() => {
+                  if (linkSelection.enabled && linkSelection.expense && linkSelection.income) {
+                    setLinkModalLegs({ expense: linkSelection.expense, income: linkSelection.income });
+                  }
+                }}
+              >
+                Link as transfer
+              </button>
+            )}
             <button
               type="button"
               className="inline-flex min-h-[44px] items-center rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
@@ -660,43 +783,72 @@ function TransactionsPageContent() {
                       const isTransfer = tx.linked_transaction_id !== null;
                       const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                       return editingId === tx.id ? (
-                        <div key={tx.id} className="grid grid-cols-12 items-center gap-2 px-6 py-2 bg-surface-raised">
-                          <span className="col-span-1 flex items-center">
-                            <input
-                              type="checkbox"
-                              aria-label={`Select transaction ${tx.id}`}
-                              checked={selectedIds.has(tx.id)}
-                              onChange={() => toggleOne(tx.id)}
-                              className="h-4 w-4"
-                            />
-                          </span>
-                          <span className="col-span-2 min-w-0"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm w-full ${input}`} /></span>
-                          <span className="col-span-2"><input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
-                          <span className="col-span-2">
-                            <select aria-label="Account" value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
-                              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
-                            </select>
-                          </span>
-                          <span className="col-span-1 min-w-0">
-                            <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
-                          </span>
-                          <span className="col-span-1">
-                            <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
-                              <option value="settled">Settled</option>
-                              <option value="pending">Pending</option>
-                            </select>
-                          </span>
-                          <span className="col-span-2 flex gap-1 min-w-0">
-                            <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] !w-14 shrink-0 ${input}`}>
-                              <option value="expense">-</option>
-                              <option value="income">+</option>
-                            </select>
-                            <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm flex-1 min-w-0 ${input}`} />
-                          </span>
-                          <span className="col-span-1 flex justify-end gap-2">
-                            <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>
-                            <button onClick={() => setEditingId(null)} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
-                          </span>
+                        <div key={tx.id} className="bg-surface-raised">
+                          {editPartner && (
+                            <div className="px-6 pt-2 pb-1 text-xs text-accent" data-testid={`edit-mirror-notice-${tx.id}`}>
+                              Editing a transfer leg. Changes to amount apply to both rows.
+                            </div>
+                          )}
+                          <div className="grid grid-cols-12 items-center gap-2 px-6 py-2">
+                            <span className="col-span-1 flex items-center">
+                              <input
+                                type="checkbox"
+                                aria-label={`Select transaction ${tx.id}`}
+                                checked={selectedIds.has(tx.id)}
+                                onChange={() => toggleOne(tx.id)}
+                                className="h-4 w-4"
+                              />
+                            </span>
+                            <span className="col-span-2 min-w-0"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm w-full ${input}`} /></span>
+                            <span className="col-span-2"><input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
+                            <span className="col-span-2">
+                              <select
+                                aria-label="Account"
+                                value={editAccountId}
+                                onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))}
+                                className={`text-sm ${input}`}
+                              >
+                                {accounts
+                                  .filter((a) => {
+                                    if (!editPartner) return true;
+                                    if (a.id === editPartner.account_id) return false;
+                                    const partnerAcct = accounts.find((x) => x.id === editPartner.account_id);
+                                    return partnerAcct ? a.currency === partnerAcct.currency : true;
+                                  })
+                                  .map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
+                              </select>
+                            </span>
+                            <span className="col-span-1 min-w-0">
+                              <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
+                            </span>
+                            <span className="col-span-1">
+                              <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
+                                <option value="settled">Settled</option>
+                                <option value="pending">Pending</option>
+                              </select>
+                            </span>
+                            <span className="col-span-2 flex gap-1 min-w-0">
+                              {editPartner ? (
+                                <span
+                                  aria-label="Type"
+                                  title="Type is fixed for transfer legs."
+                                  className={`text-[11px] !w-14 shrink-0 inline-flex items-center justify-center rounded border border-border bg-surface px-1 text-text-muted`}
+                                >
+                                  {editType === "expense" ? "-" : "+"}
+                                </span>
+                              ) : (
+                                <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] !w-14 shrink-0 ${input}`}>
+                                  <option value="expense">-</option>
+                                  <option value="income">+</option>
+                                </select>
+                              )}
+                              <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm flex-1 min-w-0 ${input}`} />
+                            </span>
+                            <span className="col-span-1 flex justify-end gap-2">
+                              <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>
+                              <button onClick={closeEdit} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                            </span>
+                          </div>
                         </div>
                       ) : (
                         <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
@@ -740,7 +892,13 @@ function TransactionsPageContent() {
                             {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                           </span>
                           <span className="col-span-1 flex justify-end gap-2">
-                            {!isTransfer && <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>}
+                            <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
+                            {!isTransfer && (
+                              <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark as transfer…</button>
+                            )}
+                            {isTransfer && (
+                              <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
+                            )}
                             <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
                           </span>
                         </div>
@@ -765,6 +923,11 @@ function TransactionsPageContent() {
                       if (editingId === tx.id) {
                         return (
                           <article key={tx.id} className="flex flex-col gap-3 rounded-lg border border-border bg-surface-raised p-4 shadow-sm">
+                            {editPartner && (
+                              <div className="text-xs text-accent" data-testid={`edit-mirror-notice-mobile-${tx.id}`}>
+                                Editing a transfer leg. Changes to amount apply to both rows.
+                              </div>
+                            )}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div>
                                 <label className={label}>Date</label>
@@ -776,8 +939,20 @@ function TransactionsPageContent() {
                               </div>
                               <div>
                                 <label className={label}>Account</label>
-                                <select aria-label="Account" value={editAccountId} onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={`text-sm ${input}`}>
-                                  {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
+                                <select
+                                  aria-label="Account"
+                                  value={editAccountId}
+                                  onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))}
+                                  className={`text-sm ${input}`}
+                                >
+                                  {accounts
+                                    .filter((a) => {
+                                      if (!editPartner) return true;
+                                      if (a.id === editPartner.account_id) return false;
+                                      const partnerAcct = accounts.find((x) => x.id === editPartner.account_id);
+                                      return partnerAcct ? a.currency === partnerAcct.currency : true;
+                                    })
+                                    .map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
                                 </select>
                               </div>
                               <div>
@@ -793,10 +968,20 @@ function TransactionsPageContent() {
                               </div>
                               <div>
                                 <label className={label}>Type</label>
-                                <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-sm ${input}`}>
-                                  <option value="expense">Expense</option>
-                                  <option value="income">Income</option>
-                                </select>
+                                {editPartner ? (
+                                  <span
+                                    aria-label="Type"
+                                    title="Type is fixed for transfer legs."
+                                    className={`text-sm flex items-center px-3 rounded border border-border bg-surface text-text-muted h-10`}
+                                  >
+                                    {editType === "expense" ? "Expense" : "Income"}
+                                  </span>
+                                ) : (
+                                  <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-sm ${input}`}>
+                                    <option value="expense">Expense</option>
+                                    <option value="income">Income</option>
+                                  </select>
+                                )}
                               </div>
                               <div className="sm:col-span-2">
                                 <label className={label}>Amount</label>
@@ -805,7 +990,7 @@ function TransactionsPageContent() {
                             </div>
                             <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
                               <button onClick={handleSaveEdit} className="min-h-[44px] px-4 rounded-md bg-accent text-accent-text text-sm font-medium">Save</button>
-                              <button onClick={() => setEditingId(null)} className="min-h-[44px] px-4 rounded-md border border-border text-sm text-text-secondary">Cancel</button>
+                              <button onClick={closeEdit} className="min-h-[44px] px-4 rounded-md border border-border text-sm text-text-secondary">Cancel</button>
                             </div>
                           </article>
                         );
@@ -860,14 +1045,32 @@ function TransactionsPageContent() {
                             )}
                           </div>
                           <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+                            <button
+                              onClick={() => startEdit(tx)}
+                              aria-label={`Edit: ${tx.description}`}
+                              disabled={bulkDeleting}
+                              className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              Edit
+                            </button>
                             {!isTransfer && (
                               <button
-                                onClick={() => startEdit(tx)}
-                                aria-label={`Edit: ${tx.description}`}
+                                onClick={() => setMarkModalSource(tx)}
+                                aria-label={`Mark as transfer: ${tx.description}`}
                                 disabled={bulkDeleting}
                                 className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                               >
-                                Edit
+                                Mark as transfer…
+                              </button>
+                            )}
+                            {isTransfer && (
+                              <button
+                                onClick={() => openUnpairModal(tx)}
+                                aria-label={`Unlink transfer: ${tx.description}`}
+                                disabled={bulkDeleting}
+                                className="min-h-[44px] px-3 rounded-md border border-border text-sm text-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                Unlink
                               </button>
                             )}
                             <button
@@ -928,6 +1131,41 @@ function TransactionsPageContent() {
         onConfirm={handleBulkDelete}
         onCancel={() => setConfirmBulkDelete(false)}
       />
+      {linkModalLegs && (
+        <LinkAsTransferModal
+          expenseLeg={linkModalLegs.expense}
+          incomeLeg={linkModalLegs.income}
+          onLinked={() => {
+            setLinkModalLegs(null);
+            clearSelection();
+            loadTransactions(page).catch(() => {});
+          }}
+          onCancel={() => setLinkModalLegs(null)}
+        />
+      )}
+      {markModalSource && (
+        <MarkAsTransferModal
+          source={markModalSource}
+          accounts={accounts}
+          onConverted={() => {
+            setMarkModalSource(null);
+            loadTransactions(page).catch(() => {});
+          }}
+          onCancel={() => setMarkModalSource(null)}
+        />
+      )}
+      {unpairModalLegs && (
+        <UnpairTransferModal
+          expenseLeg={unpairModalLegs.expense}
+          incomeLeg={unpairModalLegs.income}
+          categories={categories}
+          onUnpaired={() => {
+            setUnpairModalLegs(null);
+            loadTransactions(page).catch(() => {});
+          }}
+          onCancel={() => setUnpairModalLegs(null)}
+        />
+      )}
     </AppShell>
   );
 }

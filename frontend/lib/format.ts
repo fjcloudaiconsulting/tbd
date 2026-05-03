@@ -35,3 +35,17 @@ export function projectedPeriodEnd(startISO: string, cycleDay: number): string |
   next.setDate(next.getDate() - 1);
   return formatLocalDate(next);
 }
+
+/** Compare two decimal-string amounts for equality without float math. */
+export function equalsAmount(a: string, b: string): boolean {
+  return normalizeAmount(a) === normalizeAmount(b);
+}
+
+function normalizeAmount(s: string): string {
+  const sign = s.startsWith("-") ? "-" : "";
+  const body = s.replace(/^-/, "");
+  const [whole, frac = ""] = body.split(".");
+  const wholeN = whole.replace(/^0+(?=\d)/, "") || "0";
+  const fracN = frac.replace(/0+$/, "");
+  return sign + (fracN ? `${wholeN}.${fracN}` : wholeN);
+}

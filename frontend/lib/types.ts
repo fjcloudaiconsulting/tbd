@@ -293,3 +293,49 @@ export interface FeatureStateResponse {
   plan: { id: number; name: string; slug: string } | null;
   features: FeatureStateRow[];
 }
+
+// ── Transfer-pair shapes ─────────────────────────────────────────────────────
+
+export interface TransferCandidate {
+  id: number;
+  date: string;
+  description: string;
+  amount: number;
+  account_id: number;
+  account_name: string;
+  date_diff_days: number;
+  confidence: "same_day" | "near_date";
+}
+
+export interface TransferCandidatesResponse {
+  candidates: TransferCandidate[];
+}
+
+export interface DuplicateCandidate {
+  id: number;
+  date: string;
+  description: string;
+  amount: number;
+  account_id: number;
+  account_name: string;
+  existing_leg_is_imported: boolean;
+}
+
+export interface TransactionPairRequest {
+  expense_id: number;
+  income_id: number;
+  transfer_category_id?: number | null;
+  recategorize?: boolean;
+}
+
+export interface ConvertToTransferRequest {
+  destination_account_id: number;
+  pair_with_transaction_id?: number | null;
+  transfer_category_id?: number | null;
+  recategorize?: boolean;
+}
+
+export interface UnpairTransactionRequest {
+  expense_fallback_category_id: number;
+  income_fallback_category_id: number;
+}
