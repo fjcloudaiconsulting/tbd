@@ -647,6 +647,65 @@ async def find_duplicate_of_linked_leg(
     return rows
 
 
+async def pair_existing_transactions(
+    db: AsyncSession,
+    org_id: int,
+    expense_tx_id: int,
+    income_tx_id: int,
+    *,
+    recategorize: bool = True,
+    transfer_category_id: int | None = None,
+) -> tuple[Transaction, Transaction]:
+    """Link two existing un-linked rows as a transfer pair.
+
+    Owns transaction scope. Locks both rows in sorted-ID order via SELECT FOR
+    UPDATE, validates via _link_pair, links bidirectionally, optionally
+    recategorizes both legs to the system Transfer category. No balance changes
+    (both rows already exist with correct per-leg balance contributions).
+
+    Raises ValidationError on identical IDs or invariant violations,
+    NotFoundError if either row is missing in this org.
+    """
+    if expense_tx_id == income_tx_id:
+        raise ValidationError("Expense and income IDs must differ")
+
+    ids_sorted = sorted([expense_tx_id, income_tx_id])
+    locked = await db.execute(
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.id.in_(ids_sorted), Transaction.org_id == org_id)
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    rows = list(locked.scalars().all())
+    if len(rows) != 2:
+        raise NotFoundError("Transaction")
+    rows_by_id = {r.id: r for r in rows}
+    expense_tx = rows_by_id[expense_tx_id]
+    income_tx = rows_by_id[income_tx_id]
+
+    async with db.begin_nested():
+        await _link_pair(
+            db,
+            expense_tx=expense_tx,
+            income_tx=income_tx,
+            recategorize=recategorize,
+            transfer_category_id=transfer_category_id,
+        )
+    await db.commit()
+
+    await logger.ainfo(
+        "transfers.linked",
+        org_id=org_id,
+        expense_id=expense_tx.id,
+        income_id=income_tx.id,
+        source="bulk_link",
+        recategorized=recategorize,
+    )
+    return expense_tx, income_tx
+
+
 async def create_transfer(
     db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:

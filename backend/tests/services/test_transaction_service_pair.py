@@ -371,3 +371,186 @@ async def test_find_duplicate_of_linked_leg_excludes_un_linked_rows(db_session):
         type=TransactionType.EXPENSE, date=date(2026, 5, 1), currency="EUR",
     )
     assert candidates == []
+
+
+async def test_pair_existing_transactions_links_bidirectionally(db_session):
+    """Two un-linked rows on different accounts get linked atomically."""
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="Src", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    dst = Account(org_id=org.id, name="Dst", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="Other", slug="other", type=CategoryType.BOTH, is_system=True)
+    transfer_cat = Category(org_id=org.id, name="Transfer", slug="transfer", type=CategoryType.BOTH, is_system=True)
+    db_session.add_all([cat, transfer_cat])
+    await db_session.flush()
+
+    exp = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="x", amount=Decimal("100"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    inc = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="x", amount=Decimal("100"),
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add_all([exp, inc])
+    await db_session.commit()
+
+    result_exp, result_inc = await transaction_service.pair_existing_transactions(
+        db_session, org.id, exp.id, inc.id,
+    )
+    assert result_exp.linked_transaction_id == inc.id
+    assert result_inc.linked_transaction_id == exp.id
+    assert result_exp.category_id == transfer_cat.id  # recategorized by default
+    assert result_inc.category_id == transfer_cat.id
+
+
+async def test_pair_existing_transactions_rejects_identical_ids(db_session):
+    """Same id for both legs → ValidationError."""
+    from app.services.exceptions import ValidationError
+    with pytest.raises(ValidationError):
+        await transaction_service.pair_existing_transactions(db_session, 1, 42, 42)
+
+
+async def test_pair_existing_transactions_rejects_amount_mismatch(db_session):
+    """Different absolute amounts → ValidationError via _link_pair."""
+    from app.services.exceptions import ValidationError
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="Src", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    dst = Account(org_id=org.id, name="Dst", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="Other", slug="other", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+
+    exp = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="x", amount=Decimal("100"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    inc = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="x", amount=Decimal("99"),  # different amount
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add_all([exp, inc])
+    await db_session.commit()
+    with pytest.raises(ValidationError):
+        await transaction_service.pair_existing_transactions(
+            db_session, org.id, exp.id, inc.id,
+        )
+
+
+async def test_pair_existing_transactions_rejects_currency_mismatch(db_session):
+    """Different account currencies → ValidationError via _link_pair."""
+    from app.services.exceptions import ValidationError
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="EUR", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    dst = Account(org_id=org.id, name="USD", account_type_id=at.id, balance=Decimal("0"), currency="USD")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="Other", slug="other", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+
+    exp = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="x", amount=Decimal("100"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    inc = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="x", amount=Decimal("100"),
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add_all([exp, inc])
+    await db_session.commit()
+    with pytest.raises(ValidationError):
+        await transaction_service.pair_existing_transactions(
+            db_session, org.id, exp.id, inc.id,
+        )
+
+
+async def test_pair_existing_transactions_rejects_already_linked(db_session):
+    """Either row already linked → ValidationError via _link_pair."""
+    from app.services.exceptions import ValidationError
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+    # Create a third un-linked row to attempt to pair with the already-linked expense
+    third = Transaction(
+        org_id=expense.org_id, account_id=income.account_id, category_id=expense.category_id,
+        description="x", amount=expense.amount,
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=expense.date, settled_date=expense.date,
+    )
+    db_session.add(third)
+    await db_session.commit()
+    with pytest.raises(ValidationError):
+        await transaction_service.pair_existing_transactions(
+            db_session, expense.org_id, expense.id, third.id,
+        )
+
+
+async def test_pair_existing_transactions_does_not_change_balances(db_session):
+    """Linking does not modify account balances (both rows already exist)."""
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="Src", account_type_id=at.id, balance=Decimal("500"), currency="EUR")
+    dst = Account(org_id=org.id, name="Dst", account_type_id=at.id, balance=Decimal("700"), currency="EUR")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="Other", slug="other", type=CategoryType.BOTH, is_system=True)
+    transfer_cat = Category(org_id=org.id, name="Transfer", slug="transfer", type=CategoryType.BOTH, is_system=True)
+    db_session.add_all([cat, transfer_cat])
+    await db_session.flush()
+
+    exp = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="x", amount=Decimal("100"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    inc = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="x", amount=Decimal("100"),
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add_all([exp, inc])
+    await db_session.commit()
+
+    src_balance_before = src.balance
+    dst_balance_before = dst.balance
+
+    await transaction_service.pair_existing_transactions(
+        db_session, org.id, exp.id, inc.id,
+    )
+
+    await db_session.refresh(src)
+    await db_session.refresh(dst)
+    assert src.balance == src_balance_before
+    assert dst.balance == dst_balance_before
