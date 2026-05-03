@@ -677,3 +677,100 @@ async def test_convert_and_create_leg_rejects_already_linked_source(db_session):
         await transaction_service.convert_and_create_leg(
             db_session, expense.org_id, expense.id, destination_account_id=third.id,
         )
+
+
+async def test_unpair_transactions_clears_links_and_sets_fallback_categories(db_session):
+    """Both legs lose linked_transaction_id; category_id reset to type-matched fallback."""
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+
+    # Create distinct fallback categories
+    new_exp_cat = Category(org_id=expense.org_id, name="Groceries", slug="groceries", type=CategoryType.EXPENSE, is_system=False)
+    new_inc_cat = Category(org_id=expense.org_id, name="Salary", slug="salary", type=CategoryType.INCOME, is_system=False)
+    db_session.add_all([new_exp_cat, new_inc_cat])
+    await db_session.commit()
+
+    result_exp, result_inc = await transaction_service.unpair_transactions(
+        db_session, expense.org_id, expense.id,
+        expense_fallback_category_id=new_exp_cat.id,
+        income_fallback_category_id=new_inc_cat.id,
+    )
+    assert result_exp.linked_transaction_id is None
+    assert result_inc.linked_transaction_id is None
+    assert result_exp.category_id == new_exp_cat.id
+    assert result_inc.category_id == new_inc_cat.id
+
+
+async def test_unpair_transactions_balances_unchanged(db_session):
+    """No balance mutation."""
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+
+    # Get balances before
+    src = await db_session.scalar(select(Account).where(Account.id == expense.account_id))
+    dst = await db_session.scalar(select(Account).where(Account.id == income.account_id))
+    src_balance_before = src.balance
+    dst_balance_before = dst.balance
+
+    # Reuse the existing Transfer cat as fallback (a hack, but valid CategoryType=BOTH works for both legs)
+    transfer_cat = await db_session.scalar(select(Category).where(Category.slug == "transfer", Category.org_id == expense.org_id))
+
+    await transaction_service.unpair_transactions(
+        db_session, expense.org_id, expense.id,
+        expense_fallback_category_id=transfer_cat.id,
+        income_fallback_category_id=transfer_cat.id,
+    )
+    await db_session.refresh(src)
+    await db_session.refresh(dst)
+    assert src.balance == src_balance_before
+    assert dst.balance == dst_balance_before
+
+
+async def test_unpair_transactions_rejects_unlinked_row(db_session):
+    """Calling unpair on a non-transfer row raises ValidationError."""
+    from app.services.exceptions import ValidationError
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    acct = Account(org_id=org.id, name="A", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add(acct)
+    cat = Category(org_id=org.id, name="C", slug="c", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+
+    plain = Transaction(
+        org_id=org.id, account_id=acct.id, category_id=cat.id,
+        description="x", amount=Decimal("5"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add(plain)
+    await db_session.commit()
+
+    with pytest.raises(ValidationError):
+        await transaction_service.unpair_transactions(
+            db_session, org.id, plain.id,
+            expense_fallback_category_id=cat.id,
+            income_fallback_category_id=cat.id,
+        )
+
+
+async def test_unpair_transactions_works_when_called_with_either_leg_id(db_session):
+    """Passing the income leg's id should still resolve to the same pair."""
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+    cat_id = expense.category_id
+
+    result_exp, result_inc = await transaction_service.unpair_transactions(
+        db_session, expense.org_id, income.id,
+        expense_fallback_category_id=cat_id,
+        income_fallback_category_id=cat_id,
+    )
+    # Returns expense first regardless of which id was passed
+    assert result_exp.type == TransactionType.EXPENSE
+    assert result_inc.type == TransactionType.INCOME
+    assert result_exp.linked_transaction_id is None
+    assert result_inc.linked_transaction_id is None

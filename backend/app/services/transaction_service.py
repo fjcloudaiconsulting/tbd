@@ -821,6 +821,73 @@ async def convert_and_create_leg(
     return expense_tx, income_tx
 
 
+async def unpair_transactions(
+    db: AsyncSession,
+    org_id: int,
+    transaction_id: int,
+    *,
+    expense_fallback_category_id: int,
+    income_fallback_category_id: int,
+) -> tuple[Transaction, Transaction]:
+    """Break a transfer pair without deleting either row. The only sanctioned
+    code path that clears linked_transaction_id.
+
+    Owns transaction scope. Locks both rows in sorted-ID order via SELECT FOR
+    UPDATE. NULLs both link columns atomically. Sets each leg's category_id to
+    the type-matched fallback. No balance changes.
+    """
+    preview = await db.scalar(
+        select(Transaction).where(
+            Transaction.id == transaction_id, Transaction.org_id == org_id
+        )
+    )
+    if preview is None:
+        raise NotFoundError("Transaction")
+    if preview.linked_transaction_id is None:
+        raise ValidationError("Transaction is not part of a transfer pair")
+
+    # Validate fallback categories upfront (raises NotFoundError on miss).
+    await validate_category(db, expense_fallback_category_id, org_id)
+    await validate_category(db, income_fallback_category_id, org_id)
+
+    ids_sorted = sorted([transaction_id, preview.linked_transaction_id])
+    locked = await db.execute(
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.id.in_(ids_sorted), Transaction.org_id == org_id)
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    rows = list(locked.scalars().all())
+    if len(rows) != 2:
+        raise ConflictError("Pair partner not found; refresh and retry")
+
+    rows_by_type = {r.type: r for r in rows}
+    expense_tx = rows_by_type.get(TransactionType.EXPENSE)
+    income_tx = rows_by_type.get(TransactionType.INCOME)
+    if expense_tx is None or income_tx is None:
+        raise ConflictError("Pair has invalid type composition")
+
+    async with db.begin_nested():
+        expense_tx.linked_transaction_id = None
+        income_tx.linked_transaction_id = None
+        expense_tx.category_id = expense_fallback_category_id
+        income_tx.category_id = income_fallback_category_id
+        await db.flush()
+    await db.commit()
+
+    await logger.ainfo(
+        "transfers.unpaired",
+        org_id=org_id,
+        expense_id=expense_tx.id,
+        income_id=income_tx.id,
+        expense_fallback_category_id=expense_fallback_category_id,
+        income_fallback_category_id=income_fallback_category_id,
+    )
+    return expense_tx, income_tx
+
+
 async def create_transfer(
     db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:
