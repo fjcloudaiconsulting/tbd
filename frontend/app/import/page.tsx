@@ -104,8 +104,7 @@ function ImportPageContent() {
           type: r.type,
           category_id: r.suggested_category_id ?? null,
           skip: r.is_duplicate, // pre-skip duplicates
-          is_transfer: false,
-          transfer_account_id: null,
+          action: "create" as const,
           suggested_category_id: r.suggested_category_id ?? null,
           suggestion_source: r.suggestion_source ?? null,
         })),
@@ -293,7 +292,7 @@ function ImportPageContent() {
                   let rowBg = "";
                   if (rowState.skip) rowBg = "opacity-40";
                   else if (isDup) rowBg = "bg-warning-dim";
-                  else if (isTransfer || rowState.is_transfer) rowBg = "bg-accent/5";
+                  else if (isTransfer) rowBg = "bg-accent/5";
 
                   return (
                     <tr key={previewRow.row_number} className={`border-b border-border ${rowBg}`}>
@@ -319,7 +318,7 @@ function ImportPageContent() {
                       </td>
                       <td className="px-4 py-2 capitalize text-text-secondary">{previewRow.type}</td>
                       <td className="px-4 py-2">
-                        {!rowState.skip && !rowState.is_transfer && (
+                        {!rowState.skip && (
                           <div className="flex items-center">
                             <CategorySelect
                               id={`cat-${previewRow.row_number}`}
@@ -353,39 +352,7 @@ function ImportPageContent() {
                         )}
                       </td>
                       <td className="px-4 py-2">
-                        {!rowState.skip && (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={rowState.is_transfer}
-                              onChange={(e) =>
-                                updateRow(previewRow.row_number, {
-                                  is_transfer: e.target.checked,
-                                  transfer_account_id: null,
-                                })
-                              }
-                              className="rounded border-border"
-                            />
-                            {rowState.is_transfer && (
-                              <select
-                                value={rowState.transfer_account_id ?? ""}
-                                onChange={(e) =>
-                                  updateRow(previewRow.row_number, {
-                                    transfer_account_id: e.target.value === "" ? null : Number(e.target.value),
-                                  })
-                                }
-                                className={input + " !w-40"}
-                              >
-                                <option value="">Select account...</option>
-                                {activeAccounts
-                                  .filter((a) => a.id !== preview.account_id)
-                                  .map((a) => (
-                                    <option key={a.id} value={a.id}>{a.name}</option>
-                                  ))}
-                              </select>
-                            )}
-                          </div>
-                        )}
+                        {/* Transfer-pair UI ships in PR-E (pill + chooser per spec §4.6) */}
                       </td>
                     </tr>
                   );

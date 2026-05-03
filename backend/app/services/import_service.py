@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
 from app.models.settings import OrgSetting
-from app.models.transaction import Transaction, TransactionType
+from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.import_schemas import (
     ImportConfirmRequest,
     ImportConfirmResponse,
@@ -373,6 +373,14 @@ async def execute_import(
                         raise ConflictError(
                             "Partner row is recurring; re-preview"
                         )
+                    if partner.status != TransactionStatus.SETTLED:
+                        # find_match_candidates only suggests SETTLED rows;
+                        # if partner flipped to PENDING after preview, the
+                        # pair invariant could break — bounce the user to
+                        # re-preview.
+                        raise ConflictError(
+                            "Partner row no longer settled; re-preview"
+                        )
                     if partner.account.currency != destination_account.currency:
                         raise ConflictError(
                             "Currency mismatch detected at confirm; re-preview"
@@ -474,6 +482,11 @@ async def execute_import(
         # the transaction. Skipped for paired rows (transfer legs — the
         # description is bank-noise, not a meaningful merchant) and dropped
         # rows (no transaction was created).
+        #
+        # Isolated in its OWN nested savepoint so a learn-side failure cannot
+        # roll back successfully imported rows that share the outer
+        # transaction. begin_nested() rolls back the savepoint automatically
+        # on exception, leaving the outer transaction untouched.
         if action_taken == "create" and row.category_id is not None and not should_skip_learning(new_tx):
             accepted = (
                 row.suggested_category_id is not None
@@ -481,21 +494,24 @@ async def execute_import(
             )
             source = "user_pick" if accepted else "user_edit"
             try:
-                await learn_from_choice(
-                    db,
-                    org_id=org_id,
-                    description=row.description,
-                    category_id=row.category_id,
-                    source=source,
-                )
-                if (
-                    accepted and share_merchant_data
-                    and row.suggestion_source == "shared_dictionary"
-                ):
-                    await bump_shared_vote(db, description=row.description)
-                await db.commit()
+                async with db.begin_nested():
+                    await learn_from_choice(
+                        db,
+                        org_id=org_id,
+                        description=row.description,
+                        category_id=row.category_id,
+                        source=source,
+                    )
+                    if (
+                        accepted and share_merchant_data
+                        and row.suggestion_source == "shared_dictionary"
+                    ):
+                        await bump_shared_vote(db, description=row.description)
+                # savepoint released on normal exit; outer transaction unchanged
             except Exception as exc:
-                await db.rollback()
+                # savepoint already rolled back by the begin_nested context
+                # manager; outer transaction (with imports + paired rows)
+                # untouched.
                 await logger.awarning(
                     "smart_rules.learn_failed",
                     org_id=org_id,

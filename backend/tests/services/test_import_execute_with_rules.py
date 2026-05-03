@@ -295,7 +295,13 @@ async def test_learn_failure_does_not_fail_the_import(
     db_session: AsyncSession,
 ) -> None:
     """If learn_from_choice raises, the imported transaction is preserved
-    and the failure is logged (not propagated to the caller)."""
+    and the failure is logged (not propagated to the caller).
+
+    PR-C review high-severity regression: the learn block must NOT roll back
+    successfully imported rows that share the outer transaction. The fix
+    isolates learn in a nested savepoint so a learn-side failure rolls back
+    only the savepoint, not the outer commit.
+    """
     seed = await _seed(db_session, share=False)
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
@@ -319,6 +325,19 @@ async def test_learn_failure_does_not_fail_the_import(
 
     assert result.imported_count == 1
     assert result.error_count == 0  # learn failure does NOT surface as a row error
+
+    # Imported row must still be in the DB — savepoint isolation prevents
+    # the learn rollback from taking the import with it.
+    persisted = (await db_session.execute(
+        select(Transaction).where(
+            Transaction.org_id == seed["org_id"],
+            Transaction.description == "POS LIDL *9999",
+        )
+    )).scalars().all()
+    assert len(persisted) == 1, (
+        "imported row should survive learn failure; "
+        "savepoint isolation regression"
+    )
 
 
 async def test_default_category_fallthrough_records_miss(

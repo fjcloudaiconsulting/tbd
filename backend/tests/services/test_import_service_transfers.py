@@ -711,3 +711,61 @@ async def test_confirm_response_counters_match_actions(
         + result.error_count
     )
     assert total == len(body.rows)
+
+
+async def test_confirm_pair_with_existing_rejects_pending_partner(
+    db_session: AsyncSession,
+) -> None:
+    """Stale-preview test (PR-C review fix 3): partner became PENDING between
+    preview and confirm. find_match_candidates only suggests SETTLED rows,
+    so a partner whose status flipped after preview must be rejected at
+    confirm to preserve the pair invariant.
+    """
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+    # Partner: un-linked SETTLED income on dst (eligible at preview-time).
+    partner = await _add_unlinked(
+        db_session,
+        org_id=seed["org_id"], account_id=seed["dst_id"],
+        category_id=seed["transfer_cat_id"], amount=Decimal("60"),
+        type=TransactionType.INCOME, when=when, description="incoming-xfer",
+    )
+
+    # Between preview and confirm: partner flipped to PENDING.
+    partner.status = TransactionStatus.PENDING
+    await db_session.commit()
+
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="ATM WITHDRAW", amount=Decimal("60"),
+            type="expense",
+            category_id=seed["transfer_cat_id"],
+            action="pair_with_existing",
+            pair_with_transaction_id=partner.id,
+        )],
+    )
+
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+
+    # Surfaces as a row error; not paired.
+    assert result.paired_count == 0
+    assert result.imported_count == 0
+    assert result.error_count == 1
+    assert "re-preview" in result.errors[0].error.lower()
+
+    # Partner remains un-linked.
+    await db_session.refresh(partner)
+    assert partner.linked_transaction_id is None
+    # The new CSV leg must NOT exist (savepoint rolled back).
+    new_legs = (await db_session.execute(
+        select(Transaction).where(
+            Transaction.account_id == seed["src_id"],
+            Transaction.description == "ATM WITHDRAW",
+        )
+    )).scalars().all()
+    assert new_legs == []
