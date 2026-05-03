@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.category import Category
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry
+from app.services.transaction_filters import is_transfer_leg
 
 # URL scheme prefix (HTTP / HTTPS) — stripped before bank-noise so `HTTPS://AMAZON…` collapses cleanly.
 _URL_SCHEME = re.compile(r"^\s*HTTPS?://", re.IGNORECASE)
@@ -159,26 +160,21 @@ def normalize_description(raw: str) -> str:
 
 
 def should_skip_learning(obj) -> bool:
-    """True for any object representing a transfer.
+    """True for any object representing a transfer leg.
 
-    Duck-typed:
-      - ORM Transaction → uses ``linked_transaction_id`` (non-None means it's
-        paired with another leg, i.e. a transfer).
-      - ImportPreviewRow / ImportConfirmRow → uses ``is_transfer``.
-
-    Either attribute being truthy short-circuits to True. Objects with neither
-    attribute return False.
+    Now that ImportConfirmRow no longer carries an is_transfer field (PR-C),
+    transfer-leg detection is single-source: the ORM Transaction's
+    ``linked_transaction_id``, accessed via ``is_transfer_leg``. The
+    ``hasattr`` guard preserves duck-typing safety: any non-Transaction object
+    passed through (e.g. a bare Pydantic row in legacy callers) returns False
+    rather than raising AttributeError.
 
     Why: transfers don't have a meaningful merchant — they're inter-account
     movement. Learning a rule from a transfer would map "TRANSFER TO SAVINGS"
     to whatever category the user picked for accounting purposes, which would
     then mis-categorize legitimate same-merchant payments later.
     """
-    if getattr(obj, "linked_transaction_id", None) is not None:
-        return True
-    if getattr(obj, "is_transfer", False):
-        return True
-    return False
+    return is_transfer_leg(obj) if hasattr(obj, "linked_transaction_id") else False
 
 
 InferSource = Literal["org_rule", "shared_dictionary", "default"]
