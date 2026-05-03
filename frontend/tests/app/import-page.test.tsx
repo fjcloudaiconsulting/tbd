@@ -287,4 +287,178 @@ describe("ImportPage transfer pill column", () => {
     expect(checkbox).not.toBeNull();
     expect(checkbox.checked).toBe(true);
   });
+
+  it("Review pairings filter shows only rows with transfer_match_action != none or duplicate", async () => {
+    const preview = basePreview([
+      baseRow({
+        row_number: 1,
+        description: "Plain row",
+        // transfer_match_action defaults to "none".
+      }),
+      baseRow({
+        row_number: 2,
+        description: "Pair row",
+        transfer_match_action: "pair_with",
+        transfer_match_confidence: "same_day",
+        pair_with_transaction_id: 99,
+        transfer_candidates: [
+          {
+            id: 99,
+            date: "2026-05-01",
+            description: "Counter leg",
+            amount: 50,
+            account_id: 2,
+            account_name: "Savings",
+            date_diff_days: 0,
+            confidence: "same_day",
+          },
+        ],
+      }),
+      baseRow({
+        row_number: 3,
+        description: "Duplicate-of-linked row",
+        is_duplicate_of_linked_leg: true,
+        default_action_drop: true,
+        duplicate_candidate: {
+          id: 77,
+          date: "2026-05-01",
+          description: "Existing leg",
+          amount: 50,
+          account_id: 1,
+          account_name: "Checking",
+          existing_leg_is_imported: true,
+        },
+      }),
+    ]);
+
+    await renderAndPreview(preview);
+
+    // Initially all 3 rows visible.
+    expect(screen.getByText("Plain row")).toBeInTheDocument();
+    expect(screen.getByText("Pair row")).toBeInTheDocument();
+    expect(screen.getByText("Duplicate-of-linked row")).toBeInTheDocument();
+
+    // Toggle filter on.
+    const toggle = screen.getByTestId("review-pairings-toggle") as HTMLInputElement;
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(true);
+
+    // The "none" row should be hidden; pair + duplicate-of-linked stay.
+    expect(screen.queryByText("Plain row")).toBeNull();
+    expect(screen.getByText("Pair row")).toBeInTheDocument();
+    expect(screen.getByText("Duplicate-of-linked row")).toBeInTheDocument();
+  });
+
+  it("Confirm payload sets action correctly per row state", async () => {
+    const preview = basePreview([
+      baseRow({
+        row_number: 1,
+        description: "Same-day pair",
+        transfer_match_action: "pair_with",
+        transfer_match_confidence: "same_day",
+        pair_with_transaction_id: 201,
+        transfer_candidates: [
+          {
+            id: 201,
+            date: "2026-05-01",
+            description: "Counter A",
+            amount: 50,
+            account_id: 2,
+            account_name: "Savings",
+            date_diff_days: 0,
+            confidence: "same_day",
+          },
+        ],
+      }),
+      baseRow({
+        row_number: 2,
+        description: "Suggest pair",
+        transfer_match_action: "suggest_pair",
+        transfer_match_confidence: "near_date",
+        pair_with_transaction_id: 202,
+        transfer_candidates: [
+          {
+            id: 202,
+            date: "2026-04-29",
+            description: "Counter B",
+            amount: 50,
+            account_id: 2,
+            account_name: "Savings",
+            date_diff_days: 2,
+            confidence: "near_date",
+          },
+        ],
+      }),
+      baseRow({
+        row_number: 3,
+        description: "Drop linked",
+        is_duplicate_of_linked_leg: true,
+        default_action_drop: true,
+        duplicate_candidate: {
+          id: 303,
+          date: "2026-05-01",
+          description: "Existing leg",
+          amount: 50,
+          account_id: 1,
+          account_name: "Checking",
+          existing_leg_is_imported: true,
+        },
+      }),
+    ]);
+
+    await renderAndPreview(preview);
+
+    // The suggest_pair row's checkbox starts unchecked. Open panel and accept.
+    const suggestPill = await screen.findByTestId("transfer-pill-2");
+    fireEvent.click(suggestPill);
+    const suggestPanel = await screen.findByTestId("transfer-panel-2");
+    const suggestCheckbox = suggestPanel.querySelector(
+      'input[type="checkbox"]',
+    ) as HTMLInputElement;
+    fireEvent.click(suggestCheckbox);
+    expect(suggestCheckbox.checked).toBe(true);
+
+    // Provide a default category so confirm is enabled. The page renders only
+    // the "Default Category" native <select> on the preview step; per-row
+    // category pickers use a custom CategorySelect (not a native select).
+    const selects = document.querySelectorAll("select");
+    const defaultCatSelect = selects[selects.length - 1] as HTMLSelectElement;
+    fireEvent.change(defaultCatSelect, { target: { value: "5" } });
+
+    // Stub the confirm response so the click resolves cleanly.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockResolvedValueOnce({
+      imported_count: 2,
+      skipped_count: 1,
+      error_count: 0,
+      errors: [],
+    } as never);
+
+    const confirmBtn = screen.getByRole("button", { name: /import 3 transactions/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      const confirmCall = apiFetchMock.mock.calls.find(
+        ([url]) => url === "/api/v1/import/confirm",
+      );
+      expect(confirmCall).toBeDefined();
+    });
+
+    const confirmCall = apiFetchMock.mock.calls.find(
+      ([url]) => url === "/api/v1/import/confirm",
+    )!;
+    const body = JSON.parse((confirmCall[1] as RequestInit).body as string);
+
+    expect(body.rows).toHaveLength(3);
+    expect(body.rows[0].action).toBe("pair_with_existing");
+    expect(body.rows[0].pair_with_transaction_id).toBe(201);
+    expect(body.rows[0].duplicate_of_transaction_id).toBeNull();
+
+    expect(body.rows[1].action).toBe("pair_with_existing");
+    expect(body.rows[1].pair_with_transaction_id).toBe(202);
+
+    expect(body.rows[2].action).toBe("drop_as_duplicate");
+    expect(body.rows[2].duplicate_of_transaction_id).toBe(303);
+    expect(body.rows[2].pair_with_transaction_id).toBeNull();
+  });
 });

@@ -21,6 +21,84 @@ import type {
 
 type Step = "upload" | "preview" | "results";
 
+// Transfer-pill UI state (parallel map keyed by row_number — UI only,
+// independent of the confirm-payload row state).
+type TransferUiState = {
+  panelOpen: boolean;
+  pairAccepted: boolean;
+  selectedCandidateId: number | null;
+  dropAccepted: boolean;
+};
+
+/**
+ * Build a confirm-payload row by combining the existing row state with the
+ * preview detector outputs and per-row transfer-pill UI state. Pure function
+ * (no side effects) so it can be unit-tested or batch-mapped.
+ *
+ * Action precedence (per spec §4.6):
+ *   1. is_duplicate_of_linked_leg + dropAccepted → "drop_as_duplicate"
+ *   2. transfer_match_action != "none" + user-confirmed pair → "pair_with_existing"
+ *   3. otherwise → "create"
+ *
+ * Notes:
+ * - skip semantics (UI-only "don't import this row") is unchanged. drop_as_duplicate
+ *   is server-side: the row is still submitted, backend skips it after revalidation.
+ * - When dropAccepted is FALSE on an is_duplicate_of_linked_leg row, we fall
+ *   through to the pair / create branches: the user implicitly chose "Keep both",
+ *   meaning the row imports as a regular transaction (or pairs if they also
+ *   accepted a pair candidate).
+ */
+function buildConfirmRow(
+  rowState: ImportConfirmRow,
+  preview: ImportPreviewRow,
+  ui: TransferUiState,
+): ImportConfirmRow {
+  const isDup = preview.is_duplicate_of_linked_leg;
+  const matchAction = preview.transfer_match_action;
+
+  if (isDup && ui.dropAccepted) {
+    return {
+      ...rowState,
+      action: "drop_as_duplicate",
+      duplicate_of_transaction_id: preview.duplicate_candidate?.id ?? null,
+      pair_with_transaction_id: null,
+      transfer_category_id: null,
+      recategorize: undefined,
+    };
+  }
+
+  const hasPairChoice =
+    matchAction === "pair_with" || matchAction === "suggest_pair"
+      ? ui.pairAccepted
+      : matchAction === "choose_candidate"
+      ? ui.selectedCandidateId !== null
+      : false;
+
+  if (matchAction !== "none" && hasPairChoice) {
+    const partnerId =
+      matchAction === "choose_candidate"
+        ? ui.selectedCandidateId
+        : preview.pair_with_transaction_id ?? null;
+    return {
+      ...rowState,
+      action: "pair_with_existing",
+      pair_with_transaction_id: partnerId,
+      duplicate_of_transaction_id: null,
+      transfer_category_id: null,
+      recategorize: true,
+    };
+  }
+
+  return {
+    ...rowState,
+    action: "create",
+    pair_with_transaction_id: null,
+    duplicate_of_transaction_id: null,
+    transfer_category_id: null,
+    recategorize: undefined,
+  };
+}
+
 export default function ImportPage() {
   return (
     <Suspense>
@@ -64,15 +142,13 @@ function ImportPageContent() {
   const [rowStates, setRowStates] = useState<ImportConfirmRow[]>([]);
   const [defaultCategoryId, setDefaultCategoryId] = useState<number | "">("");
 
-  // Transfer-pill UI state (parallel map keyed by row_number — UI only,
-  // confirm-payload mapping happens in E2).
-  type TransferUiState = {
-    panelOpen: boolean;
-    pairAccepted: boolean;
-    selectedCandidateId: number | null;
-    dropAccepted: boolean;
-  };
+  // Transfer-pill UI state (parallel map keyed by row_number — UI only).
+  // Confirm-payload mapping happens via buildConfirmRow at submit time.
   const [transferUi, setTransferUi] = useState<Record<number, TransferUiState>>({});
+
+  // Review pairings filter — when ON, table only renders rows with a
+  // transfer detector match (Detector 1 or Detector 2).
+  const [reviewPairingsOnly, setReviewPairingsOnly] = useState(false);
 
   // Results step
   const [results, setResults] = useState<ImportConfirmResponse | null>(null);
@@ -148,13 +224,29 @@ function ImportPageContent() {
     setErrorMsg("");
     setLoading(true);
 
+    // Map every row through buildConfirmRow so action / partner-id /
+    // duplicate-id reflect the user's per-row transfer choices.
+    const previewByRow = new Map(preview.rows.map((r) => [r.row_number, r]));
+    const defaultUi: TransferUiState = {
+      panelOpen: false,
+      pairAccepted: false,
+      selectedCandidateId: null,
+      dropAccepted: false,
+    };
+    const payloadRows = rowStates.map((rs) => {
+      const pv = previewByRow.get(rs.row_number);
+      if (!pv) return rs;
+      const ui = transferUi[rs.row_number] ?? defaultUi;
+      return buildConfirmRow(rs, pv, ui);
+    });
+
     try {
       const data = await apiFetch<ImportConfirmResponse>("/api/v1/import/confirm", {
         method: "POST",
         body: JSON.stringify({
           account_id: preview.account_id,
           default_category_id: defaultCategoryId,
-          rows: rowStates,
+          rows: payloadRows,
         }),
       });
       setResults(data);
@@ -164,7 +256,7 @@ function ImportPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [preview, defaultCategoryId, rowStates]);
+  }, [preview, defaultCategoryId, rowStates, transferUi]);
 
   // ── Row update helpers ───────────────────────────────────────────────────
   const updateRow = useCallback((rowNum: number, patch: Partial<ImportConfirmRow>) => {
@@ -319,6 +411,28 @@ function ImportPageContent() {
             </div>
           </div>
 
+          {/* Review pairings filter toggle */}
+          <div className={card}>
+            <div className="flex flex-col gap-2 px-6 py-3 text-sm sm:flex-row sm:items-center sm:gap-4">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={reviewPairingsOnly}
+                  onChange={(e) => setReviewPairingsOnly(e.target.checked)}
+                  className="rounded border-border"
+                  data-testid="review-pairings-toggle"
+                />
+                <span className="font-medium text-text-primary">Review pairings only</span>
+              </label>
+              <span className="text-text-muted">
+                {preview.auto_paired_count} auto-paired ·{" "}
+                {preview.suggested_pair_count} suggested ·{" "}
+                {preview.multi_candidate_count} multi-candidate ·{" "}
+                {preview.duplicate_of_linked_count} duplicate
+              </span>
+            </div>
+          </div>
+
           {/* Preview table */}
           <div className={card + " overflow-x-auto"}>
             <table className="w-full min-w-[720px] text-sm">
@@ -337,6 +451,17 @@ function ImportPageContent() {
                 {preview.rows.map((previewRow, idx) => {
                   const rowState = rowStates[idx];
                   if (!rowState) return null;
+
+                  // Apply Review pairings filter — when ON, only render rows
+                  // with a transfer detector match (Detector 1 or Detector 2).
+                  if (
+                    reviewPairingsOnly &&
+                    previewRow.transfer_match_action === "none" &&
+                    !previewRow.is_duplicate_of_linked_leg
+                  ) {
+                    return null;
+                  }
+
                   const catOptions = rowState.type === "income" ? incomeCategories : expenseCategories;
                   const isDup = previewRow.is_duplicate;
 
