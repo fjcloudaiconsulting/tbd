@@ -464,6 +464,57 @@ describe("ImportPage transfer pill column", () => {
     expect(body.rows[2].pair_with_transaction_id).toBeNull();
   });
 
+  it("hides the Transfer column header when no row has any transfer state", async () => {
+    // All rows are plain (no detector hits, no duplicate-of-linked).
+    const preview = basePreview([
+      baseRow({ row_number: 1, description: "Plain row 1" }),
+      baseRow({ row_number: 2, description: "Plain row 2" }),
+    ]);
+
+    await renderAndPreview(preview);
+
+    // Body is rendered.
+    expect(screen.getByText("Plain row 1")).toBeInTheDocument();
+
+    // Transfer header should NOT be present when there is no transfer state at all.
+    const transferHeader = screen.queryByRole("columnheader", { name: /^Transfer$/i });
+    expect(transferHeader).toBeNull();
+  });
+
+  it("shows the Transfer column header when at least one row has transfer state", async () => {
+    const preview = basePreview([
+      baseRow({ row_number: 1, description: "Plain row" }),
+      baseRow({
+        row_number: 2,
+        description: "Pair row",
+        transfer_match_action: "pair_with",
+        transfer_match_confidence: "same_day",
+        pair_with_transaction_id: 99,
+        transfer_candidates: [
+          {
+            id: 99,
+            date: "2026-05-01",
+            description: "Counter leg",
+            amount: 50,
+            account_id: 2,
+            account_name: "Savings",
+            date_diff_days: 0,
+            confidence: "same_day",
+          },
+        ],
+      }),
+    ]);
+
+    await renderAndPreview(preview);
+
+    // Transfer header is present.
+    const transferHeader = screen.getByRole("columnheader", { name: /^Transfer$/i });
+    expect(transferHeader).toBeInTheDocument();
+
+    // Pill is rendered for the matched row.
+    expect(screen.getByTestId("transfer-pill-2")).toBeInTheDocument();
+  });
+
   it("results page surfaces paired_count and dropped_duplicate_count", async () => {
     const preview = basePreview([baseRow({ row_number: 1 })]);
 

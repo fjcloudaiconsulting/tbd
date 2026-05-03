@@ -256,6 +256,41 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     expect(body.description).toBe("Linked out edited");
   });
 
+  it("Per-row action column renders all actions on a single un-linked row (responsive layout)", async () => {
+    // Smoke test for the responsive action-column fix: the Edit, Mark transfer,
+    // and Delete buttons must all render on the desktop grid for an un-linked
+    // row, with their full aria-labels intact.
+    const tx = makeTx({
+      id: 50, account_id: ACCT_A.id, account_name: ACCT_A.name,
+      type: "expense", amount: 30, description: "Solo tx",
+      linked_transaction_id: null,
+    });
+    setupApiFetch([tx]);
+
+    render(<TransactionsPage />);
+
+    await screen.findAllByText("Solo tx");
+
+    // All three expected actions must be reachable by aria-label. (Mobile and
+    // desktop layouts each render one button, hence findAll.)
+    await waitFor(() => {
+      expect(
+        screen.queryAllByRole("button", { name: /^Edit: Solo tx$/i }).length,
+      ).toBeGreaterThan(0);
+    });
+    expect(
+      screen.getAllByRole("button", { name: /Mark as transfer: Solo tx/i }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole("button", { name: /Delete: Solo tx/i }).length,
+    ).toBeGreaterThan(0);
+
+    // Linked-row "Unlink" must NOT appear on an un-linked row.
+    expect(
+      screen.queryByRole("button", { name: /Unlink transfer: Solo tx/i }),
+    ).toBeNull();
+  });
+
   it("Per-row Mark as transfer button shown on un-linked rows only", async () => {
     const linked = makeTx({
       id: 20, account_id: ACCT_A.id, account_name: ACCT_A.name,

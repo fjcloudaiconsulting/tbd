@@ -357,7 +357,17 @@ function ImportPageContent() {
       )}
 
       {/* ── Step 2: Preview ─────────────────────────────────────────────── */}
-      {step === "preview" && preview && categories && categories.length > 0 && (
+      {step === "preview" && preview && categories && categories.length > 0 && (() => {
+        // Hide the Transfer column entirely when no row in this preview has
+        // any transfer state. Avoids a column of empty cells confusing users
+        // who report "the Transfer column is empty / checkbox missing".
+        const hasAnyTransferState =
+          preview.auto_paired_count +
+            preview.suggested_pair_count +
+            preview.multi_candidate_count +
+            preview.duplicate_of_linked_count >
+          0;
+        return (
         <div className="space-y-4">
           {/* Summary bar */}
           <div className={card}>
@@ -444,7 +454,9 @@ function ImportPageContent() {
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">Amount</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">Type</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">Category</th>
-                  <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">Transfer</th>
+                  {hasAnyTransferState && (
+                    <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">Transfer</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -504,7 +516,8 @@ function ImportPageContent() {
                   }
 
                   // Determine table column count for panel-row colspan.
-                  const COL_COUNT = 7;
+                  // Tracks whether the Transfer column is rendered.
+                  const COL_COUNT = hasAnyTransferState ? 7 : 6;
 
                   return (
                     <Fragment key={previewRow.row_number}>
@@ -564,21 +577,25 @@ function ImportPageContent() {
                             </div>
                           )}
                         </td>
-                        <td className="px-4 py-2">
-                          {pill && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateTransferUi(previewRow.row_number, { panelOpen: !ui.panelOpen })
-                              }
-                              className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${pill.classes}`}
-                              aria-expanded={ui.panelOpen}
-                              data-testid={`transfer-pill-${previewRow.row_number}`}
-                            >
-                              {pill.text}
-                            </button>
-                          )}
-                        </td>
+                        {hasAnyTransferState && (
+                          <td className="px-4 py-2">
+                            {pill ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateTransferUi(previewRow.row_number, { panelOpen: !ui.panelOpen })
+                                }
+                                className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${pill.classes}`}
+                                aria-expanded={ui.panelOpen}
+                                data-testid={`transfer-pill-${previewRow.row_number}`}
+                              >
+                                {pill.text}
+                              </button>
+                            ) : (
+                              <span className="text-text-muted">—</span>
+                            )}
+                          </td>
+                        )}
                       </tr>
 
                       {pill && ui.panelOpen && (
@@ -754,7 +771,8 @@ function ImportPageContent() {
             </button>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ── Step 3: Results ─────────────────────────────────────────────── */}
       {step === "results" && results && (

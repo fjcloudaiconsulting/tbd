@@ -760,13 +760,13 @@ function TransactionsPageContent() {
                   { field: "account_name" as const, label: "Account", span: "col-span-2", align: "" },
                   { field: "category_name" as const, label: "Category", span: "col-span-1", align: "" },
                   { field: "status" as const, label: "Status", span: "col-span-1", align: "text-center" },
-                  { field: "amount" as const, label: "Amount", span: "col-span-2", align: "text-right" },
+                  { field: "amount" as const, label: "Amount", span: "col-span-1", align: "text-right" },
                 ]).map((col) => (
                   <button key={col.field} onClick={() => toggleSort(col.field)} className={`${col.span} ${col.align} hover:text-text-primary transition-colors`}>
                     {col.label}{sortField === col.field ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
                   </button>
                 ))}
-                <span className="col-span-1" />
+                <span className="col-span-2" />
               </div>
             </div>
             {(() => {
@@ -827,26 +827,26 @@ function TransactionsPageContent() {
                                 <option value="pending">Pending</option>
                               </select>
                             </span>
-                            <span className="col-span-2 flex gap-1 min-w-0">
+                            <span className="col-span-1 flex gap-1 min-w-0">
                               {editPartner ? (
                                 <span
                                   aria-label="Type"
                                   title="Type is fixed for transfer legs."
-                                  className={`text-[11px] !w-14 shrink-0 inline-flex items-center justify-center rounded border border-border bg-surface px-1 text-text-muted`}
+                                  className={`text-[11px] !w-10 shrink-0 inline-flex items-center justify-center rounded border border-border bg-surface px-1 text-text-muted`}
                                 >
                                   {editType === "expense" ? "-" : "+"}
                                 </span>
                               ) : (
-                                <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] !w-14 shrink-0 ${input}`}>
+                                <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] !w-10 shrink-0 ${input}`}>
                                   <option value="expense">-</option>
                                   <option value="income">+</option>
                                 </select>
                               )}
                               <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm flex-1 min-w-0 ${input}`} />
                             </span>
-                            <span className="col-span-1 flex justify-end gap-2">
-                              <button onClick={handleSaveEdit} className="text-xs text-accent hover:text-accent-hover">Save</button>
-                              <button onClick={closeEdit} className="text-xs text-text-muted hover:text-text-secondary">Cancel</button>
+                            <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
+                              <button onClick={handleSaveEdit} className="whitespace-nowrap text-xs text-accent hover:text-accent-hover">Save</button>
+                              <button onClick={closeEdit} className="whitespace-nowrap text-xs text-text-muted hover:text-text-secondary">Cancel</button>
                             </span>
                           </div>
                         </div>
@@ -888,18 +888,18 @@ function TransactionsPageContent() {
                               </button>
                             )}
                           </span>
-                          <span className={`col-span-2 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                          <span className={`col-span-1 text-right text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                             {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                           </span>
-                          <span className="col-span-1 flex justify-end gap-2">
-                            <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
+                          <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
+                            <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
                             {!isTransfer && (
-                              <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark as transfer…</button>
+                              <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
                             )}
                             {isTransfer && (
-                              <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
+                              <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
                             )}
-                            <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
+                            <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="whitespace-nowrap text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
                           </span>
                         </div>
                       );
