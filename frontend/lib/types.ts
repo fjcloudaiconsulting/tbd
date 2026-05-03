@@ -293,3 +293,49 @@ export interface FeatureStateResponse {
   plan: { id: number; name: string; slug: string } | null;
   features: FeatureStateRow[];
 }
+
+// ── Transfer-pair shapes (PR-D) ──────────────────────────────────────────────
+
+export type TransferCandidate = {
+  id: number;
+  date: string;
+  description: string;
+  amount: string;
+  account_id: number;
+  account_name: string;
+  date_diff_days: number;
+  confidence: "same_day" | "near_date";
+};
+
+export type TransferCandidatesResponse = {
+  candidates: TransferCandidate[];
+};
+
+export type DuplicateCandidate = {
+  id: number;
+  date: string;
+  description: string;
+  amount: string;
+  account_id: number;
+  account_name: string;
+  existing_leg_is_imported: boolean;
+};
+
+export type TransactionPairRequest = {
+  expense_id: number;
+  income_id: number;
+  transfer_category_id?: number | null;
+  recategorize?: boolean;
+};
+
+export type ConvertToTransferRequest = {
+  destination_account_id: number;
+  pair_with_transaction_id?: number | null;
+  transfer_category_id?: number | null;
+  recategorize?: boolean;
+};
+
+export type UnpairTransactionRequest = {
+  expense_fallback_category_id: number;
+  income_fallback_category_id: number;
+};
