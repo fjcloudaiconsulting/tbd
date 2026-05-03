@@ -73,3 +73,41 @@ async def test_create_transfer_calls_link_pair_and_links_bidirectionally(db_sess
     await db_session.refresh(dst)
     assert src.balance == Decimal("75")
     assert dst.balance == Decimal("25")
+
+
+async def test_create_transaction_no_commit_does_not_commit(db_session):
+    """The internal primitive must flush but not commit, so callers can wrap
+    it in their own transaction. Verified by inspecting that a rollback after
+    the call removes the inserted row entirely.
+    """
+    from app.services.transaction_service import _create_transaction_no_commit
+    from app.schemas.transaction import TransactionCreate
+
+    org = Organization(name="Test", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    acct = Account(org_id=org.id, name="A", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add(acct)
+    cat = Category(org_id=org.id, name="C", slug="c", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+
+    body = TransactionCreate(
+        account_id=acct.id, category_id=cat.id, description="x",
+        amount=Decimal("5"), type="expense", status="settled", date=date(2026, 5, 1),
+    )
+    tx = await _create_transaction_no_commit(db_session, org.id, body)
+    assert tx.id is not None  # flushed, has an id
+    tx_id = tx.id
+
+    # Roll back to confirm the primitive did not commit
+    await db_session.rollback()
+
+    # The row should be gone
+    result = await db_session.execute(
+        select(Transaction).where(Transaction.id == tx_id)
+    )
+    assert result.scalar_one_or_none() is None

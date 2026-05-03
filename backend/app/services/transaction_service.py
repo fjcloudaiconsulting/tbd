@@ -126,39 +126,66 @@ def revert_balance(account: Account, amount: Decimal, tx_type: TransactionType) 
 
 # ── CRUD operations ───────────────────────────────────────────────────────────
 
-async def create_transaction(
-    db: AsyncSession, org_id: int, body: TransactionCreate, *, is_imported: bool = False
+async def _create_transaction_no_commit(
+    db: AsyncSession,
+    org_id: int,
+    body: TransactionCreate,
+    *,
+    is_imported: bool = False,
 ) -> Transaction:
+    """Internal create primitive that flushes but does NOT commit.
+
+    Used by:
+      - public create_transaction (wraps with commit + best-effort learning)
+      - import_service.execute_import pair_with_existing branch (calls
+        directly, then _link_pair, all inside the outer execute_import
+        transaction so the pair is atomic).
+
+    Caller owns transaction scope. This function does NOT open db.begin_nested
+    or commit; balance application happens unconditionally for SETTLED rows
+    and rolls back with the caller's outer transaction if anything raises.
+    """
     await validate_account(db, body.account_id, org_id)
     await validate_category(db, body.category_id, org_id)
     tx_type = TransactionType(body.type)
     tx_status = TransactionStatus(body.status)
 
+    if tx_status == TransactionStatus.SETTLED:
+        acct = await get_account_for_update(db, body.account_id, org_id)
+        apply_balance(acct, body.amount, tx_type)
+
+    tx = Transaction(
+        org_id=org_id,
+        account_id=body.account_id,
+        category_id=body.category_id,
+        description=body.description,
+        amount=body.amount,
+        type=tx_type,
+        status=tx_status,
+        date=body.date,
+        settled_date=body.date if tx_status == TransactionStatus.SETTLED else None,
+        is_imported=is_imported,
+    )
+    db.add(tx)
+    await db.flush()
+    return tx
+
+
+async def create_transaction(
+    db: AsyncSession, org_id: int, body: TransactionCreate, *, is_imported: bool = False
+) -> Transaction:
+    """Public create endpoint. Owns transaction scope: wraps the no-commit
+    primitive in begin_nested, commits, then runs best-effort smart-rules
+    learning post-commit.
+    """
     async with db.begin_nested():
-        if tx_status == TransactionStatus.SETTLED:
-            acct = await get_account_for_update(db, body.account_id, org_id)
-            apply_balance(acct, body.amount, tx_type)
-
-        tx = Transaction(
-            org_id=org_id,
-            account_id=body.account_id,
-            category_id=body.category_id,
-            description=body.description,
-            amount=body.amount,
-            type=tx_type,
-            status=tx_status,
-            date=body.date,
-            settled_date=body.date if tx_status == TransactionStatus.SETTLED else None,
-            is_imported=is_imported,
-        )
-        db.add(tx)
-
+        tx = await _create_transaction_no_commit(db, org_id, body, is_imported=is_imported)
     await db.commit()
 
     # Learn from the explicit category pick on MANUAL creates only.
-    # Imports own their own learning in execute_import (Task 7), with
-    # accept-vs-override awareness. Adding a learn here would double-write
-    # and clobber user_pick semantics.
+    # Imports own their own learning in execute_import, with accept-vs-override
+    # awareness. Adding a learn here would double-write and clobber user_pick
+    # semantics.
     #
     # Learning is best-effort: a failure here must NOT surface as a 500
     # to the caller — the user's transaction is already committed above.
