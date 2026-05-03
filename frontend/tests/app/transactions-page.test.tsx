@@ -204,6 +204,58 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     expect(typeNodes[0].getAttribute("title")).toMatch(/transfer leg/i);
   });
 
+  it("Saving an edit on a linked row omits 'type' from the PUT body", async () => {
+    const expenseLeg = makeTx({
+      id: 30, account_id: ACCT_A.id, account_name: ACCT_A.name,
+      type: "expense", amount: 50, description: "Linked out",
+      linked_transaction_id: 31,
+    });
+    const incomeLeg = makeTx({
+      id: 31, account_id: ACCT_B.id, account_name: ACCT_B.name,
+      type: "income", amount: 50, description: "Linked in",
+      linked_transaction_id: 30,
+    });
+    setupApiFetch([expenseLeg, incomeLeg]);
+
+    render(<TransactionsPage />);
+
+    await screen.findAllByText("Linked out");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
+    });
+
+    // Open edit on the visible (lower-id) linked row.
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+
+    // Change description to something different.
+    const descInputs = screen.getAllByLabelText("Description");
+    fireEvent.change(descInputs[0], { target: { value: "Linked out edited" } });
+
+    // Click Save.
+    const saveBtns = screen.getAllByRole("button", { name: /^Save$/i });
+    fireEvent.click(saveBtns[0]);
+
+    // Find the PUT call to /api/v1/transactions/30.
+    const apiFetchMock = vi.mocked(apiFetch);
+    await waitFor(() => {
+      const putCall = apiFetchMock.mock.calls.find(
+        (call) =>
+          call[0] === "/api/v1/transactions/30" &&
+          (call[1] as RequestInit | undefined)?.method === "PUT"
+      );
+      expect(putCall).toBeTruthy();
+    });
+
+    const putCall = apiFetchMock.mock.calls.find(
+      (call) =>
+        call[0] === "/api/v1/transactions/30" &&
+        (call[1] as RequestInit | undefined)?.method === "PUT"
+    )!;
+    const body = JSON.parse((putCall[1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty("type");
+    expect(body.description).toBe("Linked out edited");
+  });
+
   it("Per-row Mark as transfer button shown on un-linked rows only", async () => {
     const linked = makeTx({
       id: 20, account_id: ACCT_A.id, account_name: ACCT_A.name,

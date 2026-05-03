@@ -39,6 +39,7 @@ export default function MarkAsTransferModal({
   // Stage 2
   const [candidates, setCandidates] = useState<TransferCandidate[]>([]);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [candidatesLoaded, setCandidatesLoaded] = useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState<number | null>(null);
   const [createInstead, setCreateInstead] = useState(false);
 
@@ -102,10 +103,12 @@ export default function MarkAsTransferModal({
       setCandidates([]);
       setSelectedCandidateId(null);
       setCreateInstead(false);
+      setCandidatesLoaded(false);
       return;
     }
     let cancelled = false;
     setCandidatesLoading(true);
+    setCandidatesLoaded(false);
     setSelectedCandidateId(null);
     setCreateInstead(false);
     setErrorText(null);
@@ -116,6 +119,7 @@ export default function MarkAsTransferModal({
       .then((r) => {
         if (cancelled) return;
         setCandidates(r.candidates);
+        setCandidatesLoaded(true);
         // Pre-select single same-day candidate (opt-out)
         if (r.candidates.length === 1 && r.candidates[0].confidence === "same_day") {
           setSelectedCandidateId(r.candidates[0].id);
@@ -134,7 +138,7 @@ export default function MarkAsTransferModal({
   }, [destAcctId, source.id]);
 
   const hasZeroCandidates =
-    destAcctId !== null && !candidatesLoading && candidates.length === 0;
+    destAcctId !== null && !candidatesLoading && candidatesLoaded && candidates.length === 0;
   const hasOneSameDay =
     candidates.length === 1 && candidates[0].confidence === "same_day";
   const hasOneNearDate =

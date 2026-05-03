@@ -383,17 +383,21 @@ function TransactionsPageContent() {
     if (!editDesc.trim()) { setError("Description is required"); return; }
     setError("");
     try {
+      const isLinked = editPartner !== null;
+      const body: Record<string, unknown> = {
+        description: editDesc,
+        amount: editAmount,
+        status: editStatus,
+        date: editDate,
+        account_id: editAccountId,
+        category_id: editCategoryId,
+      };
+      if (!isLinked) {
+        body.type = editType;
+      }
       await apiFetch(`/api/v1/transactions/${editingId}`, {
         method: "PUT",
-        body: JSON.stringify({
-          description: editDesc,
-          amount: editAmount,
-          type: editType,
-          status: editStatus,
-          date: editDate,
-          account_id: editAccountId,
-          category_id: editCategoryId,
-        }),
+        body: JSON.stringify(body),
       });
       closeEdit();
       await loadTransactions(page);

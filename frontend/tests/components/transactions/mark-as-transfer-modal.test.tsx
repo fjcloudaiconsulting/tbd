@@ -226,6 +226,31 @@ describe("MarkAsTransferModal", () => {
     ).toBeEnabled();
   });
 
+  it("does not enable Create partner leg when candidate fetch fails", async () => {
+    apiFetchMock.mockRejectedValueOnce(new Error("transient API error"));
+    render(
+      <MarkAsTransferModal
+        source={source}
+        accounts={accounts}
+        onConverted={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "20" } });
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/transient API error/i)
+    );
+    // The "Create partner leg" button must NOT be enabled — fetch failed,
+    // not "zero candidates".
+    const createButton = screen.queryByRole("button", { name: /Create partner leg/i });
+    if (createButton) {
+      expect(createButton).toBeDisabled();
+    }
+    // Stronger assertion: the "no matching" notice shouldn't appear (only on
+    // successful empty fetch).
+    expect(screen.queryByText(/No matching un-linked rows/i)).not.toBeInTheDocument();
+  });
+
   it("submit pair calls POST /convert-to-transfer with pair_with_transaction_id", async () => {
     apiFetchMock.mockResolvedValueOnce({
       candidates: [
