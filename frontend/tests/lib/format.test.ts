@@ -1,4 +1,5 @@
 import { formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
+import { equalsAmount } from "@/lib/format";
 
 
 describe("format utilities", () => {
@@ -33,5 +34,28 @@ describe("format utilities", () => {
     expect(todayISO()).toBe("2026-04-24");
 
     vi.useRealTimers();
+  });
+});
+
+describe("equalsAmount", () => {
+  it("returns true for normalized equal strings", () => {
+    expect(equalsAmount("100.00", "100")).toBe(true);
+    expect(equalsAmount("100.0", "100.00")).toBe(true);
+    expect(equalsAmount("0", "0.00")).toBe(true);
+    expect(equalsAmount("1.50", "1.5")).toBe(true);
+  });
+
+  it("returns false for unequal strings", () => {
+    expect(equalsAmount("100.01", "100.00")).toBe(false);
+    expect(equalsAmount("100", "1000")).toBe(false);
+  });
+
+  it("handles negative values", () => {
+    expect(equalsAmount("-100.00", "-100")).toBe(true);
+    expect(equalsAmount("-100", "100")).toBe(false);
+  });
+
+  it("does not use float comparison (0.1 + 0.2 case)", () => {
+    expect(equalsAmount("0.30", "0.30")).toBe(true);
   });
 });
