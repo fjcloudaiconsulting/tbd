@@ -574,7 +574,9 @@ async def find_match_candidates(
     Caller passes ``source_type``; helper computes opposite internally. Never
     call this with an already-flipped type.
 
-    Ordered by abs(date_diff) ASC, id ASC. Capped at 25 candidates.
+    Ordered by abs(date_diff) ASC, id ASC. Capped at 25 candidates AFTER
+    Python sort (no SQL LIMIT — without ORDER BY in SQL, LIMIT could exclude
+    the closest candidate).
     """
     target_type = (
         TransactionType.INCOME if source_type == TransactionType.EXPENSE else TransactionType.EXPENSE
@@ -598,12 +600,13 @@ async def find_match_candidates(
             Transaction.date <= window_end,
             Account.currency == currency,
         )
-        .limit(25)
+        # NOTE: no SQL .limit() — the ±3-day window + strict filter set keeps
+        # the result set naturally tiny. Sort in Python, then slice.
     )
     result = await db.execute(q)
     rows = list(result.scalars().all())
     rows.sort(key=lambda r: (abs((r.date - date).days), r.id))
-    return rows
+    return rows[:25]  # defensive cap AFTER sorting
 
 
 async def find_duplicate_of_linked_leg(
@@ -620,7 +623,9 @@ async def find_duplicate_of_linked_leg(
     CSV row's (type, amount, currency) within ±3 days. Used by import preview
     to flag bank rows that duplicate a synthetic leg created via Op-3.
 
-    Ordered by abs(date_diff) ASC, id ASC.
+    Ordered by abs(date_diff) ASC, id ASC. Capped at 10 AFTER Python sort
+    (no SQL LIMIT — without ORDER BY in SQL, LIMIT could exclude the
+    closest candidate).
     """
     window_start = date - datetime.timedelta(days=3)
     window_end = date + datetime.timedelta(days=3)
@@ -639,12 +644,12 @@ async def find_duplicate_of_linked_leg(
             Transaction.date <= window_end,
             Account.currency == currency,
         )
-        .limit(10)
+        # NOTE: no SQL .limit() — see find_match_candidates for rationale.
     )
     result = await db.execute(q)
     rows = list(result.scalars().all())
     rows.sort(key=lambda r: (abs((r.date - date).days), r.id))
-    return rows
+    return rows[:10]  # defensive cap AFTER sorting
 
 
 async def pair_existing_transactions(
@@ -721,49 +726,79 @@ async def convert_and_create_leg(
     Owns transaction scope. See pair_existing_transactions for the locking
     discipline. Source may be SETTLED or PENDING; partner mirrors source
     status. Same-currency only.
+
+    Lock order: source transaction FIRST, then accounts (sorted-ID). This
+    matches update_transaction's order (tx then accounts) so concurrent
+    operations on overlapping (transaction, account) pairs cannot deadlock.
     """
-    # Pre-read source and destination account (no lock yet, just to check
-    # existence + collect ids for sorted-order lock acquisition).
-    source = await db.scalar(
+    # 1. Pre-read source transaction (no lock) only to collect IDs needed for
+    # subsequent lock acquisition + early existence check.
+    source_pre = await db.scalar(
         select(Transaction).where(
             Transaction.id == source_tx_id, Transaction.org_id == org_id
         )
     )
-    if source is None:
+    if source_pre is None:
         raise NotFoundError("Transaction")
-    if source.linked_transaction_id is not None:
+    pre_account_id = source_pre.account_id
+    pre_linked = source_pre.linked_transaction_id
+    pre_recurring = source_pre.recurring_id
+
+    # 2. Pre-validate destination account + early invariants on the unlocked
+    # read. These will be re-checked under the lock to defeat races.
+    if pre_linked is not None:
         raise ValidationError("Source row is already a transfer leg")
-    if source.recurring_id is not None:
+    if pre_recurring is not None:
         raise ValidationError("Recurring rows cannot be converted to transfer legs")
-    if source.account_id == destination_account_id:
+    if pre_account_id == destination_account_id:
         raise ValidationError("Source and destination accounts must differ")
 
-    src_account = await db.scalar(
-        select(Account).where(Account.id == source.account_id, Account.org_id == org_id)
+    src_account_pre = await db.scalar(
+        select(Account).where(Account.id == pre_account_id, Account.org_id == org_id)
     )
-    dst_account = await db.scalar(
+    dst_account_pre = await db.scalar(
         select(Account).where(Account.id == destination_account_id, Account.org_id == org_id)
     )
-    if dst_account is None:
+    if dst_account_pre is None:
         raise NotFoundError("Account")
-    if src_account.currency != dst_account.currency:
+    if src_account_pre.currency != dst_account_pre.currency:
         raise ValidationError("Source and destination accounts must have the same currency")
 
-    # Acquire account locks in sorted ID order (deadlock prevention).
-    first_id, second_id = sorted([source.account_id, destination_account_id])
-    first_acct = await get_account_for_update(db, first_id, org_id)
-    second_acct = await get_account_for_update(db, second_id, org_id)
-    dst_locked = first_acct if destination_account_id == first_id else second_acct
-
-    # Lock the source row with FOR UPDATE; refresh with eager-loaded relationships.
+    # 3. Lock the source transaction FIRST (before accounts) to match the
+    # lock-acquisition order used by update_transaction. Refresh with eager
+    # relationships so downstream code sees the locked row state.
     locked = await db.execute(
         select(Transaction)
         .options(*_load_opts())
-        .where(Transaction.id == source.id, Transaction.org_id == org_id)
+        .where(Transaction.id == source_tx_id, Transaction.org_id == org_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    source = locked.scalar_one()
+    source = locked.scalar_one_or_none()
+    if source is None:
+        # Row vanished between pre-read and FOR UPDATE.
+        raise ConflictError("Source row state changed; refresh and retry")
+
+    # 4. Re-validate locked source state. If anything changed since the
+    # unlocked read, abort with ConflictError so the caller can refresh.
+    if source.linked_transaction_id is not None:
+        raise ConflictError("Source row state changed; refresh and retry")
+    if source.recurring_id is not None:
+        raise ConflictError("Source row state changed; refresh and retry")
+    if source.account_id == destination_account_id:
+        raise ConflictError("Source row state changed; refresh and retry")
+
+    # 5. Lock both accounts in sorted-ID order using the locked source's
+    # account_id (paranoia: in case it differs from the pre-read).
+    first_id, second_id = sorted([source.account_id, destination_account_id])
+    first_acct = await get_account_for_update(db, first_id, org_id)
+    second_acct = await get_account_for_update(db, second_id, org_id)
+    src_locked = first_acct if source.account_id == first_id else second_acct
+    dst_locked = first_acct if destination_account_id == first_id else second_acct
+
+    # 6. Re-validate currency on the locked accounts.
+    if src_locked.currency != dst_locked.currency:
+        raise ConflictError("Account currencies changed; refresh and retry")
 
     # Determine partner type by mirroring source.
     partner_type = (
@@ -849,6 +884,25 @@ async def unpair_transactions(
     # Validate fallback categories upfront (raises NotFoundError on miss).
     await validate_category(db, expense_fallback_category_id, org_id)
     await validate_category(db, income_fallback_category_id, org_id)
+
+    # Enforce type compatibility for each fallback. validate_category only
+    # checks org/existence; the docstring promises type-matched fallbacks so
+    # the API must reject INCOME-only categories for the expense leg, and
+    # EXPENSE-only categories for the income leg.
+    exp_cat = await db.scalar(
+        select(Category).where(
+            Category.id == expense_fallback_category_id, Category.org_id == org_id
+        )
+    )
+    inc_cat = await db.scalar(
+        select(Category).where(
+            Category.id == income_fallback_category_id, Category.org_id == org_id
+        )
+    )
+    if exp_cat.type not in (CategoryType.EXPENSE, CategoryType.BOTH):
+        raise ValidationError("expense_fallback_category_id must be EXPENSE or BOTH")
+    if inc_cat.type not in (CategoryType.INCOME, CategoryType.BOTH):
+        raise ValidationError("income_fallback_category_id must be INCOME or BOTH")
 
     ids_sorted = sorted([transaction_id, preview.linked_transaction_id])
     locked = await db.execute(

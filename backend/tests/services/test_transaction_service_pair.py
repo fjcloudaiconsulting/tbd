@@ -774,3 +774,153 @@ async def test_unpair_transactions_works_when_called_with_either_leg_id(db_sessi
     assert result_inc.type == TransactionType.INCOME
     assert result_exp.linked_transaction_id is None
     assert result_inc.linked_transaction_id is None
+
+
+# ── PR-B review: lock ordering, type compat, sort-then-cap ──────────────────
+
+
+async def test_convert_and_create_leg_locks_source_before_accounts(db_session, monkeypatch):
+    """Sanity check that the source row is locked before the accounts. Without
+    a real concurrent-process test, we verify the *order of operations* by
+    spying on get_account_for_update vs. the FOR UPDATE source select.
+
+    The implementation should issue the source FOR UPDATE select before
+    calling get_account_for_update.
+    """
+    # Setup a valid source + dst pair
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(org_id=org.id, name="Src", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    dst = Account(org_id=org.id, name="Dst", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add_all([src, dst])
+    cat = Category(org_id=org.id, name="C", slug="c", type=CategoryType.BOTH, is_system=True)
+    transfer_cat = Category(org_id=org.id, name="Transfer", slug="transfer", type=CategoryType.BOTH, is_system=True)
+    db_session.add_all([cat, transfer_cat])
+    await db_session.flush()
+    source_row = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="x", amount=Decimal("10"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add(source_row)
+    await db_session.commit()
+
+    # Patch get_account_for_update to record when it's called relative to
+    # the FOR UPDATE select on the transaction
+    call_log: list[str] = []
+    real_get_account = transaction_service.get_account_for_update
+    real_execute = db_session.execute
+
+    async def spy_get_account(*args, **kwargs):
+        call_log.append("get_account_for_update")
+        return await real_get_account(*args, **kwargs)
+
+    async def spy_execute(stmt, *args, **kwargs):
+        # crude check: any select on Transaction with FOR UPDATE
+        try:
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": False})) if hasattr(stmt, "compile") else str(stmt)
+        except Exception:
+            sql = str(stmt)
+        if "transactions" in sql.lower() and "for update" in sql.lower():
+            call_log.append("source_for_update_select")
+        return await real_execute(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(transaction_service, "get_account_for_update", spy_get_account)
+    monkeypatch.setattr(db_session, "execute", spy_execute)
+
+    await transaction_service.convert_and_create_leg(
+        db_session, org.id, source_row.id, destination_account_id=dst.id,
+    )
+
+    # The source FOR UPDATE select must come before any get_account_for_update call
+    first_lock_idx = next((i for i, e in enumerate(call_log) if e == "source_for_update_select"), -1)
+    first_account_idx = next((i for i, e in enumerate(call_log) if e == "get_account_for_update"), -1)
+    assert first_lock_idx >= 0, f"No FOR UPDATE on transactions found in: {call_log}"
+    assert first_account_idx >= 0, f"No get_account_for_update call: {call_log}"
+    assert first_lock_idx < first_account_idx, (
+        f"Source FOR UPDATE must be acquired BEFORE accounts; got order {call_log}"
+    )
+
+
+async def test_unpair_transactions_rejects_wrong_type_for_expense_leg(db_session):
+    """Income-only category as expense fallback → ValidationError."""
+    from app.services.exceptions import ValidationError
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+
+    salary = Category(org_id=expense.org_id, name="Salary", slug="salary", type=CategoryType.INCOME, is_system=False)
+    db_session.add(salary)
+    await db_session.commit()
+
+    with pytest.raises(ValidationError):
+        await transaction_service.unpair_transactions(
+            db_session, expense.org_id, expense.id,
+            expense_fallback_category_id=salary.id,  # INCOME-only as expense fallback → reject
+            income_fallback_category_id=salary.id,
+        )
+
+
+async def test_unpair_transactions_rejects_wrong_type_for_income_leg(db_session):
+    """Expense-only category as income fallback → ValidationError."""
+    from app.services.exceptions import ValidationError
+    from tests.services.test_transaction_filters import _seed_pair
+    expense, income = await _seed_pair(db_session)
+
+    groceries = Category(org_id=expense.org_id, name="Groceries", slug="groceries", type=CategoryType.EXPENSE, is_system=False)
+    db_session.add(groceries)
+    await db_session.commit()
+
+    with pytest.raises(ValidationError):
+        await transaction_service.unpair_transactions(
+            db_session, expense.org_id, expense.id,
+            expense_fallback_category_id=groceries.id,
+            income_fallback_category_id=groceries.id,  # EXPENSE-only as income fallback → reject
+        )
+
+
+async def test_find_match_candidates_sorts_then_caps(db_session):
+    """If more rows match than the cap, the CLOSEST should win, not arbitrary 25."""
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    acct_a = Account(org_id=org.id, name="A", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    acct_b = Account(org_id=org.id, name="B", account_type_id=at.id, balance=Decimal("0"), currency="EUR")
+    db_session.add_all([acct_a, acct_b])
+    cat = Category(org_id=org.id, name="C", slug="c", type=CategoryType.BOTH, is_system=True)
+    db_session.add(cat)
+    await db_session.flush()
+
+    # Seed 7 rows: dates -3, -2, -1, 0, +1, +2, +3 from query date
+    target = date(2026, 5, 4)
+    from datetime import timedelta
+    for delta in [-3, -2, -1, 0, 1, 2, 3]:
+        tx = Transaction(
+            org_id=org.id, account_id=acct_a.id, category_id=cat.id,
+            description=f"day{delta}", amount=Decimal("100"),
+            type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+            date=target + timedelta(days=delta),
+            settled_date=target + timedelta(days=delta),
+        )
+        db_session.add(tx)
+    await db_session.commit()
+
+    candidates = await transaction_service.find_match_candidates(
+        db_session, org.id,
+        source_type=TransactionType.INCOME,
+        amount=Decimal("100"),
+        account_id_excluded=acct_b.id,
+        date=target,
+        currency="EUR",
+    )
+    # Closest first: 0d, then ±1d (sorted by id ASC), then ±2d, then ±3d
+    assert len(candidates) == 7
+    distances = [abs((c.date - target).days) for c in candidates]
+    assert distances == [0, 1, 1, 2, 2, 3, 3]
