@@ -769,3 +769,327 @@ async def test_confirm_pair_with_existing_rejects_pending_partner(
         )
     )).scalars().all()
     assert new_legs == []
+
+
+# ── IMM (import-mark-manual) create_transfer_pair branch ─────────────────────
+
+
+async def test_confirm_create_transfer_pair_creates_both_legs_and_links(
+    db_session: AsyncSession,
+) -> None:
+    """action='create_transfer_pair' creates the CSV leg + a synthetic
+    partner leg on partner_account_id and links them. Counts once toward
+    paired_count; transfers.linked emitted with source='import_create_pair'.
+    """
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="TO SAVINGS", amount=Decimal("80"),
+            type="expense",
+            category_id=seed["transfer_cat_id"],
+            action="create_transfer_pair",
+            partner_account_id=seed["dst_id"],
+            recategorize=False,
+        )],
+    )
+
+    with patch.object(
+        import_service.logger, "ainfo", new_callable=AsyncMock,
+    ) as spy:
+        result = await import_service.execute_import(
+            db_session, org_id=seed["org_id"], body=body,
+        )
+
+    assert result.imported_count == 0
+    assert result.paired_count == 1
+    assert result.dropped_duplicate_count == 0
+    assert result.error_count == 0
+
+    # Two transactions exist: one expense on src, one income on dst, both
+    # linked to each other, equal amounts, same date.
+    csv_leg = (await db_session.execute(
+        select(Transaction).where(
+            Transaction.account_id == seed["src_id"],
+        )
+    )).scalar_one()
+    partner_leg = (await db_session.execute(
+        select(Transaction).where(
+            Transaction.account_id == seed["dst_id"],
+        )
+    )).scalar_one()
+    assert csv_leg.type == TransactionType.EXPENSE
+    assert partner_leg.type == TransactionType.INCOME
+    assert csv_leg.amount == partner_leg.amount == Decimal("80")
+    assert csv_leg.date == partner_leg.date == when
+    assert csv_leg.linked_transaction_id == partner_leg.id
+    assert partner_leg.linked_transaction_id == csv_leg.id
+    # CSV leg flagged is_imported; synthetic partner is not.
+    assert csv_leg.is_imported is True
+    assert partner_leg.is_imported is False
+
+    linked_calls = [
+        c for c in spy.call_args_list
+        if c.args and c.args[0] == "transfers.linked"
+    ]
+    assert len(linked_calls) == 1
+    assert linked_calls[0].kwargs["source"] == "import_create_pair"
+    assert linked_calls[0].kwargs["recategorized"] is False
+
+
+async def test_confirm_create_transfer_pair_atomicity_rollback(
+    db_session: AsyncSession,
+) -> None:
+    """If _link_pair raises after both creates, BOTH legs roll back. The DB
+    must contain zero transactions afterward.
+    """
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="TO SAVINGS", amount=Decimal("80"),
+            type="expense",
+            category_id=seed["transfer_cat_id"],
+            action="create_transfer_pair",
+            partner_account_id=seed["dst_id"],
+        )],
+    )
+
+    with patch(
+        "app.services.import_service._link_pair",
+        new=AsyncMock(side_effect=RuntimeError("simulated link failure")),
+    ):
+        result = await import_service.execute_import(
+            db_session, org_id=seed["org_id"], body=body,
+        )
+
+    # Surfaces as a row error.
+    assert result.paired_count == 0
+    assert result.imported_count == 0
+    assert result.error_count == 1
+    assert "simulated link failure" in result.errors[0].error
+
+    # Zero transactions in the DB — both legs were savepoint-rolled back.
+    all_tx = (await db_session.execute(select(Transaction))).scalars().all()
+    assert all_tx == []
+
+
+async def test_confirm_create_transfer_pair_validates_currency_mismatch(
+    db_session: AsyncSession,
+) -> None:
+    """Partner account with a different currency → row error, no rows
+    created (savepoint rollback).
+    """
+    seed = await _seed_two_accounts(db_session)
+    # Flip dst's currency to USD (src stays EUR).
+    dst = (await db_session.execute(
+        select(Account).where(Account.id == seed["dst_id"])
+    )).scalar_one()
+    dst.currency = "USD"
+    await db_session.commit()
+
+    when = datetime.date(2026, 5, 1)
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="TO SAVINGS", amount=Decimal("50"),
+            type="expense",
+            category_id=seed["transfer_cat_id"],
+            action="create_transfer_pair",
+            partner_account_id=seed["dst_id"],
+        )],
+    )
+
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+    assert result.paired_count == 0
+    assert result.imported_count == 0
+    assert result.error_count == 1
+    assert "currency" in result.errors[0].error.lower()
+
+    # No transactions created.
+    all_tx = (await db_session.execute(select(Transaction))).scalars().all()
+    assert all_tx == []
+
+
+async def test_confirm_create_transfer_pair_validates_same_account(
+    db_session: AsyncSession,
+) -> None:
+    """partner_account_id == import account → row error, no rows created."""
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="SELF TRANSFER", amount=Decimal("30"),
+            type="expense",
+            category_id=seed["transfer_cat_id"],
+            action="create_transfer_pair",
+            partner_account_id=seed["src_id"],  # same as import account
+        )],
+    )
+
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+    assert result.paired_count == 0
+    assert result.imported_count == 0
+    assert result.error_count == 1
+    assert "differ" in result.errors[0].error.lower()
+    all_tx = (await db_session.execute(select(Transaction))).scalars().all()
+    assert all_tx == []
+
+
+async def test_confirm_create_transfer_pair_increments_paired_count(
+    db_session: AsyncSession,
+) -> None:
+    """Mixed batch: 2 plain creates + 1 create_transfer_pair → imported=2,
+    paired=1. Confirms the new branch contributes to paired_count, not
+    imported_count.
+    """
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[
+            ImportConfirmRow(
+                row_number=1, date=when,
+                description="POS COFFEE A", amount=Decimal("3.50"),
+                type="expense",
+                category_id=seed["transfer_cat_id"],
+                action="create",
+            ),
+            ImportConfirmRow(
+                row_number=2, date=when,
+                description="POS COFFEE B", amount=Decimal("4.50"),
+                type="expense",
+                category_id=seed["transfer_cat_id"],
+                action="create",
+            ),
+            ImportConfirmRow(
+                row_number=3, date=when,
+                description="TO SAVINGS", amount=Decimal("100"),
+                type="expense",
+                category_id=seed["transfer_cat_id"],
+                action="create_transfer_pair",
+                partner_account_id=seed["dst_id"],
+            ),
+        ],
+    )
+
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+    assert result.imported_count == 2
+    assert result.paired_count == 1
+    assert result.dropped_duplicate_count == 0
+    assert result.skipped_count == 0
+    assert result.error_count == 0
+    total = (
+        result.imported_count + result.paired_count
+        + result.dropped_duplicate_count + result.skipped_count
+        + result.error_count
+    )
+    assert total == len(body.rows)
+
+
+async def test_create_transfer_pair_locks_accounts_in_sorted_order(
+    db_session: AsyncSession,
+    monkeypatch,
+) -> None:
+    """Sanity check: account locks for create_transfer_pair are acquired in
+    sorted-ID order BEFORE either _create_transaction_no_commit call.
+    Mirrors the pattern in convert_and_create_leg's lock-ordering test
+    (PR-#118 review fix — deadlock prevention).
+    """
+    seed = await _seed_two_accounts(db_session)
+    # src_id < dst_id by insertion order; verify and capture both for the
+    # sorted-ID assertion below.
+    src_id = seed["src_id"]
+    dst_id = seed["dst_id"]
+    assert src_id < dst_id
+
+    real_get_account = import_service.get_account_for_update
+    real_create = import_service._create_transaction_no_commit
+    call_log: list[tuple[str, int]] = []
+
+    async def spy_get_account(db, account_id, org_id):
+        call_log.append(("lock_account", account_id))
+        return await real_get_account(db, account_id, org_id)
+
+    async def spy_create(db, org_id, body, *, is_imported=False):
+        call_log.append(("create_no_commit", body.account_id))
+        return await real_create(db, org_id, body, is_imported=is_imported)
+
+    monkeypatch.setattr(
+        import_service, "get_account_for_update", spy_get_account,
+    )
+    monkeypatch.setattr(
+        import_service, "_create_transaction_no_commit", spy_create,
+    )
+
+    when = datetime.date(2026, 5, 1)
+    body = ImportConfirmRequest(
+        account_id=src_id,
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="TO SAVINGS", amount=Decimal("80"),
+            type="expense",
+            category_id=seed["transfer_cat_id"],
+            action="create_transfer_pair",
+            partner_account_id=dst_id,
+            recategorize=False,
+        )],
+    )
+
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+    assert result.paired_count == 1
+    assert result.error_count == 0
+
+    # The account-lock calls (entries with op="lock_account") must come
+    # BEFORE any "create_no_commit" call, AND in sorted-ID order
+    # (lo then hi).
+    lock_entries = [c for c in call_log if c[0] == "lock_account"]
+    create_entries = [c for c in call_log if c[0] == "create_no_commit"]
+    assert len(lock_entries) >= 2, (
+        f"Expected >=2 account locks, got: {call_log}"
+    )
+    assert len(create_entries) >= 2, (
+        f"Expected 2 transaction creates, got: {call_log}"
+    )
+
+    # First two locks are the sorted account-id pair.
+    first_two_lock_ids = [c[1] for c in lock_entries[:2]]
+    assert first_two_lock_ids == sorted(first_two_lock_ids), (
+        f"Account locks must be sorted-ID order; got {first_two_lock_ids}"
+    )
+    assert first_two_lock_ids == [src_id, dst_id]
+
+    # Both account-locks happen BEFORE any create_no_commit.
+    first_create_idx = next(
+        i for i, c in enumerate(call_log) if c[0] == "create_no_commit"
+    )
+    pre_create_locks = [
+        i for i, c in enumerate(call_log[:first_create_idx])
+        if c[0] == "lock_account"
+    ]
+    assert len(pre_create_locks) >= 2, (
+        f"Both account locks must precede the first create; got {call_log}"
+    )

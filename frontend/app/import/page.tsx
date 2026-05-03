@@ -8,6 +8,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import AppShell from "@/components/AppShell";
 import CategorySelect from "@/components/ui/CategorySelect";
 import Spinner from "@/components/ui/Spinner";
+import ImportMarkAsTransferModal from "@/components/transactions/ImportMarkAsTransferModal";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type {
   Account,
@@ -28,6 +29,9 @@ type TransferUiState = {
   pairAccepted: boolean;
   selectedCandidateId: number | null;
   dropAccepted: boolean;
+  // Manual "Mark as transfer..." choice for un-flagged rows. When set, the
+  // row will be confirmed as create_transfer_pair with this as partner.
+  markTransferDestAccountId: number | null;
 };
 
 /**
@@ -83,6 +87,21 @@ function buildConfirmRow(
       ...rowState,
       action: "pair_with_existing",
       pair_with_transaction_id: partnerId,
+      duplicate_of_transaction_id: null,
+      transfer_category_id: null,
+      recategorize: true,
+    };
+  }
+
+  // Manual "Mark as transfer..." — the user flagged an un-detected row
+  // and picked a destination account. Backend creates the CSV leg + a
+  // synthetic partner leg on the chosen account, atomically.
+  if (ui.markTransferDestAccountId !== null) {
+    return {
+      ...rowState,
+      action: "create_transfer_pair",
+      partner_account_id: ui.markTransferDestAccountId,
+      pair_with_transaction_id: null,
       duplicate_of_transaction_id: null,
       transfer_category_id: null,
       recategorize: true,
@@ -206,6 +225,7 @@ function ImportPageContent() {
           pairAccepted: r.transfer_match_action === "pair_with",
           selectedCandidateId: null,
           dropAccepted: r.is_duplicate_of_linked_leg, // default Drop
+          markTransferDestAccountId: null,
         };
       });
       setTransferUi(ui);
@@ -232,6 +252,7 @@ function ImportPageContent() {
       pairAccepted: false,
       selectedCandidateId: null,
       dropAccepted: false,
+      markTransferDestAccountId: null,
     };
     const payloadRows = rowStates.map((rs) => {
       const pv = previewByRow.get(rs.row_number);
@@ -273,9 +294,13 @@ function ImportPageContent() {
         pairAccepted: false,
         selectedCandidateId: null,
         dropAccepted: false,
+        markTransferDestAccountId: null,
       }), ...patch },
     }));
   }, []);
+
+  // Modal state — when set, opens ImportMarkAsTransferModal for that row.
+  const [markTransferModalRow, setMarkTransferModalRow] = useState<ImportPreviewRow | null>(null);
 
   const activeRows = rowStates.filter((r) => !r.skip);
   const skipCount = rowStates.filter((r) => r.skip).length;
@@ -358,15 +383,30 @@ function ImportPageContent() {
 
       {/* ── Step 2: Preview ─────────────────────────────────────────────── */}
       {step === "preview" && preview && categories && categories.length > 0 && (() => {
-        // Hide the Transfer column entirely when no row in this preview has
-        // any transfer state. Avoids a column of empty cells confusing users
-        // who report "the Transfer column is empty / checkbox missing".
+        // Account selected at upload time. Drives the eligible-for-manual-mark
+        // check (need at least one OTHER same-currency account).
+        const currentImportAccount = accounts?.find((a) => a.id === preview.account_id);
+        const eligibleForManualMark =
+          !!currentImportAccount &&
+          (accounts?.filter(
+            (a) =>
+              a.id !== preview.account_id &&
+              a.currency === currentImportAccount.currency &&
+              a.is_active,
+          ).length ?? 0) > 0;
+
+        // Lookup map for rendering "Will create transfer to <name>" pill.
+        const accountsById = new Map((accounts ?? []).map((a) => [a.id, a]));
+
+        // Show the Transfer column when ANY row has a detector hit OR when
+        // manual marking is possible (so even on a no-detector-hit import the
+        // column appears with per-row "Mark as transfer..." buttons).
         const hasAnyTransferState =
           preview.auto_paired_count +
             preview.suggested_pair_count +
             preview.multi_candidate_count +
             preview.duplicate_of_linked_count >
-          0;
+            0 || eligibleForManualMark;
         return (
         <div className="space-y-4">
           {/* Summary bar */}
@@ -465,11 +505,16 @@ function ImportPageContent() {
                   if (!rowState) return null;
 
                   // Apply Review pairings filter — when ON, only render rows
-                  // with a transfer detector match (Detector 1 or Detector 2).
+                  // with a transfer detector match (Detector 1 or Detector 2)
+                  // OR a manual "Mark as transfer..." selection in the
+                  // per-row UI state.
+                  const manualMarkDestId =
+                    transferUi[previewRow.row_number]?.markTransferDestAccountId ?? null;
                   if (
                     reviewPairingsOnly &&
                     previewRow.transfer_match_action === "none" &&
-                    !previewRow.is_duplicate_of_linked_leg
+                    !previewRow.is_duplicate_of_linked_leg &&
+                    manualMarkDestId === null
                   ) {
                     return null;
                   }
@@ -486,6 +531,7 @@ function ImportPageContent() {
                     pairAccepted: false,
                     selectedCandidateId: null,
                     dropAccepted: false,
+                    markTransferDestAccountId: null,
                   };
 
                   // Pill rendering driven by detector outputs. Detector 1
@@ -591,6 +637,45 @@ function ImportPageContent() {
                               >
                                 {pill.text}
                               </button>
+                            ) : previewRow.transfer_match_action === "none" &&
+                              !previewRow.is_duplicate_of_linked_leg ? (
+                              ui.markTransferDestAccountId !== null ? (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2.5 py-1 text-xs font-medium text-accent"
+                                  data-testid={`mark-transfer-pill-${previewRow.row_number}`}
+                                >
+                                  <span>
+                                    Will create transfer{" "}
+                                    {previewRow.type === "expense" ? "to" : "from"}{" "}
+                                    {accountsById.get(ui.markTransferDestAccountId)?.name ??
+                                      "account"}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateTransferUi(previewRow.row_number, {
+                                        markTransferDestAccountId: null,
+                                      })
+                                    }
+                                    aria-label="Clear mark as transfer"
+                                    className="ml-1 rounded text-accent hover:text-accent-hover"
+                                    data-testid={`mark-transfer-clear-${previewRow.row_number}`}
+                                  >
+                                    x
+                                  </button>
+                                </span>
+                              ) : eligibleForManualMark ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setMarkTransferModalRow(previewRow)}
+                                  className="text-xs text-text-muted underline-offset-2 hover:text-accent hover:underline"
+                                  data-testid={`mark-transfer-button-${previewRow.row_number}`}
+                                >
+                                  Mark as transfer...
+                                </button>
+                              ) : (
+                                <span className="text-text-muted">—</span>
+                              )
                             ) : (
                               <span className="text-text-muted">—</span>
                             )}
@@ -770,6 +855,31 @@ function ImportPageContent() {
                 : `Import ${activeRows.length} transaction${activeRows.length === 1 ? "" : "s"}`}
             </button>
           </div>
+
+          {/* Mark-as-transfer modal (manual flag for un-detected rows). */}
+          {markTransferModalRow && currentImportAccount && (
+            <ImportMarkAsTransferModal
+              rowNumber={markTransferModalRow.row_number}
+              rowDescription={markTransferModalRow.description}
+              rowAmount={markTransferModalRow.amount}
+              rowDate={markTransferModalRow.date}
+              rowType={markTransferModalRow.type}
+              importAccountId={preview.account_id}
+              importAccountName={currentImportAccount.name}
+              importAccountCurrency={currentImportAccount.currency}
+              accounts={accounts ?? []}
+              initialDestAccountId={
+                transferUi[markTransferModalRow.row_number]?.markTransferDestAccountId ?? null
+              }
+              onConfirm={(destAccountId) => {
+                updateTransferUi(markTransferModalRow.row_number, {
+                  markTransferDestAccountId: destAccountId,
+                });
+                setMarkTransferModalRow(null);
+              }}
+              onCancel={() => setMarkTransferModalRow(null)}
+            />
+          )}
         </div>
         );
       })()}

@@ -76,9 +76,12 @@ class ImportConfirmRow(BaseModel):
     skip: bool = False
 
     # Spec §3.2 confirm-row action mapping
-    action: Literal["create", "pair_with_existing", "drop_as_duplicate"] = "create"
+    action: Literal[
+        "create", "pair_with_existing", "drop_as_duplicate", "create_transfer_pair"
+    ] = "create"
     pair_with_transaction_id: int | None = None      # required iff action == "pair_with_existing"
     duplicate_of_transaction_id: int | None = None   # required iff action == "drop_as_duplicate"
+    partner_account_id: int | None = None            # required iff action == "create_transfer_pair"
     transfer_category_id: int | None = None
     recategorize: bool = True
 

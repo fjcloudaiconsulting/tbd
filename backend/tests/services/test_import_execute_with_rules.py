@@ -387,3 +387,63 @@ async def test_default_category_fallthrough_records_miss(
     assert agg["miss_count"] == 1
     assert agg["learned_count"] == 0  # user didn't pick → no learn
     assert agg["source_split"]["default"] == 1
+
+
+async def test_create_transfer_pair_does_not_learn(
+    db_session: AsyncSession,
+) -> None:
+    """Smart-rules learning must not fire for action='create_transfer_pair'
+    rows. The CSV leg gets linked_transaction_id set by _link_pair, so it's
+    a transfer leg post-link; learn_from_choice must NEVER be called for
+    these rows. Mirrors test_transfer_row_does_not_learn for the new action.
+    """
+    seed = await _seed(db_session, share=False)
+    # Need a partner account in a different account from the import target.
+    other_acct = Account(
+        org_id=seed["org_id"], account_type_id=seed["account_type_id"],
+        name="Savings", balance=Decimal("0"), currency="EUR",
+    )
+    db_session.add(other_acct)
+    await db_session.flush()
+    src_acct = (await db_session.execute(
+        select(Account).where(Account.id == seed["account_id"])
+    )).scalar_one()
+    src_acct.currency = "EUR"
+    transfer_cat = Category(
+        org_id=seed["org_id"], name="Transfer", slug="transfer",
+        is_system=True, type=CategoryType.BOTH,
+    )
+    db_session.add(transfer_cat)
+    await db_session.commit()
+
+    body = ImportConfirmRequest(
+        account_id=seed["account_id"],
+        default_category_id=transfer_cat.id,
+        rows=[ImportConfirmRow(
+            row_number=1, date=datetime.date(2026, 5, 1),
+            description="POS LIDL *9999",  # would normally learn → "LIDL"
+            amount=Decimal("12.50"), type="expense",
+            category_id=transfer_cat.id,
+            action="create_transfer_pair",
+            partner_account_id=other_acct.id,
+            recategorize=False,
+            # Echo a suggestion so we'd see learning fire if it ran.
+            suggested_category_id=seed["groceries_id"],
+            suggestion_source="shared_dictionary",
+        )],
+    )
+
+    with patch(
+        "app.services.import_service.learn_from_choice",
+        new=AsyncMock(),
+    ) as learn_spy:
+        await import_service.execute_import(
+            db_session, org_id=seed["org_id"], body=body,
+        )
+
+    # learn_from_choice must NEVER be called for create_transfer_pair rows.
+    learn_spy.assert_not_called()
+
+    # And no CategoryRule was written for the LIDL token.
+    rules = (await db_session.execute(select(CategoryRule))).scalars().all()
+    assert rules == []

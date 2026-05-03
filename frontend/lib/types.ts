@@ -213,9 +213,10 @@ export interface ImportConfirmRow {
   category_id: number | null;
   skip: boolean;
   // Spec §3.2 confirm-row action mapping
-  action?: "create" | "pair_with_existing" | "drop_as_duplicate";
+  action?: "create" | "pair_with_existing" | "drop_as_duplicate" | "create_transfer_pair";
   pair_with_transaction_id?: number | null;
   duplicate_of_transaction_id?: number | null;
+  partner_account_id?: number | null;
   transfer_category_id?: number | null;
   recategorize?: boolean;
   // Echoed from preview for accept-vs-override smart-rules detection
