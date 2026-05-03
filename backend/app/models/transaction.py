@@ -31,6 +31,35 @@ class TransactionStatus(str, enum.Enum):
 
 
 class Transaction(Base):
+    """Financial transaction.
+
+    Transfers between own accounts are modeled as TWO paired rows (one
+    EXPENSE on the source account, one INCOME on the destination), linked
+    bidirectionally via ``linked_transaction_id`` (self-FK, ondelete=SET NULL).
+
+    Transfer-pair invariants (enforced by the pairing service):
+      1. Both rows belong to the same org.
+      2. Linked bidirectionally.
+      3. Opposite types (EXPENSE / INCOME).
+      4. Equal absolute amounts.
+      5. Different accounts.
+      6. Same currency, evaluated as A.account.currency == B.account.currency.
+      7. Neither row may already be linked to a third row before pairing.
+      8. The reserved TransactionType.TRANSFER value is not used by the
+         pairing model; legs are typed by direction.
+
+    ``linked_transaction_id`` is **created** only by
+    ``transaction_service._link_pair`` and **cleared** only by
+    ``transaction_service.unpair_transactions``. Other code paths must not
+    write this column directly.
+
+    Reporting semantics: income/expense aggregates treat rows with
+    ``linked_transaction_id IS NULL`` as reportable. Use
+    ``app.services.transaction_filters.reportable_transaction_filter()``
+    in queries and ``is_reportable_transaction(tx)`` / ``is_transfer_leg(tx)``
+    in Python predicates.
+    """
+
     __tablename__ = "transactions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
