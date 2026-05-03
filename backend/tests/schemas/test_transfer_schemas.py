@@ -42,3 +42,18 @@ def test_unpair_request_rejects_extra_fields():
 def test_unpair_request_requires_both_fallbacks():
     with pytest.raises(ValidationError):
         UnpairTransactionRequest(expense_fallback_category_id=1)
+
+
+def test_transaction_update_accepts_settled_date():
+    """settled_date is now a settable field on TransactionUpdate."""
+    from app.schemas.transaction import TransactionUpdate
+    import datetime
+    body = TransactionUpdate(settled_date=datetime.date(2026, 5, 4))
+    assert body.settled_date == datetime.date(2026, 5, 4)
+
+
+def test_transaction_update_settled_date_optional():
+    """settled_date defaults to None."""
+    from app.schemas.transaction import TransactionUpdate
+    body = TransactionUpdate(description="x")
+    assert body.settled_date is None

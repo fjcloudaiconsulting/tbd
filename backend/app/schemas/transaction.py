@@ -45,6 +45,7 @@ class TransactionUpdate(BaseModel):
     amount: Optional[Decimal] = Field(default=None, gt=0, max_digits=12, decimal_places=2)
     type: Optional[Literal["income", "expense"]] = None
     status: Optional[Literal["settled", "pending"]] = None
+    settled_date: Optional[datetime.date] = None
     date: Optional[datetime.date] = None
 
     @field_validator("description")
