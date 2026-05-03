@@ -169,11 +169,25 @@ export interface ImportPreviewRow {
   type: "income" | "expense";
   counterparty: string | null;
   transaction_type: string | null;
+
+  // Existing duplicate-detection (different from transfer-leg duplicate)
   is_duplicate: boolean;
   duplicate_transaction_id: number | null;
-  is_potential_transfer: boolean;
+
+  // Smart-rules suggestion
   suggested_category_id?: number | null;
   suggestion_source?: SuggestionSource | null;
+
+  // Detector 1: matches an already-linked leg on the same account → drop default
+  is_duplicate_of_linked_leg: boolean;
+  duplicate_candidate?: DuplicateCandidate | null;
+  default_action_drop: boolean;
+
+  // Detector 2: cross-account un-linked match (transfer-pair candidate)
+  transfer_match_action: "none" | "pair_with" | "suggest_pair" | "choose_candidate";
+  transfer_match_confidence?: "same_day" | "near_date" | "multi_candidate" | null;
+  pair_with_transaction_id?: number | null;
+  transfer_candidates: TransferCandidate[];
 }
 
 export interface ImportPreviewResponse {
@@ -182,7 +196,12 @@ export interface ImportPreviewResponse {
   file_name: string;
   total_rows: number;
   duplicate_count: number;
-  transfer_candidate_count: number;
+
+  // New per-spec §3.2 summary counters (replace transfer_candidate_count)
+  auto_paired_count: number;
+  suggested_pair_count: number;
+  multi_candidate_count: number;
+  duplicate_of_linked_count: number;
 }
 
 export interface ImportConfirmRow {
@@ -217,6 +236,8 @@ export interface ImportRowError {
 
 export interface ImportConfirmResponse {
   imported_count: number;
+  paired_count: number;
+  dropped_duplicate_count: number;
   skipped_count: number;
   error_count: number;
   errors: ImportRowError[];
