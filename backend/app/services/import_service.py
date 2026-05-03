@@ -10,8 +10,9 @@ import structlog
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.account import Account
 from app.models.settings import OrgSetting
-from app.models.transaction import Transaction
+from app.models.transaction import Transaction, TransactionType
 from app.schemas.import_schemas import (
     ImportConfirmRequest,
     ImportConfirmResponse,
@@ -19,8 +20,16 @@ from app.schemas.import_schemas import (
     ImportPreviewResponse,
     ImportRowError,
 )
-from app.schemas.transaction import TransactionCreate
+from app.schemas.transaction import (
+    DuplicateCandidate,
+    TransactionCreate,
+    TransferCandidate,
+)
 from app.services import transaction_service
+from app.services.transaction_service import (
+    find_duplicate_of_linked_leg,
+    find_match_candidates,
+)
 from app.services.category_rules_service import (
     bump_shared_vote,
     infer_category,
@@ -42,8 +51,15 @@ async def build_preview(
 ) -> ImportPreviewResponse:
     """Build a preview response: flag duplicates and potential transfers."""
 
-    # Validate account belongs to this org
-    await transaction_service.validate_account(db, account_id, org_id)
+    # Validate account belongs to this org and load it for currency.
+    # Detectors filter cross-account candidates by Account.currency; we need
+    # the destination's currency to keep the match space sensible.
+    destination_account = await db.scalar(
+        select(Account).where(Account.id == account_id, Account.org_id == org_id)
+    )
+    if destination_account is None:
+        # Match validate_account semantics: surface the same error shape.
+        await transaction_service.validate_account(db, account_id, org_id)
 
     # ── Batch duplicate check: single query for the CSV date range ──
     min_date = min(r.date for r in parsed_rows)
@@ -79,6 +95,81 @@ async def build_preview(
         if is_dup:
             duplicate_count += 1
 
+        # ── Detector 1: same-account already-linked match → flag duplicate-of-linked-leg ──
+        row_tx_type = (
+            TransactionType.EXPENSE if row.type == "expense" else TransactionType.INCOME
+        )
+        dup_linked_candidates = await find_duplicate_of_linked_leg(
+            db, org_id,
+            account_id=account_id,
+            amount=row.amount,
+            type=row_tx_type,
+            date=row.date,
+            currency=destination_account.currency,
+        )
+        is_dup_of_linked = bool(dup_linked_candidates)
+        duplicate_candidate_obj: DuplicateCandidate | None = None
+        if is_dup_of_linked:
+            c0 = dup_linked_candidates[0]
+            duplicate_candidate_obj = DuplicateCandidate(
+                id=c0.id,
+                date=c0.date,
+                description=c0.description,
+                amount=c0.amount,
+                account_id=c0.account_id,
+                account_name=c0.account.name,
+                existing_leg_is_imported=c0.is_imported,
+            )
+
+        # ── Detector 2: cross-account un-linked match → suggest transfer pair ──
+        # Skipped when Detector 1 fires — a duplicate-of-linked-leg already has
+        # an answer (default action: drop), so cross-account suggestions would
+        # only confuse the user.
+        if is_dup_of_linked:
+            action: str = "none"
+            confidence: str | None = None
+            pair_with_id: int | None = None
+            candidate_models: list[TransferCandidate] = []
+        else:
+            match_candidates = await find_match_candidates(
+                db, org_id,
+                source_type=row_tx_type,
+                amount=row.amount,
+                account_id_excluded=account_id,
+                date=row.date,
+                currency=destination_account.currency,
+            )
+            if not match_candidates:
+                action, confidence, pair_with_id, candidate_models = (
+                    "none", None, None, [],
+                )
+            elif len(match_candidates) >= 2:
+                action = "choose_candidate"
+                confidence = "multi_candidate"
+                pair_with_id = None
+                candidate_models = [
+                    TransferCandidate(
+                        id=c.id,
+                        date=c.date,
+                        description=c.description,
+                        amount=c.amount,
+                        account_id=c.account_id,
+                        account_name=c.account.name,
+                        date_diff_days=abs((c.date - row.date).days),
+                        confidence="same_day" if c.date == row.date else "near_date",
+                    )
+                    for c in match_candidates
+                ]
+            else:
+                c0 = match_candidates[0]
+                diff = abs((c0.date - row.date).days)
+                if diff == 0:
+                    action, confidence = "pair_with", "same_day"
+                else:
+                    action, confidence = "suggest_pair", "near_date"
+                pair_with_id = c0.id
+                candidate_models = []
+
         preview_rows.append(
             ImportPreviewRow(
                 row_number=row.row_number,
@@ -92,14 +183,15 @@ async def build_preview(
                 duplicate_transaction_id=dup_id,
                 suggested_category_id=suggested_category_id,
                 suggestion_source=suggestion_source,
-                # Detector wiring lands in C2; defaults below stand in for now.
-                is_duplicate_of_linked_leg=False,
-                duplicate_candidate=None,
-                default_action_drop=False,
-                transfer_match_action="none",
-                transfer_match_confidence=None,
-                pair_with_transaction_id=None,
-                transfer_candidates=[],
+                # Detector 1 outputs.
+                is_duplicate_of_linked_leg=is_dup_of_linked,
+                duplicate_candidate=duplicate_candidate_obj,
+                default_action_drop=is_dup_of_linked,
+                # Detector 2 outputs.
+                transfer_match_action=action,
+                transfer_match_confidence=confidence,
+                pair_with_transaction_id=pair_with_id,
+                transfer_candidates=candidate_models,
             )
         )
 
@@ -116,17 +208,39 @@ async def build_preview(
         source_split=dict(source_split),
     )
 
+    # ── Detector summary counters + telemetry (spec §3.2) ──
+    auto_paired_count = sum(
+        1 for r in preview_rows if r.transfer_match_action == "pair_with"
+    )
+    suggested_pair_count = sum(
+        1 for r in preview_rows if r.transfer_match_action == "suggest_pair"
+    )
+    multi_candidate_count = sum(
+        1 for r in preview_rows if r.transfer_match_action == "choose_candidate"
+    )
+    duplicate_of_linked_count = sum(
+        1 for r in preview_rows if r.is_duplicate_of_linked_leg
+    )
+    await logger.ainfo(
+        "import.preview.matched",
+        org_id=org_id,
+        file_name=file_name,
+        auto_paired=auto_paired_count,
+        suggested=suggested_pair_count,
+        multi_candidate=multi_candidate_count,
+        duplicate_of_linked=duplicate_of_linked_count,
+    )
+
     return ImportPreviewResponse(
         rows=preview_rows,
         account_id=account_id,
         file_name=file_name,
         total_rows=len(preview_rows),
         duplicate_count=duplicate_count,
-        # Detector wiring lands in C2; counters are zeroed defaults for now.
-        auto_paired_count=0,
-        suggested_pair_count=0,
-        multi_candidate_count=0,
-        duplicate_of_linked_count=0,
+        auto_paired_count=auto_paired_count,
+        suggested_pair_count=suggested_pair_count,
+        multi_candidate_count=multi_candidate_count,
+        duplicate_of_linked_count=duplicate_of_linked_count,
     )
 
 
