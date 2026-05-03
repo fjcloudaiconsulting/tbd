@@ -240,9 +240,24 @@ function ImportPageContent() {
                   {preview.duplicate_count} duplicates
                 </span>
               )}
-              {preview.transfer_candidate_count > 0 && (
+              {preview.auto_paired_count > 0 && (
                 <span className="rounded bg-accent/10 px-2 py-0.5 text-accent">
-                  {preview.transfer_candidate_count} potential transfers
+                  {preview.auto_paired_count} auto-paired
+                </span>
+              )}
+              {preview.suggested_pair_count > 0 && (
+                <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-800">
+                  {preview.suggested_pair_count} possible transfers
+                </span>
+              )}
+              {preview.multi_candidate_count > 0 && (
+                <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-800">
+                  {preview.multi_candidate_count} need a pick
+                </span>
+              )}
+              {preview.duplicate_of_linked_count > 0 && (
+                <span className="rounded bg-rose-100 px-2 py-0.5 text-rose-800">
+                  {preview.duplicate_of_linked_count} dup of linked leg
                 </span>
               )}
             </div>
@@ -287,12 +302,10 @@ function ImportPageContent() {
                   if (!rowState) return null;
                   const catOptions = rowState.type === "income" ? incomeCategories : expenseCategories;
                   const isDup = previewRow.is_duplicate;
-                  const isTransfer = previewRow.is_potential_transfer;
 
                   let rowBg = "";
                   if (rowState.skip) rowBg = "opacity-40";
                   else if (isDup) rowBg = "bg-warning-dim";
-                  else if (isTransfer) rowBg = "bg-accent/5";
 
                   return (
                     <tr key={previewRow.row_number} className={`border-b border-border ${rowBg}`}>
