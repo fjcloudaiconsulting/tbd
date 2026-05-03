@@ -557,6 +557,391 @@ async def _link_pair(
     return expense_tx, income_tx
 
 
+async def find_match_candidates(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    source_type: TransactionType,
+    amount: Decimal,
+    account_id_excluded: int,
+    date: datetime.date,
+    currency: str,
+) -> list[Transaction]:
+    """Returns un-linked, settled, non-recurring rows on different accounts in
+    the same org with same `currency`, type == opposite(source_type),
+    abs(amount) == amount, date within ±3 days.
+
+    Caller passes ``source_type``; helper computes opposite internally. Never
+    call this with an already-flipped type.
+
+    Ordered by abs(date_diff) ASC, id ASC. Capped at 25 candidates AFTER
+    Python sort (no SQL LIMIT — without ORDER BY in SQL, LIMIT could exclude
+    the closest candidate).
+    """
+    target_type = (
+        TransactionType.INCOME if source_type == TransactionType.EXPENSE else TransactionType.EXPENSE
+    )
+    window_start = date - datetime.timedelta(days=3)
+    window_end = date + datetime.timedelta(days=3)
+
+    q = (
+        select(Transaction)
+        .options(*_load_opts())
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.account_id != account_id_excluded,
+            Transaction.type == target_type,
+            Transaction.amount == amount,
+            Transaction.status == TransactionStatus.SETTLED,
+            Transaction.linked_transaction_id.is_(None),
+            Transaction.recurring_id.is_(None),
+            Transaction.date >= window_start,
+            Transaction.date <= window_end,
+            Account.currency == currency,
+        )
+        # NOTE: no SQL .limit() — the ±3-day window + strict filter set keeps
+        # the result set naturally tiny. Sort in Python, then slice.
+    )
+    result = await db.execute(q)
+    rows = list(result.scalars().all())
+    rows.sort(key=lambda r: (abs((r.date - date).days), r.id))
+    return rows[:25]  # defensive cap AFTER sorting
+
+
+async def find_duplicate_of_linked_leg(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    account_id: int,
+    amount: Decimal,
+    type: TransactionType,
+    date: datetime.date,
+    currency: str,
+) -> list[Transaction]:
+    """Returns up to 10 already-linked rows on the SAME account that match the
+    CSV row's (type, amount, currency) within ±3 days. Used by import preview
+    to flag bank rows that duplicate a synthetic leg created via Op-3.
+
+    Ordered by abs(date_diff) ASC, id ASC. Capped at 10 AFTER Python sort
+    (no SQL LIMIT — without ORDER BY in SQL, LIMIT could exclude the
+    closest candidate).
+    """
+    window_start = date - datetime.timedelta(days=3)
+    window_end = date + datetime.timedelta(days=3)
+
+    q = (
+        select(Transaction)
+        .options(*_load_opts())
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.account_id == account_id,
+            Transaction.type == type,
+            Transaction.amount == amount,
+            Transaction.linked_transaction_id.is_not(None),
+            Transaction.date >= window_start,
+            Transaction.date <= window_end,
+            Account.currency == currency,
+        )
+        # NOTE: no SQL .limit() — see find_match_candidates for rationale.
+    )
+    result = await db.execute(q)
+    rows = list(result.scalars().all())
+    rows.sort(key=lambda r: (abs((r.date - date).days), r.id))
+    return rows[:10]  # defensive cap AFTER sorting
+
+
+async def pair_existing_transactions(
+    db: AsyncSession,
+    org_id: int,
+    expense_tx_id: int,
+    income_tx_id: int,
+    *,
+    recategorize: bool = True,
+    transfer_category_id: int | None = None,
+) -> tuple[Transaction, Transaction]:
+    """Link two existing un-linked rows as a transfer pair.
+
+    Owns transaction scope. Locks both rows in sorted-ID order via SELECT FOR
+    UPDATE, validates via _link_pair, links bidirectionally, optionally
+    recategorizes both legs to the system Transfer category. No balance changes
+    (both rows already exist with correct per-leg balance contributions).
+
+    Raises ValidationError on identical IDs or invariant violations,
+    NotFoundError if either row is missing in this org.
+    """
+    if expense_tx_id == income_tx_id:
+        raise ValidationError("Expense and income IDs must differ")
+
+    ids_sorted = sorted([expense_tx_id, income_tx_id])
+    locked = await db.execute(
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.id.in_(ids_sorted), Transaction.org_id == org_id)
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    rows = list(locked.scalars().all())
+    if len(rows) != 2:
+        raise NotFoundError("Transaction")
+    rows_by_id = {r.id: r for r in rows}
+    expense_tx = rows_by_id[expense_tx_id]
+    income_tx = rows_by_id[income_tx_id]
+
+    async with db.begin_nested():
+        await _link_pair(
+            db,
+            expense_tx=expense_tx,
+            income_tx=income_tx,
+            recategorize=recategorize,
+            transfer_category_id=transfer_category_id,
+        )
+    await db.commit()
+
+    await logger.ainfo(
+        "transfers.linked",
+        org_id=org_id,
+        expense_id=expense_tx.id,
+        income_id=income_tx.id,
+        source="bulk_link",
+        recategorized=recategorize,
+    )
+    return expense_tx, income_tx
+
+
+async def convert_and_create_leg(
+    db: AsyncSession,
+    org_id: int,
+    source_tx_id: int,
+    *,
+    destination_account_id: int,
+    recategorize: bool = True,
+    transfer_category_id: int | None = None,
+) -> tuple[Transaction, Transaction]:
+    """Convert an un-linked source row into a transfer leg by creating the
+    matching partner leg on the destination account, then linking the pair.
+
+    Owns transaction scope. See pair_existing_transactions for the locking
+    discipline. Source may be SETTLED or PENDING; partner mirrors source
+    status. Same-currency only.
+
+    Lock order: source transaction FIRST, then accounts (sorted-ID). This
+    matches update_transaction's order (tx then accounts) so concurrent
+    operations on overlapping (transaction, account) pairs cannot deadlock.
+    """
+    # 1. Pre-read source transaction (no lock) only to collect IDs needed for
+    # subsequent lock acquisition + early existence check.
+    source_pre = await db.scalar(
+        select(Transaction).where(
+            Transaction.id == source_tx_id, Transaction.org_id == org_id
+        )
+    )
+    if source_pre is None:
+        raise NotFoundError("Transaction")
+    pre_account_id = source_pre.account_id
+    pre_linked = source_pre.linked_transaction_id
+    pre_recurring = source_pre.recurring_id
+
+    # 2. Pre-validate destination account + early invariants on the unlocked
+    # read. These will be re-checked under the lock to defeat races.
+    if pre_linked is not None:
+        raise ValidationError("Source row is already a transfer leg")
+    if pre_recurring is not None:
+        raise ValidationError("Recurring rows cannot be converted to transfer legs")
+    if pre_account_id == destination_account_id:
+        raise ValidationError("Source and destination accounts must differ")
+
+    src_account_pre = await db.scalar(
+        select(Account).where(Account.id == pre_account_id, Account.org_id == org_id)
+    )
+    dst_account_pre = await db.scalar(
+        select(Account).where(Account.id == destination_account_id, Account.org_id == org_id)
+    )
+    if dst_account_pre is None:
+        raise NotFoundError("Account")
+    if src_account_pre.currency != dst_account_pre.currency:
+        raise ValidationError("Source and destination accounts must have the same currency")
+
+    # 3. Lock the source transaction FIRST (before accounts) to match the
+    # lock-acquisition order used by update_transaction. Refresh with eager
+    # relationships so downstream code sees the locked row state.
+    locked = await db.execute(
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.id == source_tx_id, Transaction.org_id == org_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    source = locked.scalar_one_or_none()
+    if source is None:
+        # Row vanished between pre-read and FOR UPDATE.
+        raise ConflictError("Source row state changed; refresh and retry")
+
+    # 4. Re-validate locked source state. If anything changed since the
+    # unlocked read, abort with ConflictError so the caller can refresh.
+    if source.linked_transaction_id is not None:
+        raise ConflictError("Source row state changed; refresh and retry")
+    if source.recurring_id is not None:
+        raise ConflictError("Source row state changed; refresh and retry")
+    if source.account_id == destination_account_id:
+        raise ConflictError("Source row state changed; refresh and retry")
+
+    # 5. Lock both accounts in sorted-ID order using the locked source's
+    # account_id (paranoia: in case it differs from the pre-read).
+    first_id, second_id = sorted([source.account_id, destination_account_id])
+    first_acct = await get_account_for_update(db, first_id, org_id)
+    second_acct = await get_account_for_update(db, second_id, org_id)
+    src_locked = first_acct if source.account_id == first_id else second_acct
+    dst_locked = first_acct if destination_account_id == first_id else second_acct
+
+    # 6. Re-validate currency on the locked accounts.
+    if src_locked.currency != dst_locked.currency:
+        raise ConflictError("Account currencies changed; refresh and retry")
+
+    # Determine partner type by mirroring source.
+    partner_type = (
+        TransactionType.INCOME if source.type == TransactionType.EXPENSE
+        else TransactionType.EXPENSE
+    )
+
+    async with db.begin_nested():
+        partner = Transaction(
+            org_id=org_id,
+            account_id=destination_account_id,
+            category_id=source.category_id,
+            description=source.description,
+            amount=source.amount,
+            type=partner_type,
+            status=source.status,
+            date=source.date,
+            settled_date=source.settled_date,
+            is_imported=False,
+        )
+        db.add(partner)
+        await db.flush()
+
+        # Apply balance to destination only when SETTLED.
+        if partner.status == TransactionStatus.SETTLED:
+            apply_balance(dst_locked, partner.amount, partner_type)
+
+        # Determine which leg is expense vs income for _link_pair.
+        if source.type == TransactionType.EXPENSE:
+            expense_tx, income_tx = source, partner
+        else:
+            expense_tx, income_tx = partner, source
+
+        # Re-fetch partner with .account loaded so _link_pair's currency check
+        # uses the eager path. Source already has it from _load_opts above.
+        await db.refresh(partner, attribute_names=["account"])
+
+        await _link_pair(
+            db,
+            expense_tx=expense_tx,
+            income_tx=income_tx,
+            recategorize=recategorize,
+            transfer_category_id=transfer_category_id,
+        )
+    await db.commit()
+
+    await logger.ainfo(
+        "transfers.linked",
+        org_id=org_id,
+        expense_id=expense_tx.id,
+        income_id=income_tx.id,
+        source="convert_create",
+        recategorized=recategorize,
+    )
+    return expense_tx, income_tx
+
+
+async def unpair_transactions(
+    db: AsyncSession,
+    org_id: int,
+    transaction_id: int,
+    *,
+    expense_fallback_category_id: int,
+    income_fallback_category_id: int,
+) -> tuple[Transaction, Transaction]:
+    """Break a transfer pair without deleting either row. The only sanctioned
+    code path that clears linked_transaction_id.
+
+    Owns transaction scope. Locks both rows in sorted-ID order via SELECT FOR
+    UPDATE. NULLs both link columns atomically. Sets each leg's category_id to
+    the type-matched fallback. No balance changes.
+    """
+    preview = await db.scalar(
+        select(Transaction).where(
+            Transaction.id == transaction_id, Transaction.org_id == org_id
+        )
+    )
+    if preview is None:
+        raise NotFoundError("Transaction")
+    if preview.linked_transaction_id is None:
+        raise ValidationError("Transaction is not part of a transfer pair")
+
+    # Validate fallback categories upfront (raises NotFoundError on miss).
+    await validate_category(db, expense_fallback_category_id, org_id)
+    await validate_category(db, income_fallback_category_id, org_id)
+
+    # Enforce type compatibility for each fallback. validate_category only
+    # checks org/existence; the docstring promises type-matched fallbacks so
+    # the API must reject INCOME-only categories for the expense leg, and
+    # EXPENSE-only categories for the income leg.
+    exp_cat = await db.scalar(
+        select(Category).where(
+            Category.id == expense_fallback_category_id, Category.org_id == org_id
+        )
+    )
+    inc_cat = await db.scalar(
+        select(Category).where(
+            Category.id == income_fallback_category_id, Category.org_id == org_id
+        )
+    )
+    if exp_cat.type not in (CategoryType.EXPENSE, CategoryType.BOTH):
+        raise ValidationError("expense_fallback_category_id must be EXPENSE or BOTH")
+    if inc_cat.type not in (CategoryType.INCOME, CategoryType.BOTH):
+        raise ValidationError("income_fallback_category_id must be INCOME or BOTH")
+
+    ids_sorted = sorted([transaction_id, preview.linked_transaction_id])
+    locked = await db.execute(
+        select(Transaction)
+        .options(*_load_opts())
+        .where(Transaction.id.in_(ids_sorted), Transaction.org_id == org_id)
+        .order_by(Transaction.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    rows = list(locked.scalars().all())
+    if len(rows) != 2:
+        raise ConflictError("Pair partner not found; refresh and retry")
+
+    rows_by_type = {r.type: r for r in rows}
+    expense_tx = rows_by_type.get(TransactionType.EXPENSE)
+    income_tx = rows_by_type.get(TransactionType.INCOME)
+    if expense_tx is None or income_tx is None:
+        raise ConflictError("Pair has invalid type composition")
+
+    async with db.begin_nested():
+        expense_tx.linked_transaction_id = None
+        income_tx.linked_transaction_id = None
+        expense_tx.category_id = expense_fallback_category_id
+        income_tx.category_id = income_fallback_category_id
+        await db.flush()
+    await db.commit()
+
+    await logger.ainfo(
+        "transfers.unpaired",
+        org_id=org_id,
+        expense_id=expense_tx.id,
+        income_id=income_tx.id,
+        expense_fallback_category_id=expense_fallback_category_id,
+        income_fallback_category_id=income_fallback_category_id,
+    )
+    return expense_tx, income_tx
+
+
 async def create_transfer(
     db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:
