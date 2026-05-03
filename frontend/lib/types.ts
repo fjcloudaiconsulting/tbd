@@ -193,8 +193,13 @@ export interface ImportConfirmRow {
   type: "income" | "expense";
   category_id: number | null;
   skip: boolean;
-  is_transfer: boolean;
-  transfer_account_id: number | null;
+  // Spec §3.2 confirm-row action mapping
+  action?: "create" | "pair_with_existing" | "drop_as_duplicate";
+  pair_with_transaction_id?: number | null;
+  duplicate_of_transaction_id?: number | null;
+  transfer_category_id?: number | null;
+  recategorize?: boolean;
+  // Echoed from preview for accept-vs-override smart-rules detection
   suggested_category_id?: number | null;
   suggestion_source?: SuggestionSource | null;
 }

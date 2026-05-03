@@ -26,6 +26,7 @@ from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.settings import OrgSetting
+from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
 from app.schemas.import_schemas import ImportConfirmRequest, ImportConfirmRow
 from app.services import import_service
@@ -155,24 +156,68 @@ async def test_accept_without_opt_in_does_not_bump_shared(db_session: AsyncSessi
 
 
 async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:
-    seed = await _seed(db_session, share=True)
-    other = Account(
+    """Paired rows (action='pair_with_existing') must NOT trigger smart-rules
+    learning. The new ORM Transaction has linked_transaction_id set after
+    _link_pair, so should_skip_learning (now via is_transfer_leg) returns
+    True and the learn-from-choice block is skipped.
+    """
+    seed = await _seed(db_session, share=False)
+    # Build a partner on a SEPARATE account (transfers require different
+    # accounts). Reuse the existing checking account as source; create a
+    # second account for the partner leg.
+    other_acct = Account(
         org_id=seed["org_id"], account_type_id=seed["account_type_id"],
-        name="Savings", balance=Decimal("0"),
+        name="Savings", balance=Decimal("0"), currency="EUR",
     )
-    db_session.add(other)
+    db_session.add(other_acct)
+    await db_session.flush()
+    # Make sure the source account also has a currency for the pair partner check.
+    src_acct = (await db_session.execute(
+        select(Account).where(Account.id == seed["account_id"])
+    )).scalar_one()
+    src_acct.currency = "EUR"
+    transfer_cat = Category(
+        org_id=seed["org_id"], name="Transfer", slug="transfer",
+        is_system=True, type=CategoryType.BOTH,
+    )
+    db_session.add(transfer_cat)
+    await db_session.flush()
+    # Un-linked income leg on the partner account.
+    partner = Transaction(
+        org_id=seed["org_id"], account_id=other_acct.id,
+        category_id=transfer_cat.id, description="incoming-xfer",
+        amount=Decimal("12.50"),
+        type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED,
+        date=datetime.date(2026, 5, 1),
+        settled_date=datetime.date(2026, 5, 1),
+    )
+    db_session.add(partner)
     await db_session.commit()
 
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
-        default_category_id=seed["restaurants_id"],
+        default_category_id=transfer_cat.id,
         rows=[ImportConfirmRow(
             row_number=1, date=datetime.date(2026, 5, 1),
-            description="POS LIDL *9999", amount=Decimal("12.50"), type="expense",
-            is_transfer=True, transfer_account_id=other.id,
+            description="POS LIDL *9999",  # would normally learn → "LIDL"
+            amount=Decimal("12.50"), type="expense",
+            category_id=transfer_cat.id,
+            action="pair_with_existing",
+            pair_with_transaction_id=partner.id,
+            recategorize=False,
+            # Echo a suggestion so we'd see learning if it ran.
+            suggested_category_id=seed["groceries_id"],
+            suggestion_source="shared_dictionary",
         )],
     )
-    await import_service.execute_import(db_session, org_id=seed["org_id"], body=body)
+    await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+
+    # No CategoryRule should have been written for the LIDL token; the
+    # paired row's linked_transaction_id is non-None so should_skip_learning
+    # short-circuits learn_from_choice and the source_split miss path.
     rules = (await db_session.execute(select(CategoryRule))).scalars().all()
     assert rules == []
 
@@ -250,7 +295,13 @@ async def test_learn_failure_does_not_fail_the_import(
     db_session: AsyncSession,
 ) -> None:
     """If learn_from_choice raises, the imported transaction is preserved
-    and the failure is logged (not propagated to the caller)."""
+    and the failure is logged (not propagated to the caller).
+
+    PR-C review high-severity regression: the learn block must NOT roll back
+    successfully imported rows that share the outer transaction. The fix
+    isolates learn in a nested savepoint so a learn-side failure rolls back
+    only the savepoint, not the outer commit.
+    """
     seed = await _seed(db_session, share=False)
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
@@ -274,6 +325,19 @@ async def test_learn_failure_does_not_fail_the_import(
 
     assert result.imported_count == 1
     assert result.error_count == 0  # learn failure does NOT surface as a row error
+
+    # Imported row must still be in the DB — savepoint isolation prevents
+    # the learn rollback from taking the import with it.
+    persisted = (await db_session.execute(
+        select(Transaction).where(
+            Transaction.org_id == seed["org_id"],
+            Transaction.description == "POS LIDL *9999",
+        )
+    )).scalars().all()
+    assert len(persisted) == 1, (
+        "imported row should survive learn failure; "
+        "savepoint isolation regression"
+    )
 
 
 async def test_default_category_fallthrough_records_miss(

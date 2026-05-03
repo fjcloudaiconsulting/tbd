@@ -97,15 +97,9 @@ def test_should_skip_learning_skips_transfer_via_linked_id() -> None:
     assert should_skip_learning(tx) is True
 
 
-def test_should_skip_learning_skips_preview_row_marked_transfer() -> None:
-    """ImportConfirmRow with is_transfer=True must skip."""
-    row = SimpleNamespace(linked_transaction_id=None, is_transfer=True)
-    assert should_skip_learning(row) is True
-
-
 def test_should_skip_learning_keeps_regular_transaction() -> None:
-    """Neither linked nor flagged → learn."""
-    tx = SimpleNamespace(linked_transaction_id=None, type="expense", is_transfer=False)
+    """No linked-leg link → learn."""
+    tx = SimpleNamespace(linked_transaction_id=None, type="expense")
     assert should_skip_learning(tx) is False
 
 
