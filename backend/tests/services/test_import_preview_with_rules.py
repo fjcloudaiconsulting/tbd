@@ -87,9 +87,10 @@ async def test_preview_attaches_shared_dictionary_suggestion(
     assert result.rows[0].suggestion_source == "shared_dictionary"
 
 
-async def test_preview_no_suggestion_for_transfer_row(
+async def test_preview_legacy_online_banking_string_no_longer_triggers_transfer(
     db_session: AsyncSession,
 ) -> None:
+    """PR-C C1 removed the transaction_type heuristic; the row is now plain."""
     seed = await _seed(db_session)
     rows = [
         ParsedRow(
@@ -102,9 +103,13 @@ async def test_preview_no_suggestion_for_transfer_row(
         db_session, org_id=seed["org_id"], account_id=seed["account_id"],
         file_name="t.csv", parsed_rows=rows,
     )
-    assert result.rows[0].is_potential_transfer is True
-    assert result.rows[0].suggested_category_id is None
-    assert result.rows[0].suggestion_source is None
+    # PR-C C1 removed the `transaction_type=='online banking'` heuristic.
+    # C2 wires real detectors instead; with no DB matches, action is "none".
+    assert result.rows[0].transfer_match_action == "none"
+    # The smart-rules suggestion no longer skips on the legacy heuristic.
+    # POS LIDL still resolves via the shared dictionary seed.
+    assert result.rows[0].suggested_category_id == seed["groceries_id"]
+    assert result.rows[0].suggestion_source == "shared_dictionary"
 
 
 async def test_preview_default_source_when_no_match(

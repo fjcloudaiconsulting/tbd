@@ -14,6 +14,7 @@ import datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
@@ -154,27 +155,15 @@ async def test_accept_without_opt_in_does_not_bump_shared(db_session: AsyncSessi
     assert entry.vote_count == 0
 
 
+@pytest.mark.skip(
+    reason=(
+        "Legacy is_transfer/transfer_account_id confirm path. PR-C C1 "
+        "dropped these schema fields. PR-C C3 reintroduces transfer-on-confirm "
+        "via action='pair_with_existing' and replaces this test."
+    )
+)
 async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:
-    seed = await _seed(db_session, share=True)
-    other = Account(
-        org_id=seed["org_id"], account_type_id=seed["account_type_id"],
-        name="Savings", balance=Decimal("0"),
-    )
-    db_session.add(other)
-    await db_session.commit()
-
-    body = ImportConfirmRequest(
-        account_id=seed["account_id"],
-        default_category_id=seed["restaurants_id"],
-        rows=[ImportConfirmRow(
-            row_number=1, date=datetime.date(2026, 5, 1),
-            description="POS LIDL *9999", amount=Decimal("12.50"), type="expense",
-            is_transfer=True, transfer_account_id=other.id,
-        )],
-    )
-    await import_service.execute_import(db_session, org_id=seed["org_id"], body=body)
-    rules = (await db_session.execute(select(CategoryRule))).scalars().all()
-    assert rules == []
+    pass
 
 
 async def test_aggregate_metric_emitted_with_correct_shape(db_session: AsyncSession) -> None:

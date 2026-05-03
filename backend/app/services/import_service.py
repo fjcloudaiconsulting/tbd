@@ -19,7 +19,7 @@ from app.schemas.import_schemas import (
     ImportPreviewResponse,
     ImportRowError,
 )
-from app.schemas.transaction import TransactionCreate, TransferCreate
+from app.schemas.transaction import TransactionCreate
 from app.services import transaction_service
 from app.services.category_rules_service import (
     bump_shared_vote,
@@ -28,13 +28,9 @@ from app.services.category_rules_service import (
     normalize_description,
     should_skip_learning,
 )
-from app.services.exceptions import ValidationError
 from app.services.import_parser import ParsedRow
 
 logger = structlog.get_logger()
-
-# Transaction types that suggest an inter-account transfer
-_TRANSFER_TYPES = {"online banking"}
 
 
 async def build_preview(
@@ -70,30 +66,18 @@ async def build_preview(
 
     preview_rows: list[ImportPreviewRow] = []
     duplicate_count = 0
-    transfer_count = 0
 
     for row in parsed_rows:
         dup_id = existing_map.get((row.date, row.amount, row.description))
         is_dup = dup_id is not None
 
-        # ── Transfer detection: heuristic on transaction_type ──
-        is_transfer = bool(
-            row.transaction_type
-            and row.transaction_type.lower() in _TRANSFER_TYPES
+        # ── Smart-rules suggestion ──
+        suggested_category_id, suggestion_source = await infer_category(
+            db, org_id=org_id, description=row.description
         )
-
-        # ── Smart-rules suggestion (skipped for transfers) ──
-        suggested_category_id: int | None = None
-        suggestion_source: str | None = None
-        if not is_transfer:
-            suggested_category_id, suggestion_source = await infer_category(
-                db, org_id=org_id, description=row.description
-            )
 
         if is_dup:
             duplicate_count += 1
-        if is_transfer:
-            transfer_count += 1
 
         preview_rows.append(
             ImportPreviewRow(
@@ -106,9 +90,16 @@ async def build_preview(
                 transaction_type=row.transaction_type,
                 is_duplicate=is_dup,
                 duplicate_transaction_id=dup_id,
-                is_potential_transfer=is_transfer,
                 suggested_category_id=suggested_category_id,
                 suggestion_source=suggestion_source,
+                # Detector wiring lands in C2; defaults below stand in for now.
+                is_duplicate_of_linked_leg=False,
+                duplicate_candidate=None,
+                default_action_drop=False,
+                transfer_match_action="none",
+                transfer_match_confidence=None,
+                pair_with_transaction_id=None,
+                transfer_candidates=[],
             )
         )
 
@@ -131,7 +122,11 @@ async def build_preview(
         file_name=file_name,
         total_rows=len(preview_rows),
         duplicate_count=duplicate_count,
-        transfer_candidate_count=transfer_count,
+        # Detector wiring lands in C2; counters are zeroed defaults for now.
+        auto_paired_count=0,
+        suggested_pair_count=0,
+        multi_candidate_count=0,
+        duplicate_of_linked_count=0,
     )
 
 
@@ -171,107 +166,82 @@ async def execute_import(
 
         category_id = row.category_id or body.default_category_id
 
-        # Validate transfer rows have a target account
-        if row.is_transfer and not row.transfer_account_id:
-            errors.append(ImportRowError(row_number=row.row_number, error="Transfer requires a target account"))
-            continue
-
         try:
-            if row.is_transfer and row.transfer_account_id:
-                # Determine direction: the imported account is source for expenses,
-                # destination for income.
-                if row.type == "expense":
-                    from_id = body.account_id
-                    to_id = row.transfer_account_id
-                else:
-                    from_id = row.transfer_account_id
-                    to_id = body.account_id
+            # PR-C C1: only the create branch is wired. The pair_with_existing
+            # and drop_as_duplicate branches land in C3.
+            tx_body = TransactionCreate(
+                account_id=body.account_id,
+                category_id=category_id,
+                description=row.description,
+                amount=row.amount,
+                type=row.type,
+                date=row.date,
+            )
+            await transaction_service.create_transaction(
+                db, org_id, tx_body, is_imported=True
+            )
 
-                transfer_body = TransferCreate(
-                    from_account_id=from_id,
-                    to_account_id=to_id,
-                    description=row.description,
-                    amount=row.amount,
-                    date=row.date,
+            # ── Learn from the user's category choice ────────────────
+            # Skip transfers (linked rows) and rows with no category at
+            # all. The double commit (create_transaction commits the txn,
+            # this block commits the rule + vote separately) is
+            # intentional — keeps a learn-failure from rolling back the
+            # imported transaction.
+            if row.category_id is not None and not should_skip_learning(row):
+                accepted = (
+                    row.suggested_category_id is not None
+                    and row.suggested_category_id == row.category_id
                 )
-                await transaction_service.create_transfer(
-                    db, org_id, transfer_body, is_imported=True
-                )
-            else:
-                tx_body = TransactionCreate(
-                    account_id=body.account_id,
-                    category_id=category_id,
-                    description=row.description,
-                    amount=row.amount,
-                    type=row.type,
-                    date=row.date,
-                )
-                await transaction_service.create_transaction(
-                    db, org_id, tx_body, is_imported=True
-                )
-
-                # ── Learn from the user's category choice ────────────────
-                # Skip transfers (the transfer branch above never reaches
-                # this block) and rows with no category at all. The double
-                # commit (create_transaction commits the txn, this block
-                # commits the rule + vote separately) is intentional —
-                # keeps a learn-failure from rolling back the imported
-                # transaction.
-                if row.category_id is not None and not should_skip_learning(row):
-                    accepted = (
-                        row.suggested_category_id is not None
-                        and row.suggested_category_id == row.category_id
+                source = "user_pick" if accepted else "user_edit"
+                # Learning is best-effort: a failure here must NOT
+                # bubble out as a row error. The transaction itself
+                # has already committed (see create_transaction
+                # above) — the row is imported regardless.
+                try:
+                    await learn_from_choice(
+                        db,
+                        org_id=org_id,
+                        description=row.description,
+                        category_id=row.category_id,
+                        source=source,
                     )
-                    source = "user_pick" if accepted else "user_edit"
-                    # Learning is best-effort: a failure here must NOT
-                    # bubble out as a row error. The transaction itself
-                    # has already committed (see create_transaction
-                    # above) — the row is imported regardless.
-                    try:
-                        await learn_from_choice(
-                            db,
-                            org_id=org_id,
-                            description=row.description,
-                            category_id=row.category_id,
-                            source=source,
-                        )
-                        if (
-                            accepted and share_merchant_data
-                            and row.suggestion_source == "shared_dictionary"
-                        ):
-                            await bump_shared_vote(db, description=row.description)
-                        await db.commit()
-                    except Exception as exc:
-                        await db.rollback()
-                        await logger.awarning(
-                            "smart_rules.learn_failed",
-                            org_id=org_id,
-                            op="execute_import",
-                            row_number=row.row_number,
-                            error=str(exc),
-                            error_type=type(exc).__name__,
-                        )
+                    if (
+                        accepted and share_merchant_data
+                        and row.suggestion_source == "shared_dictionary"
+                    ):
+                        await bump_shared_vote(db, description=row.description)
+                    await db.commit()
+                except Exception as exc:
+                    await db.rollback()
+                    await logger.awarning(
+                        "smart_rules.learn_failed",
+                        org_id=org_id,
+                        op="execute_import",
+                        row_number=row.row_number,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
 
-                    # Counters always update — the user's choice was
-                    # registered against an imported row, even if the
-                    # rule write failed and got logged above.
-                    learned_count += 1
-                    if accepted:
-                        accepted_count += 1
-                    elif row.suggested_category_id is not None:
-                        overridden_count += 1
+                # Counters always update — the user's choice was
+                # registered against an imported row, even if the
+                # rule write failed and got logged above.
+                learned_count += 1
+                if accepted:
+                    accepted_count += 1
+                elif row.suggested_category_id is not None:
+                    overridden_count += 1
 
-                # Metric collection — fires for EVERY imported non-transfer
-                # row, including default-category fallthroughs (row.category_id
-                # is None and the user relied on default_category_id). This
-                # is the architect-mandated signal for "uncategorizable on
-                # import" and must NOT be gated on row.category_id.
-                if not should_skip_learning(row):
-                    source_split[row.suggestion_source or "default"] += 1
-                    if row.suggestion_source in ("default", None):
-                        token = normalize_description(row.description)
-                        if token:
-                            miss_tokens.add(token)
+            # Metric collection — fires for EVERY imported non-transfer
+            # row, including default-category fallthroughs (row.category_id
+            # is None and the user relied on default_category_id). This
+            # is the architect-mandated signal for "uncategorizable on
+            # import" and must NOT be gated on row.category_id.
+            if not should_skip_learning(row):
+                source_split[row.suggestion_source or "default"] += 1
+                if row.suggestion_source in ("default", None):
+                    token = normalize_description(row.description)
+                    if token:
+                        miss_tokens.add(token)
 
             imported_count += 1
 
