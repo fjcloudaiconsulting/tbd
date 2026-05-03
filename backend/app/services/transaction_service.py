@@ -557,6 +557,55 @@ async def _link_pair(
     return expense_tx, income_tx
 
 
+async def find_match_candidates(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    source_type: TransactionType,
+    amount: Decimal,
+    account_id_excluded: int,
+    date: datetime.date,
+    currency: str,
+) -> list[Transaction]:
+    """Returns un-linked, settled, non-recurring rows on different accounts in
+    the same org with same `currency`, type == opposite(source_type),
+    abs(amount) == amount, date within ±3 days.
+
+    Caller passes ``source_type``; helper computes opposite internally. Never
+    call this with an already-flipped type.
+
+    Ordered by abs(date_diff) ASC, id ASC. Capped at 25 candidates.
+    """
+    target_type = (
+        TransactionType.INCOME if source_type == TransactionType.EXPENSE else TransactionType.EXPENSE
+    )
+    window_start = date - datetime.timedelta(days=3)
+    window_end = date + datetime.timedelta(days=3)
+
+    q = (
+        select(Transaction)
+        .options(*_load_opts())
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.account_id != account_id_excluded,
+            Transaction.type == target_type,
+            Transaction.amount == amount,
+            Transaction.status == TransactionStatus.SETTLED,
+            Transaction.linked_transaction_id.is_(None),
+            Transaction.recurring_id.is_(None),
+            Transaction.date >= window_start,
+            Transaction.date <= window_end,
+            Account.currency == currency,
+        )
+        .limit(25)
+    )
+    result = await db.execute(q)
+    rows = list(result.scalars().all())
+    rows.sort(key=lambda r: (abs((r.date - date).days), r.id))
+    return rows
+
+
 async def create_transfer(
     db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:
