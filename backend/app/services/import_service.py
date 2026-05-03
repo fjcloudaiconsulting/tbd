@@ -26,7 +26,11 @@ from app.schemas.transaction import (
     TransferCandidate,
 )
 from app.services import transaction_service
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.transaction_service import (
+    _create_transaction_no_commit,
+    _link_pair,
+    _load_opts,
     find_duplicate_of_linked_leg,
     find_match_candidates,
 )
@@ -249,14 +253,39 @@ async def execute_import(
     org_id: int,
     body: ImportConfirmRequest,
 ) -> ImportConfirmResponse:
-    """Create transactions for all confirmed (non-skipped) rows.
+    """Create / pair / drop transactions for all confirmed (non-skipped) rows.
 
-    Uses the existing create_transaction / create_transfer service functions
-    so all validation, balance mutations, and locking are preserved.
+    Per-row branches (spec §3.3):
+      action="create"             → plain insert via _create_transaction_no_commit.
+      action="pair_with_existing" → insert new leg + atomically link to a
+                                    locked partner via _link_pair. Single
+                                    nested savepoint per row guarantees
+                                    rollback on any failure inside the pair.
+      action="drop_as_duplicate"  → server-side revalidate the duplicate-of-
+                                    linked-leg candidate, then skip insert.
+
+    Each row runs inside its own ``db.begin_nested()`` savepoint so failures
+    in the pair branch (e.g. _link_pair raises after the new leg flushed)
+    cleanly roll back the partial work without taking the whole batch with it.
+    Smart-rules learning runs OUTSIDE the savepoint per row, best-effort:
+    a learn failure must NOT bubble out as a row error or roll back the
+    imported transaction.
     """
-    imported_count = 0
+    imported_count = 0          # plain creates only (action="create")
+    paired_count = 0
+    dropped_duplicate_count = 0
     skipped_count = 0
     errors: list[ImportRowError] = []
+
+    # Destination account for currency lookups (used by both pair partner
+    # validation and drop_as_duplicate revalidation).
+    destination_account = await db.scalar(
+        select(Account).where(
+            Account.id == body.account_id, Account.org_id == org_id
+        )
+    )
+    if destination_account is None:
+        await transaction_service.validate_account(db, body.account_id, org_id)
 
     # ── Smart-rules learning: fetch share flag once, init aggregate counters ──
     share_flag = (await db.execute(
@@ -272,6 +301,7 @@ async def execute_import(
     overridden_count = 0
     source_split: Counter[str] = Counter()
     miss_tokens: set[str] = set()
+    paired_pair_ids: list[tuple[int, int]] = []
 
     for row in body.rows:
         if row.skip:
@@ -279,101 +309,237 @@ async def execute_import(
             continue
 
         category_id = row.category_id or body.default_category_id
+        action_taken: str | None = None
+        new_tx: Transaction | None = None
 
         try:
-            # PR-C C1: only the create branch is wired. The pair_with_existing
-            # and drop_as_duplicate branches land in C3.
-            tx_body = TransactionCreate(
-                account_id=body.account_id,
-                category_id=category_id,
-                description=row.description,
-                amount=row.amount,
-                type=row.type,
-                date=row.date,
-            )
-            await transaction_service.create_transaction(
-                db, org_id, tx_body, is_imported=True
-            )
-
-            # ── Learn from the user's category choice ────────────────
-            # Skip transfers (linked rows) and rows with no category at
-            # all. The double commit (create_transaction commits the txn,
-            # this block commits the rule + vote separately) is
-            # intentional — keeps a learn-failure from rolling back the
-            # imported transaction.
-            if row.category_id is not None and not should_skip_learning(row):
-                accepted = (
-                    row.suggested_category_id is not None
-                    and row.suggested_category_id == row.category_id
-                )
-                source = "user_pick" if accepted else "user_edit"
-                # Learning is best-effort: a failure here must NOT
-                # bubble out as a row error. The transaction itself
-                # has already committed (see create_transaction
-                # above) — the row is imported regardless.
-                try:
-                    await learn_from_choice(
-                        db,
-                        org_id=org_id,
+            async with db.begin_nested():
+                if row.action == "create":
+                    tx_body = TransactionCreate(
+                        account_id=body.account_id,
+                        category_id=category_id,
                         description=row.description,
-                        category_id=row.category_id,
-                        source=source,
+                        amount=row.amount,
+                        type=row.type,
+                        date=row.date,
                     )
-                    if (
-                        accepted and share_merchant_data
-                        and row.suggestion_source == "shared_dictionary"
-                    ):
-                        await bump_shared_vote(db, description=row.description)
-                    await db.commit()
-                except Exception as exc:
-                    await db.rollback()
-                    await logger.awarning(
-                        "smart_rules.learn_failed",
-                        org_id=org_id,
-                        op="execute_import",
-                        row_number=row.row_number,
-                        error=str(exc),
-                        error_type=type(exc).__name__,
+                    new_tx = await _create_transaction_no_commit(
+                        db, org_id, tx_body, is_imported=True
+                    )
+                    action_taken = "create"
+
+                elif row.action == "pair_with_existing":
+                    if row.pair_with_transaction_id is None:
+                        raise ValidationError(
+                            "pair_with_transaction_id required when "
+                            "action='pair_with_existing'"
+                        )
+                    tx_body = TransactionCreate(
+                        account_id=body.account_id,
+                        category_id=category_id,
+                        description=row.description,
+                        amount=row.amount,
+                        type=row.type,
+                        date=row.date,
+                    )
+                    new_tx = await _create_transaction_no_commit(
+                        db, org_id, tx_body, is_imported=True
                     )
 
-                # Counters always update — the user's choice was
-                # registered against an imported row, even if the
-                # rule write failed and got logged above.
-                learned_count += 1
-                if accepted:
-                    accepted_count += 1
-                elif row.suggested_category_id is not None:
-                    overridden_count += 1
+                    # Lock partner row with FOR UPDATE + populate_existing so
+                    # the eligibility re-check reads the freshest server state
+                    # (defends against a concurrent pair landing between
+                    # preview and confirm).
+                    partner_locked = await db.execute(
+                        select(Transaction)
+                        .options(*_load_opts())
+                        .where(
+                            Transaction.id == row.pair_with_transaction_id,
+                            Transaction.org_id == org_id,
+                        )
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
+                    )
+                    partner = partner_locked.scalar_one_or_none()
+                    if partner is None:
+                        raise ConflictError(
+                            "Partner row no longer exists; re-preview"
+                        )
+                    if partner.linked_transaction_id is not None:
+                        raise ConflictError(
+                            "Partner row is already linked; re-preview"
+                        )
+                    if partner.recurring_id is not None:
+                        raise ConflictError(
+                            "Partner row is recurring; re-preview"
+                        )
+                    if partner.account.currency != destination_account.currency:
+                        raise ConflictError(
+                            "Currency mismatch detected at confirm; re-preview"
+                        )
 
-            # Metric collection — fires for EVERY imported non-transfer
-            # row, including default-category fallthroughs (row.category_id
-            # is None and the user relied on default_category_id). This
-            # is the architect-mandated signal for "uncategorizable on
-            # import" and must NOT be gated on row.category_id.
-            if not should_skip_learning(row):
-                source_split[row.suggestion_source or "default"] += 1
-                if row.suggestion_source in ("default", None):
-                    token = normalize_description(row.description)
-                    if token:
-                        miss_tokens.add(token)
+                    # Determine which leg is expense / income.
+                    if new_tx.type == TransactionType.EXPENSE:
+                        expense_tx, income_tx = new_tx, partner
+                    else:
+                        expense_tx, income_tx = partner, new_tx
 
-            imported_count += 1
+                    await _link_pair(
+                        db,
+                        expense_tx=expense_tx,
+                        income_tx=income_tx,
+                        recategorize=row.recategorize,
+                        transfer_category_id=row.transfer_category_id,
+                    )
+                    paired_pair_ids.append((new_tx.id, partner.id))
+                    action_taken = "pair_with_existing"
 
-        except Exception as exc:
-            await db.rollback()
+                elif row.action == "drop_as_duplicate":
+                    if row.duplicate_of_transaction_id is None:
+                        raise ValidationError(
+                            "duplicate_of_transaction_id required when "
+                            "action='drop_as_duplicate'"
+                        )
+                    row_tx_type = (
+                        TransactionType.EXPENSE
+                        if row.type == "expense"
+                        else TransactionType.INCOME
+                    )
+                    dup_check = await find_duplicate_of_linked_leg(
+                        db, org_id,
+                        account_id=body.account_id,
+                        amount=row.amount,
+                        type=row_tx_type,
+                        date=row.date,
+                        currency=destination_account.currency,
+                    )
+                    candidate_ids = {c.id for c in dup_check}
+                    if row.duplicate_of_transaction_id not in candidate_ids:
+                        raise ConflictError(
+                            "Duplicate candidate no longer matches; re-preview"
+                        )
+                    action_taken = "drop_as_duplicate"
+
+        except (ConflictError, ValidationError, NotFoundError) as exc:
+            # Domain failures: row-level error, batch continues.
+            errors.append(
+                ImportRowError(row_number=row.row_number, error=str(exc))
+            )
             await logger.awarning(
                 "import_row_failed",
                 row_number=row.row_number,
                 error=str(exc),
+                error_type=type(exc).__name__,
             )
-            errors.append(ImportRowError(row_number=row.row_number, error=str(exc)))
+            continue
+        except Exception as exc:
+            # Unexpected failures: surface as row-level error, batch continues.
+            errors.append(
+                ImportRowError(row_number=row.row_number, error=str(exc))
+            )
+            await logger.awarning(
+                "import_row_failed",
+                row_number=row.row_number,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            continue
+
+        # Per-action counter increments + telemetry (post-savepoint commit).
+        if action_taken == "create":
+            imported_count += 1
+        elif action_taken == "pair_with_existing":
+            paired_count += 1
+            await logger.ainfo(
+                "transfers.linked",
+                org_id=org_id,
+                expense_id=expense_tx.id,
+                income_id=income_tx.id,
+                source="import_pair",
+                recategorized=row.recategorize,
+            )
+        elif action_taken == "drop_as_duplicate":
+            dropped_duplicate_count += 1
+            await logger.ainfo(
+                "import.dropped_duplicate_leg",
+                org_id=org_id,
+                csv_row_index=row.row_number,
+                duplicate_of_transaction_id=row.duplicate_of_transaction_id,
+                account_id=body.account_id,
+                amount=str(row.amount),  # spec §6.1: amount as string
+            )
+
+        # ── Best-effort learning from the user's category choice ───────────
+        # Runs OUTSIDE the per-row savepoint so a learn failure doesn't undo
+        # the transaction. Skipped for paired rows (transfer legs — the
+        # description is bank-noise, not a meaningful merchant) and dropped
+        # rows (no transaction was created).
+        if action_taken == "create" and row.category_id is not None and not should_skip_learning(new_tx):
+            accepted = (
+                row.suggested_category_id is not None
+                and row.suggested_category_id == row.category_id
+            )
+            source = "user_pick" if accepted else "user_edit"
+            try:
+                await learn_from_choice(
+                    db,
+                    org_id=org_id,
+                    description=row.description,
+                    category_id=row.category_id,
+                    source=source,
+                )
+                if (
+                    accepted and share_merchant_data
+                    and row.suggestion_source == "shared_dictionary"
+                ):
+                    await bump_shared_vote(db, description=row.description)
+                await db.commit()
+            except Exception as exc:
+                await db.rollback()
+                await logger.awarning(
+                    "smart_rules.learn_failed",
+                    org_id=org_id,
+                    op="execute_import",
+                    row_number=row.row_number,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+
+            # Counters always update — the user's choice was registered
+            # against an imported row, even if the rule write failed.
+            learned_count += 1
+            if accepted:
+                accepted_count += 1
+            elif row.suggested_category_id is not None:
+                overridden_count += 1
+
+        # Metric collection — fires for EVERY imported plain-create row,
+        # including default-category fallthroughs (row.category_id is None
+        # and the user relied on default_category_id). Architect-mandated
+        # "uncategorizable on import" signal; must NOT be gated on
+        # row.category_id. Paired/dropped rows are excluded here because
+        # paired rows aren't "missing a merchant rule" (they're transfers)
+        # and dropped rows didn't create a transaction.
+        if action_taken == "create" and not should_skip_learning(new_tx):
+            source_split[row.suggestion_source or "default"] += 1
+            if row.suggestion_source in ("default", None):
+                token = normalize_description(row.description)
+                if token:
+                    miss_tokens.add(token)
+
+    # Final commit for any savepoints whose changes haven't been flushed to
+    # the outer transaction yet (savepoint commit only releases to the outer
+    # transaction; we still owe the outer commit).
+    await db.commit()
 
     # ── Aggregate smart-rules metric (architect-mandated; one per import) ──
+    # rows_total preserves its original meaning: total submitted rows.
     await logger.ainfo(
         "smart_rules.import_executed",
         org_id=org_id,
         rows_total=len(body.rows),
         imported_count=imported_count,
+        paired_count=paired_count,
         learned_count=learned_count,
         accepted_count=accepted_count,
         overridden_count=overridden_count,
@@ -387,8 +553,19 @@ async def execute_import(
             "smart_rules.miss", org_id=org_id, normalized_token=token,
         )
 
+    # ── Per-execute confirm summary (transfer-aware) ──
+    await logger.ainfo(
+        "import.confirmed.transfers",
+        org_id=org_id,
+        paired_count=paired_count,
+        dropped_duplicate_count=dropped_duplicate_count,
+        plain_created_count=imported_count,
+    )
+
     return ImportConfirmResponse(
         imported_count=imported_count,
+        paired_count=paired_count,
+        dropped_duplicate_count=dropped_duplicate_count,
         skipped_count=skipped_count,
         error_count=len(errors),
         errors=errors,

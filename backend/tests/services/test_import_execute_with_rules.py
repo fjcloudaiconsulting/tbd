@@ -14,7 +14,6 @@ import datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
-import pytest
 import pytest_asyncio
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
@@ -27,6 +26,7 @@ from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.settings import OrgSetting
+from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
 from app.schemas.import_schemas import ImportConfirmRequest, ImportConfirmRow
 from app.services import import_service
@@ -155,15 +155,71 @@ async def test_accept_without_opt_in_does_not_bump_shared(db_session: AsyncSessi
     assert entry.vote_count == 0
 
 
-@pytest.mark.skip(
-    reason=(
-        "Legacy is_transfer/transfer_account_id confirm path. PR-C C1 "
-        "dropped these schema fields. PR-C C3 reintroduces transfer-on-confirm "
-        "via action='pair_with_existing' and replaces this test."
-    )
-)
 async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:
-    pass
+    """Paired rows (action='pair_with_existing') must NOT trigger smart-rules
+    learning. The new ORM Transaction has linked_transaction_id set after
+    _link_pair, so should_skip_learning (now via is_transfer_leg) returns
+    True and the learn-from-choice block is skipped.
+    """
+    seed = await _seed(db_session, share=False)
+    # Build a partner on a SEPARATE account (transfers require different
+    # accounts). Reuse the existing checking account as source; create a
+    # second account for the partner leg.
+    other_acct = Account(
+        org_id=seed["org_id"], account_type_id=seed["account_type_id"],
+        name="Savings", balance=Decimal("0"), currency="EUR",
+    )
+    db_session.add(other_acct)
+    await db_session.flush()
+    # Make sure the source account also has a currency for the pair partner check.
+    src_acct = (await db_session.execute(
+        select(Account).where(Account.id == seed["account_id"])
+    )).scalar_one()
+    src_acct.currency = "EUR"
+    transfer_cat = Category(
+        org_id=seed["org_id"], name="Transfer", slug="transfer",
+        is_system=True, type=CategoryType.BOTH,
+    )
+    db_session.add(transfer_cat)
+    await db_session.flush()
+    # Un-linked income leg on the partner account.
+    partner = Transaction(
+        org_id=seed["org_id"], account_id=other_acct.id,
+        category_id=transfer_cat.id, description="incoming-xfer",
+        amount=Decimal("12.50"),
+        type=TransactionType.INCOME,
+        status=TransactionStatus.SETTLED,
+        date=datetime.date(2026, 5, 1),
+        settled_date=datetime.date(2026, 5, 1),
+    )
+    db_session.add(partner)
+    await db_session.commit()
+
+    body = ImportConfirmRequest(
+        account_id=seed["account_id"],
+        default_category_id=transfer_cat.id,
+        rows=[ImportConfirmRow(
+            row_number=1, date=datetime.date(2026, 5, 1),
+            description="POS LIDL *9999",  # would normally learn → "LIDL"
+            amount=Decimal("12.50"), type="expense",
+            category_id=transfer_cat.id,
+            action="pair_with_existing",
+            pair_with_transaction_id=partner.id,
+            recategorize=False,
+            # Echo a suggestion so we'd see learning if it ran.
+            suggested_category_id=seed["groceries_id"],
+            suggestion_source="shared_dictionary",
+        )],
+    )
+    await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+
+    # No CategoryRule should have been written for the LIDL token; the
+    # paired row's linked_transaction_id is non-None so should_skip_learning
+    # short-circuits learn_from_choice and the source_split miss path.
+    rules = (await db_session.execute(select(CategoryRule))).scalars().all()
+    assert rules == []
 
 
 async def test_aggregate_metric_emitted_with_correct_shape(db_session: AsyncSession) -> None:

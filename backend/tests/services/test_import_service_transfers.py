@@ -1,6 +1,7 @@
-"""Detector 1 + Detector 2 wiring in build_preview (PR-C C2).
+"""Detector 1 + Detector 2 wiring in build_preview (PR-C C2) +
+execute_import confirm-branch wiring (PR-C C3).
 
-Covers spec §3.1 / §3.2:
+Covers spec §3.1 / §3.2 / §3.3:
   Detector 1 = find_duplicate_of_linked_leg → is_duplicate_of_linked_leg=True
               + duplicate_candidate populated + default_action_drop=True.
   Detector 2 = find_match_candidates → transfer_match_action set per
@@ -8,13 +9,15 @@ Covers spec §3.1 / §3.2:
   Precedence: Detector 1 wins; Detector 2 is skipped on the same row.
   Summary counters in ImportPreviewResponse mirror per-row actions.
   Telemetry: one import.preview.matched event per preview.
+  C3 confirm: action="pair_with_existing" inserts + links atomically;
+              action="drop_as_duplicate" revalidates server-side and skips.
 """
 import datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest_asyncio
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -24,6 +27,7 @@ from app.models.account import Account, AccountType
 from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization
+from app.schemas.import_schemas import ImportConfirmRequest, ImportConfirmRow
 from app.services import import_service
 from app.services.import_parser import ParsedRow
 
@@ -456,3 +460,254 @@ async def test_legacy_online_banking_string_no_longer_triggers_transfer_flag(
     assert result.suggested_pair_count == 0
     assert result.multi_candidate_count == 0
     assert result.duplicate_of_linked_count == 0
+
+
+# ── PR-C C3 confirm-branch tests ─────────────────────────────────────────────
+
+
+async def test_confirm_pair_with_existing_creates_and_links_atomically(
+    db_session: AsyncSession,
+) -> None:
+    """Happy path: action='pair_with_existing' inserts the new leg,
+    locks the partner, and links both rows under a single per-row savepoint.
+    Both legs end up linked; transfers.linked telemetry is emitted with
+    source='import_pair'.
+    """
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+    # Partner: un-linked income on dst (the OTHER account).
+    partner = await _add_unlinked(
+        db_session,
+        org_id=seed["org_id"], account_id=seed["dst_id"],
+        category_id=seed["transfer_cat_id"], amount=Decimal("50"),
+        type=TransactionType.INCOME, when=when, description="incoming-xfer",
+    )
+
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="ATM WITHDRAW", amount=Decimal("50"),
+            type="expense",
+            category_id=seed["transfer_cat_id"],
+            action="pair_with_existing",
+            pair_with_transaction_id=partner.id,
+            recategorize=False,  # already on Transfer category
+        )],
+    )
+
+    with patch.object(
+        import_service.logger, "ainfo", new_callable=AsyncMock,
+    ) as spy:
+        result = await import_service.execute_import(
+            db_session, org_id=seed["org_id"], body=body,
+        )
+
+    assert result.imported_count == 0
+    assert result.paired_count == 1
+    assert result.dropped_duplicate_count == 0
+    assert result.error_count == 0
+
+    # Both legs are linked.
+    new_leg = (await db_session.execute(
+        select(Transaction).where(
+            Transaction.account_id == seed["src_id"],
+            Transaction.type == TransactionType.EXPENSE,
+        )
+    )).scalar_one()
+    await db_session.refresh(partner)
+    assert new_leg.linked_transaction_id == partner.id
+    assert partner.linked_transaction_id == new_leg.id
+
+    # Telemetry: transfers.linked with source='import_pair'.
+    linked_calls = [
+        c for c in spy.call_args_list
+        if c.args and c.args[0] == "transfers.linked"
+    ]
+    assert len(linked_calls) == 1
+    assert linked_calls[0].kwargs["source"] == "import_pair"
+    assert linked_calls[0].kwargs["recategorized"] is False
+
+
+async def test_confirm_pair_with_existing_atomicity_rollback(
+    db_session: AsyncSession,
+) -> None:
+    """Force _link_pair to raise after _create_transaction_no_commit succeeds.
+    The new CSV leg must NOT be present in the DB after the rollback (the
+    per-row savepoint catches it). The partner must remain un-linked.
+    """
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+    partner = await _add_unlinked(
+        db_session,
+        org_id=seed["org_id"], account_id=seed["dst_id"],
+        category_id=seed["transfer_cat_id"], amount=Decimal("75"),
+        type=TransactionType.INCOME, when=when, description="incoming-xfer",
+    )
+
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="ATM WITHDRAW", amount=Decimal("75"),
+            type="expense",
+            category_id=seed["transfer_cat_id"],
+            action="pair_with_existing",
+            pair_with_transaction_id=partner.id,
+        )],
+    )
+
+    with patch(
+        "app.services.import_service._link_pair",
+        new=AsyncMock(side_effect=RuntimeError("simulated link failure")),
+    ):
+        result = await import_service.execute_import(
+            db_session, org_id=seed["org_id"], body=body,
+        )
+
+    # Failure surfaces as a row error.
+    assert result.paired_count == 0
+    assert result.imported_count == 0
+    assert result.error_count == 1
+    assert "simulated link failure" in result.errors[0].error
+
+    # The new CSV leg must NOT exist (savepoint rolled back).
+    new_legs = (await db_session.execute(
+        select(Transaction).where(
+            Transaction.account_id == seed["src_id"],
+            Transaction.description == "ATM WITHDRAW",
+        )
+    )).scalars().all()
+    assert new_legs == [], "new CSV leg should be rolled back"
+
+    # Partner remains un-linked.
+    await db_session.refresh(partner)
+    assert partner.linked_transaction_id is None
+
+
+async def test_confirm_drop_as_duplicate_revalidates_server_side(
+    db_session: AsyncSession,
+) -> None:
+    """Preview returned a duplicate-of-linked-leg candidate; before confirm,
+    the candidate gets unpaired (so it would no longer match — it has no
+    linked_transaction_id anymore). Confirm with action='drop_as_duplicate'
+    must raise ConflictError ('re-preview'), surfaced as a row error.
+    """
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+    # Linked pair: expense leg on src. This is the would-be duplicate target.
+    expense, income = await _add_linked_pair(
+        db_session,
+        org_id=seed["org_id"],
+        expense_account_id=seed["src_id"],
+        income_account_id=seed["dst_id"],
+        category_id=seed["transfer_cat_id"],
+        amount=Decimal("10"),
+        when=when,
+        is_imported=False,
+    )
+
+    # Between preview and confirm: unpair the candidate.
+    expense.linked_transaction_id = None
+    income.linked_transaction_id = None
+    await db_session.commit()
+
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[ImportConfirmRow(
+            row_number=1, date=when,
+            description="ATM", amount=Decimal("10"),
+            type="expense",
+            action="drop_as_duplicate",
+            duplicate_of_transaction_id=expense.id,
+        )],
+    )
+
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+
+    assert result.dropped_duplicate_count == 0
+    assert result.error_count == 1
+    assert "re-preview" in result.errors[0].error.lower()
+
+
+async def test_confirm_response_counters_match_actions(
+    db_session: AsyncSession,
+) -> None:
+    """Mix of action='create', 'pair_with_existing', 'drop_as_duplicate' rows
+    in one batch. Each counter increments correctly; sum + skipped + errors
+    equals total submitted.
+    """
+    seed = await _seed_two_accounts(db_session)
+    when = datetime.date(2026, 5, 1)
+    # Partner for pair branch.
+    partner = await _add_unlinked(
+        db_session,
+        org_id=seed["org_id"], account_id=seed["dst_id"],
+        category_id=seed["transfer_cat_id"], amount=Decimal("100"),
+        type=TransactionType.INCOME, when=when, description="incoming-xfer",
+    )
+    # Linked-leg target for drop branch (preserve linked state through confirm).
+    linked_expense, _linked_income = await _add_linked_pair(
+        db_session,
+        org_id=seed["org_id"],
+        expense_account_id=seed["src_id"],
+        income_account_id=seed["dst_id"],
+        category_id=seed["transfer_cat_id"],
+        amount=Decimal("20"),
+        when=when,
+    )
+
+    body = ImportConfirmRequest(
+        account_id=seed["src_id"],
+        default_category_id=seed["transfer_cat_id"],
+        rows=[
+            # plain create
+            ImportConfirmRow(
+                row_number=1, date=when,
+                description="POS COFFEE", amount=Decimal("3.50"),
+                type="expense",
+                category_id=seed["transfer_cat_id"],
+                action="create",
+            ),
+            # pair_with_existing
+            ImportConfirmRow(
+                row_number=2, date=when,
+                description="ATM WITHDRAW", amount=Decimal("100"),
+                type="expense",
+                category_id=seed["transfer_cat_id"],
+                action="pair_with_existing",
+                pair_with_transaction_id=partner.id,
+                recategorize=False,
+            ),
+            # drop_as_duplicate (still linked → revalidation passes).
+            ImportConfirmRow(
+                row_number=3, date=when,
+                description="ATM REPLAY", amount=Decimal("20"),
+                type="expense",
+                action="drop_as_duplicate",
+                duplicate_of_transaction_id=linked_expense.id,
+            ),
+        ],
+    )
+
+    result = await import_service.execute_import(
+        db_session, org_id=seed["org_id"], body=body,
+    )
+
+    assert result.imported_count == 1
+    assert result.paired_count == 1
+    assert result.dropped_duplicate_count == 1
+    assert result.skipped_count == 0
+    assert result.error_count == 0
+    # Counters sum to total submitted rows.
+    total = (
+        result.imported_count + result.paired_count
+        + result.dropped_duplicate_count + result.skipped_count
+        + result.error_count
+    )
+    assert total == len(body.rows)
