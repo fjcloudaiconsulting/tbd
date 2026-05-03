@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.account import Account
-from app.models.category import Category
+from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate, TransferCreate
 from app.services.category_rules_service import learn_from_choice
@@ -126,39 +126,66 @@ def revert_balance(account: Account, amount: Decimal, tx_type: TransactionType) 
 
 # ── CRUD operations ───────────────────────────────────────────────────────────
 
-async def create_transaction(
-    db: AsyncSession, org_id: int, body: TransactionCreate, *, is_imported: bool = False
+async def _create_transaction_no_commit(
+    db: AsyncSession,
+    org_id: int,
+    body: TransactionCreate,
+    *,
+    is_imported: bool = False,
 ) -> Transaction:
+    """Internal create primitive that flushes but does NOT commit.
+
+    Used by:
+      - public create_transaction (wraps with commit + best-effort learning)
+      - import_service.execute_import pair_with_existing branch (calls
+        directly, then _link_pair, all inside the outer execute_import
+        transaction so the pair is atomic).
+
+    Caller owns transaction scope. This function does NOT open db.begin_nested
+    or commit; balance application happens unconditionally for SETTLED rows
+    and rolls back with the caller's outer transaction if anything raises.
+    """
     await validate_account(db, body.account_id, org_id)
     await validate_category(db, body.category_id, org_id)
     tx_type = TransactionType(body.type)
     tx_status = TransactionStatus(body.status)
 
+    if tx_status == TransactionStatus.SETTLED:
+        acct = await get_account_for_update(db, body.account_id, org_id)
+        apply_balance(acct, body.amount, tx_type)
+
+    tx = Transaction(
+        org_id=org_id,
+        account_id=body.account_id,
+        category_id=body.category_id,
+        description=body.description,
+        amount=body.amount,
+        type=tx_type,
+        status=tx_status,
+        date=body.date,
+        settled_date=body.date if tx_status == TransactionStatus.SETTLED else None,
+        is_imported=is_imported,
+    )
+    db.add(tx)
+    await db.flush()
+    return tx
+
+
+async def create_transaction(
+    db: AsyncSession, org_id: int, body: TransactionCreate, *, is_imported: bool = False
+) -> Transaction:
+    """Public create endpoint. Owns transaction scope: wraps the no-commit
+    primitive in begin_nested, commits, then runs best-effort smart-rules
+    learning post-commit.
+    """
     async with db.begin_nested():
-        if tx_status == TransactionStatus.SETTLED:
-            acct = await get_account_for_update(db, body.account_id, org_id)
-            apply_balance(acct, body.amount, tx_type)
-
-        tx = Transaction(
-            org_id=org_id,
-            account_id=body.account_id,
-            category_id=body.category_id,
-            description=body.description,
-            amount=body.amount,
-            type=tx_type,
-            status=tx_status,
-            date=body.date,
-            settled_date=body.date if tx_status == TransactionStatus.SETTLED else None,
-            is_imported=is_imported,
-        )
-        db.add(tx)
-
+        tx = await _create_transaction_no_commit(db, org_id, body, is_imported=is_imported)
     await db.commit()
 
     # Learn from the explicit category pick on MANUAL creates only.
-    # Imports own their own learning in execute_import (Task 7), with
-    # accept-vs-override awareness. Adding a learn here would double-write
-    # and clobber user_pick semantics.
+    # Imports own their own learning in execute_import, with accept-vs-override
+    # awareness. Adding a learn here would double-write and clobber user_pick
+    # semantics.
     #
     # Learning is best-effort: a failure here must NOT surface as a 500
     # to the caller — the user's transaction is already committed above.
@@ -441,6 +468,95 @@ async def bulk_delete_transactions(
     return (len(found), skipped_ids)
 
 
+async def _link_pair(
+    db: AsyncSession,
+    *,
+    expense_tx: Transaction,
+    income_tx: Transaction,
+    recategorize: bool = True,
+    transfer_category_id: int | None = None,
+) -> tuple[Transaction, Transaction]:
+    """Validate transfer-pair invariants and link the rows bidirectionally.
+
+    Caller MUST hold FOR UPDATE locks on both rows (and any accounts whose
+    balances are about to mutate) in sorted-ID order. Caller owns transaction
+    scope (db.begin_nested / commit) — _link_pair flushes only.
+
+    Re-validates ALL invariants from spec §1.6 after applying mutations. Raises
+    ValidationError naming the violated invariant.
+
+    The currency invariant requires that both rows' Account relationships are
+    loaded before calling. Caller is responsible for ensuring the relationship
+    is populated (typically via a select(Transaction).options(selectinload(...))
+    or by passing rows that were just queried with `_load_opts()`).
+    """
+    if expense_tx.org_id != income_tx.org_id:
+        raise ValidationError("Transfer legs must belong to the same org")
+    if expense_tx.type != TransactionType.EXPENSE:
+        raise ValidationError("Expense leg must have type=EXPENSE")
+    if income_tx.type != TransactionType.INCOME:
+        raise ValidationError("Income leg must have type=INCOME")
+    if expense_tx.account_id == income_tx.account_id:
+        raise ValidationError("Transfer legs must be on different accounts")
+    if abs(expense_tx.amount) != abs(income_tx.amount):
+        raise ValidationError("Transfer legs must have equal absolute amounts")
+    # Invariant 7 (strict): neither row may already be linked before pairing.
+    # _link_pair is the single creator of linked_transaction_id and refuses to
+    # operate on rows that already carry one, even self-referentially. Callers
+    # that need to re-link an existing pair must unpair it first via
+    # unpair_transactions.
+    if expense_tx.linked_transaction_id is not None:
+        raise ValidationError("Expense leg is already linked")
+    if income_tx.linked_transaction_id is not None:
+        raise ValidationError("Income leg is already linked")
+    # Currency check. Requires .account relationship to be loaded.
+    expense_account = expense_tx.__dict__.get("account")
+    income_account = income_tx.__dict__.get("account")
+    if expense_account is not None and income_account is not None:
+        if expense_account.currency != income_account.currency:
+            raise ValidationError("Transfer legs must have the same currency")
+    # If account relationship is not loaded, fall back to a query
+    else:
+        result = await db.execute(
+            select(Account.id, Account.currency).where(
+                Account.id.in_([expense_tx.account_id, income_tx.account_id]),
+                Account.org_id == expense_tx.org_id,
+            )
+        )
+        currencies = {row.id: row.currency for row in result.all()}
+        if currencies.get(expense_tx.account_id) != currencies.get(income_tx.account_id):
+            raise ValidationError("Transfer legs must have the same currency")
+
+    # Recategorize if requested
+    if recategorize:
+        cat_id = transfer_category_id
+        if cat_id is None:
+            cat_id = await db.scalar(
+                select(Category.id).where(
+                    Category.slug == "transfer", Category.org_id == expense_tx.org_id
+                )
+            )
+            if cat_id is None:
+                new_cat = Category(
+                    org_id=expense_tx.org_id, name="Transfer", slug="transfer",
+                    description="Internal transfers between accounts",
+                    type=CategoryType.BOTH, is_system=True,
+                )
+                db.add(new_cat)
+                await db.flush()
+                cat_id = new_cat.id
+        else:
+            await validate_category(db, cat_id, expense_tx.org_id)
+        expense_tx.category_id = cat_id
+        income_tx.category_id = cat_id
+
+    # Link bidirectionally
+    expense_tx.linked_transaction_id = income_tx.id
+    income_tx.linked_transaction_id = expense_tx.id
+    await db.flush()
+    return expense_tx, income_tx
+
+
 async def create_transfer(
     db: AsyncSession, org_id: int, body: TransferCreate, *, is_imported: bool = False
 ) -> tuple[Transaction, Transaction]:
@@ -470,7 +586,6 @@ async def create_transfer(
         )
         if transfer_cat is None:
             # Auto-create the Transfer category if missing (legacy data)
-            from app.models.category import CategoryType
             new_cat = Category(
                 org_id=org_id, name="Transfer", slug="transfer",
                 description="Internal transfers between accounts",
@@ -518,8 +633,13 @@ async def create_transfer(
         db.add(income_tx)
         await db.flush()
 
-        expense_tx.linked_transaction_id = income_tx.id
-        income_tx.linked_transaction_id = expense_tx.id
+        await _link_pair(
+            db,
+            expense_tx=expense_tx,
+            income_tx=income_tx,
+            recategorize=False,
+            transfer_category_id=category_id,
+        )
 
         if tx_status == TransactionStatus.SETTLED:
             first_id, second_id = sorted([body.from_account_id, body.to_account_id])

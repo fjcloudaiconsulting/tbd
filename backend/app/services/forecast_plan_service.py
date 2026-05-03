@@ -34,6 +34,7 @@ from app.schemas.forecast_plan import (
 from app.services.billing_service import resolve_period
 from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.transaction_filters import reportable_transaction_filter
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -142,7 +143,7 @@ async def _compute_actuals_batch(
         Transaction.status == TransactionStatus.SETTLED,
         Transaction.settled_date >= period_start,
         Transaction.type.in_(["income", "expense"]),
-        Transaction.linked_transaction_id.is_(None),
+        reportable_transaction_filter(),
     )
     if period_end is not None:
         q = q.where(Transaction.settled_date <= period_end)

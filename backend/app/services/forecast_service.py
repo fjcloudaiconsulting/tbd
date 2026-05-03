@@ -18,6 +18,7 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services.billing_service import get_current_period
 from app.services.date_utils import advance_date
+from app.services.transaction_filters import reportable_transaction_filter
 
 
 async def compute_forecast(
@@ -71,7 +72,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= p_end,
-            Transaction.linked_transaction_id.is_(None),
+            reportable_transaction_filter(),
         )
     ) or Decimal("0")
 
@@ -82,7 +83,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= p_end,
-            Transaction.linked_transaction_id.is_(None),
+            reportable_transaction_filter(),
         )
     ) or Decimal("0")
 
@@ -94,7 +95,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.PENDING,
             Transaction.date >= p_start,
             Transaction.date <= p_end,
-            Transaction.linked_transaction_id.is_(None),
+            reportable_transaction_filter(),
         )
     ) or Decimal("0")
 
@@ -105,7 +106,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.PENDING,
             Transaction.date >= p_start,
             Transaction.date <= p_end,
-            Transaction.linked_transaction_id.is_(None),
+            reportable_transaction_filter(),
         )
     ) or Decimal("0")
 
@@ -147,7 +148,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= p_start,
             Transaction.settled_date <= p_end,
-            Transaction.linked_transaction_id.is_(None),
+            reportable_transaction_filter(),
         ).group_by(Transaction.category_id)
     )
     cat_executed = {row[0]: Decimal(str(row[1])) for row in cat_exec_result.all()}
@@ -163,7 +164,7 @@ async def compute_forecast(
             Transaction.status == TransactionStatus.PENDING,
             Transaction.date >= p_start,
             Transaction.date <= p_end,
-            Transaction.linked_transaction_id.is_(None),
+            reportable_transaction_filter(),
         ).group_by(Transaction.category_id)
     )
     cat_pending = {row[0]: Decimal(str(row[1])) for row in cat_pend_result.all()}
