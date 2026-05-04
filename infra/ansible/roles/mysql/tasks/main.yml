@@ -22,8 +22,13 @@
 # password MySQL never accepted, breaking subsequent tasks and cron dumps.
 # Cron dumps use the dedicated `mysql_backup` user below.
 
+# All privileged mysql tasks pin login_user: root + login_unix_socket so they
+# auth via root@localhost's auth_socket plugin regardless of whatever the
+# mysql client would otherwise pick up from /root/.my.cnf (which exists from
+# prior runs and points at the lower-privilege mysql_backup user).
 - name: Create backup user (read-everything for mysqldump --single-transaction)
   community.mysql.mysql_user:
+    login_user: root
     login_unix_socket: /var/run/mysqld/mysqld.sock
     name: "{{ mysql_backup_user }}"
     password: "{{ mysql_backup_password }}"
@@ -32,6 +37,47 @@
     plugin: mysql_native_password
     state: present
 
+- name: Remove anonymous MySQL users
+  community.mysql.mysql_user:
+    login_user: root
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    name: ""
+    host_all: true
+    state: absent
+
+- name: Remove MySQL test database
+  community.mysql.mysql_db:
+    login_user: root
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    name: test
+    state: absent
+
+- name: Create application database
+  community.mysql.mysql_db:
+    login_user: root
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    name: "{{ mysql_app_db }}"
+    state: present
+    encoding: utf8mb4
+    collation: utf8mb4_0900_ai_ci
+
+- name: Create application MySQL user (host=%)
+  community.mysql.mysql_user:
+    login_user: root
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    name: "{{ mysql_app_user }}"
+    password: "{{ mysql_app_password }}"
+    host: "%"
+    priv: "{{ mysql_app_db }}.*:ALL"
+    plugin: mysql_native_password
+    state: present
+
+# Drop /root/.my.cnf AFTER all privileged mysql_user / mysql_db tasks complete.
+# The mysql client library reads /root/.my.cnf when present and authenticates
+# as the user listed there (mysql_backup), which does not have CREATE DATABASE
+# / CREATE USER privilege — so any privileged task that runs after this file
+# exists fails with "Access denied for user 'pfv_backup'". The cron mysqldump
+# is the only consumer that needs this file.
 - name: Drop /root/.my.cnf so cron mysqldump runs non-interactively
   ansible.builtin.template:
     src: root.my.cnf.j2
@@ -39,37 +85,6 @@
     owner: root
     group: root
     mode: "0600"
-
-- name: Remove anonymous MySQL users
-  community.mysql.mysql_user:
-    name: ""
-    host_all: true
-    state: absent
-    login_unix_socket: /var/run/mysqld/mysqld.sock
-
-- name: Remove MySQL test database
-  community.mysql.mysql_db:
-    name: test
-    state: absent
-    login_unix_socket: /var/run/mysqld/mysqld.sock
-
-- name: Create application database
-  community.mysql.mysql_db:
-    name: "{{ mysql_app_db }}"
-    state: present
-    encoding: utf8mb4
-    collation: utf8mb4_0900_ai_ci
-    login_unix_socket: /var/run/mysqld/mysqld.sock
-
-- name: Create application MySQL user (host=%)
-  community.mysql.mysql_user:
-    name: "{{ mysql_app_user }}"
-    password: "{{ mysql_app_password }}"
-    host: "%"
-    priv: "{{ mysql_app_db }}.*:ALL"
-    plugin: mysql_native_password
-    state: present
-    login_unix_socket: /var/run/mysqld/mysqld.sock
 
 - name: Drop pfv MySQL config override
   ansible.builtin.template:
