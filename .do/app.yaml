@@ -9,8 +9,8 @@ region: ams
 # See https://docs.digitalocean.com/products/app-platform/how-to/enable-vpc/
 # Push the spec via `doctl apps update <APP_ID> --spec .do/app.yaml`
 # (NOT via the GH Action — see reference_do_spec_sync.md).
-# vpc:
-#   id: REPLACE_WITH_VPC_UUID_FROM_TERRAFORM
+vpc:
+  id: 694e9d40-a08d-486a-becb-5d068e5ef5c5
 # Custom domain MUST stay declared here. With `app_spec_location` driving
 # every deploy, anything missing from this file is removed from the live
 # app on push — same failure mode as missing SECRET envs. Stripping the
@@ -117,11 +117,11 @@ services:
       - key: DATABASE_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:6hfpzR8vLg+7V8xAKnnPxKCH31YvJ/wq:zBRFCBWk4LU+PgCsbCyXe3B28BtGpFeQ+KHldE7sFKA9XXlkkM94KQVsAVtlqwShSj29XHQ8JJzACa3Q+bX5nmrByRe4JGPlMDUC2iV5gcGb074vQntKdL2/0RIGhycbbbczpJUZubF3vh910KhN8toTPIS0bwpIvxHSvd8coPcI]
+        value: EV[1:niaLqbiSPh1dsD/z5fDHdZ9ELQIj/Zn0:dKdndRZkqkvQw6/T7jzR2TagmSphELkbf1u5Jb+Bcb5KRm2pQUC/doIw7oB0IMWCLUPo9MbuBw7FznNM21g/OBW1a/Mcq0ySDzbf6J8pSwqT76J0Xw+2FN+yObaldtru26H4MVgqtoyKqZTyug==]
       - key: REDIS_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:A9gqCkOiw6t/7SnDUDSu4bqfD79Lwx7D:Gpukt1xW3kxOGnnI919j4lGoKjUM/RGOIfdtne26gHTGi0TAIqp1p7eklyrJ38JOAoY1Gs/Hb9K3fw7JIYxUTCaBovrZ0ppe0W8s0+v4m0uRHTRbSZ3UAn+5rwZ63G+mZTZEEZbNerchwFe2FltrHn4VgYk=]
+        value: EV[1:yVJeJV1w+bxs3ZuWPQ1A7J1HTmvpBIZL:zeU+3P19VEfGrR0dwmskJqhw5ieNzQMdS6moOtaw6UIhPJGgGKYsM06GM/mrY2gbngsC771r88KRCeYvgws/jiUT+gkOBWR6jHyr6eExDaR0r/RsbMYsI9c5]
       - key: JWT_SECRET_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET
@@ -198,4 +198,4 @@ jobs:
       - key: DATABASE_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:6hfpzR8vLg+7V8xAKnnPxKCH31YvJ/wq:zBRFCBWk4LU+PgCsbCyXe3B28BtGpFeQ+KHldE7sFKA9XXlkkM94KQVsAVtlqwShSj29XHQ8JJzACa3Q+bX5nmrByRe4JGPlMDUC2iV5gcGb074vQntKdL2/0RIGhycbbbczpJUZubF3vh910KhN8toTPIS0bwpIvxHSvd8coPcI]
+        value: EV[1:PW7zpRXasYFhIiOoqMNopBxpqujwXZCO:LB8zQbjWAG4N99+0Q3m4fwakl3DTHqrPo9PH5r+JkSVSouY4n8pTl0ISC5FLVUBMPo92zTCxPIzGnfiKKbDEq5oxbKyM1g+jyVdUoXOBgogEWvJ84R5yvWC8SQVNQrdKsplwP2YScTPlpewRMw==]
