@@ -12,6 +12,7 @@
           { "scope": "test", "release": false },
           { "scope": "tests", "release": false },
           { "scope": "dev", "release": false },
+          { "scope": "infra", "release": false },
           { "type": "feat", "release": "minor" },
           { "type": "fix", "release": "patch" },
           { "type": "perf", "release": "patch" },
