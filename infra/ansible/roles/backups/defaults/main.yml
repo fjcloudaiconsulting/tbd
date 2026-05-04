@@ -1,0 +1,5 @@
+---
+mysql_backup_dir: /var/backups/mysql
+mysql_backup_retention_days: 7
+mysql_backup_cron_hour: "2"
+mysql_backup_cron_minute: "0"

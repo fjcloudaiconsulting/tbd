@@ -1,0 +1,36 @@
+---
+- name: Create MySQL backup directory
+  ansible.builtin.file:
+    path: "{{ mysql_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# Pre-created so the migration runbook (infra/MIGRATION.md step 4) can
+# `scp dump.sql.gz droplet:/var/backups/mysql/migration/` without first
+# having to ssh in and mkdir the subdir by hand.
+- name: Create MySQL backup migration subdirectory
+  ansible.builtin.file:
+    path: "{{ mysql_backup_dir }}/migration"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install MySQL backup script
+  ansible.builtin.template:
+    src: mysql-backup.sh.j2
+    dest: /usr/local/bin/mysql-backup.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Schedule daily MySQL backup cron
+  ansible.builtin.cron:
+    name: "mysql daily backup"
+    user: root
+    hour: "{{ mysql_backup_cron_hour }}"
+    minute: "{{ mysql_backup_cron_minute }}"
+    job: "/usr/local/bin/mysql-backup.sh >> /var/log/mysql-backup.log 2>&1"
+    state: present

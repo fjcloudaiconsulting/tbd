@@ -1,0 +1,4 @@
+inventory.yml
+collections/
+*.retry
+.vault_pass

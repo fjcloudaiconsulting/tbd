@@ -1,0 +1,81 @@
+---
+- name: Install MySQL server
+  ansible.builtin.apt:
+    name:
+      - mysql-server
+      - python3-pymysql
+    state: present
+
+- name: Ensure MySQL is started and enabled
+  ansible.builtin.service:
+    name: mysql
+    state: started
+    enabled: true
+
+# Ubuntu 24.04 ships MySQL 8 with auth_socket on root@localhost — we keep that
+# default. Local maintenance is done via `sudo mysql` (the socket plugin
+# authenticates by uid, no password needed). We deliberately do NOT manage a
+# password for root@localhost here: the `mysql_user ... update_password:
+# on_create` form only sets the password when the user is first created, and
+# root already exists from the apt package install. Re-running this play with
+# a rotated `mysql_root_password` would silently rewrite /root/.my.cnf to a
+# password MySQL never accepted, breaking subsequent tasks and cron dumps.
+# Cron dumps use the dedicated `mysql_backup` user below.
+
+- name: Create backup user (read-everything for mysqldump --single-transaction)
+  community.mysql.mysql_user:
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    name: "{{ mysql_backup_user }}"
+    password: "{{ mysql_backup_password }}"
+    host: localhost
+    priv: "*.*:SELECT,LOCK TABLES,SHOW VIEW,EVENT,TRIGGER,RELOAD,PROCESS,REPLICATION CLIENT"
+    plugin: mysql_native_password
+    state: present
+
+- name: Drop /root/.my.cnf so cron mysqldump runs non-interactively
+  ansible.builtin.template:
+    src: root.my.cnf.j2
+    dest: /root/.my.cnf
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Remove anonymous MySQL users
+  community.mysql.mysql_user:
+    name: ""
+    host_all: true
+    state: absent
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Remove MySQL test database
+  community.mysql.mysql_db:
+    name: test
+    state: absent
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Create application database
+  community.mysql.mysql_db:
+    name: "{{ mysql_app_db }}"
+    state: present
+    encoding: utf8mb4
+    collation: utf8mb4_0900_ai_ci
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Create application MySQL user (host=%)
+  community.mysql.mysql_user:
+    name: "{{ mysql_app_user }}"
+    password: "{{ mysql_app_password }}"
+    host: "%"
+    priv: "{{ mysql_app_db }}.*:ALL"
+    plugin: mysql_native_password
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Drop pfv MySQL config override
+  ansible.builtin.template:
+    src: my.cnf.j2
+    dest: /etc/mysql/mysql.conf.d/pfv.cnf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mysql

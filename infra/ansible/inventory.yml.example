@@ -1,0 +1,24 @@
+# Copy to inventory.yml and fill from `terraform output`. inventory.yml is gitignored.
+all:
+  hosts:
+    pfv-data-01:
+      # Public IP for bootstrap. Switch to private when you have a jumpbox or
+      # are running Ansible from inside the VPC (e.g., a doctl one-shot droplet).
+      ansible_host: REPLACE_PUBLIC_IPV4
+      ansible_user: root
+      ansible_python_interpreter: /usr/bin/python3
+      # Made available to roles for binding MySQL/Redis to the VPC interface.
+      private_ipv4: REPLACE_PRIVATE_IPV4
+  vars:
+    vpc_ip_range: 10.42.0.0/24
+    mysql_app_db: pfv2
+    mysql_app_user: pfv_app
+    # Generate a strong password and (recommended) store via ansible-vault.
+    mysql_app_password: REPLACE_OR_USE_VAULT
+    # Backup user used by nightly mysqldump cron and the migration runbook.
+    # root@localhost is intentionally left on Ubuntu's default socket-auth
+    # plugin (access via `sudo mysql`); we don't manage its password here.
+    mysql_backup_user: pfv_backup
+    mysql_backup_password: REPLACE_OR_USE_VAULT
+    # Generate a strong password and (recommended) store via ansible-vault.
+    redis_password: REPLACE_OR_USE_VAULT

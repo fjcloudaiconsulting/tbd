@@ -1,0 +1,19 @@
+{# Custom overrides loaded from /etc/mysql/mysql.conf.d/. The Ubuntu MySQL #}
+{# package's main config includes this directory by default. #}
+{# bind-address = 0.0.0.0 because MySQL 8 only honours one bind-address; #}
+{# the DO Cloud Firewall + ufw together enforce VPC-only access. #}
+[mysqld]
+bind-address = 0.0.0.0
+default-authentication-plugin = mysql_native_password
+
+max_connections = {{ mysql_max_connections }}
+innodb_buffer_pool_size = {{ mysql_innodb_buffer_pool_size }}
+innodb_log_file_size = {{ mysql_innodb_log_file_size }}
+
+character-set-server = utf8mb4
+collation-server = utf8mb4_0900_ai_ci
+
+# Slow query log helps catch regressions early on a small box.
+slow_query_log = 1
+slow_query_log_file = /var/log/mysql/slow.log
+long_query_time = 2

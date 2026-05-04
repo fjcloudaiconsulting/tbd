@@ -1,0 +1,10 @@
+{# Drop-in override loaded from /etc/redis/redis.conf via include. #}
+{# We don't rewrite the whole config; this file overrides only what matters. #}
+bind 127.0.0.1 {{ private_ipv4 }}
+protected-mode yes
+requirepass {{ redis_password }}
+maxmemory {{ redis_maxmemory }}
+maxmemory-policy {{ redis_maxmemory_policy }}
+# Persistence off: PFV uses Redis only for ephemeral data (rate limits, sessions).
+appendonly no
+save ""

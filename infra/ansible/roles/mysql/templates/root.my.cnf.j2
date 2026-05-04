@@ -1,0 +1,11 @@
+{# /root/.my.cnf — credentials for cron-backed mysqldump.
+   Uses the dedicated `mysql_backup` user (see roles/mysql/tasks/main.yml),
+   not root. root@localhost stays on the default socket-auth plugin and is
+   accessed via `sudo mysql` for ad-hoc maintenance. #}
+[client]
+user = {{ mysql_backup_user }}
+password = "{{ mysql_backup_password }}"
+
+[mysqldump]
+user = {{ mysql_backup_user }}
+password = "{{ mysql_backup_password }}"

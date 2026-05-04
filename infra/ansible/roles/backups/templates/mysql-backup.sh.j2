@@ -1,0 +1,24 @@
+#!/bin/bash
+# pfv MySQL nightly logical backup. Credentials read from /root/.my.cnf,
+# which is templated with the dedicated `mysql_backup` user (NOT root).
+# root@localhost stays on Ubuntu's default socket-auth plugin and is for
+# ad-hoc maintenance via `sudo mysql` only.
+set -euo pipefail
+
+BACKUP_DIR={{ mysql_backup_dir }}
+DB={{ mysql_app_db }}
+DATE=$(date +%Y%m%d-%H%M%S)
+DUMP="${BACKUP_DIR}/${DB}_${DATE}.sql.gz"
+
+mkdir -p "${BACKUP_DIR}"
+
+mysqldump \
+  --single-transaction \
+  --routines \
+  --triggers \
+  --quick \
+  --hex-blob \
+  "${DB}" | gzip > "${DUMP}"
+
+# Retention: keep last {{ mysql_backup_retention_days }} daily backups.
+find "${BACKUP_DIR}" -name "${DB}_*.sql.gz" -mtime +{{ mysql_backup_retention_days }} -delete

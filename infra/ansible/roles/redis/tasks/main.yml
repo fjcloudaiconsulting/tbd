@@ -1,0 +1,38 @@
+---
+- name: Install Redis
+  ansible.builtin.apt:
+    name: redis-server
+    state: present
+
+- name: Ensure /etc/redis/conf.d exists
+  ansible.builtin.file:
+    path: /etc/redis/conf.d
+    state: directory
+    owner: redis
+    group: redis
+    mode: "0750"
+
+- name: Drop pfv Redis config override
+  ansible.builtin.template:
+    src: redis.conf.j2
+    dest: /etc/redis/conf.d/pfv.conf
+    owner: redis
+    group: redis
+    mode: "0640"
+  notify: Restart redis
+
+# Make sure the main /etc/redis/redis.conf actually pulls in our override.
+# The Ubuntu 24.04 redis-server package supports `include` directives.
+- name: Ensure main redis.conf includes our override
+  ansible.builtin.lineinfile:
+    path: /etc/redis/redis.conf
+    line: "include /etc/redis/conf.d/pfv.conf"
+    state: present
+    insertafter: EOF
+  notify: Restart redis
+
+- name: Ensure Redis is started and enabled
+  ansible.builtin.service:
+    name: redis-server
+    state: started
+    enabled: true

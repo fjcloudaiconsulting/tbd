@@ -1,0 +1,13 @@
+# Reference only. Production runs happen in Terraform Cloud (FlamaCorp/pfv);
+# variables are set as workspace variables there. Use this file ONLY for
+# local-CLI runs (e.g., `terraform login` then `terraform plan` from a
+# laptop), and `terraform.tfvars` stays gitignored regardless.
+#
+# do_token     = "dop_v1_REPLACE_ME"
+# ssh_key_name = "your-ssh-key-name-in-do"
+
+# Optional overrides (defaults live in variables.tf):
+# region        = "ams3"
+# droplet_size  = "s-1vcpu-1gb"
+# project_name  = "pfv"
+# vpc_ip_range  = "10.42.0.0/24"

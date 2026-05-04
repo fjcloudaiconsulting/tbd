@@ -1,0 +1,11 @@
+---
+# CIDR allowed to reach MySQL/Redis through ufw. Override per-host in inventory.
+vpc_ip_range: 10.42.0.0/24
+
+# Swap file size. Tiny droplets benefit a lot from a small swap so MySQL+Redis
+# don't OOM-kill each other under transient pressure.
+swap_file_path: /swapfile
+swap_file_size_mb: 1024
+
+# Timezone. UTC keeps logs/cron predictable across regions.
+system_timezone: UTC

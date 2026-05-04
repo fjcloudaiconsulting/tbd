@@ -1,5 +1,16 @@
 name: pfv
 region: ams
+# After running `infra/terraform apply`, set this to
+# `terraform -chdir=infra/terraform output -raw vpc_id` and uncomment.
+# Required for App Platform -> droplet private-IP connectivity once
+# DATABASE_URL / REDIS_URL point at the droplet's 10.42.x.x address.
+# Without it, the app cannot reach the droplet's private interface even
+# if the cloud firewall allows the VPC CIDR.
+# See https://docs.digitalocean.com/products/app-platform/how-to/enable-vpc/
+# Push the spec via `doctl apps update <APP_ID> --spec .do/app.yaml`
+# (NOT via the GH Action — see reference_do_spec_sync.md).
+# vpc:
+#   id: REPLACE_WITH_VPC_UUID_FROM_TERRAFORM
 # Custom domain MUST stay declared here. With `app_spec_location` driving
 # every deploy, anything missing from this file is removed from the live
 # app on push — same failure mode as missing SECRET envs. Stripping the

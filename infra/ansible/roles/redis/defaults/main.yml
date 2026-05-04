@@ -1,0 +1,8 @@
+---
+# Override in inventory.yml; vault-encrypt for real use.
+redis_password: CHANGE_ME
+
+# 200MB cap leaves the rest of RAM to MySQL + OS. Rate-limit + session-cache
+# workloads fit easily here.
+redis_maxmemory: 200mb
+redis_maxmemory_policy: allkeys-lru
