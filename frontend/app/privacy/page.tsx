@@ -78,9 +78,11 @@ export default function PrivacyPolicyPage() {
               </li>
               <li>
                 <strong>Cookies:</strong> an HTTP-only refresh-token cookie
-                to keep you logged in, a theme preference in local storage,
-                and a bot-management cookie set by Cloudflare. We do not use
-                analytics or advertising cookies.
+                to keep you logged in, a short-lived <code>oauth_state</code>{" "}
+                cookie issued during Google sign-in (deleted within 10 minutes
+                of the sign-in flow completing or being cancelled), a theme
+                preference in local storage, and a bot-management cookie set
+                by Cloudflare. We do not use analytics or advertising cookies.
               </li>
             </ul>
           </section>
