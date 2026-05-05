@@ -3,6 +3,8 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
@@ -106,6 +108,101 @@ async def validation_handler(request, exc: ValidationError):
 @app.exception_handler(ConflictError)
 async def conflict_handler(request, exc: ConflictError):
     return JSONResponse(status_code=409, content={"detail": exc.detail})
+
+
+# Field names whose VALUES must never be echoed back in 422 validation
+# errors. FastAPI's default RequestValidationError handler includes the
+# raw input under `detail[i].input` — for body-level errors that's the
+# whole submitted dict, for field-level errors it's just the offending
+# scalar value. Both shapes can leak secrets; both are handled below.
+#
+# Match by exact key name. Adding more names is forward-compatible;
+# removing any is a regression (test_sensitive_field_set_covers_review_required_names).
+_SENSITIVE_FIELD_NAMES = frozenset({
+    "password",
+    "new_password",
+    "current_password",
+    "confirm_password",
+    "token",
+    "refresh_token",
+    "mfa_token",
+    "email_token",
+    "recovery_code",
+    # MFA/TOTP/email-verify/recovery flows all use the bare `code` field
+    # (backend/app/schemas/auth.py: MfaEnableRequest, MfaVerifyRequest,
+    # MfaRecoveryRequest, MfaEmailVerifyRequest). A field-level validation
+    # error on those would echo the submitted code without this entry.
+    # No `country_code` / `currency_code` exists in schemas today, so the
+    # bare match has no false positives.
+    "code",
+})
+
+_REDACTED = "<redacted>"
+
+
+def _redact_sensitive(value):
+    """Walk a JSON-shaped value and replace any dict field whose key
+    matches `_SENSITIVE_FIELD_NAMES` with the literal '<redacted>'.
+
+    Returns a new structure; does not mutate the input. Non-dict, non-
+    list values pass through unchanged — the *caller* is responsible for
+    deciding whether a top-level scalar is sensitive (via `loc`-based
+    redaction in the handler below).
+    """
+    if isinstance(value, dict):
+        return {
+            k: (_REDACTED if k in _SENSITIVE_FIELD_NAMES else _redact_sensitive(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive(v) for v in value]
+    return value
+
+
+def _loc_targets_sensitive_field(loc) -> bool:
+    """True when any element of pydantic's `loc` tuple matches a known
+    sensitive field name. Pydantic field-level errors put the offending
+    value in `input` as a scalar and identify the field through `loc`
+    — e.g. {"loc": ["body", "password"], "input": "short"}. The
+    recursive dict walk in `_redact_sensitive` does not catch this
+    shape, so the handler checks `loc` separately and redacts `input`
+    outright when the path includes a sensitive name.
+    """
+    if not isinstance(loc, (list, tuple)):
+        return False
+    return any(
+        isinstance(part, str) and part in _SENSITIVE_FIELD_NAMES
+        for part in loc
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(request, exc: RequestValidationError):
+    """Sanitize FastAPI's default 422 response so we don't echo
+    submitted passwords / tokens / codes back to the client (and into
+    any 4xx response log capture). Preserves the standard
+    `{detail: [...]}` shape — only `detail[i].input` is sanitized.
+
+    Two shapes get redacted:
+      1. Body-level errors with `input` = the full submitted dict —
+         walked recursively, sensitive keys' values replaced.
+      2. Field-level errors with `input` = the scalar value of the
+         failing field, identified through `loc` (e.g. ["body",
+         "password"]). The whole `input` is replaced with '<redacted>'.
+    """
+    redacted_errors = []
+    for err in exc.errors():
+        new_err = dict(err)
+        if "input" in new_err:
+            if _loc_targets_sensitive_field(new_err.get("loc")):
+                new_err["input"] = _REDACTED
+            else:
+                new_err["input"] = _redact_sensitive(new_err["input"])
+        redacted_errors.append(new_err)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": jsonable_encoder(redacted_errors)},
+    )
 
 
 app.include_router(auth.router)
