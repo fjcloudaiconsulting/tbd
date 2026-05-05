@@ -22,3 +22,19 @@ def require_org_admin(current_user: User = Depends(get_current_user)) -> User:
             detail="Admin or owner role required",
         )
     return current_user
+
+
+def require_org_owner(current_user: User = Depends(get_current_user)) -> User:
+    """Pass when the requester is OWNER within their org. ADMIN/MEMBER → 403.
+
+    Stricter than ``require_org_admin``; reserved for tenant-scoped
+    destructive operations (data reset, ownership transfer, org
+    closure). No platform-superadmin bypass on tenant endpoints —
+    superadmins use the /admin surface with its own audit.
+    """
+    if current_user.role != Role.OWNER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner role required",
+        )
+    return current_user

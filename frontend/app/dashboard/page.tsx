@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -44,6 +45,23 @@ const PAGE_SIZE = 10;
 
 export default function DashboardPage() {
   const { user, loading } = useAuth();
+  const router = useRouter();
+  const [resetBanner, setResetBanner] = useState(false);
+
+  // L3.1: read ?reset=1 left by the data-reset flow, show a one-time
+  // success banner, then strip the param so a refresh doesn't replay it.
+  // Reads window.location instead of useSearchParams() so /dashboard
+  // can stay statically prerenderable in Next 15 — useSearchParams
+  // would force a Suspense boundary or a deopt warning at build time,
+  // and this banner is purely a client-only artifact.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("reset") === "1") {
+      setResetBanner(true);
+      router.replace("/dashboard");
+    }
+  }, [router]);
+
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -357,6 +375,25 @@ export default function DashboardPage() {
           </Link>
         </div>
       </div>
+
+      {resetBanner && (
+        <div
+          data-testid="reset-banner"
+          className="mb-4 flex items-start justify-between gap-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-4"
+        >
+          <div className="text-sm text-text-primary">
+            <strong>Your data has been reset.</strong> Welcome back to a clean slate.
+          </div>
+          <button
+            type="button"
+            onClick={() => setResetBanner(false)}
+            aria-label="Dismiss"
+            className="text-lg leading-none text-text-secondary hover:text-text-primary"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
 

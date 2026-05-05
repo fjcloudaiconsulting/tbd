@@ -17,7 +17,7 @@ from app.models.user import Organization
 from app.services import subscription_service
 from app.logging import setup_logging
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_orgs, auth, budgets, categories, forecast, forecast_plans, import_router, org_members, plans, recurring, settings, subscriptions, transactions, users
+from app.routers import account_types, accounts, admin, admin_orgs, auth, budgets, categories, forecast, forecast_plans, import_router, org_data, org_members, plans, recurring, settings, subscriptions, transactions, users
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 # Setup JSON logging early so uvicorn's loggers are captured
@@ -125,6 +125,7 @@ app.include_router(plans.router)
 app.include_router(admin.router)
 app.include_router(admin_orgs.router)
 app.include_router(org_members.router)
+app.include_router(org_data.router)
 
 
 @app.get("/health")

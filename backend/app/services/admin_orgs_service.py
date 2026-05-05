@@ -16,23 +16,20 @@ from __future__ import annotations
 import datetime
 from typing import Optional
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.account import Account, AccountType
-from app.models.billing import BillingPeriod
+from app.models.account import Account
 from app.models.budget import Budget
-from app.models.category import Category
-from app.models.category_rule import CategoryRule
 from app.models.feature_override import OrgFeatureOverride
-from app.models.forecast_plan import ForecastPlan, ForecastPlanItem
+from app.models.forecast_plan import ForecastPlan
 from app.models.invitation import Invitation
-from app.models.recurring import RecurringTransaction
 from app.models.settings import OrgSetting
 from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.transaction import Transaction
 from app.models.user import Organization, User
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.org_data_service import wipe_org_data
 
 
 def _serialize_subscription(sub: Optional[Subscription], plan: Optional[Plan]) -> dict:
@@ -266,65 +263,15 @@ async def delete_org_cascade(
     if org is None:
         raise NotFoundError("Organization")
 
-    counts: dict[str, int] = {}
+    # Wipe org-scoped data tables via the shared helper. Single source
+    # of truth for the FK-safe wipe order — also used by the tenant
+    # reset path in org_data_service.reset_org_data.
+    counts = await wipe_org_data(db, org_id=org_id)
 
-    # Order matters: delete children before parents.
-    # transactions reference accounts, categories, recurring → first.
-    counts["transactions"] = (
-        await db.execute(delete(Transaction).where(Transaction.org_id == org_id))
-    ).rowcount or 0
-
-    counts["forecast_plan_items"] = (
-        await db.execute(
-            delete(ForecastPlanItem).where(ForecastPlanItem.org_id == org_id)
-        )
-    ).rowcount or 0
-
-    counts["budgets"] = (
-        await db.execute(delete(Budget).where(Budget.org_id == org_id))
-    ).rowcount or 0
+    # Org-shell tables (only the admin path deletes these):
 
     counts["invitations"] = (
         await db.execute(delete(Invitation).where(Invitation.org_id == org_id))
-    ).rowcount or 0
-
-    counts["recurring_transactions"] = (
-        await db.execute(
-            delete(RecurringTransaction).where(RecurringTransaction.org_id == org_id)
-        )
-    ).rowcount or 0
-
-    counts["forecast_plans"] = (
-        await db.execute(delete(ForecastPlan).where(ForecastPlan.org_id == org_id))
-    ).rowcount or 0
-
-    counts["billing_periods"] = (
-        await db.execute(delete(BillingPeriod).where(BillingPeriod.org_id == org_id))
-    ).rowcount or 0
-
-    counts["accounts"] = (
-        await db.execute(delete(Account).where(Account.org_id == org_id))
-    ).rowcount or 0
-
-    counts["account_types"] = (
-        await db.execute(delete(AccountType).where(AccountType.org_id == org_id))
-    ).rowcount or 0
-
-    # category_rules.category_id FKs to categories.id, so it must be
-    # deleted before the bulk DELETE on categories below or MySQL's
-    # strict FK refuses. (merchant_dictionary is shared across orgs
-    # and has no org_id — it must survive org deletion.)
-    counts["category_rules"] = (
-        await db.execute(delete(CategoryRule).where(CategoryRule.org_id == org_id))
-    ).rowcount or 0
-
-    # Categories self-reference via parent_id. Break the link before
-    # the bulk DELETE so MySQL's strict FK doesn't refuse.
-    await db.execute(
-        update(Category).where(Category.org_id == org_id).values(parent_id=None)
-    )
-    counts["categories"] = (
-        await db.execute(delete(Category).where(Category.org_id == org_id))
     ).rowcount or 0
 
     counts["settings"] = (
