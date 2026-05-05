@@ -547,7 +547,28 @@ export default function DashboardPage() {
 
             {/* Forecast */}
             <div className={`${card} p-5`}>
-              <h2 className={`mb-4 ${cardTitle}`}>Forecast</h2>
+              <div className="mb-4 flex items-center gap-2">
+                <h2 className={cardTitle}>Forecast</h2>
+                <details className="group relative">
+                  <summary
+                    aria-label="Explain forecast numbers"
+                    className="flex h-5 w-5 cursor-help items-center justify-center rounded-full border border-border text-[10px] font-semibold text-text-muted hover:border-accent hover:text-accent list-none [&::-webkit-details-marker]:hidden"
+                  >
+                    i
+                  </summary>
+                  <div
+                    role="tooltip"
+                    className="absolute left-0 top-full z-20 mt-2 w-72 rounded-md border border-border bg-surface p-3 text-xs leading-relaxed text-text-secondary shadow-lg"
+                  >
+                    <p>
+                      <strong className="text-text-primary">Planned</strong> is what you set in your forecast plan for this period (the targets you&rsquo;re working against).
+                    </p>
+                    <p className="mt-2">
+                      <strong className="text-text-primary">Actual</strong> is the sum of settled transactions for this period, matched by settlement date. Pending transactions are not counted until they settle.
+                    </p>
+                  </div>
+                </details>
+              </div>
               {forecast ? (() => {
                 const plannedIncome = Number(forecast.total_planned_income);
                 const plannedExpense = Number(forecast.total_planned_expense);
