@@ -58,6 +58,10 @@ jobs:
     needs: deploy
     permissions:
       contents: read
+      # Required by the failure-notification step below to open or
+      # comment on a GitHub issue when the smoke job fails. Scoped to
+      # this job only so the deploy job stays read-only.
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -68,3 +72,14 @@ jobs:
           SMOKE_USERNAME: ${{ secrets.SMOKE_USERNAME }}
           SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
         run: ./scripts/smoke-test.sh
+
+      - name: Notify on smoke failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+        run: ./scripts/notify-smoke-failure.sh
