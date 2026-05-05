@@ -43,3 +43,28 @@ jobs:
           # live app on push (we hit that exact failure mode 2026-04-25,
           # backend crashlooped on a placeholder JWT_SECRET_KEY).
           app_spec_location: .do/app.yaml
+
+  # L0.5 — Post-deploy smoke tests. Runs only after `deploy` succeeds
+  # so a failed deploy never reports as a smoke-test failure (the
+  # `needs: deploy` gate plus our `on: push: branches: [main]` trigger
+  # together guarantee this never runs on PRs or forks).
+  #
+  # Asserts the live app can serve traffic — DO marking the deploy
+  # ACTIVE is necessary but not sufficient. See scripts/smoke-test.sh
+  # for the surface and the smoke-user invariants (must exist, must be
+  # email_verified, must NOT have MFA enabled).
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: deploy
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run smoke tests against production
+        env:
+          SMOKE_BASE_URL: https://app.thebetterdecision.com
+          SMOKE_USERNAME: ${{ secrets.SMOKE_USERNAME }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: ./scripts/smoke-test.sh
