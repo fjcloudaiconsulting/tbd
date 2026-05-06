@@ -1,9 +1,9 @@
 import { NextRequest } from "next/server";
 
-import { middleware } from "@/middleware";
+import { proxy } from "@/proxy";
 
 
-describe("frontend middleware", () => {
+describe("frontend proxy", () => {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
   beforeEach(() => {
@@ -26,7 +26,7 @@ describe("frontend middleware", () => {
       },
     );
 
-    middleware(request);
+    proxy(request);
 
     expect(logSpy).toHaveBeenCalledTimes(1);
     const entry = JSON.parse(logSpy.mock.calls[0][0] as string);
@@ -46,7 +46,7 @@ describe("frontend middleware", () => {
       },
     });
 
-    middleware(request);
+    proxy(request);
 
     const entry = JSON.parse(logSpy.mock.calls[0][0] as string);
     expect(entry.path).toBe("/dashboard");
