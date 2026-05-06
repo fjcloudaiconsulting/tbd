@@ -112,6 +112,16 @@
   --color-sidebar-border: var(--theme-sidebar-border);
   --color-sidebar-muted: var(--theme-sidebar-muted);
 
+  /* Chart palette. Aliases of the themed status + neutral tokens above so
+     theme switches cascade automatically. Brass is intentionally excluded
+     per The One Brass Rule; danger appears only at index 5 for the
+     over-budget state. */
+  --color-chart-1: var(--theme-info);
+  --color-chart-2: var(--theme-success);
+  --color-chart-3: var(--theme-text-secondary);
+  --color-chart-4: var(--theme-text-muted);
+  --color-chart-5: var(--theme-danger);
+
   --font-display: "Fraunces", Georgia, serif;
   --font-body: "Outfit", system-ui, sans-serif;
 }

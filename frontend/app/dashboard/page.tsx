@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -13,6 +13,7 @@ import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pa
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import CategorySelect from "@/components/ui/CategorySelect";
+import OnTrackTile from "@/components/dashboard/OnTrackTile";
 import type { Account, BillingPeriod, Budget, Category, Transaction } from "@/lib/types";
 
 interface ForecastPlanItem {
@@ -39,6 +40,27 @@ interface ForecastPlan {
   total_actual_income: string;
   total_actual_expense: string;
   items: ForecastPlanItem[];
+}
+
+// Shape returned by GET /api/v1/forecast?period_start=...
+// Generated server-side by backend/app/services/forecast_service.py.
+// Only the fields the OnTrackTile reads are typed strictly; the rest
+// (per-category breakdown, individual line items) we leave as unknown
+// because nothing on the dashboard surface uses them today.
+interface ForecastProjection {
+  period_start: string;
+  period_end: string;
+  executed_income: string;
+  executed_expense: string;
+  executed_net: string;
+  pending_income: string;
+  pending_expense: string;
+  recurring_income: string;
+  recurring_expense: string;
+  forecast_income: string;
+  forecast_expense: string;
+  forecast_net: string;
+  categories: unknown[];
 }
 
 const PAGE_SIZE = 10;
@@ -72,6 +94,15 @@ export default function DashboardPage() {
   const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
   const [periodIdx, setPeriodIdx] = useState(0);
   const [forecast, setForecast] = useState<ForecastPlan | null>(null);
+  const [forecastProjection, setForecastProjection] = useState<ForecastProjection | null>(null);
+  const [projectionFailed, setProjectionFailed] = useState(false);
+  const [projectionLoading, setProjectionLoading] = useState(false);
+  // Monotonically-increasing request id for the projection fetch. Used
+  // to discard stale responses when a newer fetch has already started
+  // (e.g. period nav during an in-flight call, or two writes in quick
+  // succession). Only the latest in-flight request is allowed to
+  // commit projection state.
+  const projectionRequestId = useRef(0);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -166,6 +197,48 @@ export default function DashboardPage() {
     setFetching(false);
   }, [monthFrom, monthTo, realPeriodStart]);
 
+  // Loads the forecast projection from /api/v1/forecast for the
+  // currently-selected billing period. Separate from loadTransactions
+  // because (a) failure here should NOT crash the whole dashboard load
+  // — the OnTrackTile renders a "Projection unavailable. Retry" inline
+  // state instead — and (b) the user can retry from the tile without
+  // re-fetching everything else.
+  const loadForecastProjection = useCallback(async () => {
+    if (!realPeriodStart) {
+      // Bump the id so any in-flight request from a previous period
+      // can't commit state after we've cleared it.
+      projectionRequestId.current += 1;
+      setForecastProjection(null);
+      setProjectionFailed(false);
+      setProjectionLoading(false);
+      return;
+    }
+    // Clear stale data synchronously so a period change or a
+    // post-write refetch doesn't render the previous period's
+    // projection while the new one is in flight.
+    const myId = ++projectionRequestId.current;
+    setForecastProjection(null);
+    setProjectionFailed(false);
+    setProjectionLoading(true);
+    try {
+      const projection = await apiFetch<ForecastProjection>(
+        `/api/v1/forecast?period_start=${realPeriodStart}`,
+      );
+      // A newer request has started; this response is stale.
+      if (projectionRequestId.current !== myId) return;
+      setForecastProjection(projection);
+      setProjectionFailed(false);
+    } catch {
+      if (projectionRequestId.current !== myId) return;
+      setForecastProjection(null);
+      setProjectionFailed(true);
+    } finally {
+      if (projectionRequestId.current === myId) {
+        setProjectionLoading(false);
+      }
+    }
+  }, [realPeriodStart]);
+
   useEffect(() => {
     if (!loading && user) {
       // Previously `.catch(() => {})` — any failure here (backend 500,
@@ -197,6 +270,12 @@ export default function DashboardPage() {
       });
     }
   }, [loading, user, loadTransactions, page, realPeriodStart]);
+
+  useEffect(() => {
+    if (!loading && user && realPeriodStart) {
+      void loadForecastProjection();
+    }
+  }, [loading, user, realPeriodStart, loadForecastProjection]);
 
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);
@@ -261,6 +340,11 @@ export default function DashboardPage() {
       setShowForm(false);
       await loadRefs();
       await loadTransactions(0);
+      // The hero verdict is computed from the projection's executed_expense
+      // and forecast_expense. After a write those numbers are stale until
+      // we re-call /api/v1/forecast, otherwise the page's primary answer
+      // ("are we on track?") can be wrong.
+      void loadForecastProjection();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -301,13 +385,6 @@ export default function DashboardPage() {
 
   // Precompute tx map for O(1) linked lookups
   const txMap = new Map(allTransactions.map((tx) => [tx.id, tx]));
-
-  // Totals from ALL period transactions (not just the paginated page).
-  // Transfer halves are persisted as type=income/expense with a non-null
-  // linked_transaction_id pointing at the counterpart; exclude them so
-  // internal transfers don't inflate either the income or expense tile.
-  const totalIncome = allTransactions.filter((tx) => tx.type === "income" && tx.status === "settled" && tx.linked_transaction_id == null).reduce((s, tx) => s + Number(tx.amount), 0);
-  const totalExpense = allTransactions.filter((tx) => tx.type === "expense" && tx.status === "settled" && tx.linked_transaction_id == null).reduce((s, tx) => s + Number(tx.amount), 0);
 
   // Pending totals per account from all period transactions
   const pendingByAccount = allTransactions
@@ -358,7 +435,13 @@ export default function DashboardPage() {
       return dashSortDir === "asc" ? cmp : -cmp;
     });
 
-  const CHART_COLORS = ["#D4A64A", "#5FA8D3", "#4ade80", "#f87171", "#a78bfa", "#fb923c", "#38bdf8", "#e879f9", "#34d399", "#fbbf24"];
+  const CHART_COLORS = [
+    "var(--color-chart-1)",
+    "var(--color-chart-2)",
+    "var(--color-chart-3)",
+    "var(--color-chart-4)",
+    "var(--color-chart-5)",
+  ];
 
   return (
     <AppShell>
@@ -379,7 +462,7 @@ export default function DashboardPage() {
       {resetBanner && (
         <div
           data-testid="reset-banner"
-          className="mb-4 flex items-start justify-between gap-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-4"
+          className="mb-4 flex items-start justify-between gap-3 rounded-md border border-success/40 bg-success-dim p-4"
         >
           <div className="text-sm text-text-primary">
             <strong>Your data has been reset.</strong> Welcome back to a clean slate.
@@ -407,8 +490,8 @@ export default function DashboardPage() {
               <div className="mb-4 flex items-center gap-4">
                 <h2 className={cardTitle}>{formMode === "transfer" ? "Quick Transfer" : "Quick Add"}</h2>
                 <div className="flex rounded-md border border-border text-xs">
-                  <button type="button" onClick={() => setFormMode("transaction")} className={`px-3 py-1 rounded-l-md ${formMode === "transaction" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transaction</button>
-                  <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
+                  <button type="button" onClick={() => setFormMode("transaction")} className={`px-3 py-1 rounded-l-md ${formMode === "transaction" ? "bg-surface-overlay text-text-primary" : "text-text-muted hover:bg-surface-raised"}`}>Transaction</button>
+                  <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-surface-overlay text-text-primary" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
                 </div>
               </div>
               <form onSubmit={handleQuickAdd} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -519,102 +602,19 @@ export default function DashboardPage() {
                 <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised">Today</button>
               )}
             </div>
-            <Link href="/transactions" className="text-xs text-accent hover:text-accent-hover">View All Transactions</Link>
+            <Link href="/transactions" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">View All Transactions</Link>
           </div>
 
-          {/* ═══ ROW 1: Executed | Forecast — two symmetric columns ═══ */}
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {/* Executed */}
-            <div className={`${card} p-5`}>
-              <h2 className={`mb-4 ${cardTitle}`}>Executed</h2>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income</p>
-                  <p className="mt-1 text-xl font-semibold tabular-nums text-success">+{formatAmount(totalIncome)}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses</p>
-                  <p className="mt-1 text-xl font-semibold tabular-nums text-danger">-{formatAmount(totalExpense)}</p>
-                </div>
-              </div>
-              <div className="mt-4 pt-3 border-t border-border-subtle">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Net</p>
-                <p className={`mt-1 font-display text-2xl tabular-nums ${totalIncome - totalExpense >= 0 ? "text-accent" : "text-danger"}`}>
-                  {totalIncome - totalExpense >= 0 ? "+" : ""}{formatAmount(totalIncome - totalExpense)}
-                </p>
-              </div>
-            </div>
-
-            {/* Forecast */}
-            <div className={`${card} p-5`}>
-              <div className="mb-4 flex items-center gap-2">
-                <h2 className={cardTitle}>Forecast</h2>
-                <details className="group relative">
-                  <summary
-                    aria-label="Explain forecast numbers"
-                    className="flex h-5 w-5 cursor-help items-center justify-center rounded-full border border-border text-[10px] font-semibold text-text-muted hover:border-accent hover:text-accent list-none [&::-webkit-details-marker]:hidden"
-                  >
-                    i
-                  </summary>
-                  <div
-                    role="tooltip"
-                    className="absolute left-0 top-full z-20 mt-2 w-72 rounded-md border border-border bg-surface p-3 text-xs leading-relaxed text-text-secondary shadow-lg"
-                  >
-                    <p>
-                      <strong className="text-text-primary">Planned</strong> is what you set in your forecast plan for this period (the targets you&rsquo;re working against).
-                    </p>
-                    <p className="mt-2">
-                      <strong className="text-text-primary">Actual</strong> is the sum of settled transactions for this period, matched by settlement date. Pending transactions are not counted until they settle.
-                    </p>
-                  </div>
-                </details>
-              </div>
-              {forecast ? (() => {
-                const plannedIncome = Number(forecast.total_planned_income);
-                const plannedExpense = Number(forecast.total_planned_expense);
-                const actualIncome = Number(forecast.total_actual_income);
-                const actualExpense = Number(forecast.total_actual_expense);
-                const plannedNet = plannedIncome - plannedExpense;
-                return (
-                  <>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Income (planned)</p>
-                        <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(plannedIncome)}</p>
-                        {actualIncome > 0 && <p className="text-[10px] text-text-muted">{formatAmount(actualIncome)} actual</p>}
-                      </div>
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Expenses (planned)</p>
-                        <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(plannedExpense)}</p>
-                        {actualExpense > 0 && <p className="text-[10px] text-text-muted">{formatAmount(actualExpense)} actual</p>}
-                      </div>
-                    </div>
-                    <div className="mt-4 pt-3 border-t border-border-subtle">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Planned Net</p>
-                      <p className={`mt-1 font-display text-2xl tabular-nums ${plannedNet >= 0 ? "text-accent" : "text-danger"}`}>
-                        {plannedNet >= 0 ? "+" : ""}{formatAmount(plannedNet)}
-                      </p>
-                    </div>
-                  </>
-                );
-              })() : (
-                <div className="py-4 text-center">
-                  {isPastSelectedPeriod ? (
-                    <p className="text-sm text-text-muted">No forecast was set for this period.</p>
-                  ) : (
-                    <>
-                      <p className="text-sm text-text-muted mb-2">
-                        {isFutureSelectedPeriod ? "No forecast for this future period." : "No forecast for this period."}
-                      </p>
-                      <Link href="/forecast-plans" className="text-sm text-accent hover:text-accent-hover">
-                        {isFutureSelectedPeriod ? "Plan ahead →" : "Set one up →"}
-                      </Link>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
+          {/* ═══ ROW 1: On Track hero — single full-width tile ═══ */}
+          <OnTrackTile
+            forecastPlan={forecast}
+            projection={forecastProjection}
+            projectionFailed={projectionFailed}
+            projectionLoading={projectionLoading}
+            onRetryProjection={() => void loadForecastProjection()}
+            isPastPeriod={isPastSelectedPeriod}
+            isFuturePeriod={isFutureSelectedPeriod}
+          />
 
           {/* ═══ ROW 2: Accounts — single row, primary slightly bigger ═══ */}
           {accountsWithBalance.length > 0 && (() => {
@@ -626,8 +626,8 @@ export default function DashboardPage() {
                 {defaultAcct && (
                   <div className={`${card} px-5 py-3 sm:shrink-0 sm:min-w-[220px]`}>
                     <div className="flex items-center gap-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-accent">{defaultAcct.name}</p>
-                      <span className="rounded bg-accent-dim px-1.5 py-0.5 text-[9px] font-semibold text-accent">PRIMARY</span>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-primary">{defaultAcct.name}</p>
+                      <span className="rounded border border-border px-1.5 py-0.5 text-[9px] font-semibold text-text-secondary">PRIMARY</span>
                     </div>
                     <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(defaultAcct.balance)} <span className="text-xs text-text-muted">{defaultAcct.currency}</span></p>
                     {pendingByAccount[defaultAcct.id] !== undefined && pendingByAccount[defaultAcct.id] !== 0 && (
@@ -659,7 +659,7 @@ export default function DashboardPage() {
             <div className={`${card} p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
               {chartFilter && (
-                <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-accent-dim px-2.5 py-1 text-xs text-accent hover:bg-accent/20">
+                <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised">
                   Filtering: {chartFilter} &times;
                 </button>
               )}
@@ -688,7 +688,7 @@ export default function DashboardPage() {
                   <div className="w-full space-y-1.5 sm:flex-1">
                     {donutData.slice(0, 10).map((d, i) => (
                       <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
-                        className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-accent-dim" : ""}`}>
+                        className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-surface-overlay" : ""}`}>
                         <div className="flex items-center gap-2">
                           <div className="h-2.5 w-2.5 rounded-full" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
                           <span className="text-xs text-text-secondary">{d.name}</span>
@@ -710,7 +710,7 @@ export default function DashboardPage() {
             <div className={`${card} overflow-hidden`}>
               <div className={`flex items-center justify-between ${cardHeader}`}>
                 <h2 className={cardTitle}>Budget Progress</h2>
-                <Link href="/budgets" className="text-xs text-accent hover:text-accent-hover">Manage</Link>
+                <Link href="/budgets" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">Manage</Link>
               </div>
               {budgets.length > 0 ? (
                 <>
@@ -723,11 +723,11 @@ export default function DashboardPage() {
                       pct: b.percent_used,
                     }))} layout="vertical" margin={{ left: 0, right: 20, top: 0, bottom: 0 }}>
                       <XAxis type="number" hide />
-                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
+                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
                       <Tooltip
                         formatter={(v, name) => [
                           formatAmount(Number(v)),
-                          name === "spent" ? <span style={{ color: "#f87171" }}>Spent</span> : <span style={{ color: "#4ade80" }}>Remaining</span>,
+                          name === "spent" ? <span style={{ color: "var(--color-chart-5)" }}>Spent</span> : <span style={{ color: "var(--color-chart-2)" }}>Remaining</span>,
                         ]}
                         contentStyle={{ fontSize: "11px" }}
                       />
@@ -739,18 +739,18 @@ export default function DashboardPage() {
                         }}
                       >
                         {budgets.slice(0, 6).map((b, i) => (
-                          <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
+                          <Cell key={i} fill={b.percent_used > 100 ? "var(--color-chart-5)" : b.percent_used > 80 ? "var(--color-chart-4)" : "var(--color-chart-1)"} />
                         ))}
                       </Bar>
-                      <Bar dataKey="remaining" stackId="a" fill="#e8ebf0" radius={[0, 4, 4, 0]} animationDuration={600} />
+                      <Bar dataKey="remaining" stackId="a" fill="var(--color-border)" radius={[0, 4, 4, 0]} animationDuration={600} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
                 <div className="flex flex-wrap gap-3 px-4 pb-3 text-[10px] text-text-muted">
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Spent</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f59e0b" }} /> &gt;80%</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over budget</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#e8ebf0" }} /> Remaining</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-1)" }} /> Spent</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-4)" }} /> &gt;80%</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-5)" }} /> Over budget</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-border)" }} /> Remaining</span>
                 </div>
                 </>
               ) : (
@@ -758,8 +758,8 @@ export default function DashboardPage() {
                   {isPastSelectedPeriod
                     ? <>No budgets were set for this period.</>
                     : isFutureSelectedPeriod
-                      ? <>Future budgets live in Forecasts. <Link href="/forecast-plans" className="text-accent">Plan ahead →</Link></>
-                      : <>No budgets for this period. <Link href="/budgets" className="text-accent">Add one</Link></>
+                      ? <>Future budgets live in Forecasts. <Link href="/forecast-plans" className="text-text-primary underline underline-offset-2 hover:text-text-secondary">Plan ahead →</Link></>
+                      : <>No budgets for this period. <Link href="/budgets" className="text-text-primary underline underline-offset-2 hover:text-text-secondary">Add one</Link></>
                   }
                 </div>
               )}
@@ -788,20 +788,20 @@ export default function DashboardPage() {
                           <Tooltip
                             formatter={(v, name) => [
                               formatAmount(Number(v)),
-                              name === "planned" ? <span style={{ color: "#D4A64A" }}>Planned</span> : <span style={{ color: "#4ade80" }}>Actual</span>,
+                              name === "planned" ? <span style={{ color: "var(--color-chart-1)" }}>Planned</span> : <span style={{ color: "var(--color-chart-2)" }}>Actual</span>,
                             ]}
                             contentStyle={{ fontSize: "11px" }}
                           />
-                          <Bar dataKey="planned" fill="#D4A64A" radius={[4, 4, 4, 4]} animationDuration={600}
+                          <Bar dataKey="planned" fill="var(--color-chart-1)" radius={[4, 4, 4, 4]} animationDuration={600}
                             cursor="pointer"
                             onClick={(_, idx) => {
                               const name = expenseItems[idx]?.category_name;
                               if (name) setChartFilter(chartFilter === name ? null : name);
                             }}
                           />
-                          <Bar dataKey="actual" fill="#4ade80" radius={[4, 4, 4, 4]} animationDuration={600}>
+                          <Bar dataKey="actual" fill="var(--color-chart-2)" radius={[4, 4, 4, 4]} animationDuration={600}>
                             {expenseItems.slice(0, 8).map((it, i) => (
-                              <Cell key={i} fill={Number(it.actual_amount) > Number(it.planned_amount) ? "#f87171" : "#4ade80"} />
+                              <Cell key={i} fill={Number(it.actual_amount) > Number(it.planned_amount) ? "var(--color-chart-5)" : "var(--color-chart-2)"} />
                             ))}
                           </Bar>
                         </BarChart>
@@ -814,16 +814,16 @@ export default function DashboardPage() {
                     {isPastSelectedPeriod
                       ? <>No forecast was set for this period.</>
                       : isFutureSelectedPeriod
-                        ? <>No forecast for this future period. <Link href="/forecast-plans" className="text-accent">Plan ahead</Link>.</>
-                        : <>No forecast for this period. <Link href="/forecast-plans" className="text-accent">Set one up</Link>.</>
+                        ? <>No forecast for this future period. <Link href="/forecast-plans" className="text-text-primary underline underline-offset-2 hover:text-text-secondary">Plan ahead</Link>.</>
+                        : <>No forecast for this period. <Link href="/forecast-plans" className="text-text-primary underline underline-offset-2 hover:text-text-secondary">Set one up</Link>.</>
                     }
                   </p>
                 );
               })()}
               <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Planned</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#4ade80" }} /> Under plan</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-1)" }} /> Planned</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-2)" }} /> Under plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-5)" }} /> Over plan</span>
               </div>
             </div>
           </div>
@@ -858,11 +858,11 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-sm font-medium tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
+                      <span className={`text-sm font-medium tabular-nums ${isTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                         {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                       </span>
                       {!isTransfer && (
-                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); await loadRefs(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); await loadRefs(); void loadForecastProjection(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
                           {tx.status}
                         </button>
                       )}
@@ -889,7 +889,7 @@ export default function DashboardPage() {
             <div className={`${card} p-10 text-center`}>
               <p className="text-text-secondary">No accounts yet.</p>
               <p className="mt-2 text-sm text-text-muted">
-                Go to <Link href="/accounts" className="text-accent hover:text-accent-hover">Accounts</Link> to get started.
+                Go to <Link href="/accounts" className="text-text-primary underline underline-offset-2 hover:text-text-secondary">Accounts</Link> to get started.
               </p>
             </div>
           )}

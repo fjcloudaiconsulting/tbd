@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-06T09:30:00Z",
+  "title": "Design System: The Better Decision",
+  "extensions": {
+    "colorMeta": {
+      "bg":              { "role": "neutral", "displayName": "Night Navy",      "canonical": "oklch(11% 0.02 257)", "tonalRamp": ["#03060c","#050a14","#070d18","#0a1322","#0e1a2e","#122340","#162d52","#1c3866"] },
+      "surface":         { "role": "neutral", "displayName": "Ledger Navy",     "canonical": "oklch(20% 0.04 257)", "tonalRamp": ["#070d18","#0a1422","#0B1F3A","#0f2748","#122d54","#163660","#1a3e6d","#1f487b"] },
+      "surface-raised":  { "role": "neutral", "displayName": "Raised Navy",     "canonical": "oklch(25% 0.05 257)", "tonalRamp": ["#0a1422","#0e1a2c","#122a4a","#16335a","#1a3b69","#1e4378","#234d8a","#2a5a9d"] },
+      "surface-overlay": { "role": "neutral", "displayName": "Overlay Navy",    "canonical": "oklch(28% 0.05 257)", "tonalRamp": ["#0e1a2c","#122340","#163157","#1a3a66","#1e4275","#234b85","#285595","#3163a8"] },
+      "border":          { "role": "neutral", "displayName": "Hairline",        "canonical": "oklch(30% 0.05 257)", "tonalRamp": ["#0e1a2c","#122a4a","#1a3560","#234070","#2c4b80","#365690","#406ba1","#4d7eb6"] },
+      "text-primary":    { "role": "neutral", "displayName": "Paper White",     "canonical": "oklch(92% 0.01 257)", "tonalRamp": ["#3d4f68","#5a6a82","#7a8da6","#9ba8bd","#bfcad6","#d6dde6","#E6EAF0","#f4f6f9"] },
+      "text-secondary":  { "role": "neutral", "displayName": "Mist",            "canonical": "oklch(70% 0.02 250)" },
+      "text-muted":      { "role": "neutral", "displayName": "Fog",             "canonical": "oklch(48% 0.03 250)" },
+      "accent":          { "role": "primary", "displayName": "Brass Tally",     "canonical": "oklch(74% 0.13 80)",  "tonalRamp": ["#3d2f12","#5e481b","#7a5d24","#946f2c","#B88A2E","#c89a3b","#D4A64A","#e3bb73"] },
+      "accent-hover":    { "role": "primary", "displayName": "Aged Brass",      "canonical": "oklch(63% 0.12 75)" },
+      "accent-text":     { "role": "primary", "displayName": "Brass Ink",       "canonical": "oklch(20% 0.04 257)" },
+      "danger":          { "role": "status",  "displayName": "Overdue Coral",   "canonical": "oklch(70% 0.18 22)" },
+      "success":         { "role": "status",  "displayName": "Settled Green",   "canonical": "oklch(78% 0.20 145)" },
+      "info":            { "role": "status",  "displayName": "Reference Blue",  "canonical": "oklch(70% 0.10 230)" },
+      "sidebar-bg":      { "role": "neutral", "displayName": "Sidebar Navy",    "canonical": "oklch(8% 0.02 257)" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Editorial Display", "purpose": "Page titles and one or two emphasis moments per route. Fraunces, an opsz-aware editorial serif. Reserved by The Display-Is-A-Deposit Rule." },
+      "body":    { "displayName": "Workhorse Body",    "purpose": "Default for all UI elements: tables, controls, descriptions, status copy. Outfit, a clean geometric sans. 220+ occurrences in the codebase." },
+      "label":   { "displayName": "Category Label",    "purpose": "Form field labels and card titles. Uppercase Outfit at 12px with 0.08em tracking. Signals 'this is metadata, the content below is the value'." }
+    },
+    "shadows": [
+      { "name": "dropdown",     "value": "0 10px 15px -3px rgb(0 0 0 / 0.3), 0 4px 6px -4px rgb(0 0 0 / 0.3)", "purpose": "Floating menus, popovers, comboboxes. State-only." },
+      { "name": "modal",        "value": "0 25px 50px -12px rgb(0 0 0 / 0.5)",                                "purpose": "Modal dialogs over a backdrop. State-only." },
+      { "name": "toast",        "value": "0 1px 2px 0 rgb(0 0 0 / 0.2)",                                      "purpose": "Lightweight floating notifications." }
+    ],
+    "motion": [
+      { "name": "color-fade",   "value": "background-color 0.2s ease, color 0.2s ease",     "purpose": "Body theme transition; minimal and unobtrusive." },
+      { "name": "interactive",  "value": "all 0.15s ease",                                   "purpose": "Default for links and buttons. Quiet feedback, not choreographed." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px",  "purpose": "Phone landscape and up; switches form buttons from full-width to content-width." },
+      { "name": "md", "value": "768px",  "purpose": "Tablet portrait." },
+      { "name": "lg", "value": "1024px", "purpose": "Desktop; sidebar becomes always-visible." },
+      { "name": "xl", "value": "1280px", "purpose": "Wide desktop; data tables show optional columns." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single primary action on a view. Brass Tally on Ledger Navy — the only place the accent earns full saturation.",
+      "html": "<button class=\"ds-btn-primary\">Save changes</button>",
+      "css": ".ds-btn-primary { background: #D4A64A; color: #0B1F3A; padding: 8px 16px; border: none; border-radius: 8px; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s ease; } .ds-btn-primary:hover { background: #B88A2E; } .ds-btn-primary:focus-visible { outline: 2px solid #D4A64A; outline-offset: 2px; } .ds-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "The cancel or escape pair to the primary. Bordered, transparent, restrained.",
+      "html": "<button class=\"ds-btn-secondary\">Cancel</button>",
+      "css": ".ds-btn-secondary { background: transparent; color: #E6EAF0; padding: 8px 16px; border: 1px solid #1a3560; border-radius: 8px; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background-color 0.15s ease; } .ds-btn-secondary:hover { background: #122a4a; } .ds-btn-secondary:focus-visible { outline: 2px solid #D4A64A; outline-offset: 2px; }"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Form field inset into a card. The brass focus ring doubles as the AA-required focus indicator.",
+      "html": "<div><label class=\"ds-label\">Account name</label><input class=\"ds-input\" placeholder=\"e.g. ING Joint Account\" /></div>",
+      "css": ".ds-input { width: 100%; background: #122a4a; color: #E6EAF0; padding: 8px 12px; border: 1px solid #1a3560; border-radius: 8px; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.875rem; transition: border-color 0.15s ease, box-shadow 0.15s ease; } .ds-input::placeholder { color: #5a6a82; } .ds-input:focus { outline: none; border-color: #D4A64A; box-shadow: 0 0 0 2px rgba(212, 166, 74, 0.3); } .ds-label { display: block; margin-bottom: 6px; color: #5a6a82; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "The default container. Flat at rest, bordered, no shadow. Surface tone alone provides hierarchy.",
+      "html": "<article class=\"ds-card\"><header class=\"ds-card-header\"><span class=\"ds-card-title\">May Forecast</span></header><div class=\"ds-card-body\"><div class=\"ds-amount\">€9,931.04</div><div class=\"ds-meta\">Projected end of month</div></div></article>",
+      "css": ".ds-card { background: #0B1F3A; color: #E6EAF0; border: 1px solid #1a3560; border-radius: 12px; overflow: hidden; } .ds-card-header { padding: 16px 24px; border-bottom: 1px solid #1a3560; } .ds-card-title { color: #5a6a82; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; } .ds-card-body { padding: 16px 24px; } .ds-amount { font-family: 'Outfit', system-ui, sans-serif; font-size: 2rem; font-weight: 500; color: #E6EAF0; line-height: 1.1; } .ds-meta { margin-top: 4px; color: #9ba8bd; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; }"
+    },
+    {
+      "name": "Sidebar Item (Active)",
+      "kind": "nav",
+      "refersTo": "sidebar-item",
+      "description": "Active navigation row. Brass tint background and brass label, brass icon via currentColor inheritance.",
+      "html": "<a class=\"ds-nav-item ds-nav-item--active\" href=\"#\"><svg class=\"ds-nav-icon\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25a2.25 2.25 0 0 1-2.25-2.25v-2.25Z\"/></svg><span>Dashboard</span></a>",
+      "css": ".ds-nav-item { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 8px; color: #7a8da6; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.875rem; text-decoration: none; transition: all 0.15s ease; } .ds-nav-item:hover { background: rgba(212, 166, 74, 0.06); color: #E6EAF0; } .ds-nav-item--active { background: rgba(212, 166, 74, 0.12); color: #D4A64A; } .ds-nav-icon { width: 18px; height: 18px; }"
+    },
+    {
+      "name": "Status Badge (Settled)",
+      "kind": "chip",
+      "refersTo": "badge-success",
+      "description": "Status indicator paired with a label. Color alone never conveys state.",
+      "html": "<span class=\"ds-badge ds-badge--success\"><svg class=\"ds-badge-icon\" viewBox=\"0 0 20 20\" fill=\"currentColor\"><path fill-rule=\"evenodd\" d=\"M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm3.707-9.293a1 1 0 0 0-1.414-1.414L9 10.586 7.707 9.293a1 1 0 0 0-1.414 1.414l2 2a1 1 0 0 0 1.414 0l4-4Z\" clip-rule=\"evenodd\"/></svg><span>Settled</span></span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 9999px; font-family: 'Outfit', system-ui, sans-serif; font-size: 0.75rem; font-weight: 500; line-height: 1; } .ds-badge--success { background: rgba(74, 222, 128, 0.12); color: #4ade80; } .ds-badge-icon { width: 12px; height: 12px; flex-shrink: 0; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Household Ledger",
+    "overview": "A premium financial ledger reimagined for the screen. The system descends from the user's monthly Google Sheet — line-item budgets, per-account separation, executed-vs-forecast totals — but rejects every spreadsheet visual cue (gridlines, uniform rows, no hierarchy). The aesthetic is editorial: a serif display face, a calm dark-navy field, and a single brass accent that earns its place. It is meant to feel like a kept book, not a control panel.\n\nTwo registers must coexist without friction: a solo user planning ahead at 11pm on a Tuesday, and a couple reviewing the month over a Saturday coffee. Neither should feel patronized by friendly illustration, nor cornered by corporate stiffness. Numbers, dates, and statuses are the heroes; chrome serves them.\n\nWhat this system explicitly rejects: the bank-app idiom (heavy navy-and-white corporate chrome, paternalistic copy, big circular avatar greetings) and the spreadsheet skin (gridlines as hierarchy, identical rows, no weight contrast). The Better Decision is a planning tool that happens to handle money, not a transactional account viewer.",
+    "keyCharacteristics": [
+      "Editorial-confident, not corporate-formal",
+      "Tonal depth, not shadow-heavy",
+      "Single accent, used rarely",
+      "Numbers-first typography",
+      "Calm at rest, expressive on state",
+      "Dark default, light theme available and equally considered"
+    ],
+    "rules": [
+      { "name": "The One Brass Rule",            "section": "colors",     "body": "The accent appears at most twice on any screen, and ideally once. Its rarity is the point." },
+      { "name": "The Sidebar-Always-Navy Rule",  "section": "colors",     "body": "The product chrome stays the brand's deepest navy in both themes. Light theme adapts the data canvas, not the navigation frame." },
+      { "name": "The No Off-Token Rule",         "section": "colors",     "body": "Every color used in the app must come from the theme tokens in globals.css. Raw Tailwind palette colors are forbidden." },
+      { "name": "The Display-Is-A-Deposit Rule", "section": "typography", "body": "Fraunces is reserved for page titles and one or two emphasis moments per route. A deposit you can spend once or twice; spending it three times over-counts." },
+      { "name": "The Number Voice Rule",         "section": "typography", "body": "Currency, dates, and decimal amounts always use Body (Outfit), never Display. Numbers in a serif read as branding; in a clean sans they read as data." },
+      { "name": "The Body-Is-Sm Rule",           "section": "typography", "body": "The default body size is text-sm (14px), not text-base. Tables and dense data benefit from the tighter scale." },
+      { "name": "The Tonal Depth Rule",          "section": "elevation",  "body": "Depth comes from surface / surface-raised / surface-overlay. Reach for a darker or lighter surface variant before reaching for a shadow." },
+      { "name": "The State-Only Shadow Rule",    "section": "elevation",  "body": "Shadows mark transient state, not permanent hierarchy. A card with shadow at rest is wrong." },
+      { "name": "The Composed-Utility Rule",     "section": "components", "body": "Component primitives are exported strings in lib/styles.ts, not React components. New primitives go there; ad-hoc Tailwind that duplicates an existing primitive is wrong." },
+      { "name": "The Pressable-Surfaces Rule",   "section": "components", "body": "Anything pressable has a visible focus state using Brass Tally. Default browser focus rings are forbidden." }
+    ],
+    "dos": [
+      "Do use theme tokens (bg-surface, text-text-primary, border-border) for every color; raw Tailwind palette utilities are forbidden.",
+      "Do lead with Body (Outfit) for any UI element that displays a number, date, or status.",
+      "Do reserve Brass Tally for primary CTAs, focus states, and the active sidebar item.",
+      "Do prefer surface-tone changes over shadows for elevation at rest.",
+      "Do import primitives from lib/styles.ts (btnPrimary, btnSecondary, card, input, label).",
+      "Do include min-h-[44px] on any pressable affordance whose parent is touch-likely.",
+      "Do keep the sidebar navy in both themes.",
+      "Do pair color-coded status with a label, icon, or shape — never color alone."
+    ],
+    "donts": [
+      "Don't look like a bank app. No heavy navy-and-white corporate chrome on the data surfaces, no paternalistic copy, no big circular avatar greeting.",
+      "Don't look like a spreadsheet skin. Hierarchy comes from typography, color, spacing, and grouping — not gridlines and uniform rows.",
+      "Don't use border-left or border-right greater than 1px as a colored accent stripe.",
+      "Don't wrap text in a gradient. Use a single solid color. Emphasis through weight or scale.",
+      "Don't put box-shadow on a card at rest. Shadows are state, not decoration.",
+      "Don't use Fraunces for numbers, currency, or status text.",
+      "Don't introduce a new accent. The system has one.",
+      "Don't use raw Tailwind palette colors (amber-500, slate-700, gray-200).",
+      "Don't rely on color alone to convey state.",
+      "Don't put a shadow on the sidebar to separate it from the content."
+    ]
+  }
+}
