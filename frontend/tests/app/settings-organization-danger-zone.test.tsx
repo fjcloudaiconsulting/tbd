@@ -108,7 +108,7 @@ describe("OrganizationSettingsPage — Danger Zone", () => {
     render(<OrganizationSettingsPage />);
     await waitFor(() => expect(screen.getByText(/Danger zone/i)).toBeInTheDocument());
 
-    const button = screen.getByRole("button", { name: /reset my data/i }) as HTMLButtonElement;
+    const button = screen.getByRole("button", { name: /reset organization data permanently/i }) as HTMLButtonElement;
     const input = screen.getByLabelText(/confirm reset phrase/i);
 
     expect(button.disabled).toBe(true);
@@ -141,7 +141,7 @@ describe("OrganizationSettingsPage — Danger Zone", () => {
 
     const input = screen.getByLabelText(/confirm reset phrase/i);
     fireEvent.change(input, { target: { value: `RESET ${ORG_NAME}` } });
-    fireEvent.click(screen.getByRole("button", { name: /reset my data/i }));
+    fireEvent.click(screen.getByRole("button", { name: /reset organization data permanently/i }));
 
     await waitFor(() => {
       const call = vi.mocked(apiFetch).mock.calls.find(
@@ -164,7 +164,7 @@ describe("OrganizationSettingsPage — Danger Zone", () => {
 
     const input = screen.getByLabelText(/confirm reset phrase/i);
     fireEvent.change(input, { target: { value: `RESET ${ORG_NAME}` } });
-    fireEvent.click(screen.getByRole("button", { name: /reset my data/i }));
+    fireEvent.click(screen.getByRole("button", { name: /reset organization data permanently/i }));
 
     await waitFor(() => expect(vi.mocked(mutate)).toHaveBeenCalled());
     // Match-all matcher (function predicate), undefined value (clear),
@@ -179,5 +179,52 @@ describe("OrganizationSettingsPage — Danger Zone", () => {
     const mutateOrder = vi.mocked(mutate).mock.invocationCallOrder[0];
     const pushOrder = pushMock.mock.invocationCallOrder[0];
     expect(mutateOrder).toBeLessThan(pushOrder);
+  });
+
+  it("shows a spinner + 'Resetting organization data...' while the POST is in flight", async () => {
+    mockUser("owner");
+    // Hold the POST open so we can assert the in-flight UI. Wire up
+    // the same baseline fixtures the other tests use, then override
+    // /orgs/data/reset to be deferred.
+    let resolveReset!: (v: unknown) => void;
+    const resetPromise = new Promise((r) => {
+      resolveReset = r;
+    });
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/orgs/data/reset" && init?.method === "POST")
+        return resetPromise as never;
+      if (url === "/api/v1/settings/billing-cycle")
+        return Promise.resolve({ billing_cycle_day: 1 });
+      if (url === "/api/v1/settings/billing-period")
+        return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
+      if (url === "/api/v1/settings") return Promise.resolve([]);
+      if (url === "/api/v1/orgs/members") return Promise.resolve([]);
+      if (url === "/api/v1/orgs/invitations") return Promise.resolve([]);
+      if (url === "/api/v1/category-rules") return Promise.resolve([]);
+      return Promise.resolve({});
+    }) as never);
+    render(<OrganizationSettingsPage />);
+    await waitFor(() => expect(screen.getByText(/Danger zone/i)).toBeInTheDocument());
+
+    const input = screen.getByLabelText(/confirm reset phrase/i);
+    fireEvent.change(input, { target: { value: `RESET ${ORG_NAME}` } });
+    const button = screen.getByRole("button", { name: /reset organization data permanently/i });
+    fireEvent.click(button);
+
+    // In-flight: button copy switches to "Resetting organization data..."
+    // and a spinner svg appears next to it.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /resetting organization data/i })).toBeInTheDocument(),
+    );
+    const spinningButton = screen.getByRole("button", { name: /resetting organization data/i });
+    // The spinner is a Loader2 lucide icon with the animate-spin class.
+    const spinner = spinningButton.querySelector("svg");
+    expect(spinner).not.toBeNull();
+    expect(spinner?.classList.contains("animate-spin")).toBe(true);
+    // Button is disabled while the POST is in flight.
+    expect((spinningButton as HTMLButtonElement).disabled).toBe(true);
+
+    // Resolve the POST so the test cleans up.
+    resolveReset({});
   });
 });

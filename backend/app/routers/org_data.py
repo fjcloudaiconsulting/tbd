@@ -46,9 +46,14 @@ async def reset_org_data(
             detail="confirm_phrase does not match required value",
         )
 
+    # ``reset_org_data`` commits per batch internally so locks release
+    # between chunks. We do NOT issue an outer commit here — there's
+    # nothing pending. On exception, rollback whatever was uncommitted
+    # at the moment of failure; previously-committed batches persist
+    # and the user can re-run the reset (idempotent on both the wipe
+    # and the seed) to finish.
     try:
         counts = await org_data_service.reset_org_data(db, org_id=org_id)
-        await db.commit()
     except Exception as e:  # noqa: BLE001 — translate to generic 500 + log.
         await db.rollback()
         await logger.aerror(

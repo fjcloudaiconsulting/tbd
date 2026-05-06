@@ -6,6 +6,7 @@ import { mutate } from "swr";
 import SettingsLayout from "@/components/SettingsLayout";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import { Loader2 } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { projectedPeriodEnd } from "@/lib/format";
@@ -433,7 +434,14 @@ export default function OrganizationSettingsPage() {
                   disabled={!resetPhraseMatches || resetting}
                   className="rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-50"
                 >
-                  {resetting ? "Resetting…" : "Reset my data"}
+                  {resetting ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      Resetting organization data...
+                    </span>
+                  ) : (
+                    "Reset organization data permanently"
+                  )}
                 </button>
               </div>
             </div>

@@ -324,16 +324,186 @@ async def test_reset_returns_counts_and_wipes_data(session_factory):
     seeded = await _seed_full_org(session_factory)
 
     async with session_factory() as db:
+        # reset_org_data commits per batch internally; the outer commit
+        # here is a no-op but kept for symmetry with the test pattern.
         counts = await org_data_service.reset_org_data(db, org_id=seeded["org_id"])
         await db.commit()
 
+    # The contract widened in the L3.4 follow-up: `reset_org_data` now
+    # also re-seeds system defaults after the wipe and reports those
+    # counts as `seeded_account_types` and `seeded_categories`.
     expected_keys = {
         "transactions", "forecast_plan_items", "budgets",
         "recurring_transactions", "forecast_plans", "billing_periods",
         "accounts", "account_types", "category_rules", "categories",
+        "seeded_account_types", "seeded_categories",
     }
     assert set(counts.keys()) == expected_keys
 
     async with session_factory() as db:
         # Org shell still alive (wrapper didn't accidentally call cascade).
         assert await _count(db, Organization, id=seeded["org_id"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_reset_reseeds_system_defaults_after_wipe(session_factory):
+    """The L3.4 follow-up gap: post-reset, the org must look like a freshly
+    registered org (system account types, system master + child categories,
+    Transfer category) instead of an empty shell.
+    """
+    seeded = await _seed_full_org(session_factory)
+    org_id = seeded["org_id"]
+
+    # Pre-reset: verify the seeded org has *non-default* shape (otherwise
+    # the assertions below trivially pass on the seed alone).
+    async with session_factory() as db:
+        # The fixture inserts 1 system + 1 user account type plus 1 master
+        # + 1 child category. After reset we expect to see only system
+        # account types and system categories — the user-added ones go.
+        pre_user_at = await db.scalar(
+            select(func.count()).select_from(AccountType).where(
+                AccountType.org_id == org_id,
+                AccountType.is_system.is_(False),
+            )
+        )
+        assert pre_user_at >= 1, "fixture should seed at least one user account type"
+
+    async with session_factory() as db:
+        counts = await org_data_service.reset_org_data(db, org_id=org_id)
+
+    # The seed inserted SOMETHING — non-zero counts confirm the re-seed ran.
+    assert counts["seeded_account_types"] > 0
+    assert counts["seeded_categories"] > 0
+
+    async with session_factory() as db:
+        # After reset, only system rows survive in the per-org tables.
+        all_at = (await db.scalars(
+            select(AccountType).where(AccountType.org_id == org_id)
+        )).all()
+        assert len(all_at) > 0
+        assert all(at.is_system for at in all_at)
+
+        all_cats = (await db.scalars(
+            select(Category).where(Category.org_id == org_id)
+        )).all()
+        assert len(all_cats) > 0
+        assert all(cat.is_system for cat in all_cats)
+        # The Transfer system category specifically must be present.
+        transfer = await db.scalar(
+            select(Category).where(
+                Category.org_id == org_id,
+                Category.slug == "transfer",
+                Category.is_system.is_(True),
+            )
+        )
+        assert transfer is not None, "Transfer system category not re-seeded"
+
+
+@pytest.mark.asyncio
+async def test_seed_org_defaults_is_idempotent(session_factory):
+    """``seed_org_defaults`` is keyed by ``(org_id, slug, is_system=True)``
+    and must skip existing rows. Calling it twice without a wipe in
+    between must not duplicate, and the second call's reported counts
+    must be zero.
+    """
+    from app.services.org_bootstrap_service import seed_org_defaults
+
+    seeded = await _seed_full_org(session_factory)
+    org_id = seeded["org_id"]
+
+    # First call: ``_seed_full_org`` already inserted some system rows
+    # (matching the registration shape — see fixture). The seed should
+    # find them and only insert what's missing.
+    async with session_factory() as db:
+        first = await seed_org_defaults(db, org_id=org_id)
+        await db.commit()
+
+    async with session_factory() as db:
+        second = await seed_org_defaults(db, org_id=org_id)
+        await db.commit()
+    # Second call: nothing missing, nothing inserted.
+    assert second == {"account_types": 0, "categories": 0}
+
+    # Row counts unchanged between the two calls.
+    async with session_factory() as db:
+        at_count = await db.scalar(
+            select(func.count()).select_from(AccountType).where(AccountType.org_id == org_id)
+        )
+        cat_count = await db.scalar(
+            select(func.count()).select_from(Category).where(Category.org_id == org_id)
+        )
+    # Sanity: the first call did insert rows (or the fixture already
+    # had them all). Either way the contract is non-negative + stable.
+    assert first["account_types"] >= 0
+    assert first["categories"] >= 0
+    assert at_count >= 1
+    assert cat_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_reset_end_state_is_stable_across_repeats(session_factory):
+    """Repeated resets must leave the org in the same shape every
+    time. Each reset wipes (including system rows) and re-seeds, so
+    every reset's seed counts are non-zero — but the final row counts
+    must be identical to the first reset's final state.
+    """
+    seeded = await _seed_full_org(session_factory)
+    org_id = seeded["org_id"]
+
+    async with session_factory() as db:
+        await org_data_service.reset_org_data(db, org_id=org_id)
+
+    async with session_factory() as db:
+        first_at = await db.scalar(
+            select(func.count()).select_from(AccountType).where(AccountType.org_id == org_id)
+        )
+        first_cat = await db.scalar(
+            select(func.count()).select_from(Category).where(Category.org_id == org_id)
+        )
+
+    # Run reset two more times and confirm the row counts are stable.
+    async with session_factory() as db:
+        await org_data_service.reset_org_data(db, org_id=org_id)
+    async with session_factory() as db:
+        await org_data_service.reset_org_data(db, org_id=org_id)
+
+    async with session_factory() as db:
+        third_at = await db.scalar(
+            select(func.count()).select_from(AccountType).where(AccountType.org_id == org_id)
+        )
+        third_cat = await db.scalar(
+            select(func.count()).select_from(Category).where(Category.org_id == org_id)
+        )
+    assert third_at == first_at
+    assert third_cat == first_cat
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_still_uses_unbatched_wipe_path(session_factory):
+    """Regression: ``admin_orgs_service.delete_org_cascade`` must keep
+    using ``wipe_org_data`` (single transaction, no per-batch commit,
+    no re-seed) — NOT the new ``reset_org_data`` path. A change to the
+    self-service reset path must not bleed into the admin delete path.
+    """
+    from app.services import admin_orgs_service
+    seeded = await _seed_full_org(session_factory)
+    org_id = seeded["org_id"]
+
+    async with session_factory() as db:
+        counts = await admin_orgs_service.delete_org_cascade(db, org_id=org_id)
+        # The admin-delete contract is: caller commits. delete_org_cascade
+        # uses the unbatched wipe path expecting one commit boundary,
+        # which is exactly what this regression is asserting must NOT
+        # have changed when reset_org_data was rewritten.
+        await db.commit()
+
+    # delete_org_cascade returns its own merged dict including the
+    # wipe table counts AND the org-shell counts (org_settings,
+    # subscriptions, users, organization). Critically, it must NOT
+    # include the seed keys — admin delete does not re-seed a tomb.
+    assert "seeded_account_types" not in counts
+    assert "seeded_categories" not in counts
+
+    # The org itself is gone (admin-delete cascade ran to completion).
+    async with session_factory() as db:
+        assert await _count(db, Organization, id=org_id) == 0

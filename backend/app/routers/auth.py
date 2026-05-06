@@ -124,42 +124,19 @@ async def _find_available_username(db: AsyncSession, base: str) -> str:
 
 
 async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organization:
-    """Create an organization with system account types and categories."""
+    """Create an organization and seed system account types + categories.
+
+    Delegates the seed to ``org_bootstrap_service.seed_org_defaults`` so
+    the same logic backs both initial registration and the post-reset
+    re-seed in ``org_data_service.reset_org_data``. Idempotent on the
+    seed side; this caller path inserts a fresh org so no preexisting
+    defaults can collide.
+    """
     org = Organization(name=org_name)
     db.add(org)
     await db.flush()
-
-    for sat in SYSTEM_ACCOUNT_TYPES:
-        db.add(AccountType(org_id=org.id, name=sat["name"], slug=sat["slug"], is_system=True))
-
-    for master_def in SYSTEM_CATEGORIES:
-        master = Category(
-            org_id=org.id,
-            name=master_def["name"],
-            slug=master_def["slug"],
-            description=master_def["description"],
-            type=CategoryType(master_def["type"]),
-            is_system=True,
-        )
-        db.add(master)
-        await db.flush()
-        for child_def in master_def.get("children", []):
-            db.add(Category(
-                org_id=org.id,
-                parent_id=master.id,
-                name=child_def["name"],
-                slug=child_def["slug"],
-                description=child_def["description"],
-                type=CategoryType(master_def["type"]),
-                is_system=True,
-            ))
-
-    db.add(Category(
-        org_id=org.id, name="Transfer", slug="transfer",
-        description="Internal transfers between accounts",
-        type=CategoryType.BOTH, is_system=True,
-    ))
-
+    from app.services.org_bootstrap_service import seed_org_defaults
+    await seed_org_defaults(db, org_id=org.id)
     return org
 
 
