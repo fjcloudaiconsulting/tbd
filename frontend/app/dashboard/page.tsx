@@ -12,6 +12,7 @@ import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pa
 
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
+import { Check, Clock } from "lucide-react";
 import CategorySelect from "@/components/ui/CategorySelect";
 import OnTrackTile from "@/components/dashboard/OnTrackTile";
 import type { Account, BillingPeriod, Budget, Category, Transaction } from "@/lib/types";
@@ -471,7 +472,7 @@ export default function DashboardPage() {
             type="button"
             onClick={() => setResetBanner(false)}
             aria-label="Dismiss"
-            className="text-lg leading-none text-text-secondary hover:text-text-primary"
+            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-lg leading-none text-text-secondary hover:text-text-primary"
           >
             ×
           </button>
@@ -588,18 +589,18 @@ export default function DashboardPage() {
           {/* ═══ BILLING PERIOD — standalone nav bar ═══ */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
               </button>
               <span className="text-sm font-medium text-text-primary">
                 {monthFrom}{monthTo ? ` — ${monthTo}` : ""}
               </span>
-              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
               </button>
               {selectedPeriod?.end_date === null && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
               {selectedPeriod?.end_date !== null && (
-                <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted hover:bg-surface-raised">Today</button>
+                <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised">Today</button>
               )}
             </div>
             <Link href="/transactions" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">View All Transactions</Link>
@@ -619,7 +620,14 @@ export default function DashboardPage() {
           {/* ═══ ROW 2: Accounts — single row, primary slightly bigger ═══ */}
           {accountsWithBalance.length > 0 && (() => {
             const defaultAcct = accountsWithBalance.find((a) => a.is_default);
-            const others = accountsWithBalance.filter((a) => !a.is_default);
+            // Non-primary accounts sort alphabetically by name (locale-aware,
+            // case-insensitive). Stable across transactions: a coffee
+            // purchase can't reshuffle the strip the way a balance-desc
+            // sort would. Predictable position is the point.
+            const others = accountsWithBalance
+              .filter((a) => !a.is_default)
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
             return (
               <div className="grid grid-cols-1 gap-3 sm:flex sm:gap-3 sm:overflow-x-auto sm:pb-1">
                 {/* Primary account — wider */}
@@ -853,7 +861,6 @@ export default function DashboardPage() {
                         <p className="text-sm text-text-primary truncate">{tx.description}</p>
                         <p className="text-[11px] text-text-muted truncate">
                           {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : <>{tx.account_name} · {tx.category_name}</>}
-                          {tx.status === "pending" && <span className="ml-1 rounded bg-surface-overlay px-1 py-0.5 text-[9px] font-medium text-text-muted">pending</span>}
                         </p>
                       </div>
                     </div>
@@ -862,8 +869,30 @@ export default function DashboardPage() {
                         {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                       </span>
                       {!isTransfer && (
-                        <button onClick={async () => { try { await apiFetch(`/api/v1/transactions/${tx.id}`, { method: "PUT", body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }) }); await loadTransactions(page); await loadRefs(); void loadForecastProjection(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Toggle status`} className={`rounded px-1 py-0.5 text-[9px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
-                          {tx.status}
+                        <button
+                          onClick={async () => {
+                            try {
+                              await apiFetch(`/api/v1/transactions/${tx.id}`, {
+                                method: "PUT",
+                                body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }),
+                              });
+                              await loadTransactions(page);
+                              await loadRefs();
+                              void loadForecastProjection();
+                            } catch (err) {
+                              setError(extractErrorMessage(err));
+                            }
+                          }}
+                          aria-label={`Settled status for ${tx.description}`}
+                          aria-pressed={tx.status === "settled"}
+                          className={`inline-flex min-h-[44px] items-center gap-1 rounded px-2 text-xs font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}
+                        >
+                          {tx.status === "settled" ? (
+                            <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                          ) : (
+                            <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                          )}
+                          <span>{tx.status}</span>
                         </button>
                       )}
                     </div>
@@ -878,9 +907,9 @@ export default function DashboardPage() {
             </div>
             {!chartFilter && (page > 0 || hasMore) && (
               <div className="flex items-center justify-between border-t border-border px-5 py-2.5">
-                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised disabled:opacity-40">Prev</button>
-                <span className="text-[11px] text-text-muted">Page {page + 1}</span>
-                <button onClick={() => setPage(page + 1)} disabled={!hasMore} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised disabled:opacity-40">Next</button>
+                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border px-3 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40">Prev</button>
+                <span className="text-xs text-text-muted">Page {page + 1}</span>
+                <button onClick={() => setPage(page + 1)} disabled={!hasMore} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border px-3 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40">Next</button>
               </div>
             )}
           </div>

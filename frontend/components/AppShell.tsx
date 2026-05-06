@@ -156,7 +156,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-screen overflow-hidden">
       {/* Mobile overlay backdrop */}
       {sidebarOpen && (
-        <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />
+        <div className="fixed inset-0 z-40 bg-bg/80 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       {/* Dark sidebar — fixed height, never scrolls */}
