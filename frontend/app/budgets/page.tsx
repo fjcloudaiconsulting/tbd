@@ -270,8 +270,8 @@ export default function BudgetsPage() {
                   {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</>}
                 </span>
               </div>
-              <div className="p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
-                <ResponsiveContainer width="100%" height="100%">
+              <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
+                <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                   <BarChart data={budgets.map((b) => ({
                     name: b.category_name,
                     spent: Number(b.spent),

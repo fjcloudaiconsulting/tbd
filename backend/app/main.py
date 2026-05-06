@@ -7,6 +7,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+from app.middleware.request_context import RequestContextMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select, text
@@ -92,8 +94,16 @@ app.add_middleware(
     allow_origins=app_settings.cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
+    expose_headers=["X-Request-Id"],
 )
+
+# L4.9: bind a per-request correlation id (and clear any leftover
+# structlog contextvars from a previous request) at the very edge of
+# the stack. Added LAST so it sits OUTERMOST in the ASGI chain
+# (Starlette adds middleware in reverse order) — guarantees the
+# context is set before any other middleware logs a thing.
+app.add_middleware(RequestContextMiddleware)
 
 @app.exception_handler(NotFoundError)
 async def not_found_handler(request, exc: NotFoundError):

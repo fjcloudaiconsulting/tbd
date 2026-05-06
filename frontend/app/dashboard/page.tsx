@@ -710,7 +710,7 @@ export default function DashboardPage() {
               {donutData.length > 0 ? (
                 <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
                   <div className="h-40 w-40 shrink-0">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                       <PieChart>
                         <Pie
                           data={donutData} cx="50%" cy="50%" innerRadius={35} outerRadius={65}
@@ -758,8 +758,8 @@ export default function DashboardPage() {
               </div>
               {budgets.length > 0 ? (
                 <>
-                <div className="p-4" style={{ height: Math.max(budgets.slice(0, 6).length * 40, 100) }}>
-                  <ResponsiveContainer width="100%" height="100%">
+                <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.slice(0, 6).length * 40, 100) }}>
+                  <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                     <BarChart data={budgets.slice(0, 6).map((b) => ({
                       name: b.category_name,
                       spent: Number(b.spent),
@@ -816,8 +816,8 @@ export default function DashboardPage() {
                 const expenseItems = forecast?.items.filter((it) => it.type === "expense") ?? [];
                 if (forecast && expenseItems.length > 0) {
                   return (
-                    <div style={{ height: Math.max(Math.min(expenseItems.length, 8) * 32, 100) }}>
-                      <ResponsiveContainer width="100%" height="100%">
+                    <div className="w-full min-w-0" style={{ height: Math.max(Math.min(expenseItems.length, 8) * 32, 100) }}>
+                      <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                         <BarChart
                           data={expenseItems.slice(0, 8).map((it) => ({
                             name: it.category_name.length > 12 ? it.category_name.slice(0, 12) + "…" : it.category_name,

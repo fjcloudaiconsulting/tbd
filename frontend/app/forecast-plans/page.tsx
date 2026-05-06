@@ -567,8 +567,8 @@ export default function ForecastPlansPage() {
               <h2 className={`${cardTitle} mb-4`}>
                 Planned vs Actual (Expenses)
               </h2>
-              <div style={{ height: Math.max(chartData.length * 40, 100) }}>
-                <ResponsiveContainer width="100%" height="100%">
+              <div className="w-full min-w-0" style={{ height: Math.max(chartData.length * 40, 100) }}>
+                <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                   <BarChart
                     data={chartData}
                     layout="vertical"

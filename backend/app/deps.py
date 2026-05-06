@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -42,5 +43,16 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been invalidated",
             )
+
+    # L4.9: bind authenticated context onto structlog's request-scoped
+    # contextvars (request_id was already bound by RequestContextMiddleware
+    # before deps resolved). Every structlog event emitted in this
+    # request from here on — including the uvicorn access log line at
+    # response time — carries user_id / org_id / role for triage.
+    structlog.contextvars.bind_contextvars(
+        user_id=user.id,
+        org_id=user.org_id,
+        role=user.role.value if hasattr(user.role, "value") else str(user.role),
+    )
 
     return user

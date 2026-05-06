@@ -55,4 +55,59 @@ describe("frontend proxy", () => {
     expect(entry).not.toHaveProperty("user_agent");
     expect(entry).not.toHaveProperty("referer");
   });
+
+  it("preserves a reasonable inbound X-Request-Id and echoes it on the response (L4.9)", () => {
+    const request = new NextRequest("https://example.com/dashboard", {
+      headers: {
+        "x-request-id": "trace-abc-123",
+      },
+    });
+
+    const response = proxy(request);
+
+    const entry = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(entry.request_id).toBe("trace-abc-123");
+    expect(response.headers.get("x-request-id")).toBe("trace-abc-123");
+  });
+
+  it("generates a request id when none is inbound (L4.9)", () => {
+    const request = new NextRequest("https://example.com/dashboard");
+
+    const response = proxy(request);
+    const entry = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(entry.request_id).toMatch(/^[a-f0-9]{32}$/);
+    expect(response.headers.get("x-request-id")).toBe(entry.request_id);
+  });
+
+  it("rejects an inbound id that fails the safe-character regex (L4.9)", () => {
+    // Header values with newlines are rejected by the platform Headers
+    // API before our code runs, so we can't actually pass `\n` through.
+    // Test a value the platform accepts but our regex rejects (spaces).
+    const request = new NextRequest("https://example.com/dashboard", {
+      headers: {
+        "x-request-id": "abc inject",
+      },
+    });
+
+    const response = proxy(request);
+    const entry = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(entry.request_id).not.toBe("abc inject");
+    expect(entry.request_id).toMatch(/^[a-f0-9]{32}$/);
+    expect(response.headers.get("x-request-id")).toBe(entry.request_id);
+  });
+
+  it("rejects an inbound id past the bounded length (L4.9)", () => {
+    const huge = "a".repeat(200);
+    const request = new NextRequest("https://example.com/dashboard", {
+      headers: {
+        "x-request-id": huge,
+      },
+    });
+
+    const response = proxy(request);
+    const entry = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(entry.request_id).not.toBe(huge);
+    expect(entry.request_id.length).toBeLessThanOrEqual(64);
+    expect(response.headers.get("x-request-id")).toBe(entry.request_id);
+  });
 });
