@@ -361,3 +361,22 @@ export interface UnpairTransactionRequest {
   expense_fallback_category_id: number;
   income_fallback_category_id: number;
 }
+
+export interface AuditEvent {
+  id: number;
+  event_type: string;
+  actor_user_id: number | null;
+  actor_email: string;
+  target_org_id: number | null;
+  target_org_name: string | null;
+  request_id: string | null;
+  ip_address: string | null;
+  outcome: "success" | "failure";
+  detail: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AuditEventListResponse {
+  items: AuditEvent[];
+  total: number;
+}

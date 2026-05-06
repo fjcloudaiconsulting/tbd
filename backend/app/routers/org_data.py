@@ -2,27 +2,36 @@
 on the org's own data."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
 
 from app.auth.org_permissions import require_org_owner
 from app.database import get_db
+from app.deps import get_session_factory
 from app.models.user import Organization, User
+from app.rate_limit import get_client_ip
 from app.schemas.org_data import OrgDataResetRequest, OrgDataResetResponse
-from app.services import org_data_service, org_reset_lock_service
+from app.services import audit_service, org_data_service, org_reset_lock_service
 
 logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/api/v1/orgs/data", tags=["org-data"])
 
 
+def _request_id() -> str | None:
+    """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
+    return structlog.contextvars.get_contextvars().get("request_id")
+
+
 @router.post("/reset", response_model=OrgDataResetResponse)
 async def reset_org_data(
     body: OrgDataResetRequest,
+    request: Request,
     current_user: User = Depends(require_org_owner),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     org = (await db.execute(
         select(Organization).where(Organization.id == current_user.org_id)
@@ -91,6 +100,25 @@ async def reset_org_data(
         )
         # Release the lock before raising so a retry isn't blocked.
         await org_reset_lock_service.release_reset_lock(db, org_id=org_id, token=lease_token)
+        # Independent-session audit write — survives the business
+        # rollback and a possible follow-on org wipe (target_org_id
+        # uses ON DELETE SET NULL).
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="org.data.reset.failed",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=org_id,
+            target_org_name=org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={
+                "actor_role": actor_role,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to reset organization data",
@@ -107,5 +135,20 @@ async def reset_org_data(
         org_id=org_id,
         org_name=org_name,
         deleted_rows_by_table=counts,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="org.data.reset",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=org_id,
+        target_org_name=org_name,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={
+            "actor_role": actor_role,
+            "deleted_rows_by_table": counts,
+        },
     )
     return {"deleted_rows_by_table": counts}

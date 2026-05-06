@@ -4,11 +4,21 @@ import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database import get_db
+from app.database import async_session, get_db
 from app.models.user import User
 from app.security import decode_token, token_cutoff
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the engine-wide session factory for callers that need
+    to open an independent transaction (audit-event recording, etc.).
+
+    Wrapped in a dependency so tests can override with an in-memory
+    factory the same way they override ``get_db``.
+    """
+    return async_session
 
 bearer_scheme = HTTPBearer()
 

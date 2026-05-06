@@ -96,9 +96,12 @@ describe("/admin page", () => {
     render(<AdminDashboardPage />);
 
     expect(await screen.findByText("Admin")).toBeInTheDocument();
-    expect(screen.getByText("Organizations")).toBeInTheDocument();
+    // "Organizations" appears in both the KPI label and the quick-link
+    // card — at least one match is enough to confirm the page rendered.
+    expect(screen.getAllByText("Organizations").length).toBeGreaterThan(0);
     expect(screen.getByText("42")).toBeInTheDocument();
     expect(screen.getByText("System health")).toBeInTheDocument();
+    expect(screen.getByText("Audit log")).toBeInTheDocument();
     expect(screen.getByText("Database")).toBeInTheDocument();
     expect(screen.getByText("Redis")).toBeInTheDocument();
     expect(screen.getByText("timeout")).toBeInTheDocument();

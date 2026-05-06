@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -126,6 +127,28 @@ export default function AdminDashboardPage() {
               <h2 className={`${cardTitle} mb-2`}>System health</h2>
               <HealthRow name="Database" cell={data.health.db} />
               <HealthRow name="Redis" cell={data.health.redis} />
+            </section>
+
+            <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Link
+                href="/admin/orgs"
+                className={`${card} block p-5 transition-colors hover:border-accent`}
+              >
+                <h2 className={`${cardTitle} mb-1`}>Organizations</h2>
+                <p className="text-sm text-text-secondary">
+                  Search, drill into, and manage every org on the platform.
+                </p>
+              </Link>
+              <Link
+                href="/admin/audit"
+                className={`${card} block p-5 transition-colors hover:border-accent`}
+              >
+                <h2 className={`${cardTitle} mb-1`}>Audit log</h2>
+                <p className="text-sm text-text-secondary">
+                  Persisted record of platform actions (subscription overrides,
+                  org deletes, tenant resets).
+                </p>
+              </Link>
             </section>
           </>
         )}

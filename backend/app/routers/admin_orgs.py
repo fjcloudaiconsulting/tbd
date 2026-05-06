@@ -15,29 +15,35 @@ message client-side, full detail server-side.
 from datetime import datetime
 from app._time import utcnow_naive
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
 
 from app.auth.feature_catalog import ALL_FEATURE_KEYS
 from app.auth.permissions import require_permission
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.feature_override import OrgFeatureOverride
 from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.user import Organization, User
+from app.rate_limit import get_client_ip
 from app.schemas.admin_orgs import OrgDeleteRequest, SubscriptionUpdateRequest
 from app.schemas.feature_override import FeatureOverrideUpsert, OrgFeatureOverrideResponse
 from app.schemas.feature_state import FeatureStateResponse
-from app.services import admin_orgs_service, feature_service
+from app.services import admin_orgs_service, audit_service, feature_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 logger = structlog.stdlib.get_logger()
 log = structlog.get_logger()
 
 router = APIRouter(prefix="/api/v1/admin/orgs", tags=["admin-orgs"])
+
+
+def _request_id() -> str | None:
+    """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
+    return structlog.contextvars.get_contextvars().get("request_id")
 
 
 @router.get(
@@ -68,8 +74,10 @@ async def get_org_detail(org_id: int, db: AsyncSession = Depends(get_db)):
 async def update_org_subscription(
     org_id: int,
     body: SubscriptionUpdateRequest,
+    request: Request,
     current_user: User = Depends(require_permission("orgs.manage")),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     try:
         # Look up name once for the audit event.
@@ -101,6 +109,18 @@ async def update_org_subscription(
         before=before,
         after=after,
     )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.org.subscription.override",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=org_id,
+        target_org_name=detail["name"],
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"before": before, "after": after},
+    )
     return {"before": before, "after": after}
 
 
@@ -108,8 +128,10 @@ async def update_org_subscription(
 async def delete_org(
     org_id: int,
     body: OrgDeleteRequest,
+    request: Request,
     current_user: User = Depends(require_permission("orgs.manage")),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     if org_id == current_user.org_id:
         raise HTTPException(
@@ -142,6 +164,22 @@ async def delete_org(
             error=str(e),
             error_type=type(e).__name__,
         )
+        # Independent-session audit write — the business txn has been
+        # rolled back, but the failure must still appear in the audit
+        # log. That's the whole point of opening a fresh session for
+        # the audit row.
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="admin.org.delete.failed",
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=org_id,
+            target_org_name=detail["name"],
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={"error": str(e), "error_type": type(e).__name__},
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete organization",
@@ -154,6 +192,18 @@ async def delete_org(
         target_org_id=org_id,
         target_org_name=detail["name"],
         deleted_rows_by_table=counts,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.org.delete",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=org_id,
+        target_org_name=detail["name"],
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"deleted_rows_by_table": counts},
     )
     return {"deleted": counts}
 
@@ -192,22 +242,25 @@ async def set_feature_override(
     org_id: int,
     feature_key: str,
     body: FeatureOverrideUpsert,
+    request: Request,
     user: User = Depends(require_permission("orgs.manage")),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     try:
         _validate_feature_key(feature_key)
     except ValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    org_exists = await db.scalar(
-        select(Organization.id).where(Organization.id == org_id)
-    )
-    if org_exists is None:
+    org_row = (
+        await db.execute(select(Organization).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    if org_row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Organization not found",
         )
+    target_org_name = org_row.name
 
     existing = await db.scalar(
         select(OrgFeatureOverride).where(
@@ -258,6 +311,25 @@ async def set_feature_override(
         actor_email=user.email,
         note_present=body.note is not None,
     )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.org.feature.set",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=org_id,
+        target_org_name=target_org_name,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={
+            "feature_key": feature_key,
+            "old_value": old_value,
+            "new_value": body.value,
+            "old_expires_at": old_expires_at.isoformat() if old_expires_at else None,
+            "new_expires_at": body.expires_at.isoformat() if body.expires_at else None,
+            "note_present": body.note is not None,
+        },
+    )
 
     return await _override_to_response(row, db)
 
@@ -269,8 +341,10 @@ async def set_feature_override(
 async def revoke_feature_override(
     org_id: int,
     feature_key: str,
+    request: Request,
     user: User = Depends(require_permission("orgs.manage")),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     # 400 if key isn't in the catalog (matches PUT translation).
     try:
@@ -278,14 +352,15 @@ async def revoke_feature_override(
     except ValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    org_exists = await db.scalar(
-        select(Organization.id).where(Organization.id == org_id)
-    )
-    if org_exists is None:
+    org_row = (
+        await db.execute(select(Organization).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    if org_row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Organization not found",
         )
+    target_org_name = org_row.name
 
     existing = await db.scalar(
         select(OrgFeatureOverride).where(
@@ -310,6 +385,18 @@ async def revoke_feature_override(
         old_value=old_value,
         actor_user_id=user.id,
         actor_email=user.email,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.org.feature.revoked",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=org_id,
+        target_org_name=target_org_name,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"feature_key": feature_key, "old_value": old_value},
     )
     return Response(status_code=204)
 
