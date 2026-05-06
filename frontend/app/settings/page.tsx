@@ -5,7 +5,7 @@ import { FormEvent, useEffect, useState } from "react";
 import SettingsLayout from "@/components/SettingsLayout";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { input, label, btnPrimary, card, cardTitle, error as errorCls, success as successCls } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, card, cardTitle, error as errorCls, success as successCls } from "@/lib/styles";
 import type { User } from "@/lib/types";
 
 export default function SettingsProfilePage() {
@@ -21,6 +21,15 @@ export default function SettingsProfilePage() {
   // the /me/password endpoint's re-auth requirement and closes the
   // email-change account-takeover chain (S-P1-2).
   const [currentPassword, setCurrentPassword] = useState("");
+  // SSO users (`password_set=false`) cannot type a current password.
+  // They re-authenticate via Google: clicking "Verify with Google"
+  // POSTs /api/v1/auth/sso-stepup/initiate, the browser navigates to
+  // Google, and the callback redirects back to this page with the
+  // token in the URL fragment. We read it on mount, clear the hash
+  // so it never lingers in browser history, and pass it to the
+  // backend in place of `current_password`.
+  const [stepupToken, setStepupToken] = useState("");
+  const [stepupBusy, setStepupBusy] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -32,11 +41,40 @@ export default function SettingsProfilePage() {
     }
   }, [user]);
 
+  // Pull `#stepup_token=…` off the URL on mount and immediately
+  // strip it from history. Fragments are never sent to the server,
+  // so this is the safe channel the backend redirects to.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash;
+    if (hash.startsWith("#stepup_token=")) {
+      const token = hash.slice("#stepup_token=".length);
+      if (token) setStepupToken(token);
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }, []);
+
   const [profileMsg, setProfileMsg] = useState("");
   const [profileErr, setProfileErr] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
 
   const emailChanging = email !== (user?.email ?? "");
+  const passwordSet = user?.password_set ?? true;
+
+  async function handleVerifyWithGoogle() {
+    setProfileErr(""); setStepupBusy(true);
+    try {
+      const data = await apiFetch<{ redirect_url: string }>(
+        "/api/v1/auth/sso-stepup/initiate",
+        { method: "POST" },
+      );
+      // Full navigation, not router.push — Google must own the next page.
+      window.location.href = data.redirect_url;
+    } catch (err) {
+      setProfileErr(extractErrorMessage(err));
+      setStepupBusy(false);
+    }
+  }
 
   async function handleProfileSubmit(e: FormEvent) {
     e.preventDefault();
@@ -59,13 +97,23 @@ export default function SettingsProfilePage() {
       }
 
       if ("email" in payload) {
-        if (!currentPassword) {
-          setProfileErr(
-            "Enter your current password to change your email. If you signed in with Google and never set one, reset your password first.",
-          );
-          return;
+        if (user?.password_set === false) {
+          if (!stepupToken) {
+            setProfileErr(
+              "Verify with Google before changing your email. Click 'Verify with Google' below.",
+            );
+            return;
+          }
+          payload.stepup_token = stepupToken;
+        } else {
+          if (!currentPassword) {
+            setProfileErr(
+              "Enter your current password to change your email.",
+            );
+            return;
+          }
+          payload.current_password = currentPassword;
         }
-        payload.current_password = currentPassword;
       }
 
       await apiFetch<User>("/api/v1/users/me", {
@@ -74,6 +122,7 @@ export default function SettingsProfilePage() {
       });
       await refreshMe();
       setCurrentPassword("");
+      setStepupToken("");
       // Nudge the user toward the next step — changing email logs every
       // session out and leaves email_verified=false until they click
       // the new verification link.
@@ -133,7 +182,7 @@ export default function SettingsProfilePage() {
               <label htmlFor="profile-email" className={label}>Email</label>
               <input id="profile-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={input} />
             </div>
-            {emailChanging && (
+            {emailChanging && passwordSet && (
               <div>
                 <label htmlFor="profile-current-password" className={label}>
                   Current password <span className="text-xs text-text-muted">(required to change email)</span>
@@ -148,12 +197,40 @@ export default function SettingsProfilePage() {
                   className={input}
                 />
                 <p className="mt-1 text-xs text-text-muted">
-                  Signed in with Google and never set a password?{" "}
-                  <Link href="/forgot-password" className="text-accent hover:underline">
-                    Reset it first
-                  </Link>
-                  , then come back to change your email.
+                  Prefer not to type your password? You can{" "}
+                  <Link href="/settings/security" className="text-accent hover:underline">
+                    change it
+                  </Link>{" "}
+                  any time from the Security settings.
                 </p>
+              </div>
+            )}
+            {emailChanging && !passwordSet && (
+              <div className="rounded-lg border border-border p-4 space-y-3">
+                <p className="text-sm text-text-primary font-medium">
+                  Verify with Google to change your email
+                </p>
+                <p className="text-xs text-text-muted">
+                  Your account was created with Google and has no password yet. Verify with Google now to confirm this change, or{" "}
+                  <Link href="/settings/security" className="text-accent hover:underline">
+                    set a password first
+                  </Link>{" "}
+                  in Security settings.
+                </p>
+                {stepupToken ? (
+                  <p className="text-xs text-success">
+                    Google verified. Click Save Changes to update your email.
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleVerifyWithGoogle}
+                    disabled={stepupBusy}
+                    className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                  >
+                    {stepupBusy ? "Redirecting..." : "Verify with Google"}
+                  </button>
+                )}
               </div>
             )}
             <div>

@@ -1,4 +1,5 @@
 import re
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -20,6 +21,16 @@ from app.services.email_service import send_verification_email
 
 _USERNAME_RE = re.compile(USERNAME_PATTERN)
 
+
+def _aware(dt: datetime) -> datetime:
+    """Treat naive datetimes as UTC. The `users` step-up expiry column
+    is plain `DateTime` (naive) for cross-DB compatibility, but every
+    write goes through `datetime.now(timezone.utc)` so the underlying
+    instant is always UTC. This helper makes the comparison safe even
+    if a future migration flips the column to `DateTime(timezone=True)`.
+    """
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
 
@@ -40,6 +51,7 @@ def _user_response(user: User) -> UserResponse:
         is_superadmin=user.is_superadmin,
         is_active=user.is_active,
         mfa_enabled=user.mfa_enabled,
+        password_set=user.password_set,
     )
 
 
@@ -84,13 +96,41 @@ async def update_profile(
         # Closes S-P1-2: without re-auth, a session-only compromise could
         # swap the recovery channel to an attacker-controlled inbox and
         # convert a transient hijack into persistent account takeover.
-        if not body.current_password or not verify_password(
-            body.current_password, current_user.password_hash
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is required and must be correct to change email",
+        # Two acceptable proofs of presence:
+        #   - normal users (`password_set=True`) supply `current_password`
+        #   - SSO users who never set a password (`password_set=False`)
+        #     instead supply a fresh `stepup_token` that the SSO step-up
+        #     callback wrote on their row (5min hard expiry, single-use).
+        if current_user.password_set:
+            if not body.current_password or not verify_password(
+                body.current_password, current_user.password_hash
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Current password is required and must be correct to change email",
+                )
+        else:
+            now_check = datetime.now(timezone.utc)
+            stored = current_user.stepup_token
+            expires_at = current_user.stepup_token_expires_at
+            # Compare in a constant-time manner; reject missing/expired
+            # tokens with the same generic 400 the password branch
+            # returns to avoid leaking which check failed.
+            valid = (
+                bool(body.stepup_token)
+                and stored is not None
+                and expires_at is not None
+                and _aware(expires_at) > now_check
+                and secrets.compare_digest(body.stepup_token, stored)
             )
+            if not valid:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Step-up verification with Google is required to change email",
+                )
+            # Consume the token so it cannot be replayed.
+            current_user.stepup_token = None
+            current_user.stepup_token_expires_at = None
         existing = await db.execute(
             select(User).where(User.email == body.email)
         )
@@ -140,14 +180,26 @@ async def change_password(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not verify_password(body.current_password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
+    # Two paths through this handler:
+    #   - `password_set=True` (default for every classic register flow):
+    #     require a valid `current_password`. Existing behavior.
+    #   - `password_set=False` (Google SSO user setting a real password
+    #     for the first time): skip the current-password check; any
+    #     supplied value is ignored. After the write `password_set`
+    #     flips True permanently so subsequent rotations land in the
+    #     standard branch above.
+    if current_user.password_set:
+        if not body.current_password or not verify_password(
+            body.current_password, current_user.password_hash
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is incorrect",
+            )
 
     now = datetime.now(timezone.utc)
     current_user.password_hash = hash_password(body.new_password)
+    current_user.password_set = True
     current_user.password_changed_at = now
     current_user.sessions_invalidated_at = now
     await db.commit()

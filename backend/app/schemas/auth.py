@@ -59,6 +59,11 @@ class UserResponse(BaseModel):
     is_superadmin: bool
     is_active: bool
     mfa_enabled: bool = False
+    # False for SSO-created users who have not yet set a password. The
+    # frontend uses this to flip the Change Password card into "Set a
+    # Password" mode and to show the "Verify with Google" button on the
+    # email-change form.
+    password_set: bool = True
     subscription_status: str | None = None
     subscription_plan: str | None = None
     trial_end: str | None = None

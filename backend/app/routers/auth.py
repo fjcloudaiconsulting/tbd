@@ -94,6 +94,7 @@ def _user_response(user: User, org: Organization, sub: Subscription | None = Non
         is_superadmin=user.is_superadmin,
         is_active=user.is_active,
         mfa_enabled=user.mfa_enabled,
+        password_set=user.password_set,
         subscription_status=sub.status.value if sub else None,
         subscription_plan=plan.slug if plan else None,
         trial_end=sub.trial_end.isoformat() if sub and sub.trial_end else None,
@@ -1004,6 +1005,12 @@ async def google_callback(
             email_verified=True,  # guaranteed by the verified_email guard
             role=Role.OWNER,
             is_superadmin=is_first_user,
+            # SSO users get a random unguessable hash they cannot use to
+            # sign in with. Flag the row so the change-password endpoint
+            # accepts a first-time set without `current_password` and so
+            # the email-change endpoint takes the step-up path. Flips
+            # back to True the moment they set a real password.
+            password_set=False,
         )
         db.add(user)
         await db.commit()
@@ -1047,4 +1054,163 @@ async def google_callback(
         max_age=7 * 24 * 60 * 60,
         path="/api/v1/auth/refresh",
     )
+    return resp
+
+
+# ── SSO Step-Up (L1.7) ──────────────────────────────────────────────────────
+#
+# SSO users without a password (`password_set=False`) cannot satisfy the
+# email-change re-auth gate the password branch enforces. Rather than
+# silently swap email on the session (which would convert any session
+# compromise to permanent account takeover, since email is the recovery
+# channel), we require a fresh round-trip through Google: the user clicks
+# "Verify with Google", we redirect them to Google's consent screen, and
+# the callback writes a 5-minute single-use token onto their `users` row.
+# The PUT /users/me handler then accepts that token in place of
+# `current_password` for the email-change branch.
+#
+# Cookie path is scoped to /api/v1/auth/sso-stepup so it never collides
+# with the main Google login `oauth_state` cookie at /api/v1/auth/google.
+
+STEPUP_TOKEN_TTL_SECONDS = 5 * 60
+
+
+@router.post("/sso-stepup/initiate")
+async def sso_stepup_initiate(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+):
+    """Begin a Google step-up flow for the signed-in user.
+
+    Returns the Google consent URL the frontend should navigate to.
+    The state cookie embeds the `current_user.id` so the callback can
+    verify the same user finished the round-trip and reject any state
+    coming back to a different session.
+    """
+    _validate_google_config()
+
+    nonce = secrets.token_urlsafe(32)
+    state = f"stepup:{current_user.id}:{nonce}"
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        httponly=True,
+        secure=app_settings.cookie_secure,
+        samesite="lax",
+        max_age=600,  # 10 minutes
+        path="/api/v1/auth/sso-stepup",
+    )
+
+    params = {
+        "client_id": app_settings.google_client_id,
+        "redirect_uri": f"{app_settings.app_url}/api/v1/auth/sso-stepup/callback",
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "online",
+        "prompt": "select_account",
+        "state": state,
+    }
+    return {"redirect_url": f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"}
+
+
+@router.get("/sso-stepup/callback")
+async def sso_stepup_callback(
+    code: str,
+    state: str,
+    db: AsyncSession = Depends(get_db),
+    oauth_state: str | None = Cookie(default=None),
+):
+    """Finalize a Google step-up. Issues a 5-minute single-use token.
+
+    Browser-driven redirect from Google: no Authorization header is
+    present, so this endpoint cannot use `get_current_user`. Identity
+    is bound through the state-cookie + state-string round trip
+    (same pattern as the SSO login `google_callback`):
+
+      - state cookie matches the URL `state` (CSRF)
+      - state is shaped `stepup:{user_id}:{nonce}`; `user_id` is the
+        target user (looked up directly from the DB)
+      - the Google account that completed the consent has the same
+        verified email as that user (no swapping accounts at the
+        consent screen)
+
+    On success, writes a random 32-byte token + 5min expiry onto the
+    `users` row and redirects back to /settings with the token in the
+    URL fragment. Like the SSO login flow, fragments stay client-side
+    (not sent to servers, not in access logs).
+    """
+    _validate_google_config()
+
+    if not oauth_state or oauth_state != state:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF")
+
+    # State binds the redemption to a specific user_id chosen at
+    # initiate time. Without an Authorization header here, the state
+    # cookie + state string round trip is the identity proof.
+    parts = state.split(":")
+    if len(parts) != 3 or parts[0] != "stepup":
+        raise HTTPException(status_code=400, detail="Malformed step-up state")
+    try:
+        state_user_id = int(parts[1])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed step-up state")
+
+    user = await db.get(User, state_user_id)
+    if user is None:
+        # Treat a missing user as a bad state rather than 404, so we
+        # don't leak which user_ids exist.
+        raise HTTPException(status_code=400, detail="Invalid state")
+
+    # Exchange code → tokens → userinfo, identical shape to /google/callback
+    try:
+        async with httpx.AsyncClient(timeout=GOOGLE_OAUTH_TIMEOUT) as client:
+            token_resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "code": code,
+                    "client_id": app_settings.google_client_id,
+                    "client_secret": app_settings.google_client_secret,
+                    "redirect_uri": f"{app_settings.app_url}/api/v1/auth/sso-stepup/callback",
+                    "grant_type": "authorization_code",
+                },
+            )
+            if token_resp.status_code != 200:
+                raise HTTPException(status_code=400, detail="Failed to exchange Google auth code")
+            tokens = token_resp.json()
+
+            userinfo_resp = await client.get(
+                "https://www.googleapis.com/oauth2/v2/userinfo",
+                headers={"Authorization": f"Bearer {tokens['access_token']}"},
+            )
+            if userinfo_resp.status_code != 200:
+                raise HTTPException(status_code=400, detail="Failed to get Google user info")
+            google_user = userinfo_resp.json()
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Failed to communicate with Google")
+
+    google_email = (google_user.get("email") or "").strip().lower()
+    raw = google_user.get("verified_email")
+    if raw is None:
+        raw = google_user.get("email_verified", False)
+    if not bool(raw):
+        raise HTTPException(status_code=400, detail="Google has not verified this email")
+    if not google_email or google_email != user.email.strip().lower():
+        # The user must complete the step-up with the same Google
+        # identity attached to this account. Otherwise this would let
+        # an attacker who initiated step-up for someone else's user_id
+        # swap the email by consenting on their own Google account.
+        raise HTTPException(status_code=400, detail="Google account does not match the signed-in user")
+
+    token = secrets.token_urlsafe(32)
+    user.stepup_token = token
+    user.stepup_token_expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=STEPUP_TOKEN_TTL_SECONDS
+    )
+    await db.commit()
+
+    resp = RedirectResponse(
+        url=f"{app_settings.app_url}/settings#stepup_token={token}",
+        status_code=302,
+    )
+    resp.delete_cookie("oauth_state", path="/api/v1/auth/sso-stepup")
     return resp

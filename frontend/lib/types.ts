@@ -14,6 +14,11 @@ export interface User {
   is_superadmin: boolean;
   is_active: boolean;
   mfa_enabled: boolean;
+  // False for Google SSO users who have not yet set a real password.
+  // The Settings UI flips Change Password into "Set a Password" mode and
+  // swaps the email-change re-auth from "current password" to a Google
+  // step-up flow when this is false.
+  password_set: boolean;
   subscription_status: SubscriptionStatus | null;
   subscription_plan: string | null;
   trial_end: string | null;

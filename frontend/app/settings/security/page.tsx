@@ -31,17 +31,33 @@ export default function SecurityPage() {
   const [pwdErr, setPwdErr] = useState("");
   const [savingPwd, setSavingPwd] = useState(false);
 
+  // SSO users (Google) start with `password_set=false`. The first time
+  // they POST /me/password the backend skips the current-password
+  // check and the flag flips true, so on the next render this branch
+  // collapses back to the standard Change Password UI.
+  const passwordSet = user?.password_set ?? true;
+
   async function handlePasswordSubmit(e: FormEvent) {
     e.preventDefault();
     setPwdMsg(""); setPwdErr("");
     if (newPassword !== confirmPassword) { setPwdErr("New passwords do not match"); return; }
     setSavingPwd(true);
     try {
+      const payload: { new_password: string; current_password?: string } = {
+        new_password: newPassword,
+      };
+      if (passwordSet) {
+        payload.current_password = currentPassword;
+      }
       await apiFetch("/api/v1/users/me/password", {
         method: "POST",
-        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+        body: JSON.stringify(payload),
       });
-      setPwdMsg("Password changed. Signing in with new credentials...");
+      setPwdMsg(
+        passwordSet
+          ? "Password changed. Signing in with new credentials..."
+          : "Password set. Signing in with new credentials...",
+      );
       try {
         await login(user!.username, newPassword);
       } catch (loginErr) {
@@ -53,8 +69,15 @@ export default function SecurityPage() {
           throw loginErr;
         }
       }
+      // Refresh the user so `password_set` flips and the card
+      // re-renders in standard mode after a first-time set.
+      await refreshMe();
       setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
-      setPwdMsg("Password changed successfully");
+      setPwdMsg(
+        passwordSet
+          ? "Password changed successfully"
+          : "Password set. You can now sign in with your email and password.",
+      );
     } catch (err) { setPwdErr(extractErrorMessage(err)); }
     finally { setSavingPwd(false); }
   }
@@ -205,14 +228,21 @@ export default function SecurityPage() {
       <div className="max-w-lg space-y-6">
         {/* ── Change Password ──────────────────────────────────────────── */}
         <div className={`${card} p-6`}>
-          <h2 className={`mb-5 ${cardTitle}`}>Change Password</h2>
+          <h2 className={`mb-5 ${cardTitle}`}>{passwordSet ? "Change Password" : "Set a Password"}</h2>
+          {!passwordSet && (
+            <p className="mb-4 text-sm text-text-muted">
+              Your account was created with Google. Set a password to also sign in with your email address.
+            </p>
+          )}
           <form onSubmit={handlePasswordSubmit} className="space-y-4">
             {pwdMsg && <div className={successCls}>{pwdMsg}</div>}
             {pwdErr && <div className={errorCls}>{pwdErr}</div>}
-            <div>
-              <label htmlFor="pwd-current" className={label}>Current Password</label>
-              <input id="pwd-current" type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={input} autoComplete="current-password" />
-            </div>
+            {passwordSet && (
+              <div>
+                <label htmlFor="pwd-current" className={label}>Current Password</label>
+                <input id="pwd-current" type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={input} autoComplete="current-password" />
+              </div>
+            )}
             <div>
               <label htmlFor="pwd-new" className={label}>New Password</label>
               <input id="pwd-new" type="password" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={input} autoComplete="new-password" />
@@ -222,7 +252,9 @@ export default function SecurityPage() {
               <input id="pwd-confirm" type="password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={input} autoComplete="new-password" />
             </div>
             <button type="submit" disabled={savingPwd} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
-              {savingPwd ? "Changing..." : "Change Password"}
+              {savingPwd
+                ? (passwordSet ? "Changing..." : "Setting...")
+                : (passwordSet ? "Change Password" : "Set Password")}
             </button>
           </form>
         </div>

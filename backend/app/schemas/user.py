@@ -21,6 +21,11 @@ class ProfileUpdate(BaseModel):
     # email without re-auth is a takeover-persistence vector when a
     # session is compromised.
     current_password: str | None = Field(default=None, max_length=128)
+    # Alternative to `current_password` for SSO users who have not yet
+    # set one (`password_set=False`). The token is issued by the
+    # /api/v1/auth/sso-stepup/initiate → callback flow, lives 5 minutes,
+    # and is consumed (cleared on `users`) on first successful use.
+    stepup_token: str | None = Field(default=None, max_length=128)
 
     @field_validator("avatar_url")
     @classmethod
@@ -31,5 +36,10 @@ class ProfileUpdate(BaseModel):
 
 
 class PasswordChange(BaseModel):
-    current_password: str = Field(max_length=128)
+    # Optional at the schema layer — the handler enforces the rule
+    # conditionally. When the caller has `password_set=True` the handler
+    # requires a valid `current_password`. When `password_set=False`
+    # (Google SSO user setting a password for the first time) the
+    # `current_password` field is ignored entirely.
+    current_password: str | None = Field(default=None, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
