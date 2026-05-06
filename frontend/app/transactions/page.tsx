@@ -600,13 +600,13 @@ function TransactionsPageContent() {
             {formMode === "transaction" && (
               <div>
                 <label htmlFor="tx-category" className={label}>Category</label>
-                <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+                <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
               </div>
             )}
             {formMode === "transfer" && (
               <div>
                 <label className={label}>Category (optional)</label>
-                <CategorySelect id="tx-transfer-cat" categories={categories} value={formTransferCatId} onChange={setFormTransferCatId} className={input} />
+                <CategorySelect id="tx-transfer-cat" categories={categories} value={formTransferCatId} onChange={setFormTransferCatId} className={input} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                 <p className="mt-1 text-[10px] text-text-muted">Defaults to Transfer. Override to track in budgets.</p>
               </div>
             )}
@@ -819,7 +819,7 @@ function TransactionsPageContent() {
                               </select>
                             </span>
                             <span className="col-span-1 min-w-0">
-                              <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
+                              <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                             </span>
                             <span className="col-span-1">
                               <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
@@ -957,7 +957,7 @@ function TransactionsPageContent() {
                               </div>
                               <div>
                                 <label className={label}>Category</label>
-                                <CategorySelect aria-label="Category" id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} />
+                                <CategorySelect aria-label="Category" id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                               </div>
                               <div>
                                 <label className={label}>Status</label>

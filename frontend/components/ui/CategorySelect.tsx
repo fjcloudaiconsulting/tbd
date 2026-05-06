@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import AddCategoryModal from "@/components/ui/AddCategoryModal";
 import type { Category } from "@/lib/types";
 
 const RECENT_KEY = "pfv2-recent-categories";
@@ -29,17 +30,20 @@ interface Props {
   typeFilter?: "INCOME" | "EXPENSE";
   className?: string;
   "aria-label"?: string;
+  onCategoryCreated?: (cat: Category) => void;
 }
 
-export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel }: Props) {
+export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, onCategoryCreated }: Props) {
   // Normalize uppercase `typeFilter` (transfers callers) to internal lowercase
   // so it joins the existing filterType machinery without divergent code paths.
   const effectiveFilterType = filterType ?? (typeFilter === "INCOME" ? "income" : typeFilter === "EXPENSE" ? "expense" : undefined);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(-1);
+  const [showAddModal, setShowAddModal] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const selected = categories.find((c) => c.id === value);
 
@@ -77,13 +81,13 @@ export default function CategorySelect({ id, categories, value, onChange, filter
   const flatList: Category[] = [...recentItems, ...nonRecent];
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || showAddModal) return;
     function handleClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [open]);
+  }, [open, showAddModal]);
 
   useEffect(() => { setHighlightIdx(-1); }, [query, open]);
 
@@ -119,8 +123,13 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     items[highlightIdx]?.scrollIntoView({ block: "nearest" });
   }, [highlightIdx]);
 
-  // Group non-recent by master for display
-  const masters = categories.filter((c) => c.parent_id === null);
+  // Group non-recent by master for display.
+  // Memoized so the `grouped` useMemo below sees a stable `masters`
+  // reference and only recomputes when the categories list itself changes.
+  const masters = useMemo(
+    () => categories.filter((c) => c.parent_id === null),
+    [categories]
+  );
   const grouped = useMemo(() => {
     const groups: { label: string; items: Category[] }[] = [];
     for (const master of masters) {
@@ -140,6 +149,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
   return (
     <div ref={ref} className="relative">
       <input
+        ref={inputRef}
         id={id}
         type="text"
         autoComplete="off"
@@ -199,7 +209,40 @@ export default function CategorySelect({ id, categories, value, onChange, filter
           {filtered.length === 0 && (
             <div className="px-3 py-4 text-center text-sm text-text-muted">No categories match</div>
           )}
+
+          <div className="sticky bottom-0 border-t border-border-subtle bg-surface">
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                // Prevent the input's blur/outside-click handler from firing
+                // before the click registers; keeps the dropdown open while
+                // the modal mounts.
+                e.preventDefault();
+              }}
+              onClick={() => setShowAddModal(true)}
+              className="flex w-full items-center px-3 py-2 text-left text-sm font-medium text-accent transition-colors hover:bg-accent-dim"
+            >
+              + Add category
+            </button>
+          </div>
         </div>
+      )}
+
+      {showAddModal && (
+        <AddCategoryModal
+          initialName={query}
+          initialType={effectiveFilterType ?? "both"}
+          masterCategories={masters}
+          onCreated={(cat) => {
+            setShowAddModal(false);
+            onCategoryCreated?.(cat);
+            handleSelect(cat);
+          }}
+          onCancel={() => {
+            setShowAddModal(false);
+            inputRef.current?.focus();
+          }}
+        />
       )}
     </div>
   );

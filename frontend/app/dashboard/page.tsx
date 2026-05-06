@@ -559,7 +559,7 @@ export default function DashboardPage() {
                 {formMode === "transaction" && (
                   <div>
                     <label htmlFor="da-category" className={label}>Category</label>
-                    <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} />
+                    <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                   </div>
                 )}
                 {formMode === "transfer" && (
@@ -571,6 +571,7 @@ export default function DashboardPage() {
                       value={formTransferCatId}
                       onChange={setFormTransferCatId}
                       className={input}
+                      onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])}
                     />
                     <p className="mt-1 text-[10px] text-text-muted">Defaults to Transfer. Override to track in budgets.</p>
                   </div>

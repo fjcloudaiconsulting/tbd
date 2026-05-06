@@ -132,7 +132,7 @@ function ImportPageContent() {
 
   // ── Shared data ──────────────────────────────────────────────────────────
   const { data: accounts } = useSWR<Account[]>("accounts", () => apiFetch<Account[]>("/api/v1/accounts"));
-  const { data: categories } = useSWR<Category[]>("categories", () => apiFetch<Category[]>("/api/v1/categories"));
+  const { data: categories, mutate: mutateCategories } = useSWR<Category[]>("categories", () => apiFetch<Category[]>("/api/v1/categories"));
 
   const activeAccounts = useMemo(() => accounts?.filter((a) => a.is_active) ?? [], [accounts]);
   const defaultAccount = useMemo(() => activeAccounts.find((a) => a.is_default), [activeAccounts]);
@@ -603,6 +603,9 @@ function ImportPageContent() {
                                 }
                                 filterType={previewRow.type === "income" ? "income" : "expense"}
                                 className={input + " !w-48"}
+                                onCategoryCreated={() => {
+                                  void mutateCategories();
+                                }}
                               />
                               {previewRow.suggestion_source === "org_rule" && (
                                 <span
