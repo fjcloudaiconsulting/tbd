@@ -11,7 +11,7 @@ from app.auth.org_permissions import require_org_owner
 from app.database import get_db
 from app.models.user import Organization, User
 from app.schemas.org_data import OrgDataResetRequest, OrgDataResetResponse
-from app.services import org_data_service
+from app.services import org_data_service, org_reset_lock_service
 
 logger = structlog.stdlib.get_logger()
 
@@ -46,6 +46,29 @@ async def reset_org_data(
             detail="confirm_phrase does not match required value",
         )
 
+    # Server-side concurrency guard: take the per-org reset lock
+    # before doing anything destructive. Two simultaneous reset POSTs
+    # could otherwise interleave through the per-batch commits and
+    # the app-level idempotent seed; the seed has no DB-level UNIQUE
+    # on (org_id, slug, is_system) so the interleave window can
+    # duplicate defaults. Released in `finally` so a 500 still frees
+    # the lock; stale locks self-recover after LOCK_TTL_MINUTES in
+    # case a worker crashed mid-reset.
+    lease_token = await org_reset_lock_service.acquire_reset_lock(
+        db, org_id=org_id, user_id=actor_user_id,
+    )
+    if lease_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "reset_already_running",
+                "message": (
+                    "Another reset is already running for this organization. "
+                    "Please wait a moment and try again."
+                ),
+            },
+        )
+
     # ``reset_org_data`` commits per batch internally so locks release
     # between chunks. We do NOT issue an outer commit here — there's
     # nothing pending. On exception, rollback whatever was uncommitted
@@ -66,10 +89,15 @@ async def reset_org_data(
             error=str(e),
             error_type=type(e).__name__,
         )
+        # Release the lock before raising so a retry isn't blocked.
+        await org_reset_lock_service.release_reset_lock(db, org_id=org_id, token=lease_token)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to reset organization data",
         )
+
+    # Success path: release the lock so subsequent resets can run.
+    await org_reset_lock_service.release_reset_lock(db, org_id=org_id, token=lease_token)
 
     await logger.ainfo(
         "org.data.reset",

@@ -6,6 +6,7 @@ value=False correctly denies an otherwise plan-granted feature.
 """
 from __future__ import annotations
 
+from app._time import utcnow_naive
 from datetime import datetime, timedelta
 
 import pytest
@@ -211,7 +212,7 @@ async def test_expired_override_ignored(session_factory):
             org_id=org.id,
             feature_key="ai.budget",
             value=False,
-            expires_at=datetime.utcnow() - timedelta(days=1),
+            expires_at=utcnow_naive() - timedelta(days=1),
         ))
         await db.commit()
 

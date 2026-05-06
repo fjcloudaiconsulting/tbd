@@ -309,3 +309,83 @@ async def test_reset_failure_logs_failed_event(monkeypatch, session_factory, cap
     assert payload["org_id"] == seed["org_id"]
     assert payload["error_type"] == "RuntimeError"
     assert "simulated DB failure" in payload["error"]
+
+
+# ── Concurrent-reset guard (residual-risk follow-up to PR #134) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_reset_returns_409_if_lock_already_held(session_factory):
+    """Second reset POST while a first one is in flight returns 409
+    with a structured error so the frontend can surface a clear
+    'another reset is running' message.
+    """
+    from app.services import org_reset_lock_service
+    seed = await _seed(session_factory)
+
+    # Plant a fresh lock manually to simulate an in-flight reset.
+    async with session_factory() as db:
+        acquired = await org_reset_lock_service.acquire_reset_lock(
+            db, org_id=seed["org_id"], user_id=seed["owner_id"],
+        )
+    assert acquired is not None  # acquire returns the lease token now
+
+    app = make_app(session_factory, _resolver_for(Role.OWNER))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/orgs/data/reset",
+            json={"confirm_phrase": f"RESET {ORG_NAME}"},
+        )
+    assert res.status_code == 409
+    body = res.json()
+    assert body["detail"]["code"] == "reset_already_running"
+    assert "another reset" in body["detail"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_reset_releases_lock_on_success(session_factory):
+    """A successful reset must release the lock so the user can run
+    another reset later (the canonical workflow).
+    """
+    from app.services import org_reset_lock_service
+    seed = await _seed(session_factory)
+
+    app = make_app(session_factory, _resolver_for(Role.OWNER))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/orgs/data/reset",
+            json={"confirm_phrase": f"RESET {ORG_NAME}"},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        assert await org_reset_lock_service.is_reset_locked(
+            db, org_id=seed["org_id"]
+        ) is False
+
+
+@pytest.mark.asyncio
+async def test_reset_releases_lock_on_failure(monkeypatch, session_factory):
+    """On a 500 from the reset path, the lock must still be released
+    so the user isn't stuck with a forever-busy org.
+    """
+    from app.services import org_data_service, org_reset_lock_service
+    seed = await _seed(session_factory)
+
+    async def boom(db, *, org_id, batch_size=500):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(org_data_service, "reset_org_data", boom)
+
+    app = make_app(session_factory, _resolver_for(Role.OWNER))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/orgs/data/reset",
+            json={"confirm_phrase": f"RESET {ORG_NAME}"},
+        )
+    assert res.status_code == 500
+
+    async with session_factory() as db:
+        assert await org_reset_lock_service.is_reset_locked(
+            db, org_id=seed["org_id"]
+        ) is False

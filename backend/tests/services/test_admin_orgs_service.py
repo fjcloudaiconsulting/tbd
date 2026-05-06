@@ -9,6 +9,7 @@ MySQL.
 from __future__ import annotations
 
 import datetime
+from app._time import utcnow_naive
 from decimal import Decimal
 
 import pytest
@@ -189,7 +190,7 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             org_id=org.id, email=f"invitee_{name}@acme.io",
             role=Role.MEMBER, open_email=f"invitee_{name}@acme.io",
             created_by=owner.id,
-            expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=7),
+            expires_at=utcnow_naive() + datetime.timedelta(days=7),
         )
         # Smart-rules row — category_rules.category_id FKs to categories.id,
         # so the cascade must wipe these before the bulk DELETE on categories.

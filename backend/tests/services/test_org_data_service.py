@@ -6,6 +6,7 @@ PRAGMA foreign_keys=ON so SQLite enforces FKs the way MySQL would.
 from __future__ import annotations
 
 import datetime
+from app._time import utcnow_naive
 from decimal import Decimal
 
 import pytest
@@ -174,7 +175,7 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             org_id=org.id, email=f"invitee_{name}@acme.io",
             role=Role.MEMBER, open_email=f"invitee_{name}@acme.io",
             created_by=owner.id,
-            expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=7),
+            expires_at=utcnow_naive() + datetime.timedelta(days=7),
         )
         rule = CategoryRule(
             org_id=org.id,

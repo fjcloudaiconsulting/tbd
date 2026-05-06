@@ -4,6 +4,7 @@ flows independent of the HTTP router."""
 from __future__ import annotations
 
 import datetime
+from app._time import utcnow_naive
 
 import pytest
 import pytest_asyncio
@@ -111,7 +112,7 @@ async def test_create_invitation_happy_path(session_factory):
         assert inv.revoked_at is None
         assert inv.open_email == "newmember@acme.io"
         # 7-day default expiry
-        delta = inv.expires_at - datetime.datetime.utcnow()
+        delta = inv.expires_at - utcnow_naive()
         assert datetime.timedelta(days=6, hours=23) < delta < datetime.timedelta(days=7, hours=1)
 
 
@@ -238,9 +239,9 @@ async def test_list_pending_invitations_excludes_accepted_and_revoked(session_fa
         )
         # Manually flip b → revoked, c → accepted.
         b.open_email = None
-        b.revoked_at = datetime.datetime.utcnow()
+        b.revoked_at = utcnow_naive()
         c.open_email = None
-        c.accepted_at = datetime.datetime.utcnow()
+        c.accepted_at = utcnow_naive()
         await db.commit()
     async with session_factory() as db:
         pending = await invitation_service.list_pending_invitations(db, org_id=org_id)
@@ -301,7 +302,7 @@ async def test_create_invitation_clears_expired_open_invite_blocking_reuse(sessi
             email="late@acme.io", role=Role.MEMBER,
         )
         # Time-warp the first row past its expires_at
-        first.expires_at = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        first.expires_at = utcnow_naive() - datetime.timedelta(days=1)
         await db.commit()
     async with session_factory() as db:
         # Second invite to the same email should succeed because the lazy

@@ -13,6 +13,7 @@ message client-side, full detail server-side.
 """
 
 from datetime import datetime
+from app._time import utcnow_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
@@ -170,7 +171,7 @@ async def _override_to_response(row: OrgFeatureOverride, db: AsyncSession) -> di
     email = None
     if row.set_by is not None:
         email = await db.scalar(select(User.email).where(User.id == row.set_by))
-    is_expired = row.expires_at is not None and row.expires_at <= datetime.utcnow()
+    is_expired = row.expires_at is not None and row.expires_at <= utcnow_naive()
     return {
         "feature_key": row.feature_key,
         "value": row.value,
@@ -232,7 +233,7 @@ async def set_feature_override(
             else:
                 existing.value = body.value
                 existing.set_by = user.id
-                existing.set_at = datetime.utcnow()
+                existing.set_at = utcnow_naive()
                 existing.expires_at = body.expires_at
                 existing.note = body.note
                 row = existing
@@ -351,7 +352,7 @@ async def get_feature_state(
         .outerjoin(User, User.id == OrgFeatureOverride.set_by)
         .where(OrgFeatureOverride.org_id == org_id)
     )
-    now = datetime.utcnow()
+    now = utcnow_naive()
     overrides_by_key: dict[str, dict] = {}
     for row, email in rows.all():
         if row.feature_key not in ALL_FEATURE_KEYS:

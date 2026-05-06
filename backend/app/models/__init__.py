@@ -13,6 +13,7 @@ from app.models.invitation import Invitation
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.feature_override import OrgFeatureOverride  # noqa: F401
+from app.models.org_data_reset_lock import OrgDataResetLock  # noqa: F401
 
 __all__ = [
     "Base",
@@ -44,4 +45,5 @@ __all__ = [
     "RuleSource",
     "MerchantDictionaryEntry",
     "OrgFeatureOverride",
+    "OrgDataResetLock",
 ]

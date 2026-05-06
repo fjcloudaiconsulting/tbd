@@ -18,6 +18,7 @@ isolation:
 from __future__ import annotations
 
 import datetime
+from app._time import utcnow_naive
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -54,7 +55,7 @@ async def _clear_expired_open_invites(
 ) -> None:
     """Null `open_email` on expired pending rows for this (org, email)
     so the unique slot is free for a fresh invite."""
-    now = datetime.datetime.utcnow()
+    now = utcnow_naive()
     await db.execute(
         update(Invitation)
         .where(
@@ -109,7 +110,7 @@ async def create_invitation(
     if pending is not None:
         raise ConflictError("This email is already invited")
 
-    now = datetime.datetime.utcnow()
+    now = utcnow_naive()
     inv = Invitation(
         org_id=org_id,
         email=norm,
@@ -141,7 +142,7 @@ async def list_pending_invitations(
     """Pending = not accepted, not revoked, not expired. Lazy expiry —
     rows past `expires_at` are filtered out here even if `open_email` is
     still set."""
-    now = datetime.datetime.utcnow()
+    now = utcnow_naive()
     result = await db.execute(
         select(Invitation)
         .where(
@@ -170,7 +171,7 @@ async def revoke_invitation(
     if inv.accepted_at is not None or inv.revoked_at is not None:
         # Already terminal — keep idempotent and return as-is.
         return inv
-    inv.revoked_at = datetime.datetime.utcnow()
+    inv.revoked_at = utcnow_naive()
     inv.open_email = None
     await db.flush()
     return inv
@@ -199,7 +200,7 @@ async def _resolve_pending(
     if inv.email != token_email:
         # Token reused against a row whose email was changed — refuse.
         raise InvitationUnavailable()
-    now = datetime.datetime.utcnow()
+    now = utcnow_naive()
     if inv.accepted_at is not None or inv.revoked_at is not None or inv.expires_at <= now:
         raise InvitationUnavailable()
     return inv
@@ -263,7 +264,7 @@ async def accept_invitation(
         or _normalize_email(str(payload.get("email", ""))) != inv.email
     ):
         raise InvitationUnavailable()
-    now = datetime.datetime.utcnow()
+    now = utcnow_naive()
     if inv.accepted_at is not None or inv.revoked_at is not None or inv.expires_at <= now:
         raise InvitationUnavailable()
 
@@ -395,6 +396,6 @@ async def remove_member(
             raise ConflictError("Cannot remove the last owner of the organization")
 
     target.is_active = False
-    target.sessions_invalidated_at = datetime.datetime.utcnow()
+    target.sessions_invalidated_at = utcnow_naive()
     await db.flush()
     return target

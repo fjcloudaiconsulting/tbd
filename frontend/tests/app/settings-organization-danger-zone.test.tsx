@@ -227,4 +227,57 @@ describe("OrganizationSettingsPage — Danger Zone", () => {
     // Resolve the POST so the test cleans up.
     resolveReset({});
   });
+
+  it("surfaces the 409 'reset_already_running' error message and re-enables the button", async () => {
+    mockUser("owner");
+    // Mirror apiFetch's ApiResponseError shape — the wrapper translates
+    // the structured 409 detail into err.message.
+    class FakeApiResponseError extends Error {
+      status = 409;
+      code = "reset_already_running";
+      constructor(message: string) {
+        super(message);
+        this.name = "ApiResponseError";
+      }
+    }
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/orgs/data/reset" && init?.method === "POST") {
+        return Promise.reject(
+          new FakeApiResponseError(
+            "Another reset is already running for this organization. Please wait a moment and try again.",
+          ),
+        );
+      }
+      if (url === "/api/v1/settings/billing-cycle")
+        return Promise.resolve({ billing_cycle_day: 1 });
+      if (url === "/api/v1/settings/billing-period")
+        return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
+      if (url === "/api/v1/settings") return Promise.resolve([]);
+      if (url === "/api/v1/orgs/members") return Promise.resolve([]);
+      if (url === "/api/v1/orgs/invitations") return Promise.resolve([]);
+      if (url === "/api/v1/category-rules") return Promise.resolve([]);
+      return Promise.resolve({});
+    }) as never);
+    render(<OrganizationSettingsPage />);
+    await waitFor(() => expect(screen.getByText(/Danger zone/i)).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText(/confirm reset phrase/i), {
+      target: { value: `RESET ${ORG_NAME}` },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /reset organization data permanently/i }));
+
+    // Error banner shows the structured message from the backend.
+    await waitFor(() =>
+      expect(screen.getByText(/Another reset is already running/)).toBeInTheDocument(),
+    );
+
+    // Button returns to its enabled-with-default-copy state so the
+    // user can retry once the other reset finishes.
+    const button = screen.getByRole("button", {
+      name: /reset organization data permanently/i,
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    // Spinner copy is gone.
+    expect(screen.queryByText(/Resetting organization data/)).toBeNull();
+  });
 });
