@@ -5,15 +5,20 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { fetchAll } from "@/lib/pagination";
 import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
-import type { Account, AccountType } from "@/lib/types";
+import type { Account, AccountType, Transaction } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 
 export default function AccountsPage() {
   const { user, loading } = useAuth();
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  // All-time pending transactions for the per-account "Pending: €X.XX"
+  // row. Pending is a status, not a period concept; a CC charge sitting
+  // in pending must be visible whether it was made this month or last.
+  const [pendingTransactions, setPendingTransactions] = useState<Transaction[]>([]);
   const [fetching, setFetching] = useState(true);
 
   const [typeName, setTypeName] = useState("");
@@ -38,12 +43,25 @@ export default function AccountsPage() {
   const [confirmDeleteAcctId, setConfirmDeleteAcctId] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
-    const [types, accts] = await Promise.all([
+    // Primary fetches: account types + accounts. A failure here is a
+    // real failure — surface it through the existing reload().catch.
+    // Run in parallel with the supplementary pending fetch but don't
+    // let pending's failure bring the whole page down.
+    const pendingPromise = fetchAll<Transaction>("/api/v1/transactions?status=pending")
+      // Best-effort: a pending fetch failure must not (a) blank the
+      // accounts list on initial load, or (b) make a successful
+      // mutation look failed because reload() rejected only due to
+      // the pending augment. Resolve with `null` to signal "skip the
+      // setState" without rejecting the parent Promise.all.
+      .catch(() => null);
+    const [types, accts, pending] = await Promise.all([
       apiFetch<AccountType[]>("/api/v1/account-types"),
       apiFetch<Account[]>("/api/v1/accounts"),
+      pendingPromise,
     ]);
     setAccountTypes(types ?? []);
     setAccounts(accts ?? []);
+    if (pending !== null) setPendingTransactions(pending);
     setFetching(false);
   }, []);
 
@@ -133,6 +151,16 @@ export default function AccountsPage() {
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
+
+  // Per-account pending totals. Income contributes positively, expense
+  // negatively (so for a CC, pending is normally negative — money owed).
+  // The display below renders Math.abs() and the "Pending:" label, so
+  // sign is just used to compute the magnitude correctly.
+  const pendingByAccount = pendingTransactions.reduce<Record<number, number>>((acc, tx) => {
+    const sign = tx.type === "income" ? 1 : -1;
+    acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
+    return acc;
+  }, {});
 
   return (
     <AppShell>
@@ -261,11 +289,16 @@ export default function AccountsPage() {
                         {!a.is_active && <span className="text-xs text-danger">inactive</span>}
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-4 md:ml-auto">
+                    <div className="flex shrink-0 flex-col items-end gap-0.5 md:ml-auto">
                       <span className="text-sm tabular-nums text-text-primary">
                         {formatAmount(a.balance)}{" "}
                         <span className="text-text-muted">{a.currency}</span>
                       </span>
+                      {pendingByAccount[a.id] ? (
+                        <span className="text-xs tabular-nums text-text-muted">
+                          Pending: {formatAmount(Math.abs(pendingByAccount[a.id]))}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="flex flex-wrap gap-3">
                       <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>

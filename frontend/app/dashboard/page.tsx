@@ -7,6 +7,7 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { fetchAll } from "@/lib/pagination";
 import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
 
@@ -95,6 +96,17 @@ export default function DashboardPage() {
   const [billingCycleDay, setBillingCycleDay] = useState(user?.billing_cycle_day ?? 1);
   const [periodIdx, setPeriodIdx] = useState(0);
   const [forecast, setForecast] = useState<ForecastPlan | null>(null);
+  // All-time pending transactions (no date filter). Pending is a status,
+  // not a period concept; a CC charge from October that's still pending
+  // in November must remain visible regardless of which period the user
+  // is viewing. Refreshed on every write — independent of the visible
+  // transaction page (the status toggle on page 2 still needs to refresh
+  // the strip's pending totals).
+  const [pendingTransactions, setPendingTransactions] = useState<Transaction[]>([]);
+  // Counter-ref guard for the pending fetch. Two writes in quick
+  // succession can issue two pending refetches; only the latest one is
+  // allowed to commit state. Same pattern as projectionRequestId below.
+  const pendingRequestId = useRef(0);
   const [forecastProjection, setForecastProjection] = useState<ForecastProjection | null>(null);
   const [projectionFailed, setProjectionFailed] = useState(false);
   const [projectionLoading, setProjectionLoading] = useState(false);
@@ -198,6 +210,24 @@ export default function DashboardPage() {
     setFetching(false);
   }, [monthFrom, monthTo, realPeriodStart]);
 
+  // All-time pending refetch. Decoupled from loadTransactions so it
+  // refreshes on writes regardless of which transaction page is visible:
+  // a status toggle on page 2 must still update the accounts strip.
+  // Paginated through fetchAll<Transaction> so the limit=200 cap can't
+  // silently drop older unresolved pending charges.
+  const loadPendingTransactions = useCallback(async () => {
+    const myId = ++pendingRequestId.current;
+    try {
+      const all = await fetchAll<Transaction>("/api/v1/transactions?status=pending");
+      if (pendingRequestId.current !== myId) return;
+      setPendingTransactions(all);
+    } catch {
+      // Pending failures are noisy but non-fatal — silently keep the
+      // last good snapshot. The dashboard error banner already surfaces
+      // the real problem if loadRefs / loadTransactions also failed.
+    }
+  }, []);
+
   // Loads the forecast projection from /api/v1/forecast for the
   // currently-selected billing period. Separate from loadTransactions
   // because (a) failure here should NOT crash the whole dashboard load
@@ -250,8 +280,10 @@ export default function DashboardPage() {
       loadRefs().catch((err) => {
         setError(extractErrorMessage(err, "Failed to load dashboard data"));
       });
+      // Pending is independent of period and refs; load alongside.
+      void loadPendingTransactions();
     }
-  }, [loading, user, loadRefs]);
+  }, [loading, user, loadRefs, loadPendingTransactions]);
 
   useEffect(() => {
     // Gate the period-scoped load on a real billing period being in
@@ -346,6 +378,9 @@ export default function DashboardPage() {
       // we re-call /api/v1/forecast, otherwise the page's primary answer
       // ("are we on track?") can be wrong.
       void loadForecastProjection();
+      // Pending charges may have changed (a settled-on-create or a manual
+      // pending entry); refresh independent of the visible page index.
+      void loadPendingTransactions();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -387,14 +422,15 @@ export default function DashboardPage() {
   // Precompute tx map for O(1) linked lookups
   const txMap = new Map(allTransactions.map((tx) => [tx.id, tx]));
 
-  // Pending totals per account from all period transactions
-  const pendingByAccount = allTransactions
-    .filter((tx) => tx.status === "pending")
-    .reduce<Record<number, number>>((acc, tx) => {
-      const sign = tx.type === "income" ? 1 : -1;
-      acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
-      return acc;
-    }, {});
+  // Pending totals per account, computed from the all-time pending fetch
+  // (NOT from the period-filtered allTransactions). Pending CC charges
+  // must remain visible regardless of which billing period the user is
+  // viewing — pending is a status, not a date.
+  const pendingByAccount = pendingTransactions.reduce<Record<number, number>>((acc, tx) => {
+    const sign = tx.type === "income" ? 1 : -1;
+    acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
+    return acc;
+  }, {});
 
   // Spending by category from all period transactions. Transfer expense
   // halves carry linked_transaction_id; excluding them here stops transfers
@@ -879,6 +915,9 @@ export default function DashboardPage() {
                               await loadTransactions(page);
                               await loadRefs();
                               void loadForecastProjection();
+                              // Independent of `page` — a toggle on page 2
+                              // still has to refresh the strip's totals.
+                              void loadPendingTransactions();
                             } catch (err) {
                               setError(extractErrorMessage(err));
                             }
