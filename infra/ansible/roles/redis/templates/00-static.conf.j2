@@ -1,0 +1,11 @@
+{# Static settings: changes here REQUIRE a Redis restart. Restart is the #}
+{# heavy hammer: it drops every existing client connection, including the #}
+{# App Platform backend's redis-py connection pool, so the admin dashboard #}
+{# briefly reports Redis: DOWN until clients reconnect. Keep this file #}
+{# small and only put fields here that the running server cannot reload. #}
+bind 127.0.0.1 {{ private_ipv4 }}
+protected-mode yes
+requirepass {{ redis_password }}
+# Persistence off: PFV uses Redis only for ephemeral data (rate limits, sessions).
+appendonly no
+save ""

@@ -12,23 +12,66 @@
     group: redis
     mode: "0750"
 
-- name: Drop pfv Redis config override
+# Static knobs (bind, port, requirepass, protected-mode, persistence).
+# Changes here require a real restart, which drops every client
+# connection, including the App Platform backend's redis-py pool. Worth
+# the cost when these actually change; rare in practice.
+- name: Drop pfv Redis static config override
   ansible.builtin.template:
-    src: redis.conf.j2
-    dest: /etc/redis/conf.d/pfv.conf
+    src: 00-static.conf.j2
+    dest: /etc/redis/conf.d/00-static.conf
     owner: redis
     group: redis
     mode: "0640"
   notify: Restart redis
 
-# Make sure the main /etc/redis/redis.conf actually pulls in our override.
-# The Ubuntu 24.04 redis-server package supports `include` directives.
-- name: Ensure main redis.conf includes our override
+# Live-tunable knobs (maxmemory, maxmemory-policy). Applying via
+# `redis-cli CONFIG SET` keeps every existing client connection alive,
+# so the admin dashboard does not flap to Redis: DOWN during a routine
+# memory bump. The handler also runs CONFIG REWRITE so the new value
+# survives a future restart even though it isn't written back to this
+# drop-in (CONFIG REWRITE only edits the file Redis loaded from). The
+# drop-in remains the source of truth for the next Ansible run.
+- name: Drop pfv Redis tunables override
+  ansible.builtin.template:
+    src: 10-tunables.conf.j2
+    dest: /etc/redis/conf.d/10-tunables.conf
+    owner: redis
+    group: redis
+    mode: "0640"
+  notify: Apply redis live tunables
+
+# Make sure the main /etc/redis/redis.conf actually pulls in our
+# overrides. The Ubuntu 24.04 redis-server package supports `include`
+# directives. Use a wildcard so both drop-ins are picked up in
+# alphabetical order (00-static before 10-tunables).
+- name: Ensure main redis.conf includes our overrides
+  ansible.builtin.lineinfile:
+    path: /etc/redis/redis.conf
+    line: "include /etc/redis/conf.d/*.conf"
+    state: present
+    insertafter: EOF
+  notify: Restart redis
+
+# Drop the previous single-include line so we don't end up with both
+# entries after this role runs against a host provisioned by the older
+# revision of the role.
+- name: Remove legacy single-file include line
   ansible.builtin.lineinfile:
     path: /etc/redis/redis.conf
     line: "include /etc/redis/conf.d/pfv.conf"
-    state: present
-    insertafter: EOF
+    state: absent
+  notify: Restart redis
+
+# Clean up the legacy single-file drop-in left over from earlier
+# revisions of this role. Leaving it would mean two `requirepass` /
+# `maxmemory` declarations in /etc/redis/conf.d, with the alphabetically
+# last one winning, which is fine today but invites drift the next time
+# someone edits one and forgets the other.
+- name: Remove legacy single-file drop-in
+  ansible.builtin.file:
+    path: /etc/redis/conf.d/pfv.conf
+    state: absent
   notify: Restart redis
 
 - name: Ensure Redis is started and enabled

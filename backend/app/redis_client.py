@@ -15,6 +15,10 @@ Behavior when `settings.redis_url` is empty:
 import logging
 
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.config import settings
 
@@ -26,8 +30,22 @@ _client: Redis | None = None
 def get_client() -> Redis | None:
     """Return the Redis client if configured, else None.
 
-    Idempotent. The client is shared across the process lifetime — the
+    Idempotent. The client is shared across the process lifetime, the
     underlying connection pool handles concurrency.
+
+    Resilience knobs explained:
+    - `socket_keepalive=True`: lets the kernel detect dead peers (Valkey
+      restart, droplet reboot, VPC route flap) instead of waiting for the
+      next read to time out three seconds in.
+    - `health_check_interval=30`: redis-py pings idle pooled connections
+      every 30s and discards any that fail, so a Valkey restart does not
+      leave half-open sockets sitting in the pool waiting to time out a
+      future caller.
+    - `retry_on_error` + `retry`: one short backoff retry on connect or
+      timeout errors. This makes the dashboard probe and the MFA nonce
+      path tolerate a Valkey blip (e.g. an Ansible re-converge that
+      bounces the service) instead of surfacing a hard failure on the
+      very first stale-pool socket.
     """
     global _client
     if _client is None and settings.redis_url:
@@ -36,6 +54,10 @@ def get_client() -> Redis | None:
             decode_responses=True,
             socket_connect_timeout=3,
             socket_timeout=3,
+            socket_keepalive=True,
+            health_check_interval=30,
+            retry_on_error=[RedisConnectionError, RedisTimeoutError],
+            retry=Retry(ExponentialBackoff(cap=1.0, base=0.1), retries=2),
         )
     return _client
 

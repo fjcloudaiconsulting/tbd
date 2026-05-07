@@ -1,0 +1,6 @@
+{# Live-tunable settings: changes here are applied to the running server #}
+{# via `redis-cli CONFIG SET` (see the "Apply redis live tunables" handler) #}
+{# and persisted with `CONFIG REWRITE`. No restart, no dropped client #}
+{# connections, no spurious "Redis: DOWN" on the admin dashboard. #}
+maxmemory {{ redis_maxmemory }}
+maxmemory-policy {{ redis_maxmemory_policy }}
