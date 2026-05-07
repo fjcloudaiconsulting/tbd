@@ -9,15 +9,15 @@ export default function LandingFooter() {
           © <CurrentYear /> The Better Decision
         </div>
         <div className="flex flex-wrap items-center gap-5">
+          <Link href="/docs" className="hover:text-text-primary">
+            Docs
+          </Link>
           <Link href="/privacy" className="hover:text-text-primary">
             Privacy
           </Link>
           <Link href="/terms" className="hover:text-text-primary">
             Terms
           </Link>
-          {/* Help link intentionally omitted until roadmap L5.3 ships a
-              /help page. Visitors with questions can use the contact
-              email below in the meantime. */}
           <a
             href="mailto:hello@thebetterdecision.com"
             className="hover:text-text-primary"

@@ -32,7 +32,8 @@ cp .env.example .env    # First time only
 
 - App: http://localhost
 - API: http://localhost/api/
-- API docs: http://localhost/docs
+- API docs (Swagger): http://localhost/api/docs
+- In-app user manual: http://localhost/docs
 
 ## Common Commands
 
@@ -95,6 +96,6 @@ frontend/
 - **Auth on every endpoint** — use `get_current_user` dependency. Only /health, /ready, /api/v1/auth/login, /api/v1/auth/register, /api/v1/auth/refresh are public.
 - **Enum values** — SQLAlchemy enums use `values_callable=lambda x: [e.value for e in x]` to store lowercase values in MySQL
 - **Frontend has two Dockerfiles** — `Dockerfile.dev` for local dev (hot reload with volume mounts), `Dockerfile` for production (multi-stage standalone build, ~slim image)
-- **nginx is the single entry point** — backend and frontend only expose ports internally. `/api/*` routes to FastAPI, everything else to Next.js. `/docs` and `/openapi.json` are proxied directly.
+- **nginx is the single entry point** — backend and frontend only expose ports internally. `/api/*` routes to FastAPI, everything else to Next.js. FastAPI's Swagger UI is served at `/api/docs` (with `/api/openapi.json`) so `/docs` is free for the public in-app user manual served by Next.js.
 
 

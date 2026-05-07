@@ -39,11 +39,11 @@ mysql_data/
 .playwright-mcp/
 .cursor/
 .mcp.json
-# docs/ is intentionally kept out of the repo until we start a real user-
-# facing documentation / manual effort. Design decision records and
-# planning artifacts live in ~/.claude/projects/<slug>/specs/ (local).
-# When a dedicated docs effort starts, remove or scope this line.
-docs/
+# Top-level docs/ is intentionally kept out of the repo: design decision
+# records and planning artifacts live in ~/.claude/projects/<slug>/specs/
+# (local). The user-facing /docs page lives at frontend/app/docs/ which
+# this rule explicitly does not ignore (leading slash anchors the match).
+/docs/
 
 # Local test fixtures and scratch
 mock/

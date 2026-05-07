@@ -81,8 +81,12 @@ _is_dev = app_settings.app_env == "development"
 app = FastAPI(
     title=app_settings.app_name,
     lifespan=lifespan,
-    docs_url="/docs" if _is_dev else None,
-    openapi_url="/openapi.json" if _is_dev else None,
+    # Swagger UI moved under /api/ so the frontend can own /docs as the
+    # public in-app user manual. The browser path is /api/docs (proxied
+    # by nginx through the existing /api/* rule); FastAPI serves
+    # /api/docs and /api/openapi.json directly.
+    docs_url="/api/docs" if _is_dev else None,
+    openapi_url="/api/openapi.json" if _is_dev else None,
     redoc_url=None,
 )
 
