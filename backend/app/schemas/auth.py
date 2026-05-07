@@ -132,3 +132,12 @@ class MfaEmailVerifyRequest(BaseModel):
 
 class MfaRegenerateRequest(BaseModel):
     password: str = Field(max_length=128)
+
+
+class StepUpInitiateRequest(BaseModel):
+    # Short tag chosen by the frontend ("settings" for email change,
+    # "security" for first-time password set). Validated against the
+    # allowlist in routers/auth.py; anything else falls back to the
+    # default settings page rather than 4xx so an old client never
+    # breaks.
+    return_to: str | None = Field(default=None, max_length=32)

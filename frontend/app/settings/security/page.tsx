@@ -18,6 +18,11 @@ import {
 } from "@/lib/styles";
 import type { MfaSetupResponse, MfaEnableResponse } from "@/lib/types";
 
+// Mirror of the backend's `_STEPUP_RETURN_TARGETS` allowlist key.
+// Initiate POST sends this so the callback knows to redirect back to
+// /settings/security (here) instead of the email-change page.
+const STEPUP_RETURN_TO = "security";
+
 type MfaStep = "idle" | "qr" | "verify" | "codes";
 
 export default function SecurityPage() {
@@ -31,23 +36,64 @@ export default function SecurityPage() {
   const [pwdErr, setPwdErr] = useState("");
   const [savingPwd, setSavingPwd] = useState(false);
 
-  // SSO users (Google) start with `password_set=false`. The first time
-  // they POST /me/password the backend skips the current-password
-  // check and the flag flips true, so on the next render this branch
-  // collapses back to the standard Change Password UI.
+  // SSO users (Google) start with `password_set=false`. They cannot
+  // type a current password, so the first-time set requires the same
+  // Google step-up proof the email-change flow uses. The token rides
+  // back from the OAuth callback in `#stepup_token=…`, is read on
+  // mount, then sent to /me/password. After the first set the flag
+  // flips true and this branch collapses to the standard form.
   const passwordSet = user?.password_set ?? true;
+  const [stepupToken, setStepupToken] = useState("");
+  const [stepupBusy, setStepupBusy] = useState(false);
+
+  // Pull `#stepup_token=…` off the URL on mount and immediately strip
+  // it from history. Fragments are never sent to the server, so this
+  // is the safe channel the backend redirects to.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash;
+    if (hash.startsWith("#stepup_token=")) {
+      const token = hash.slice("#stepup_token=".length);
+      if (token) setStepupToken(token);
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }, []);
+
+  async function handleVerifyWithGoogle() {
+    setPwdErr(""); setStepupBusy(true);
+    try {
+      const data = await apiFetch<{ redirect_url: string }>(
+        "/api/v1/auth/sso-stepup/initiate",
+        {
+          method: "POST",
+          body: JSON.stringify({ return_to: STEPUP_RETURN_TO }),
+        },
+      );
+      // Full navigation, not router.push — Google must own the next page.
+      window.location.href = data.redirect_url;
+    } catch (err) {
+      setPwdErr(extractErrorMessage(err));
+      setStepupBusy(false);
+    }
+  }
 
   async function handlePasswordSubmit(e: FormEvent) {
     e.preventDefault();
     setPwdMsg(""); setPwdErr("");
     if (newPassword !== confirmPassword) { setPwdErr("New passwords do not match"); return; }
+    if (!passwordSet && !stepupToken) {
+      setPwdErr("Verify with Google before setting your password. Click 'Verify with Google' below.");
+      return;
+    }
     setSavingPwd(true);
     try {
-      const payload: { new_password: string; current_password?: string } = {
+      const payload: { new_password: string; current_password?: string; stepup_token?: string } = {
         new_password: newPassword,
       };
       if (passwordSet) {
         payload.current_password = currentPassword;
+      } else {
+        payload.stepup_token = stepupToken;
       }
       await apiFetch("/api/v1/users/me/password", {
         method: "POST",
@@ -73,12 +119,20 @@ export default function SecurityPage() {
       // re-renders in standard mode after a first-time set.
       await refreshMe();
       setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+      setStepupToken("");
       setPwdMsg(
         passwordSet
           ? "Password changed successfully"
           : "Password set. You can now sign in with your email and password.",
       );
-    } catch (err) { setPwdErr(extractErrorMessage(err)); }
+    } catch (err) {
+      // The step-up token is single-use on the backend and is consumed
+      // on the row before any error path that returns 4xx. Clearing
+      // local state forces the user to re-verify with Google rather
+      // than retry against an already-spent token. Keeps the UI honest.
+      if (!passwordSet) setStepupToken("");
+      setPwdErr(extractErrorMessage(err));
+    }
     finally { setSavingPwd(false); }
   }
 
@@ -243,6 +297,30 @@ export default function SecurityPage() {
                 <input id="pwd-current" type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={input} autoComplete="current-password" />
               </div>
             )}
+            {!passwordSet && (
+              <div className="rounded-lg border border-border p-4 space-y-3">
+                <p className="text-sm text-text-primary font-medium">
+                  Verify with Google to set a password
+                </p>
+                <p className="text-xs text-text-muted">
+                  Confirm this is you by signing in with Google before we save a password to your account.
+                </p>
+                {stepupToken ? (
+                  <p className="text-xs text-success">
+                    Google verified. Enter your new password below to finish.
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleVerifyWithGoogle}
+                    disabled={stepupBusy}
+                    className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                  >
+                    {stepupBusy ? "Redirecting..." : "Verify with Google"}
+                  </button>
+                )}
+              </div>
+            )}
             <div>
               <label htmlFor="pwd-new" className={label}>New Password</label>
               <input id="pwd-new" type="password" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={input} autoComplete="new-password" />
@@ -251,7 +329,11 @@ export default function SecurityPage() {
               <label htmlFor="pwd-confirm" className={label}>Confirm New Password</label>
               <input id="pwd-confirm" type="password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={input} autoComplete="new-password" />
             </div>
-            <button type="submit" disabled={savingPwd} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
+            <button
+              type="submit"
+              disabled={savingPwd || (!passwordSet && !stepupToken)}
+              className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+            >
               {savingPwd
                 ? (passwordSet ? "Changing..." : "Setting...")
                 : (passwordSet ? "Change Password" : "Set Password")}

@@ -131,7 +131,20 @@ export default function SettingsProfilePage() {
           ? "Profile updated. Check your new inbox for a verification link — you'll need to sign in again."
           : "Profile updated",
       );
-    } catch (err) { setProfileErr(extractErrorMessage(err)); }
+    } catch (err) {
+      const message = extractErrorMessage(err);
+      // Clear the step-up token whenever the error mentions step-up
+      // verification. Backend may have rejected the token as expired
+      // or no-longer-on-the-row, in which case the UI claiming
+      // "Google verified" lies to the user. Re-prompting is cheap.
+      // (Finding 3 from PR #138.)
+      if (stepupToken && /step-up|verify with google/i.test(message)) {
+        setStepupToken("");
+        setProfileErr(`${message} Please verify with Google again to retry.`);
+      } else {
+        setProfileErr(message);
+      }
+    }
     finally { setSavingProfile(false); }
   }
 

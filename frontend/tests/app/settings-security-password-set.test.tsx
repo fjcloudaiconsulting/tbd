@@ -77,9 +77,11 @@ describe("Security page — Set a Password / Change Password gate", () => {
     ).toBeInTheDocument();
     // The current-password input is intentionally hidden in this branch.
     expect(screen.queryByLabelText(/Current Password/i)).not.toBeInTheDocument();
-    // Helper copy explains *why* there is no current password field.
+    // Helper copy frames the step-up requirement (replaces the older
+    // "created with Google" sentence after Finding 1 tightened this
+    // path).
     expect(
-      screen.getByText(/created with Google/i),
+      screen.getByText(/Verify with Google to set a password/i),
     ).toBeInTheDocument();
   });
 
@@ -93,7 +95,14 @@ describe("Security page — Set a Password / Change Password gate", () => {
     expect(screen.getByLabelText(/Current Password/i)).toBeInTheDocument();
   });
 
-  it("submits new_password only (no current_password) when password_set is false", async () => {
+  it("disables Set Password until the user verifies with Google", async () => {
+    mockUser(false);
+    render(<SecurityPage />);
+    const submit = screen.getByRole("button", { name: /Set Password/i });
+    expect(submit).toBeDisabled();
+  });
+
+  it("does not POST /me/password without a step-up token (Finding 1)", async () => {
     mockUser(false);
     render(<SecurityPage />);
     fireEvent.change(screen.getByLabelText(/^New Password$/i), {
@@ -102,16 +111,86 @@ describe("Security page — Set a Password / Change Password gate", () => {
     fireEvent.change(screen.getByLabelText(/Confirm New Password/i), {
       target: { value: "fresh-password-1" },
     });
+    // The submit button is disabled until verification completes; the
+    // critical invariant is that no request is fired.
     fireEvent.click(screen.getByRole("button", { name: /Set Password/i }));
 
     await waitFor(() => {
+      // No password POST should have happened. (Other endpoints, like
+      // the security page's settings reads, are gated to admins only
+      // and stay quiet for this fixture.)
+      const passwordCalls = vi.mocked(apiFetch).mock.calls.filter(
+        ([url]) => url === "/api/v1/users/me/password",
+      );
+      expect(passwordCalls).toHaveLength(0);
+    });
+  });
+
+  it("clicking 'Verify with Google' POSTs initiate with return_to=security", async () => {
+    mockUser(false);
+    vi.mocked(apiFetch).mockResolvedValueOnce({
+      redirect_url: "https://accounts.google.com/o/oauth2/v2/auth?state=stepup",
+    } as never);
+    // Stub navigation so the test doesn't actually leave the page.
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: { ...originalLocation, href: "" },
+    });
+
+    render(<SecurityPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Verify with Google/i }));
+
+    await waitFor(() => {
       expect(apiFetch).toHaveBeenCalledWith(
-        "/api/v1/users/me/password",
+        "/api/v1/auth/sso-stepup/initiate",
         expect.objectContaining({
           method: "POST",
-          body: JSON.stringify({ new_password: "fresh-password-1" }),
+          body: JSON.stringify({ return_to: "security" }),
         }),
       );
     });
+
+    Object.defineProperty(window, "location", {
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("submits stepup_token with new_password when password_set is false", async () => {
+    mockUser(false);
+    // Seed the URL fragment so the page picks up the token on mount,
+    // mirroring the redirect from the SSO step-up callback.
+    const originalHash = window.location.hash;
+    window.location.hash = "#stepup_token=abcdef-step-up-token";
+    try {
+      render(<SecurityPage />);
+      // The mount-effect strips the hash and fills `stepupToken`.
+      // Wait for the "Google verified" copy to appear.
+      await screen.findByText(/Google verified/i);
+
+      fireEvent.change(screen.getByLabelText(/^New Password$/i), {
+        target: { value: "fresh-password-1" },
+      });
+      fireEvent.change(screen.getByLabelText(/Confirm New Password/i), {
+        target: { value: "fresh-password-1" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Set Password/i }));
+
+      await waitFor(() => {
+        expect(apiFetch).toHaveBeenCalledWith(
+          "/api/v1/users/me/password",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({
+              new_password: "fresh-password-1",
+              stepup_token: "abcdef-step-up-token",
+            }),
+          }),
+        );
+      });
+    } finally {
+      window.location.hash = originalHash;
+    }
   });
 });
