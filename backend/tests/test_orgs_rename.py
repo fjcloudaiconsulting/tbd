@@ -441,3 +441,76 @@ async def test_rename_org_normalizes_whitespace_in_preflight(session_factory):
         )
         assert old == ORG_A_NAME
         assert new == ORG_A_NAME
+
+
+@pytest.mark.asyncio
+async def test_rename_org_service_preflight_is_accent_sensitive(session_factory):
+    """Service-level pin for the accent-sensitive preflight.
+
+    Regression: the original preflight used
+    ``Organization.name.ilike(new_name)``. On MySQL with the base
+    column's default ``utf8mb4_0900_ai_ci`` collation, ``ilike``
+    treats "Cafe" and "Café" as equal and would 409 a rename that
+    the actual UNIQUE on the ``utf8mb4_0900_as_cs``-collated
+    ``name_normalized`` column would happily accept.
+
+    There's a route-level test (``test_rename_org_duplicate_accent_sensitive``)
+    that exercises this path through the API on SQLite, but the SQL
+    operator behaviour differs by dialect. This test calls the
+    service directly so the intent — "accent-different names are NOT
+    duplicates" — is greppable at the comparison's site.
+    """
+    seed = await _seed(session_factory, second_org_name="Cafe")
+    async with session_factory() as db:
+        old, new = await org_service.rename_org(
+            db, org_id=seed["org_a_id"], new_name="Café",
+        )
+        assert old == ORG_A_NAME
+        assert new == "Café"
+
+
+@pytest.mark.asyncio
+async def test_rename_org_service_preflight_does_not_treat_underscore_as_wildcard(
+    session_factory,
+):
+    """Service-level pin that the preflight uses exact comparison,
+    not SQL ``LIKE`` wildcards.
+
+    Regression: ``ilike("FooXbar")`` would NOT have matched a row
+    named "Foo_bar" — wrong direction for that example. The real
+    risk with ``ilike`` is the inverse: ``ilike("Foo_bar")`` matches
+    "FooXbar" because ``_`` is the single-char wildcard. Seed an org
+    "Foo_bar", then attempt to rename to "Foo_bar" exactly while
+    another org "FooXbar" exists. The exact match should still
+    409 (collision with self-named row). The flip case — exists
+    "FooXbar", rename target "Foo_bar" — should NOT 409 because
+    the names are genuinely different.
+    """
+    seed = await _seed(session_factory, second_org_name="FooXbar")
+    async with session_factory() as db:
+        # Distinct names, distinct rows: this rename must succeed.
+        old, new = await org_service.rename_org(
+            db, org_id=seed["org_a_id"], new_name="Foo_bar",
+        )
+        assert old == ORG_A_NAME
+        assert new == "Foo_bar"
+
+
+@pytest.mark.asyncio
+async def test_rename_org_service_preflight_case_insensitive_still_blocks(
+    session_factory,
+):
+    """Companion to the accent-sensitive test: confirm the preflight
+    still raises 409 when the new name differs from another org's
+    name only by ASCII case. Belt-and-suspenders alongside the
+    route-level case-insensitive test.
+    """
+    from fastapi import HTTPException
+
+    seed = await _seed(session_factory, second_org_name="Acme")
+    async with session_factory() as db:
+        with pytest.raises(HTTPException) as exc:
+            await org_service.rename_org(
+                db, org_id=seed["org_a_id"], new_name="ACME",
+            )
+        assert exc.value.status_code == 409

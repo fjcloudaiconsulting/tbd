@@ -7,7 +7,7 @@ later tracks; keeping the module narrow until then.
 from __future__ import annotations
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import Organization
@@ -66,18 +66,35 @@ async def rename_org(
     # truth, but a clean 409 with a helpful message beats raising
     # IntegrityError up to the user. The race window between this
     # SELECT and the COMMIT is closed by the constraint.
-    duplicate = (
+    #
+    # The actual UNIQUE on MySQL lives on a generated ``name_normalized``
+    # column with collation ``utf8mb4_0900_as_cs`` — case-insensitive
+    # but accent-sensitive. The base ``organizations.name`` column uses
+    # the table's default collation (typically ``utf8mb4_0900_ai_ci``,
+    # accent-insensitive), so SQL operators on the base column treat
+    # "Cafe" and "Café" as equal. To stay aligned with the constraint,
+    # SQL pre-filters loosely on ``LOWER(name)`` (over-accepts on
+    # MySQL: matches accent variants too) and Python filters exactly
+    # with ``str.lower()`` (preserves accents).
+    #
+    # Also avoids ``ilike(new_name)``: ``%``/``_`` would be parsed as
+    # wildcards and could falsely match unrelated names.
+    new_lower = new_name.lower()
+    candidates = (
         await db.execute(
-            select(Organization.id)
+            select(Organization.id, Organization.name)
             .where(Organization.id != org_id)
-            .where(Organization.name.ilike(new_name))
+            .where(func.lower(Organization.name) == new_lower)
         )
-    ).scalar_one_or_none()
-    if duplicate is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An organization with that name already exists",
-        )
+    ).all()
+    for row in candidates:
+        # Python's str.lower() is accent-preserving, mirroring the
+        # accent-sensitive UNIQUE on MySQL.
+        if row.name.lower() == new_lower:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An organization with that name already exists",
+            )
 
     org.name = new_name
     return (old_name, new_name)

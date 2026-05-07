@@ -49,22 +49,33 @@ depends_on = None
 
 
 def _check_no_duplicates(bind) -> None:
-    """Bail with a clear error if duplicate (case-insensitive) org
-    names already exist. Pre-launch insurance: the DDL would fail
-    anyway, but this surfaces the offending rows up front so an
-    operator can fix them in one pass.
+    """Bail with a clear error if duplicate (case-insensitive,
+    accent-sensitive) org names already exist. Pre-launch insurance:
+    the DDL would fail anyway, but this surfaces the offending rows
+    up front so an operator can fix them in one pass.
+
+    The actual UNIQUE on MySQL is over ``LOWER(name)`` collated as
+    ``utf8mb4_0900_as_cs`` — case-insensitive, accent-sensitive. The
+    base ``organizations.name`` column inherits the table's default
+    collation (typically ``utf8mb4_0900_ai_ci``, accent-insensitive),
+    so a pure ``GROUP BY LOWER(name)`` SQL precheck would falsely flag
+    "Cafe" and "Café" as duplicates and block a valid upgrade. Pull
+    rows out and group in Python with ``str.lower()`` (accent-
+    preserving) to mirror the constraint exactly.
     """
-    rows = bind.execute(sa.text(
-        "SELECT LOWER(name) AS norm, COUNT(*) AS n "
-        "FROM organizations "
-        "GROUP BY LOWER(name) "
-        "HAVING n > 1"
-    )).all()
-    if rows:
-        offenders = ", ".join(f"{r.norm!r} (x{r.n})" for r in rows)
+    rows = bind.execute(
+        sa.text("SELECT name FROM organizations")
+    ).all()
+    groups: dict[str, int] = {}
+    for r in rows:
+        key = (r.name or "").lower()
+        groups[key] = groups.get(key, 0) + 1
+    offenders = [(k, n) for k, n in groups.items() if n > 1]
+    if offenders:
+        rendered = ", ".join(f"{k!r} (x{n})" for k, n in offenders)
         raise RuntimeError(
-            "Cannot apply UNIQUE on organizations.name (case-insensitive): "
-            f"duplicates already exist: {offenders}. "
+            "Cannot apply UNIQUE on organizations.name (case-insensitive, "
+            f"accent-sensitive): duplicates already exist: {rendered}. "
             "Resolve the duplicates and re-run the migration."
         )
 
