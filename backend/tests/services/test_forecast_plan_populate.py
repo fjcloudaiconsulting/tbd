@@ -283,6 +283,49 @@ async def test_history_settled_only(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_current_period_only_creates_plan_line_without_history(session_factory):
+    """A category with NO historical settled transactions but at least one
+    current-period transaction (settled or pending) must still produce a
+    plan line. Current-period activity is authoritative; the 2-month
+    minimum gate only applies when relying purely on history.
+
+    Regression: before this fix, populate skipped any category whose only
+    activity was in the current period, so a non-recurring one-shot like
+    a furniture purchase imported in May would not surface in auto-populate
+    even though pending was being counted into master_monthly.
+    """
+    seed = await _seed(session_factory)
+
+    async with session_factory() as db:
+        # No historical transactions at all. One pending in current period.
+        db.add(_tx(
+            org_id=seed["org_id"], account_id=seed["account_id"],
+            category_id=seed["groceries_id"], amount=500,
+            date=datetime.date(2026, 5, 7),
+            settled_date=None,
+            status=TransactionStatus.PENDING, type_=TransactionType.EXPENSE,
+        ))
+        await db.commit()
+
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+
+    items = [
+        i for i in resp.items
+        if i.category_id == seed["groceries_id"] and i.type == "expense"
+    ]
+    assert len(items) == 1, (
+        "current-period-only activity should create a plan line; "
+        "historical 2-month gate must not apply when current-period exists"
+    )
+    # Average over the single current-period slot equals the tx amount.
+    assert items[0].planned_amount == Decimal("500.00")
+    assert items[0].source == "history"
+
+
+@pytest.mark.asyncio
 async def test_current_period_excludes_transfer_legs(session_factory):
     """A pending transfer leg (linked_transaction_id != NULL) in the
     current period must not feed the suggestion — same rule as actuals."""

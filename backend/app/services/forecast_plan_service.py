@@ -422,7 +422,12 @@ async def populate_from_sources(
     for key, months in master_monthly.items():
         if key in existing_keys:
             continue
-        if len(months) < 2:  # Need at least 2 months to suggest
+        # Current-period activity is authoritative: even if there is no
+        # historical settled signal in this category, an already-imported
+        # transaction in the period being planned should drive a suggestion.
+        # Pure-history signals still need 2+ months to avoid one-off noise.
+        has_current = current_period_label in months
+        if not has_current and len(months) < 2:
             continue
         master_id, tx_type = key
         avg_amount = sum(months.values()) / len(months)
