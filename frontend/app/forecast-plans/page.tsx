@@ -1,10 +1,11 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import CategorySelect from "@/components/ui/CategorySelect";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount } from "@/lib/format";
@@ -134,18 +135,36 @@ export default function ForecastPlansPage() {
     }
   }, [loading, user, loadPlan, periodStart]);
 
-  // Available categories for add form
-  const masterCategories = categories.filter((c) => c.parent_id === null);
-  const existingKeys = new Set(
-    (plan?.items ?? []).map((i) => `${i.category_id}-${i.type}`)
-  );
-  const availableForType = masterCategories.filter(
-    (c) =>
-      !existingKeys.has(`${c.id}-${formType}`) &&
-      (formType === "expense"
-        ? c.type === "expense" || c.type === "both"
-        : c.type === "income" || c.type === "both")
-  );
+  // Categories already used in the plan for the currently-selected
+  // type. Plan items always reference master categories, but the
+  // dropdown lets the user pick subcategories too (we roll up to master
+  // on submit), so a master being "already added" must also disable
+  // all of its children. Greying out keeps the option visible so the
+  // user sees why a previously available choice can no longer be
+  // picked, instead of having the row silently vanish.
+  const disabledForType = useMemo(() => {
+    const usedMasters = new Set<number>();
+    for (const i of plan?.items ?? []) {
+      if (i.type === formType) usedMasters.add(i.category_id);
+    }
+    const ids = new Set<number>(usedMasters);
+    for (const c of categories) {
+      if (c.parent_id !== null && usedMasters.has(c.parent_id)) {
+        ids.add(c.id);
+      }
+    }
+    return ids;
+  }, [plan?.items, formType, categories]);
+
+  // Resolve a selected category to its master (parent if it's a sub,
+  // itself if it's already a master). Forecast plans store master ids,
+  // but the dropdown lets the user pick subs for ergonomics.
+  const resolveMasterId = (catId: number | ""): number | "" => {
+    if (catId === "") return "";
+    const cat = categories.find((c) => c.id === catId);
+    if (!cat) return "";
+    return cat.parent_id ?? cat.id;
+  };
 
   // Filtered items
   const items = (plan?.items ?? []).filter(
@@ -169,17 +188,43 @@ export default function ForecastPlansPage() {
     }
   }
 
+  async function handleRefreshFromSources() {
+    setConfirmAction({
+      title: "Refresh from sources",
+      message:
+        "This replaces auto-generated rows (recurring templates, history averages) with fresh data. Lines you added or edited yourself stay untouched.",
+      variant: "warning",
+      action: async () => {
+        setError("");
+        try {
+          const p = await apiFetch<ForecastPlan>(
+            `/api/v1/forecast-plans/refresh-from-sources?period_start=${periodStart}`,
+            { method: "POST" }
+          );
+          setPlan(p);
+        } catch (err) {
+          setError(extractErrorMessage(err));
+        }
+      },
+    });
+  }
+
   async function handleAddItem(e: FormEvent) {
     e.preventDefault();
     if (!plan) return;
     setError("");
+    const masterId = resolveMasterId(formCategoryId);
+    if (masterId === "") {
+      setError("Please pick a category");
+      return;
+    }
     try {
       const p = await apiFetch<ForecastPlan>(
         `/api/v1/forecast-plans/${plan.id}/items`,
         {
           method: "POST",
           body: JSON.stringify({
-            category_id: formCategoryId,
+            category_id: masterId,
             type: formType,
             planned_amount: formAmount,
           }),
@@ -321,6 +366,15 @@ export default function ForecastPlansPage() {
             <button onClick={handlePopulate} className={btnPrimary}>
               Auto-populate
             </button>
+            {hasItems && (
+              <button
+                onClick={handleRefreshFromSources}
+                className={btnPrimary}
+                title="Drop auto-generated rows and re-run populate. Manual edits are preserved."
+              >
+                Refresh from sources
+              </button>
+            )}
             <button
               onClick={() => setShowForm(!showForm)}
               className={btnPrimary}
@@ -472,24 +526,21 @@ export default function ForecastPlansPage() {
               <label htmlFor="fp-cat" className={label}>
                 Category
               </label>
-              <select
+              <CategorySelect
                 id="fp-cat"
-                required
+                categories={categories}
                 value={formCategoryId}
-                onChange={(e) =>
-                  setFormCategoryId(
-                    e.target.value === "" ? "" : Number(e.target.value)
-                  )
-                }
+                onChange={(id) => setFormCategoryId(id)}
+                filterType={formType}
+                disabledIds={disabledForType}
                 className={input}
-              >
-                <option value="">Select category</option>
-                {availableForType.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+                aria-label="Plan item category"
+                onCategoryCreated={(cat) => {
+                  setCategories((prev) =>
+                    prev.some((c) => c.id === cat.id) ? prev : [...prev, cat],
+                  );
+                }}
+              />
             </div>
             <div className="w-full sm:w-40">
               <label htmlFor="fp-amount" className={label}>
