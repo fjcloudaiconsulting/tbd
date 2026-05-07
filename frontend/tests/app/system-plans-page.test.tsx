@@ -52,9 +52,6 @@ const PRO_PLAN = {
     "ai.smart_plan": false,
     "ai.autocategorize": false,
   },
-  ai_budget_enabled: true,
-  ai_forecast_enabled: false,
-  ai_smart_plan_enabled: false,
 };
 
 describe("/system/plans page — Features section + Duplicate", () => {

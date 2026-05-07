@@ -22,7 +22,7 @@ def _sub_response(sub, plan) -> dict:
     return {
         "id": sub.id,
         "org_id": sub.org_id,
-        # PlanResponse handles features + CLEANUP-029 derived ai_*_enabled fields.
+        # PlanResponse canonicalizes features for the wire shape.
         "plan": PlanResponse.model_validate(plan).model_dump(),
         "status": sub.status.value,
         "billing_interval": sub.billing_interval.value,
