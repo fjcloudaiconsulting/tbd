@@ -8,7 +8,7 @@ L4.11 — adds:
   * plans.features JSON NOT NULL DEFAULT (JSON_OBJECT())
     Backfilled from legacy ai_budget_enabled / ai_forecast_enabled /
     ai_smart_plan_enabled columns. ai.autocategorize defaults False.
-    Legacy columns survive for one release as rollback ballast (CLEANUP-029).
+    Legacy columns dropped in migration 032.
 
   * org_feature_overrides table — single-current per-org boolean overrides
     keyed on UNIQUE(org_id, feature_key).

@@ -262,11 +262,6 @@ export interface Plan {
   max_users: number | null;
   retention_days: number | null;
   features: PlanFeatures;
-
-  // CLEANUP-029: remove the three fields below when migration 029 ships.
-  ai_budget_enabled: boolean;
-  ai_forecast_enabled: boolean;
-  ai_smart_plan_enabled: boolean;
 }
 
 export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled";
