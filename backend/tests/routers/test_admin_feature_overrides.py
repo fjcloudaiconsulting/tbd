@@ -13,7 +13,7 @@ DELETE coverage lives in `test_admin_feature_overrides_delete.py`
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -25,8 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models import Base
+from app.models.audit_event import AuditEvent, AuditOutcome
+from app.models.feature_override import OrgFeatureOverride
 from app.models.user import Organization, Role, User
 from app.routers.admin_orgs import router as admin_orgs_router
 from app.security import hash_password
@@ -65,8 +67,12 @@ def make_app(session_factory, current_user_resolver):
     async def override_current_user() -> User:
         return await current_user_resolver(session_factory)
 
+    def override_session_factory():
+        return session_factory
+
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_session_factory] = override_session_factory
     app.include_router(admin_orgs_router)
     return app
 
@@ -131,7 +137,8 @@ def _plain_user_resolver():
 async def test_put_sets_new_override(session_factory):
     seed = await _seed(session_factory)
     app = make_app(session_factory, _superadmin_resolver())
-    with patch("app.routers.admin_orgs.log") as mock_log:
+    from app.routers import admin_orgs as admin_orgs_module
+    with patch.object(admin_orgs_module.logger, "ainfo", new_callable=AsyncMock) as mock_ainfo:
         with TestClient(app) as client:
             res = client.put(
                 f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
@@ -145,9 +152,13 @@ async def test_put_sets_new_override(session_factory):
     assert body["set_by_email"] == seed["admin_email"]
     assert body["is_expired"] is False
 
-    mock_log.info.assert_called_once()
-    args, kwargs = mock_log.info.call_args
-    assert args[0] == "admin.org.feature.set"
+    # Find the structured event among possibly-multiple ainfo calls.
+    set_calls = [
+        c for c in mock_ainfo.call_args_list
+        if c.args and c.args[0] == "admin.org.feature.set"
+    ]
+    assert len(set_calls) == 1
+    args, kwargs = set_calls[0]
     assert kwargs["target_org_id"] == seed["target_id"]
     assert kwargs["feature_key"] == "ai.budget"
     assert kwargs["old_value"] is None
@@ -171,7 +182,8 @@ async def test_put_updates_existing_override(session_factory):
         assert first.status_code == 200
         assert first.json()["value"] is True
 
-        with patch("app.routers.admin_orgs.log") as mock_log:
+        from app.routers import admin_orgs as admin_orgs_module
+        with patch.object(admin_orgs_module.logger, "ainfo", new_callable=AsyncMock) as mock_ainfo:
             second = client.put(
                 f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.forecast",
                 json={"value": False, "note": "rolled back"},
@@ -182,9 +194,12 @@ async def test_put_updates_existing_override(session_factory):
     assert body["value"] is False
     assert body["set_by_email"] == seed["admin_email"]
 
-    mock_log.info.assert_called_once()
-    args, kwargs = mock_log.info.call_args
-    assert args[0] == "admin.org.feature.set"
+    set_calls = [
+        c for c in mock_ainfo.call_args_list
+        if c.args and c.args[0] == "admin.org.feature.set"
+    ]
+    assert len(set_calls) == 1
+    args, kwargs = set_calls[0]
     assert kwargs["old_value"] is True
     assert kwargs["new_value"] is False
     assert kwargs["note_present"] is True
@@ -258,7 +273,8 @@ async def test_delete_revokes_existing_override(session_factory):
         )
         assert put_res.status_code == 200
 
-        with patch("app.routers.admin_orgs.log") as mock_log:
+        from app.routers import admin_orgs as admin_orgs_module
+        with patch.object(admin_orgs_module.logger, "ainfo", new_callable=AsyncMock) as mock_ainfo:
             del_res = client.delete(
                 f"/api/v1/admin/orgs/{seed['target_id']}/feature-overrides/ai.budget",
             )
@@ -266,9 +282,12 @@ async def test_delete_revokes_existing_override(session_factory):
     assert del_res.status_code == 204
     assert del_res.content == b""
 
-    mock_log.info.assert_called_once()
-    args, kwargs = mock_log.info.call_args
-    assert args[0] == "admin.org.feature.revoked"
+    revoked_calls = [
+        c for c in mock_ainfo.call_args_list
+        if c.args and c.args[0] == "admin.org.feature.revoked"
+    ]
+    assert len(revoked_calls) == 1
+    args, kwargs = revoked_calls[0]
     assert kwargs["target_org_id"] == seed["target_id"]
     assert kwargs["feature_key"] == "ai.budget"
     assert kwargs["old_value"] is True
@@ -385,3 +404,156 @@ async def test_put_refreshes_set_at_on_update(session_factory):
     # ISO-8601 is lexicographically ordered, so a string compare suffices,
     # but parsing is more explicit.
     assert datetime.fromisoformat(new_set_at) > past
+
+
+# ── POST /feature-overrides/sweep-expired ─────────────────────────────────
+
+
+async def _seed_overrides(factory, target_id: int, *, admin_user_id: int) -> None:
+    """Plant 4 overrides on target org: 2 expired, 1 future, 1 NULL expiry."""
+    from datetime import timedelta
+
+    from app._time import utcnow_naive
+
+    now = utcnow_naive()
+    past_1 = now - timedelta(days=1)
+    past_2 = now - timedelta(hours=1)
+    future = now + timedelta(days=7)
+    async with factory() as db:
+        db.add_all([
+            OrgFeatureOverride(
+                org_id=target_id, feature_key="ai.budget",
+                value=True, set_by=admin_user_id, expires_at=past_1,
+            ),
+            OrgFeatureOverride(
+                org_id=target_id, feature_key="ai.forecast",
+                value=True, set_by=admin_user_id, expires_at=past_2,
+            ),
+            OrgFeatureOverride(
+                org_id=target_id, feature_key="ai.smart_plan",
+                value=True, set_by=admin_user_id, expires_at=future,
+            ),
+            OrgFeatureOverride(
+                org_id=target_id, feature_key="ai.autocategorize",
+                value=True, set_by=admin_user_id, expires_at=None,
+            ),
+        ])
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_sweep_deletes_only_expired_rows(session_factory):
+    """Only rows whose expires_at is past NOW are deleted. Future-
+    and NULL-expiry rows are untouched."""
+    from sqlalchemy import select as _select
+
+    seed = await _seed(session_factory)
+    await _seed_overrides(
+        session_factory, seed["target_id"], admin_user_id=seed["admin_user_id"]
+    )
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
+
+    assert res.status_code == 200
+    assert res.json() == {"deleted_count": 2}
+
+    async with session_factory() as db:
+        remaining_keys = sorted(
+            (
+                await db.execute(
+                    _select(OrgFeatureOverride.feature_key).where(
+                        OrgFeatureOverride.org_id == seed["target_id"]
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert remaining_keys == ["ai.autocategorize", "ai.smart_plan"]
+
+
+@pytest.mark.asyncio
+async def test_sweep_writes_audit_event(session_factory):
+    """A successful sweep records exactly one
+    ``admin.feature_override.expired_swept`` audit row carrying
+    ``deleted_count`` in detail and no PII beyond the actor email."""
+    from sqlalchemy import select as _select
+
+    seed = await _seed(session_factory)
+    await _seed_overrides(
+        session_factory, seed["target_id"], admin_user_id=seed["admin_user_id"]
+    )
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                _select(AuditEvent).where(
+                    AuditEvent.event_type
+                    == "admin.feature_override.expired_swept"
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.outcome == AuditOutcome.SUCCESS
+    assert row.actor_user_id == seed["admin_user_id"]
+    assert row.actor_email == seed["admin_email"]
+    assert row.target_org_id is None
+    assert row.target_org_name is None
+    assert row.detail == {"deleted_count": 2}
+
+
+@pytest.mark.asyncio
+async def test_sweep_idempotent_when_nothing_expired(session_factory):
+    """No expired rows → returns deleted_count: 0, audit row still written."""
+    from sqlalchemy import select as _select
+
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
+    assert res.status_code == 200
+    assert res.json() == {"deleted_count": 0}
+
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                _select(AuditEvent).where(
+                    AuditEvent.event_type
+                    == "admin.feature_override.expired_swept"
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].detail == {"deleted_count": 0}
+
+
+@pytest.mark.asyncio
+async def test_sweep_requires_orgs_manage(session_factory):
+    """A non-superadmin without orgs.manage gets 403 and nothing is deleted."""
+    from sqlalchemy import select as _select
+
+    seed = await _seed(session_factory)
+    await _seed_overrides(
+        session_factory, seed["target_id"], admin_user_id=seed["admin_user_id"]
+    )
+    app = make_app(session_factory, _plain_user_resolver())
+    with TestClient(app) as client:
+        res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
+    assert res.status_code == 403
+
+    async with session_factory() as db:
+        count = (
+            await db.execute(
+                _select(OrgFeatureOverride).where(
+                    OrgFeatureOverride.org_id == seed["target_id"]
+                )
+            )
+        ).scalars().all()
+    # All 4 rows still present.
+    assert len(count) == 4

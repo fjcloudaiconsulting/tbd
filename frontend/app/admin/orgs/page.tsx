@@ -4,17 +4,20 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isSuperadmin } from "@/lib/auth";
 import {
+  btnSecondary,
   card,
   cardHeader,
   cardTitle,
   error as errorCls,
   input,
   pageTitle,
+  success as successCls,
 } from "@/lib/styles";
 
 type OrgRow = {
@@ -46,6 +49,27 @@ export default function AdminOrgsPage() {
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
   const [fetching, setFetching] = useState(true);
+  const [sweepConfirmOpen, setSweepConfirmOpen] = useState(false);
+  const [sweepBusy, setSweepBusy] = useState(false);
+  const [sweepNotice, setSweepNotice] = useState("");
+
+  async function runSweep() {
+    setSweepConfirmOpen(false);
+    setSweepBusy(true);
+    setSweepNotice("");
+    setError("");
+    try {
+      const res = await apiFetch<{ deleted_count: number }>(
+        "/api/v1/admin/orgs/feature-overrides/sweep-expired",
+        { method: "POST" },
+      );
+      setSweepNotice(`Removed ${res.deleted_count} expired overrides.`);
+    } catch (err) {
+      setError(extractErrorMessage(err, "Sweep failed"));
+    } finally {
+      setSweepBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (loading) return;
@@ -82,13 +106,40 @@ export default function AdminOrgsPage() {
 
   return (
     <AppShell>
-      <h1 className={pageTitle}>Organizations</h1>
+      <div className="mb-8 flex items-center justify-between gap-4">
+        <h1 className={`${pageTitle} mb-0`}>Organizations</h1>
+        <button
+          type="button"
+          onClick={() => setSweepConfirmOpen(true)}
+          disabled={sweepBusy}
+          className={btnSecondary}
+        >
+          {sweepBusy ? "Sweeping…" : "Sweep expired overrides"}
+        </button>
+      </div>
 
       {error && (
         <div className={`${errorCls} mb-4`} role="alert">
           {error}
         </div>
       )}
+
+      {sweepNotice && (
+        <div className={`${successCls} mb-4`} role="status">
+          {sweepNotice}
+        </div>
+      )}
+
+      <ConfirmModal
+        open={sweepConfirmOpen}
+        title="Sweep expired overrides"
+        message="Permanently delete every feature override row whose expires_at is in the past. This cannot be undone."
+        confirmLabel="Sweep"
+        cancelLabel="Cancel"
+        variant="warning"
+        onConfirm={runSweep}
+        onCancel={() => setSweepConfirmOpen(false)}
+      />
 
       <div className={`${card} mb-6`}>
         <div className={cardHeader}>
