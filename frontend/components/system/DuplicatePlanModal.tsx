@@ -46,7 +46,7 @@ export default function DuplicatePlanModal({ source, onClose, onDuplicated }: Pr
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
       <form onSubmit={handleSubmit} className={`${card} w-full max-w-md p-6`}>
         <h2 className="mb-4 text-lg font-semibold">Duplicate plan</h2>
         {errorMsg && <div className={`${errorCls} mb-3`}>{errorMsg}</div>}
