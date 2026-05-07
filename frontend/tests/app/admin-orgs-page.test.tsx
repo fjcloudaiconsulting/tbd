@@ -85,4 +85,29 @@ describe("AdminOrgsPage", () => {
       expect(replaceMock).toHaveBeenCalledWith("/dashboard");
     });
   });
+
+  it("sweeps expired overrides and shows the deleted count", async () => {
+    apiFetchMock.mockResolvedValueOnce({
+      items: [], total: 0, limit: 50, offset: 0,
+    } as never);
+    apiFetchMock.mockResolvedValueOnce({ deleted_count: 3 } as never);
+
+    render(<AdminOrgsPage />);
+
+    const button = await screen.findByRole("button", {
+      name: /sweep expired overrides/i,
+    });
+    fireEvent.click(button);
+
+    const confirm = await screen.findByRole("button", { name: /^Sweep$/ });
+    fireEvent.click(confirm);
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith(
+        "/api/v1/admin/orgs/feature-overrides/sweep-expired",
+        { method: "POST" },
+      );
+    });
+    await screen.findByText("Removed 3 expired overrides.");
+  });
 });

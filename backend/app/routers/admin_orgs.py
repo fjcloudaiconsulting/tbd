@@ -16,7 +16,7 @@ from datetime import datetime
 from app._time import utcnow_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
@@ -36,7 +36,6 @@ from app.services import admin_orgs_service, audit_service, feature_service
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 logger = structlog.stdlib.get_logger()
-log = structlog.get_logger()
 
 router = APIRouter(prefix="/api/v1/admin/orgs", tags=["admin-orgs"])
 
@@ -234,6 +233,47 @@ async def _override_to_response(row: OrgFeatureOverride, db: AsyncSession) -> di
     }
 
 
+@router.post("/feature-overrides/sweep-expired")
+async def sweep_expired_feature_overrides(
+    request: Request,
+    user: User = Depends(require_permission("orgs.manage")),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Delete every ``org_feature_overrides`` row whose ``expires_at``
+    is in the past. Idempotent (returns ``deleted_count: 0`` when nothing
+    matches). Audit row is always written.
+    """
+    cutoff = utcnow_naive()
+    result = await db.execute(
+        delete(OrgFeatureOverride)
+        .where(OrgFeatureOverride.expires_at.is_not(None))
+        .where(OrgFeatureOverride.expires_at <= cutoff)
+    )
+    deleted_count = result.rowcount or 0
+    await db.commit()
+
+    await logger.ainfo(
+        "admin.feature_override.expired_swept",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        deleted_count=deleted_count,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.feature_override.expired_swept",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=None,
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"deleted_count": deleted_count},
+    )
+    return {"deleted_count": deleted_count}
+
+
 @router.put(
     "/{org_id}/feature-overrides/{feature_key}",
     response_model=OrgFeatureOverrideResponse,
@@ -299,7 +339,7 @@ async def set_feature_override(
             detail="Override changed concurrently; retry.",
         )
 
-    log.info(
+    await logger.ainfo(
         "admin.org.feature.set",
         target_org_id=org_id,
         feature_key=feature_key,
@@ -378,7 +418,7 @@ async def revoke_feature_override(
     await db.delete(existing)
     await db.commit()
 
-    log.info(
+    await logger.ainfo(
         "admin.org.feature.revoked",
         target_org_id=org_id,
         feature_key=feature_key,
