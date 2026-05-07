@@ -88,6 +88,35 @@ class BulkDeleteRequest(BaseModel):
     )
 
 
+class PromoteToRecurringRequest(BaseModel):
+    """Body for POST /api/v1/transactions/{id}/promote-to-recurring.
+
+    Promotes an existing settled-or-pending transaction into a recurring
+    template (creates a RecurringTransaction with the tx's account/category/
+    amount/type/description and the supplied schedule, then sets
+    transaction.recurring_id to the new template).
+
+    Account, category, amount, type, and description come from the source
+    transaction. Out of scope: promoting transfer legs, demoting, editing
+    the new template's auto_settle (defaults False — match recurring create).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
+    next_due_date: datetime.date
+
+    @field_validator("next_due_date")
+    @classmethod
+    def _next_due_date_not_past(cls, v: datetime.date) -> datetime.date:
+        # Pydantic-level early reject. Server-side service guard repeats
+        # the comparison so date semantics are enforced even if a caller
+        # bypasses the schema (e.g. internal reuse).
+        if v < datetime.date.today():
+            raise ValueError("Date must be today or later")
+        return v
+
+
 class BulkDeleteResponse(BaseModel):
     """Result of a bulk delete."""
 

@@ -21,7 +21,13 @@ from sqlalchemy.orm import selectinload
 from app.models.account import Account
 from app.models.category import Category, CategoryType
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
-from app.schemas.transaction import TransactionCreate, TransactionResponse, TransactionUpdate, TransferCreate
+from app.schemas.transaction import (
+    PromoteToRecurringRequest,
+    TransactionCreate,
+    TransactionResponse,
+    TransactionUpdate,
+    TransferCreate,
+)
 from app.services.category_rules_service import learn_from_choice
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.transaction_filters import is_reportable_transaction
@@ -411,6 +417,87 @@ async def update_transaction(
         select(Transaction).options(*_load_opts()).where(Transaction.id == tx.id)
     )
     return result.scalar_one()
+
+
+async def promote_to_recurring(
+    db: AsyncSession,
+    org_id: int,
+    transaction_id: int,
+    body: PromoteToRecurringRequest,
+) -> Transaction:
+    """Promote an existing transaction into a recurring template.
+
+    Atomic: locks the transaction row, creates a new RecurringTransaction
+    cloning the tx's account/category/amount/type/description with the
+    supplied frequency + next_due_date, sets tx.recurring_id, then commits
+    once. If template creation fails, the row lock + outer transaction roll
+    back together — no orphan template, no half-promoted tx.
+
+    Rejects:
+      - tx not found / cross-org → NotFoundError
+      - tx already has recurring_id → ValidationError
+      - tx is a transfer leg (linked_transaction_id) → ValidationError
+      - next_due_date in the past (server-side guard) → ValidationError
+    """
+    # Local import avoids a circular dependency between
+    # transaction_service and recurring_service (the latter imports
+    # validate_account/validate_category/apply_balance from this module).
+    from app.models.recurring import Frequency, RecurringTransaction
+
+    # Server-side date guard — defense in depth alongside the schema's
+    # field validator. Service callers (or future internal reuse) can't
+    # bypass the date semantic by skipping the schema layer.
+    if body.next_due_date < datetime.date.today():
+        raise ValidationError("Date must be today or later")
+
+    async with db.begin_nested():
+        # Lock the tx row so concurrent promote calls serialize behind
+        # the recurring_id IS NOT NULL guard below. populate_existing=True
+        # keeps the ORM identity-map state in sync with the locked row,
+        # matching the codebase's FOR UPDATE convention.
+        result = await db.execute(
+            select(Transaction)
+            .where(
+                Transaction.id == transaction_id,
+                Transaction.org_id == org_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        tx = result.scalar_one_or_none()
+        if tx is None:
+            raise NotFoundError("Transaction")
+        if tx.linked_transaction_id is not None:
+            raise ValidationError("Cannot promote a transfer leg to recurring")
+        if tx.recurring_id is not None:
+            raise ValidationError(
+                "Transaction is already linked to a recurring template"
+            )
+
+        template = RecurringTransaction(
+            org_id=org_id,
+            account_id=tx.account_id,
+            category_id=tx.category_id,
+            description=tx.description,
+            amount=tx.amount,
+            type=tx.type.value,
+            frequency=Frequency(body.frequency),
+            next_due_date=body.next_due_date,
+            auto_settle=False,
+            is_active=True,
+        )
+        db.add(template)
+        await db.flush()
+
+        tx.recurring_id = template.id
+        await db.flush()
+
+    await db.commit()
+
+    refreshed = await db.execute(
+        select(Transaction).options(*_load_opts()).where(Transaction.id == transaction_id)
+    )
+    return refreshed.scalar_one()
 
 
 def _apply_field_updates(tx: Transaction, body: TransactionUpdate) -> None:

@@ -14,6 +14,7 @@ from app.schemas.transaction import (
     BulkDeleteRequest,
     BulkDeleteResponse,
     ConvertToTransferRequest,
+    PromoteToRecurringRequest,
     TransactionCreate,
     TransactionPairRequest,
     TransactionResponse,
@@ -239,6 +240,33 @@ async def update_transaction(
     db: AsyncSession = Depends(get_db),
 ):
     tx = await svc.update_transaction(db, current_user.org_id, transaction_id, body)
+    return svc.to_response(tx)
+
+
+@router.post(
+    "/{transaction_id}/promote-to-recurring",
+    response_model=TransactionResponse,
+    status_code=201,
+)
+async def promote_transaction_to_recurring(
+    transaction_id: int,
+    body: PromoteToRecurringRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Promote an existing transaction into a recurring template.
+
+    Creates a recurring template with the transaction's account, category,
+    amount, type, and description, plus the supplied frequency and next due
+    date. Sets the transaction's recurring_id to point at the new template.
+    Atomic in a single DB transaction.
+
+    Out of scope: transfer legs (returns 400) and re-promotion of an
+    already-recurring transaction (returns 400).
+    """
+    tx = await svc.promote_to_recurring(
+        db, current_user.org_id, transaction_id, body
+    )
     return svc.to_response(tx)
 
 
