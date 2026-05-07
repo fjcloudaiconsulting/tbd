@@ -21,10 +21,13 @@ interface Props {
    * When provided, the form is locked to this type:
    * the user cannot change it, and the parent-master dropdown
    * (when "Subcategory" is checked) only lists masters whose type
-   * is compatible (matching type or "both"). The submitted POST
-   * always carries the locked type. The backend rejects any
-   * (parent.type, child.type) mismatch, so we mirror that here to
-   * keep the user from hitting a 400 mid-flow.
+   * matches exactly (no "both" parents). Child categories inherit
+   * parent type at the backend, so allowing a "both" parent would
+   * silently create a "both" child against the modal's type-only
+   * promise. The submitted POST always carries the locked type.
+   * The backend rejects any (parent.type, child.type) mismatch,
+   * so we mirror that here to keep the user from hitting a 400
+   * mid-flow.
    */
   lockedType?: "income" | "expense";
   masterCategories: Category[];
@@ -61,15 +64,19 @@ export default function AddCategoryModal({
     setMounted(true);
   }, []);
 
-  // Focus + restore
+  // Focus + restore. Gated on `mounted` so it runs after the portal
+  // content actually renders. Without the gate, nameRef.current is
+  // null on first run and keyboard focus stays behind the aria-modal
+  // dialog.
   useEffect(() => {
+    if (!mounted) return;
     previousFocusRef.current = document.activeElement as HTMLElement;
     nameRef.current?.focus();
     nameRef.current?.select();
     return () => {
       previousFocusRef.current?.focus();
     };
-  }, []);
+  }, [mounted]);
 
   // Escape + focus trap
   useEffect(() => {
@@ -142,7 +149,7 @@ export default function AddCategoryModal({
   if (!mounted) return null;
 
   const modal = (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 p-4">
       <div
         ref={dialogRef}
         role="dialog"

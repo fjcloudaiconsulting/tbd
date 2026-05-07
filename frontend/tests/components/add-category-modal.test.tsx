@@ -55,6 +55,25 @@ describe("AddCategoryModal", () => {
     expect(nameInput.value).toBe("Rent");
   });
 
+  it("focuses the name field on mount (after portal renders)", async () => {
+    render(
+      <AddCategoryModal
+        initialName="Rent"
+        initialType="expense"
+        masterCategories={masterCategories}
+        onCreated={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    // The modal gates rendering on `mounted`, which flips in a
+    // post-mount effect. Wait for the input to be present (proving
+    // the portal mounted), then assert it's the active element.
+    const nameInput = await screen.findByLabelText(/Name/i);
+    await waitFor(() => {
+      expect(document.activeElement).toBe(nameInput);
+    });
+  });
+
   it("disables Add category when name is empty", () => {
     render(
       <AddCategoryModal

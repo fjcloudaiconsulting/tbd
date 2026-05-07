@@ -437,26 +437,42 @@ function TransactionsPageContent() {
         body: JSON.stringify(body),
       });
       if (wantsPromote) {
-        const promoted = await apiFetch<Transaction>(
-          `/api/v1/transactions/${editingId}/promote-to-recurring`,
-          {
-            method: "POST",
-            body: JSON.stringify({
-              frequency: editRecFrequency,
-              next_due_date: editRecNextDue,
-            }),
-          },
-        );
-        // Optimistically reflect the new recurring_id locally so the chip
-        // appears immediately even before loadTransactions resolves.
-        if (promoted) {
-          setTransactions((prev) =>
-            prev.map((t) =>
-              t.id === editingId
-                ? { ...t, recurring_id: promoted.recurring_id }
-                : t,
-            ),
+        // The PUT already committed the edit. If the promote step then
+        // fails, surface a partial-success message so the user knows
+        // the transaction edits stuck even though the combined action
+        // reported an error.
+        try {
+          const promoted = await apiFetch<Transaction>(
+            `/api/v1/transactions/${editingId}/promote-to-recurring`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                frequency: editRecFrequency,
+                next_due_date: editRecNextDue,
+              }),
+            },
           );
+          // Optimistically reflect the new recurring_id locally so the chip
+          // appears immediately even before loadTransactions resolves.
+          if (promoted) {
+            setTransactions((prev) =>
+              prev.map((t) =>
+                t.id === editingId
+                  ? { ...t, recurring_id: promoted.recurring_id }
+                  : t,
+              ),
+            );
+          }
+        } catch (promoteErr) {
+          const reason = extractErrorMessage(promoteErr);
+          setError(
+            `Transaction updated, but promote-to-recurring failed: ${reason}. The transaction still reflects your edits.`,
+          );
+          // Exit edit mode (the edit DID persist) and refresh so the row
+          // shows the saved values; the error banner stays visible.
+          closeEdit();
+          await loadTransactions(page);
+          return;
         }
       }
       closeEdit();
