@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from app.auth.feature_catalog import PlanFeatures
 
@@ -28,24 +28,6 @@ class PlanResponse(BaseModel):
         # drifts (manual SQL, partial migration), the wire shape stays
         # canonical so consumers don't break.
         return PlanFeatures.model_validate(v or {}).model_dump(by_alias=True)
-
-    # CLEANUP-029: remove the three computed fields below when migration
-    # 029 ships. Frontend `Plan` type and `/settings/billing/page.tsx`
-    # tier-descriptor logic also migrate to read `features` directly.
-    @computed_field  # type: ignore[misc]
-    @property
-    def ai_budget_enabled(self) -> bool:
-        return self.features.get("ai.budget", False)
-
-    @computed_field  # type: ignore[misc]
-    @property
-    def ai_forecast_enabled(self) -> bool:
-        return self.features.get("ai.forecast", False)
-
-    @computed_field  # type: ignore[misc]
-    @property
-    def ai_smart_plan_enabled(self) -> bool:
-        return self.features.get("ai.smart_plan", False)
 
 
 class PlanCreate(BaseModel):

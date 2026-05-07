@@ -194,9 +194,9 @@ export default function BillingPage() {
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">AI Features</p>
                   <p className="text-sm font-medium text-text-primary">
-                    {currentPlan.ai_smart_plan_enabled
+                    {currentPlan.features["ai.smart_plan"]
                       ? "Full Access"
-                      : currentPlan.ai_budget_enabled
+                      : currentPlan.features["ai.budget"]
                         ? "Budget Only"
                         : "None"}
                   </p>
@@ -247,9 +247,9 @@ export default function BillingPage() {
                         {plan.retention_days ? `${plan.retention_days}-day data retention` : "Unlimited retention"}
                       </li>
                       <li>
-                        {plan.ai_smart_plan_enabled
+                        {plan.features["ai.smart_plan"]
                           ? "All AI features"
-                          : plan.ai_budget_enabled
+                          : plan.features["ai.budget"]
                             ? "AI budget suggestions"
                             : "No AI features"}
                       </li>
