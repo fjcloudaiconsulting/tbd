@@ -68,6 +68,10 @@ services:
       - ./frontend/lib:/app/lib
       - ./frontend/public:/app/public
       - ./frontend/tests:/app/tests
+      # next.config.ts is COPYed into the image at build time; without
+      # this explicit mount, edits require `docker compose up --build`
+      # to take effect.
+      - ./frontend/next.config.ts:/app/next.config.ts
 
   nginx:
     image: nginx:alpine
