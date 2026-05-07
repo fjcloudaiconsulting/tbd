@@ -11,7 +11,22 @@ mysql_app_password: CHANGE_ME
 mysql_backup_user: pfv_backup
 mysql_backup_password: CHANGE_ME
 
-# Tuned for s-1vcpu-1gb. Leaves headroom for the OS and Redis (200MB cap).
-mysql_max_connections: 50
-mysql_innodb_buffer_pool_size: 384M
-mysql_innodb_log_file_size: 64M
+# Tuned for s-1vcpu-2gb shared with Redis (300M cap) + OS overhead (~250M).
+# MySQL gets ~1.4G of the 2G total. Adjust upward only if Redis stays
+# well under its cap and the OS isn't paging.
+mysql_max_connections: 100
+mysql_innodb_buffer_pool_size: 768M
+# One pool instance is the right call when the buffer pool is under ~1G;
+# multiple instances at this scale just waste RAM on per-instance overhead.
+mysql_innodb_buffer_pool_instances: 1
+mysql_innodb_log_file_size: 128M
+mysql_innodb_log_buffer_size: 16M
+# tmp_table_size and max_heap_table_size MUST stay equal — MySQL silently
+# clamps in-memory temp tables to the smaller of the two.
+mysql_tmp_table_size: 32M
+mysql_max_heap_table_size: 32M
+# DO block storage is SSD-backed; the 200/400 InnoDB defaults are HDD-era.
+# 1000/2000 lets InnoDB push more dirty pages per flush cycle, which is
+# what the L4.7 audit-log + L4.9 request-log write workload wants.
+mysql_innodb_io_capacity: 1000
+mysql_innodb_io_capacity_max: 2000

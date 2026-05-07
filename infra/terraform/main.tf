@@ -57,10 +57,12 @@ module "data_droplet" {
 
   ssh_key_id = data.digitalocean_ssh_key.primary.id
 
-  # backups=true is intentionally default-on: this droplet is the only copy of
-  # production data outside the nightly mysqldump cron, so weekly DO snapshots
-  # are cheap insurance.
-  enable_backups    = true
+  # backups=false: the nightly mysqldump cron (see ansible/roles/backups) plus
+  # the App Platform release pin already cover the recovery scenarios we care
+  # about for a single-user finance app. Re-enable here if/when shared use
+  # changes the durability calculus. Toggling backups on/off does not affect
+  # the size variable above.
+  enable_backups    = false
   enable_monitoring = true
 
   tags = ["pfv", "data", "managed-by-terraform"]

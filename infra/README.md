@@ -1,8 +1,9 @@
 # pfv infra
 
 Self-hosted MySQL + Redis on a single DigitalOcean droplet, replacing the DO
-Managed MySQL + Managed Redis pair (~$30/mo) with one `s-1vcpu-1gb` droplet
-(~$6/mo + ~$1.20/mo for backups).
+Managed MySQL + Managed Redis pair (~$30/mo) with one `s-1vcpu-2gb` droplet
+(~$12/mo). DO backups are off; the nightly mysqldump cron is the durability
+floor.
 
 This folder owns the cloud and the box. App Platform spec lives elsewhere.
 
@@ -22,7 +23,7 @@ This folder owns the cloud and the box. App Platform spec lives elsewhere.
                                     │ VPC peering
                                     ▼
               VPC 10.42.0.0/24 ┌────────────────────────────┐
-                               │  pfv-data-01 (s-1vcpu-1gb) │
+                               │  pfv-data-01 (s-1vcpu-2gb) │
                                │   - MySQL 8 (3306)         │
                                │   - Redis  (6379)          │
                                │   - ufw + fail2ban         │

@@ -9,7 +9,7 @@ and runs live in TFC; this directory holds the configuration.
 | Resource | Purpose |
 |---|---|
 | `digitalocean_vpc` | Dedicated `10.42.0.0/24` VPC in region `ams3` |
-| `digitalocean_droplet` | `pfv-data-01`: `s-1vcpu-1gb` Ubuntu 24.04, hosts MySQL 8 + Redis |
+| `digitalocean_droplet` | `pfv-data-01`: `s-1vcpu-2gb` Ubuntu 24.04, hosts MySQL 8 + Redis |
 | `digitalocean_firewall` | SSH 22 from anywhere; MySQL 3306 / Redis 6379 / ICMP from the VPC only |
 | `digitalocean_project_resources` | Attaches the droplet to the existing DO `pfv` project |
 
@@ -54,7 +54,7 @@ Read from TFC -> Workspace -> Outputs after apply.
 ├── outputs.tf
 └── modules/
     ├── vpc/           digitalocean_vpc
-    ├── droplet/       digitalocean_droplet (backups + monitoring on by default)
+    ├── droplet/       digitalocean_droplet (monitoring on by default; backups off, see main.tf)
     └── firewall/      digitalocean_firewall (defence-in-depth pair with host ufw)
 ```
 
@@ -66,12 +66,14 @@ resolves the right namespace inside the module.
 
 | Line | Monthly |
 |---|---|
-| `s-1vcpu-1gb` droplet | ~$6.00 |
-| DO weekly snapshots (~20% of droplet) | ~$1.20 |
+| `s-1vcpu-2gb` droplet | ~$12.00 |
+| DO weekly snapshots | $0 (disabled — nightly mysqldump cron is the durability floor) |
 | VPC + firewall + project attachment | $0 |
-| **Total** | **~$7.20** |
+| **Total** | **~$12.00** |
 
-Replaces ~$30/mo of DO Managed MySQL + Managed Redis.
+Replaces ~$30/mo of DO Managed MySQL + Managed Redis. The 2 GB tier (vs.
+the 1 GB launch tier) gives the InnoDB buffer pool room to absorb the
+write rate from the L4.7 audit log and L4.9 enriched request logs.
 
 ## See also
 
