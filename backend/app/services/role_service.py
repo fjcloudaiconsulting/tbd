@@ -204,9 +204,17 @@ async def update_role(
     role_id: int,
     name: Optional[str] = None,
     description: Optional[str] = None,
+    clear_description: bool = False,
     permissions: Optional[list[str]] = None,
 ) -> dict:
     """Patch a role. Refuses on ``is_system_frozen``.
+
+    ``description`` semantics (PR #142 #3): the patch shape needs to
+    distinguish "field omitted" from "field explicitly cleared to null".
+    Callers pass ``description=None`` for both omitted and explicit null,
+    so an extra ``clear_description=True`` flag tells the service to
+    write NULL to the column. Without that flag a ``None`` description
+    is treated as "leave unchanged".
 
     ``permissions`` semantics: ``None`` leaves them untouched, ``[]``
     clears, otherwise replaces.
@@ -229,6 +237,8 @@ async def update_role(
         role.name = name
     if description is not None:
         role.description = description
+    elif clear_description:
+        role.description = None
 
     if permissions is not None:
         keys = _validate_permissions(permissions)

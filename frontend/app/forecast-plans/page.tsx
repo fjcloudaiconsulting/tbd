@@ -33,10 +33,15 @@ import {
 } from "recharts";
 import type { BillingPeriod, Category, ForecastPlan, ForecastPlanItem } from "@/lib/types";
 
+// "Auto" is the honest label for source=history (PR #146 #1). populate
+// surfaces both 3-month-average rows AND current-period-only rows under
+// the same flag, so calling the bucket "Avg (3mo)" was a lie when a one-off
+// furniture purchase showed up. Matches the L3.10 import preview "Auto"
+// badge convention.
 const SOURCE_LABELS: Record<string, string> = {
   manual: "Manual",
   recurring: "Recurring",
-  history: "Avg (3mo)",
+  history: "Auto",
 };
 
 export default function ForecastPlansPage() {
