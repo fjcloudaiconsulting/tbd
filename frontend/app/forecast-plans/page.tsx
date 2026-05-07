@@ -47,7 +47,7 @@ const SOURCE_LABELS: Record<string, string> = {
 // Inline help copy. The /docs#forecasts section carries the long explanation;
 // these are 1-2 sentence reminders reachable from the controls themselves.
 const HELP_VARIANCE =
-  "Actual minus planned. For expenses, green when under plan and red when over. For income, the colors flip.";
+  "Actual minus planned, per category. Negative means you spent less than planned for an expense category (good); positive means you spent more (over budget). Income variance flips: positive is good, negative is short of plan.";
 const HELP_AUTO_POPULATE =
   "Fill the empty plan from your recurring bills, your last 3 months of activity, and what's already booked this period. Use this when you first build the plan.";
 const HELP_REFRESH =
@@ -65,7 +65,7 @@ function HelpIcon({ label, text }: { label: string; text: string }) {
       role="img"
       aria-label={`${label} explained: ${text}`}
       title={text + DOCS_HINT}
-      className="ml-1 cursor-help text-text-muted/70 hover:text-text-secondary"
+      className="ml-1 cursor-help rounded-sm text-text-muted/70 hover:text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
     >
       (?)
     </span>
@@ -425,7 +425,7 @@ export default function ForecastPlansPage() {
           </div>
         )}
         {isActive && (
-          <>
+          <div className="flex items-center gap-2">
             <button
               onClick={handleRevertToDraft}
               className={btnPrimary}
@@ -434,7 +434,7 @@ export default function ForecastPlansPage() {
               Edit Plan
             </button>
             <HelpIcon label="Edit Plan" text={HELP_EDIT_PLAN} />
-          </>
+          </div>
         )}
       </div>
 

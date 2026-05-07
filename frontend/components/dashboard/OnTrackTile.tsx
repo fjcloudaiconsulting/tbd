@@ -32,7 +32,7 @@ const WATCH_MAX = 1.05;
 // Tooltip copy for the dashboard stats. Plain language; the docs page
 // (/docs#forecasts) carries the longer explanation.
 const VARIANCE_HELP =
-  "Plan minus actual. Green when you're under plan, red when you're over.";
+  "Plan minus actual. Positive number means you spent less than planned (good for expense). Green when you're under plan, red when you're over.";
 const PROJECTED_HELP =
   "Best guess at end-of-month total = settled + pending + scheduled recurring. Can differ from your plan.";
 
@@ -85,14 +85,14 @@ function Stat({
   return (
     <div>
       <p className="flex items-center gap-1 text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
-        <span>{label}</span>
+        {label}
         {helpText && (
           <span
             tabIndex={0}
             role="img"
             aria-label={`${label} explained: ${helpText}`}
             title={`${helpText} See /docs#forecasts for more.`}
-            className="cursor-help text-text-muted/70 hover:text-text-secondary"
+            className="cursor-help rounded-sm text-text-muted/70 hover:text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
           >
             (?)
           </span>

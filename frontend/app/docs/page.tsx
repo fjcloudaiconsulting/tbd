@@ -216,8 +216,10 @@ export default function DocsPage() {
               </li>
               <li>
                 <strong>Whatever you've already booked in this period</strong>,
-                used as a fallback when there is neither a recurring bill
-                nor 3 months of history.
+                blended in with the past 3 months so the suggestion reflects
+                your most recent reality. A category can be seeded from
+                current-period activity alone, even if it has no 3-month
+                history.
               </li>
             </ol>
             <p>
