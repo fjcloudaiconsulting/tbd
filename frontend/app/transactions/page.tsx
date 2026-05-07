@@ -53,6 +53,15 @@ function TransactionsPageContent() {
   const [editDate, setEditDate] = useState("");
   const [editAccountId, setEditAccountId] = useState<number | "">("");
   const [editCategoryId, setEditCategoryId] = useState<number | "">("");
+  // Edit-time promote-to-recurring (L3.12). Hidden on rows that are already
+  // recurring (a static chip is rendered instead). Default next_due_date is
+  // "today + 30 days" so users get a reasonable starting point without a
+  // backend round-trip.
+  const [editPromoteRecurring, setEditPromoteRecurring] = useState(false);
+  const [editRecFrequency, setEditRecFrequency] = useState<
+    "weekly" | "biweekly" | "monthly" | "quarterly" | "yearly"
+  >("monthly");
+  const [editRecNextDue, setEditRecNextDue] = useState("");
 
   // Filters
   const [filterAccount, setFilterAccount] = useState<number | "">("");
@@ -345,6 +354,14 @@ function TransactionsPageContent() {
     setUnpairModalLegs({ expense, income });
   }
 
+  function defaultNextDueISO(): string {
+    // 30 days out — gives users a reasonable starting due date without
+    // surprising them with "today" when they tick the box.
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    return d.toISOString().slice(0, 10);
+  }
+
   async function startEdit(tx: Transaction) {
     setEditingId(tx.id);
     setEditDesc(tx.description);
@@ -354,6 +371,9 @@ function TransactionsPageContent() {
     setEditDate(tx.date);
     setEditAccountId(tx.account_id);
     setEditCategoryId(tx.category_id);
+    setEditPromoteRecurring(false);
+    setEditRecFrequency("monthly");
+    setEditRecNextDue(defaultNextDueISO());
     // Hydrate partner for linked rows so the Account select can filter
     // currency-compatible options and the mirror-amount notice can render.
     if (tx.linked_transaction_id) {
@@ -376,12 +396,29 @@ function TransactionsPageContent() {
   function closeEdit() {
     setEditingId(null);
     setEditPartner(null);
+    setEditPromoteRecurring(false);
   }
 
   async function handleSaveEdit() {
     if (editingId === null) return;
     if (!editDesc.trim()) { setError("Description is required"); return; }
     setError("");
+    // Capture the row pre-save so we can decide whether the promote step
+    // applies (transfer legs and already-recurring rows are excluded).
+    const editingRow = transactions.find((t) => t.id === editingId) ?? null;
+    const wantsPromote =
+      editPromoteRecurring &&
+      editingRow !== null &&
+      editingRow.linked_transaction_id === null &&
+      editingRow.recurring_id === null;
+    if (wantsPromote && !editRecNextDue) {
+      setError("Pick a next due date");
+      return;
+    }
+    if (wantsPromote && editRecNextDue < todayISO()) {
+      setError("Date must be today or later");
+      return;
+    }
     try {
       const isLinked = editPartner !== null;
       const body: Record<string, unknown> = {
@@ -399,6 +436,29 @@ function TransactionsPageContent() {
         method: "PUT",
         body: JSON.stringify(body),
       });
+      if (wantsPromote) {
+        const promoted = await apiFetch<Transaction>(
+          `/api/v1/transactions/${editingId}/promote-to-recurring`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              frequency: editRecFrequency,
+              next_due_date: editRecNextDue,
+            }),
+          },
+        );
+        // Optimistically reflect the new recurring_id locally so the chip
+        // appears immediately even before loadTransactions resolves.
+        if (promoted) {
+          setTransactions((prev) =>
+            prev.map((t) =>
+              t.id === editingId
+                ? { ...t, recurring_id: promoted.recurring_id }
+                : t,
+            ),
+          );
+        }
+      }
       closeEdit();
       await loadTransactions(page);
     } catch (err) {
@@ -849,6 +909,62 @@ function TransactionsPageContent() {
                               <button onClick={closeEdit} className="whitespace-nowrap text-xs text-text-muted hover:text-text-secondary">Cancel</button>
                             </span>
                           </div>
+                          {/* Promote-to-recurring (L3.12). Hidden for transfer legs;
+                              shown as a static chip when the row is already recurring. */}
+                          {!editPartner && (
+                            <div className="px-6 pb-3 pt-1" data-testid={`edit-recurring-row-${tx.id}`}>
+                              {tx.recurring_id !== null ? (
+                                <span
+                                  className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-text-muted"
+                                  data-testid={`edit-recurring-chip-${tx.id}`}
+                                >
+                                  Recurring
+                                </span>
+                              ) : (
+                                <div className="flex flex-wrap items-center gap-3">
+                                  <label className="inline-flex items-center gap-2 text-xs text-text-secondary">
+                                    <input
+                                      type="checkbox"
+                                      aria-label="Make recurring"
+                                      checked={editPromoteRecurring}
+                                      onChange={(e) => setEditPromoteRecurring(e.target.checked)}
+                                      className="h-4 w-4"
+                                      data-testid={`edit-recurring-toggle-${tx.id}`}
+                                    />
+                                    Make recurring
+                                  </label>
+                                  {editPromoteRecurring && (
+                                    <>
+                                      <select
+                                        aria-label="Frequency"
+                                        value={editRecFrequency}
+                                        onChange={(e) =>
+                                          setEditRecFrequency(
+                                            e.target.value as typeof editRecFrequency,
+                                          )
+                                        }
+                                        className={`text-[11px] !w-32 ${input}`}
+                                      >
+                                        <option value="weekly">Weekly</option>
+                                        <option value="biweekly">Biweekly</option>
+                                        <option value="monthly">Monthly</option>
+                                        <option value="quarterly">Quarterly</option>
+                                        <option value="yearly">Yearly</option>
+                                      </select>
+                                      <input
+                                        aria-label="Next due date"
+                                        type="date"
+                                        min={todayISO()}
+                                        value={editRecNextDue}
+                                        onChange={(e) => setEditRecNextDue(e.target.value)}
+                                        className={`text-[11px] !w-40 ${input}`}
+                                      />
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
@@ -988,6 +1104,68 @@ function TransactionsPageContent() {
                                 <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm ${input}`} />
                               </div>
                             </div>
+                            {/* Promote-to-recurring (L3.12) — mobile layout. Hidden on
+                                transfer legs; static chip when already recurring. */}
+                            {!editPartner && (
+                              <div data-testid={`edit-recurring-row-mobile-${tx.id}`}>
+                                {tx.recurring_id !== null ? (
+                                  <span
+                                    className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-text-muted"
+                                    data-testid={`edit-recurring-chip-mobile-${tx.id}`}
+                                  >
+                                    Recurring
+                                  </span>
+                                ) : (
+                                  <div className="flex flex-col gap-2">
+                                    <label className="inline-flex items-center gap-2 text-sm text-text-secondary">
+                                      <input
+                                        type="checkbox"
+                                        aria-label="Make recurring"
+                                        checked={editPromoteRecurring}
+                                        onChange={(e) => setEditPromoteRecurring(e.target.checked)}
+                                        className="h-4 w-4"
+                                        data-testid={`edit-recurring-toggle-mobile-${tx.id}`}
+                                      />
+                                      Make recurring
+                                    </label>
+                                    {editPromoteRecurring && (
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <div>
+                                          <label className={label}>Frequency</label>
+                                          <select
+                                            aria-label="Frequency"
+                                            value={editRecFrequency}
+                                            onChange={(e) =>
+                                              setEditRecFrequency(
+                                                e.target.value as typeof editRecFrequency,
+                                              )
+                                            }
+                                            className={`text-sm ${input}`}
+                                          >
+                                            <option value="weekly">Weekly</option>
+                                            <option value="biweekly">Biweekly</option>
+                                            <option value="monthly">Monthly</option>
+                                            <option value="quarterly">Quarterly</option>
+                                            <option value="yearly">Yearly</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label className={label}>Next due date</label>
+                                          <input
+                                            aria-label="Next due date"
+                                            type="date"
+                                            min={todayISO()}
+                                            value={editRecNextDue}
+                                            onChange={(e) => setEditRecNextDue(e.target.value)}
+                                            className={`text-sm ${input}`}
+                                          />
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                             <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
                               <button onClick={handleSaveEdit} className="min-h-[44px] px-4 rounded-md bg-accent text-accent-text text-sm font-medium">Save</button>
                               <button onClick={closeEdit} className="min-h-[44px] px-4 rounded-md border border-border text-sm text-text-secondary">Cancel</button>
