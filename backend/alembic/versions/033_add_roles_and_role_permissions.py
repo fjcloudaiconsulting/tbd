@@ -1,7 +1,7 @@
 """Add roles and role_permissions tables (L4.8 role admin UI).
 
 Revision ID: 033_roles
-Revises: 031_password_set_stepup_token
+Revises: 032_drop_legacy_plan_ai
 Create Date: 2026-05-07
 
 Persists platform-level roles (today only ``superadmin``; tomorrow:
@@ -39,7 +39,7 @@ from alembic import op
 
 
 revision = "033_roles"
-down_revision = "031_password_set_stepup_token"
+down_revision = "032_drop_legacy_plan_ai"
 branch_labels = None
 depends_on = None
 
