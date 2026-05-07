@@ -1,0 +1,181 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+
+import CategorySelect from "@/components/ui/CategorySelect";
+import type { Category } from "@/lib/types";
+
+vi.mock("@/components/ui/AddCategoryModal", () => ({
+  default: (props: {
+    initialName: string;
+    initialType: "income" | "expense" | "both";
+    masterCategories: Category[];
+    lockedType?: "income" | "expense";
+    onCreated: (cat: Category) => void;
+    onCancel: () => void;
+  }) => (
+    <div data-testid="add-category-modal-stub">
+      <span data-testid="modal-initial-type">{props.initialType}</span>
+      <span data-testid="modal-locked-type">{props.lockedType ?? ""}</span>
+      <span data-testid="modal-master-count">
+        {props.masterCategories.length}
+      </span>
+      <button type="button" onClick={() => props.onCancel()}>
+        stub-cancel
+      </button>
+    </div>
+  ),
+}));
+
+const CATEGORIES: Category[] = [
+  // Income master
+  {
+    id: 10,
+    name: "Salary",
+    type: "income",
+    parent_id: null,
+    parent_name: null,
+    description: null,
+    slug: "salary",
+    is_system: false,
+    transaction_count: 0,
+  },
+  // Expense master
+  {
+    id: 20,
+    name: "Groceries",
+    type: "expense",
+    parent_id: null,
+    parent_name: null,
+    description: null,
+    slug: "groceries",
+    is_system: false,
+    transaction_count: 0,
+  },
+  // Both-typed master (transfers)
+  {
+    id: 30,
+    name: "Transfer",
+    type: "both",
+    parent_id: null,
+    parent_name: null,
+    description: null,
+    slug: "transfer",
+    is_system: false,
+    transaction_count: 0,
+  },
+  // Expense subcategory
+  {
+    id: 21,
+    name: "Supermarket",
+    type: "expense",
+    parent_id: 20,
+    parent_name: "Groceries",
+    description: null,
+    slug: "supermarket",
+    is_system: false,
+    transaction_count: 0,
+  },
+];
+
+describe("CategorySelect — value resolution under filterType", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("does not display an incompatible category as the selected chip when filterType narrows the type", () => {
+    // value points at the income master "Salary" (id 10), but the
+    // dropdown is locked to expense. The combobox must render empty
+    // (no stale "Salary" chip), since the resolved value is
+    // incompatible with the active filterType.
+    render(
+      <CategorySelect
+        id="t1"
+        categories={CATEGORIES}
+        value={10}
+        onChange={vi.fn()}
+        filterType="expense"
+      />,
+    );
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    expect(input.value).toBe("");
+  });
+
+  it("still displays a compatible value (same type)", () => {
+    render(
+      <CategorySelect
+        id="t2"
+        categories={CATEGORIES}
+        value={20}
+        onChange={vi.fn()}
+        filterType="expense"
+      />,
+    );
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    expect(input.value).toBe("Groceries");
+  });
+
+  it("treats BOTH-typed categories as compatible with any filterType", () => {
+    // "Transfer" (type: both) is compatible with both expense and income
+    // selectors — should still render as the chosen value.
+    render(
+      <CategorySelect
+        id="t3"
+        categories={CATEGORIES}
+        value={30}
+        onChange={vi.fn()}
+        filterType="expense"
+      />,
+    );
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    expect(input.value).toBe("Transfer");
+  });
+
+  it("dropdown filterType=expense includes BOTH-typed masters alongside expense ones", () => {
+    render(
+      <CategorySelect
+        id="t4"
+        categories={CATEGORIES}
+        value=""
+        onChange={vi.fn()}
+        filterType="expense"
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    const listbox = screen.getByRole("listbox");
+    expect(within(listbox).getByText("Groceries")).toBeInTheDocument();
+    expect(within(listbox).getByText("Supermarket")).toBeInTheDocument();
+    expect(within(listbox).getByText("Transfer")).toBeInTheDocument();
+    expect(within(listbox).queryByText("Salary")).not.toBeInTheDocument();
+  });
+
+  it("forwards filterType to AddCategoryModal as lockedType when set", () => {
+    render(
+      <CategorySelect
+        id="t5"
+        categories={CATEGORIES}
+        value=""
+        onChange={vi.fn()}
+        filterType="income"
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
+    expect(screen.getByTestId("modal-locked-type")).toHaveTextContent(
+      "income",
+    );
+  });
+
+  it("does not pass lockedType when filterType is unset (free-form fallback)", () => {
+    render(
+      <CategorySelect
+        id="t6"
+        categories={CATEGORIES}
+        value=""
+        onChange={vi.fn()}
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
+    expect(screen.getByTestId("modal-locked-type")).toHaveTextContent("");
+  });
+});

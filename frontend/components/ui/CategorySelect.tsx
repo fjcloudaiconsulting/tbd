@@ -58,7 +58,23 @@ export default function CategorySelect({ id, categories, value, onChange, filter
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const selected = categories.find((c) => c.id === value);
+  // Resolve the selected category from the full categories list, but
+  // hide it when its type is incompatible with the active filterType.
+  // BOTH-typed categories are treated as compatible. We surface the
+  // mismatch as "no chip" rather than auto-firing onChange — keeping
+  // CategorySelect a pure controlled component, the way every existing
+  // caller already uses it. The backend now rejects mismatched
+  // (txn_type, category) pairs, so callers should also clear their
+  // local state when their type changes (forecast-plans, transactions
+  // edit row, etc. already do this).
+  const rawSelected = categories.find((c) => c.id === value);
+  const selected =
+    rawSelected &&
+    effectiveFilterType &&
+    rawSelected.type !== effectiveFilterType &&
+    rawSelected.type !== "both"
+      ? undefined
+      : rawSelected;
 
   // Precompute parent IDs set and selectable items (O(n) instead of O(n^2))
   const { selectable, parentIds } = useMemo(() => {
@@ -292,6 +308,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
         <AddCategoryModal
           initialName={query}
           initialType={effectiveFilterType ?? "both"}
+          lockedType={effectiveFilterType}
           masterCategories={masters}
           onCreated={(cat) => {
             setShowAddModal(false);

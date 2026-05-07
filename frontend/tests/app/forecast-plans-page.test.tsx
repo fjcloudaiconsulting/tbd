@@ -349,4 +349,44 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
       screen.queryByRole("button", { name: "Refresh from sources" }),
     ).toBeNull();
   });
+
+  it("flipping the form type clears a previously selected category", async () => {
+    mockInitialFetches(makePlan());
+
+    render(<ForecastPlansPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Auto-populate" }),
+      ).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+
+    // Default formType is "expense". Pick "Supermarket" — an expense
+    // sub-category (its master "Groceries" is suppressed in the
+    // dropdown when it has children, so the leaf is the user-pickable
+    // option here).
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    }) as HTMLInputElement;
+    fireEvent.focus(combobox);
+    const listbox = await screen.findByRole("listbox");
+    const supermarketOption = within(listbox)
+      .getAllByRole("option")
+      .find((o) => (o.textContent ?? "").includes("Supermarket"));
+    expect(supermarketOption).toBeTruthy();
+    fireEvent.click(supermarketOption!);
+
+    // Combobox should now show "Supermarket"
+    expect(combobox.value).toBe("Supermarket");
+
+    // Flip type to income — the stale expense pick must be cleared so a
+    // submit can't slip through with a mismatched (income, expense-cat)
+    // pair.
+    const typeSelect = screen.getByLabelText("Type") as HTMLSelectElement;
+    fireEvent.change(typeSelect, { target: { value: "income" } });
+
+    expect(combobox.value).toBe("");
+  });
 });

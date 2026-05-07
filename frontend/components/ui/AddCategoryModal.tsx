@@ -17,6 +17,16 @@ import type { Category } from "@/lib/types";
 interface Props {
   initialName: string;
   initialType: "income" | "expense" | "both";
+  /**
+   * When provided, the form is locked to this type:
+   * the user cannot change it, and the parent-master dropdown
+   * (when "Subcategory" is checked) only lists masters whose type
+   * is compatible (matching type or "both"). The submitted POST
+   * always carries the locked type. The backend rejects any
+   * (parent.type, child.type) mismatch, so we mirror that here to
+   * keep the user from hitting a 400 mid-flow.
+   */
+  lockedType?: "income" | "expense";
   masterCategories: Category[];
   onCreated: (cat: Category) => void;
   onCancel: () => void;
@@ -25,12 +35,17 @@ interface Props {
 export default function AddCategoryModal({
   initialName,
   initialType,
+  lockedType,
   masterCategories,
   onCreated,
   onCancel,
 }: Props) {
   const [name, setName] = useState(initialName);
-  const [type, setType] = useState<"income" | "expense" | "both">(initialType);
+  // When lockedType is set, the form's type follows it regardless of
+  // what initialType was passed (the lock wins).
+  const [type, setType] = useState<"income" | "expense" | "both">(
+    lockedType ?? initialType,
+  );
   const [isSub, setIsSub] = useState(false);
   const [parentId, setParentId] = useState<number | "">("");
   const [description, setDescription] = useState("");
@@ -166,23 +181,32 @@ export default function AddCategoryModal({
             />
           </div>
 
-          <fieldset>
-            <legend className={labelCls}>Type</legend>
-            <div className="flex gap-4 text-sm text-text-primary">
-              {(["expense", "income", "both"] as const).map((t) => (
-                <label key={t} className="flex items-center gap-1.5">
-                  <input
-                    type="radio"
-                    name="add-cat-type"
-                    value={t}
-                    checked={type === t}
-                    onChange={() => setType(t)}
-                  />
-                  <span className="capitalize">{t}</span>
-                </label>
-              ))}
+          {lockedType ? (
+            <div>
+              <span className={labelCls}>Type</span>
+              <p className="text-sm capitalize text-text-muted">
+                {lockedType} only
+              </p>
             </div>
-          </fieldset>
+          ) : (
+            <fieldset>
+              <legend className={labelCls}>Type</legend>
+              <div className="flex gap-4 text-sm text-text-primary">
+                {(["expense", "income", "both"] as const).map((t) => (
+                  <label key={t} className="flex items-center gap-1.5">
+                    <input
+                      type="radio"
+                      name="add-cat-type"
+                      value={t}
+                      checked={type === t}
+                      onChange={() => setType(t)}
+                    />
+                    <span className="capitalize">{t}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
 
           <div className="flex items-center gap-2 text-sm text-text-primary">
             <input
@@ -217,11 +241,13 @@ export default function AddCategoryModal({
                 aria-invalid={needsParent || undefined}
               >
                 <option value="">Select a parent...</option>
-                {masterCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
+                {masterCategories
+                  .filter((c) => !lockedType || c.type === lockedType)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
               </select>
               {needsParent && (
                 <p

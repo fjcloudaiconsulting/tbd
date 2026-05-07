@@ -513,9 +513,14 @@ export default function ForecastPlansPage() {
               <select
                 id="fp-type"
                 value={formType}
-                onChange={(e) =>
-                  setFormType(e.target.value as "income" | "expense")
-                }
+                onChange={(e) => {
+                  // Clear the in-progress category pick — the previously
+                  // selected expense category would otherwise ride along
+                  // into an income POST and trip the backend's
+                  // type-mismatch guard.
+                  setFormType(e.target.value as "income" | "expense");
+                  setFormCategoryId("");
+                }}
                 className={input}
               >
                 <option value="expense">Expense</option>

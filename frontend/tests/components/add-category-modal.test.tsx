@@ -275,4 +275,154 @@ describe("AddCategoryModal", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onCancel).toHaveBeenCalled();
   });
+
+  describe("lockedType", () => {
+    // Income master + expense master + a "both"-typed master, so we can
+    // assert the parent dropdown filters by compatibility.
+    const mixedMasters: Category[] = [
+      {
+        id: 10,
+        name: "Salary",
+        type: "income",
+        parent_id: null,
+        parent_name: null,
+        description: null,
+        slug: "salary",
+        is_system: false,
+        transaction_count: 0,
+      },
+      {
+        id: 20,
+        name: "Groceries",
+        type: "expense",
+        parent_id: null,
+        parent_name: null,
+        description: null,
+        slug: "groceries",
+        is_system: false,
+        transaction_count: 0,
+      },
+      {
+        id: 30,
+        name: "Transfer",
+        type: "both",
+        parent_id: null,
+        parent_name: null,
+        description: null,
+        slug: "transfer",
+        is_system: false,
+        transaction_count: 0,
+      },
+    ];
+
+    it("hides the free Type radio group when lockedType is provided", () => {
+      render(
+        <AddCategoryModal
+          initialName="Side gig"
+          initialType="income"
+          lockedType="income"
+          masterCategories={mixedMasters}
+          onCreated={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+      // The free radio group should be hidden. The "Expense" / "Both"
+      // radio inputs must not be present.
+      expect(
+        screen.queryByRole("radio", { name: /expense/i }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("radio", { name: /both/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("filters the parent-master dropdown to compatible masters when lockedType=income", () => {
+      render(
+        <AddCategoryModal
+          initialName="Bonus"
+          initialType="income"
+          lockedType="income"
+          masterCategories={mixedMasters}
+          onCreated={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+      // Toggle subcategory so the parent dropdown is rendered.
+      fireEvent.click(screen.getByLabelText(/Subcategory/i));
+      const parentSelect = screen.getByLabelText(
+        /Parent category/i,
+      ) as HTMLSelectElement;
+      // lockedType=income excludes both expense AND "both" masters: child
+      // categories inherit parent type at the backend, so allowing a "both"
+      // parent would silently create a "both" child against the modal's
+      // "income only" promise.
+      const optionTexts = Array.from(parentSelect.options).map(
+        (o) => o.textContent ?? "",
+      );
+      expect(optionTexts).toContain("Salary");
+      expect(optionTexts).not.toContain("Transfer");
+      expect(optionTexts).not.toContain("Groceries");
+    });
+
+    it("submits POST with the locked type even if initialType disagrees", async () => {
+      const created: Category = {
+        id: 70,
+        name: "Refund",
+        type: "income",
+        parent_id: null,
+        parent_name: null,
+        description: null,
+        slug: "refund",
+        is_system: false,
+        transaction_count: 0,
+      };
+      apiFetchMock.mockResolvedValueOnce(created as never);
+      const onCreated = vi.fn();
+
+      render(
+        <AddCategoryModal
+          initialName="Refund"
+          // initialType differs from lockedType to prove the lock wins.
+          initialType="expense"
+          lockedType="income"
+          masterCategories={mixedMasters}
+          onCreated={onCreated}
+          onCancel={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created));
+      expect(apiFetchMock).toHaveBeenCalledWith(
+        "/api/v1/categories",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ name: "Refund", type: "income" }),
+        }),
+      );
+    });
+
+    it("free-form behavior is unchanged when lockedType is unset", () => {
+      render(
+        <AddCategoryModal
+          initialName="Coffee"
+          initialType="expense"
+          masterCategories={masterCategories}
+          onCreated={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+      // All three radio options remain user-pickable.
+      expect(
+        screen.getByRole("radio", { name: /expense/i }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("radio", { name: /income/i }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("radio", { name: /both/i }),
+      ).toBeInTheDocument();
+    });
+  });
 });
