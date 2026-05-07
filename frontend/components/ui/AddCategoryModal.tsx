@@ -242,12 +242,7 @@ export default function AddCategoryModal({
               >
                 <option value="">Select a parent...</option>
                 {masterCategories
-                  .filter(
-                    (c) =>
-                      !lockedType ||
-                      c.type === lockedType ||
-                      c.type === "both",
-                  )
+                  .filter((c) => !lockedType || c.type === lockedType)
                   .map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}

@@ -352,12 +352,15 @@ describe("AddCategoryModal", () => {
       const parentSelect = screen.getByLabelText(
         /Parent category/i,
       ) as HTMLSelectElement;
-      // Income master + Both master are compatible, expense master is not.
+      // lockedType=income excludes both expense AND "both" masters: child
+      // categories inherit parent type at the backend, so allowing a "both"
+      // parent would silently create a "both" child against the modal's
+      // "income only" promise.
       const optionTexts = Array.from(parentSelect.options).map(
         (o) => o.textContent ?? "",
       );
       expect(optionTexts).toContain("Salary");
-      expect(optionTexts).toContain("Transfer");
+      expect(optionTexts).not.toContain("Transfer");
       expect(optionTexts).not.toContain("Groceries");
     });
 
