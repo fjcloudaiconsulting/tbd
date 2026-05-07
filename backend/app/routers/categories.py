@@ -10,6 +10,8 @@ from app.models.category_rule import CategoryRule
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.category import CategoryCreate, CategoryResponse, CategoryUpdate
+from app.services.category_service import validate_category_type_change
+from app.services.exceptions import ValidationError
 from app.services.transaction_service import assert_no_dependents
 
 router = APIRouter(prefix="/api/v1/categories", tags=["categories"])
@@ -117,7 +119,32 @@ async def update_category(
     if body.name is not None:
         cat.name = body.name
     if body.type is not None:
-        cat.type = CategoryType(body.type)
+        new_type = CategoryType(body.type)
+        if new_type != cat.type:
+            # Pre-flight: every existing reference (transactions, recurring
+            # templates, forecast items) on this category — and on every
+            # child if this is a master — must be compatible with the new
+            # type. Closes the third HIGH finding from PR #150 review.
+            try:
+                await validate_category_type_change(db, cat, new_type)
+            except ValidationError as exc:
+                raise HTTPException(status_code=400, detail=exc.detail) from exc
+
+            # Codebase invariant: child type == master type (see
+            # services/category_service.py module docstring). When a master
+            # changes, cascade the new type to every child in the same
+            # operation so the invariant holds post-write.
+            if cat.parent_id is None:
+                children = (await db.scalars(
+                    select(Category).where(
+                        Category.parent_id == cat.id,
+                        Category.org_id == current_user.org_id,
+                    )
+                )).all()
+                for child in children:
+                    child.type = new_type
+
+            cat.type = new_type
     if body.description is not None:
         cat.description = body.description
     await db.commit()
