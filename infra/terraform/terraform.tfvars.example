@@ -8,6 +8,6 @@
 
 # Optional overrides (defaults live in variables.tf):
 # region        = "ams3"
-# droplet_size  = "s-1vcpu-1gb"
+# droplet_size  = "s-1vcpu-2gb"
 # project_name  = "pfv"
 # vpc_ip_range  = "10.42.0.0/24"

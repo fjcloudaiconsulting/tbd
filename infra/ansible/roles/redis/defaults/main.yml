@@ -2,7 +2,9 @@
 # Override in inventory.yml; vault-encrypt for real use.
 redis_password: CHANGE_ME
 
-# 200MB cap leaves the rest of RAM to MySQL + OS. Rate-limit + session-cache
-# workloads fit easily here.
-redis_maxmemory: 200mb
+# 300MB cap on the s-1vcpu-2gb shared box (was 200MB on s-1vcpu-1gb).
+# 50% headroom for cache growth without crowding the InnoDB buffer pool.
+# Rate-limit + session-cache workloads still fit easily; allkeys-lru means
+# any overflow evicts cold keys cleanly.
+redis_maxmemory: 300mb
 redis_maxmemory_policy: allkeys-lru

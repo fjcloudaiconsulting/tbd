@@ -11,9 +11,9 @@ variable "region" {
 }
 
 variable "droplet_size" {
-  description = "Droplet size slug. s-1vcpu-1gb is the $6/mo entry tier and is enough for MySQL+Redis on a personal-finance-app workload."
+  description = "Droplet size slug. s-1vcpu-2gb (~$12/mo) is the sweet spot for MySQL+Redis: gives the InnoDB buffer pool room to breathe (~768M) once the L4.7 audit-log + L4.9 enriched-request-log write rates kick in. s-1vcpu-1gb worked at launch but ran hot under sustained writes."
   type        = string
-  default     = "s-1vcpu-1gb"
+  default     = "s-1vcpu-2gb"
 }
 
 variable "droplet_image" {
