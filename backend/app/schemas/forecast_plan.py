@@ -6,10 +6,15 @@ from pydantic import BaseModel, Field
 
 
 class ForecastPlanItemCreate(BaseModel):
+    """Public-write shape for a forecast plan item.
+
+    ``source`` is intentionally NOT a field — the server pins every public
+    write to ``ItemSource.MANUAL`` (PR #144 #2). Only internal pipelines
+    (populate, refresh, copy) write RECURRING / HISTORY rows.
+    """
     category_id: int
     type: Literal["income", "expense"]
     planned_amount: Decimal = Field(gt=0)
-    source: Literal["manual", "recurring", "history"] = "manual"
 
 
 class ForecastPlanItemUpdate(BaseModel):
@@ -47,10 +52,13 @@ class ForecastPlanResponse(BaseModel):
 
 
 class BulkUpsertItem(BaseModel):
+    """Single row in a bulk public write.
+
+    ``source`` is server-controlled and pinned to MANUAL (PR #144 #2).
+    """
     category_id: int
     type: Literal["income", "expense"]
     planned_amount: Decimal = Field(gt=0)
-    source: Literal["manual", "recurring", "history"] = "manual"
 
 
 class BulkUpsertRequest(BaseModel):

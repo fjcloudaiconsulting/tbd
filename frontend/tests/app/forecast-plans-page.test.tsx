@@ -389,4 +389,33 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
 
     expect(combobox.value).toBe("");
   });
+
+  it("PR #146 #1: source=history renders an honest 'Auto' label, not 'Avg (3mo)'", async () => {
+    // populate now also surfaces categories whose only signal is in the
+    // current period (one-off furniture purchase, etc.) but writes them
+    // with source=history. "Avg (3mo)" lied; rename to "Auto" — broader
+    // and matches the L3.10 import preview "Auto" badge.
+    mockInitialFetches(
+      makePlan([
+        {
+          category_id: 20,
+          category_name: "Groceries",
+          type: "expense",
+          planned_amount: 250,
+          source: "history",
+        },
+      ]),
+    );
+
+    render(<ForecastPlansPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Groceries")).toBeTruthy();
+    });
+
+    // The honest label appears.
+    expect(screen.getAllByText("Auto").length).toBeGreaterThan(0);
+    // The misleading old label is gone.
+    expect(screen.queryByText("Avg (3mo)")).toBeNull();
+  });
 });

@@ -258,6 +258,49 @@ async def test_update_role_patches_permissions(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_update_role_clears_description_with_explicit_null(session_factory):
+    """PR #142 #3: PATCH with `description: null` actually clears.
+
+    Previously the service collapsed `None` into "leave unchanged"; this
+    pins that explicit null clears the stored value while omitting the
+    field still leaves it untouched.
+    """
+    await _seed_users(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/admin/roles",
+            json={
+                "slug": "ops",
+                "name": "Ops",
+                "description": "Original",
+                "permissions": [],
+            },
+        ).json()
+        # PATCH without description leaves it.
+        res = client.patch(
+            f"/api/v1/admin/roles/{created['id']}",
+            json={"name": "Operations"},
+        )
+        assert res.status_code == 200
+        assert res.json()["description"] == "Original"
+        # PATCH with explicit null clears.
+        res = client.patch(
+            f"/api/v1/admin/roles/{created['id']}",
+            json={"description": None},
+        )
+        assert res.status_code == 200
+        assert res.json()["description"] is None
+        # PATCH with non-null sets.
+        res = client.patch(
+            f"/api/v1/admin/roles/{created['id']}",
+            json={"description": "New value"},
+        )
+        assert res.status_code == 200
+        assert res.json()["description"] == "New value"
+
+
+@pytest.mark.asyncio
 async def test_delete_role(session_factory):
     await _seed_users(session_factory)
     app = make_app(session_factory, _superadmin_resolver())

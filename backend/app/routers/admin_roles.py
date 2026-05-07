@@ -187,12 +187,18 @@ async def update_role(
             ),
         )
 
+    # Distinguish "description omitted" from "description explicitly null"
+    # so the user can clear the field by sending `{"description": null}`.
+    # Pydantic's model_fields_set tracks which keys were present in the
+    # request body even when their value is None (PR #142 #3).
+    description_provided = "description" in body.model_fields_set
     try:
         item = await role_service.update_role(
             db,
             role_id=role_id,
             name=body.name,
             description=body.description,
+            clear_description=description_provided and body.description is None,
             permissions=body.permissions,
         )
     except NotFoundError:
@@ -209,10 +215,13 @@ async def update_role(
         )
     await db.commit()
 
+    # Treat any field present in the request body as "changed" — including
+    # `description: null` (clear). Without model_fields_set this would miss
+    # the explicit-clear case.
     changed_fields = [
         f
         for f in ("name", "description", "permissions")
-        if getattr(body, f) is not None
+        if f in body.model_fields_set
     ]
     # Capture the permission delta for the audit row. Keys are not
     # sensitive (the catalog is exposed via /admin/permissions to any
