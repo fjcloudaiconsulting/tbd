@@ -9,7 +9,7 @@ import datetime
 from decimal import Decimal
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import func, literal_column, select, text
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -336,17 +336,29 @@ async def populate_from_sources(
         db.add(item)
         existing_keys.add(key)
 
-    # ── From 3-month historical monthly averages ──
-    # Aggregate subcategories into master before averaging
+    # ── From 3-month historical monthly averages + current-period activity ──
+    # Two scopes:
+    #   - History (3 months prior to current period): SETTLED only. Pending
+    #     transactions from months ago shouldn't drive averages — if they
+    #     never settled, treating them as real history would inflate the
+    #     suggestion.
+    #   - Current period: SETTLED OR PENDING. The user's already-imported
+    #     bills for the period being planned are real expectations and
+    #     should feed the suggestion immediately, not after they settle.
+    # Each contributing month counts as one slot in the average; current
+    # period acts as one additional month.
+    #
+    # Month bucketing happens in Python (not SQL date_format) so the
+    # query stays portable between MySQL and SQLite (test fixtures run
+    # in-memory SQLite).
     three_months_ago = p_start - relativedelta(months=3)
 
-    # Subquery: sum per category per type per month
-    monthly_sub = (
+    hist_q = (
         select(
             Transaction.category_id,
             Transaction.type,
-            func.date_format(Transaction.date, "%Y-%m").label("month"),
-            func.sum(Transaction.amount).label("monthly_total"),
+            Transaction.date,
+            Transaction.amount,
         )
         .where(
             Transaction.org_id == org_id,
@@ -354,30 +366,58 @@ async def populate_from_sources(
             Transaction.date >= three_months_ago,
             Transaction.date < p_start,
             Transaction.type.in_(["income", "expense"]),
-        )
-        .group_by(Transaction.category_id, Transaction.type, text("month"))
-        .subquery()
-    )
-
-    hist_result = await db.execute(
-        select(
-            monthly_sub.c.category_id,
-            monthly_sub.c.type,
-            monthly_sub.c.month,
-            monthly_sub.c.monthly_total,
+            reportable_transaction_filter(),
         )
     )
+    hist_result = await db.execute(hist_q)
 
     # Roll up to master category, then compute monthly averages
     # Structure: {(master_id, type): {month: total}}
     master_monthly: dict[tuple[int, str], dict[str, Decimal]] = {}
-    for cat_id, tx_type_raw, month, monthly_total in hist_result.all():
+    for cat_id, tx_type_raw, tx_date, amount in hist_result.all():
         tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
         master_id = cat_to_master.get(cat_id, cat_id)
         key = (master_id, tx_type)
+        month = f"{tx_date.year:04d}-{tx_date.month:02d}"
         if key not in master_monthly:
             master_monthly[key] = {}
-        master_monthly[key][month] = master_monthly[key].get(month, Decimal("0")) + Decimal(str(monthly_total))
+        master_monthly[key][month] = master_monthly[key].get(month, Decimal("0")) + Decimal(str(amount))
+
+    # Current-period scope: SETTLED OR PENDING. Treated as one additional
+    # month slot in the rolling average so already-imported bills for the
+    # period being planned surface in the suggestion right away.
+    current_q = (
+        select(
+            Transaction.category_id,
+            Transaction.type,
+            func.coalesce(func.sum(Transaction.amount), 0).label("total"),
+        )
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.status.in_(
+                [TransactionStatus.SETTLED, TransactionStatus.PENDING]
+            ),
+            Transaction.date >= p_start,
+            Transaction.date <= p_end,
+            Transaction.type.in_(["income", "expense"]),
+            reportable_transaction_filter(),
+        )
+        .group_by(Transaction.category_id, Transaction.type)
+    )
+    current_result = await db.execute(current_q)
+    current_period_label = "__current__"
+    for cat_id, tx_type_raw, total in current_result.all():
+        tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
+        master_id = cat_to_master.get(cat_id, cat_id)
+        key = (master_id, tx_type)
+        amt = Decimal(str(total))
+        if amt <= 0:
+            continue
+        if key not in master_monthly:
+            master_monthly[key] = {}
+        master_monthly[key][current_period_label] = master_monthly[key].get(
+            current_period_label, Decimal("0")
+        ) + amt
 
     for key, months in master_monthly.items():
         if key in existing_keys:
@@ -401,6 +441,34 @@ async def populate_from_sources(
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
     return await _build_response(db, org_id, plan)
+
+
+async def refresh_from_sources(
+    db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
+) -> ForecastPlanResponse:
+    """Replace auto-generated plan items, preserving manual edits.
+
+    Drops every item whose source is RECURRING or HISTORY (the populate
+    output) and re-runs ``populate_from_sources`` against fresh data.
+    Items with source=MANUAL stay untouched — that flag is set whenever
+    the user adds an item by hand or edits an auto-generated one, so the
+    rule is "user-touched stays, never-touched gets refreshed".
+    """
+    period = await resolve_period(db, org_id, period_start)
+    plan = await _get_or_create_plan_row(db, org_id, period.id)
+    _require_draft(plan)
+    await db.refresh(plan, ["billing_period", "items"])
+
+    for item in list(plan.items):
+        if item.source != ItemSource.MANUAL:
+            await db.delete(item)
+    await db.flush()
+    await db.refresh(plan, ["billing_period", "items"])
+
+    # Re-run populate against the cleared slate. populate handles its own
+    # commit; we ride on its commit so the deletes and inserts land
+    # together.
+    return await populate_from_sources(db, org_id, period_start=period_start)
 
 
 async def upsert_item(

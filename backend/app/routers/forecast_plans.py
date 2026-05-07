@@ -48,6 +48,18 @@ async def populate_plan(
     return await svc.populate_from_sources(db, current_user.org_id, period_start=period_start)
 
 
+@router.post("/refresh-from-sources", response_model=ForecastPlanResponse)
+async def refresh_from_sources_plan(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    period_start: datetime.date | None = Query(default=None),
+):
+    """Drop auto-generated items (source=recurring|history) and re-run
+    populate. Manual items are preserved. Use this to pick up newly
+    added recurring templates or transactions after the initial populate."""
+    return await svc.refresh_from_sources(db, current_user.org_id, period_start=period_start)
+
+
 @router.post("/{plan_id}/items", response_model=ForecastPlanResponse, status_code=201)
 async def add_item(
     plan_id: int,

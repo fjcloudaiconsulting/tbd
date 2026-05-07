@@ -31,9 +31,22 @@ interface Props {
   className?: string;
   "aria-label"?: string;
   onCategoryCreated?: (cat: Category) => void;
+  /**
+   * Category IDs that should still appear in the dropdown but render as
+   * disabled (greyed-out, non-selectable, with an "(already added)"
+   * hint). Used by callers that enforce one-row-per-category, so a
+   * previously available choice doesn't silently vanish after it's
+   * picked — the user can see why the option is no longer selectable.
+   */
+  disabledIds?: ReadonlySet<number> | number[];
 }
 
-export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, onCategoryCreated }: Props) {
+export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, onCategoryCreated, disabledIds }: Props) {
+  const disabledSet = useMemo(() => {
+    if (!disabledIds) return null;
+    return disabledIds instanceof Set ? disabledIds : new Set(disabledIds);
+  }, [disabledIds]);
+  const isDisabled = (id: number) => (disabledSet ? disabledSet.has(id) : false);
   // Normalize uppercase `typeFilter` (transfers callers) to internal lowercase
   // so it joins the existing filterType machinery without divergent code paths.
   const effectiveFilterType = filterType ?? (typeFilter === "INCOME" ? "income" : typeFilter === "EXPENSE" ? "expense" : undefined);
@@ -77,8 +90,12 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     .filter(Boolean) as Category[];
   const nonRecent = filtered.filter((c) => !recentIds.includes(c.id));
 
-  // Build ordered flat list for keyboard nav
-  const flatList: Category[] = [...recentItems, ...nonRecent];
+  // Build ordered flat list for keyboard nav.
+  // Disabled categories are skipped — Enter on an "already added" row
+  // is a no-op, so we don't waste an arrow stop on it.
+  const flatList: Category[] = [...recentItems, ...nonRecent].filter(
+    (c) => !isDisabled(c.id),
+  );
 
   useEffect(() => {
     if (!open || showAddModal) return;
@@ -92,6 +109,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
   useEffect(() => { setHighlightIdx(-1); }, [query, open]);
 
   function handleSelect(cat: Category) {
+    if (isDisabled(cat.id)) return;
     onChange(cat.id);
     saveRecent(cat.id);
     setQuery("");
@@ -144,8 +162,6 @@ export default function CategorySelect({ id, categories, value, onChange, filter
   const activeDescendant = highlightIdx >= 0 && highlightIdx < flatList.length
     ? `${id}-opt-${flatList[highlightIdx].id}` : undefined;
 
-  let itemIdx = recentItems.length;
-
   return (
     <div ref={ref} className="relative">
       <input
@@ -174,37 +190,81 @@ export default function CategorySelect({ id, categories, value, onChange, filter
           {recentItems.length > 0 && (
             <>
               <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Recent</div>
-              {recentItems.map((cat, i) => (
-                <button key={cat.id} type="button" data-cat-item onClick={() => handleSelect(cat)}
-                  id={`${id}-opt-${cat.id}`}
-                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${highlightIdx === i ? "bg-accent-dim text-accent" : "text-text-primary hover:bg-surface-raised"}`}
-                  role="option" aria-selected={cat.id === value}>
-                  <span>{cat.name}</span>
-                  <span className="text-xs text-text-muted">{cat.parent_name}</span>
-                </button>
-              ))}
+              {recentItems.map((cat) => {
+                const disabled = isDisabled(cat.id);
+                const navIdx = flatList.indexOf(cat);
+                const highlighted = !disabled && navIdx >= 0 && highlightIdx === navIdx;
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    data-cat-item
+                    onClick={() => handleSelect(cat)}
+                    id={`${id}-opt-${cat.id}`}
+                    disabled={disabled}
+                    aria-disabled={disabled}
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
+                      disabled
+                        ? "cursor-not-allowed text-text-muted opacity-60"
+                        : highlighted
+                          ? "bg-accent-dim text-accent"
+                          : "text-text-primary hover:bg-surface-raised"
+                    }`}
+                    role="option"
+                    aria-selected={cat.id === value}
+                  >
+                    <span>
+                      {cat.name}
+                      {disabled && (
+                        <span className="ml-1.5 text-[11px] italic text-text-muted">(already added)</span>
+                      )}
+                    </span>
+                    <span className="text-xs text-text-muted">{cat.parent_name}</span>
+                  </button>
+                );
+              })}
               <div className="border-t border-border-subtle" />
             </>
           )}
 
-          {grouped.map((group) => {
-            const startIdx = itemIdx;
-            itemIdx += group.items.length;
-            return (
-              <div key={group.label}>
-                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{group.label}</div>
-                {group.items.map((cat, i) => (
-                  <button key={cat.id} type="button" data-cat-item onClick={() => handleSelect(cat)}
+          {grouped.map((group) => (
+            <div key={group.label}>
+              <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{group.label}</div>
+              {group.items.map((cat) => {
+                const disabled = isDisabled(cat.id);
+                const navIdx = flatList.indexOf(cat);
+                const highlighted = !disabled && navIdx >= 0 && highlightIdx === navIdx;
+                return (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    data-cat-item
+                    onClick={() => handleSelect(cat)}
                     id={`${id}-opt-${cat.id}`}
-                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${highlightIdx === startIdx + i ? "bg-accent-dim text-accent" : "text-text-primary hover:bg-surface-raised"}`}
-                    role="option" aria-selected={cat.id === value}>
-                    <span>{cat.name}</span>
+                    disabled={disabled}
+                    aria-disabled={disabled}
+                    className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors ${
+                      disabled
+                        ? "cursor-not-allowed text-text-muted opacity-60"
+                        : highlighted
+                          ? "bg-accent-dim text-accent"
+                          : "text-text-primary hover:bg-surface-raised"
+                    }`}
+                    role="option"
+                    aria-selected={cat.id === value}
+                  >
+                    <span>
+                      {cat.name}
+                      {disabled && (
+                        <span className="ml-1.5 text-[11px] italic text-text-muted">(already added)</span>
+                      )}
+                    </span>
                     {cat.description && <span className="ml-2 truncate text-xs text-text-muted">{cat.description}</span>}
                   </button>
-                ))}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          ))}
 
           {filtered.length === 0 && (
             <div className="px-3 py-4 text-center text-sm text-text-muted">No categories match</div>
