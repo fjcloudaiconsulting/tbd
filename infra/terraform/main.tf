@@ -2,10 +2,13 @@ terraform {
   required_version = ">= 1.5.0"
 
   # State + plan/apply runs live in Terraform Cloud (FlamaCorp/pfv).
-  # The workspace is VCS-driven against this repo with the working directory
-  # scoped to infra/terraform/ and trigger paths the same. Set workspace
-  # variables `do_token` (sensitive) and `ssh_key_name` in TFC; everything
-  # else has sensible defaults in variables.tf.
+  # The workspace is VCS-driven against this repo via the HCP Terraform
+  # GitHub App, with working directory scoped to infra/terraform/ and
+  # trigger pattern infra/terraform/** . Speculative plans fire on PR;
+  # merges to main create runs that wait for manual Confirm & Apply in
+  # the TFC UI (auto-apply is intentionally off). Set workspace variables
+  # `do_token` (sensitive) and `ssh_key_name` in TFC; everything else
+  # has sensible defaults in variables.tf.
   cloud {
     organization = "FlamaCorp"
     workspaces {
