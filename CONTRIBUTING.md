@@ -373,8 +373,8 @@ doctl apps create-deployment <app-id>
 
 ## API Documentation
 
-- **Swagger UI:** http://localhost/docs (development)
-- **OpenAPI spec:** http://localhost/openapi.json
+- **Swagger UI:** http://localhost/api/docs (development)
+- **OpenAPI spec:** http://localhost/api/openapi.json
 
 All API routes are prefixed with `/api/v1/`. The API is organized by resource:
 
@@ -406,7 +406,7 @@ cd frontend && npx tsc --noEmit
 ### Backend (manual)
 
 No automated test suite yet. Test via:
-- Swagger UI at http://localhost/docs
+- Swagger UI at http://localhost/api/docs
 - Browser testing of full flows
 - API calls via `curl` or httpie
 

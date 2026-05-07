@@ -12,6 +12,12 @@ export default function TopNav() {
       </Link>
       <div className="flex items-center gap-4">
         <Link
+          href="/docs"
+          className="text-sm text-text-muted transition-colors hover:text-text-primary"
+        >
+          Docs
+        </Link>
+        <Link
           href="/login"
           className="text-sm text-text-muted transition-colors hover:text-text-primary"
         >
