@@ -17,8 +17,8 @@ function defaults(overrides: Partial<Parameters<typeof OnTrackTile>[0]> = {}) {
   };
 }
 
-describe("OnTrackTile — verdict thresholds (current period)", () => {
-  it("renders ON TRACK when projected/plan <= 0.95", () => {
+describe("OnTrackTile — verdict thresholds (current period, anchored on actuals)", () => {
+  it("renders ON TRACK when executed/plan <= 0.95", () => {
     render(
       <OnTrackTile
         {...defaults({
@@ -32,28 +32,93 @@ describe("OnTrackTile — verdict thresholds (current period)", () => {
     expect(screen.getByRole("heading", { level: 2 })).not.toHaveTextContent(/OVER BUDGET/);
   });
 
-  it("renders WATCH when 0.95 < projected/plan <= 1.05", () => {
+  it("renders WATCH when 0.95 < executed/plan <= 1.05", () => {
     render(
       <OnTrackTile
         {...defaults({
           forecastPlan: PLAN_1000,
-          projection: { executed_expense: "500", forecast_expense: "1000" },
+          projection: { executed_expense: "1000", forecast_expense: "1000" },
         })}
       />,
     );
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^WATCH/);
   });
 
-  it("renders OVER BUDGET when projected/plan > 1.05", () => {
+  it("renders OVER BUDGET when executed/plan > 1.05", () => {
     render(
       <OnTrackTile
         {...defaults({
           forecastPlan: PLAN_1000,
-          projection: { executed_expense: "800", forecast_expense: "1200" },
+          projection: { executed_expense: "1200", forecast_expense: "1200" },
         })}
       />,
     );
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/OVER BUDGET/);
+  });
+});
+
+describe("OnTrackTile — verdict ignores projection (the user-reported bug)", () => {
+  // Bug: a fully-pending month (executed=0) used to read as OVER BUDGET because
+  // the projected expense (settled + pending + remaining recurring fires)
+  // exceeded the plan. The verdict now anchors on settled spending only.
+
+  it("ON TRACK when nothing has actually been spent yet, even with projected > plan", () => {
+    render(
+      <OnTrackTile
+        {...defaults({
+          forecastPlan: { total_planned_expense: "561.86" },
+          projection: { executed_expense: "0", forecast_expense: "1050" },
+        })}
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^ON TRACK/);
+    // Projected stat still shows the number, but muted (informational only).
+    const projectedLabel = screen.getByText(/^PROJECTED$/);
+    const projectedValue = projectedLabel.parentElement?.querySelectorAll("p")[1];
+    expect(projectedValue?.textContent).toMatch(/1,050/);
+    expect(projectedValue?.className).toMatch(/text-text-muted/);
+  });
+
+  it("OVER BUDGET when settled spending alone exceeds the plan", () => {
+    render(
+      <OnTrackTile
+        {...defaults({
+          forecastPlan: { total_planned_expense: "561.86" },
+          projection: { executed_expense: "600", forecast_expense: "600" },
+        })}
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^OVER BUDGET/);
+  });
+
+  it("ON TRACK with projected over plan: variance is favorable, no danger color anywhere", () => {
+    const { container } = render(
+      <OnTrackTile
+        {...defaults({
+          forecastPlan: { total_planned_expense: "561.86" },
+          projection: { executed_expense: "300", forecast_expense: "900" },
+        })}
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^ON TRACK/);
+    // Variance under plan, accent (favorable) color, no danger.
+    expect(screen.getByText(/under plan/i)).toBeInTheDocument();
+    expect(container.querySelector(".text-danger")).toBeNull();
+  });
+
+  it("PROJECTED stat carries 'projected end-of-month' sublabel and is muted", () => {
+    render(
+      <OnTrackTile
+        {...defaults({
+          forecastPlan: PLAN_1000,
+          projection: { executed_expense: "300", forecast_expense: "900" },
+        })}
+      />,
+    );
+    expect(screen.getByText(/projected end-of-month/i)).toBeInTheDocument();
+    const projectedLabel = screen.getByText(/^PROJECTED$/);
+    const projectedValue = projectedLabel.parentElement?.querySelectorAll("p")[1];
+    expect(projectedValue?.className).toMatch(/text-text-muted/);
   });
 });
 
@@ -71,12 +136,12 @@ describe("OnTrackTile — variance and column labels", () => {
     expect(screen.getByText(/under plan/i)).toBeInTheDocument();
   });
 
-  it("renders Variance with danger + 'over plan' sublabel when projection is unfavorable", () => {
+  it("renders Variance with danger + 'over plan' sublabel when actual spending is unfavorable", () => {
     render(
       <OnTrackTile
         {...defaults({
           forecastPlan: PLAN_1000,
-          projection: { executed_expense: "800", forecast_expense: "1200" },
+          projection: { executed_expense: "1200", forecast_expense: "1200" },
         })}
       />,
     );
@@ -195,6 +260,19 @@ describe("OnTrackTile — past period", () => {
     expect(screen.queryByText(/Set one up/)).not.toBeInTheDocument();
     expect(screen.queryByText(/^This period$/)).not.toBeInTheDocument();
     expect(screen.getByText(/^Past period$/)).toBeInTheDocument();
+  });
+
+  it("renders ENDED ON TRACK when final actual spending is comfortably under plan", () => {
+    render(
+      <OnTrackTile
+        {...defaults({
+          forecastPlan: { total_planned_expense: "561.86" },
+          projection: { executed_expense: "400", forecast_expense: "400" },
+          isPastPeriod: true,
+        })}
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^ENDED ON TRACK/);
   });
 
   it("renders FINAL SPENT column and suppresses PROJECTED column", () => {
