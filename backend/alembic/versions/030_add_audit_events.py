@@ -14,9 +14,10 @@ which is the opposite of what an audit log is for). Snapshot
 columns (actor_email, target_org_name) preserve the human-readable
 identity at event time.
 
-created_at uses DATETIME(6) with NOW(6) default to give microsecond
-precision — events from the same admin click can land within the
-same second, and we still want a stable order in the UI.
+created_at uses sa.func.now() so Alembic emits the dialect-correct
+default (CURRENT_TIMESTAMP on SQLite, NOW() on MySQL). Order ties
+between same-second events fall back to id DESC in the read path,
+which is good enough for the admin UI.
 """
 from __future__ import annotations
 
@@ -55,7 +56,7 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=False),
-            server_default=sa.text("CURRENT_TIMESTAMP(6)"),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(

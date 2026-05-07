@@ -40,6 +40,15 @@ logger = structlog.stdlib.get_logger()
 router = APIRouter(prefix="/api/v1/admin/orgs", tags=["admin-orgs"])
 
 
+# Cap on the number of per-row entries embedded in the
+# `admin.feature_override.expired_swept` audit detail. 50 is a
+# reasonable ceiling for a JSON column and keeps the audit row
+# readable in the admin UI; over the cap, the audit row carries
+# `truncated_count` and `counts_by_feature` so the aggregate signal
+# survives even if individual rows fall off.
+_SWEEP_AUDIT_ENTRY_CAP = 50
+
+
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
     return structlog.contextvars.get_contextvars().get("request_id")
@@ -149,8 +158,58 @@ async def delete_org(
             detail="confirm_name does not match organization name",
         )
 
+    # Snapshot the org's identifying fields BEFORE the delete so the
+    # durable audit row carries answers to "what was deleted" even
+    # after the FK ON DELETE SET NULL cascade nulls target_org_id.
+    # Bounded — counts not member lists, no PII beyond what the audit
+    # table already accepts.
+    org_snapshot = {
+        "org_id": org_id,
+        "org_name": detail["name"],
+        "created_at": detail.get("created_at"),
+        "billing_cycle_day": detail.get("billing_cycle_day"),
+        "member_count_at_delete": len(detail.get("members") or []),
+        "subscription": detail.get("subscription"),
+        "deleted_by_user_id": current_user.id,
+        "deleted_by_email": current_user.email,
+    }
+
     try:
+        # 1) Stage the success audit row FIRST so the FK
+        #    (target_org_id → organizations.id) still resolves at
+        #    INSERT time — the org row is still present.
+        # 2) Run delete_org_cascade. The cascade includes the org row
+        #    DELETE; the FK is ON DELETE SET NULL, so the audit row's
+        #    target_org_id is nulled by the DB at the same time.
+        # 3) Update the audit row's `detail` with the deleted_rows
+        #    counts and commit. All atomic — audit row exists iff
+        #    delete succeeded.
+        # Snapshot in `detail.snapshot` preserves the org's identity
+        # after the cascade nulls target_org_id, which is the whole
+        # point of writing this row before the delete.
+        audit_row = audit_service.add_audit_event_to_session(
+            db,
+            event_type="admin.org.delete",
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=org_id,
+            target_org_name=detail["name"],
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail={"snapshot": org_snapshot},
+        )
+        # Flush so the audit row is INSERTed with the FK still
+        # satisfiable (org row still present), before the cascade
+        # tears the org away.
+        await db.flush()
         counts = await admin_orgs_service.delete_org_cascade(db, org_id=org_id)
+        # Reassign the JSON detail (SQLAlchemy doesn't track in-place
+        # dict mutation on JSON columns by default).
+        audit_row.detail = {
+            "snapshot": org_snapshot,
+            "deleted_rows_by_table": counts,
+        }
         await db.commit()
     except Exception as e:  # noqa: BLE001 — translate to generic 500 + log.
         await db.rollback()
@@ -164,9 +223,9 @@ async def delete_org(
             error_type=type(e).__name__,
         )
         # Independent-session audit write — the business txn has been
-        # rolled back, but the failure must still appear in the audit
-        # log. That's the whole point of opening a fresh session for
-        # the audit row.
+        # rolled back (taking the staged success row with it), but the
+        # failure must still appear in the audit log. That's the whole
+        # point of opening a fresh session for the audit row.
         await audit_service.record_audit_event(
             session_factory,
             event_type="admin.org.delete.failed",
@@ -177,7 +236,11 @@ async def delete_org(
             request_id=_request_id(),
             ip_address=get_client_ip(request),
             outcome="failure",
-            detail={"error": str(e), "error_type": type(e).__name__},
+            detail={
+                "snapshot": org_snapshot,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -191,18 +254,6 @@ async def delete_org(
         target_org_id=org_id,
         target_org_name=detail["name"],
         deleted_rows_by_table=counts,
-    )
-    await audit_service.record_audit_event(
-        session_factory,
-        event_type="admin.org.delete",
-        actor_user_id=current_user.id,
-        actor_email=current_user.email,
-        target_org_id=org_id,
-        target_org_name=detail["name"],
-        request_id=_request_id(),
-        ip_address=get_client_ip(request),
-        outcome="success",
-        detail={"deleted_rows_by_table": counts},
     )
     return {"deleted": counts}
 
@@ -243,14 +294,130 @@ async def sweep_expired_feature_overrides(
     """Delete every ``org_feature_overrides`` row whose ``expires_at``
     is in the past. Idempotent (returns ``deleted_count: 0`` when nothing
     matches). Audit row is always written.
+
+    Audit detail (PR-C / PR #141 #1) includes a bounded summary of the
+    rows that were deleted so ops can answer "which orgs/features lost
+    access" without reaching for structlog. ``entries`` is capped at
+    ``_SWEEP_AUDIT_ENTRY_CAP``; over the cap, ``truncated_count`` and
+    ``counts_by_feature`` carry the rest.
+
+    On the rare ``DELETE`` rowcount mismatch path (locked N rows under
+    SELECT FOR UPDATE, deleted M < N) the audit detail records
+    ``deleted_count`` and ``locked_count`` plus a ``divergence`` flag,
+    and OMITS per-row ``entries`` and ``counts_by_feature``: without
+    ``DELETE ... RETURNING`` (unsupported on MySQL) we cannot honestly
+    tell which of the locked rows our DELETE removed versus rows a
+    concurrent actor removed, so we refuse to guess.
     """
     cutoff = utcnow_naive()
-    result = await db.execute(
-        delete(OrgFeatureOverride)
-        .where(OrgFeatureOverride.expires_at.is_not(None))
-        .where(OrgFeatureOverride.expires_at <= cutoff)
-    )
-    deleted_count = result.rowcount or 0
+    # Lock-then-delete-by-id so the audit summary describes rows this
+    # sweep actually removed, not rows it merely observed.
+    #
+    # The previous SELECT-then-DELETE-by-predicate pattern was racy:
+    # two overlapping sweeps could each snapshot the same expired rows
+    # (predicate-equal), the first DELETE removed them, and the second
+    # DELETE matched nothing yet still audited
+    # ``deleted_count = len(snapshot)`` plus per-row entries for rows
+    # it never touched. With FOR UPDATE on InnoDB the second sweep
+    # blocks until the first commits, then locks zero rows; with
+    # DELETE-by-id and rowcount-driven counts, even a non-locking
+    # dialect (e.g. tests on SQLite) can't drift out of sync because
+    # the audit numbers come from the actual rows removed.
+    locked_rows = (
+        await db.execute(
+            select(OrgFeatureOverride)
+            .where(OrgFeatureOverride.expires_at.is_not(None))
+            .where(OrgFeatureOverride.expires_at <= cutoff)
+            .order_by(OrgFeatureOverride.org_id, OrgFeatureOverride.feature_key)
+            .with_for_update()
+        )
+    ).scalars().all()
+
+    # Snapshot identity for the audit detail BEFORE the delete; after
+    # commit the in-memory rows are detached and SQLAlchemy's
+    # expire-on-commit would invalidate attribute access.
+    locked_by_id = {
+        row.id: {
+            "org_id": row.org_id,
+            "feature_key": row.feature_key,
+            "value": row.value,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        }
+        for row in locked_rows
+    }
+    locked_ids = list(locked_by_id.keys())
+
+    deleted_count = 0
+    divergence = False
+    if locked_ids:
+        delete_result = await db.execute(
+            delete(OrgFeatureOverride).where(OrgFeatureOverride.id.in_(locked_ids))
+        )
+        affected = delete_result.rowcount
+        if affected is None or affected == len(locked_ids):
+            # Happy path on every locking dialect we care about.
+            # ``rowcount`` of -1/None on a dialect that doesn't report
+            # affected rows is treated as the all-locked-deleted case;
+            # FOR UPDATE held the rows in InnoDB so this is safe.
+            deleted_count = len(locked_ids)
+        else:
+            # Divergence: rowcount disagrees with the locked snapshot.
+            # On MySQL InnoDB with SELECT FOR UPDATE this branch
+            # should never fire in practice; it's a defensive
+            # fallback for environments without row locks (e.g., the
+            # SQLite test database) and protects audit detail from
+            # claiming false row identities.
+            #
+            # We refuse to guess which of the locked rows our DELETE
+            # actually removed: without ``DELETE ... RETURNING``
+            # (which MySQL does not support) the answer is
+            # unknowable. ``deleted_count`` (the rowcount) is
+            # authoritative; ``entries`` and ``counts_by_feature``
+            # are deliberately omitted from the audit detail.
+            divergence = True
+            deleted_count = affected
+            await logger.awarning(
+                "admin.feature_override.sweep.lock_delete_mismatch",
+                locked_count=len(locked_ids),
+                deleted_count=affected,
+            )
+
+    # Audit detail. Happy path: bounded per-row entries +
+    # counts_by_feature for ops spot-checks. Divergence path:
+    # counts only, with an explicit flag and note so a future reader
+    # of the audit table can tell why per-row identity is missing.
+    detail: dict[str, object]
+    if divergence:
+        detail = {
+            "deleted_count": deleted_count,
+            "locked_count": len(locked_ids),
+            "divergence": True,
+            "divergence_reason": "concurrent_modification",
+            "note": (
+                "Exact row identities could not be determined under "
+                "concurrent sweep activity. deleted_count is "
+                "authoritative; counts_by_feature and entries are "
+                "omitted."
+            ),
+        }
+    else:
+        counts_by_feature: dict[str, int] = {}
+        entries: list[dict] = []
+        for row_id in locked_ids:
+            snap = locked_by_id[row_id]
+            counts_by_feature[snap["feature_key"]] = (
+                counts_by_feature.get(snap["feature_key"], 0) + 1
+            )
+            if len(entries) < _SWEEP_AUDIT_ENTRY_CAP:
+                entries.append(snap)
+        truncated_count = max(0, deleted_count - _SWEEP_AUDIT_ENTRY_CAP)
+        detail = {
+            "deleted_count": deleted_count,
+            "entries": entries,
+            "truncated_count": truncated_count,
+            "counts_by_feature": counts_by_feature,
+        }
+
     await db.commit()
 
     await logger.ainfo(
@@ -269,7 +436,7 @@ async def sweep_expired_feature_overrides(
         request_id=_request_id(),
         ip_address=get_client_ip(request),
         outcome="success",
-        detail={"deleted_count": deleted_count},
+        detail=detail,
     )
     return {"deleted_count": deleted_count}
 

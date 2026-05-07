@@ -163,6 +163,108 @@ async def test_subscription_override_writes_audit(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_delete_success_persists_audit_with_snapshot(session_factory):
+    """PR-C / PR #139 #1: the org-delete success audit row must be
+    durably persisted to ``audit_events`` (it used to be lost because
+    the FK insert ran AFTER the org row was deleted, the FK violation
+    was swallowed by record_audit_event, and the success only ever
+    showed up in structlog).
+
+    Pin:
+    - row exists with outcome=SUCCESS and event_type=admin.org.delete
+    - target_org_id is NULL (FK ON DELETE SET NULL fired in the same
+      txn — the org is gone)
+    - detail.snapshot.org_id preserves the original id even after the
+      FK nulls
+    - detail.deleted_rows_by_table is populated
+    """
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.request(
+            "DELETE",
+            f"/api/v1/admin/orgs/{seed['target_id']}",
+            json={"confirm_name": seed["target_name"]},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "admin.org.delete"
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1, "success audit row missing — pre-PR-C bug"
+    row = rows[0]
+    assert row.outcome == AuditOutcome.SUCCESS
+    # FK ON DELETE SET NULL fired when the org row was deleted in the
+    # SAME transaction — target_org_id is now NULL on the audit row.
+    assert row.target_org_id is None
+    # Snapshot preserves the identity that the FK just dropped.
+    assert row.detail is not None
+    snapshot = row.detail.get("snapshot")
+    assert snapshot is not None
+    assert snapshot["org_id"] == seed["target_id"]
+    assert snapshot["org_name"] == seed["target_name"]
+    assert "member_count_at_delete" in snapshot
+    assert snapshot["deleted_by_user_id"] == seed["admin_user_id"]
+    assert snapshot["deleted_by_email"] == "root@platform.io"
+    # Counts also recorded.
+    assert "deleted_rows_by_table" in row.detail
+    assert row.detail["deleted_rows_by_table"]["organizations"] == 1
+    # Snapshot survives even though target_org_id is gone — the
+    # org_name fallback column on the audit row is also still set.
+    assert row.target_org_name == seed["target_name"]
+
+
+@pytest.mark.asyncio
+async def test_delete_rollback_drops_staged_audit_row(session_factory):
+    """When delete_org_cascade raises after the success audit row has
+    been staged in the same session, the rollback must take the
+    staged audit row with it — no orphan ``admin.org.delete`` rows
+    for deletes that didn't happen.
+
+    The independent-session ``admin.org.delete.failed`` row is the
+    only audit-table evidence in the rollback case; covered by
+    test_delete_failed_writes_audit below.
+    """
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("simulated cascade failure")
+
+    with patch(
+        "app.routers.admin_orgs.admin_orgs_service.delete_org_cascade",
+        side_effect=boom,
+    ):
+        with TestClient(app) as client:
+            res = client.request(
+                "DELETE",
+                f"/api/v1/admin/orgs/{seed['target_id']}",
+                json={"confirm_name": seed["target_name"]},
+            )
+    assert res.status_code == 500
+
+    # The success row should NOT exist — the rollback dropped it.
+    async with session_factory() as db:
+        success_rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "admin.org.delete",
+                    AuditEvent.outcome == AuditOutcome.SUCCESS,
+                )
+            )
+        ).scalars().all()
+    assert len(success_rows) == 0, (
+        "success audit row leaked despite rollback — pre-commit "
+        "staging didn't roll back with the business txn"
+    )
+
+
+@pytest.mark.asyncio
 async def test_delete_failed_writes_audit(session_factory):
     """Patch delete_org_cascade to raise — verify a `failure` audit
     row exists even though the business txn rolled back. This is the
@@ -201,6 +303,14 @@ async def test_delete_failed_writes_audit(session_factory):
     assert row.target_org_name == seed["target_name"]
     assert row.detail is not None
     assert row.detail.get("error_type") == "RuntimeError"
+    # PR-C also embeds the org snapshot on the failure path so
+    # ops can answer "which org failed to delete and what state was
+    # it in" without reaching back to a structlog grep.
+    snapshot = row.detail.get("snapshot")
+    assert snapshot is not None
+    assert snapshot["org_id"] == seed["target_id"]
+    assert snapshot["org_name"] == seed["target_name"]
+    assert snapshot["deleted_by_email"] == "root@platform.io"
 
     # The target org is still present — the business txn was rolled
     # back. Sanity check: the audit row survived a rollback because

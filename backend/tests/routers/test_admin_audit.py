@@ -178,3 +178,58 @@ async def test_get_audit_list_pagination(session_factory):
         body2 = res2.json()
         assert body2["total"] == 5
         assert len(body2["items"]) == 1
+
+
+# ── outcome filter validation (PR-C / PR #139 #3) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_audit_list_invalid_outcome_returns_422(session_factory):
+    """A typo'd outcome (e.g. `failuer`) must return 422, not silently
+    skip the filter and return all events. Catches the bug where the
+    service's ``except ValueError: pass`` was swallowing typos."""
+    await _seed(session_factory)
+    await _seed_events(session_factory, 3)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/audit?outcome=failuer")
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_audit_list_outcome_success_filters(session_factory):
+    """The valid value `success` filters as before."""
+    await _seed(session_factory)
+    base = datetime.datetime(2026, 5, 1, 9, 0, 0)
+    async with session_factory() as db:
+        db.add_all([
+            AuditEvent(
+                event_type="admin.x.success",
+                actor_user_id=None, actor_email="a@x.io",
+                target_org_id=None, target_org_name=None,
+                request_id=None, ip_address=None,
+                outcome=AuditOutcome.SUCCESS, detail=None,
+                created_at=base,
+            ),
+            AuditEvent(
+                event_type="admin.x.failure",
+                actor_user_id=None, actor_email="a@x.io",
+                target_org_id=None, target_org_name=None,
+                request_id=None, ip_address=None,
+                outcome=AuditOutcome.FAILURE, detail=None,
+                created_at=base + datetime.timedelta(minutes=1),
+            ),
+        ])
+        await db.commit()
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/audit?outcome=success")
+        assert res.status_code == 200
+        assert res.json()["total"] == 1
+        assert res.json()["items"][0]["outcome"] == "success"
+
+        res2 = client.get("/api/v1/admin/audit?outcome=failure")
+        assert res2.status_code == 200
+        assert res2.json()["total"] == 1
+        assert res2.json()["items"][0]["outcome"] == "failure"
