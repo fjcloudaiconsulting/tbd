@@ -24,10 +24,10 @@ Track income and expenses across multiple accounts, set budgets per category, fo
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2 |
-| Frontend | Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS, Recharts |
-| Database | MySQL 8.0 |
-| Cache | Redis / Valkey |
-| Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 |
+| Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, Recharts |
+| Database | MySQL 8.0 (self-hosted on a single DO droplet in production) |
+| Cache | Redis 7 (containerized in dev, self-hosted on the same droplet in production) |
+| Auth | JWT (access + refresh), bcrypt, TOTP (pyotp), Google OAuth2 (with step-up for sensitive flows) |
 | Email | Mailgun (production), structlog (development) |
 | Proxy | nginx (development), DO App Platform ingress (production) |
 
@@ -83,17 +83,20 @@ Swagger UI is available at http://localhost/api/docs when running locally.
 
 | Resource | Prefix | Description |
 |----------|--------|-------------|
-| Auth | `/api/v1/auth` | Login, register, MFA, SSO, password reset |
+| Auth | `/api/v1/auth` | Login, register, MFA, Google SSO, password reset, step-up |
 | Users | `/api/v1/users` | Profile, password change |
 | Accounts | `/api/v1/accounts` | Bank accounts and balances |
 | Categories | `/api/v1/categories` | Hierarchical income/expense categories |
-| Transactions | `/api/v1/transactions` | Income, expenses, transfers |
+| Transactions | `/api/v1/transactions` | Income, expenses, transfers (period bucketing by `settled_date`) |
 | Recurring | `/api/v1/recurring` | Recurring transaction templates |
 | Budgets | `/api/v1/budgets` | Per-category spending limits |
 | Forecast | `/api/v1/forecast` | Computed forecast (read-only) |
 | Forecast Plans | `/api/v1/forecast-plans` | Editable forecast plans |
 | Import | `/api/v1/import` | CSV import (preview + confirm) |
-| Settings | `/api/v1/settings` | Org settings, billing periods |
+| Settings | `/api/v1/settings` | Org settings, billing periods, billing cycle |
+| Orgs | `/api/v1/orgs` | Org rename and per-org actions |
+| Plans / Subscriptions | `/api/v1/plans`, `/api/v1/subscriptions` | Plan catalog and trial / subscription state |
+| Admin | `/api/v1/admin/*` | Superadmin: orgs, audit log, roles |
 
 ## Contributing
 

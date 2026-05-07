@@ -3,6 +3,13 @@
 Source of truth for moving prod data from DO Managed MySQL + Managed Redis to
 the new `pfv-data-01` droplet provisioned by `infra/terraform`.
 
+> **Status (2026-05-07).** The cutover described here has already been
+> executed; production runs against `pfv-data-01` and the managed services
+> have been decommissioned. The runbook is kept as a reference for any
+> future managed-to-droplet move (or as the canonical writeup of the path
+> we took). Variables like `<managed-host>`, `<APP_ID>`, and the secret
+> blobs are illustrative for any next time; do not re-run the steps as-is.
+
 Plan window: pick a quiet hour. Total downtime: ~10–20 min for the size of the
 PFV dataset today. Mostly waiting on dump + import.
 
@@ -381,6 +388,8 @@ If smoke tests fail or production behaves badly:
 - No TLS on either service. Traffic stays inside DO's VPC; revisit if we
   add a second region or move to a multi-tenant network.
 - Backups: nightly logical dump in `/var/backups/mysql/` (7-day retention)
-  plus DO weekly droplet snapshots. To restore: copy a `.sql.gz` off the
-  droplet, `gunzip -c <file> | mysql pfv2`. Or restore the snapshot from the
-  DO console and re-point DNS / spec at the new droplet.
+  is the only durability floor; DO droplet snapshots are off at the IaC
+  level (`enable_backups = false` in `infra/terraform/main.tf`). To restore:
+  copy a `.sql.gz` off the droplet, `gunzip -c <file> | mysql pfv2`. If
+  snapshots are ever re-enabled, restoring from the DO console and
+  re-pointing the spec at the new droplet is the alternate recovery path.

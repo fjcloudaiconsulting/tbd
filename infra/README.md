@@ -40,8 +40,10 @@ only. ICMP from VPC. ufw on the host repeats the same restrictions.
 
 ## Prerequisites
 
-- A DO API token with read/write scope. Set `TF_VAR_do_token` or fill
-  `terraform.tfvars`.
+- A DO API token with read/write scope. In normal operation it lives as the
+  `do_token` workspace variable in TFC (`FlamaCorp/pfv`); local CLI debug
+  runs against the same workspace need `TF_VAR_do_token` (or a gitignored
+  `terraform.tfvars`).
 - An SSH key already registered in DO (Settings -> Security). Note its name.
 - A DO project named `pfv` (or change `project_name`). Projects must be
   created from the UI or `doctl` first; we don't manage them in Terraform.
@@ -130,11 +132,15 @@ See `MIGRATION.md` for the full data-move runbook (including rollback).
 
 ## Teardown
 
-```bash
-cd infra/terraform
-terraform destroy
-```
+Terraform is VCS-driven via TFC; teardown follows the same path. Either:
 
-Warning: this destroys the droplet and its data. Pull a final `mysqldump`
-first (see `MIGRATION.md`) and verify weekly snapshots are also gone if you
-intend a clean break.
+- Open a PR that removes (or comments out) the droplet / VPC / firewall
+  resources in `infra/terraform/`. Merge it and run the apply via the TFC
+  UI (Confirm & Apply), same as any other infra change.
+- Or, for a one-shot destroy, queue a `Destroy plan` from the TFC
+  workspace UI and approve it. Local `terraform destroy` is debug-only.
+
+Warning: this destroys the droplet and its data. DO droplet snapshots are
+disabled at the IaC level, so the only durability floor is the nightly
+`mysqldump` on the droplet — pull a final dump (see `MIGRATION.md` for the
+command and the verify step) before queuing the destroy.
