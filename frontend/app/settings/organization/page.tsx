@@ -17,6 +17,7 @@ import {
   input,
   label,
   btnPrimary,
+  btnSecondary,
   card,
   cardHeader,
   cardTitle,
@@ -26,7 +27,7 @@ import {
 import type { OrgSetting } from "@/lib/types";
 
 export default function OrganizationSettingsPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, refreshMe } = useAuth();
   const router = useRouter();
 
   const [settings, setSettings] = useState<OrgSetting[]>([]);
@@ -66,6 +67,15 @@ export default function OrganizationSettingsPage() {
   const [resetPhrase, setResetPhrase] = useState("");
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState("");
+
+  // Track D — owner-only org rename. Read-only display for non-owners.
+  // Same superadmin caveat as the Danger Zone above: the backend's
+  // require_org_owner gate refuses the platform-superadmin bypass on
+  // tenant routes, so the UI mirrors that strictness exactly.
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameError, setRenameError] = useState("");
 
   const admin = user ? isAdmin(user) : false;
   const isOrgOwner = user?.role === "owner";
@@ -124,6 +134,55 @@ export default function OrganizationSettingsPage() {
         });
     }
   }, [admin, reload]);
+
+  function startRename() {
+    setRenameDraft(orgName);
+    setRenameError("");
+    setRenaming(true);
+  }
+
+  function cancelRename() {
+    setRenaming(false);
+    setRenameDraft("");
+    setRenameError("");
+  }
+
+  async function handleSaveRename(e: FormEvent) {
+    e.preventDefault();
+    if (!user) return;
+    const trimmed = renameDraft.trim();
+    // Client-side guards mirror the server: empty/whitespace-only
+    // is rejected here so we don't flash a spinner only to see a 422.
+    // Same-name submissions also short-circuit; the server treats
+    // them as a no-op but there's no point in the round trip.
+    if (trimmed === "") {
+      setRenameError("Name cannot be empty");
+      return;
+    }
+    if (trimmed === orgName) {
+      cancelRename();
+      return;
+    }
+    setRenameSaving(true);
+    setRenameError("");
+    try {
+      await apiFetch(`/api/v1/orgs/${user.org_id}/rename`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: trimmed }),
+      });
+      // Pull the fresh user shape so org_name updates everywhere
+      // that reads from AuthContext (sidebar, header, etc.).
+      await refreshMe();
+      setRenaming(false);
+      setRenameDraft("");
+      setSuccessMsg("Organization renamed");
+      setTimeout(() => setSuccessMsg(""), 3000);
+    } catch (err) {
+      setRenameError(extractErrorMessage(err, "Failed to rename organization"));
+    } finally {
+      setRenameSaving(false);
+    }
+  }
 
   async function handleSaveCycle(e: FormEvent) {
     e.preventDefault();
@@ -250,7 +309,74 @@ export default function OrganizationSettingsPage() {
             <h2 className={cardTitle}>Organization</h2>
           </div>
           <div className="p-6">
-            <p className="text-sm text-text-secondary">{user.org_name}</p>
+            {isOrgOwner ? (
+              renaming ? (
+                <form onSubmit={handleSaveRename} className="space-y-3">
+                  <label className={label} htmlFor="org-rename-input">
+                    New organization name
+                  </label>
+                  <input
+                    id="org-rename-input"
+                    type="text"
+                    className={input}
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    maxLength={80}
+                    autoFocus
+                    aria-invalid={renameError ? true : undefined}
+                    aria-describedby={renameError ? "org-rename-error" : undefined}
+                  />
+                  {renameError && (
+                    <p id="org-rename-error" className={errorCls}>
+                      {renameError}
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      disabled={
+                        renameSaving ||
+                        renameDraft.trim() === "" ||
+                        renameDraft.trim() === orgName
+                      }
+                      className={btnPrimary}
+                      aria-label="Save organization name"
+                    >
+                      {renameSaving ? (
+                        <span className="inline-flex items-center gap-2">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Saving...
+                        </span>
+                      ) : (
+                        "Save"
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelRename}
+                      disabled={renameSaving}
+                      className={btnSecondary}
+                      aria-label="Cancel organization rename"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-sm text-text-secondary">{user.org_name}</p>
+                  <button
+                    type="button"
+                    onClick={startRename}
+                    className={btnSecondary}
+                  >
+                    Rename
+                  </button>
+                </div>
+              )
+            ) : (
+              <p className="text-sm text-text-secondary">{user.org_name}</p>
+            )}
           </div>
         </div>
 
