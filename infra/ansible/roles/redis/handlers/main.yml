@@ -1,5 +1,30 @@
 ---
+# Restart is the heavy hammer: it drops every client connection (the App
+# Platform backend's redis-py connection pool included), and dropped
+# connections surface as "Redis: DOWN (timeout)" on the admin dashboard
+# until the client pool heals. Reserve this for changes the running
+# server cannot pick up live (bind address, port, requirepass).
 - name: Restart redis
   ansible.builtin.service:
     name: redis-server
     state: restarted
+
+# Apply the live-tunable knobs without dropping connections. CONFIG SET
+# updates the running server; CONFIG REWRITE persists the change to the
+# main /etc/redis/redis.conf so a future restart keeps it. We don't write
+# back to the drop-in (CONFIG REWRITE only touches the loaded config
+# file), but the drop-in keeps providing the source of truth on the next
+# Ansible run, which re-applies via this same handler if the value
+# changed.
+- name: Apply redis live tunables
+  ansible.builtin.shell: |
+    set -euo pipefail
+    redis-cli -a "{{ redis_password }}" --no-auth-warning \
+      CONFIG SET maxmemory {{ redis_maxmemory }}
+    redis-cli -a "{{ redis_password }}" --no-auth-warning \
+      CONFIG SET maxmemory-policy {{ redis_maxmemory_policy }}
+    redis-cli -a "{{ redis_password }}" --no-auth-warning CONFIG REWRITE
+  args:
+    executable: /bin/bash
+  changed_when: true
+  no_log: true
