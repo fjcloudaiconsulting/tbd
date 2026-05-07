@@ -19,7 +19,7 @@ from app.services.transaction_service import (
     apply_balance,
     get_account_for_update,
     validate_account,
-    validate_category,
+    validate_category_for_type,
 )
 
 
@@ -57,9 +57,14 @@ async def list_recurring(db: AsyncSession, org_id: int) -> list[RecurringTransac
 
 
 async def create_recurring(db: AsyncSession, org_id: int, body: RecurringCreate) -> RecurringTransaction:
-    # Validate refs
+    # Validate refs. Category must be type-compatible with the template's
+    # transaction type, generate_due_transactions writes Transaction rows
+    # directly from the template and would otherwise emit mismatched rows
+    # at every cycle, bypassing the guard on _create_transaction_no_commit.
     await validate_account(db, body.account_id, org_id)
-    await validate_category(db, body.category_id, org_id)
+    await validate_category_for_type(
+        db, body.category_id, org_id, TransactionType(body.type)
+    )
 
     r = RecurringTransaction(
         org_id=org_id,
@@ -96,15 +101,10 @@ async def update_recurring(
     if body.account_id is not None:
         await validate_account(db, body.account_id, org_id)
         r.account_id = body.account_id
-    if body.category_id is not None:
-        await validate_category(db, body.category_id, org_id)
-        r.category_id = body.category_id
     if body.description is not None:
         r.description = body.description
     if body.amount is not None:
         r.amount = body.amount
-    if body.type is not None:
-        r.type = body.type
     if body.frequency is not None:
         r.frequency = Frequency(body.frequency)
     if body.next_due_date is not None:
@@ -113,6 +113,20 @@ async def update_recurring(
         r.auto_settle = body.auto_settle
     if body.is_active is not None:
         r.is_active = body.is_active
+
+    # Validate the post-update (type, category) pair when either changes.
+    # Mirrors update_transaction's pattern: a partial update only touching
+    # one of the two fields must still be compatible with the unchanged
+    # one. validate_category_for_type also re-checks org ownership when a
+    # new category_id is supplied.
+    if body.type is not None or body.category_id is not None:
+        new_type = TransactionType(body.type) if body.type is not None else TransactionType(r.type)
+        new_category_id = body.category_id if body.category_id is not None else r.category_id
+        await validate_category_for_type(db, new_category_id, org_id, new_type)
+        if body.type is not None:
+            r.type = body.type
+        if body.category_id is not None:
+            r.category_id = body.category_id
 
     await db.commit()
 

@@ -10,6 +10,8 @@ from app.models.category_rule import CategoryRule
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.category import CategoryCreate, CategoryResponse, CategoryUpdate
+from app.services.category_service import validate_category_type_change
+from app.services.exceptions import ValidationError
 from app.services.transaction_service import assert_no_dependents
 
 router = APIRouter(prefix="/api/v1/categories", tags=["categories"])
@@ -64,6 +66,11 @@ async def create_category(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # Children silently inherit their parent's type. parent_id is the
+    # authoritative signal; body.type is ignored for subcategories so the
+    # codebase invariant ("child type == master type", see
+    # services/category_service.py module docstring) holds at create time.
+    effective_type = CategoryType(body.type)
     if body.parent_id is not None:
         parent_row = await db.execute(
             select(Category).where(
@@ -75,11 +82,12 @@ async def create_category(
             raise HTTPException(status_code=400, detail="Invalid parent category")
         if parent_cat.parent_id is not None:
             raise HTTPException(status_code=400, detail="Cannot nest more than two levels")
+        effective_type = parent_cat.type
 
     cat = Category(
         org_id=current_user.org_id,
         name=body.name,
-        type=CategoryType(body.type),
+        type=effective_type,
         parent_id=body.parent_id,
         description=body.description,
     )
@@ -114,10 +122,59 @@ async def update_category(
     if cat is None:
         raise HTTPException(status_code=404, detail="Category not found")
 
+    # Subcategory invariant: child.type must equal parent.type. Reject any
+    # type change on a child that would diverge from the parent's type;
+    # masters are the only authoritative side of the invariant. Run BEFORE
+    # any field assignment so the rejection is atomic.
+    if (
+        cat.parent_id is not None
+        and body.type is not None
+        and CategoryType(body.type) != cat.type
+    ):
+        parent_type = await db.scalar(
+            select(Category.type).where(
+                Category.id == cat.parent_id,
+                Category.org_id == current_user.org_id,
+            )
+        )
+        if parent_type is None or CategoryType(body.type) != parent_type:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Subcategory type must match its parent. Update the "
+                    "master category instead."
+                ),
+            )
+
     if body.name is not None:
         cat.name = body.name
     if body.type is not None:
-        cat.type = CategoryType(body.type)
+        new_type = CategoryType(body.type)
+        if new_type != cat.type:
+            # Pre-flight: every existing reference (transactions, recurring
+            # templates, forecast items) on this category — and on every
+            # child if this is a master — must be compatible with the new
+            # type. Closes the third HIGH finding from PR #150 review.
+            try:
+                await validate_category_type_change(db, cat, new_type)
+            except ValidationError as exc:
+                raise HTTPException(status_code=400, detail=exc.detail) from exc
+
+            # Codebase invariant: child type == master type (see
+            # services/category_service.py module docstring). When a master
+            # changes, cascade the new type to every child in the same
+            # operation so the invariant holds post-write.
+            if cat.parent_id is None:
+                children = (await db.scalars(
+                    select(Category).where(
+                        Category.parent_id == cat.id,
+                        Category.org_id == current_user.org_id,
+                    )
+                )).all()
+                for child in children:
+                    child.type = new_type
+
+            cat.type = new_type
     if body.description is not None:
         cat.description = body.description
     await db.commit()

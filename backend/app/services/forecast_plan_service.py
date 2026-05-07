@@ -83,8 +83,16 @@ def _require_draft(plan: ForecastPlan) -> None:
 
 async def _validate_master_category(
     db: AsyncSession, org_id: int, category_id: int,
+    item_type: ForecastItemType | None = None,
 ) -> None:
-    """Validate that the category exists, belongs to the org, and is a master category."""
+    """Validate that the category exists, belongs to the org, is a master,
+    and (when ``item_type`` is supplied) has a compatible CategoryType.
+
+    Compatibility rule (PR #144 review fix):
+      - INCOME item  → category.type ∈ {INCOME, BOTH}
+      - EXPENSE item → category.type ∈ {EXPENSE, BOTH}
+    Mismatch raises ValidationError, mapped to HTTP 400 by app.main.
+    """
     result = await db.execute(
         select(Category).where(Category.id == category_id, Category.org_id == org_id)
     )
@@ -93,6 +101,27 @@ async def _validate_master_category(
         raise ValidationError("Invalid category")
     if cat.parent_id is not None:
         raise ValidationError("Forecast plan items must use master categories, not subcategories")
+    if item_type is not None and not _category_type_matches(cat.type, item_type):
+        raise ValidationError(
+            f"Category type ({cat.type.value}) does not match "
+            f"forecast item type ({item_type.value})"
+        )
+
+
+def _category_type_matches(
+    cat_type, item_type: ForecastItemType,
+) -> bool:
+    """Compatibility check used by upsert_item / bulk_upsert. Mirrors the
+    transaction-side helper but speaks ForecastItemType (which is income/
+    expense only — there is no TRANSFER on plan items)."""
+    from app.models.category import CategoryType
+    if cat_type == CategoryType.BOTH:
+        return True
+    if item_type == ForecastItemType.INCOME:
+        return cat_type == CategoryType.INCOME
+    if item_type == ForecastItemType.EXPENSE:
+        return cat_type == CategoryType.EXPENSE
+    return False
 
 
 async def _compute_actuals_batch(
@@ -483,7 +512,9 @@ async def upsert_item(
     plan = await _get_plan(db, org_id, plan_id)
     _require_draft(plan)
 
-    await _validate_master_category(db, org_id, body.category_id)
+    await _validate_master_category(
+        db, org_id, body.category_id, ForecastItemType(body.type)
+    )
 
     # Find existing item
     existing = None
@@ -518,20 +549,39 @@ async def bulk_upsert(
     plan = await _get_plan(db, org_id, plan_id)
     _require_draft(plan)
 
-    # Validate all category IDs belong to the org and are master categories
+    # Validate all category IDs belong to the org and are master categories.
+    # Atomic: any invalid or type-mismatched row rejects the whole batch
+    # before any insert, matching the existing convention where an invalid
+    # ID raises ValidationError before any commit.
     requested_ids = {item.category_id for item in body.items}
+    cat_by_id: dict[int, Category] = {}
     if requested_ids:
         valid_result = await db.execute(
-            select(Category.id).where(
+            select(Category).where(
                 Category.id.in_(requested_ids),
                 Category.org_id == org_id,
-                Category.parent_id.is_(None),
             )
         )
-        valid_ids = {r[0] for r in valid_result.all()}
-        invalid = requested_ids - valid_ids
+        for cat in valid_result.scalars().all():
+            cat_by_id[cat.id] = cat
+        non_master = {
+            cid for cid, cat in cat_by_id.items() if cat.parent_id is not None
+        }
+        invalid = (requested_ids - cat_by_id.keys()) | non_master
         if invalid:
             raise ValidationError(f"Invalid or non-master category IDs: {sorted(invalid)}")
+
+    # Per-row type compatibility (PR #144 review fix). Reject the whole
+    # batch on first mismatch so partial inserts can't leave the plan in a
+    # mixed state.
+    for item_data in body.items:
+        cat = cat_by_id[item_data.category_id]
+        if not _category_type_matches(cat.type, ForecastItemType(item_data.type)):
+            raise ValidationError(
+                f"Category type ({cat.type.value}) does not match "
+                f"forecast item type ({item_data.type}) for category_id="
+                f"{item_data.category_id}"
+            )
 
     existing_map = {
         (i.category_id, i.type.value): i for i in plan.items

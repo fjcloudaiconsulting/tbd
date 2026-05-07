@@ -79,6 +79,101 @@ async def validate_category(db: AsyncSession, category_id: int, org_id: int) -> 
         raise ValidationError("Invalid category")
 
 
+async def validate_category_for_type(
+    db: AsyncSession, category_id: int, org_id: int, tx_type: TransactionType,
+) -> None:
+    """Validate org ownership AND that the category's type is compatible
+    with ``tx_type``.
+
+    Compatibility:
+      - INCOME tx  → category.type ∈ {INCOME, BOTH}
+      - EXPENSE tx → category.type ∈ {EXPENSE, BOTH}
+      - For subcategories, the parent master must also be compatible (a
+        subcategory whose master is income-only can't tag an expense, and
+        vice versa, even if the sub itself happens to be CategoryType.BOTH).
+      - TRANSFER is never user-supplied on the create/update path. Transfer
+        legs are typed EXPENSE/INCOME at the leg level (see Transaction
+        model invariant 8). The system Transfer category is CategoryType.BOTH
+        so transfer pairs pass the check naturally — no carve-out needed.
+
+    Raises ValidationError when the category is missing, cross-org, or
+    type-incompatible. Mapped by app.main.validation_handler to HTTP 400.
+    """
+    result = await db.execute(
+        select(Category).where(
+            Category.id == category_id, Category.org_id == org_id
+        )
+    )
+    cat = result.scalar_one_or_none()
+    if cat is None:
+        raise ValidationError("Invalid category")
+
+    if not _category_type_matches(cat.type, tx_type):
+        raise ValidationError(
+            f"Category type ({cat.type.value}) does not match "
+            f"transaction type ({tx_type.value})"
+        )
+
+    if cat.parent_id is not None:
+        parent_type = await db.scalar(
+            select(Category.type).where(
+                Category.id == cat.parent_id, Category.org_id == org_id
+            )
+        )
+        if parent_type is not None and not _category_type_matches(
+            parent_type, tx_type
+        ):
+            raise ValidationError(
+                f"Subcategory's master type ({parent_type.value}) does "
+                f"not match transaction type ({tx_type.value})"
+            )
+
+
+def _category_type_matches(
+    cat_type: CategoryType, tx_type: TransactionType,
+) -> bool:
+    """Pure compatibility check between a CategoryType and a TransactionType.
+
+    BOTH always matches. TRANSFER is rejected, transactions on the create/
+    update path are never user-typed as TRANSFER (transfer legs are typed
+    EXPENSE/INCOME at the leg level).
+    """
+    if cat_type == CategoryType.BOTH:
+        return True
+    if tx_type == TransactionType.INCOME:
+        return cat_type == CategoryType.INCOME
+    if tx_type == TransactionType.EXPENSE:
+        return cat_type == CategoryType.EXPENSE
+    return False
+
+
+async def validate_transfer_category(
+    db: AsyncSession, category_id: int, org_id: int,
+) -> None:
+    """Validate a user-supplied transfer category.
+
+    A transfer pair shares one category across both legs (expense and income).
+    Anything other than CategoryType.BOTH is structurally wrong: the opposite
+    leg would end up with a one-sided category that fails the same
+    (type, category) compatibility rule enforced on regular writes.
+
+    Raises ValidationError when the category is missing, cross-org, or
+    not CategoryType.BOTH. Mapped by app.main.validation_handler to HTTP 400.
+    """
+    cat = await db.scalar(
+        select(Category).where(
+            Category.id == category_id, Category.org_id == org_id
+        )
+    )
+    if cat is None:
+        raise ValidationError("Invalid category")
+    if cat.type != CategoryType.BOTH:
+        raise ValidationError(
+            "Transfer category must accept both income and expense "
+            f"(got type={cat.type.value})"
+        )
+
+
 async def get_account_for_update(db: AsyncSession, account_id: int, org_id: int) -> Account:
     # populate_existing=True: every FOR UPDATE in this codebase MUST repopulate
     # the ORM identity-map entry so callers see the locked row state, not
@@ -153,9 +248,11 @@ async def _create_transaction_no_commit(
     and rolls back with the caller's outer transaction if anything raises.
     """
     await validate_account(db, body.account_id, org_id)
-    await validate_category(db, body.category_id, org_id)
     tx_type = TransactionType(body.type)
     tx_status = TransactionStatus(body.status)
+    # Type-aware category check covers the existing org/exists guard plus
+    # the (type, category.type) compatibility guard added for PR #137.
+    await validate_category_for_type(db, body.category_id, org_id, tx_type)
 
     if tx_status == TransactionStatus.SETTLED:
         acct = await get_account_for_update(db, body.account_id, org_id)
@@ -289,8 +386,6 @@ async def update_transaction(
     # Validate references regardless of linked status
     if body.account_id is not None and body.account_id != tx.account_id and partner is None:
         await validate_account(db, body.account_id, org_id)
-    if body.category_id is not None:
-        await validate_category(db, body.category_id, org_id)
 
     old_account_id = tx.account_id
     old_amount = tx.amount
@@ -300,6 +395,16 @@ async def update_transaction(
 
     new_account_id = body.account_id if body.account_id is not None else old_account_id
     new_status = TransactionStatus(body.status) if body.status is not None else old_status
+
+    # Category/type compatibility check (PR #137 review fix). Fires whenever
+    # either field is being changed — checks the post-update pair, so a
+    # simultaneous (type, category_id) swap to a compatible pair passes.
+    # On transfer legs the schema-level guard above already rejects
+    # body.type, so the resolved type here is unchanged for linked rows.
+    new_category_id = body.category_id if body.category_id is not None else old_category_id
+    new_type = TransactionType(body.type) if body.type is not None else old_type
+    if body.category_id is not None or body.type is not None:
+        await validate_category_for_type(db, new_category_id, org_id, new_type)
 
     # 3. Lock affected accounts in sorted ID order
     account_ids_to_lock: set[int] = set()
@@ -735,7 +840,10 @@ async def _link_pair(
                 await db.flush()
                 cat_id = new_cat.id
         else:
-            await validate_category(db, cat_id, expense_tx.org_id)
+            # Both legs share one category, anything other than BOTH would
+            # leave the opposite leg with a one-sided category that fails
+            # the (type, category) compatibility guard.
+            await validate_transfer_category(db, cat_id, expense_tx.org_id)
         expense_tx.category_id = cat_id
         income_tx.category_id = cat_id
 
@@ -1170,7 +1278,9 @@ async def create_transfer(
             transfer_cat = new_cat.id
         category_id = transfer_cat
     else:
-        await validate_category(db, category_id, org_id)
+        # Both legs share one category, a one-sided category would leave
+        # the opposite leg with an incompatible (type, category) pair.
+        await validate_transfer_category(db, category_id, org_id)
 
     tx_status = TransactionStatus(body.status)
 
