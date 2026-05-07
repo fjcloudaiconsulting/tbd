@@ -66,6 +66,11 @@ async def create_category(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # Children silently inherit their parent's type. parent_id is the
+    # authoritative signal; body.type is ignored for subcategories so the
+    # codebase invariant ("child type == master type", see
+    # services/category_service.py module docstring) holds at create time.
+    effective_type = CategoryType(body.type)
     if body.parent_id is not None:
         parent_row = await db.execute(
             select(Category).where(
@@ -77,11 +82,12 @@ async def create_category(
             raise HTTPException(status_code=400, detail="Invalid parent category")
         if parent_cat.parent_id is not None:
             raise HTTPException(status_code=400, detail="Cannot nest more than two levels")
+        effective_type = parent_cat.type
 
     cat = Category(
         org_id=current_user.org_id,
         name=body.name,
-        type=CategoryType(body.type),
+        type=effective_type,
         parent_id=body.parent_id,
         description=body.description,
     )
@@ -115,6 +121,30 @@ async def update_category(
     cat = result.scalar_one_or_none()
     if cat is None:
         raise HTTPException(status_code=404, detail="Category not found")
+
+    # Subcategory invariant: child.type must equal parent.type. Reject any
+    # type change on a child that would diverge from the parent's type;
+    # masters are the only authoritative side of the invariant. Run BEFORE
+    # any field assignment so the rejection is atomic.
+    if (
+        cat.parent_id is not None
+        and body.type is not None
+        and CategoryType(body.type) != cat.type
+    ):
+        parent_type = await db.scalar(
+            select(Category.type).where(
+                Category.id == cat.parent_id,
+                Category.org_id == current_user.org_id,
+            )
+        )
+        if parent_type is None or CategoryType(body.type) != parent_type:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Subcategory type must match its parent. Update the "
+                    "master category instead."
+                ),
+            )
 
     if body.name is not None:
         cat.name = body.name
