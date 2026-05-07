@@ -200,7 +200,7 @@ export default function SystemPlansPage() {
                 value={formSlug}
                 onChange={(e) => setFormSlug(e.target.value)}
                 className={input}
-                pattern="[a-z0-9-]+"
+                pattern={"[a-z0-9\\-]+"}
                 required
                 disabled={!!editing}
               />

@@ -205,6 +205,55 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     expect(body.next_due_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
+  it("partial success: PUT succeeds + POST promote fails surfaces partial-success message and exits edit", async () => {
+    const tx = makeTx({ id: 75, description: "Partial save", recurring_id: null });
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
+      if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+      if (url === "/api/v1/transactions/75" && method === "PUT") {
+        return { ...tx, description: "Partial save edited" } as never;
+      }
+      if (url === "/api/v1/transactions/75/promote-to-recurring" && method === "POST") {
+        throw new Error("recurring quota exceeded");
+      }
+      if (url.startsWith("/api/v1/transactions") && method === "GET") return [tx] as never;
+      return null as never;
+    });
+
+    render(<TransactionsPage />);
+
+    await screen.findAllByText("Partial save");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+
+    fireEvent.click(screen.getAllByLabelText("Make recurring")[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save$/i })[0]);
+
+    // Partial-success banner explicitly tells the user what stuck and what failed.
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Transaction updated, but promote-to-recurring failed/i),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/recurring quota exceeded/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/still reflects your edits/i),
+    ).toBeInTheDocument();
+
+    // Edit mode should have exited (the PUT did persist), so no Save button visible.
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: /^Save$/i }).length).toBe(0);
+    });
+  });
+
   it("save without ticking recurring does NOT call promote-to-recurring", async () => {
     const tx = makeTx({ id: 72, description: "No promote" });
     setupApiFetch([tx], {

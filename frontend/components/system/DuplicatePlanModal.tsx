@@ -70,7 +70,7 @@ export default function DuplicatePlanModal({ source, onClose, onDuplicated }: Pr
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
             className={input}
-            pattern="^[a-z0-9-]+$"
+            pattern={"^[a-z0-9\\-]+$"}
             required
           />
         </div>
