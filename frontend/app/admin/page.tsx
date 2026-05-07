@@ -149,6 +149,15 @@ export default function AdminDashboardPage() {
                   org deletes, tenant resets).
                 </p>
               </Link>
+              <Link
+                href="/admin/roles"
+                className={`${card} block p-5 transition-colors hover:border-accent`}
+              >
+                <h2 className={`${cardTitle} mb-1`}>Roles</h2>
+                <p className="text-sm text-text-secondary">
+                  Manage platform roles and the permissions they grant.
+                </p>
+              </Link>
             </section>
           </>
         )}

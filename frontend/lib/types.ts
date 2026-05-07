@@ -380,3 +380,49 @@ export interface AuditEventListResponse {
   items: AuditEvent[];
   total: number;
 }
+
+// L4.8 — Role administration UI.
+
+export interface RoleListItem {
+  id: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  is_system_frozen: boolean;
+  permission_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RoleListResponse {
+  items: RoleListItem[];
+}
+
+export interface RoleDetail {
+  id: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  is_system_frozen: boolean;
+  permissions: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RoleCreatePayload {
+  slug: string;
+  name: string;
+  description?: string | null;
+  permissions: string[];
+}
+
+export interface RoleUpdatePayload {
+  name?: string;
+  description?: string | null;
+  permissions?: string[];
+}
+
+export interface PermissionCatalogResponse {
+  namespaces: Record<string, string[]>;
+  keys: string[];
+}

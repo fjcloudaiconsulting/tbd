@@ -51,6 +51,7 @@ def test_all_permissions_contains_known_platform_permissions() -> None:
         "orgs.view",
         "orgs.manage",
         "audit.view",
+        "roles.manage",
     })
 
 
