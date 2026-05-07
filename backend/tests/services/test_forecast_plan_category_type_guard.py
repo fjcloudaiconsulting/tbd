@@ -110,7 +110,6 @@ async def test_upsert_rejects_income_with_expense_category(session_factory):
         category_id=seed["expense_master_id"],
         type="income",
         planned_amount=Decimal("100"),
-        source="manual",
     )
     async with session_factory() as db:
         with pytest.raises(ValidationError):
@@ -126,7 +125,6 @@ async def test_upsert_rejects_expense_with_income_category(session_factory):
         category_id=seed["income_master_id"],
         type="expense",
         planned_amount=Decimal("100"),
-        source="manual",
     )
     async with session_factory() as db:
         with pytest.raises(ValidationError):
@@ -142,7 +140,6 @@ async def test_upsert_accepts_matching_category(session_factory):
         category_id=seed["expense_master_id"],
         type="expense",
         planned_amount=Decimal("100"),
-        source="manual",
     )
     async with session_factory() as db:
         resp = await forecast_plan_service.upsert_item(
@@ -161,13 +158,11 @@ async def test_upsert_accepts_both_category_for_either_type(session_factory):
         category_id=seed["both_master_id"],
         type="expense",
         planned_amount=Decimal("50"),
-        source="manual",
     )
     income_body = ForecastPlanItemCreate(
         category_id=seed["both_master_id"],
         type="income",
         planned_amount=Decimal("50"),
-        source="manual",
     )
     async with session_factory() as db:
         await forecast_plan_service.upsert_item(
@@ -196,13 +191,11 @@ async def test_bulk_upsert_rejects_when_any_row_mismatches(session_factory):
                 category_id=seed["expense_master_id"],
                 type="expense",
                 planned_amount=Decimal("100"),
-                source="manual",
             ),
             BulkUpsertItem(
                 category_id=seed["income_master_id"],
                 type="expense",  # mismatched
                 planned_amount=Decimal("50"),
-                source="manual",
             ),
         ]
     )
@@ -230,13 +223,11 @@ async def test_bulk_upsert_accepts_all_compatible(session_factory):
                 category_id=seed["expense_master_id"],
                 type="expense",
                 planned_amount=Decimal("100"),
-                source="manual",
             ),
             BulkUpsertItem(
                 category_id=seed["income_master_id"],
                 type="income",
                 planned_amount=Decimal("3000"),
-                source="manual",
             ),
         ]
     )

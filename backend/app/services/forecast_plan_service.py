@@ -523,9 +523,12 @@ async def upsert_item(
             existing = item
             break
 
+    # Public writes are always MANUAL (PR #144 #2). The schema no longer
+    # carries a source field; recurring/history are reserved for internal
+    # populate/refresh/copy paths.
     if existing:
         existing.planned_amount = body.planned_amount
-        existing.source = ItemSource(body.source)
+        existing.source = ItemSource.MANUAL
     else:
         new_item = ForecastPlanItem(
             plan_id=plan.id,
@@ -533,7 +536,7 @@ async def upsert_item(
             category_id=body.category_id,
             type=ForecastItemType(body.type),
             planned_amount=body.planned_amount,
-            source=ItemSource(body.source),
+            source=ItemSource.MANUAL,
         )
         db.add(new_item)
 
@@ -587,11 +590,12 @@ async def bulk_upsert(
         (i.category_id, i.type.value): i for i in plan.items
     }
 
+    # Public bulk writes are always MANUAL (PR #144 #2). See upsert_item.
     for item_data in body.items:
         key = (item_data.category_id, item_data.type)
         if key in existing_map:
             existing_map[key].planned_amount = item_data.planned_amount
-            existing_map[key].source = ItemSource(item_data.source)
+            existing_map[key].source = ItemSource.MANUAL
         else:
             new_item = ForecastPlanItem(
                 plan_id=plan.id,
@@ -599,7 +603,7 @@ async def bulk_upsert(
                 category_id=item_data.category_id,
                 type=ForecastItemType(item_data.type),
                 planned_amount=item_data.planned_amount,
-                source=ItemSource(item_data.source),
+                source=ItemSource.MANUAL,
             )
             db.add(new_item)
             existing_map[key] = new_item  # track to handle duplicates in same request

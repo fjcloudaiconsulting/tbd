@@ -212,6 +212,74 @@ async def test_update_role_leaves_permissions_when_none(db_session):
 
 
 @pytest.mark.asyncio
+async def test_update_role_clears_description_when_explicit_none(db_session):
+    """PR #142 #3: passing description=None must clear the stored value.
+
+    The router passes a sentinel via the schema's ``model_fields_set`` so
+    "field omitted" stays a no-op while "field explicitly null" actually
+    nulls out the column.
+    """
+    item = await role_service.create_role(
+        db_session,
+        slug="ops",
+        name="Ops",
+        description="Original description",
+        permissions=[],
+    )
+    await db_session.commit()
+
+    updated = await role_service.update_role(
+        db_session,
+        role_id=item["id"],
+        description=None,
+        clear_description=True,
+    )
+    await db_session.commit()
+    assert updated["description"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_role_leaves_description_when_omitted(db_session):
+    """No description argument means leave stored value untouched."""
+    item = await role_service.create_role(
+        db_session,
+        slug="ops",
+        name="Ops",
+        description="Keep me",
+        permissions=[],
+    )
+    await db_session.commit()
+
+    updated = await role_service.update_role(
+        db_session,
+        role_id=item["id"],
+        name="Operations",
+    )
+    await db_session.commit()
+    assert updated["description"] == "Keep me"
+
+
+@pytest.mark.asyncio
+async def test_update_role_sets_description_when_provided(db_session):
+    item = await role_service.create_role(
+        db_session,
+        slug="ops",
+        name="Ops",
+        description=None,
+        permissions=[],
+    )
+    await db_session.commit()
+
+    updated = await role_service.update_role(
+        db_session,
+        role_id=item["id"],
+        description="New description",
+    )
+    await db_session.commit()
+    assert updated["description"] == "New description"
+
+
+@pytest.mark.asyncio
 async def test_update_role_refuses_frozen(db_session):
     role_id = await _seed_frozen_superadmin(db_session)
     with pytest.raises(ConflictError):
