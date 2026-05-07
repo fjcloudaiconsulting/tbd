@@ -25,17 +25,20 @@ Permission = Literal[
     "orgs.view",
     "orgs.manage",
     "audit.view",
+    "roles.manage",
 ]
 
 
-# Canonical set — useful when iterating or seeding L4.8's eventual DB
-# migration.
+# Canonical set — useful when iterating or seeding the role admin
+# UI's permission editor (L4.8) and the migration that seeds the
+# superadmin role row.
 ALL_PERMISSIONS: frozenset[Permission] = frozenset({
     "admin.view",
     "plans.manage",
     "orgs.view",
     "orgs.manage",
     "audit.view",
+    "roles.manage",
 })
 
 
