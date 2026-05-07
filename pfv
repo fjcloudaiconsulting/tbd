@@ -36,7 +36,7 @@ cmd_start() {
   echo "Ready (migrations run automatically on backend startup):"
   echo "  App:      http://localhost"
   echo "  API:      http://localhost/api/"
-  echo "  API docs: http://localhost/docs"
+  echo "  API docs: http://localhost/api/docs"
 }
 
 cmd_stop() {

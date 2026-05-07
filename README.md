@@ -79,7 +79,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full architecture breakdown, envi
 
 ## API Documentation
 
-Swagger UI is available at http://localhost/docs when running locally.
+Swagger UI is available at http://localhost/api/docs when running locally.
 
 | Resource | Prefix | Description |
 |----------|--------|-------------|
