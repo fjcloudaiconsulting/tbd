@@ -286,10 +286,13 @@ export default function OnTrackTile({
     );
   }
 
-  // Default current-period view: verdict + variance use the projection.
-  const pct = forecastExpense / plannedExpense;
+  // Default current-period view: verdict + variance anchor on actual (settled)
+  // spending, NOT the projection. The projection is shown as an informational
+  // muted stat so it never alarms the user before money has actually moved.
+  // YNAB / Monarch / Copilot / Mint all behave this way.
+  const pct = executedExpense / plannedExpense;
   const verdict = computeVerdict(pct);
-  const variance = plannedExpense - forecastExpense;
+  const variance = plannedExpense - executedExpense;
   const varianceFavorable = variance >= 0;
 
   return (
@@ -319,7 +322,8 @@ export default function OnTrackTile({
         <Stat
           label="PROJECTED"
           value={formatAmount(forecastExpense)}
-          sublabel="forecast for month"
+          sublabel="projected end-of-month"
+          muted
         />
       </div>
     </section>
