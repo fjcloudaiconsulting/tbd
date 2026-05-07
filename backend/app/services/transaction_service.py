@@ -30,7 +30,10 @@ from app.schemas.transaction import (
 )
 from app.services.category_rules_service import learn_from_choice
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
-from app.services.transaction_filters import is_reportable_transaction
+from app.services.transaction_filters import (
+    effective_period_date_expr,
+    is_reportable_transaction,
+)
 
 logger = structlog.get_logger()
 
@@ -1384,12 +1387,12 @@ async def list_transactions(
     if status is not None:
         q = q.where(Transaction.status == TransactionStatus(status))
     if date_from is not None:
-        q = q.where(Transaction.date >= date_from)
+        q = q.where(effective_period_date_expr() >= date_from)
     if date_to is not None:
-        q = q.where(Transaction.date <= date_to)
+        q = q.where(effective_period_date_expr() <= date_to)
     if search is not None:
         q = q.where(Transaction.description.ilike(f"%{search}%"))
-    q = q.order_by(Transaction.date.desc(), Transaction.id.desc())
+    q = q.order_by(effective_period_date_expr().desc(), Transaction.id.desc())
     q = q.limit(limit).offset(offset)
 
     result = await db.execute(q)

@@ -6,12 +6,25 @@ which already imports from transaction_service.
 Today these all delegate to ``linked_transaction_id IS NULL``. Future-proofed
 to grow additional reasons (voided, refunded) without renaming call sites.
 """
+from sqlalchemy import func
+
 from app.models.transaction import Transaction
 
 
 def reportable_transaction_filter():
     """SQL clause: rows that count toward income/expense aggregates."""
     return Transaction.linked_transaction_id.is_(None)
+
+
+def effective_period_date_expr():
+    """Period-bucketing date for billing-window queries.
+
+    Settled rows count against the period in which they settled.
+    Pending rows with a settled_date estimate count against that estimate.
+    Pending rows without a settled_date fall back to purchase date, the
+    only signal we have for hand-keyed pending entries.
+    """
+    return func.coalesce(Transaction.settled_date, Transaction.date)
 
 
 def is_reportable_transaction(tx: Transaction) -> bool:
