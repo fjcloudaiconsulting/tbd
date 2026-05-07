@@ -40,6 +40,11 @@ class PasswordChange(BaseModel):
     # conditionally. When the caller has `password_set=True` the handler
     # requires a valid `current_password`. When `password_set=False`
     # (Google SSO user setting a password for the first time) the
-    # `current_password` field is ignored entirely.
+    # `current_password` field is ignored and a fresh `stepup_token`
+    # (issued by the SSO step-up callback) is required instead.
     current_password: str | None = Field(default=None, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
+    # First-set proof of presence for SSO users. Same single-use,
+    # 5-minute token shape as the email-change flow consumes; the
+    # handler validates and consumes it on the row.
+    stepup_token: str | None = Field(default=None, max_length=128)

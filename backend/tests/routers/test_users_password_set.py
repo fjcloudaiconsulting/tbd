@@ -147,14 +147,49 @@ async def test_sso_user_create_sets_password_set_false(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_initial_password_skips_current_password_check(session_factory):
+async def test_initial_password_requires_stepup_token(session_factory):
+    """Finding 1: a stolen SSO session must NOT be able to write a
+    persistent local password without a fresh Google step-up. Posting
+    `new_password` alone when `password_set=False` is rejected — same
+    proof-of-presence requirement the email-change endpoint enforces."""
     user_id = await _seed_user(session_factory, password_set=False)
     app = _make_app(session_factory, user_id)
     with TestClient(app) as client:
-        # Note: no current_password in body.
         res = client.post(
             "/api/v1/users/me/password",
             json={"new_password": "brand-new-password"},
+        )
+    assert res.status_code == 400, res.text
+    assert "step-up" in res.json()["detail"].lower()
+
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        # No write happened.
+        assert user.password_set is False
+        assert not verify_password("brand-new-password", user.password_hash)
+
+
+@pytest.mark.asyncio
+async def test_initial_password_with_valid_stepup_token_succeeds(session_factory):
+    """Same flow as before, but with a valid step-up token. Sets the
+    password, flips the flag, and consumes the token so it cannot be
+    replayed by `/users/me` for an email change."""
+    token = "first-set-stepup-" + "x" * 8
+    user_id = await _seed_user(
+        session_factory,
+        password_set=False,
+        stepup_token=token,
+        stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+    app = _make_app(session_factory, user_id)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/users/me/password",
+            json={
+                "new_password": "brand-new-password",
+                "stepup_token": token,
+            },
         )
     assert res.status_code == 204, res.text
 
@@ -163,19 +198,82 @@ async def test_initial_password_skips_current_password_check(session_factory):
         assert user is not None
         assert user.password_set is True
         assert verify_password("brand-new-password", user.password_hash)
+        # Token is consumed (single-use, no replay across endpoints).
+        assert user.stepup_token is None
+        assert user.stepup_token_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_initial_password_rejects_expired_stepup_token(session_factory):
+    token = "expired-set-token-" + "x" * 8
+    user_id = await _seed_user(
+        session_factory,
+        password_set=False,
+        stepup_token=token,
+        stepup_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    app = _make_app(session_factory, user_id)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/users/me/password",
+            json={"new_password": "brand-new-password", "stepup_token": token},
+        )
+    assert res.status_code == 400, res.text
+
+    async with session_factory() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        # Password not written, flag still False.
+        assert user.password_set is False
+
+
+@pytest.mark.asyncio
+async def test_initial_password_rejects_replay_of_consumed_stepup_token(session_factory):
+    """Step-up token is single-use across endpoints. Once /me/password
+    consumes it, a second /me/password call replaying the same token
+    must fail."""
+    token = "single-use-set-token-" + "x" * 8
+    user_id = await _seed_user(
+        session_factory,
+        password_set=False,
+        stepup_token=token,
+        stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
+    app = _make_app(session_factory, user_id)
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/v1/users/me/password",
+            json={"new_password": "first-attempt", "stepup_token": token},
+        )
+        assert first.status_code == 204, first.text
+
+        # password_set is now True, so the standard branch runs and the
+        # stepup_token is rejected as not a valid current_password. The
+        # critical invariant: the same token never grants two writes.
+        second = client.post(
+            "/api/v1/users/me/password",
+            json={"new_password": "second-attempt", "stepup_token": token},
+        )
+    assert second.status_code == 400, second.text
 
 
 @pytest.mark.asyncio
 async def test_initial_password_updates_password_changed_at_and_sessions_invalidated_at(
     session_factory,
 ):
-    user_id = await _seed_user(session_factory, password_set=False)
+    token = "valid-stepup-" + "x" * 8
+    user_id = await _seed_user(
+        session_factory,
+        password_set=False,
+        stepup_token=token,
+        stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
     before = datetime.now(timezone.utc)
     app = _make_app(session_factory, user_id)
     with TestClient(app) as client:
         res = client.post(
             "/api/v1/users/me/password",
-            json={"new_password": "brand-new-password"},
+            json={"new_password": "brand-new-password", "stepup_token": token},
         )
     assert res.status_code == 204, res.text
 
@@ -197,12 +295,18 @@ async def test_initial_password_path_rejected_after_first_set(session_factory):
     """After password_set flips True, the standard branch must enforce
     the current_password check. Posting only `new_password` should 400
     instead of silently rotating the password again."""
-    user_id = await _seed_user(session_factory, password_set=False)
+    token = "first-set-token-" + "x" * 8
+    user_id = await _seed_user(
+        session_factory,
+        password_set=False,
+        stepup_token=token,
+        stepup_expires_at=datetime.now(timezone.utc) + timedelta(minutes=4),
+    )
     app = _make_app(session_factory, user_id)
     with TestClient(app) as client:
         first = client.post(
             "/api/v1/users/me/password",
-            json={"new_password": "first-set-password"},
+            json={"new_password": "first-set-password", "stepup_token": token},
         )
         assert first.status_code == 204
 
@@ -296,6 +400,66 @@ async def test_email_change_rejects_expired_stepup_token(session_factory):
         user = await db.get(User, user_id)
         assert user is not None
         assert user.email == "alice@acme.io"
+
+
+@pytest.mark.asyncio
+async def test_email_change_keeps_stepup_token_when_target_email_taken(session_factory):
+    """Finding 3: target-email validation must run BEFORE the step-up
+    token is consumed. If the new email is already taken the change
+    cannot apply, so the user's still-valid token must survive the
+    failed attempt and the row must still hold it for the retry."""
+    token = "preserve-on-conflict-" + "x" * 8
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=4)
+
+    # Seed two users in the same org. `alice` has the step-up token.
+    # `bob` already owns the email alice will try to claim.
+    async with session_factory() as db:
+        org = Organization(name="Acme", billing_cycle_day=1)
+        db.add(org)
+        await db.commit()
+        alice = User(
+            org_id=org.id,
+            username="alice",
+            email="alice@acme.io",
+            password_hash=hash_password("starting-password"),
+            role=Role.OWNER,
+            is_active=True,
+            email_verified=True,
+            password_set=False,
+            stepup_token=token,
+            stepup_token_expires_at=expires_at,
+        )
+        bob = User(
+            org_id=org.id,
+            username="bob",
+            email="bob@acme.io",
+            password_hash=hash_password("bob-password"),
+            role=Role.MEMBER,
+            is_active=True,
+            email_verified=True,
+            password_set=True,
+        )
+        db.add_all([alice, bob])
+        await db.commit()
+        alice_id = alice.id
+
+    app = _make_app(session_factory, alice_id)
+    with TestClient(app) as client:
+        res = client.put(
+            "/api/v1/users/me",
+            json={"email": "bob@acme.io", "stepup_token": token},
+        )
+    assert res.status_code == 409, res.text
+
+    async with session_factory() as db:
+        user = await db.get(User, alice_id)
+        assert user is not None
+        # Email did not change.
+        assert user.email == "alice@acme.io"
+        # Token must still be there for a retry — failed validation
+        # cannot consume the step-up proof.
+        assert user.stepup_token == token
+        assert user.stepup_token_expires_at is not None
 
 
 @pytest.mark.asyncio

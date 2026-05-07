@@ -128,9 +128,10 @@ async def update_profile(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Step-up verification with Google is required to change email",
                 )
-            # Consume the token so it cannot be replayed.
-            current_user.stepup_token = None
-            current_user.stepup_token_expires_at = None
+        # Validate the target email BEFORE consuming the step-up token
+        # or any password-branch side effects. If the email is already
+        # taken the change cannot apply, so the proof of presence must
+        # remain usable for the user's retry. (Finding 3 from PR #138.)
         existing = await db.execute(
             select(User).where(User.email == body.email)
         )
@@ -139,6 +140,11 @@ async def update_profile(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Email already taken",
             )
+        if not current_user.password_set:
+            # Step-up was validated above; only consume now that the
+            # change is actually about to be applied.
+            current_user.stepup_token = None
+            current_user.stepup_token_expires_at = None
         # Capture the new email now (body.email survives the pydantic
         # validation; current_user.email is still the old one until the
         # assignment below).
@@ -184,8 +190,12 @@ async def change_password(
     #   - `password_set=True` (default for every classic register flow):
     #     require a valid `current_password`. Existing behavior.
     #   - `password_set=False` (Google SSO user setting a real password
-    #     for the first time): skip the current-password check; any
-    #     supplied value is ignored. After the write `password_set`
+    #     for the first time): require a valid `stepup_token` issued by
+    #     the SSO step-up callback. Same proof-of-presence the email
+    #     change branch uses, for the same reason — without it a
+    #     stolen SSO session could write a persistent local password
+    #     and convert a transient hijack into permanent account access.
+    #     (Finding 1 from PR #138.) After the write `password_set`
     #     flips True permanently so subsequent rotations land in the
     #     standard branch above.
     if current_user.password_set:
@@ -196,6 +206,26 @@ async def change_password(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Current password is incorrect",
             )
+    else:
+        now_check = datetime.now(timezone.utc)
+        stored = current_user.stepup_token
+        expires_at = current_user.stepup_token_expires_at
+        valid = (
+            bool(body.stepup_token)
+            and stored is not None
+            and expires_at is not None
+            and _aware(expires_at) > now_check
+            and secrets.compare_digest(body.stepup_token, stored)
+        )
+        if not valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Step-up verification with Google is required to set a password",
+            )
+        # Consume the token so it cannot be replayed against any
+        # other step-up-gated endpoint.
+        current_user.stepup_token = None
+        current_user.stepup_token_expires_at = None
 
     now = datetime.now(timezone.utc)
     current_user.password_hash = hash_password(body.new_password)

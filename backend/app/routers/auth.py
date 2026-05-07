@@ -37,6 +37,7 @@ from app.schemas.auth import (
     RegisterRequest,
     ResendVerificationPublicRequest,
     ResetPasswordRequest,
+    StepUpInitiateRequest,
     TokenResponse,
     UsernameCheckResponse,
     UserResponse,
@@ -466,6 +467,12 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
 
     now = datetime.now(timezone.utc)
     user.password_hash = hash_password(body.new_password)
+    # Flip `password_set` so an SSO user who reset via token lands in
+    # the standard branch on every future /users/me/password call and
+    # the UI stops offering "Set a Password". Without this flip the
+    # account has working local credentials but the row still claims
+    # no password has ever been chosen. (Finding 2 from PR #138.)
+    user.password_set = True
     user.password_changed_at = now
     user.sessions_invalidated_at = now
     await db.commit()
@@ -1075,9 +1082,22 @@ async def google_callback(
 STEPUP_TOKEN_TTL_SECONDS = 5 * 60
 
 
+# Allowlist of pages the step-up callback may redirect back to. We
+# encode the chosen target into `state` (and validate it on the way
+# back) so the Google round-trip cannot be twisted into an open
+# redirect. New entries here must remain same-origin first-party
+# settings paths.
+_STEPUP_RETURN_TARGETS: dict[str, str] = {
+    "settings": "/settings",
+    "security": "/settings/security",
+}
+_STEPUP_DEFAULT_TARGET = "settings"
+
+
 @router.post("/sso-stepup/initiate")
 async def sso_stepup_initiate(
     response: Response,
+    body: StepUpInitiateRequest | None = None,
     current_user: User = Depends(get_current_user),
 ):
     """Begin a Google step-up flow for the signed-in user.
@@ -1085,12 +1105,19 @@ async def sso_stepup_initiate(
     Returns the Google consent URL the frontend should navigate to.
     The state cookie embeds the `current_user.id` so the callback can
     verify the same user finished the round-trip and reject any state
-    coming back to a different session.
+    coming back to a different session. State also encodes the chosen
+    return target (validated against an allowlist) so the callback can
+    redirect to either /settings (email change) or /settings/security
+    (first-time password set) without a query-string open redirect.
     """
     _validate_google_config()
 
+    return_key = (body.return_to if body else None) or _STEPUP_DEFAULT_TARGET
+    if return_key not in _STEPUP_RETURN_TARGETS:
+        return_key = _STEPUP_DEFAULT_TARGET
+
     nonce = secrets.token_urlsafe(32)
-    state = f"stepup:{current_user.id}:{nonce}"
+    state = f"stepup:{current_user.id}:{nonce}:{return_key}"
     response.set_cookie(
         key="oauth_state",
         value=state,
@@ -1146,13 +1173,19 @@ async def sso_stepup_callback(
 
     # State binds the redemption to a specific user_id chosen at
     # initiate time. Without an Authorization header here, the state
-    # cookie + state string round trip is the identity proof.
+    # cookie + state string round trip is the identity proof. The
+    # 4-part shape carries the return-target chosen at initiate so the
+    # callback redirects to the correct settings page (validated
+    # against `_STEPUP_RETURN_TARGETS` to prevent open redirect).
     parts = state.split(":")
-    if len(parts) != 3 or parts[0] != "stepup":
+    if len(parts) != 4 or parts[0] != "stepup":
         raise HTTPException(status_code=400, detail="Malformed step-up state")
     try:
         state_user_id = int(parts[1])
     except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed step-up state")
+    return_key = parts[3]
+    if return_key not in _STEPUP_RETURN_TARGETS:
         raise HTTPException(status_code=400, detail="Malformed step-up state")
 
     user = await db.get(User, state_user_id)
@@ -1208,8 +1241,9 @@ async def sso_stepup_callback(
     )
     await db.commit()
 
+    return_path = _STEPUP_RETURN_TARGETS[return_key]
     resp = RedirectResponse(
-        url=f"{app_settings.app_url}/settings#stepup_token={token}",
+        url=f"{app_settings.app_url}{return_path}#stepup_token={token}",
         status_code=302,
     )
     resp.delete_cookie("oauth_state", path="/api/v1/auth/sso-stepup")
