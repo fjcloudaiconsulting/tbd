@@ -36,6 +36,31 @@ from app.models.audit_event import AuditEvent, AuditOutcome
 logger = structlog.stdlib.get_logger()
 
 
+def _build_audit_event(
+    *,
+    event_type: str,
+    actor_user_id: Optional[int],
+    actor_email: str,
+    target_org_id: Optional[int],
+    target_org_name: Optional[str],
+    request_id: Optional[str],
+    ip_address: Optional[str],
+    outcome: Literal["success", "failure"],
+    detail: Optional[dict[str, Any]] = None,
+) -> AuditEvent:
+    return AuditEvent(
+        event_type=event_type,
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=target_org_id,
+        target_org_name=target_org_name,
+        request_id=request_id,
+        ip_address=ip_address,
+        outcome=AuditOutcome(outcome),
+        detail=detail,
+    )
+
+
 async def record_audit_event(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -49,13 +74,26 @@ async def record_audit_event(
     outcome: Literal["success", "failure"],
     detail: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Persist an audit event in its own transaction.
+    """Persist an audit event in its OWN transaction.
 
     Failures are logged via structlog and swallowed. Never raises.
+
+    Use this when the audit write must succeed regardless of the
+    business txn outcome (e.g. a failed delete still needs an audit
+    row even though the business txn rolled back).
+
+    For the inverse case — audit row should commit if-and-only-if
+    the business txn commits — use ``add_audit_event_to_session``
+    on the request-scoped session instead. That pattern is used for
+    org deletion: the audit row carries a snapshot of the org's
+    identifying fields, the FK to organizations is ON DELETE SET
+    NULL, and writing in the same txn before the delete means a
+    cascade-failure rolls back the audit row too (no orphan audit
+    rows for non-deletes).
     """
     try:
         async with session_factory() as session:
-            row = AuditEvent(
+            session.add(_build_audit_event(
                 event_type=event_type,
                 actor_user_id=actor_user_id,
                 actor_email=actor_email,
@@ -63,12 +101,18 @@ async def record_audit_event(
                 target_org_name=target_org_name,
                 request_id=request_id,
                 ip_address=ip_address,
-                outcome=AuditOutcome(outcome),
+                outcome=outcome,
                 detail=detail,
-            )
-            session.add(row)
+            ))
             await session.commit()
     except Exception as exc:  # noqa: BLE001 — defensive: never bubble.
+        # Kept as a backstop. Logged at ERROR so a regression in a
+        # caller that doesn't pre-snapshot (like the original
+        # org-delete path) surfaces immediately. After PR-C the
+        # org-delete success path stages its audit row in the
+        # business txn via add_audit_event_to_session, so any
+        # audit.record.failed signal here is a genuine problem
+        # worth alerting on.
         await logger.aerror(
             "audit.record.failed",
             event_type=event_type,
@@ -78,6 +122,43 @@ async def record_audit_event(
             error=str(exc),
             error_type=type(exc).__name__,
         )
+
+
+def add_audit_event_to_session(
+    session: AsyncSession,
+    *,
+    event_type: str,
+    actor_user_id: Optional[int],
+    actor_email: str,
+    target_org_id: Optional[int],
+    target_org_name: Optional[str],
+    request_id: Optional[str],
+    ip_address: Optional[str],
+    outcome: Literal["success", "failure"],
+    detail: Optional[dict[str, Any]] = None,
+) -> AuditEvent:
+    """Stage an audit-event row on the caller's session so it commits
+    in the SAME transaction as the business write. Use for the
+    org-delete success path (the row should exist iff the delete
+    commits) and other cases where the audit row's correctness
+    depends on the business txn.
+
+    Returns the staged AuditEvent so the caller can assert on it
+    before commit if useful.
+    """
+    row = _build_audit_event(
+        event_type=event_type,
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=target_org_id,
+        target_org_name=target_org_name,
+        request_id=request_id,
+        ip_address=ip_address,
+        outcome=outcome,
+        detail=detail,
+    )
+    session.add(row)
+    return row
 
 
 async def list_audit_events(
@@ -105,13 +186,13 @@ async def list_audit_events(
     if event_type:
         where.append(AuditEvent.event_type == event_type)
     if outcome:
-        # Validate against enum so a typo can't silently match nothing.
-        try:
-            outcome_enum = AuditOutcome(outcome)
-        except ValueError:
-            outcome_enum = None
-        if outcome_enum is not None:
-            where.append(AuditEvent.outcome == outcome_enum)
+        # The HTTP route now types this as Literal["success", "failure"]
+        # so FastAPI returns 422 for typos before this branch runs.
+        # Direct service callers (and tests) still pass strings, so
+        # raise ValueError on bad input rather than silently
+        # unfiltering — that's the bug we're closing.
+        outcome_enum = AuditOutcome(outcome)
+        where.append(AuditEvent.outcome == outcome_enum)
     if from_dt is not None:
         where.append(AuditEvent.created_at >= from_dt)
     if to_dt is not None:

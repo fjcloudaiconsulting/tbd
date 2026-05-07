@@ -11,6 +11,7 @@ log captures are the same events the structlog stream emits.
 from __future__ import annotations
 
 import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +34,10 @@ async def list_audit_events(
     actor_user_id: int | None = Query(default=None, ge=1),
     target_org_id: int | None = Query(default=None, ge=1),
     event_type: str | None = Query(default=None, max_length=80),
-    outcome: str | None = Query(default=None, max_length=16),
+    # Typed Literal so a typo (?outcome=failuer) returns 422 from
+    # FastAPI's request validation rather than silently dropping the
+    # filter and returning the unfiltered list.
+    outcome: Literal["success", "failure"] | None = Query(default=None),
     from_dt: datetime.datetime | None = Query(default=None),
     to_dt: datetime.datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),

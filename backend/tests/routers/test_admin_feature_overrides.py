@@ -505,7 +505,22 @@ async def test_sweep_writes_audit_event(session_factory):
     assert row.actor_email == seed["admin_email"]
     assert row.target_org_id is None
     assert row.target_org_name is None
-    assert row.detail == {"deleted_count": 2}
+    # PR-C: bounded detail with per-row entries + counts.
+    assert row.detail["deleted_count"] == 2
+    assert row.detail["truncated_count"] == 0
+    assert sorted(e["feature_key"] for e in row.detail["entries"]) == (
+        ["ai.budget", "ai.forecast"]
+    )
+    # All entries reference the seeded target org.
+    assert {e["org_id"] for e in row.detail["entries"]} == {seed["target_id"]}
+    assert row.detail["counts_by_feature"] == {
+        "ai.budget": 1,
+        "ai.forecast": 1,
+    }
+    # Happy path: no divergence flag (or explicitly false). Pin the
+    # contract so a future reader can tell happy-path detail from the
+    # divergence-path detail at a glance.
+    assert not row.detail.get("divergence")
 
 
 @pytest.mark.asyncio
@@ -530,7 +545,83 @@ async def test_sweep_idempotent_when_nothing_expired(session_factory):
             )
         ).scalars().all()
     assert len(rows) == 1
-    assert rows[0].detail == {"deleted_count": 0}
+    # No expirees: zero counts everywhere, empty entries list. Happy
+    # path (nothing was locked, nothing was deleted), so no divergence.
+    assert rows[0].detail["deleted_count"] == 0
+    assert rows[0].detail["truncated_count"] == 0
+    assert rows[0].detail["entries"] == []
+    assert rows[0].detail["counts_by_feature"] == {}
+    assert not rows[0].detail.get("divergence")
+
+
+@pytest.mark.asyncio
+async def test_sweep_truncates_audit_entries_over_cap(session_factory):
+    """When > _SWEEP_AUDIT_ENTRY_CAP rows are deleted, the audit
+    detail caps the per-row `entries` list and surfaces the rest as
+    `truncated_count` plus `counts_by_feature`.
+
+    Pre-PR-C the audit row only carried `deleted_count`, so an ops
+    person investigating a sweep could only see the total — not which
+    orgs/features lost access.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select as _select
+
+    from app._time import utcnow_naive
+    from app.models.user import Organization
+    from app.routers.admin_orgs import _SWEEP_AUDIT_ENTRY_CAP
+
+    seed = await _seed(session_factory)
+    cap = _SWEEP_AUDIT_ENTRY_CAP
+    over_cap = cap + 5
+    past = utcnow_naive() - timedelta(hours=1)
+
+    # Need many distinct orgs because of the UNIQUE(org_id, feature_key).
+    # Plant a single expired override per fresh org, alternating between
+    # two keys so counts_by_feature is non-trivial.
+    async with session_factory() as db:
+        orgs = [
+            Organization(name=f"OrgX-{i}", billing_cycle_day=1)
+            for i in range(over_cap)
+        ]
+        db.add_all(orgs)
+        await db.commit()
+        for i, org in enumerate(orgs):
+            db.add(
+                OrgFeatureOverride(
+                    org_id=org.id,
+                    feature_key=("ai.budget" if i % 2 == 0 else "ai.forecast"),
+                    value=True,
+                    set_by=seed["admin_user_id"],
+                    expires_at=past,
+                )
+            )
+        await db.commit()
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
+    assert res.status_code == 200
+    assert res.json()["deleted_count"] == over_cap
+
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                _select(AuditEvent).where(
+                    AuditEvent.event_type
+                    == "admin.feature_override.expired_swept"
+                )
+            )
+        ).scalars().one()
+    assert row.detail["deleted_count"] == over_cap
+    assert len(row.detail["entries"]) == cap
+    assert row.detail["truncated_count"] == over_cap - cap
+    # Aggregate counts cover ALL deleted rows, not just the entries list.
+    total_via_counts = sum(row.detail["counts_by_feature"].values())
+    assert total_via_counts == over_cap
+    # Happy path: no divergence under non-racing sweep.
+    assert not row.detail.get("divergence")
 
 
 @pytest.mark.asyncio
@@ -557,3 +648,169 @@ async def test_sweep_requires_orgs_manage(session_factory):
         ).scalars().all()
     # All 4 rows still present.
     assert len(count) == 4
+
+
+@pytest.mark.asyncio
+async def test_sweep_audit_count_matches_actual_deletes(session_factory):
+    """Regression: audit `deleted_count`, `entries`, and `counts_by_feature`
+    must reflect rows that were ACTUALLY removed by this sweep, not the
+    set of rows the sweep merely observed as expired.
+
+    Pre-fix the route ran SELECT-then-DELETE-by-predicate. Two
+    overlapping sweeps could both snapshot the same expired rows; the
+    first deleted them, the second deleted 0 but still audited
+    ``deleted_count = len(snapshot)``. With lock-then-delete-by-id +
+    deleted_count derived from the DELETE rowcount, the second sweep
+    audits exactly what it removed.
+
+    We simulate the race deterministically by deleting some of the
+    expired rows out-of-band BETWEEN the route's snapshot and its
+    DELETE. SQLite ignores SELECT FOR UPDATE, so this hook reliably
+    fires; on MySQL the FOR UPDATE serializes the second sweep until
+    the first commits, achieving the same invariant.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import delete as _delete
+    from sqlalchemy import select as _select
+
+    from app._time import utcnow_naive
+
+    seed = await _seed(session_factory)
+    await _seed_overrides(
+        session_factory, seed["target_id"], admin_user_id=seed["admin_user_id"]
+    )
+
+    # Hook to fire between the route's snapshot SELECT and its
+    # DELETE: delete ai.budget out-of-band so the sweep observes 2
+    # expired rows but only actually deletes 1.
+    saw_select = {"done": False}
+    real_execute = AsyncSession.execute
+
+    async def hooked_execute(self, statement, *args, **kwargs):
+        sql = str(statement).lower()
+        # Fire AFTER the snapshot SELECT, BEFORE the DELETE.
+        if (
+            not saw_select["done"]
+            and "select" in sql
+            and "org_feature_overrides" in sql
+            and "expires_at" in sql
+        ):
+            saw_select["done"] = True
+            result = await real_execute(self, statement, *args, **kwargs)
+            # Out-of-band delete via a separate session so it commits
+            # independently of the route's session.
+            async with session_factory() as side_db:
+                await side_db.execute(
+                    _delete(OrgFeatureOverride).where(
+                        OrgFeatureOverride.org_id == seed["target_id"],
+                        OrgFeatureOverride.feature_key == "ai.budget",
+                    )
+                )
+                await side_db.commit()
+            return result
+        return await real_execute(self, statement, *args, **kwargs)
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with patch.object(AsyncSession, "execute", hooked_execute):
+        with TestClient(app) as client:
+            res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
+    assert res.status_code == 200
+    # Only ai.forecast survived to be deleted by the route. ai.budget
+    # was deleted out-of-band; the route's DELETE-by-id should not
+    # count it.
+    assert res.json() == {"deleted_count": 1}
+
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                _select(AuditEvent).where(
+                    AuditEvent.event_type
+                    == "admin.feature_override.expired_swept"
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1
+    detail = rows[0].detail
+    # Divergence path: the route locked 2 rows under SELECT FOR
+    # UPDATE (no-op on SQLite) but only deleted 1 because the other
+    # was removed out-of-band. We CANNOT honestly tell which of the
+    # two locked rows our DELETE removed without DELETE ... RETURNING
+    # (MySQL doesn't have it). The audit row records the count we
+    # know is true and explicitly flags the gap; per-row identities
+    # are omitted because asserting them would be a guess.
+    assert detail["deleted_count"] == 1
+    assert detail["locked_count"] == 2
+    assert detail["divergence"] is True
+    assert detail["divergence_reason"] == "concurrent_modification"
+    assert "entries" not in detail
+    assert "counts_by_feature" not in detail
+    assert "truncated_count" not in detail
+
+
+@pytest.mark.asyncio
+async def test_sweep_zero_deletes_when_all_expired_rows_already_gone(session_factory):
+    """Edge: every expired row is removed out-of-band between the
+    route's snapshot and its DELETE. Sweep must audit deleted_count=0
+    with empty entries — the symmetric of the partial-overlap case.
+    """
+    from sqlalchemy import delete as _delete
+    from sqlalchemy import select as _select
+
+    seed = await _seed(session_factory)
+    await _seed_overrides(
+        session_factory, seed["target_id"], admin_user_id=seed["admin_user_id"]
+    )
+
+    saw_select = {"done": False}
+    real_execute = AsyncSession.execute
+
+    async def hooked_execute(self, statement, *args, **kwargs):
+        sql = str(statement).lower()
+        if (
+            not saw_select["done"]
+            and "select" in sql
+            and "org_feature_overrides" in sql
+            and "expires_at" in sql
+        ):
+            saw_select["done"] = True
+            result = await real_execute(self, statement, *args, **kwargs)
+            async with session_factory() as side_db:
+                await side_db.execute(
+                    _delete(OrgFeatureOverride).where(
+                        OrgFeatureOverride.org_id == seed["target_id"],
+                        OrgFeatureOverride.feature_key.in_(
+                            ["ai.budget", "ai.forecast"]
+                        ),
+                    )
+                )
+                await side_db.commit()
+            return result
+        return await real_execute(self, statement, *args, **kwargs)
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with patch.object(AsyncSession, "execute", hooked_execute):
+        with TestClient(app) as client:
+            res = client.post("/api/v1/admin/orgs/feature-overrides/sweep-expired")
+    assert res.status_code == 200
+    assert res.json() == {"deleted_count": 0}
+
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                _select(AuditEvent).where(
+                    AuditEvent.event_type
+                    == "admin.feature_override.expired_swept"
+                )
+            )
+        ).scalars().one()
+    # Divergence: route locked 2 rows, then both were deleted
+    # out-of-band, so DELETE-by-id removed 0. Same shape as the
+    # partial-overlap case. No per-row claims.
+    assert row.detail["deleted_count"] == 0
+    assert row.detail["locked_count"] == 2
+    assert row.detail["divergence"] is True
+    assert row.detail["divergence_reason"] == "concurrent_modification"
+    assert "entries" not in row.detail
+    assert "counts_by_feature" not in row.detail
+    assert "truncated_count" not in row.detail

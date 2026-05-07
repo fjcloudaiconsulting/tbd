@@ -108,6 +108,54 @@ async def test_record_audit_event_survives_bad_session():
     )
 
 
+@pytest.mark.asyncio
+async def test_record_audit_event_failure_logs_at_error():
+    """A backstop audit-write failure surfaces at ERROR level.
+
+    After PR-C the org-delete success path stages the audit row in
+    the business txn (see ``add_audit_event_to_session``); the
+    independent-session ``record_audit_event`` is now reserved for
+    the failure path and the sweep. Either is operationally
+    significant when it fails — a regression that pulls a caller
+    back onto this swallow needs to fire alerts, not whisper at
+    WARN. This pins the level so a future "oops" downgrade is
+    caught.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    def broken_factory():
+        raise RuntimeError("DB unreachable")
+
+    from app.services import audit_service as audit_service_module
+
+    with patch.object(
+        audit_service_module.logger, "aerror", new_callable=AsyncMock
+    ) as mock_aerror, patch.object(
+        audit_service_module.logger, "awarning", new_callable=AsyncMock
+    ) as mock_awarning:
+        await record_audit_event(
+            broken_factory,
+            event_type="admin.org.delete",
+            actor_user_id=None,
+            actor_email="root@example.io",
+            target_org_id=None,
+            target_org_name=None,
+            request_id=None,
+            ip_address=None,
+            outcome="failure",
+            detail=None,
+        )
+
+    assert mock_awarning.call_count == 0, (
+        "audit.record.failed must log at ERROR, not WARN"
+    )
+    assert mock_aerror.call_count == 1
+    args, kwargs = mock_aerror.call_args
+    assert args[0] == "audit.record.failed"
+    assert kwargs["event_type"] == "admin.org.delete"
+    assert kwargs["error_type"] == "RuntimeError"
+
+
 # ── querying ────────────────────────────────────────────────────────────
 
 
@@ -164,6 +212,19 @@ async def test_list_audit_events_filters_by_outcome(session_factory):
     assert total == 1
     assert len(rows) == 1
     assert rows[0].event_type == "admin.org.delete.failed"
+
+
+@pytest.mark.asyncio
+async def test_list_audit_events_invalid_outcome_raises(session_factory):
+    """Service-direct callers (and old swallow) used to silently skip
+    the filter on a typo. PR-C tightens this: the route layer types
+    the param as Literal so FastAPI rejects, and the service raises
+    ValueError so any direct caller (tests, ad-hoc scripts) sees the
+    typo loudly."""
+    await _seed_three(session_factory)
+    async with session_factory() as db:
+        with pytest.raises(ValueError):
+            await list_audit_events(db, outcome="failuer")
 
 
 @pytest.mark.asyncio
