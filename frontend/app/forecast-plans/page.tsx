@@ -102,8 +102,39 @@ export default function ForecastPlansPage() {
     title: string;
     message: string;
     variant: "warning" | "danger";
+    confirmLabel?: string;
     action: () => void;
   } | null>(null);
+
+  // Show details toggle. Default off; persisted under
+  // forecast-plans:show-details. Initial render reads localStorage in a
+  // mount effect so server/client HTML stays identical (no hydration
+  // mismatch). Until the effect runs, treat the toggle as "off" — the
+  // simpler view — so flipping after hydration only ever reveals more.
+  const [showDetails, setShowDetails] = useState<boolean>(false);
+  const [showDetailsHydrated, setShowDetailsHydrated] = useState<boolean>(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("forecast-plans:show-details");
+      if (raw === "true") setShowDetails(true);
+    } catch {
+      // localStorage unavailable (private mode etc.) — keep default off.
+    }
+    setShowDetailsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!showDetailsHydrated) return;
+    try {
+      localStorage.setItem(
+        "forecast-plans:show-details",
+        showDetails ? "true" : "false",
+      );
+    } catch {
+      // ignore
+    }
+  }, [showDetails, showDetailsHydrated]);
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
@@ -236,6 +267,48 @@ export default function ForecastPlansPage() {
           );
           setPlan(p);
         } catch (err) {
+          setError(extractErrorMessage(err));
+        }
+      },
+    });
+  }
+
+  // Finalized-plan refresh: revert to draft, then refresh from sources.
+  // The user explicitly chose to edit and refresh, so a partial failure
+  // (revert ok, refresh fails) MUST leave the plan in draft and surface
+  // the error — silently flipping back to active would discard the
+  // user's choice without explanation.
+  async function handleEditAndRefresh() {
+    setConfirmAction({
+      title: "Edit and refresh plan",
+      message:
+        "This will revert the plan to draft, replace auto-generated rows with fresh data, and keep lines you added or edited yourself.",
+      variant: "warning",
+      confirmLabel: "Edit and refresh",
+      action: async () => {
+        if (!plan) return;
+        setError("");
+        let revertedPlan: ForecastPlan | null = null;
+        try {
+          revertedPlan = await apiFetch<ForecastPlan>(
+            `/api/v1/forecast-plans/${plan.id}/revert`,
+            { method: "POST" },
+          );
+          setPlan(revertedPlan);
+        } catch (err) {
+          setError(extractErrorMessage(err));
+          return;
+        }
+        try {
+          const refreshed = await apiFetch<ForecastPlan>(
+            `/api/v1/forecast-plans/refresh-from-sources?period_start=${periodStart}`,
+            { method: "POST" },
+          );
+          setPlan(refreshed);
+        } catch (err) {
+          // Revert succeeded, refresh failed. Keep the draft visible
+          // and surface the error so the user can retry refresh or
+          // continue editing manually.
           setError(extractErrorMessage(err));
         }
       },
@@ -384,58 +457,102 @@ export default function ForecastPlansPage() {
   return (
     <AppShell>
       {/* Header */}
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
         <h1 className={`${pageTitle} mb-0`}>Forecast Plans</h1>
-        {isDraft && (
-          <div className="flex items-center gap-2">
-            {hasItems && (
-              <button
-                onClick={handleDiscard}
-                className="rounded-md px-3 py-2 text-xs text-text-muted hover:text-danger"
-              >
-                Discard
-              </button>
-            )}
-            <button
-              onClick={handlePopulate}
-              className={btnPrimary}
-              title={HELP_AUTO_POPULATE + DOCS_HINT}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Show/hide details toggle. Hides variance/source/chart/refresh
+              and the technical (?) help markers when off. */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showDetails}
+            aria-label={showDetails ? "Hide details" : "Show details"}
+            onClick={() => setShowDetails((v) => !v)}
+            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <span
+              aria-hidden="true"
+              className={`inline-block h-3 w-6 rounded-full transition-colors ${
+                showDetails ? "bg-accent" : "bg-border"
+              }`}
             >
-              Auto-populate
-            </button>
-            <HelpIcon label="Auto-populate" text={HELP_AUTO_POPULATE} />
-            {hasItems && (
-              <>
+              <span
+                className={`block h-3 w-3 rounded-full bg-surface transition-transform ${
+                  showDetails ? "translate-x-3" : "translate-x-0"
+                }`}
+              />
+            </span>
+            <span>{showDetails ? "Hide details" : "Show details"}</span>
+          </button>
+
+          {isDraft && (
+            <>
+              {hasItems && (
                 <button
-                  onClick={handleRefreshFromSources}
+                  onClick={handleDiscard}
+                  className="rounded-md px-3 py-2 text-xs text-text-muted hover:text-danger"
+                >
+                  Discard
+                </button>
+              )}
+              <button
+                onClick={handlePopulate}
+                className={btnPrimary}
+                title={
+                  showDetails ? HELP_AUTO_POPULATE + DOCS_HINT : undefined
+                }
+              >
+                Auto-populate
+              </button>
+              {showDetails && (
+                <HelpIcon label="Auto-populate" text={HELP_AUTO_POPULATE} />
+              )}
+              {showDetails && hasItems && (
+                <>
+                  <button
+                    onClick={handleRefreshFromSources}
+                    className={btnPrimary}
+                    title={HELP_REFRESH + DOCS_HINT}
+                  >
+                    Refresh from sources
+                  </button>
+                  <HelpIcon label="Refresh from sources" text={HELP_REFRESH} />
+                </>
+              )}
+              <button
+                onClick={() => setShowForm(!showForm)}
+                className={btnPrimary}
+              >
+                {showForm ? "Cancel" : "+ Add Item"}
+              </button>
+            </>
+          )}
+          {isActive && (
+            <>
+              {showDetails && (
+                <button
+                  onClick={handleEditAndRefresh}
                   className={btnPrimary}
                   title={HELP_REFRESH + DOCS_HINT}
                 >
                   Refresh from sources
                 </button>
-                <HelpIcon label="Refresh from sources" text={HELP_REFRESH} />
-              </>
-            )}
-            <button
-              onClick={() => setShowForm(!showForm)}
-              className={btnPrimary}
-            >
-              {showForm ? "Cancel" : "+ Add Item"}
-            </button>
-          </div>
-        )}
-        {isActive && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleRevertToDraft}
-              className={btnPrimary}
-              title={HELP_EDIT_PLAN + DOCS_HINT}
-            >
-              Edit Plan
-            </button>
-            <HelpIcon label="Edit Plan" text={HELP_EDIT_PLAN} />
-          </div>
-        )}
+              )}
+              <button
+                onClick={handleRevertToDraft}
+                className={btnPrimary}
+                title={
+                  showDetails ? HELP_EDIT_PLAN + DOCS_HINT : undefined
+                }
+              >
+                Edit Plan
+              </button>
+              {showDetails && (
+                <HelpIcon label="Edit Plan" text={HELP_EDIT_PLAN} />
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Contextual guidance */}
@@ -666,7 +783,7 @@ export default function ForecastPlansPage() {
           )}
 
           {/* Planned vs Actual chart */}
-          {chartData.length > 0 && (
+          {showDetails && chartData.length > 0 && (
             <div className={`${card} p-5 overflow-hidden`}>
               <h2 className={`${cardTitle} mb-4`}>
                 Planned vs Actual (Expenses)
@@ -757,6 +874,7 @@ export default function ForecastPlansPage() {
                 title="Income"
                 items={incomeItems}
                 readOnly={isActive}
+                showDetails={showDetails}
                 editingId={editingId}
                 editAmount={editAmount}
                 onStartEdit={(item) => {
@@ -776,6 +894,7 @@ export default function ForecastPlansPage() {
                 title="Expenses"
                 items={expenseItems}
                 readOnly={isActive}
+                showDetails={showDetails}
                 editingId={editingId}
                 editAmount={editAmount}
                 onStartEdit={(item) => {
@@ -815,7 +934,7 @@ export default function ForecastPlansPage() {
         open={confirmAction !== null}
         title={confirmAction?.title ?? ""}
         message={confirmAction?.message ?? ""}
-        confirmLabel="Confirm"
+        confirmLabel={confirmAction?.confirmLabel ?? "Confirm"}
         variant={confirmAction?.variant ?? "default"}
         onConfirm={() => { confirmAction?.action(); setConfirmAction(null); }}
         onCancel={() => setConfirmAction(null)}
@@ -830,6 +949,7 @@ function ItemSection({
   title,
   items,
   readOnly,
+  showDetails,
   editingId,
   editAmount,
   onStartEdit,
@@ -841,6 +961,7 @@ function ItemSection({
   title: string;
   items: ForecastPlanItem[];
   readOnly: boolean;
+  showDetails: boolean;
   editingId: number | null;
   editAmount: string;
   onStartEdit: (item: ForecastPlanItem) => void;
@@ -849,9 +970,16 @@ function ItemSection({
   onDelete: (id: number) => void;
   setEditAmount: (v: string) => void;
 }) {
+  // When details are off, drop variance + source columns. The grid
+  // template tracks the visible column count so cells don't wrap
+  // around an invisible slot.
   const colTemplate = readOnly
-    ? "grid-cols-[1fr_100px] md:grid-cols-[1fr_100px_100px_100px_80px]"
-    : "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px_80px_100px]";
+    ? showDetails
+      ? "grid-cols-[1fr_100px] md:grid-cols-[1fr_100px_100px_100px_80px]"
+      : "grid-cols-[1fr_100px] md:grid-cols-[1fr_100px_100px]"
+    : showDetails
+      ? "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px_80px_100px]"
+      : "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px]";
 
   return (
     <div className={card}>
@@ -867,11 +995,15 @@ function ItemSection({
             <span>Category</span>
             <span className="text-right">Planned</span>
             <span className="hidden text-right md:block">Actual</span>
-            <span className="hidden text-right md:block">
-              Variance
-              <HelpIcon label="Variance" text={HELP_VARIANCE} />
-            </span>
-            <span className="hidden text-center md:block">Source</span>
+            {showDetails && (
+              <>
+                <span className="hidden text-right md:block">
+                  Variance
+                  <HelpIcon label="Variance" text={HELP_VARIANCE} />
+                </span>
+                <span className="hidden text-center md:block">Source</span>
+              </>
+            )}
             {!readOnly && <span className="text-right">Actions</span>}
           </div>
           <div className="divide-y divide-border-subtle">
@@ -908,8 +1040,12 @@ function ItemSection({
                       <span className="hidden text-right text-sm tabular-nums text-text-secondary md:block">
                         {formatAmount(item.actual_amount)}
                       </span>
-                      <span className="hidden md:block" />
-                      <span className="hidden md:block" />
+                      {showDetails && (
+                        <>
+                          <span className="hidden md:block" />
+                          <span className="hidden md:block" />
+                        </>
+                      )}
                       <div className="flex justify-end gap-2">
                         <button
                           onClick={() => onSaveEdit(item.id)}
@@ -930,17 +1066,22 @@ function ItemSection({
                       <div className="text-sm text-text-primary">
                         {item.category_name}
                         <div className="md:hidden mt-1 text-xs text-text-muted">
-                          Actual {formatAmount(item.actual_amount)} · Variance{" "}
-                          <span
-                            className={`font-medium ${
-                              isOver ? "text-danger" : "text-success"
-                            }`}
-                          >
-                            {variance > 0 ? "+" : ""}
-                            {formatAmount(variance)}
-                          </span>
-                          {" · "}
-                          {SOURCE_LABELS[item.source] ?? item.source}
+                          Actual {formatAmount(item.actual_amount)}
+                          {showDetails && (
+                            <>
+                              {" · "}Variance{" "}
+                              <span
+                                className={`font-medium ${
+                                  isOver ? "text-danger" : "text-success"
+                                }`}
+                              >
+                                {variance > 0 ? "+" : ""}
+                                {formatAmount(variance)}
+                              </span>
+                              {" · "}
+                              {SOURCE_LABELS[item.source] ?? item.source}
+                            </>
+                          )}
                         </div>
                       </div>
                       <span className="text-right text-sm tabular-nums text-text-primary">
@@ -949,17 +1090,21 @@ function ItemSection({
                       <span className="hidden text-right text-sm tabular-nums text-text-secondary md:block">
                         {formatAmount(item.actual_amount)}
                       </span>
-                      <span
-                        className={`hidden text-right text-sm tabular-nums font-medium md:block ${
-                          isOver ? "text-danger" : "text-success"
-                        }`}
-                      >
-                        {variance > 0 ? "+" : ""}
-                        {formatAmount(variance)}
-                      </span>
-                      <span className="hidden text-center text-[11px] text-text-muted md:block">
-                        {SOURCE_LABELS[item.source] ?? item.source}
-                      </span>
+                      {showDetails && (
+                        <>
+                          <span
+                            className={`hidden text-right text-sm tabular-nums font-medium md:block ${
+                              isOver ? "text-danger" : "text-success"
+                            }`}
+                          >
+                            {variance > 0 ? "+" : ""}
+                            {formatAmount(variance)}
+                          </span>
+                          <span className="hidden text-center text-[11px] text-text-muted md:block">
+                            {SOURCE_LABELS[item.source] ?? item.source}
+                          </span>
+                        </>
+                      )}
                       {!readOnly && (
                         <div className="flex justify-end gap-2">
                           <button

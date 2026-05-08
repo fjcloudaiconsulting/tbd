@@ -304,6 +304,14 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
 
     render(<ForecastPlansPage />);
 
+    // Refresh from sources is gated behind the Show details toggle
+    // (defaults off post-PR-B forecasts UX restructure). Flip it on
+    // before asserting the button is visible.
+    await waitFor(() => {
+      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
+
     await waitFor(() => {
       expect(screen.getByText("Refresh from sources")).toBeTruthy();
     });
@@ -390,6 +398,243 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
     expect(combobox.value).toBe("");
   });
 
+  it("Show details toggle defaults off: Variance/Source columns and Refresh-from-sources are hidden on a draft plan", async () => {
+    mockInitialFetches(
+      makePlan([
+        {
+          category_id: 20,
+          category_name: "Groceries",
+          type: "expense",
+          planned_amount: 500,
+          source: "history",
+          actual_amount: 300,
+          variance: -200,
+        },
+      ]),
+    );
+
+    render(<ForecastPlansPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Groceries")).toBeTruthy();
+    });
+
+    // Toggle is off by default — labelled "Show details".
+    const toggle = screen.getByRole("switch", { name: /show details/i });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+
+    // Variance + Source columns hidden.
+    expect(screen.queryByText("Variance")).toBeNull();
+    expect(screen.queryByText("Source")).toBeNull();
+    // Auto label (source) is also hidden.
+    expect(screen.queryByText("Auto")).toBeNull();
+    // Refresh-from-sources hidden on draft when details off.
+    expect(
+      screen.queryByRole("button", { name: "Refresh from sources" }),
+    ).toBeNull();
+  });
+
+  it("Show details toggle persists in localStorage and rehydrates on reload", async () => {
+    mockInitialFetches(makePlan());
+
+    const { unmount } = render(<ForecastPlansPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
+
+    // Persisted to localStorage.
+    await waitFor(() => {
+      expect(localStorage.getItem("forecast-plans:show-details")).toBe("true");
+    });
+    unmount();
+
+    // Re-render with the same localStorage state — the toggle should
+    // come back as "Hide details" (i.e. on).
+    render(<ForecastPlansPage />);
+    await waitFor(() => {
+      expect(screen.getByRole("switch", { name: /hide details/i })).toBeTruthy();
+    });
+  });
+
+  it("Finalized plan + details on: Refresh from sources opens 'Edit and refresh plan' modal with locked copy and confirm label", async () => {
+    const finalized = {
+      ...makePlan([
+        {
+          category_id: 20,
+          category_name: "Groceries",
+          type: "expense",
+          planned_amount: 500,
+          source: "recurring",
+          actual_amount: 200,
+          variance: -300,
+        },
+      ]),
+      status: "active" as const,
+    };
+
+    mockInitialFetches(finalized);
+
+    render(<ForecastPlansPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Refresh from sources" }),
+      ).toBeTruthy();
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh from sources" }),
+    );
+
+    // Modal renders with the spec-locked copy.
+    expect(
+      screen.getByText("Edit and refresh plan", { selector: "h3" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        /This will revert the plan to draft, replace auto-generated rows with fresh data, and keep lines you added or edited yourself\./,
+      ),
+    ).toBeTruthy();
+    // Confirm label is "Edit and refresh", not generic "Confirm".
+    expect(
+      screen.getByRole("button", { name: /^Edit and refresh$/ }),
+    ).toBeTruthy();
+  });
+
+  it("Finalized refresh confirm calls /revert then /refresh-from-sources in order", async () => {
+    const finalized = {
+      ...makePlan([
+        {
+          category_id: 20,
+          category_name: "Groceries",
+          type: "expense",
+          planned_amount: 500,
+          source: "recurring",
+          actual_amount: 200,
+          variance: -300,
+        },
+      ]),
+      status: "active" as const,
+    };
+
+    const calls: string[] = [];
+    (apiFetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (path: string) => {
+        if (path.startsWith("/api/v1/settings/billing-periods/ensure-future"))
+          return Promise.resolve([]);
+        if (path === "/api/v1/categories") return Promise.resolve(CATEGORIES);
+        if (path === "/api/v1/settings/billing-periods")
+          return Promise.resolve([PERIOD]);
+        if (path.startsWith("/api/v1/forecast-plans?"))
+          return Promise.resolve(finalized);
+        if (path.includes("/revert")) {
+          calls.push("revert");
+          return Promise.resolve({ ...finalized, status: "draft" });
+        }
+        if (path.startsWith("/api/v1/forecast-plans/refresh-from-sources")) {
+          calls.push("refresh");
+          return Promise.resolve({ ...finalized, status: "draft" });
+        }
+        return Promise.resolve(finalized);
+      },
+    );
+
+    render(<ForecastPlansPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Refresh from sources" }),
+      ).toBeTruthy();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh from sources" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Edit and refresh$/ }),
+    );
+
+    await waitFor(() => {
+      expect(calls).toEqual(["revert", "refresh"]);
+    });
+  });
+
+  it("Finalized refresh: revert ok + refresh fail leaves plan in draft and surfaces error (no silent fallback)", async () => {
+    const finalized = {
+      ...makePlan([
+        {
+          category_id: 20,
+          category_name: "Groceries",
+          type: "expense",
+          planned_amount: 500,
+          source: "recurring",
+          actual_amount: 200,
+          variance: -300,
+        },
+      ]),
+      status: "active" as const,
+    };
+    const draftCopy = { ...finalized, status: "draft" as const };
+
+    (apiFetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (path: string) => {
+        if (path.startsWith("/api/v1/settings/billing-periods/ensure-future"))
+          return Promise.resolve([]);
+        if (path === "/api/v1/categories") return Promise.resolve(CATEGORIES);
+        if (path === "/api/v1/settings/billing-periods")
+          return Promise.resolve([PERIOD]);
+        if (path.startsWith("/api/v1/forecast-plans?"))
+          return Promise.resolve(finalized);
+        if (path.includes("/revert")) return Promise.resolve(draftCopy);
+        if (path.startsWith("/api/v1/forecast-plans/refresh-from-sources"))
+          return Promise.reject(new Error("Refresh blew up"));
+        return Promise.resolve(finalized);
+      },
+    );
+
+    render(<ForecastPlansPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Refresh from sources" }),
+      ).toBeTruthy();
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh from sources" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Edit and refresh$/ }),
+    );
+
+    // Error surfaces. Plan remains in draft (Edit Plan disappears,
+    // Auto-populate appears since drafts can populate again).
+    await waitFor(() => {
+      expect(screen.getByText(/Refresh blew up/)).toBeTruthy();
+    });
+    expect(
+      screen.queryByRole("button", { name: /^Edit Plan$/ }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Auto-populate" }),
+    ).toBeTruthy();
+  });
+
   it("PR #146 #1: source=history renders an honest 'Auto' label, not 'Avg (3mo)'", async () => {
     // populate now also surfaces categories whose only signal is in the
     // current period (one-off furniture purchase, etc.) but writes them
@@ -408,6 +653,13 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
     );
 
     render(<ForecastPlansPage />);
+
+    // Source column is gated behind Show details (off by default
+    // post-PR-B). Flip it on so the label is visible.
+    await waitFor(() => {
+      expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
 
     await waitFor(() => {
       expect(screen.getByText("Groceries")).toBeTruthy();

@@ -174,8 +174,18 @@ export default function DocsPage() {
             <p>
               The dashboard summarizes the period with an On Track
               verdict that anchors on what has actually settled, not
-              just what is projected. The projection is shown
-              alongside as informational context.
+              just what is projected. Below the verdict, a Forecast
+              card shows your expected month-end balance per account
+              (current balance plus pending items in the period), and
+              a Forecast by Category card highlights how planned and
+              actual compare for your top expense categories.
+            </p>
+            <p>
+              The Dashboard intentionally stays light on technical
+              detail. For variance numbers, source attribution, the
+              planned vs actual chart, and the refresh-from-sources
+              control, open the Forecast Plans page and turn on Show
+              details.
             </p>
           </section>
 
@@ -186,6 +196,16 @@ export default function DocsPage() {
               ideas overlap: the plan, the projection, the variance, and
               the two buttons that fill the plan in. Here is each one in
               the simplest words.
+            </p>
+            <p>
+              Where you see what: the Dashboard answers household
+              questions visually (are we on track, where will we end the
+              month, which accounts and categories explain that). The
+              Forecast Plans page is where you build and adjust the
+              plan itself. Forecast Plans starts in a simple view and
+              has a Show details toggle that reveals variance numbers,
+              source attribution, the planned vs actual chart, and the
+              refresh-from-sources control when you need them.
             </p>
 
             <h3>The plan is your wish list</h3>
@@ -300,9 +320,18 @@ export default function DocsPage() {
               against today's templates and history. Rows you typed or
               edited yourself are kept untouched. Categories that have
               shown up since the first populate will be added in this
-              pass too. Refresh only works while the plan is a draft.
-              Finalize the plan when you're done, and click Edit Plan
-              to revert to draft if you want to refresh again later.
+              pass too.
+            </p>
+            <p>
+              Refresh from sources is part of the details view on the
+              Forecast Plans page (turn on Show details to see it).
+              On a draft plan, Refresh runs immediately. On a finalized
+              plan, Refresh opens an Edit and refresh confirmation that
+              reverts the plan to draft, refreshes the auto-generated
+              rows, and keeps the lines you added or edited yourself.
+              If the refresh step fails after the revert, the plan is
+              left in draft and the error is shown so you can retry or
+              continue editing manually.
             </p>
           </section>
 
