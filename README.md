@@ -104,7 +104,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, architecture details, environm
 
 ## Deployment
 
-Production runs on DigitalOcean App Platform (Amsterdam). Merging to `main` triggers automatic deployment via GitHub Actions. See [CONTRIBUTING.md](CONTRIBUTING.md#deployment) for details.
+Production runs on DigitalOcean App Platform (Amsterdam). Automatic deployment is gated on semantic-release: only commits classified as a release (`feat`, `fix`, `perf`, `revert`) are auto-deployed by GitHub Actions on merge to `main`. `chore`, `docs`, `refactor`, `test`, and similar non-release commits do not auto-deploy. Infra-only changes that need to ship without a version bump use a manual workflow run. See [CONTRIBUTING.md](CONTRIBUTING.md#deployment) for details.
 
 ## License
 

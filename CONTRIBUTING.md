@@ -385,7 +385,7 @@ Migration files are in `backend/alembic/versions/` and follow sequential numberi
 - **Never push directly to `main`** — always branch + PR
 - Feature branches: `feat/<name>`
 - Fix branches: `fix/<name>`
-- Merge to `main` triggers production deployment via GitHub Actions
+- Merge to `main` triggers production deployment via GitHub Actions only when the commit is release-eligible (`feat`, `fix`, `perf`, `revert`). `chore`, `docs`, `refactor`, `test`, and similar commits are not auto-deployed; see the Deployment section for the manual escape hatch.
 
 ---
 
@@ -399,7 +399,10 @@ The app is deployed on DO App Platform (Amsterdam region). MySQL 8 and Redis are
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `deploy.yml` | Push to `main` | Deploys to production via `digitalocean/app_action/deploy@v2`, pushing `.do/app.yaml` as the authoritative spec |
+| `release.yml` | Push to `main` (release-eligible commits only) | Runs semantic-release. If a new release is published, deploys `.do/app.yaml` to DO App Platform via `digitalocean/app_action/deploy@v2`, then runs `scripts/smoke-test.sh` against production. |
+| `deploy.yml` | Manual (`workflow_dispatch`) | Emergency redeploy escape hatch. Same DO action and smoke-test job, but not auto-triggered. Use when an infra-only change (`chore(.do)`, `chore(infra)`, `chore(nginx)`) needs to ship without a version bump. |
+
+The orchestration is intentional: semantic-release is the single arbiter of "should we ship". A path filter cannot tell a `chore(frontend)` apart from a real shipping change, which previously caused chore commits to redeploy production. Gating `deploy` on `new_release_published == 'true'` (a job output of the semantic-release step) ensures only release-eligible commits reach App Platform automatically. The naive `on: release: { types: [published] }` shortcut does not work because GitHub does not cascade workflow runs from `GITHUB_TOKEN`-created releases.
 
 **Required GitHub repository secret:**
 
@@ -411,14 +414,21 @@ The app is deployed on DO App Platform (Amsterdam region). MySQL 8 and Redis are
 
 ### Manual Deployment
 
-If you need to deploy without GitHub Actions:
+The primary manual path is the `deploy.yml` workflow, which runs the same DO action and smoke-test job as the auto-deploy path:
+
+```bash
+# Trigger the manual workflow on main (preferred for chore(infra), chore(.do), etc.)
+gh workflow run deploy.yml --ref main
+```
+
+If GitHub Actions is unavailable or you need to bypass it entirely (using `doctl` directly):
 
 ```bash
 # Install doctl
 brew install doctl
 doctl auth init
 
-# Push the spec (preferred — covers vpc, components, env, and secrets)
+# Push the spec (covers vpc, components, env, and secrets)
 doctl apps update <app-id> --spec .do/app.yaml
 
 # Or trigger a redeploy of the current spec

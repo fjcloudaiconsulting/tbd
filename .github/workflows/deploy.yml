@@ -1,20 +1,22 @@
-name: Deploy to Production
+# Manual production deploy escape hatch.
+#
+# Automatic production deploys are now driven by release.yml's gated
+# `deploy` job, which only fires when semantic-release decides the merge
+# warrants a new release. That means infra-only commits that don't
+# trigger a release (chore(.do), chore(nginx), chore(infra),
+# chore(Dockerfile), ...) will NOT auto-deploy. When such a change must
+# ship, an operator runs this workflow manually:
+#
+#   gh workflow run deploy.yml --ref main
+#
+# The job body intentionally mirrors release.yml's deploy + smoke-tests
+# jobs so the manual path produces the same artifact and runs the same
+# post-deploy checks.
+
+name: Deploy to Production (manual)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      # Application code that ships to prod. Any change here may need a redeploy.
-      - "backend/**"
-      - "frontend/**"
-      - "nginx/**"
-      # Prod app spec on DO App Platform. Source of truth for prod runtime config.
-      - ".do/**"
-      # Image-build inputs. The Dockerfiles are referenced from .do/app.yaml.
-      - "Dockerfile*"
-      # NOTE: docker-compose*.yml is intentionally NOT in this list — it's
-      # local-dev only; prod uses .do/app.yaml. PR #105's two test-mount
-      # tweaks to docker-compose.yml triggered redundant prod deploys.
+  workflow_dispatch:
 
 permissions:
   contents: read

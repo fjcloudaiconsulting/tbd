@@ -1,3 +1,23 @@
+# Release orchestrator for main.
+#
+# This workflow is the single arbiter of "should we ship". It runs
+# semantic-release first; if (and only if) semantic-release decides a new
+# release is warranted, the gated `deploy` job pushes .do/app.yaml to DO
+# App Platform, and `smoke-tests` then asserts the live app actually
+# serves traffic. Path-only triggers were the previous gate but they
+# couldn't tell a `chore(frontend): tsconfig` apart from a real shipping
+# change, so chore commits were redeploying production. The semantic-
+# release outcome is now the gate instead. deploy.yml is preserved as a
+# manual `workflow_dispatch` escape hatch for the rare case where an
+# infra-only change (chore(.do), chore(nginx), chore(infra), ...) needs
+# to ship without a version bump.
+#
+# Why the gating job and not `on: release: { types: [published] }` on
+# deploy.yml: GitHub does not cascade workflow runs from releases that
+# are created by GITHUB_TOKEN, which is exactly what semantic-release
+# uses. See
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow
+
 name: Release
 
 on:
@@ -23,6 +43,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_git_tag: ${{ steps.semantic.outputs.new_release_git_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,6 +54,7 @@ jobs:
           persist-credentials: false
 
       - name: Semantic Release
+        id: semantic
         uses: cycjimmy/semantic-release-action@v6
         with:
           semantic_version: 24
@@ -38,3 +62,69 @@ jobs:
             conventional-changelog-conventionalcommits@8
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to DigitalOcean App Platform
+        uses: digitalocean/app_action/deploy@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          # NOTE: Do NOT add `app_name` here. The v2 action's createSpec
+          # logic (deploy/main.go) takes EITHER `app_name` OR
+          # `app_spec_location`: with both set, it fetches the live spec
+          # by name and ignores the file. Edits to .do/app.yaml then
+          # silently never reach App Platform — that is the bug that let
+          # PR #79's migration sit un-applied for hours after merge.
+          # With only `app_spec_location`, the action reads the file and
+          # picks up the app via its top-level `name:` field. .do/app.yaml
+          # MUST list every secret with its encrypted EV[...] value, since
+          # any SECRET not declared in this file gets removed from the
+          # live app on push (we hit that exact failure mode 2026-04-25,
+          # backend crashlooped on a placeholder JWT_SECRET_KEY).
+          app_spec_location: .do/app.yaml
+
+  # L0.5 — Post-deploy smoke tests. Runs only after `deploy` succeeds
+  # so a failed deploy never reports as a smoke-test failure (the
+  # `needs: deploy` gate plus our `on: push: branches: [main]` trigger
+  # together guarantee this never runs on PRs or forks).
+  #
+  # Asserts the live app can serve traffic — DO marking the deploy
+  # ACTIVE is necessary but not sufficient. See scripts/smoke-test.sh
+  # for the surface and the smoke-user invariants (must exist, must be
+  # email_verified, must NOT have MFA enabled).
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: deploy
+    permissions:
+      contents: read
+      # Required by the failure-notification step below to open or
+      # comment on a GitHub issue when the smoke job fails. Scoped to
+      # this job only so the deploy job stays read-only.
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run smoke tests against production
+        env:
+          SMOKE_BASE_URL: https://app.thebetterdecision.com
+          SMOKE_USERNAME: ${{ secrets.SMOKE_USERNAME }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: ./scripts/smoke-test.sh
+
+      - name: Notify on smoke failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+        run: ./scripts/notify-smoke-failure.sh
