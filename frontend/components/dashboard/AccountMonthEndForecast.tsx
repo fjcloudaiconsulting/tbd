@@ -137,16 +137,15 @@ export default function AccountMonthEndForecast({
       )}
 
       <div className="overflow-hidden rounded-md border border-border-subtle">
-        {/* Three left-aligned columns. Account narrowest (anchors the
-            row by name); Balance medium; End of month forecast widest
-            because the pending subtext (e.g. "Includes -€425.29
-            pending") sits underneath and shouldn't wrap awkwardly.
-            User direction overrides the spec's "tabular and right
-            aligned" — left-aligned reads as a list, not a ledger. */}
+        {/* Account left-aligned (the row anchor); Balance and End of
+            month forecast right-aligned per the spec's "currency
+            values stay tabular and right-aligned" rule. The pending
+            subtext under EOMF inherits right alignment from its
+            parent column wrapper. */}
         <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,3fr)] items-center gap-x-4 border-b border-border-subtle bg-surface-overlay px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
           <span>Account</span>
-          <span>Balance</span>
-          <span>End of month forecast</span>
+          <span className="text-right">Balance</span>
+          <span className="text-right">End of month forecast</span>
         </div>
         <div className="divide-y divide-border-subtle">
           {rows.map((row) => {
@@ -170,11 +169,11 @@ export default function AccountMonthEndForecast({
                     )}
                   </p>
                 </div>
-                <p className="text-sm tabular-nums text-text-secondary">
+                <p className="text-right text-sm tabular-nums text-text-secondary">
                   {formatAmount(row.balance)}{" "}
                   <span className="text-[10px] text-text-muted">{row.currency}</span>
                 </p>
-                <div>
+                <div className="text-right">
                   <p className="text-sm font-medium tabular-nums text-text-primary">
                     {formatAmount(row.expected_month_end_balance)}
                   </p>
