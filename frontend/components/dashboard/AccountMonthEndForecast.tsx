@@ -109,18 +109,20 @@ export default function AccountMonthEndForecast({
 
   return (
     <section className={`${card} p-5`} data-testid="account-month-end-forecast">
-      <header className={`mb-3 ${cardHeader}`}>
-        <h2 className={cardTitle}>Forecast</h2>
-        <p className="mt-1 text-xs text-text-muted">
-          Current balance plus pending items in this period.
-        </p>
-      </header>
-
+      {/* Header consolidated: the eyebrow already names the card
+          ("Expected month-end balance"), so the explicit "Forecast"
+          card title and the duplicate "Includes pending items"
+          supporting line are dropped. A single descriptive line under
+          the hero replaces both. */}
       {totals.length > 0 && (
         <div className="mb-4 space-y-1">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+          {/* h2 (not p) so the page outline (h1, h2, h2 ...) stays
+              consistent with the loading / error / non-current-period
+              branches that render <h2>Forecast</h2>. Visual styling
+              matches the eyebrow tokens unchanged. */}
+          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
             Expected month-end balance
-          </p>
+          </h2>
           <div className="space-y-0.5">
             {totals.map((t) => (
               <p
@@ -132,21 +134,22 @@ export default function AccountMonthEndForecast({
               </p>
             ))}
           </div>
-          <p className="text-xs text-text-muted">Includes pending items in this period.</p>
+          <p className="text-xs text-text-muted">
+            Current balance plus pending items in this period.
+          </p>
         </div>
       )}
 
       <div className="overflow-hidden rounded-md border border-border-subtle">
-        {/* Three left-aligned columns. Account narrowest (anchors the
-            row by name); Balance medium; End of month forecast widest
-            because the pending subtext (e.g. "Includes -€425.29
-            pending") sits underneath and shouldn't wrap awkwardly.
-            User direction overrides the spec's "tabular and right
-            aligned" — left-aligned reads as a list, not a ledger. */}
+        {/* Account left-aligned (the row anchor); Balance and End of
+            month forecast right-aligned per the spec's "currency
+            values stay tabular and right-aligned" rule. The pending
+            subtext under EOMF inherits right alignment from its
+            parent column wrapper. */}
         <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,3fr)] items-center gap-x-4 border-b border-border-subtle bg-surface-overlay px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
           <span>Account</span>
-          <span>Balance</span>
-          <span>End of month forecast</span>
+          <span className="text-right">Balance</span>
+          <span className="text-right">End of month forecast</span>
         </div>
         <div className="divide-y divide-border-subtle">
           {rows.map((row) => {
@@ -170,11 +173,11 @@ export default function AccountMonthEndForecast({
                     )}
                   </p>
                 </div>
-                <p className="text-sm tabular-nums text-text-secondary">
+                <p className="text-right text-sm tabular-nums text-text-secondary">
                   {formatAmount(row.balance)}{" "}
                   <span className="text-[10px] text-text-muted">{row.currency}</span>
                 </p>
-                <div>
+                <div className="text-right">
                   <p className="text-sm font-medium tabular-nums text-text-primary">
                     {formatAmount(row.expected_month_end_balance)}
                   </p>

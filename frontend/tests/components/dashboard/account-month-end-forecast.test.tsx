@@ -93,17 +93,24 @@ const TWO_CURRENCIES: AccountMonthEndForecastResponse = {
 };
 
 describe("AccountMonthEndForecast — current period", () => {
-  it("renders title 'Forecast' and the prescribed subtext", () => {
+  it("renders the eyebrow as the card's h2 (page outline preserved); no redundant 'Forecast' title", () => {
     render(
       <AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />,
     );
-    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^Forecast$/);
+    // Header consolidated: the explicit "Forecast" h2 title is gone,
+    // but the page outline must stay consistent with the loading /
+    // error / non-current-period branches that DO render an h2.
+    // The "Expected month-end balance" eyebrow now carries the h2
+    // role with the same eyebrow visual.
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading).toHaveTextContent(/^Expected month-end balance$/i);
+    expect(heading.textContent).not.toMatch(/^Forecast$/);
     expect(
       screen.getByText(/Current balance plus pending items in this period\./),
     ).toBeInTheDocument();
   });
 
-  it("renders the expected month-end balance per currency", () => {
+  it("renders the expected month-end balance per currency with a single descriptive line", () => {
     render(
       <AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />,
     );
@@ -111,10 +118,14 @@ describe("AccountMonthEndForecast — current period", () => {
     expect(screen.getByText(/expected month-end balance/i)).toBeInTheDocument();
     // EUR aggregate value
     expect(screen.getByText(/5,850\.00/)).toBeInTheDocument();
-    // Subtext under the headline number
+    // The single descriptive line under the hero replaces the old
+    // duplicate "Includes pending items in this period." sentence.
     expect(
-      screen.getByText(/Includes pending items in this period\./),
+      screen.getByText(/Current balance plus pending items in this period\./),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/^Includes pending items in this period\.$/),
+    ).not.toBeInTheDocument();
   });
 
   it("renders Account / Balance / End of month forecast columns", () => {

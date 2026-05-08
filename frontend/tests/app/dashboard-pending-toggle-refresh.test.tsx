@@ -148,7 +148,7 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
     // status-toggle button has the destination-aware aria-label set in
     // PR #132.
     await waitFor(
-      () => expect(screen.getByLabelText(/Settled status for Coffee/)).toBeInTheDocument(),
+      () => expect(screen.getByLabelText(/Mark as pending/)).toBeInTheDocument(),
       { timeout: 3000 },
     );
 
@@ -160,7 +160,7 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
     // pending — strip totals would silently go stale. The fix wires
     // loadPendingTransactions() into the toggle handler regardless
     // of the visible page index.
-    fireEvent.click(screen.getByLabelText(/Settled status for Coffee/));
+    fireEvent.click(screen.getByLabelText(/Mark as pending/));
 
     await waitFor(() => expect(toggleCallSeen).toBe(true));
     // Critical assertion: pending endpoint was re-called AFTER the
