@@ -91,7 +91,7 @@ describe("DashboardPage — Recent Transactions sort-header tap targets (WCAG 2.
     mockDashboardWithOneTx();
   });
 
-  it("Date, Description, Amount sort buttons carry min-h-[32px] sm:min-h-0", async () => {
+  it("Date, Description, Amount sort buttons carry min-h-[32px]", async () => {
     render(<DashboardPage />);
 
     // Wait until the inline mini-header buttons have rendered.
@@ -115,7 +115,6 @@ describe("DashboardPage — Recent Transactions sort-header tap targets (WCAG 2.
     for (const name of ["Date", "Description", "Amount"]) {
       const btn = findHeader(name);
       expect(btn.className).toContain("min-h-[32px]");
-      expect(btn.className).toContain("sm:min-h-0");
     }
   });
 });

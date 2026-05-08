@@ -449,7 +449,7 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
     });
   });
 
-  it("Mobile tap targets: every sortable header carries min-h-[32px] sm:min-h-0 (WCAG 2.5.8)", async () => {
+  it("Mobile tap targets: every sortable header carries min-h-[32px] (WCAG 2.5.8)", async () => {
     const mock = setupApiFetch();
     render(<TransactionsPage />);
 
@@ -459,7 +459,6 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
     for (const name of required) {
       const btn = getDesktopHeader(name);
       expect(btn.className).toContain("min-h-[32px]");
-      expect(btn.className).toContain("sm:min-h-0");
     }
   });
 });

@@ -948,10 +948,10 @@ export default function DashboardPage() {
             {/* Sortable mini-header */}
             <div className="flex items-center justify-between px-5 py-1.5 border-b border-border-subtle text-[10px] font-semibold uppercase tracking-wider text-text-muted">
               <div className="flex items-center gap-3">
-                <button onClick={() => toggleDashSort("date")} className="w-16 text-left min-h-[32px] sm:min-h-0 hover:text-text-primary">Date{dashSortField === "date" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
-                <button onClick={() => toggleDashSort("description")} className="text-left min-h-[32px] sm:min-h-0 hover:text-text-primary">Description{dashSortField === "description" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+                <button onClick={() => toggleDashSort("date")} className="w-16 text-left min-h-[32px] hover:text-text-primary">Date{dashSortField === "date" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+                <button onClick={() => toggleDashSort("description")} className="text-left min-h-[32px] hover:text-text-primary">Description{dashSortField === "description" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
               </div>
-              <button onClick={() => toggleDashSort("amount")} className="min-h-[32px] sm:min-h-0 hover:text-text-primary">Amount{dashSortField === "amount" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+              <button onClick={() => toggleDashSort("amount")} className="min-h-[32px] hover:text-text-primary">Amount{dashSortField === "amount" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
             </div>
             <div className="divide-y divide-border-subtle">
               {sortedVisibleTxs.map((tx) => {
