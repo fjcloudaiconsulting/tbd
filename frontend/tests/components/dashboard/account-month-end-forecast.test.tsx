@@ -93,14 +93,18 @@ const TWO_CURRENCIES: AccountMonthEndForecastResponse = {
 };
 
 describe("AccountMonthEndForecast — current period", () => {
-  it("does not render a redundant 'Forecast' card title; eyebrow + hero anchor the card", () => {
+  it("renders the eyebrow as the card's h2 (page outline preserved); no redundant 'Forecast' title", () => {
     render(
       <AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />,
     );
-    // Header consolidated: no <h2>Forecast</h2> title at the top of
-    // the card. The "Expected month-end balance" eyebrow already
-    // names what the card is about.
-    expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
+    // Header consolidated: the explicit "Forecast" h2 title is gone,
+    // but the page outline must stay consistent with the loading /
+    // error / non-current-period branches that DO render an h2.
+    // The "Expected month-end balance" eyebrow now carries the h2
+    // role with the same eyebrow visual.
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(heading).toHaveTextContent(/^Expected month-end balance$/i);
+    expect(heading.textContent).not.toMatch(/^Forecast$/);
     expect(
       screen.getByText(/Current balance plus pending items in this period\./),
     ).toBeInTheDocument();

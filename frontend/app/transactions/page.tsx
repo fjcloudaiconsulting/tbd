@@ -1010,13 +1010,19 @@ function TransactionsPageContent() {
                               <button
                                 onClick={() => handleToggleStatus(tx)}
                                 aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
-                                className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                                  tx.status === "settled"
-                                    ? "bg-success-dim text-success"
-                                    : "bg-surface-overlay text-text-muted"
-                                }`}
+                                className="inline-flex min-h-[44px] items-center justify-center"
                               >
-                                {tx.status}
+                                {/* Outer button = WCAG 2.5.8 hit area;
+                                    inner span = lean pill visual. */}
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                    tx.status === "settled"
+                                      ? "bg-success-dim text-success"
+                                      : "bg-surface-overlay text-text-muted"
+                                  }`}
+                                >
+                                  {tx.status}
+                                </span>
                               </button>
                             )}
                           </span>
@@ -1228,13 +1234,19 @@ function TransactionsPageContent() {
                               <button
                                 onClick={() => handleToggleStatus(tx)}
                                 aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
-                                className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                                  tx.status === "settled"
-                                    ? "bg-success-dim text-success"
-                                    : "bg-surface-overlay text-text-muted"
-                                }`}
+                                className="ml-auto inline-flex min-h-[44px] items-center justify-center"
                               >
-                                {tx.status}
+                                {/* Outer button = WCAG 2.5.8 hit area;
+                                    inner span = lean pill visual. */}
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                    tx.status === "settled"
+                                      ? "bg-success-dim text-success"
+                                      : "bg-surface-overlay text-text-muted"
+                                  }`}
+                                >
+                                  {tx.status}
+                                </span>
                               </button>
                             )}
                           </div>

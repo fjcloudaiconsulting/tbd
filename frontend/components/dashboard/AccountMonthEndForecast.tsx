@@ -116,9 +116,13 @@ export default function AccountMonthEndForecast({
           the hero replaces both. */}
       {totals.length > 0 && (
         <div className="mb-4 space-y-1">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+          {/* h2 (not p) so the page outline (h1, h2, h2 ...) stays
+              consistent with the loading / error / non-current-period
+              branches that render <h2>Forecast</h2>. Visual styling
+              matches the eyebrow tokens unchanged. */}
+          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
             Expected month-end balance
-          </p>
+          </h2>
           <div className="space-y-0.5">
             {totals.map((t) => (
               <p

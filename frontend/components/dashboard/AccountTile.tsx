@@ -70,8 +70,12 @@ export function AccountTileRow({ account, hasPending }: AccountTileRowProps) {
           {hasPending && (
             <>
               <span aria-hidden="true">·</span>
+              {/* Neutral pending treatment using semantic tokens (raw
+                  palette colors are forbidden). Matches the lean
+                  pending pill style on /transactions; avoids competing
+                  with the gold accent on the Quick Add button. */}
               <span
-                className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-500"
+                className="rounded bg-surface-overlay px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-text-muted"
                 aria-label="Has pending transactions"
               >
                 Pending

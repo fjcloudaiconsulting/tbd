@@ -971,9 +971,14 @@ export default function DashboardPage() {
                           }}
                           aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
                           aria-pressed={tx.status === "settled"}
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}
+                          className="inline-flex min-h-[44px] items-center"
                         >
-                          {tx.status}
+                          {/* Outer button carries the WCAG 2.5.8
+                              touch-target hit area; inner span keeps
+                              the lean visual that matches /transactions. */}
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                            {tx.status}
+                          </span>
                         </button>
                       )}
                     </div>
