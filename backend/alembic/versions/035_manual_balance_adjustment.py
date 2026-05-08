@@ -57,6 +57,33 @@ def _check_no_category_duplicates(bind) -> None:
         )
 
 
+def _index_exists(bind, table: str, name: str) -> bool:
+    """True if a named index exists on ``table`` for the current dialect.
+
+    Used to make the upgrade idempotent against a prior downgrade that
+    re-created ``ix_categories_org_id`` to keep MySQL's FK index cover.
+    """
+    if bind.dialect.name == "mysql":
+        row = bind.execute(
+            sa.text(
+                "SELECT 1 FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = :t AND INDEX_NAME = :n LIMIT 1"
+            ),
+            {"t": table, "n": name},
+        ).first()
+        return row is not None
+    # SQLite uses sqlite_master for index catalog.
+    row = bind.execute(
+        sa.text(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'index' AND tbl_name = :t AND name = :n LIMIT 1"
+        ),
+        {"t": table, "n": name},
+    ).first()
+    return row is not None
+
+
 def upgrade() -> None:
     bind = op.get_bind()
 
@@ -85,11 +112,23 @@ def upgrade() -> None:
     # 3. UNIQUE(org_id, slug, is_system) on categories
     _check_no_category_duplicates(bind)
     if bind.dialect.name == "mysql":
+        # Add the unique constraint FIRST so MySQL's FK on
+        # ``categories.org_id`` keeps a covering index throughout. The
+        # constraint's leading column is ``org_id``, so as soon as it
+        # lands the FK is covered by it.
         op.create_unique_constraint(
             "uq_categories_org_slug_system",
             "categories",
             ["org_id", "slug", "is_system"],
         )
+        # On a previous round-trip the downgrade re-created
+        # ``ix_categories_org_id`` so MySQL's FK on ``categories.org_id``
+        # would still have a covering index after the unique index went
+        # away. With the unique index now in place that explicit index
+        # becomes redundant. Drop it if present so repeated
+        # upgrade/downgrade cycles do not accumulate dead indexes.
+        if _index_exists(bind, "categories", "ix_categories_org_id"):
+            op.drop_index("ix_categories_org_id", table_name="categories")
     else:
         # SQLite (test) dialect: plain UNIQUE INDEX.
         op.create_index(
@@ -104,12 +143,32 @@ def downgrade() -> None:
     bind = op.get_bind()
 
     if bind.dialect.name == "mysql":
+        # On MySQL, ``categories.org_id`` carries an implicit FK to
+        # ``organizations.id`` (defined in migration 004 without an
+        # explicit covering index). When ``uq_categories_org_slug_system``
+        # was created in upgrade(), MySQL silently dropped the auto-
+        # generated FK index because the new unique index already
+        # covers ``org_id`` as its leading column.
+        #
+        # Dropping the unique index now would leave the FK with no
+        # covering index, so MySQL refuses with errno 1553. Recreate
+        # a plain index on ``org_id`` first so the FK keeps its cover,
+        # then drop the unique index. The IF-EXISTS guard makes the
+        # downgrade safe to retry after a partial run.
+        if not _index_exists(bind, "categories", "ix_categories_org_id"):
+            op.create_index(
+                "ix_categories_org_id",
+                "categories",
+                ["org_id"],
+            )
         op.drop_constraint(
             "uq_categories_org_slug_system",
             "categories",
             type_="unique",
         )
     else:
+        # SQLite (test) dialect does not enforce FK index coverage,
+        # so the unique index can be dropped directly.
         op.drop_index(
             "uq_categories_org_slug_system",
             table_name="categories",
