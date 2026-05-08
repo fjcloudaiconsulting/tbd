@@ -1084,7 +1084,7 @@ function TransactionsPageContent() {
                           <span className="col-span-1 text-sm text-text-secondary truncate">{tx.category_name}</span>
                           <span className="col-span-1 text-center">
                             {isTransfer ? (
-                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
                             ) : (
@@ -1099,7 +1099,7 @@ function TransactionsPageContent() {
                                   className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
                                     tx.status === "settled"
                                       ? "bg-success-dim text-success"
-                                      : "bg-surface-overlay text-text-muted"
+                                      : "bg-warning-dim text-warning"
                                   }`}
                                 >
                                   {tx.status}
@@ -1308,7 +1308,7 @@ function TransactionsPageContent() {
                               </div>
                             )}
                             {isTransfer ? (
-                              <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                              <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
                               </span>
                             ) : (
@@ -1323,7 +1323,7 @@ function TransactionsPageContent() {
                                   className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
                                     tx.status === "settled"
                                       ? "bg-success-dim text-success"
-                                      : "bg-surface-overlay text-text-muted"
+                                      : "bg-warning-dim text-warning"
                                   }`}
                                 >
                                   {tx.status}
