@@ -24,6 +24,7 @@ const sections = [
   { id: "overview", label: "Overview" },
   { id: "core-concepts", label: "Core concepts" },
   { id: "common-workflows", label: "Common workflows" },
+  { id: "forecasts", label: "Forecasts: planning vs projecting" },
   { id: "admin-workflows", label: "Admin workflows" },
   { id: "system-health", label: "System health" },
   { id: "whats-next", label: "What's next" },
@@ -175,6 +176,133 @@ export default function DocsPage() {
               verdict that anchors on what has actually settled, not
               just what is projected. The projection is shown
               alongside as informational context.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="forecasts">Forecasts: planning vs projecting</h2>
+            <p>
+              The Forecasts area can feel confusing at first because four
+              ideas overlap: the plan, the projection, the variance, and
+              the two buttons that fill the plan in. Here is each one in
+              the simplest words.
+            </p>
+
+            <h3>The plan is your wish list</h3>
+            <p>
+              A plan is a wish list with numbers. You write down what you
+              want to spend on each category for the period. For example,
+              "I want to spend 600 on groceries this month and 80 on
+              coffee." That is the plan. Saving the plan does not move
+              any money. It just records your intention.
+            </p>
+
+            <h3>Auto-populate fills the wish list for you</h3>
+            <p>
+              When you create a brand new plan, the wish list is empty.
+              Click <strong>Auto-populate</strong> and the app fills it
+              in for you. It looks at three things, in order, for each
+              master category:
+            </p>
+            <ol>
+              <li>
+                <strong>Recurring bills</strong> that will fire in the
+                period (rent, Netflix, salary). Their amounts are added
+                up.
+              </li>
+              <li>
+                <strong>Your last 3 months of activity</strong>, averaged.
+                Used for categories that don't have a recurring bill.
+              </li>
+              <li>
+                <strong>Whatever you've already booked in this period</strong>,
+                blended in with the past 3 months so the suggestion reflects
+                your most recent reality. A category can be seeded from
+                current-period activity alone, even if it has no 3-month
+                history.
+              </li>
+            </ol>
+            <p>
+              Each row in the plan shows where its number came from: a
+              recurring template, your history (labeled "Auto"), or a
+              manual edit you made.
+            </p>
+
+            <h3>Variance: did you stick to the wish list</h3>
+            <p>
+              Variance compares your plan to what actually happened.
+            </p>
+            <ul>
+              <li>
+                You planned 600 for groceries and spent 400 so far.
+                Variance is 200 under plan, shown in green. You have
+                room to spare.
+              </li>
+              <li>
+                You planned 600 for groceries and spent 700. Variance
+                is 100 over plan, shown in red. You went past the
+                number you wrote down.
+              </li>
+              <li>
+                For income, the colors flip. Earning more than you
+                planned is good (green), earning less is amber or red.
+              </li>
+            </ul>
+
+            <h3>Projected: the app's best guess for end of month</h3>
+            <p>
+              The Projected number on the dashboard is a totally
+              different idea from the plan. The plan is what you want
+              to spend. Projected is what the app thinks will actually
+              happen by the end of the month, given everything it can
+              already see. It is the sum of:
+            </p>
+            <ul>
+              <li>
+                <strong>Settled</strong>: what has already cleared.
+              </li>
+              <li>
+                <strong>Pending</strong>: charges that have been booked
+                but not yet cleared (a card swipe waiting on the
+                statement, a manual upcoming expense you typed in).
+              </li>
+              <li>
+                <strong>Scheduled recurring</strong>: every recurring
+                bill that will fire from now until the end of the
+                period.
+              </li>
+            </ul>
+            <p>
+              <strong>
+                Projected is not Planned Income minus Planned Expenses.
+              </strong>{" "}
+              It can be higher than your plan if pending charges or
+              upcoming recurring bills are bigger than you expected, or
+              lower if life has been quiet and not many bills are
+              scheduled. Treat Projected as a heads-up, not a verdict.
+              The dashboard's On Track verdict reads from what has
+              actually settled, so a noisy projection won't alarm you
+              before any money has moved.
+            </p>
+
+            <h3>Refresh from sources: re-check after life changes</h3>
+            <p>
+              Auto-populate is for the very first fill. Refresh from
+              sources is for later. Use it when something about your
+              setup has changed since you first built the plan. Maybe
+              you added a new subscription, ended an old one, edited
+              the amount of a recurring bill, or imported new
+              transactions that should feed the average.
+            </p>
+            <p>
+              Refresh drops every row whose source is Recurring or Auto
+              (the rows the system filled in) and re-runs Auto-populate
+              against today's templates and history. Rows you typed or
+              edited yourself are kept untouched. Categories that have
+              shown up since the first populate will be added in this
+              pass too. Refresh only works while the plan is a draft.
+              Finalize the plan when you're done, and click Edit Plan
+              to revert to draft if you want to refresh again later.
             </p>
           </section>
 

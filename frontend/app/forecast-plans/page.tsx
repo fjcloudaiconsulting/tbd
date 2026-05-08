@@ -44,6 +44,34 @@ const SOURCE_LABELS: Record<string, string> = {
   history: "Auto",
 };
 
+// Inline help copy. The /docs#forecasts section carries the long explanation;
+// these are 1-2 sentence reminders reachable from the controls themselves.
+const HELP_VARIANCE =
+  "Actual minus planned, per category. Negative means you spent less than planned for an expense category (good); positive means you spent more (over budget). Income variance flips: positive is good, negative is short of plan.";
+const HELP_AUTO_POPULATE =
+  "Fill the empty plan from your recurring bills, your last 3 months of activity, and what's already booked this period. Use this when you first build the plan.";
+const HELP_REFRESH =
+  "Re-run the auto-fill against today's templates and history. Drops Recurring and Auto rows, keeps anything you typed by hand. Drafts only.";
+const HELP_EDIT_PLAN =
+  "Plans go through Draft (editable) and Finalized (read-only, actuals tracked live). Edit Plan reverts the finalized plan to draft so you can change numbers or refresh.";
+const DOCS_HINT = " See /docs#forecasts for more.";
+
+// Tiny `(?)` indicator with native title tooltip. No design-system tooltip
+// primitive exists yet; native title is honest and ships now.
+function HelpIcon({ label, text }: { label: string; text: string }) {
+  return (
+    <span
+      tabIndex={0}
+      role="img"
+      aria-label={`${label} explained: ${text}`}
+      title={text + DOCS_HINT}
+      className="ml-1 cursor-help rounded-sm text-text-muted/70 hover:text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+    >
+      (?)
+    </span>
+  );
+}
+
 export default function ForecastPlansPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
@@ -368,17 +396,25 @@ export default function ForecastPlansPage() {
                 Discard
               </button>
             )}
-            <button onClick={handlePopulate} className={btnPrimary}>
+            <button
+              onClick={handlePopulate}
+              className={btnPrimary}
+              title={HELP_AUTO_POPULATE + DOCS_HINT}
+            >
               Auto-populate
             </button>
+            <HelpIcon label="Auto-populate" text={HELP_AUTO_POPULATE} />
             {hasItems && (
-              <button
-                onClick={handleRefreshFromSources}
-                className={btnPrimary}
-                title="Drop auto-generated rows and re-run populate. Manual edits are preserved."
-              >
-                Refresh from sources
-              </button>
+              <>
+                <button
+                  onClick={handleRefreshFromSources}
+                  className={btnPrimary}
+                  title={HELP_REFRESH + DOCS_HINT}
+                >
+                  Refresh from sources
+                </button>
+                <HelpIcon label="Refresh from sources" text={HELP_REFRESH} />
+              </>
             )}
             <button
               onClick={() => setShowForm(!showForm)}
@@ -389,9 +425,16 @@ export default function ForecastPlansPage() {
           </div>
         )}
         {isActive && (
-          <button onClick={handleRevertToDraft} className={btnPrimary}>
-            Edit Plan
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRevertToDraft}
+              className={btnPrimary}
+              title={HELP_EDIT_PLAN + DOCS_HINT}
+            >
+              Edit Plan
+            </button>
+            <HelpIcon label="Edit Plan" text={HELP_EDIT_PLAN} />
+          </div>
         )}
       </div>
 
@@ -824,7 +867,10 @@ function ItemSection({
             <span>Category</span>
             <span className="text-right">Planned</span>
             <span className="hidden text-right md:block">Actual</span>
-            <span className="hidden text-right md:block">Variance</span>
+            <span className="hidden text-right md:block">
+              Variance
+              <HelpIcon label="Variance" text={HELP_VARIANCE} />
+            </span>
             <span className="hidden text-center md:block">Source</span>
             {!readOnly && <span className="text-right">Actions</span>}
           </div>
