@@ -13,13 +13,12 @@ import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pa
 
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
-import { Check, Clock } from "lucide-react";
 import CategorySelect from "@/components/ui/CategorySelect";
 import OnTrackTile from "@/components/dashboard/OnTrackTile";
 import AccountMonthEndForecast, {
   type AccountMonthEndForecastResponse,
 } from "@/components/dashboard/AccountMonthEndForecast";
-import AccountTile from "@/components/dashboard/AccountTile";
+import AccountTilesCard from "@/components/dashboard/AccountTile";
 import type { Account, BillingPeriod, Budget, Category, Transaction } from "@/lib/types";
 
 interface ForecastPlanItem {
@@ -705,9 +704,11 @@ export default function DashboardPage() {
           />
 
           {/* ═══ ROW 2: Accounts sidebar + Forecast card, side-by-side ═══
-              Tiles are compact identity/status/navigation; the Forecast
-              card is the numeric authority for Balance + EOMF. Stacks
-              vertically below `lg`. */}
+              Tiles share ONE card with internal divider rows; the
+              Forecast card on the right is the numeric authority for
+              Balance + EOMF. 1fr/3fr split — forecast dominates.
+              items-start so each card sits at its natural height
+              (mismatch is intentional). Stacks vertically below `lg`. */}
           {(() => {
             // Non-primary accounts sort alphabetically by name (locale-
             // aware, case-insensitive). Stable across transactions: a
@@ -725,18 +726,11 @@ export default function DashboardPage() {
               : others;
 
             return (
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-                {accountsWithBalance.length > 0 && (
-                  <div className="flex flex-col gap-2">
-                    {orderedAccounts.map((acct) => (
-                      <AccountTile
-                        key={acct.id}
-                        account={acct}
-                        hasPending={(pendingByAccount[acct.id] ?? 0) !== 0}
-                      />
-                    ))}
-                  </div>
-                )}
+              <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]">
+                <AccountTilesCard
+                  accounts={orderedAccounts}
+                  pendingByAccount={pendingByAccount}
+                />
                 <AccountMonthEndForecast
                   forecast={accountMonthEndForecast}
                   isCurrentPeriod={isCurrentSelectedPeriod}
@@ -975,16 +969,11 @@ export default function DashboardPage() {
                               setError(extractErrorMessage(err));
                             }
                           }}
-                          aria-label={`Settled status for ${tx.description}`}
+                          aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
                           aria-pressed={tx.status === "settled"}
-                          className={`inline-flex min-h-[44px] items-center gap-1 rounded px-2 text-xs font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}
                         >
-                          {tx.status === "settled" ? (
-                            <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                          ) : (
-                            <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-                          )}
-                          <span>{tx.status}</span>
+                          {tx.status}
                         </button>
                       )}
                     </div>

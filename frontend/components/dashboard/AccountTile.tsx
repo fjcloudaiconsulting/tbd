@@ -5,18 +5,44 @@ import { card } from "@/lib/styles";
 import { formatAmount } from "@/lib/format";
 import type { Account } from "@/lib/types";
 
-export interface AccountTileProps {
+export interface AccountTilesCardProps {
+  accounts: Account[];
+  pendingByAccount: Record<number, number>;
+}
+
+// Compact identity/status/navigation column for the dashboard. ONE
+// shared card with internal divider rows, mirroring the Forecast card
+// idiom on the right side of the row. Each row is a click-through to
+// /accounts. The Forecast card is the numeric authority; the muted
+// balance hint here is secondary text only, NOT the primary visual
+// anchor of the row.
+export default function AccountTilesCard({
+  accounts,
+  pendingByAccount,
+}: AccountTilesCardProps) {
+  if (accounts.length === 0) return null;
+
+  return (
+    <section className={`${card} overflow-hidden`} data-testid="account-tiles-card">
+      <div className="divide-y divide-border-subtle">
+        {accounts.map((account) => (
+          <AccountTileRow
+            key={account.id}
+            account={account}
+            hasPending={(pendingByAccount[account.id] ?? 0) !== 0}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export interface AccountTileRowProps {
   account: Account;
   hasPending: boolean;
 }
 
-// Compact identity/status/navigation tile for the dashboard accounts
-// sidebar. The Forecast card is the numeric authority for Balance and
-// expected month-end; this tile shows account name, type, status
-// badges, and a click-through to /accounts. Balance is included as
-// MUTED secondary text only — the Forecast card carries the primary
-// number so the row doesn't read as redundant.
-export default function AccountTile({ account, hasPending }: AccountTileProps) {
+export function AccountTileRow({ account, hasPending }: AccountTileRowProps) {
   const typeLabel = account.account_type_name ?? null;
 
   return (
@@ -24,7 +50,7 @@ export default function AccountTile({ account, hasPending }: AccountTileProps) {
       href="/accounts"
       data-testid="account-tile"
       data-account-id={account.id}
-      className={`${card} flex items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent`}
+      className="flex items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">

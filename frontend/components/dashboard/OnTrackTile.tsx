@@ -120,11 +120,11 @@ export default function OnTrackTile({
   if (isPastPeriod && !hasPlan) {
     return (
       <section
-        className={`${card} p-6 md:p-8`}
+        className={`${card} p-4 md:p-6`}
         data-testid="on-track-tile"
         aria-label="No plan was set for this period"
       >
-        <header className="mb-6 flex items-center justify-between">
+        <header className="mb-4 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
             Forecast
           </span>
@@ -138,14 +138,14 @@ export default function OnTrackTile({
   // Future period: prompt to plan ahead.
   if (isFuturePeriod) {
     return (
-      <section className={`${card} p-6 md:p-8`} data-testid="on-track-tile" aria-label="Plan ahead">
-        <header className="mb-6 flex items-center justify-between">
+      <section className={`${card} p-4 md:p-6`} data-testid="on-track-tile" aria-label="Plan ahead">
+        <header className="mb-4 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
             Forecast
           </span>
           <span className="text-xs text-text-secondary">Future period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Stat
             label="Planned spending"
             value={hasPlan ? formatAmount(plannedExpense) : "—"}
@@ -170,17 +170,17 @@ export default function OnTrackTile({
   if (!hasPlan) {
     return (
       <section
-        className={`${card} p-6 md:p-8`}
+        className={`${card} p-4 md:p-6`}
         data-testid="on-track-tile"
         aria-label="No plan for this period"
       >
-        <header className="mb-6 flex items-center justify-between">
+        <header className="mb-4 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
             Forecast
           </span>
           <span className="text-xs text-text-secondary">This period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Stat label="Planned spending" value={formatAmount(0)} sublabel="not yet planned" muted />
           <Stat label="Spent so far" value="—" muted />
         </div>
@@ -200,17 +200,17 @@ export default function OnTrackTile({
   if (projectionFailed) {
     return (
       <section
-        className={`${card} p-6 md:p-8`}
+        className={`${card} p-4 md:p-6`}
         data-testid="on-track-tile"
         aria-label="Projection unavailable"
       >
-        <header className="mb-6 flex items-center justify-between">
+        <header className="mb-4 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
             Forecast
           </span>
           <span className="text-xs text-text-secondary">This period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
           <Stat label="Spent so far" value="—" muted />
         </div>
@@ -234,17 +234,17 @@ export default function OnTrackTile({
   if (!projection) {
     return (
       <section
-        className={`${card} p-6 md:p-8`}
+        className={`${card} p-4 md:p-6`}
         data-testid="on-track-tile"
         aria-label="Loading projection"
       >
-        <header className="mb-6 flex items-center justify-between">
+        <header className="mb-4 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
             Forecast
           </span>
           <span className="text-xs text-text-secondary">This period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
           <Stat label="Spent so far" value="…" muted />
         </div>
@@ -261,8 +261,8 @@ export default function OnTrackTile({
     const verdict = computeVerdict(pct);
 
     return (
-      <section className={`${card} p-6 md:p-8`} data-testid="on-track-tile" aria-label={PAST_LABELS[verdict]}>
-        <header className="mb-6 flex items-center justify-between gap-2">
+      <section className={`${card} p-4 md:p-6`} data-testid="on-track-tile" aria-label={PAST_LABELS[verdict]}>
+        <header className="mb-4 flex items-center justify-between gap-2">
           <h2
             className={`flex items-center gap-2 text-2xl font-semibold uppercase tabular-nums md:text-3xl ${VERDICT_COLOR[verdict]}`}
           >
@@ -271,8 +271,13 @@ export default function OnTrackTile({
           </h2>
           <span className="text-xs text-text-secondary">Past period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Stat
+            label="Planned spending"
+            value={formatAmount(plannedExpense)}
+            sublabel="full month"
+            muted
+          />
           <Stat label="Final spent" value={formatAmount(executedExpense)} sublabel="final" />
         </div>
         <DetailsLink />
@@ -287,7 +292,7 @@ export default function OnTrackTile({
   const verdict = computeVerdict(pct);
 
   return (
-    <section className={`${card} p-6 md:p-8`} data-testid="on-track-tile" aria-label={CURRENT_LABELS[verdict]}>
+    <section className={`${card} p-4 md:p-6`} data-testid="on-track-tile" aria-label={CURRENT_LABELS[verdict]}>
       <header className="mb-6 flex items-center justify-between gap-2">
         <h2
           className={`flex items-center gap-2 text-2xl font-semibold uppercase tabular-nums md:text-3xl ${VERDICT_COLOR[verdict]}`}
@@ -297,9 +302,21 @@ export default function OnTrackTile({
         </h2>
         <span className="text-xs text-text-secondary">This period</span>
       </header>
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-        <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
-        <Stat label="Spent so far" value={formatAmount(executedExpense)} sublabel="actual today" />
+      {/* Metric hierarchy: Spent so far is the primary visual anchor
+          (the daily-glance number); Planned and Expected are muted
+          secondary baselines/projections. */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <Stat
+          label="Planned spending"
+          value={formatAmount(plannedExpense)}
+          sublabel="full month"
+          muted
+        />
+        <Stat
+          label="Spent so far"
+          value={formatAmount(executedExpense)}
+          sublabel="actual today"
+        />
         <Stat
           label="Expected spending"
           value={formatAmount(forecastExpense)}
