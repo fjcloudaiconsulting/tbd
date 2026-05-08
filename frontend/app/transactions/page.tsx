@@ -919,7 +919,7 @@ function TransactionsPageContent() {
                   { field: "status" as const, label: "Status", span: "col-span-1", align: "text-center" },
                   { field: "amount" as const, label: "Amount", span: "col-span-1", align: "text-right" },
                 ]).map((col) => (
-                  <button key={col.field} onClick={() => toggleSort(col.field)} className={`${col.span} ${col.align} hover:text-text-primary transition-colors`}>
+                  <button key={col.field} onClick={() => toggleSort(col.field)} className={`${col.span} ${col.align} min-h-[32px] hover:text-text-primary transition-colors`}>
                     {col.label}{sortField === col.field ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
                   </button>
                 ))}
