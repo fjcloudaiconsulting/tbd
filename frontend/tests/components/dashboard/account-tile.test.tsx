@@ -55,7 +55,7 @@ describe("AccountTileRow — identity/status/navigation surface", () => {
     expect(screen.queryByText(/^Primary$/i)).not.toBeInTheDocument();
   });
 
-  it("shows a Pending badge only when hasPending is true", () => {
+  it("shows a Pending badge only when pendingAmount is non-zero", () => {
     const { rerender } = render(
       <AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />,
     );
