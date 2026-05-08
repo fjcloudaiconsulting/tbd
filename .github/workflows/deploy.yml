@@ -48,8 +48,8 @@ jobs:
 
   # L0.5 — Post-deploy smoke tests. Runs only after `deploy` succeeds
   # so a failed deploy never reports as a smoke-test failure (the
-  # `needs: deploy` gate plus our `on: push: branches: [main]` trigger
-  # together guarantee this never runs on PRs or forks).
+  # `needs: deploy` gate plus this workflow's `workflow_dispatch`-only
+  # trigger together guarantee this never runs on PRs or forks).
   #
   # Asserts the live app can serve traffic — DO marking the deploy
   # ACTIVE is necessary but not sufficient. See scripts/smoke-test.sh
