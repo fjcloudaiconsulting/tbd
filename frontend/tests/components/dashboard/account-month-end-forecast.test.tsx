@@ -93,17 +93,20 @@ const TWO_CURRENCIES: AccountMonthEndForecastResponse = {
 };
 
 describe("AccountMonthEndForecast — current period", () => {
-  it("renders title 'Forecast' and the prescribed subtext", () => {
+  it("does not render a redundant 'Forecast' card title; eyebrow + hero anchor the card", () => {
     render(
       <AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />,
     );
-    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^Forecast$/);
+    // Header consolidated: no <h2>Forecast</h2> title at the top of
+    // the card. The "Expected month-end balance" eyebrow already
+    // names what the card is about.
+    expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
     expect(
       screen.getByText(/Current balance plus pending items in this period\./),
     ).toBeInTheDocument();
   });
 
-  it("renders the expected month-end balance per currency", () => {
+  it("renders the expected month-end balance per currency with a single descriptive line", () => {
     render(
       <AccountMonthEndForecast {...defaults({ forecast: TWO_ACCOUNTS_EUR })} />,
     );
@@ -111,10 +114,14 @@ describe("AccountMonthEndForecast — current period", () => {
     expect(screen.getByText(/expected month-end balance/i)).toBeInTheDocument();
     // EUR aggregate value
     expect(screen.getByText(/5,850\.00/)).toBeInTheDocument();
-    // Subtext under the headline number
+    // The single descriptive line under the hero replaces the old
+    // duplicate "Includes pending items in this period." sentence.
     expect(
-      screen.getByText(/Includes pending items in this period\./),
+      screen.getByText(/Current balance plus pending items in this period\./),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/^Includes pending items in this period\.$/),
+    ).not.toBeInTheDocument();
   });
 
   it("renders Account / Balance / End of month forecast columns", () => {

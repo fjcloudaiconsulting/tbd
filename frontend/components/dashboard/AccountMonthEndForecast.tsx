@@ -109,13 +109,11 @@ export default function AccountMonthEndForecast({
 
   return (
     <section className={`${card} p-5`} data-testid="account-month-end-forecast">
-      <header className={`mb-3 ${cardHeader}`}>
-        <h2 className={cardTitle}>Forecast</h2>
-        <p className="mt-1 text-xs text-text-muted">
-          Current balance plus pending items in this period.
-        </p>
-      </header>
-
+      {/* Header consolidated: the eyebrow already names the card
+          ("Expected month-end balance"), so the explicit "Forecast"
+          card title and the duplicate "Includes pending items"
+          supporting line are dropped. A single descriptive line under
+          the hero replaces both. */}
       {totals.length > 0 && (
         <div className="mb-4 space-y-1">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
@@ -132,7 +130,9 @@ export default function AccountMonthEndForecast({
               </p>
             ))}
           </div>
-          <p className="text-xs text-text-muted">Includes pending items in this period.</p>
+          <p className="text-xs text-text-muted">
+            Current balance plus pending items in this period.
+          </p>
         </div>
       )}
 
