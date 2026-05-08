@@ -293,7 +293,7 @@ export default function OnTrackTile({
 
   return (
     <section className={`${card} p-4 md:p-6`} data-testid="on-track-tile" aria-label={CURRENT_LABELS[verdict]}>
-      <header className="mb-6 flex items-center justify-between gap-2">
+      <header className="mb-4 flex items-center justify-between gap-2">
         <h2
           className={`flex items-center gap-2 text-2xl font-semibold uppercase tabular-nums md:text-3xl ${VERDICT_COLOR[verdict]}`}
         >
