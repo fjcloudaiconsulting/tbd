@@ -24,17 +24,9 @@ export interface OnTrackTileProps {
   isFuturePeriod: boolean;
 }
 
-// Verdict bands: ≤95% on track, 95-105% watch, >105% over.
-// Tunable in a follow-up; for now constants live here.
+// Verdict bands: <=95% on track, 95-105% watch, >105% over.
 const ON_TRACK_MAX = 0.95;
 const WATCH_MAX = 1.05;
-
-// Tooltip copy for the dashboard stats. Plain language; the docs page
-// (/docs#forecasts) carries the longer explanation.
-const VARIANCE_HELP =
-  "Plan minus actual. Positive number means you spent less than planned (good for expense). Green when you're under plan, red when you're over.";
-const PROJECTED_HELP =
-  "Best guess at end-of-month total = settled + pending + scheduled recurring. Can differ from your plan.";
 
 type Verdict = "on-track" | "watch" | "over";
 
@@ -73,30 +65,17 @@ function Stat({
   sublabel,
   valueClass = "text-text-primary",
   muted = false,
-  helpText,
 }: {
   label: string;
   value: string;
   sublabel?: string;
   valueClass?: string;
   muted?: boolean;
-  helpText?: string;
 }) {
   return (
     <div>
-      <p className="flex items-center gap-1 text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
         {label}
-        {helpText && (
-          <span
-            tabIndex={0}
-            role="img"
-            aria-label={`${label} explained: ${helpText}`}
-            title={`${helpText} See /docs#forecasts for more.`}
-            className="cursor-help rounded-sm text-text-muted/70 hover:text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-          >
-            (?)
-          </span>
-        )}
       </p>
       <p
         className={`mt-1 text-2xl font-semibold tabular-nums ${
@@ -106,6 +85,19 @@ function Stat({
         {value}
       </p>
       {sublabel && <p className="mt-1 text-xs text-text-muted">{sublabel}</p>}
+    </div>
+  );
+}
+
+function DetailsLink() {
+  return (
+    <div className="mt-6 text-sm">
+      <Link
+        href="/forecast-plans"
+        className="text-text-primary underline underline-offset-2 hover:text-text-secondary"
+      >
+        View forecast details
+      </Link>
     </div>
   );
 }
@@ -122,9 +114,9 @@ export default function OnTrackTile({
   const plannedExpense = forecastPlan ? Number(forecastPlan.total_planned_expense) : 0;
   const hasPlan = forecastPlan !== null && plannedExpense > 0;
 
-  // Past period with no plan: non-actionable, past-tense copy.
-  // Runs BEFORE the no-plan branch so a closed period without a plan
-  // doesn't render the current-period "Set one up" CTA.
+  // Past period with no plan: non-actionable, past-tense copy. Runs
+  // BEFORE the no-plan branch so a closed period without a plan doesn't
+  // render the current-period CTA.
   if (isPastPeriod && !hasPlan) {
     return (
       <section
@@ -134,7 +126,7 @@ export default function OnTrackTile({
       >
         <header className="mb-6 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
-            Plan vs Actual
+            Forecast
           </span>
           <span className="text-xs text-text-secondary">Past period</span>
         </header>
@@ -143,26 +135,24 @@ export default function OnTrackTile({
     );
   }
 
-  // Pre-period (selected period in the future): plan if drafted, suppress everything else.
+  // Future period: prompt to plan ahead.
   if (isFuturePeriod) {
     return (
       <section className={`${card} p-6 md:p-8`} data-testid="on-track-tile" aria-label="Plan ahead">
         <header className="mb-6 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
-            Plan ahead
+            Forecast
           </span>
           <span className="text-xs text-text-secondary">Future period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
           <Stat
-            label="PLAN"
+            label="Planned spending"
             value={hasPlan ? formatAmount(plannedExpense) : "—"}
             sublabel={hasPlan ? "full month" : "not yet planned"}
             muted={!hasPlan}
           />
-          <Stat label="SPENT" value="—" sublabel="nothing yet" muted />
-          <Stat label="VARIANCE" value="—" muted helpText={VARIANCE_HELP} />
-          <Stat label="PROJECTED" value="—" muted helpText={PROJECTED_HELP} />
+          <Stat label="Spent so far" value="—" sublabel="nothing yet" muted />
         </div>
         <div className="mt-6 text-sm">
           <Link
@@ -176,7 +166,7 @@ export default function OnTrackTile({
     );
   }
 
-  // Current period, no plan exists. Spent so far is suppressed (no source independent of the projection call).
+  // Current period, no plan exists.
   if (!hasPlan) {
     return (
       <section
@@ -186,15 +176,13 @@ export default function OnTrackTile({
       >
         <header className="mb-6 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
-            Plan vs Projection
+            Forecast
           </span>
           <span className="text-xs text-text-secondary">This period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-          <Stat label="PLAN" value={formatAmount(0)} sublabel="not yet planned" muted />
-          <Stat label="SPENT SO FAR" value="—" muted />
-          <Stat label="VARIANCE" value="—" muted helpText={VARIANCE_HELP} />
-          <Stat label="PROJECTED" value="—" muted helpText={PROJECTED_HELP} />
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Stat label="Planned spending" value={formatAmount(0)} sublabel="not yet planned" muted />
+          <Stat label="Spent so far" value="—" muted />
         </div>
         <div className="mt-6 text-sm">
           <Link
@@ -208,7 +196,7 @@ export default function OnTrackTile({
     );
   }
 
-  // Plan exists, projection call failed. Plan stays; Spent / Variance / Projected suppress.
+  // Plan exists, projection call failed.
   if (projectionFailed) {
     return (
       <section
@@ -218,18 +206,16 @@ export default function OnTrackTile({
       >
         <header className="mb-6 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
-            Plan vs Projection
+            Forecast
           </span>
           <span className="text-xs text-text-secondary">This period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-          <Stat label="PLAN" value={formatAmount(plannedExpense)} sublabel="full month" />
-          <Stat label="SPENT SO FAR" value="—" muted />
-          <Stat label="VARIANCE" value="—" muted helpText={VARIANCE_HELP} />
-          <Stat label="PROJECTED" value="Unavailable" muted helpText={PROJECTED_HELP} />
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
+          <Stat label="Spent so far" value="—" muted />
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-text-muted">
-          <span>Projection unavailable.</span>
+          <span>Forecast unavailable.</span>
           <button
             type="button"
             onClick={onRetryProjection}
@@ -244,7 +230,7 @@ export default function OnTrackTile({
     );
   }
 
-  // Plan exists but projection hasn't loaded yet. Show plan with placeholders for the rest.
+  // Plan exists but projection hasn't loaded yet.
   if (!projection) {
     return (
       <section
@@ -254,15 +240,13 @@ export default function OnTrackTile({
       >
         <header className="mb-6 flex items-center justify-between">
           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
-            Plan vs Projection
+            Forecast
           </span>
           <span className="text-xs text-text-secondary">This period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-          <Stat label="PLAN" value={formatAmount(plannedExpense)} sublabel="full month" />
-          <Stat label="SPENT SO FAR" value="…" muted />
-          <Stat label="VARIANCE" value="…" muted helpText={VARIANCE_HELP} />
-          <Stat label="PROJECTED" value="…" muted helpText={PROJECTED_HELP} />
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
+          <Stat label="Spent so far" value="…" muted />
         </div>
       </section>
     );
@@ -271,13 +255,10 @@ export default function OnTrackTile({
   const executedExpense = Number(projection.executed_expense);
   const forecastExpense = Number(projection.forecast_expense);
 
-  // Past period: verdict + variance use actuals (executed_expense), not the projection.
-  // Projected column is suppressed; Final spent replaces it.
+  // Past period: verdict uses actuals (executed_expense), not the projection.
   if (isPastPeriod) {
     const pct = executedExpense / plannedExpense;
     const verdict = computeVerdict(pct);
-    const variance = plannedExpense - executedExpense;
-    const varianceFavorable = variance >= 0;
 
     return (
       <section className={`${card} p-6 md:p-8`} data-testid="on-track-tile" aria-label={PAST_LABELS[verdict]}>
@@ -290,33 +271,20 @@ export default function OnTrackTile({
           </h2>
           <span className="text-xs text-text-secondary">Past period</span>
         </header>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-          <Stat label="PLAN" value={formatAmount(plannedExpense)} sublabel="full month" />
-          <Stat
-            label="FINAL SPENT"
-            value={formatAmount(executedExpense)}
-            sublabel="final"
-          />
-          <Stat
-            label="VARIANCE"
-            value={`${variance >= 0 ? "+" : "−"}${formatAmount(Math.abs(variance))}`}
-            sublabel={varianceFavorable ? "under plan" : "over plan"}
-            valueClass={varianceFavorable ? "text-accent" : "text-danger"}
-            helpText={VARIANCE_HELP}
-          />
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+          <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
+          <Stat label="Final spent" value={formatAmount(executedExpense)} sublabel="final" />
         </div>
+        <DetailsLink />
       </section>
     );
   }
 
-  // Default current-period view: verdict + variance anchor on actual (settled)
-  // spending, NOT the projection. The projection is shown as an informational
-  // muted stat so it never alarms the user before money has actually moved.
-  // YNAB / Monarch / Copilot / Mint all behave this way.
+  // Current period: verdict anchors on actual (settled) spending. Expected
+  // spending is shown as a supporting fact, not the verdict driver. YNAB /
+  // Monarch / Copilot / Mint all behave this way.
   const pct = executedExpense / plannedExpense;
   const verdict = computeVerdict(pct);
-  const variance = plannedExpense - executedExpense;
-  const varianceFavorable = variance >= 0;
 
   return (
     <section className={`${card} p-6 md:p-8`} data-testid="on-track-tile" aria-label={CURRENT_LABELS[verdict]}>
@@ -329,28 +297,17 @@ export default function OnTrackTile({
         </h2>
         <span className="text-xs text-text-secondary">This period</span>
       </header>
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-        <Stat label="PLAN" value={formatAmount(plannedExpense)} sublabel="full month" />
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+        <Stat label="Planned spending" value={formatAmount(plannedExpense)} sublabel="full month" />
+        <Stat label="Spent so far" value={formatAmount(executedExpense)} sublabel="actual today" />
         <Stat
-          label="SPENT SO FAR"
-          value={formatAmount(executedExpense)}
-          sublabel="actual today"
-        />
-        <Stat
-          label="VARIANCE"
-          value={`${variance >= 0 ? "+" : "−"}${formatAmount(Math.abs(variance))}`}
-          sublabel={varianceFavorable ? "under plan" : "over plan"}
-          valueClass={varianceFavorable ? "text-accent" : "text-danger"}
-          helpText={VARIANCE_HELP}
-        />
-        <Stat
-          label="PROJECTED"
+          label="Expected spending"
           value={formatAmount(forecastExpense)}
-          sublabel="projected end-of-month"
+          sublabel="end of month"
           muted
-          helpText={PROJECTED_HELP}
         />
       </div>
+      <DetailsLink />
     </section>
   );
 }
