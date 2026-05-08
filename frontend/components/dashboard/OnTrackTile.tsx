@@ -29,6 +29,13 @@ export interface OnTrackTileProps {
 const ON_TRACK_MAX = 0.95;
 const WATCH_MAX = 1.05;
 
+// Tooltip copy for the dashboard stats. Plain language; the docs page
+// (/docs#forecasts) carries the longer explanation.
+const VARIANCE_HELP =
+  "Plan minus actual. Positive number means you spent less than planned (good for expense). Green when you're under plan, red when you're over.";
+const PROJECTED_HELP =
+  "Best guess at end-of-month total = settled + pending + scheduled recurring. Can differ from your plan.";
+
 type Verdict = "on-track" | "watch" | "over";
 
 function computeVerdict(pct: number): Verdict {
@@ -66,16 +73,31 @@ function Stat({
   sublabel,
   valueClass = "text-text-primary",
   muted = false,
+  helpText,
 }: {
   label: string;
   value: string;
   sublabel?: string;
   valueClass?: string;
   muted?: boolean;
+  helpText?: string;
 }) {
   return (
     <div>
-      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">{label}</p>
+      <p className="flex items-center gap-1 text-xs font-semibold uppercase tracking-[0.08em] text-text-muted">
+        {label}
+        {helpText && (
+          <span
+            tabIndex={0}
+            role="img"
+            aria-label={`${label} explained: ${helpText}`}
+            title={`${helpText} See /docs#forecasts for more.`}
+            className="cursor-help rounded-sm text-text-muted/70 hover:text-text-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+          >
+            (?)
+          </span>
+        )}
+      </p>
       <p
         className={`mt-1 text-2xl font-semibold tabular-nums ${
           muted ? "text-text-muted" : valueClass
@@ -139,8 +161,8 @@ export default function OnTrackTile({
             muted={!hasPlan}
           />
           <Stat label="SPENT" value="—" sublabel="nothing yet" muted />
-          <Stat label="VARIANCE" value="—" muted />
-          <Stat label="PROJECTED" value="—" muted />
+          <Stat label="VARIANCE" value="—" muted helpText={VARIANCE_HELP} />
+          <Stat label="PROJECTED" value="—" muted helpText={PROJECTED_HELP} />
         </div>
         <div className="mt-6 text-sm">
           <Link
@@ -171,8 +193,8 @@ export default function OnTrackTile({
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
           <Stat label="PLAN" value={formatAmount(0)} sublabel="not yet planned" muted />
           <Stat label="SPENT SO FAR" value="—" muted />
-          <Stat label="VARIANCE" value="—" muted />
-          <Stat label="PROJECTED" value="—" muted />
+          <Stat label="VARIANCE" value="—" muted helpText={VARIANCE_HELP} />
+          <Stat label="PROJECTED" value="—" muted helpText={PROJECTED_HELP} />
         </div>
         <div className="mt-6 text-sm">
           <Link
@@ -203,8 +225,8 @@ export default function OnTrackTile({
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
           <Stat label="PLAN" value={formatAmount(plannedExpense)} sublabel="full month" />
           <Stat label="SPENT SO FAR" value="—" muted />
-          <Stat label="VARIANCE" value="—" muted />
-          <Stat label="PROJECTED" value="Unavailable" muted />
+          <Stat label="VARIANCE" value="—" muted helpText={VARIANCE_HELP} />
+          <Stat label="PROJECTED" value="Unavailable" muted helpText={PROJECTED_HELP} />
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-3 text-sm text-text-muted">
           <span>Projection unavailable.</span>
@@ -239,8 +261,8 @@ export default function OnTrackTile({
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
           <Stat label="PLAN" value={formatAmount(plannedExpense)} sublabel="full month" />
           <Stat label="SPENT SO FAR" value="…" muted />
-          <Stat label="VARIANCE" value="…" muted />
-          <Stat label="PROJECTED" value="…" muted />
+          <Stat label="VARIANCE" value="…" muted helpText={VARIANCE_HELP} />
+          <Stat label="PROJECTED" value="…" muted helpText={PROJECTED_HELP} />
         </div>
       </section>
     );
@@ -280,6 +302,7 @@ export default function OnTrackTile({
             value={`${variance >= 0 ? "+" : "−"}${formatAmount(Math.abs(variance))}`}
             sublabel={varianceFavorable ? "under plan" : "over plan"}
             valueClass={varianceFavorable ? "text-accent" : "text-danger"}
+            helpText={VARIANCE_HELP}
           />
         </div>
       </section>
@@ -318,12 +341,14 @@ export default function OnTrackTile({
           value={`${variance >= 0 ? "+" : "−"}${formatAmount(Math.abs(variance))}`}
           sublabel={varianceFavorable ? "under plan" : "over plan"}
           valueClass={varianceFavorable ? "text-accent" : "text-danger"}
+          helpText={VARIANCE_HELP}
         />
         <Stat
           label="PROJECTED"
           value={formatAmount(forecastExpense)}
           sublabel="projected end-of-month"
           muted
+          helpText={PROJECTED_HELP}
         />
       </div>
     </section>
