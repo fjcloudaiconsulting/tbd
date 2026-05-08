@@ -33,7 +33,7 @@ const SECONDARY_SAVINGS: Account = {
 
 describe("AccountTileRow — identity/status/navigation surface", () => {
   it("renders account name and account-type label", () => {
-    render(<AccountTileRow account={PRIMARY_CHECKING} hasPending={false} />);
+    render(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />);
     // Both the account name and the account-type label are "Checking",
     // so we expect two matches: name (medium-emphasis) + type (muted
     // subtext).
@@ -41,39 +41,73 @@ describe("AccountTileRow — identity/status/navigation surface", () => {
   });
 
   it("renders the currency code", () => {
-    render(<AccountTileRow account={PRIMARY_CHECKING} hasPending={false} />);
+    render(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />);
     expect(screen.getByText(/^EUR$/)).toBeInTheDocument();
   });
 
   it("shows the Primary badge on the default account, not on others", () => {
     const { rerender } = render(
-      <AccountTileRow account={PRIMARY_CHECKING} hasPending={false} />,
+      <AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />,
     );
     expect(screen.getByText(/^Primary$/i)).toBeInTheDocument();
 
-    rerender(<AccountTileRow account={SECONDARY_SAVINGS} hasPending={false} />);
+    rerender(<AccountTileRow account={SECONDARY_SAVINGS} pendingAmount={0} />);
     expect(screen.queryByText(/^Primary$/i)).not.toBeInTheDocument();
   });
 
-  it("shows a Pending badge only when hasPending is true", () => {
+  it("shows a Pending badge only when pendingAmount is non-zero", () => {
     const { rerender } = render(
-      <AccountTileRow account={PRIMARY_CHECKING} hasPending={false} />,
+      <AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />,
     );
     expect(screen.queryByText(/^Pending$/i)).not.toBeInTheDocument();
 
-    rerender(<AccountTileRow account={PRIMARY_CHECKING} hasPending={true} />);
+    rerender(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={-50} />);
     expect(screen.getByText(/^Pending$/i)).toBeInTheDocument();
   });
 
+  // L3.4 (visibility): a credit card whose stored balance has been paid
+  // down to 0 but still has unsettled charges must surface the pending
+  // magnitude on the dashboard tile. Pre-fix the tile only flashed a
+  // small "Pending" pill with no number; the user lost sight of money
+  // that's still legitimately committed.
+  it("renders the pending magnitude alongside balance when balance is zero", () => {
+    const PAID_OFF_CC: Account = {
+      ...PRIMARY_CHECKING,
+      id: 99,
+      name: "Amex Primary",
+      account_type_name: "Credit Card",
+      account_type_slug: "credit_card",
+      balance: 0 as unknown as number,
+      is_default: false,
+    };
+    render(<AccountTileRow account={PAID_OFF_CC} pendingAmount={-150} />);
+    // Balance is still rendered (0.00), AND the pending magnitude is
+    // visible. Sign of pendingAmount drops out (Math.abs); the copy is
+    // unsigned, matching the accounts-page "Pending: 150.00" idiom.
+    expect(screen.getByText(/^0\.00$/)).toBeInTheDocument();
+    expect(screen.getByText(/Pending: 150\.00/)).toBeInTheDocument();
+  });
+
+  it("does NOT render the pending magnitude when pending is zero", () => {
+    render(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />);
+    expect(screen.queryByText(/Pending:/)).not.toBeInTheDocument();
+  });
+
+  it("renders pending magnitude alongside non-zero balance (positive case)", () => {
+    render(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={-200} />);
+    expect(screen.getByText(/1,000\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/Pending: 200\.00/)).toBeInTheDocument();
+  });
+
   it("renders as a link to /accounts (click-through navigation)", () => {
-    render(<AccountTileRow account={PRIMARY_CHECKING} hasPending={false} />);
+    render(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />);
     const link = screen.getByTestId("account-tile");
     expect(link.tagName).toBe("A");
     expect(link).toHaveAttribute("href", "/accounts");
   });
 
   it("balance text is muted (forecast card is the numeric authority, tile is secondary)", () => {
-    render(<AccountTileRow account={PRIMARY_CHECKING} hasPending={false} />);
+    render(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />);
     // 1,000.00 appears, but as small muted secondary text — not the
     // primary visual anchor of the tile.
     const balance = screen.getByText(/1,000\.00/);

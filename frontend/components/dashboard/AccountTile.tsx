@@ -29,7 +29,7 @@ export default function AccountTilesCard({
           <AccountTileRow
             key={account.id}
             account={account}
-            hasPending={(pendingByAccount[account.id] ?? 0) !== 0}
+            pendingAmount={pendingByAccount[account.id] ?? 0}
           />
         ))}
       </div>
@@ -39,11 +39,16 @@ export default function AccountTilesCard({
 
 export interface AccountTileRowProps {
   account: Account;
-  hasPending: boolean;
+  // Signed pending magnitude for this account (income +, expense -).
+  // The row renders Math.abs() under the balance, so the sign is just
+  // used to compute the magnitude; the row's "Pending: X.XX" copy is
+  // unsigned and matches the accounts-page idiom.
+  pendingAmount: number;
 }
 
-export function AccountTileRow({ account, hasPending }: AccountTileRowProps) {
+export function AccountTileRow({ account, pendingAmount }: AccountTileRowProps) {
   const typeLabel = account.account_type_name ?? null;
+  const hasPending = pendingAmount !== 0;
 
   return (
     <Link
@@ -85,12 +90,28 @@ export function AccountTileRow({ account, hasPending }: AccountTileRowProps) {
           )}
         </div>
       </div>
-      <p
-        className="shrink-0 text-[11px] tabular-nums text-text-muted"
-        aria-label="Current balance, secondary"
-      >
-        {formatAmount(account.balance)}
-      </p>
+      {/* Two-line right column: balance on top, pending magnitude on
+          the second line when non-zero. Pending stays visible
+          regardless of balance, so a paid-off credit card with stored
+          balance 0 still surfaces the committed-but-not-settled amount.
+          Both lines tabular-nums + right-aligned + shrink-0 so digits
+          line up across rows and the column never wraps. */}
+      <div className="flex shrink-0 flex-col items-end gap-0.5">
+        <p
+          className="text-[11px] tabular-nums text-text-muted"
+          aria-label="Current balance, secondary"
+        >
+          {formatAmount(account.balance)}
+        </p>
+        {hasPending && (
+          <p
+            className="text-[10px] tabular-nums text-warning"
+            aria-label="Pending, not yet settled"
+          >
+            Pending: {formatAmount(Math.abs(pendingAmount))}
+          </p>
+        )}
+      </div>
     </Link>
   );
 }
