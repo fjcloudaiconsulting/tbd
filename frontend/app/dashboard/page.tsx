@@ -19,6 +19,7 @@ import OnTrackTile from "@/components/dashboard/OnTrackTile";
 import AccountMonthEndForecast, {
   type AccountMonthEndForecastResponse,
 } from "@/components/dashboard/AccountMonthEndForecast";
+import AccountTile from "@/components/dashboard/AccountTile";
 import type { Account, BillingPeriod, Budget, Category, Transaction } from "@/lib/types";
 
 interface ForecastPlanItem {
@@ -703,64 +704,55 @@ export default function DashboardPage() {
             isFuturePeriod={isFutureSelectedPeriod}
           />
 
-          {/* ═══ ROW 2: Accounts — single row, primary slightly bigger ═══ */}
-          {accountsWithBalance.length > 0 && (() => {
+          {/* ═══ ROW 2: Accounts sidebar + Forecast card, side-by-side ═══
+              Tiles are compact identity/status/navigation; the Forecast
+              card is the numeric authority for Balance + EOMF. Stacks
+              vertically below `lg`. */}
+          {(() => {
+            // Non-primary accounts sort alphabetically by name (locale-
+            // aware, case-insensitive). Stable across transactions: a
+            // coffee purchase can't reshuffle the sidebar the way a
+            // balance-desc sort would.
             const defaultAcct = accountsWithBalance.find((a) => a.is_default);
-            // Non-primary accounts sort alphabetically by name (locale-aware,
-            // case-insensitive). Stable across transactions: a coffee
-            // purchase can't reshuffle the strip the way a balance-desc
-            // sort would. Predictable position is the point.
             const others = accountsWithBalance
               .filter((a) => !a.is_default)
               .slice()
-              .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+              .sort((a, b) =>
+                a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+              );
+            const orderedAccounts = defaultAcct
+              ? [defaultAcct, ...others]
+              : others;
+
             return (
-              <div className="grid grid-cols-1 gap-3 sm:flex sm:gap-3 sm:overflow-x-auto sm:pb-1">
-                {/* Primary account — wider */}
-                {defaultAcct && (
-                  <div className={`${card} px-5 py-3 sm:shrink-0 sm:min-w-[220px]`}>
-                    <div className="flex items-center gap-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-primary">{defaultAcct.name}</p>
-                      <span className="rounded border border-border px-1.5 py-0.5 text-[9px] font-semibold text-text-secondary">PRIMARY</span>
-                    </div>
-                    <p className="mt-1 text-xl font-semibold tabular-nums text-text-primary">{formatAmount(defaultAcct.balance)} <span className="text-xs text-text-muted">{defaultAcct.currency}</span></p>
-                    {pendingByAccount[defaultAcct.id] !== undefined && pendingByAccount[defaultAcct.id] !== 0 && (
-                      <p className="text-[10px] tabular-nums text-text-muted">Pending: {formatAmount(Math.abs(pendingByAccount[defaultAcct.id]))}</p>
-                    )}
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+                {accountsWithBalance.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    {orderedAccounts.map((acct) => (
+                      <AccountTile
+                        key={acct.id}
+                        account={acct}
+                        hasPending={(pendingByAccount[acct.id] ?? 0) !== 0}
+                      />
+                    ))}
                   </div>
                 )}
-                {/* Other accounts */}
-                {others.map((acct) => {
-                  const pending = pendingByAccount[acct.id] || 0;
-                  const isCreditCard = acct.account_type_slug === "credit_card";
-                  return (
-                    <div key={acct.id} className={`${card} px-4 py-3 sm:shrink-0 sm:min-w-[150px]`}>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted truncate">{acct.name}</p>
-                      <p className="mt-1 text-base font-semibold tabular-nums text-text-primary">{formatAmount(acct.balance)}</p>
-                      {isCreditCard && pending !== 0 && (
-                        <p className="text-[10px] tabular-nums text-danger">Pending: {formatAmount(Math.abs(pending))}</p>
-                      )}
-                    </div>
-                  );
-                })}
+                <AccountMonthEndForecast
+                  forecast={accountMonthEndForecast}
+                  isCurrentPeriod={isCurrentSelectedPeriod}
+                  hasAnyAccounts={activeAccounts.length > 0}
+                  hasError={accountMonthEndForecastError}
+                  onJumpToCurrent={() => {
+                    const idx = periods.findIndex((p) => p.end_date === null);
+                    if (idx >= 0) {
+                      setPeriodIdx(idx);
+                      setChartFilter(null);
+                    }
+                  }}
+                />
               </div>
             );
           })()}
-
-          {/* ═══ ROW 2.5: Account month-end forecast ═══ */}
-          <AccountMonthEndForecast
-            forecast={accountMonthEndForecast}
-            isCurrentPeriod={isCurrentSelectedPeriod}
-            hasAnyAccounts={activeAccounts.length > 0}
-            hasError={accountMonthEndForecastError}
-            onJumpToCurrent={() => {
-              const idx = periods.findIndex((p) => p.end_date === null);
-              if (idx >= 0) {
-                setPeriodIdx(idx);
-                setChartFilter(null);
-              }
-            }}
-          />
 
           {/* ═══ ROW 3: Three equal charts ═══ */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
