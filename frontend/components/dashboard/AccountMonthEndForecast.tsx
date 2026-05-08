@@ -137,10 +137,16 @@ export default function AccountMonthEndForecast({
       )}
 
       <div className="overflow-hidden rounded-md border border-border-subtle">
-        <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-4 border-b border-border-subtle bg-surface-overlay px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+        {/* Three left-aligned columns. Account narrowest (anchors the
+            row by name); Balance medium; End of month forecast widest
+            because the pending subtext (e.g. "Includes -€425.29
+            pending") sits underneath and shouldn't wrap awkwardly.
+            User direction overrides the spec's "tabular and right
+            aligned" — left-aligned reads as a list, not a ledger. */}
+        <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,3fr)] items-center gap-x-4 border-b border-border-subtle bg-surface-overlay px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
           <span>Account</span>
-          <span className="text-right">Balance</span>
-          <span className="text-right">End of month forecast</span>
+          <span>Balance</span>
+          <span>End of month forecast</span>
         </div>
         <div className="divide-y divide-border-subtle">
           {rows.map((row) => {
@@ -152,7 +158,7 @@ export default function AccountMonthEndForecast({
             return (
               <div
                 key={row.account_id}
-                className="grid grid-cols-[1fr_auto_auto] items-center gap-x-4 px-3 py-2"
+                className="grid grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,3fr)] items-center gap-x-4 px-3 py-2"
               >
                 <div className="min-w-0">
                   <p className="flex items-center gap-2 text-sm text-text-primary">
@@ -168,7 +174,7 @@ export default function AccountMonthEndForecast({
                   {formatAmount(row.balance)}{" "}
                   <span className="text-[10px] text-text-muted">{row.currency}</span>
                 </p>
-                <div className="text-right">
+                <div>
                   <p className="text-sm font-medium tabular-nums text-text-primary">
                     {formatAmount(row.expected_month_end_balance)}
                   </p>
