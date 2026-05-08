@@ -924,3 +924,155 @@ async def test_find_match_candidates_sorts_then_caps(db_session):
     assert len(candidates) == 7
     distances = [abs((c.date - target).days) for c in candidates]
     assert distances == [0, 1, 1, 2, 2, 3, 3]
+
+
+# ── Track E: manual-adjustment rejection in transfer pairing ──────────────
+
+
+async def _seed_org_with_two_accounts(db_session):
+    """Helper to seed an org, two same-currency accounts, and base categories.
+    Returns (org, src_account, dst_account, generic_category, transfer_category)."""
+    org = Organization(name="T", billing_cycle_day=1)
+    db_session.add(org)
+    await db_session.flush()
+    at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+    db_session.add(at)
+    await db_session.flush()
+    src = Account(
+        org_id=org.id, name="Src", account_type_id=at.id,
+        balance=Decimal("0"), currency="EUR",
+    )
+    dst = Account(
+        org_id=org.id, name="Dst", account_type_id=at.id,
+        balance=Decimal("0"), currency="EUR",
+    )
+    db_session.add_all([src, dst])
+    cat = Category(
+        org_id=org.id, name="Other", slug="other",
+        type=CategoryType.BOTH, is_system=True,
+    )
+    transfer_cat = Category(
+        org_id=org.id, name="Transfer", slug="transfer",
+        type=CategoryType.BOTH, is_system=True,
+    )
+    db_session.add_all([cat, transfer_cat])
+    await db_session.flush()
+    return org, src, dst, cat, transfer_cat
+
+
+async def test_pair_existing_transactions_rejects_adjustment_left_leg(db_session):
+    """Manual-adjustment row as the expense leg → ValidationError via _link_pair."""
+    from app.services.exceptions import ValidationError
+    org, src, dst, cat, _ = await _seed_org_with_two_accounts(db_session)
+
+    adj = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="manual adjust", amount=Decimal("100"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+        is_manual_adjustment=True,
+    )
+    inc = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="real income", amount=Decimal("100"),
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add_all([adj, inc])
+    await db_session.commit()
+
+    with pytest.raises(ValidationError, match="(?i)manual balance adjustment"):
+        await transaction_service.pair_existing_transactions(
+            db_session, org.id, adj.id, inc.id,
+        )
+
+
+async def test_pair_existing_transactions_rejects_adjustment_right_leg(db_session):
+    """Manual-adjustment row as the income leg → ValidationError via _link_pair."""
+    from app.services.exceptions import ValidationError
+    org, src, dst, cat, _ = await _seed_org_with_two_accounts(db_session)
+
+    exp = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="real expense", amount=Decimal("100"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    adj = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="manual adjust", amount=Decimal("100"),
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+        is_manual_adjustment=True,
+    )
+    db_session.add_all([exp, adj])
+    await db_session.commit()
+
+    with pytest.raises(ValidationError, match="(?i)manual balance adjustment"):
+        await transaction_service.pair_existing_transactions(
+            db_session, org.id, exp.id, adj.id,
+        )
+
+
+async def test_pair_existing_transactions_rejects_both_adjustment(db_session):
+    """Both legs are adjustment rows → ValidationError (defense-in-depth)."""
+    from app.services.exceptions import ValidationError
+    org, src, dst, cat, _ = await _seed_org_with_two_accounts(db_session)
+
+    adj_a = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="adj a", amount=Decimal("100"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+        is_manual_adjustment=True,
+    )
+    adj_b = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="adj b", amount=Decimal("100"),
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+        is_manual_adjustment=True,
+    )
+    db_session.add_all([adj_a, adj_b])
+    await db_session.commit()
+
+    with pytest.raises(ValidationError, match="(?i)manual balance adjustment"):
+        await transaction_service.pair_existing_transactions(
+            db_session, org.id, adj_a.id, adj_b.id,
+        )
+
+
+async def test_link_pair_directly_rejects_adjustment_row(db_session):
+    """Direct unit test of _link_pair: rejection happens at the chokepoint
+    regardless of the caller. Ensures defense-in-depth coverage even for
+    future call sites that bypass pair_existing_transactions."""
+    from app.services.exceptions import ValidationError
+    from app.services.transaction_service import _link_pair
+    org, src, dst, cat, _ = await _seed_org_with_two_accounts(db_session)
+
+    adj = Transaction(
+        org_id=org.id, account_id=src.id, category_id=cat.id,
+        description="adj", amount=Decimal("100"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+        is_manual_adjustment=True,
+    )
+    inc = Transaction(
+        org_id=org.id, account_id=dst.id, category_id=cat.id,
+        description="x", amount=Decimal("100"),
+        type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add_all([adj, inc])
+    await db_session.commit()
+    # Reload with .account loaded so the currency check uses the eager path.
+    from sqlalchemy.orm import selectinload
+    adj_loaded = (await db_session.execute(
+        select(Transaction).options(selectinload(Transaction.account)).where(Transaction.id == adj.id)
+    )).scalar_one()
+    inc_loaded = (await db_session.execute(
+        select(Transaction).options(selectinload(Transaction.account)).where(Transaction.id == inc.id)
+    )).scalar_one()
+
+    with pytest.raises(ValidationError, match="(?i)manual balance adjustment"):
+        await _link_pair(db_session, expense_tx=adj_loaded, income_tx=inc_loaded)

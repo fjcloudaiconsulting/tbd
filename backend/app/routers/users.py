@@ -52,6 +52,7 @@ def _user_response(user: User) -> UserResponse:
         is_active=user.is_active,
         mfa_enabled=user.mfa_enabled,
         password_set=user.password_set,
+        allow_manual_balance_adjustment=user.organization.allow_manual_balance_adjustment,
     )
 
 

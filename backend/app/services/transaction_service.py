@@ -15,6 +15,7 @@ from decimal import Decimal
 
 import structlog
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -60,6 +61,7 @@ def to_response(tx: Transaction) -> TransactionResponse:
         date=tx.date,
         settled_date=tx.settled_date,
         is_imported=tx.is_imported,
+        is_manual_adjustment=tx.is_manual_adjustment,
     )
 
 
@@ -237,6 +239,7 @@ async def _create_transaction_no_commit(
     body: TransactionCreate,
     *,
     is_imported: bool = False,
+    is_manual_adjustment: bool = False,
 ) -> Transaction:
     """Internal create primitive that flushes but does NOT commit.
 
@@ -245,6 +248,9 @@ async def _create_transaction_no_commit(
       - import_service.execute_import pair_with_existing branch (calls
         directly, then _link_pair, all inside the outer execute_import
         transaction so the pair is atomic).
+      - adjust_account_balance (Track E) passes ``is_manual_adjustment=True``
+        so the generated row is excluded from reporting aggregates and
+        protected against standard CRUD edits.
 
     Caller owns transaction scope. This function does NOT open db.begin_nested
     or commit; balance application happens unconditionally for SETTLED rows
@@ -272,6 +278,7 @@ async def _create_transaction_no_commit(
         date=body.date,
         settled_date=body.date if tx_status == TransactionStatus.SETTLED else None,
         is_imported=is_imported,
+        is_manual_adjustment=is_manual_adjustment,
     )
     db.add(tx)
     await db.flush()
@@ -355,6 +362,14 @@ async def update_transaction(
     tx = rows.get(transaction_id)
     if tx is None:
         raise NotFoundError("Transaction")
+
+    # Track E: manual balance adjustment rows are intentionally read-only.
+    # The audit trail relies on each adjustment being a single, immutable
+    # delta record; mutating amount/account/type would require recomputing
+    # the implied "old/new balance" the adjustment originally captured,
+    # and we'd rather force the user to issue a fresh adjustment.
+    if tx.is_manual_adjustment:
+        raise ValidationError("Manual balance adjustments cannot be edited")
 
     # Race detection: the unlocked preview saw an unlinked row, but a concurrent
     # pair_existing_transactions may have linked it. If the locked tx now has a
@@ -577,6 +592,13 @@ async def promote_to_recurring(
             raise NotFoundError("Transaction")
         if tx.linked_transaction_id is not None:
             raise ValidationError("Cannot promote a transfer leg to recurring")
+        # Track E: manual adjustments are one-shot delta corrections; a
+        # repeating "set my balance to X every month" template would
+        # silently rewrite real balances on every cycle.
+        if tx.is_manual_adjustment:
+            raise ValidationError(
+                "Cannot promote a manual balance adjustment to recurring"
+            )
         if tx.recurring_id is not None:
             raise ValidationError(
                 "Transaction is already linked to a recurring template"
@@ -653,6 +675,14 @@ async def delete_transaction(db: AsyncSession, org_id: int, transaction_id: int)
     if tx is None:
         # Raced with another delete between preview and lock.
         raise NotFoundError("Transaction")
+
+    # Track E: same logic as update_transaction — manual balance
+    # adjustment rows are immutable through the standard CRUD surface.
+    # Bulk delete (separate path) skips them silently per the spec
+    # rather than aborting the whole batch.
+    if tx.is_manual_adjustment:
+        raise ValidationError("Manual balance adjustments cannot be deleted")
+
     linked_tx = (
         rows.get(tx.linked_transaction_id)
         if tx.linked_transaction_id is not None
@@ -733,6 +763,20 @@ async def bulk_delete_transactions(
     found_ids = {tx.id for tx in found}
     skipped_ids = [i for i in requested if i not in found_ids]
 
+    # Track E (architect override): manual balance adjustment rows are
+    # immutable, but bulk delete skips them silently rather than aborting
+    # the whole batch. Drop them from the working set before lock/revert
+    # math so a mixed selection (regular rows + adjustments) succeeds for
+    # the regular rows. Their IDs land in skipped_ids so the caller can
+    # surface "N rows skipped" in the UI.
+    skipped_adjustments = [tx.id for tx in found if tx.is_manual_adjustment]
+    if skipped_adjustments:
+        skipped_ids.extend(
+            i for i in skipped_adjustments if i in requested
+        )
+        found = [tx for tx in found if not tx.is_manual_adjustment]
+        found_ids = {tx.id for tx in found}
+
     # Collect distinct account IDs that will need a balance revert
     account_ids_to_lock = sorted({
         tx.account_id
@@ -787,6 +831,18 @@ async def _link_pair(
     is populated (typically via a select(Transaction).options(selectinload(...))
     or by passing rows that were just queried with `_load_opts()`).
     """
+    # Track E: manual balance adjustments are synthetic deltas, not real
+    # money movements. Reject either leg before any other invariant so a
+    # bypass via /transactions/pair or convert-to-transfer with
+    # pair_with_transaction_id cannot recategorize an adjustment as a
+    # transfer or link it to a real row (linking would expose the
+    # adjustment to indirect mutation through partner edits / unpair).
+    # convert_and_create_leg also guards the source row directly; this is
+    # the chokepoint that catches every other path.
+    if expense_tx.is_manual_adjustment or income_tx.is_manual_adjustment:
+        raise ValidationError(
+            "Manual balance adjustments cannot be paired as transfer legs"
+        )
     if expense_tx.org_id != income_tx.org_id:
         raise ValidationError("Transfer legs must belong to the same org")
     if expense_tx.type != TransactionType.EXPENSE:
@@ -896,6 +952,11 @@ async def find_match_candidates(
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.linked_transaction_id.is_(None),
             Transaction.recurring_id.is_(None),
+            # Track E: manual balance adjustments are not real money
+            # movements, so they must not surface as transfer-pair
+            # candidates (a $100 income adjustment on account A and a
+            # $100 expense on account B would otherwise look pairable).
+            Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= window_start,
             Transaction.date <= window_end,
             Account.currency == currency,
@@ -940,6 +1001,13 @@ async def find_duplicate_of_linked_leg(
             Transaction.type == type,
             Transaction.amount == amount,
             Transaction.linked_transaction_id.is_not(None),
+            # Track E: defensive — adjustment rows can never be linked
+            # (they're created with linked_transaction_id=None and
+            # convert_and_create_leg refuses to convert them), so this
+            # filter is an invariant assertion. Kept explicit so a
+            # future regression that lets adjustments slip into a pair
+            # cannot surface them in the duplicate-detection UI.
+            Transaction.is_manual_adjustment.is_(False),
             Transaction.date >= window_start,
             Transaction.date <= window_end,
             Account.currency == currency,
@@ -1050,6 +1118,13 @@ async def convert_and_create_leg(
         raise ValidationError("Source row is already a transfer leg")
     if pre_recurring is not None:
         raise ValidationError("Recurring rows cannot be converted to transfer legs")
+    # Track E: manual adjustment rows are read-only synthetic deltas and
+    # must never become a transfer leg. The find_* filters above keep them
+    # out of candidate lists; this guard catches a direct API call.
+    if source_pre.is_manual_adjustment:
+        raise ValidationError(
+            "Cannot convert a manual balance adjustment to a transfer leg"
+        )
     if pre_account_id == destination_account_id:
         raise ValidationError("Source and destination accounts must differ")
 
@@ -1118,6 +1193,11 @@ async def convert_and_create_leg(
             date=source.date,
             settled_date=source.settled_date,
             is_imported=False,
+            # Track E: defensive — only adjust_account_balance() should
+            # ever set this True. Be explicit here so a future copy-paste
+            # of this constructor doesn't accidentally inherit the model
+            # default and silently mark a transfer leg as an adjustment.
+            is_manual_adjustment=False,
         )
         db.add(partner)
         await db.flush()
@@ -1302,6 +1382,7 @@ async def create_transfer(
             date=body.date,
             settled_date=settled,
             is_imported=is_imported,
+            is_manual_adjustment=False,  # Track E defensive
         )
         # Income side (destination account)
         income_tx = Transaction(
@@ -1315,6 +1396,7 @@ async def create_transfer(
             date=body.date,
             settled_date=settled,
             is_imported=is_imported,
+            is_manual_adjustment=False,  # Track E defensive
         )
         db.add(expense_tx)
         db.add(income_tx)
@@ -1346,6 +1428,188 @@ async def create_transfer(
     )
     tx_by_id = {tx.id: tx for tx in result.scalars().all()}
     return tx_by_id[expense_tx.id], tx_by_id[income_tx.id]
+
+
+# ── Track E: manual balance adjustment ────────────────────────────────────
+
+
+BALANCE_ADJUSTMENT_CATEGORY_SLUG = "balance-adjustment"
+_DESCRIPTION_MAX_LENGTH = 255
+
+
+async def get_or_create_balance_adjustment_category(
+    db: AsyncSession, *, org_id: int
+) -> int:
+    """Lazily seed the per-org system category that
+    ``adjust_account_balance`` tags every adjustment row with.
+
+    Mirrors the existing lazy Transfer-category pattern (see
+    ``create_transfer`` and ``_link_pair``). The category is
+    ``CategoryType.BOTH`` so both INCOME-direction and EXPENSE-direction
+    adjustments pass the (type, category) compatibility guard.
+
+    Race-safe under the ``UNIQUE(org_id, slug, is_system)`` constraint
+    added in migration 035: a concurrent first-call inserts the row
+    behind us, our INSERT trips an IntegrityError, the savepoint rolls
+    back, and we re-SELECT to pick up the winner. Returns the category
+    id either way.
+    """
+    existing = await db.scalar(
+        select(Category.id).where(
+            Category.slug == BALANCE_ADJUSTMENT_CATEGORY_SLUG,
+            Category.org_id == org_id,
+            Category.is_system.is_(True),
+        )
+    )
+    if existing is not None:
+        return existing
+
+    sp = await db.begin_nested()
+    try:
+        new_cat = Category(
+            org_id=org_id,
+            name="Balance Adjustment",
+            slug=BALANCE_ADJUSTMENT_CATEGORY_SLUG,
+            description="Generated by manual balance adjustments",
+            type=CategoryType.BOTH,
+            is_system=True,
+        )
+        db.add(new_cat)
+        await db.flush()
+    except IntegrityError:
+        # Race: another caller's INSERT committed first. Roll back the
+        # savepoint and re-SELECT to pick up the winner's id. Done via
+        # an explicit savepoint object (not `async with`) so the except
+        # handler runs while the savepoint is still pending and we can
+        # call ``await sp.rollback()`` ourselves; the `async with` form
+        # exits with the error already propagated.
+        await sp.rollback()
+        existing = await db.scalar(
+            select(Category.id).where(
+                Category.slug == BALANCE_ADJUSTMENT_CATEGORY_SLUG,
+                Category.org_id == org_id,
+                Category.is_system.is_(True),
+            )
+        )
+        if existing is None:
+            # IntegrityError without a winning row is unexpected — let
+            # the original exception bubble.
+            raise
+        return existing
+    else:
+        await sp.commit()
+        return new_cat.id
+
+
+async def adjust_account_balance(
+    db: AsyncSession,
+    org_id: int,
+    account_id: int,
+    *,
+    target_balance: Decimal,
+    reason: str | None,
+    actor_user_id: int,
+    actor_email: str,
+    actor_org_name: str,
+    request_id: str | None,
+    ip_address: str | None,
+) -> tuple[Transaction, Decimal, Decimal, Decimal]:
+    """Set account.balance to ``target_balance`` by generating a synthetic
+    transaction representing the delta.
+
+    Returns ``(tx, old_balance, new_balance, delta)``.
+
+    Atomic: locks the account FOR UPDATE, builds an INCOME or EXPENSE row
+    (typed by sign of delta), runs the standard balance-application path
+    via ``_create_transaction_no_commit``, stages an audit row in the
+    SAME transaction via ``add_audit_event_to_session``, and commits.
+    A failed audit insert rolls the whole thing back — the adjustment
+    row exists iff the audit row exists.
+
+    Raises ``ConflictError`` if delta is exactly zero (no change to apply).
+    """
+    # Local import: audit_service is unrelated to the rest of this module
+    # and pulling it at module scope risks a future circular import (the
+    # audit_event model lives next to user models the rest of the codebase
+    # imports widely).
+    from app.services import audit_service
+
+    acct = await get_account_for_update(db, account_id, org_id)
+    old_balance = acct.balance
+    delta = target_balance - old_balance
+    if delta == 0:
+        raise ConflictError("No change to apply")
+
+    if delta > 0:
+        tx_type: str = "income"
+        amount = delta
+    else:
+        tx_type = "expense"
+        amount = -delta  # abs(delta) — Decimal supports unary minus
+
+    today = datetime.date.today()
+    description = (
+        f"Balance adjustment: {old_balance} -> {target_balance}"
+    )
+    if reason:
+        description = f"{description} ({reason})"
+    if len(description) > _DESCRIPTION_MAX_LENGTH:
+        description = description[:_DESCRIPTION_MAX_LENGTH]
+
+    category_id = await get_or_create_balance_adjustment_category(db, org_id=org_id)
+
+    body = TransactionCreate(
+        account_id=account_id,
+        category_id=category_id,
+        description=description,
+        amount=amount,
+        type=tx_type,  # type: ignore[arg-type]
+        status="settled",
+        date=today,
+    )
+
+    async with db.begin_nested():
+        tx = await _create_transaction_no_commit(
+            db, org_id, body, is_imported=False, is_manual_adjustment=True,
+        )
+        # The created row's settled_date is set by _create_transaction_no_commit
+        # (= body.date for SETTLED). Pin it explicitly to "today" to honour the
+        # spec field list even if the schema defaults shift later.
+        tx.settled_date = today
+        await db.flush()
+        new_balance = acct.balance
+        # Stage the audit row in the same business transaction so a failed
+        # audit insert (FK violation, JSON-encoder bug) rolls the
+        # adjustment back too. The row carries the actor snapshot the
+        # caller passed — we don't trust SQLAlchemy lazy-loads after
+        # rollback.
+        audit_service.add_audit_event_to_session(
+            db,
+            event_type="org.account.balance.adjust",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=org_id,
+            target_org_name=actor_org_name,
+            request_id=request_id,
+            ip_address=ip_address,
+            outcome="success",
+            detail={
+                "account_id": account_id,
+                "account_name": acct.name,
+                "old_balance": str(old_balance),
+                "new_balance": str(new_balance),
+                "delta": str(delta),
+                "reason": reason,
+                "generated_transaction_id": tx.id,
+            },
+        )
+
+    await db.commit()
+
+    refreshed = await db.execute(
+        select(Transaction).options(*_load_opts()).where(Transaction.id == tx.id)
+    )
+    return refreshed.scalar_one(), old_balance, new_balance, delta
 
 
 async def get_transaction(db: AsyncSession, org_id: int, transaction_id: int) -> Transaction:

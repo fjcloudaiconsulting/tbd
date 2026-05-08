@@ -26,6 +26,14 @@ class Organization(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     billing_cycle_day: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Track E: when True, org admins can call POST /accounts/{id}/adjust-balance
+    # to set an account balance directly (every adjustment still generates a
+    # real, audited transaction so the trail stays intact). OFF by default —
+    # this is a deliberate escape hatch from the "balance is derived from
+    # transactions" invariant.
+    allow_manual_balance_adjustment: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0", default=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

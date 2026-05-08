@@ -5,11 +5,13 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Account, AccountType, Transaction } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
 
 export default function AccountsPage() {
   const { user, loading } = useAuth();
@@ -41,6 +43,12 @@ export default function AccountsPage() {
   const [error, setError] = useState("");
   const [confirmDeleteTypeId, setConfirmDeleteTypeId] = useState<number | null>(null);
   const [confirmDeleteAcctId, setConfirmDeleteAcctId] = useState<number | null>(null);
+  // Track E: account being adjusted (or null when the modal is closed).
+  // Only rendered when the user is admin AND the org has the
+  // allow_manual_balance_adjustment flag on.
+  const [adjustingAccount, setAdjustingAccount] = useState<Account | null>(null);
+
+  const canAdjustBalance = !!user && isAdmin(user) && user.allow_manual_balance_adjustment;
 
   const reload = useCallback(async () => {
     // Primary fetches: account types + accounts. A failure here is a
@@ -302,6 +310,15 @@ export default function AccountsPage() {
                     </div>
                     <div className="flex flex-wrap gap-3">
                       <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
+                      {canAdjustBalance && a.is_active && (
+                        <button
+                          onClick={() => setAdjustingAccount(a)}
+                          aria-label={`Adjust balance of ${a.name}`}
+                          className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0"
+                        >
+                          Adjust balance
+                        </button>
+                      )}
                       {!a.is_default && a.is_active && (
                         <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">
                           Default
@@ -342,6 +359,16 @@ export default function AccountsPage() {
         onConfirm={() => { if (confirmDeleteAcctId !== null) handleDeleteAccount(confirmDeleteAcctId); }}
         onCancel={() => setConfirmDeleteAcctId(null)}
       />
+      {adjustingAccount && (
+        <AdjustBalanceModal
+          account={adjustingAccount}
+          onClose={() => setAdjustingAccount(null)}
+          onAdjusted={async () => {
+            setAdjustingAccount(null);
+            await reload();
+          }}
+        />
+      )}
     </AppShell>
   );
 }

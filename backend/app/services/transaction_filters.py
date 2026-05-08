@@ -3,17 +3,29 @@
 Lives in its own module to avoid a circular import with category_rules_service,
 which already imports from transaction_service.
 
-Today these all delegate to ``linked_transaction_id IS NULL``. Future-proofed
-to grow additional reasons (voided, refunded) without renaming call sites.
+Excluded from reportable aggregates:
+
+- Transfer legs (``linked_transaction_id IS NOT NULL``): not income/expense.
+- Manual balance adjustments (``is_manual_adjustment = True``): controlled
+  escape hatch from the "balance from transactions" invariant. Counted by
+  ``reconcile_account`` (so stored balance == sum of settled rows holds)
+  but excluded from budget/forecast totals because they reflect the act
+  of correcting a balance, not actual income or expense activity.
+
+Future-proofed to grow additional reasons (voided, refunded) without
+renaming call sites.
 """
-from sqlalchemy import func
+from sqlalchemy import and_, func
 
 from app.models.transaction import Transaction
 
 
 def reportable_transaction_filter():
     """SQL clause: rows that count toward income/expense aggregates."""
-    return Transaction.linked_transaction_id.is_(None)
+    return and_(
+        Transaction.linked_transaction_id.is_(None),
+        Transaction.is_manual_adjustment.is_(False),
+    )
 
 
 def effective_period_date_expr():
@@ -29,7 +41,7 @@ def effective_period_date_expr():
 
 def is_reportable_transaction(tx: Transaction) -> bool:
     """Python predicate version of reportable_transaction_filter()."""
-    return tx.linked_transaction_id is None
+    return tx.linked_transaction_id is None and not tx.is_manual_adjustment
 
 
 def is_transfer_leg(tx: Transaction) -> bool:

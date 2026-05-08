@@ -96,6 +96,7 @@ def _user_response(user: User, org: Organization, sub: Subscription | None = Non
         is_active=user.is_active,
         mfa_enabled=user.mfa_enabled,
         password_set=user.password_set,
+        allow_manual_balance_adjustment=org.allow_manual_balance_adjustment,
         subscription_status=sub.status.value if sub else None,
         subscription_plan=plan.slug if plan else None,
         trial_end=sub.trial_end.isoformat() if sub and sub.trial_end else None,

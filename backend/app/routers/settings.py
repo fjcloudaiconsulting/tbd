@@ -1,19 +1,34 @@
 import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.budget import Budget
 from app.models.settings import OrgSetting
 from app.models.user import Organization, Role, User
-from app.schemas.settings import BillingCycleUpdate, OrgSettingResponse, OrgSettingUpdate
-from app.services import billing_service
+from app.rate_limit import get_client_ip
+from app.schemas.settings import (
+    BillingCycleUpdate,
+    ManualBalanceAdjustmentResponse,
+    ManualBalanceAdjustmentToggle,
+    OrgSettingResponse,
+    OrgSettingUpdate,
+)
+from app.services import audit_service, billing_service
+
+logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
+
+
+def _request_id() -> str | None:
+    """Pull the per-request id bound by RequestContextMiddleware."""
+    return structlog.contextvars.get_contextvars().get("request_id")
 
 
 def _require_admin(user: User) -> None:
@@ -239,3 +254,94 @@ async def close_period(
         "start_date": new_period.start_date.isoformat(),
         "end_date": None,
     }
+
+
+# ── Track E: manual balance adjustment toggle ─────────────────────────────
+
+
+@router.get(
+    "/manual-balance-adjustment",
+    response_model=ManualBalanceAdjustmentResponse,
+)
+async def get_manual_balance_adjustment(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the current org's manual-balance-adjustment toggle.
+    Available to any org member (the frontend uses it to render or hide
+    the "Adjust balance" button on each account card).
+    """
+    org = await db.scalar(
+        select(Organization).where(Organization.id == current_user.org_id)
+    )
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return ManualBalanceAdjustmentResponse(
+        enabled=org.allow_manual_balance_adjustment
+    )
+
+
+@router.put(
+    "/manual-balance-adjustment",
+    response_model=ManualBalanceAdjustmentResponse,
+)
+async def update_manual_balance_adjustment(
+    body: ManualBalanceAdjustmentToggle,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Track E: admin-only toggle for manual balance adjustment.
+
+    Writes an audit row even on no-op (old == new) so a paranoid admin
+    can confirm "yes, I checked the toggle and it's still off". The
+    audit row commits in an independent session via ``record_audit_event``
+    AFTER the business commit so the admin's UI doesn't hang on audit
+    DB hiccups, and an audit failure can never roll back a successful
+    toggle write.
+    """
+    _require_admin(current_user)
+
+    # Snapshot actor identity before any await on db so a rollback path
+    # can't expire `current_user` and break the audit row.
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+    actor_org_id = current_user.org_id
+    req_id = _request_id()
+    ip = get_client_ip(request)
+
+    org = await db.scalar(
+        select(Organization).where(Organization.id == actor_org_id)
+    )
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    old_value = bool(org.allow_manual_balance_adjustment)
+    new_value = bool(body.enabled)
+    org.allow_manual_balance_adjustment = new_value
+    org_name = org.name
+    await db.commit()
+
+    await logger.ainfo(
+        "org.config.allow_manual_balance_adjustment.set",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=actor_org_id,
+        old=old_value,
+        new=new_value,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="org.config.allow_manual_balance_adjustment.set",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=actor_org_id,
+        target_org_name=org_name,
+        request_id=req_id,
+        ip_address=ip,
+        outcome="success",
+        detail={"old": old_value, "new": new_value},
+    )
+
+    return ManualBalanceAdjustmentResponse(enabled=new_value)

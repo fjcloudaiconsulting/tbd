@@ -514,3 +514,158 @@ async def test_get_transfer_candidates(session_factory):
     assert by_id[near_id]["date_diff_days"] == 2
     # All candidates are on the requested destination account.
     assert all(c["account_id"] == seed["a2_id"] for c in cands)
+
+
+# ── Track E: manual-adjustment rejection in transfer-pair routes ──────────
+
+
+async def _add_adjustment_tx(
+    factory,
+    *,
+    org_id: int,
+    account_id: int,
+    category_id: int,
+    type: TransactionType,
+    amount: Decimal,
+    description: str = "manual adjustment",
+    on_date: date | None = None,
+) -> int:
+    """Mirror of _add_tx that flags the row as a manual balance adjustment."""
+    async with factory() as db:
+        tx = Transaction(
+            org_id=org_id,
+            account_id=account_id,
+            category_id=category_id,
+            description=description,
+            amount=amount,
+            type=type,
+            status=TransactionStatus.SETTLED,
+            date=on_date or date(2026, 5, 1),
+            is_imported=False,
+            is_manual_adjustment=True,
+        )
+        db.add(tx)
+        await db.commit()
+        return tx.id
+
+
+@pytest.mark.asyncio
+async def test_post_pair_rejects_adjustment_left_leg(session_factory):
+    """POST /pair with an adjustment row as the expense leg → 400."""
+    seed = await _seed_base(session_factory)
+    adj_id = await _add_adjustment_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"], type=TransactionType.EXPENSE,
+        amount=Decimal("25.00"),
+    )
+    income_id = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a2_id"],
+        category_id=seed["cat_salary_id"], type=TransactionType.INCOME,
+        amount=Decimal("25.00"),
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/transactions/pair",
+            json={"expense_id": adj_id, "income_id": income_id},
+        )
+    assert res.status_code == 400, res.text
+    assert "manual balance adjustment" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_post_pair_rejects_adjustment_right_leg(session_factory):
+    """POST /pair with an adjustment row as the income leg → 400."""
+    seed = await _seed_base(session_factory)
+    expense_id = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"], type=TransactionType.EXPENSE,
+        amount=Decimal("25.00"),
+    )
+    adj_id = await _add_adjustment_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a2_id"],
+        category_id=seed["cat_salary_id"], type=TransactionType.INCOME,
+        amount=Decimal("25.00"),
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/transactions/pair",
+            json={"expense_id": expense_id, "income_id": adj_id},
+        )
+    assert res.status_code == 400, res.text
+    assert "manual balance adjustment" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_convert_to_transfer_with_pair_with_transaction_id_rejects_adjustment_partner(
+    session_factory,
+):
+    """POST /{id}/convert-to-transfer with pair_with_transaction_id pointing at
+    an adjustment row → 400. The non-pair path is already guarded directly in
+    convert_and_create_leg; this verifies the pairing-bypass path is closed too."""
+    seed = await _seed_base(session_factory)
+    source_id = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"], type=TransactionType.EXPENSE,
+        amount=Decimal("50.00"),
+    )
+    adj_partner_id = await _add_adjustment_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a2_id"],
+        category_id=seed["cat_salary_id"], type=TransactionType.INCOME,
+        amount=Decimal("50.00"),
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/transactions/{source_id}/convert-to-transfer",
+            json={
+                "destination_account_id": seed["a2_id"],
+                "pair_with_transaction_id": adj_partner_id,
+            },
+        )
+    assert res.status_code == 400, res.text
+    assert "manual balance adjustment" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_convert_to_transfer_with_pair_with_transaction_id_rejects_adjustment_source(
+    session_factory,
+):
+    """When the SOURCE row is an adjustment and pair_with_transaction_id is
+    supplied, the pair path must reject it. (The non-pair path is already
+    rejected by convert_and_create_leg's direct guard.)"""
+    seed = await _seed_base(session_factory)
+    adj_source_id = await _add_adjustment_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"], type=TransactionType.EXPENSE,
+        amount=Decimal("50.00"),
+    )
+    partner_id = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a2_id"],
+        category_id=seed["cat_salary_id"], type=TransactionType.INCOME,
+        amount=Decimal("50.00"),
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/transactions/{adj_source_id}/convert-to-transfer",
+            json={
+                "destination_account_id": seed["a2_id"],
+                "pair_with_transaction_id": partner_id,
+            },
+        )
+    assert res.status_code == 400, res.text
+    assert "manual balance adjustment" in res.json()["detail"].lower()

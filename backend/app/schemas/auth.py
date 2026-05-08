@@ -59,6 +59,10 @@ class UserResponse(BaseModel):
     is_superadmin: bool
     is_active: bool
     mfa_enabled: bool = False
+    # Track E: org-level toggle for the "set balance directly" admin escape
+    # hatch. Off by default; mirrors `billing_cycle_day` storage pattern
+    # (column on `organizations`).
+    allow_manual_balance_adjustment: bool = False
     # False for SSO-created users who have not yet set a password. The
     # frontend uses this to flip the Change Password card into "Set a
     # Password" mode and to show the "Verify with Google" button on the

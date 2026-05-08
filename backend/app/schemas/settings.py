@@ -15,3 +15,11 @@ class OrgSettingResponse(BaseModel):
     value: str
 
     model_config = {"from_attributes": True}
+
+
+class ManualBalanceAdjustmentToggle(BaseModel):
+    enabled: bool
+
+
+class ManualBalanceAdjustmentResponse(BaseModel):
+    enabled: bool

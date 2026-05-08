@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -7,11 +9,35 @@ from app.database import get_db
 from app.deps import get_current_user
 from app.models.account import Account, AccountType
 from app.models.transaction import Transaction
-from app.models.user import User
-from app.schemas.account import AccountCreate, AccountResponse, AccountUpdate, ReconcileResponse
-from app.services.transaction_service import assert_no_dependents, reconcile_account
+from app.models.user import Organization, Role, User
+from app.rate_limit import get_client_ip
+from app.schemas.account import (
+    AccountCreate,
+    AccountResponse,
+    AccountUpdate,
+    BalanceAdjustmentRequest,
+    BalanceAdjustmentResponse,
+    ReconcileResponse,
+)
+from app.services.exceptions import ConflictError, ValidationError
+from app.services.transaction_service import (
+    adjust_account_balance,
+    assert_no_dependents,
+    reconcile_account,
+)
+
+logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
+
+
+def _request_id() -> str | None:
+    """Pull the per-request id bound by RequestContextMiddleware."""
+    return structlog.contextvars.get_contextvars().get("request_id")
+
+
+def _is_admin_user(user: User) -> bool:
+    return user.role in (Role.OWNER, Role.ADMIN) or user.is_superadmin
 
 
 def _to_response(account: Account) -> AccountResponse:
@@ -205,3 +231,125 @@ async def delete_account(
 
     await db.delete(account)
     await db.commit()
+
+
+@router.post("/{account_id}/adjust-balance", response_model=BalanceAdjustmentResponse)
+async def adjust_balance(
+    account_id: int,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Track E: org-admin endpoint to set an account's balance directly.
+
+    Order of guards (architect-locked precedence):
+      1. 401 (auth) — handled by ``get_current_user``.
+      2. 403 admin — non-admin caller, regardless of org flag.
+      3. 403 flag — admin caller but ``allow_manual_balance_adjustment``
+         is OFF for the org. Distinct message so the frontend can
+         differentiate "you don't have the role" from "feature is off".
+      4. 422 (Pydantic) — out-of-range target, oversized reason,
+         malformed JSON. Body is parsed manually AFTER the auth and flag
+         gates so a non-admin caller with an invalid body sees 403, not
+         422 — Pydantic's default dependency-time parsing would invert
+         that order.
+      5. 404 — account does not belong to the caller's org.
+      6. 409 — delta is exactly zero ("no change to apply").
+
+    On success returns the response body and writes a
+    ``org.account.balance.adjust`` audit row in the SAME transaction
+    as the balance write (see ``adjust_account_balance``).
+    """
+    # 2. admin gate first (architect: admin-403 wins over flag-403).
+    if not _is_admin_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+
+    # 3. flag gate. Re-fetch the org so a stale `current_user.organization`
+    # snapshot (set at login) doesn't authorize a privilege the admin just
+    # toggled off in another tab.
+    org = await db.scalar(
+        select(Organization).where(Organization.id == current_user.org_id)
+    )
+    if org is None or not org.allow_manual_balance_adjustment:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Manual balance adjustment is disabled for this organization",
+        )
+
+    # 4. body validation. Manual parse to keep the gates above ahead of
+    # 422 in the precedence order. Pydantic's default `body: Schema`
+    # dependency would resolve before the handler body runs.
+    try:
+        raw_body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid JSON body",
+        )
+    try:
+        body = BalanceAdjustmentRequest.model_validate(raw_body)
+    except PydanticValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.errors(),
+        )
+
+    # Snapshot the actor identity NOW. Once we await on db, a rollback
+    # path could expire `current_user` and lazy-loads on .email / .id /
+    # .organization would raise.
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+    actor_org_id = current_user.org_id
+    actor_org_name = org.name
+    req_id = _request_id()
+    ip = get_client_ip(request)
+
+    # 5. cross-org or missing account → 404.
+    target_acct = await db.scalar(
+        select(Account).where(
+            Account.id == account_id, Account.org_id == actor_org_id
+        )
+    )
+    if target_acct is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    try:
+        tx, old_balance, new_balance, delta = await adjust_account_balance(
+            db,
+            actor_org_id,
+            account_id,
+            target_balance=body.target_balance,
+            reason=body.reason,
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            actor_org_name=actor_org_name,
+            request_id=req_id,
+            ip_address=ip,
+        )
+    except ConflictError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    await logger.ainfo(
+        "org.account.balance.adjust",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=actor_org_id,
+        account_id=account_id,
+        old_balance=str(old_balance),
+        new_balance=str(new_balance),
+        delta=str(delta),
+        generated_transaction_id=tx.id,
+    )
+
+    return BalanceAdjustmentResponse(
+        account_id=account_id,
+        old_balance=old_balance,
+        new_balance=new_balance,
+        delta=delta,
+        transaction_id=tx.id,
+    )

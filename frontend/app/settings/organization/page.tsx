@@ -77,6 +77,15 @@ export default function OrganizationSettingsPage() {
   const [renameSaving, setRenameSaving] = useState(false);
   const [renameError, setRenameError] = useState("");
 
+  // Track E — manual balance adjustment toggle (admin-only). Local state
+  // mirrors the user.allow_manual_balance_adjustment value pulled from
+  // GET /me on mount; flips optimistically through the confirm dialog.
+  const [allowAdjustEnabled, setAllowAdjustEnabled] = useState<boolean>(
+    user?.allow_manual_balance_adjustment ?? false
+  );
+  const [adjustSaving, setAdjustSaving] = useState(false);
+  const [pendingToggleTo, setPendingToggleTo] = useState<boolean | null>(null);
+
   const admin = user ? isAdmin(user) : false;
   const isOrgOwner = user?.role === "owner";
   const orgName = user?.org_name ?? "";
@@ -104,6 +113,44 @@ export default function OrganizationSettingsPage() {
       current === "" ? String(user.billing_cycle_day) : current
     );
   }, [user?.billing_cycle_day]);
+
+  // Track E: keep the local toggle state in sync with the AuthContext
+  // user. Once /me lands the value flips from the SSR default (false)
+  // to whatever the org actually has.
+  useEffect(() => {
+    if (user?.allow_manual_balance_adjustment !== undefined) {
+      setAllowAdjustEnabled(user.allow_manual_balance_adjustment);
+    }
+  }, [user?.allow_manual_balance_adjustment]);
+
+  async function applyAllowAdjustToggle(next: boolean) {
+    setAdjustSaving(true);
+    setError("");
+    try {
+      await apiFetch("/api/v1/settings/manual-balance-adjustment", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: next }),
+      });
+      setAllowAdjustEnabled(next);
+      // Pull the fresh user shape so AuthContext.user.allow_manual_balance_adjustment
+      // updates everywhere that gates on it (the accounts page button).
+      await refreshMe();
+      setSuccessMsg(
+        next
+          ? "Manual balance adjustment enabled"
+          : "Manual balance adjustment disabled"
+      );
+      setTimeout(() => setSuccessMsg(""), 3000);
+    } catch (err) {
+      setError(extractErrorMessage(err, "Failed to update setting"));
+    } finally {
+      setAdjustSaving(false);
+    }
+  }
+
+  function handleToggleAllowAdjust(next: boolean) {
+    setPendingToggleTo(next);
+  }
 
   const reload = useCallback(async () => {
     try {
@@ -431,6 +478,47 @@ export default function OrganizationSettingsPage() {
           </div>
         </div>
 
+        {/* Manual Balance Adjustment (Track E) */}
+        <div className={card}>
+          <div className={cardHeader}>
+            <h2 className={cardTitle}>Manual balance adjustment</h2>
+          </div>
+          <div className="p-6 space-y-4">
+            <p className="text-sm text-text-secondary">
+              By default, account balances are derived from your transactions.
+              Enabling this lets admins set an account&apos;s balance directly.
+              Every adjustment generates a transaction so the audit trail
+              stays intact, but using this feature means your balances no
+              longer fully reflect imported activity. Off by default.
+            </p>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm text-text-primary">
+                {allowAdjustEnabled ? "Enabled" : "Disabled"}
+              </span>
+              <button
+                type="button"
+                onClick={() => handleToggleAllowAdjust(!allowAdjustEnabled)}
+                disabled={adjustSaving}
+                aria-pressed={allowAdjustEnabled}
+                aria-label={
+                  allowAdjustEnabled
+                    ? "Disable manual balance adjustment"
+                    : "Enable manual balance adjustment"
+                }
+                className={`${
+                  allowAdjustEnabled ? btnSecondary : btnPrimary
+                } w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+              >
+                {adjustSaving
+                  ? "Saving..."
+                  : allowAdjustEnabled
+                  ? "Disable"
+                  : "Enable"}
+              </button>
+            </div>
+          </div>
+        </div>
+
         {/* Advanced Configuration */}
         <div className={card}>
           <div className={cardHeader}>
@@ -585,6 +673,27 @@ export default function OrganizationSettingsPage() {
           setConfirmAction(null);
         }}
         onCancel={() => setConfirmAction(null)}
+      />
+      <ConfirmModal
+        open={pendingToggleTo !== null}
+        title={
+          pendingToggleTo
+            ? "Enable manual balance adjustment?"
+            : "Disable manual balance adjustment?"
+        }
+        message={
+          pendingToggleTo
+            ? "Admins will be able to set account balances directly. Each adjustment generates a transaction for the difference, but balances may diverge from imported activity."
+            : "Admins will no longer be able to set account balances directly. Existing adjustment transactions stay in place."
+        }
+        confirmLabel={pendingToggleTo ? "Enable" : "Disable"}
+        variant="warning"
+        onConfirm={() => {
+          const next = pendingToggleTo;
+          setPendingToggleTo(null);
+          if (next !== null) applyAllowAdjustToggle(next);
+        }}
+        onCancel={() => setPendingToggleTo(null)}
       />
     </SettingsLayout>
   );

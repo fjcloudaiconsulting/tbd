@@ -58,3 +58,31 @@ class ReconcileResponse(BaseModel):
     stored_balance: Decimal
     computed_balance: Decimal
     is_consistent: bool
+
+
+# ── Track E: manual balance adjustment ────────────────────────────────────
+
+
+# Hard cap mirrors the Numeric(12, 2) column on transactions.amount. The
+# Field constraint produces a clean 422 instead of a DB-overflow 500 when
+# someone slams the endpoint with an absurd target.
+_BALANCE_CAP_HI = Decimal("9999999999.99")
+_BALANCE_CAP_LO = Decimal("-9999999999.99")
+
+
+class BalanceAdjustmentRequest(BaseModel):
+    target_balance: Decimal = Field(
+        ge=_BALANCE_CAP_LO,
+        le=_BALANCE_CAP_HI,
+        max_digits=12,
+        decimal_places=2,
+    )
+    reason: Optional[str] = Field(default=None, max_length=200)
+
+
+class BalanceAdjustmentResponse(BaseModel):
+    account_id: int
+    old_balance: Decimal
+    new_balance: Decimal
+    delta: Decimal
+    transaction_id: int
