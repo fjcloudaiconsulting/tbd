@@ -101,6 +101,7 @@ async def _add_tx(
     linked_transaction_id: int | None = None,
     recurring_id: int | None = None,
 ) -> Transaction:
+    on_date = on_date or date(2026, 5, 1)
     tx = Transaction(
         org_id=org_id,
         account_id=account_id,
@@ -109,7 +110,8 @@ async def _add_tx(
         amount=amount,
         type=type,
         status=TransactionStatus.SETTLED,
-        date=on_date or date(2026, 5, 1),
+        date=on_date,
+        settled_date=on_date,
         linked_transaction_id=linked_transaction_id,
         recurring_id=recurring_id,
         is_imported=False,

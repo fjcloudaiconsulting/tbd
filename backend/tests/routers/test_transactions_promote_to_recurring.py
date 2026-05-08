@@ -163,6 +163,7 @@ async def _add_tx(
     recurring_id: int | None = None,
 ) -> int:
     async with factory() as db:
+        on_date = on_date or date(2026, 5, 1)
         tx = Transaction(
             org_id=org_id,
             account_id=account_id,
@@ -171,7 +172,8 @@ async def _add_tx(
             amount=amount,
             type=type,
             status=TransactionStatus.SETTLED,
-            date=on_date or date(2026, 5, 1),
+            date=on_date,
+            settled_date=on_date,
             linked_transaction_id=linked_transaction_id,
             recurring_id=recurring_id,
             is_imported=False,
@@ -317,12 +319,14 @@ async def test_promote_to_recurring_rejects_transfer_leg(session_factory):
             category_id=seed["cat_transfer_id"], description="xfer out",
             amount=Decimal("50"), type=TransactionType.EXPENSE,
             status=TransactionStatus.SETTLED, date=date(2026, 5, 1),
+            settled_date=date(2026, 5, 1),
         )
         income_leg = Transaction(
             org_id=seed["org_id"], account_id=seed["a2_id"],
             category_id=seed["cat_transfer_id"], description="xfer in",
             amount=Decimal("50"), type=TransactionType.INCOME,
             status=TransactionStatus.SETTLED, date=date(2026, 5, 1),
+            settled_date=date(2026, 5, 1),
         )
         db.add_all([expense_leg, income_leg])
         await db.flush()
