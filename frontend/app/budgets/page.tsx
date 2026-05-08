@@ -12,6 +12,8 @@ import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCl
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import { chartColor } from "@/lib/chart-colors";
+import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
@@ -279,37 +281,50 @@ export default function BudgetsPage() {
                     over: Math.max(Number(b.spent) - Number(b.amount), 0),
                   }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
                     <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="name" width={100} tick={{ fill: "#9ba8bd", fontSize: 11 }} />
+                    <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
                     <Tooltip
                       formatter={(v, name) => [
                         formatAmount(Number(v)),
-                        name === "spent" ? <span style={{ color: "#f87171" }}>Spent</span>
-                          : name === "over" ? <span style={{ color: "#f87171" }}>Over budget</span>
-                          : <span style={{ color: "#4ade80" }}>Remaining</span>,
+                        name === "spent" ? <span style={{ color: chartColor.spent }}>Spent</span>
+                          : name === "over" ? <span style={{ color: chartColor.over }}>Over budget</span>
+                          : <span style={{ color: chartColor.remaining }}>Remaining</span>,
                       ]}
                       contentStyle={{ fontSize: "11px" }}
                     />
-                    <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}
+                    {/* D5 fix: shared BudgetSpentBarShape recomputes
+                        corner radii per-row so a stack at >=100%
+                        utilization (no remaining segment, no over
+                        segment) still rounds its right edge. Static
+                        radius={[4,0,0,4]} on the Bar wouldn't, because
+                        the trailing remaining bar would normally own
+                        the right rounding. */}
+                    <Bar dataKey="spent" stackId="a" animationDuration={600}
                       cursor="pointer"
+                      shape={(props: BudgetSpentBarShapeProps) => (
+                        <BudgetSpentBarShape {...props} />
+                      )}
                       onClick={(data) => {
                         const name = data?.name || data?.payload?.name;
                         if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
                       }}
                     >
                       {budgets.map((b, i) => (
-                        <Cell key={i} fill={b.percent_used > 100 ? "#f87171" : b.percent_used > 80 ? "#f59e0b" : "#D4A64A"} />
+                        <Cell
+                          key={i}
+                          fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent}
+                        />
                       ))}
                     </Bar>
-                    <Bar dataKey="remaining" stackId="a" fill="#e8ebf0" radius={[0, 4, 4, 0]} animationDuration={600} />
-                    <Bar dataKey="over" stackId="a" fill="#f87171" radius={[0, 4, 4, 0]} animationDuration={600} />
+                    <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={600} />
+                    <Bar dataKey="over" stackId="a" fill={chartColor.over} radius={[4, 4, 4, 4]} animationDuration={600} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
               <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Spent</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f59e0b" }} /> &gt;80%</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over budget</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#e8ebf0" }} /> Remaining</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.spent }} /> Spent</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.watch }} /> &gt;80%</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over budget</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.remaining }} /> Remaining</span>
               </div>
             </div>
           )}

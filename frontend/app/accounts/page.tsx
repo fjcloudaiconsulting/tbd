@@ -193,11 +193,24 @@ export default function AccountsPage() {
                 </div>
                 <button type="submit" className={`w-full min-h-[44px] sm:w-auto sm:min-h-0 ${btnPrimary}`}>Add</button>
               </form>
+              {/* Column header — visible only on sm+ where the row uses
+                  the same grid template. Keeps the type name column
+                  proportional and pins the system badge + count to
+                  fixed-width slots so longer names can't push them out
+                  of alignment. */}
+              {accountTypes.length > 0 && (
+                <div className="hidden border-b border-border-subtle px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted sm:grid sm:grid-cols-[minmax(0,1fr)_4rem_3rem_auto] sm:items-center sm:gap-3">
+                  <span>Type</span>
+                  <span className="text-center">Tag</span>
+                  <span className="text-right" title="Number of accounts using this type">Count</span>
+                  <span className="sr-only">Actions</span>
+                </div>
+              )}
               <div className="space-y-1">
                 {accountTypes.map((at) => (
-                  <div key={at.id} className="group flex flex-col gap-2 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised sm:flex-row sm:items-center sm:justify-between">
+                  <div key={at.id} className="group flex flex-col gap-2 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised sm:grid sm:grid-cols-[minmax(0,1fr)_4rem_3rem_auto] sm:items-center sm:gap-3">
                     {editingTypeId === at.id ? (
-                      <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+                      <div className="flex flex-col gap-2 sm:col-span-4 sm:flex-row sm:items-center">
                         <label htmlFor={`edit-type-${at.id}`} className="sr-only">Edit type name</label>
                         <input id={`edit-type-${at.id}`} type="text" value={editingTypeName} onChange={(e) => setEditingTypeName(e.target.value)} className={`w-full sm:flex-1 ${input}`} autoFocus
                           onKeyDown={(e) => { if (e.key === "Enter") handleUpdateType(at.id); if (e.key === "Escape") setEditingTypeId(null); }} />
@@ -208,12 +221,14 @@ export default function AccountsPage() {
                       </div>
                     ) : (
                       <>
-                        <div className="flex min-w-0 flex-1 items-center gap-2">
-                          <span className="truncate text-sm text-text-primary">{at.name}</span>
-                          {at.is_system && <span className="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">system</span>}
-                          <span className="shrink-0 text-xs text-text-muted" title={`${at.account_count} account(s)`}>{at.account_count}</span>
-                        </div>
-                        <div className="flex flex-wrap gap-3">
+                        <span className="min-w-0 truncate text-sm text-text-primary">{at.name}</span>
+                        <span className="text-left sm:text-center">
+                          {at.is_system && (
+                            <span className="inline-block rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] font-medium text-text-muted">system</span>
+                          )}
+                        </span>
+                        <span className="text-xs tabular-nums text-text-muted sm:text-right" title={`${at.account_count} account(s)`}>{at.account_count}</span>
+                        <div className="flex flex-wrap gap-3 sm:justify-end">
                           {!at.is_system && (
                             <>
                               <button onClick={() => { setEditingTypeId(at.id); setEditingTypeName(at.name); }} aria-label={`Edit ${at.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-accent sm:min-h-0">Edit</button>
@@ -287,17 +302,31 @@ export default function AccountsPage() {
                     </div>
                   </div>
                 ) : (
-                  <article key={a.id} className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:flex-row md:items-center md:justify-between ${!a.is_active ? "opacity-40" : ""}`}>
+                  <article key={a.id} className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:flex-row md:items-center md:gap-4 ${!a.is_active ? "opacity-40" : ""}`}>
+                    {/* Description column: name + meta. The "DEFAULT"
+                        badge is a fixed-width inline pill (NOT trailing
+                        "· default" text), so toggling default never
+                        changes how much room neighbouring text gets. */}
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                         <span className="truncate text-sm font-medium text-text-primary">{a.name}</span>
+                        {a.is_default && (
+                          <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-text-secondary">
+                            Default
+                          </span>
+                        )}
                         <span className="text-xs text-text-muted">{a.account_type_name}</span>
-                        {a.is_default && <span className="text-xs text-accent">· default</span>}
                         {a.close_day && <span className="text-xs text-text-muted">· closes day {a.close_day}</span>}
                         {!a.is_active && <span className="text-xs text-danger">inactive</span>}
                       </div>
                     </div>
-                    <div className="flex shrink-0 flex-col items-end gap-0.5 md:ml-auto">
+                    {/* Fixed-width balance column — w-32 keeps the
+                        column position stable whether the row owns a
+                        "Default" action button or not, so toggling
+                        default no longer shifts numbers into adjacent
+                        cells. tabular-nums + text-right keep digits
+                        aligned across rows. */}
+                    <div className="flex shrink-0 flex-col items-start gap-0.5 md:w-32 md:items-end">
                       <span className="text-sm tabular-nums text-text-primary">
                         {formatAmount(a.balance)}{" "}
                         <span className="text-text-muted">{a.currency}</span>
@@ -308,7 +337,7 @@ export default function AccountsPage() {
                         </span>
                       ) : null}
                     </div>
-                    <div className="flex flex-wrap gap-3">
+                    <div className="flex flex-wrap gap-3 md:justify-end">
                       <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
                       {canAdjustBalance && a.is_active && (
                         <button
@@ -321,7 +350,7 @@ export default function AccountsPage() {
                       )}
                       {!a.is_default && a.is_active && (
                         <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">
-                          Default
+                          Set default
                         </button>
                       )}
                       <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-text-secondary md:min-h-0">
