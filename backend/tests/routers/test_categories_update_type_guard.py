@@ -117,6 +117,7 @@ async def _seed(factory) -> dict:
             category_id=both_master.id, description="x",
             amount=Decimal("10"), type=TransactionType.EXPENSE,
             status=TransactionStatus.SETTLED, date=date(2026, 5, 1),
+            settled_date=date(2026, 5, 1),
         ))
         await db.commit()
         return {
