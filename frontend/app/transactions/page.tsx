@@ -20,6 +20,27 @@ import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
 
 const PAGE_SIZE = 20;
 
+// Column-aware sort defaults. When the user clicks a different column, that
+// column's natural default direction is applied (Option B in the data-table
+// pattern). Same-column clicks toggle direction. Numeric/date columns default
+// to "desc" because most users want most-recent / largest-first.
+type SortField =
+  | "date"
+  | "description"
+  | "account_name"
+  | "category_name"
+  | "status"
+  | "amount";
+
+const SORT_DEFAULTS: Record<SortField, "asc" | "desc"> = {
+  date: "desc",
+  amount: "desc",
+  description: "asc",
+  account_name: "asc",
+  category_name: "asc",
+  status: "asc",
+};
+
 export default function TransactionsPage() {
   return (
     <Suspense fallback={
@@ -71,7 +92,7 @@ function TransactionsPageContent() {
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterSearch, setFilterSearch] = useState("");
-  const [sortField, setSortField] = useState<"date" | "description" | "account_name" | "category_name" | "status" | "amount">("date");
+  const [sortField, setSortField] = useState<SortField>("date");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   // Billing periods for filter
@@ -497,10 +518,17 @@ function TransactionsPageContent() {
 
   const activeAccounts = accounts.filter((a) => a.is_active);
 
-  // Sort helper
-  function toggleSort(field: typeof sortField) {
-    if (sortField === field) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else { setSortField(field); setSortDir(field === "date" ? "desc" : "asc"); }
+  // Sort helper. Same-column click toggles direction. Different-column click
+  // applies that column's natural default (see SORT_DEFAULTS above) so users
+  // get a sensible starting state instead of always-asc, which felt like
+  // their previous direction was "dropped".
+  function toggleSort(field: SortField) {
+    if (sortField === field) {
+      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir(SORT_DEFAULTS[field]);
+    }
   }
   const sortedTransactions = [...transactions].sort((a, b) => {
     let cmp = 0;
@@ -745,16 +773,69 @@ function TransactionsPageContent() {
           <input id="f-search" type="text" placeholder="Search descriptions..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className={input} />
         </div>
         <div className="flex flex-wrap gap-1">
-          {[
-            { label: "Today", fn: () => { const d = todayISO(); setFilterDateFrom(d); setFilterDateTo(d); } },
-            { label: "This Week", fn: () => { const now = new Date(); const day = now.getDay(); const diff = day === 0 ? 6 : day - 1; const mon = new Date(now); mon.setDate(now.getDate() - diff); setFilterDateFrom(formatLocalDate(mon)); setFilterDateTo(todayISO()); } },
-            { label: "This Month", fn: () => { const now = new Date(); setFilterDateFrom(formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 1))); setFilterDateTo(todayISO()); } },
-            { label: "All", fn: () => { setFilterDateFrom(""); setFilterDateTo(""); } },
-          ].map((p) => (
-            <button key={p.label} type="button" onClick={p.fn} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised min-h-[44px] sm:min-h-0">
-              {p.label}
-            </button>
-          ))}
+          {(() => {
+            // Quick-filter buttons. Each clears `filterPeriod` first because the
+            // period filter overrides date_from/date_to in the URL builder, so
+            // leaving it set would silently make the click a no-op.
+            const setRange = (from: string, to: string) => {
+              setFilterPeriod("");
+              setFilterDateFrom(from);
+              setFilterDateTo(to);
+            };
+            const presets: { label: string; fn: () => void }[] = [
+              {
+                label: "Today",
+                fn: () => {
+                  const d = todayISO();
+                  setRange(d, d);
+                },
+              },
+              {
+                label: "This Week",
+                fn: () => {
+                  const now = new Date();
+                  const day = now.getDay();
+                  const diff = day === 0 ? 6 : day - 1; // Monday = start of week
+                  const mon = new Date(now);
+                  mon.setDate(now.getDate() - diff);
+                  setRange(formatLocalDate(mon), todayISO());
+                },
+              },
+              {
+                label: "This Month",
+                fn: () => {
+                  const now = new Date();
+                  setRange(
+                    formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 1)),
+                    todayISO(),
+                  );
+                },
+              },
+              {
+                label: "All",
+                fn: () => setRange("", ""),
+              },
+            ];
+            // Optional "Current Period" preset, only when an open billing
+            // period exists. It sets the period filter (which the URL builder
+            // already prefers) and clears any explicit date range.
+            const currentPeriod = periods.find((p) => p.end_date === null);
+            if (currentPeriod) {
+              presets.push({
+                label: "Current Period",
+                fn: () => {
+                  setFilterDateFrom("");
+                  setFilterDateTo("");
+                  setFilterPeriod(String(currentPeriod.id));
+                },
+              });
+            }
+            return presets.map((p) => (
+              <button key={p.label} type="button" onClick={p.fn} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised min-h-[44px] sm:min-h-0">
+                {p.label}
+              </button>
+            ));
+          })()}
         </div>
       </div>
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-3">
@@ -790,11 +871,11 @@ function TransactionsPageContent() {
         </div>
         <div className="w-full sm:w-auto">
           <label htmlFor="f-from" className="sr-only">From date</label>
-          <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className={`w-full sm:w-32 ${input}`} placeholder="From" />
+          <input id="f-from" type="date" value={filterDateFrom} onChange={(e) => { setFilterPeriod(""); setFilterDateFrom(e.target.value); }} className={`w-full sm:w-32 ${input}`} placeholder="From" />
         </div>
         <div className="w-full sm:w-auto">
           <label htmlFor="f-to" className="sr-only">To date</label>
-          <input id="f-to" type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className={`w-full sm:w-32 ${input}`} placeholder="To" />
+          <input id="f-to" type="date" value={filterDateTo} onChange={(e) => { setFilterPeriod(""); setFilterDateTo(e.target.value); }} className={`w-full sm:w-32 ${input}`} placeholder="To" />
         </div>
         {periods.length > 0 && (
           <div className="w-full sm:w-auto">
