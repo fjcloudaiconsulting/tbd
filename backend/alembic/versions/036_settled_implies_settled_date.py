@@ -71,15 +71,18 @@ def upgrade() -> None:
         )
     )
 
-    # Step 2: add the CHECK constraint. Both MySQL 8.0 and SQLite
-    # support inline CHECK on tables, and Alembic's
-    # ``create_check_constraint`` handles the dialect differences.
-    op.create_check_constraint(
-        _CHECK_NAME,
-        "transactions",
-        _CHECK_SQL,
-    )
+    # Step 2: add the CHECK constraint via batch_alter_table. SQLite
+    # has no native ALTER TABLE ADD CONSTRAINT, so Alembic's batch mode
+    # rewrites the table to apply CHECK; MySQL 8.0 accepts the batch
+    # form via plain ALTER. Plain op.create_check_constraint raises
+    # NotImplementedError on SQLite.
+    with op.batch_alter_table("transactions") as batch_op:
+        batch_op.create_check_constraint(
+            _CHECK_NAME,
+            _CHECK_SQL,
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(_CHECK_NAME, "transactions", type_="check")
+    with op.batch_alter_table("transactions") as batch_op:
+        batch_op.drop_constraint(_CHECK_NAME, type_="check")
