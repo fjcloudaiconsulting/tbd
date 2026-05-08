@@ -114,7 +114,7 @@ describe("AdminRolesPage", () => {
     expect(screen.getByText("6")).toBeInTheDocument();
   });
 
-  it("redirects non-superadmin users away", async () => {
+  it("redirects non-superadmin users without roles.manage away", async () => {
     useAuthMock.mockReturnValue({
       user: { ...SUPERADMIN, is_superadmin: false } as never,
       loading: false,
@@ -130,6 +130,34 @@ describe("AdminRolesPage", () => {
     await waitFor(() => {
       expect(replaceMock).toHaveBeenCalledWith("/dashboard");
     });
+  });
+
+  it("renders for a non-superadmin who carries roles.manage in permissions", async () => {
+    apiFetchMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/admin/roles") return { items: [] };
+      if (path === "/api/v1/admin/permissions") return CATALOG;
+      throw new Error(`unexpected path: ${path}`);
+    });
+    useAuthMock.mockReturnValue({
+      user: {
+        ...SUPERADMIN,
+        is_superadmin: false,
+        permissions: ["roles.manage"],
+      } as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+
+    render(<AdminRolesPage />);
+
+    // Reaches the data-load path (so the "New role" button is rendered) and
+    // does NOT redirect to /dashboard.
+    await screen.findByRole("button", { name: /new role/i });
+    expect(replaceMock).not.toHaveBeenCalledWith("/dashboard");
   });
 
   it("opens the create modal and submits a new role", async () => {

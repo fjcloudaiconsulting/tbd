@@ -8,7 +8,7 @@ import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { isSuperadmin } from "@/lib/auth";
+import { hasPlatformPermission } from "@/lib/auth";
 import {
   btnPrimary,
   btnSecondary,
@@ -51,13 +51,13 @@ export default function AdminRoleDetailPage() {
       router.replace("/login");
       return;
     }
-    if (!isSuperadmin(user)) {
+    if (!hasPlatformPermission(user, "roles.manage")) {
       router.replace("/dashboard");
     }
   }, [loading, user, router]);
 
   useEffect(() => {
-    if (loading || !user || !isSuperadmin(user)) return;
+    if (loading || !user || !hasPlatformPermission(user, "roles.manage")) return;
     if (!Number.isFinite(roleId)) {
       setError("Invalid role id.");
       setFetching(false);
@@ -165,7 +165,7 @@ export default function AdminRoleDetailPage() {
     }
   }
 
-  if (loading || !user || !isSuperadmin(user)) {
+  if (loading || !user || !hasPlatformPermission(user, "roles.manage")) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Spinner />
