@@ -7,6 +7,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import DuplicatePlanModal from "@/components/system/DuplicatePlanModal";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { hasPlatformPermission } from "@/lib/auth";
 import { FEATURE_LABELS } from "@/lib/feature-catalog";
 import {
   input,
@@ -62,13 +63,31 @@ export default function SystemPlansPage() {
   const [formSortOrder, setFormSortOrder] = useState("0");
   const [formFeatures, setFormFeatures] = useState<PlanFeatures>({ ...DEFAULT_FEATURES });
 
+  // Forward-compatible gate: today /me does not return a permissions
+  // array, so non-superadmins resolve to false (matching the previous
+  // is_superadmin short-circuit). The backend gate on plans.manage is
+  // still authoritative — this client guard just avoids flashing the
+  // page shell before the redirect.
+  const canManagePlans = hasPlatformPermission(user, "plans.manage");
+
+  // Two-branch guard: AppShell can't redirect from a null render, so we
+  // explicitly send unauthenticated visitors to /login and authenticated
+  // users without plans.manage to /dashboard.
   useEffect(() => {
-    if (!loading && (!user || !user.is_superadmin)) router.replace("/dashboard");
-  }, [loading, user, router]);
+    if (loading) return;
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+    if (!canManagePlans) {
+      router.replace("/dashboard");
+      return;
+    }
+  }, [loading, user, canManagePlans, router]);
 
   useEffect(() => {
-    if (user?.is_superadmin) loadPlans();
-  }, [user]);
+    if (canManagePlans) loadPlans();
+  }, [canManagePlans]);
 
   async function loadPlans() {
     try {
@@ -172,7 +191,7 @@ export default function SystemPlansPage() {
     });
   }
 
-  if (loading || !user?.is_superadmin) return null;
+  if (loading || !canManagePlans) return null;
 
   return (
     <AppShell>

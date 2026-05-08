@@ -5,8 +5,9 @@ import SystemPlansPage from "@/app/system/plans/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 
+const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
   usePathname: () => "/system/plans",
 }));
 
@@ -32,6 +33,14 @@ const SUPERADMIN = {
   billing_cycle_day: 1, is_superadmin: true, is_active: true,
   mfa_enabled: false, subscription_status: null, subscription_plan: null,
   trial_end: null,
+};
+
+const NON_SUPERADMIN_BASE = { ...SUPERADMIN, id: 2, is_superadmin: false };
+const NON_SUPERADMIN_NO_PERMS = { ...NON_SUPERADMIN_BASE };
+const NON_SUPERADMIN_WITH_PLANS = {
+  ...NON_SUPERADMIN_BASE,
+  id: 3,
+  permissions: ["plans.manage"],
 };
 
 const PRO_PLAN = {
@@ -60,6 +69,7 @@ describe("/system/plans page — Features section + Duplicate", () => {
 
   beforeEach(() => {
     apiFetchMock.mockReset();
+    replaceMock.mockReset();
     useAuthMock.mockReturnValue({
       user: SUPERADMIN as never,
       loading: false,
@@ -125,6 +135,70 @@ describe("/system/plans page — Features section + Duplicate", () => {
       expect(body).toHaveProperty("features");
       expect(body.features["ai.autocategorize"]).toBe(true);
     });
+  });
+
+  it("redirects non-superadmin without plans.manage to /dashboard", async () => {
+    useAuthMock.mockReturnValue({
+      user: NON_SUPERADMIN_NO_PERMS as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+
+    const { container } = render(<SystemPlansPage />);
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/dashboard"));
+    // Component returns null while gated.
+    expect(container).toBeEmptyDOMElement();
+    // /api/v1/plans/all must NOT be called when the user is gated out.
+    const planFetches = apiFetchMock.mock.calls.filter(
+      ([url]) => typeof url === "string" && url === "/api/v1/plans/all",
+    );
+    expect(planFetches).toHaveLength(0);
+  });
+
+  it("redirects unauthenticated visitors to /login (auth settled, user=null)", async () => {
+    useAuthMock.mockReturnValue({
+      user: null as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+
+    const { container } = render(<SystemPlansPage />);
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/login"));
+    expect(container).toBeEmptyDOMElement();
+    const planFetches = apiFetchMock.mock.calls.filter(
+      ([url]) => typeof url === "string" && url === "/api/v1/plans/all",
+    );
+    expect(planFetches).toHaveLength(0);
+  });
+
+  it("renders for non-superadmin who carries plans.manage", async () => {
+    useAuthMock.mockReturnValue({
+      user: NON_SUPERADMIN_WITH_PLANS as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/plans/all") return Promise.resolve([PRO_PLAN]);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<SystemPlansPage />);
+
+    expect(await screen.findByText("Plan Management")).toBeInTheDocument();
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(apiFetchMock).toHaveBeenCalledWith("/api/v1/plans/all");
   });
 
   it("Duplicate row action opens the Duplicate plan modal", async () => {

@@ -76,6 +76,19 @@ describe("/admin page", () => {
     expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
   });
 
+  it("redirects unauthenticated visitors to /login (auth settled, user=null)", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: null,
+      loading: false,
+    } as never);
+
+    render(<AdminDashboardPage />);
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
+    expect(screen.queryByTestId("app-shell")).not.toBeInTheDocument();
+    expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
+  });
+
   it("loads and renders dashboard data for non-superadmins who carry admin.view", async () => {
     vi.mocked(useAuth).mockReturnValue({
       user: makeUser({ isSuperadmin: false, permissions: ["admin.view"] }),
@@ -144,5 +157,72 @@ describe("/admin page", () => {
     render(<AdminDashboardPage />);
 
     expect(await screen.findByText("dashboard blew up")).toBeInTheDocument();
+  });
+
+  it("hides admin cards the user lacks permission to open", async () => {
+    // User has admin.view (so the hub renders) plus orgs.view, but not
+    // audit.view or roles.manage. Only the Organizations card should
+    // appear among the quick-link section.
+    vi.mocked(useAuth).mockReturnValue({
+      user: makeUser({
+        isSuperadmin: false,
+        permissions: ["admin.view", "orgs.view"],
+      }),
+      loading: false,
+    } as never);
+    vi.mocked(apiFetch).mockResolvedValue({
+      kpis: {
+        total_orgs: 1,
+        total_users: 1,
+        active_subscriptions: 0,
+        signups_last_7d: 0,
+      },
+      health: {
+        db: { ok: true, latency_ms: 1 },
+        redis: { ok: true, latency_ms: 1 },
+      },
+    });
+
+    render(<AdminDashboardPage />);
+
+    // Wait for dashboard to settle.
+    await screen.findByText("Admin");
+
+    // Find quick-link cards by their href (KPI labels and quick-link
+    // card share text like "Organizations", so locate by anchor href).
+    const allLinks = screen.getAllByRole("link");
+    const orgsLink = allLinks.find((a) => a.getAttribute("href") === "/admin/orgs");
+    const auditLink = allLinks.find((a) => a.getAttribute("href") === "/admin/audit");
+    const rolesLink = allLinks.find((a) => a.getAttribute("href") === "/admin/roles");
+    expect(orgsLink).toBeDefined();
+    expect(auditLink).toBeUndefined();
+    expect(rolesLink).toBeUndefined();
+  });
+
+  it("renders all admin cards for superadmin (hub-side gate covered)", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: makeUser({ isSuperadmin: true }),
+      loading: false,
+    } as never);
+    vi.mocked(apiFetch).mockResolvedValue({
+      kpis: {
+        total_orgs: 1,
+        total_users: 1,
+        active_subscriptions: 0,
+        signups_last_7d: 0,
+      },
+      health: {
+        db: { ok: true, latency_ms: 1 },
+        redis: { ok: true, latency_ms: 1 },
+      },
+    });
+
+    render(<AdminDashboardPage />);
+    await screen.findByText("Admin");
+
+    const allLinks = screen.getAllByRole("link");
+    expect(allLinks.find((a) => a.getAttribute("href") === "/admin/orgs")).toBeDefined();
+    expect(allLinks.find((a) => a.getAttribute("href") === "/admin/audit")).toBeDefined();
+    expect(allLinks.find((a) => a.getAttribute("href") === "/admin/roles")).toBeDefined();
   });
 });
