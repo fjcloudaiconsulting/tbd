@@ -46,6 +46,7 @@ services:
     volumes:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
+      - ./backend/scripts:/app/scripts
       - ./backend/tests:/app/tests
       # Read-only mounts so test_deploy_workflow.py can locate
       # repo-root .github/workflows/deploy.yml and .do/app.yaml.

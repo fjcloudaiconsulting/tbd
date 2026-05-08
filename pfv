@@ -86,7 +86,7 @@ cmd_reset() {
 }
 
 cmd_migrate() {
-  docker compose exec backend alembic upgrade head
+  docker compose exec backend python /app/scripts/migrate.py
 }
 
 cmd_logs() {
