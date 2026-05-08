@@ -2,13 +2,14 @@ import re
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
+from app.rate_limit import limiter
 from app.schemas.auth import (
     USERNAME_MAX_LENGTH,
     USERNAME_MIN_LENGTH,
@@ -57,7 +58,9 @@ def _user_response(user: User) -> UserResponse:
 
 
 @router.put("/me", response_model=UserResponse)
+@limiter.limit("5/hour")
 async def update_profile(
+    request: Request,
     body: ProfileUpdate,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
@@ -182,7 +185,9 @@ async def update_profile(
 
 
 @router.post("/me/password", status_code=204)
+@limiter.limit("5/hour")
 async def change_password(
+    request: Request,
     body: PasswordChange,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
