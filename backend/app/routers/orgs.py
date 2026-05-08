@@ -16,7 +16,6 @@ it commits atomically with the business write; record failure rows
 on an independent session so a rolled-back business txn still leaves
 a forensic trail.
 """
-from __future__ import annotations
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -28,7 +27,7 @@ from app.auth.org_permissions import require_org_owner
 from app.database import get_db
 from app.deps import get_session_factory
 from app.models.user import Organization, User
-from app.rate_limit import get_client_ip
+from app.rate_limit import get_client_ip, limiter
 from app.schemas.orgs import OrgRenameRequest, OrgResponse
 from app.services import audit_service, org_service
 
@@ -43,6 +42,7 @@ def _request_id() -> str | None:
 
 
 @router.patch("/{org_id}/rename", response_model=OrgResponse)
+@limiter.limit("10/hour")
 async def rename_org_endpoint(
     org_id: int,
     body: OrgRenameRequest,

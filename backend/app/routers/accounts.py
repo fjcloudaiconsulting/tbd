@@ -10,7 +10,7 @@ from app.deps import get_current_user
 from app.models.account import Account, AccountType
 from app.models.transaction import Transaction
 from app.models.user import Organization, Role, User
-from app.rate_limit import get_client_ip
+from app.rate_limit import get_client_ip, limiter
 from app.schemas.account import (
     AccountCreate,
     AccountResponse,
@@ -234,6 +234,7 @@ async def delete_account(
 
 
 @router.post("/{account_id}/adjust-balance", response_model=BalanceAdjustmentResponse)
+@limiter.limit("20/hour")
 async def adjust_balance(
     account_id: int,
     request: Request,
