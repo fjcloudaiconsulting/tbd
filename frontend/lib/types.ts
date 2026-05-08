@@ -27,6 +27,12 @@ export interface User {
   subscription_status: SubscriptionStatus | null;
   subscription_plan: string | null;
   trial_end: string | null;
+  // Optional platform permissions array. Forward-compat: when /me starts
+  // returning effective permissions for non-superadmin platform admins,
+  // hasPlatformPermission(user, key) will pick them up without further FE
+  // changes. Today the field is undefined, so every gate degrades to the
+  // is_superadmin short-circuit (current behavior).
+  permissions?: string[];
 }
 
 export interface TokenResponse {

@@ -7,7 +7,7 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { isSuperadmin } from "@/lib/auth";
+import { hasPlatformPermission } from "@/lib/auth";
 import {
   btnPrimary,
   btnSecondary,
@@ -226,13 +226,13 @@ export default function AdminRolesPage() {
       router.replace("/login");
       return;
     }
-    if (!isSuperadmin(user)) {
+    if (!hasPlatformPermission(user, "roles.manage")) {
       router.replace("/dashboard");
     }
   }, [loading, user, router]);
 
   useEffect(() => {
-    if (loading || !user || !isSuperadmin(user)) return;
+    if (loading || !user || !hasPlatformPermission(user, "roles.manage")) return;
     setFetching(true);
     Promise.all([
       apiFetch<RoleListResponse>("/api/v1/admin/roles"),
@@ -257,7 +257,7 @@ export default function AdminRolesPage() {
     });
   }, [data]);
 
-  if (loading || !user || !isSuperadmin(user)) {
+  if (loading || !user || !hasPlatformPermission(user, "roles.manage")) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Spinner />
