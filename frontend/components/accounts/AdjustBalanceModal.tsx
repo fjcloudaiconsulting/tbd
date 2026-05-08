@@ -120,7 +120,7 @@ export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Pro
         onClick={(e) => e.stopPropagation()}
       >
         <h3 id="adjust-balance-title" className="text-lg font-semibold text-text-primary">
-          Adjust balance — {account.name}
+          Adjust balance: {account.name}
         </h3>
         <p className="mt-2 text-sm text-text-secondary">
           A real transaction will be recorded for the difference between

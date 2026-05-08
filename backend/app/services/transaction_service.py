@@ -831,6 +831,18 @@ async def _link_pair(
     is populated (typically via a select(Transaction).options(selectinload(...))
     or by passing rows that were just queried with `_load_opts()`).
     """
+    # Track E: manual balance adjustments are synthetic deltas, not real
+    # money movements. Reject either leg before any other invariant so a
+    # bypass via /transactions/pair or convert-to-transfer with
+    # pair_with_transaction_id cannot recategorize an adjustment as a
+    # transfer or link it to a real row (linking would expose the
+    # adjustment to indirect mutation through partner edits / unpair).
+    # convert_and_create_leg also guards the source row directly; this is
+    # the chokepoint that catches every other path.
+    if expense_tx.is_manual_adjustment or income_tx.is_manual_adjustment:
+        raise ValidationError(
+            "Manual balance adjustments cannot be paired as transfer legs"
+        )
     if expense_tx.org_id != income_tx.org_id:
         raise ValidationError("Transfer legs must belong to the same org")
     if expense_tx.type != TransactionType.EXPENSE:

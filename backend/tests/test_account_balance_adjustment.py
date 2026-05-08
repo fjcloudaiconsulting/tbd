@@ -445,6 +445,88 @@ async def test_admin_403_wins_over_flag_403(session_factory, seeded):
     assert res.json()["detail"] == "Admin access required"
 
 
+# ── Guard-order precedence: admin-403 / flag-403 must fire BEFORE 422 ────
+
+
+@pytest.mark.asyncio
+async def test_invalid_body_as_non_admin_returns_403_not_422(session_factory, seeded):
+    """Non-admin caller with malformed body → admin-403 wins over Pydantic 422.
+    The architect-locked precedence is admin → flag → 422; parsing the body
+    before the role check would invert that order."""
+    app = _make_app(session_factory, _resolver_for(Role.MEMBER))
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/accounts/{seeded['account_id']}/adjust-balance",
+            json={"target_balance": "99999999999999.99"},  # overflow → would be 422
+        )
+    assert res.status_code == 403
+    assert res.json()["detail"] == "Admin access required"
+
+
+@pytest.mark.asyncio
+async def test_invalid_body_as_admin_with_flag_off_returns_403_not_422(
+    session_factory, seeded
+):
+    """Admin caller with flag OFF + malformed body → flag-403 wins over 422."""
+    async with session_factory() as db:
+        org = (await db.execute(
+            select(Organization).where(Organization.id == seeded["org_id"])
+        )).scalar_one()
+        org.allow_manual_balance_adjustment = False
+        await db.commit()
+
+    app = _make_app(session_factory, _resolver_for(Role.ADMIN))
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/accounts/{seeded['account_id']}/adjust-balance",
+            json={"reason": "x" * 201},  # missing required + over-length → 422
+        )
+    assert res.status_code == 403
+    assert res.json()["detail"] == (
+        "Manual balance adjustment is disabled for this organization"
+    )
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_as_non_admin_returns_403_not_422(session_factory, seeded):
+    """Non-admin caller with non-JSON body → admin-403 still wins."""
+    app = _make_app(session_factory, _resolver_for(Role.MEMBER))
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/accounts/{seeded['account_id']}/adjust-balance",
+            data=b"not json",
+            headers={"content-type": "application/json"},
+        )
+    assert res.status_code == 403
+    assert res.json()["detail"] == "Admin access required"
+
+
+@pytest.mark.asyncio
+async def test_invalid_body_with_full_permissions_returns_422(session_factory, seeded):
+    """Admin + flag ON + malformed body → 422 (the gates pass, body validation
+    is the lawful failure mode)."""
+    app = _make_app(session_factory, _resolver_for(Role.ADMIN))
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/accounts/{seeded['account_id']}/adjust-balance",
+            json={"target_balance": "99999999999999.99"},
+        )
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_malformed_json_with_full_permissions_returns_422(session_factory, seeded):
+    """Admin + flag ON + invalid JSON → 422 (not 500)."""
+    app = _make_app(session_factory, _resolver_for(Role.ADMIN))
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/accounts/{seeded['account_id']}/adjust-balance",
+            data=b"not json",
+            headers={"content-type": "application/json"},
+        )
+    assert res.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_cross_org_account_404(session_factory, seeded):
     # Seed a second org with an account; the admin caller's org_id

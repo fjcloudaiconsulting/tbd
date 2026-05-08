@@ -1,5 +1,6 @@
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -235,20 +236,23 @@ async def delete_account(
 @router.post("/{account_id}/adjust-balance", response_model=BalanceAdjustmentResponse)
 async def adjust_balance(
     account_id: int,
-    body: BalanceAdjustmentRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Track E: org-admin endpoint to set an account's balance directly.
 
-    Order of guards:
+    Order of guards (architect-locked precedence):
       1. 401 (auth) — handled by ``get_current_user``.
       2. 403 admin — non-admin caller, regardless of org flag.
       3. 403 flag — admin caller but ``allow_manual_balance_adjustment``
          is OFF for the org. Distinct message so the frontend can
          differentiate "you don't have the role" from "feature is off".
-      4. 422 (Pydantic) — out-of-range target, oversized reason.
+      4. 422 (Pydantic) — out-of-range target, oversized reason,
+         malformed JSON. Body is parsed manually AFTER the auth and flag
+         gates so a non-admin caller with an invalid body sees 403, not
+         422 — Pydantic's default dependency-time parsing would invert
+         that order.
       5. 404 — account does not belong to the caller's org.
       6. 409 — delta is exactly zero ("no change to apply").
 
@@ -273,6 +277,24 @@ async def adjust_balance(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Manual balance adjustment is disabled for this organization",
+        )
+
+    # 4. body validation. Manual parse to keep the gates above ahead of
+    # 422 in the precedence order. Pydantic's default `body: Schema`
+    # dependency would resolve before the handler body runs.
+    try:
+        raw_body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid JSON body",
+        )
+    try:
+        body = BalanceAdjustmentRequest.model_validate(raw_body)
+    except PydanticValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.errors(),
         )
 
     # Snapshot the actor identity NOW. Once we await on db, a rollback
