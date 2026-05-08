@@ -16,6 +16,9 @@ import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveCo
 import { Check, Clock } from "lucide-react";
 import CategorySelect from "@/components/ui/CategorySelect";
 import OnTrackTile from "@/components/dashboard/OnTrackTile";
+import AccountMonthEndForecast, {
+  type AccountMonthEndForecastResponse,
+} from "@/components/dashboard/AccountMonthEndForecast";
 import type { Account, BillingPeriod, Budget, Category, Transaction } from "@/lib/types";
 
 interface ForecastPlanItem {
@@ -110,6 +113,13 @@ export default function DashboardPage() {
   const [forecastProjection, setForecastProjection] = useState<ForecastProjection | null>(null);
   const [projectionFailed, setProjectionFailed] = useState(false);
   const [projectionLoading, setProjectionLoading] = useState(false);
+  // Per-account expected month-end balance from /api/v1/forecast/account-balances.
+  // Distinct from forecastProjection above (which drives the OnTrackTile —
+  // reportable income/expense aggregates). This one is per-account balance
+  // math including pending transfer legs.
+  const [accountMonthEndForecast, setAccountMonthEndForecast] =
+    useState<AccountMonthEndForecastResponse | null>(null);
+  const accountForecastRequestId = useRef(0);
   // Monotonically-increasing request id for the projection fetch. Used
   // to discard stale responses when a newer fetch has already started
   // (e.g. period nav during an in-flight call, or two writes in quick
@@ -310,6 +320,35 @@ export default function DashboardPage() {
     }
   }, [loading, user, realPeriodStart, loadForecastProjection]);
 
+  // Per-account month-end balance forecast. Only fetch for the current
+  // selected period — past/future periods render a neutral "only
+  // available for current period" state in the component, since the
+  // stored balance is "now" and projecting it elsewhere would mislead.
+  const loadAccountMonthEndForecast = useCallback(async () => {
+    if (!realPeriodStart || !isCurrentSelectedPeriod) {
+      accountForecastRequestId.current += 1;
+      setAccountMonthEndForecast(null);
+      return;
+    }
+    const myId = ++accountForecastRequestId.current;
+    try {
+      const data = await apiFetch<AccountMonthEndForecastResponse>(
+        `/api/v1/forecast/account-balances?period_start=${realPeriodStart}`,
+      );
+      if (accountForecastRequestId.current !== myId) return;
+      setAccountMonthEndForecast(data);
+    } catch {
+      if (accountForecastRequestId.current !== myId) return;
+      setAccountMonthEndForecast(null);
+    }
+  }, [realPeriodStart, isCurrentSelectedPeriod]);
+
+  useEffect(() => {
+    if (!loading && user) {
+      void loadAccountMonthEndForecast();
+    }
+  }, [loading, user, loadAccountMonthEndForecast]);
+
   function handleTypeChange(t: "income" | "expense") {
     setFormType(t);
     setFormCategoryId("");
@@ -381,6 +420,7 @@ export default function DashboardPage() {
       // Pending charges may have changed (a settled-on-create or a manual
       // pending entry); refresh independent of the visible page index.
       void loadPendingTransactions();
+      void loadAccountMonthEndForecast();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -698,6 +738,20 @@ export default function DashboardPage() {
             );
           })()}
 
+          {/* ═══ ROW 2.5: Account month-end forecast ═══ */}
+          <AccountMonthEndForecast
+            forecast={accountMonthEndForecast}
+            isCurrentPeriod={isCurrentSelectedPeriod}
+            hasAnyAccounts={activeAccounts.length > 0}
+            onJumpToCurrent={() => {
+              const idx = periods.findIndex((p) => p.end_date === null);
+              if (idx >= 0) {
+                setPeriodIdx(idx);
+                setChartFilter(null);
+              }
+            }}
+          />
+
           {/* ═══ ROW 3: Three equal charts ═══ */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             {/* Spending by category (donut) */}
@@ -844,11 +898,7 @@ export default function DashboardPage() {
                               if (name) setChartFilter(chartFilter === name ? null : name);
                             }}
                           />
-                          <Bar dataKey="actual" fill="var(--color-chart-2)" radius={[4, 4, 4, 4]} animationDuration={600}>
-                            {expenseItems.slice(0, 8).map((it, i) => (
-                              <Cell key={i} fill={Number(it.actual_amount) > Number(it.planned_amount) ? "var(--color-chart-5)" : "var(--color-chart-2)"} />
-                            ))}
-                          </Bar>
+                          <Bar dataKey="actual" fill="var(--color-chart-2)" radius={[4, 4, 4, 4]} animationDuration={600} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -867,8 +917,7 @@ export default function DashboardPage() {
               })()}
               <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-1)" }} /> Planned</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-2)" }} /> Under plan</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-5)" }} /> Over plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-2)" }} /> Actual</span>
               </div>
             </div>
           </div>
@@ -916,6 +965,7 @@ export default function DashboardPage() {
                               await loadTransactions(page);
                               await loadRefs();
                               void loadForecastProjection();
+                              void loadAccountMonthEndForecast();
                               // Independent of `page` — a toggle on page 2
                               // still has to refresh the strip's totals.
                               void loadPendingTransactions();
