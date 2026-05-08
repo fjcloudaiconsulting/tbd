@@ -14,6 +14,8 @@ import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pa
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import CategorySelect from "@/components/ui/CategorySelect";
+import { chartColor } from "@/lib/chart-colors";
+import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import OnTrackTile from "@/components/dashboard/OnTrackTile";
 import AccountMonthEndForecast, {
   type AccountMonthEndForecastResponse,
@@ -780,19 +782,31 @@ export default function DashboardPage() {
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
+                  {/* D2 (2026-05-08): fill the description-to-amount
+                      gap with a "% of total" column instead of leaving
+                      it as dead whitespace. Layout: dot + name (flex-1
+                      truncate) + percent (right-aligned, fixed col) +
+                      amount (right-aligned, fixed col). Tabular-nums on
+                      both numeric columns keeps digits aligned across
+                      rows. */}
                   <div className="w-full space-y-1.5 sm:flex-1">
-                    {donutData.slice(0, 10).map((d, i) => (
-                      <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
-                        className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-surface-overlay" : ""}`}>
-                        <div className="flex items-center gap-2">
-                          <div className="h-2.5 w-2.5 rounded-full" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
-                          <span className="text-xs text-text-secondary">{d.name}</span>
-                        </div>
-                        <span className="text-xs tabular-nums text-text-muted">{formatAmount(d.value)}</span>
-                      </button>
-                    ))}
+                    {(() => {
+                      const totalSpend = donutData.reduce((s, d) => s + d.value, 0);
+                      return donutData.slice(0, 10).map((d, i) => {
+                        const pct = totalSpend > 0 ? (d.value / totalSpend) * 100 : 0;
+                        return (
+                          <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
+                            className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-surface-overlay" : ""}`}>
+                            <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
+                            <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
+                            <span className="text-right text-[10px] tabular-nums text-text-muted">{pct.toFixed(0)}%</span>
+                            <span className="text-right text-xs tabular-nums text-text-muted">{formatAmount(d.value)}</span>
+                          </button>
+                        );
+                      });
+                    })()}
                     {donutData.length > 10 && (
-                      <p className="px-1.5 text-[10px] text-text-muted">+{donutData.length - 10} more — click chart to filter</p>
+                      <p className="px-1.5 text-[10px] text-text-muted">+{donutData.length - 10} more (click chart to filter)</p>
                     )}
                   </div>
                 </div>
@@ -818,34 +832,42 @@ export default function DashboardPage() {
                       pct: b.percent_used,
                     }))} layout="vertical" margin={{ left: 0, right: 20, top: 0, bottom: 0 }}>
                       <XAxis type="number" hide />
-                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: "var(--color-text-secondary)", fontSize: 11 }} />
+                      <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
                       <Tooltip
                         formatter={(v, name) => [
                           formatAmount(Number(v)),
-                          name === "spent" ? <span style={{ color: "var(--color-chart-5)" }}>Spent</span> : <span style={{ color: "var(--color-chart-2)" }}>Remaining</span>,
+                          name === "spent" ? <span style={{ color: chartColor.spent }}>Spent</span> : <span style={{ color: chartColor.remaining }}>Remaining</span>,
                         ]}
                         contentStyle={{ fontSize: "11px" }}
                       />
-                      <Bar dataKey="spent" stackId="a" radius={[4, 0, 0, 4]} animationDuration={600}
+                      {/* D5 follow-up: shared BudgetSpentBarShape so
+                          the spent bar rounds its right edge at >=100%
+                          utilization (when the trailing remaining
+                          segment collapses to zero). Static
+                          radius={[4,0,0,4]} left those rows squared. */}
+                      <Bar dataKey="spent" stackId="a" animationDuration={600}
                         cursor="pointer"
+                        shape={(props: BudgetSpentBarShapeProps) => (
+                          <BudgetSpentBarShape {...props} />
+                        )}
                         onClick={(_, idx) => {
                           const name = budgets.slice(0, 6)[idx]?.category_name;
                           if (name) setChartFilter(chartFilter === name ? null : name);
                         }}
                       >
                         {budgets.slice(0, 6).map((b, i) => (
-                          <Cell key={i} fill={b.percent_used > 100 ? "var(--color-chart-5)" : b.percent_used > 80 ? "var(--color-chart-4)" : "var(--color-chart-1)"} />
+                          <Cell key={i} fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent} />
                         ))}
                       </Bar>
-                      <Bar dataKey="remaining" stackId="a" fill="var(--color-border)" radius={[0, 4, 4, 0]} animationDuration={600} />
+                      <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={600} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
                 <div className="flex flex-wrap gap-3 px-4 pb-3 text-[10px] text-text-muted">
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-1)" }} /> Spent</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-4)" }} /> &gt;80%</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-5)" }} /> Over budget</span>
-                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-border)" }} /> Remaining</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.spent }} /> Spent</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.watch }} /> &gt;80%</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over budget</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.remaining }} /> Remaining</span>
                 </div>
                 </>
               ) : (
@@ -879,22 +901,22 @@ export default function DashboardPage() {
                           margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
                         >
                           <XAxis type="number" hide />
-                          <YAxis type="category" dataKey="name" width={90} tick={{ fill: "var(--color-text-secondary)", fontSize: 10 }} />
+                          <YAxis type="category" dataKey="name" width={90} tick={{ fill: chartColor.axisTick, fontSize: 10 }} />
                           <Tooltip
                             formatter={(v, name) => [
                               formatAmount(Number(v)),
-                              name === "planned" ? <span style={{ color: "var(--color-chart-1)" }}>Planned</span> : <span style={{ color: "var(--color-chart-2)" }}>Actual</span>,
+                              name === "planned" ? <span style={{ color: chartColor.planned }}>Planned</span> : <span style={{ color: chartColor.actual }}>Actual</span>,
                             ]}
                             contentStyle={{ fontSize: "11px" }}
                           />
-                          <Bar dataKey="planned" fill="var(--color-chart-1)" radius={[4, 4, 4, 4]} animationDuration={600}
+                          <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={600}
                             cursor="pointer"
                             onClick={(_, idx) => {
                               const name = expenseItems[idx]?.category_name;
                               if (name) setChartFilter(chartFilter === name ? null : name);
                             }}
                           />
-                          <Bar dataKey="actual" fill="var(--color-chart-2)" radius={[4, 4, 4, 4]} animationDuration={600} />
+                          <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={600} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -912,8 +934,8 @@ export default function DashboardPage() {
                 );
               })()}
               <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-1)" }} /> Planned</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--color-chart-2)" }} /> Actual</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.planned }} /> Planned</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.actual }} /> Actual</span>
               </div>
             </div>
           </div>
@@ -975,8 +997,10 @@ export default function DashboardPage() {
                         >
                           {/* Outer button carries the WCAG 2.5.8
                               touch-target hit area; inner span keeps
-                              the lean visual that matches /transactions. */}
-                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-surface-overlay text-text-muted"}`}>
+                              the lean visual that matches /transactions.
+                              Pending uses the warning token so it reads
+                              as actionable, not muted gray. */}
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                             {tx.status}
                           </span>
                         </button>

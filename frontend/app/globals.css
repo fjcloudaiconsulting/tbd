@@ -33,6 +33,8 @@
   --theme-success-dim: rgba(74, 222, 128, 0.12);
   --theme-info: #5FA8D3;
   --theme-info-dim: rgba(95, 168, 211, 0.12);
+  --theme-warning: #f59e0b;
+  --theme-warning-dim: rgba(245, 158, 11, 0.16);
 
   --theme-sidebar-bg: #06101e;
   --theme-sidebar-text: #7a8da6;
@@ -68,6 +70,8 @@
   --theme-success-dim: rgba(22, 163, 74, 0.06);
   --theme-info: #2d7db3;
   --theme-info-dim: rgba(45, 125, 179, 0.08);
+  --theme-warning: #b45309;
+  --theme-warning-dim: rgba(180, 83, 9, 0.10);
 
   --theme-sidebar-bg: #0B1F3A;
   --theme-sidebar-text: #7a8da6;
@@ -102,6 +106,8 @@
   --color-success-dim: var(--theme-success-dim);
   --color-info: var(--theme-info);
   --color-info-dim: var(--theme-info-dim);
+  --color-warning: var(--theme-warning);
+  --color-warning-dim: var(--theme-warning-dim);
 
   --color-sidebar-bg: var(--theme-sidebar-bg);
   --color-sidebar-text: var(--theme-sidebar-text);

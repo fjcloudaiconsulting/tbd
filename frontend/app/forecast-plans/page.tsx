@@ -32,6 +32,7 @@ import {
 
 } from "recharts";
 import type { BillingPeriod, Category, ForecastPlan, ForecastPlanItem } from "@/lib/types";
+import { chartColor } from "@/lib/chart-colors";
 
 // "Auto" is the honest label for source=history (PR #146 #1). populate
 // surfaces both 3-month-average rows AND current-period-only rows under
@@ -800,18 +801,18 @@ export default function ForecastPlansPage() {
                       type="category"
                       dataKey="name"
                       width={100}
-                      tick={{ fill: "#9ba8bd", fontSize: 11 }}
+                      tick={{ fill: chartColor.axisTick, fontSize: 11 }}
                     />
                     <Tooltip
                       formatter={(v, name) => [
                         formatAmount(Number(v)),
-                        name === "planned" ? <span style={{ color: "#D4A64A" }}>Planned</span> : <span style={{ color: "#4ade80" }}>Actual</span>,
+                        name === "planned" ? <span style={{ color: chartColor.planned }}>Planned</span> : <span style={{ color: chartColor.actual }}>Actual</span>,
                       ]}
                       contentStyle={{ fontSize: "11px" }}
                     />
                     <Bar
                       dataKey="planned"
-                      fill="#D4A64A"
+                      fill={chartColor.planned}
                       radius={[4, 4, 4, 4]}
                       animationDuration={600}
                       cursor="pointer"
@@ -822,14 +823,14 @@ export default function ForecastPlansPage() {
                     />
                     <Bar
                       dataKey="actual"
-                      fill="#4ade80"
+                      fill={chartColor.actual}
                       radius={[4, 4, 4, 4]}
                       animationDuration={600}
                     >
                       {chartData.map((d, i) => (
                         <Cell
                           key={i}
-                          fill={d.actual > d.planned ? "#f87171" : "#4ade80"}
+                          fill={d.actual > d.planned ? chartColor.over : chartColor.actual}
                         />
                       ))}
                     </Bar>
@@ -837,9 +838,9 @@ export default function ForecastPlansPage() {
                 </ResponsiveContainer>
               </div>
               <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#D4A64A" }} /> Planned</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#4ade80" }} /> Under plan</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "#f87171" }} /> Over plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.planned }} /> Planned</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.actual }} /> Under plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over plan</span>
               </div>
             </div>
           )}
