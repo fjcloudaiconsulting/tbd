@@ -24,6 +24,7 @@ const source: Transaction = {
   date: "2026-04-29",
   settled_date: "2026-04-29",
   is_imported: false,
+  is_manual_adjustment: false,
 };
 
 const accounts: Account[] = [

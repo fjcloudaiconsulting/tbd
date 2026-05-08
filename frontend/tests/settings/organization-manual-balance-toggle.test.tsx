@@ -58,7 +58,7 @@ function makeUser(allow: boolean) {
 }
 
 function baseFixtures() {
-  return ((url: string) => {
+  return (url: string, _init?: RequestInit) => {
     if (url === "/api/v1/settings/billing-cycle")
       return Promise.resolve({ billing_cycle_day: 1 });
     if (url === "/api/v1/settings/billing-period")
@@ -68,7 +68,7 @@ function baseFixtures() {
     if (url === "/api/v1/orgs/invitations") return Promise.resolve([]);
     if (url === "/api/v1/category-rules") return Promise.resolve([]);
     return Promise.resolve({});
-  }) as never;
+  };
 }
 
 describe("OrganizationSettingsPage — manual balance adjustment toggle (Track E)", () => {

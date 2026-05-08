@@ -69,7 +69,7 @@ describe("AdjustBalanceModal", () => {
     const onClose = vi.fn();
     const onAdjusted = vi.fn();
     vi.mocked(apiFetch).mockRejectedValueOnce(
-      new ApiResponseError(409, "No change to apply", { detail: "No change to apply" })
+      new ApiResponseError(409, "No change to apply", undefined, { detail: "No change to apply" })
     );
 
     render(

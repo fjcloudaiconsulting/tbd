@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import ForecastPlansPage from "@/app/forecast-plans/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import type { ForecastPlan } from "@/lib/types";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -98,7 +99,7 @@ function makePlan(items: Array<{
     billing_period_id: PERIOD.id,
     period_start: PERIOD.start_date,
     period_end: null,
-    status: "draft" as const,
+    status: "draft" as ForecastPlan["status"],
     total_planned_income: 0,
     total_planned_expense: 0,
     total_actual_income: 0,

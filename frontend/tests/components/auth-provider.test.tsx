@@ -27,6 +27,8 @@ const TEST_USER: User = {
   is_superadmin: false,
   is_active: true,
   mfa_enabled: false,
+  password_set: true,
+  allow_manual_balance_adjustment: false,
   subscription_status: null,
   subscription_plan: null,
   trial_end: null,

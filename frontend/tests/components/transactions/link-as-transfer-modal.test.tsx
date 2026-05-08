@@ -24,6 +24,7 @@ const expenseLeg: Transaction = {
   date: "2026-04-29",
   settled_date: "2026-04-29",
   is_imported: false,
+  is_manual_adjustment: false,
 };
 
 const incomeLeg: Transaction = {
@@ -41,6 +42,7 @@ const incomeLeg: Transaction = {
   date: "2026-04-29",
   settled_date: "2026-04-29",
   is_imported: false,
+  is_manual_adjustment: false,
 };
 
 describe("LinkAsTransferModal", () => {
