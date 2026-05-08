@@ -190,7 +190,7 @@ jobs:
     dockerfile_path: backend/Dockerfile
     instance_count: 1
     instance_size_slug: basic-xxs
-    run_command: alembic upgrade head
+    run_command: python /app/scripts/migrate.py
     envs:
       - key: APP_ENV
         scope: RUN_AND_BUILD_TIME

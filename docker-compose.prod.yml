@@ -25,7 +25,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    command: ["alembic", "upgrade", "head"]
+    command: ["python", "/app/scripts/migrate.py"]
     restart: "no"
 
   backend:

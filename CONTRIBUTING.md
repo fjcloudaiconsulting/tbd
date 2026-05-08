@@ -349,8 +349,10 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 Migrations run in one of three ways depending on environment:
 
 - **Development** (`./pfv start`): the backend lifespan calls `_run_migrations()` on startup. Convenient for a single-container local stack.
-- **Local prod simulation** (`./pfv prod`): a one-shot `migrate` service defined in `docker-compose.prod.yml` runs `alembic upgrade head` and exits; the backend then starts with `APP_ENV=production` which skips the startup migration.
-- **Production (DO App Platform)**: a dedicated `PRE_DEPLOY` job defined in `.do/app.yaml` runs `alembic upgrade head` before any backend replica starts. The backend skips the startup migration because `APP_ENV=production`. **Operator note:** secrets (especially `DATABASE_URL`) must be configured against the `migrate` job component in the DO console — App Platform does not auto-inherit secrets across components.
+- **Local prod simulation** (`./pfv prod`): a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the migrate wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` which skips the startup migration.
+- **Production (DO App Platform)**: a dedicated `PRE_DEPLOY` job defined in `.do/app.yaml` runs the migrate wrapper at `/app/scripts/migrate.py` before any backend replica starts. The backend skips the startup migration because `APP_ENV=production`. **Operator note:** secrets (especially `DATABASE_URL`) must be configured against the `migrate` job component in the DO console — App Platform does not auto-inherit secrets across components.
+
+The migrate wrapper (`backend/scripts/migrate.py`) does not replace alembic, it wraps it. Internally it drives `alembic upgrade <revision>` one revision at a time and streams alembic's own stdout and stderr through unchanged, while emitting structured JSON events around each step so a deploy log is triageable on its own. Grep for the event names: `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`. The wrapper's exit code matches alembic's, so the PRE_DEPLOY gate still blocks deploy on a failed migration.
 
 ```bash
 # Create a new migration

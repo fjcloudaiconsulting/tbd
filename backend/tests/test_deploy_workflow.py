@@ -68,7 +68,12 @@ def test_deploy_workflow_pushes_app_spec():
 def test_app_spec_declares_predeploy_migrate_job():
     spec = APP_SPEC.read_text()
     assert "kind: PRE_DEPLOY" in spec, "spec must declare PRE_DEPLOY migrate"
-    assert "alembic upgrade head" in spec, "PRE_DEPLOY job must run alembic"
+    # The PRE_DEPLOY job invokes the structured-logging migrate wrapper
+    # (backend/scripts/migrate.py), which drives alembic from outside via
+    # the Python API + per-revision subprocess.
+    assert "scripts/migrate.py" in spec, (
+        "PRE_DEPLOY job must run the migrate wrapper (backend/scripts/migrate.py)"
+    )
 
 
 def test_migrate_job_binds_database_url():
