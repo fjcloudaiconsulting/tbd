@@ -159,6 +159,26 @@ describe("/system/plans page — Features section + Duplicate", () => {
     expect(planFetches).toHaveLength(0);
   });
 
+  it("redirects unauthenticated visitors to /login (auth settled, user=null)", async () => {
+    useAuthMock.mockReturnValue({
+      user: null as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+
+    const { container } = render(<SystemPlansPage />);
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/login"));
+    expect(container).toBeEmptyDOMElement();
+    const planFetches = apiFetchMock.mock.calls.filter(
+      ([url]) => typeof url === "string" && url === "/api/v1/plans/all",
+    );
+    expect(planFetches).toHaveLength(0);
+  });
+
   it("renders for non-superadmin who carries plans.manage", async () => {
     useAuthMock.mockReturnValue({
       user: NON_SUPERADMIN_WITH_PLANS as never,

@@ -76,6 +76,19 @@ describe("/admin page", () => {
     expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
   });
 
+  it("redirects unauthenticated visitors to /login (auth settled, user=null)", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: null,
+      loading: false,
+    } as never);
+
+    render(<AdminDashboardPage />);
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
+    expect(screen.queryByTestId("app-shell")).not.toBeInTheDocument();
+    expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
+  });
+
   it("loads and renders dashboard data for non-superadmins who carry admin.view", async () => {
     vi.mocked(useAuth).mockReturnValue({
       user: makeUser({ isSuperadmin: false, permissions: ["admin.view"] }),

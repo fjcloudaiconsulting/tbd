@@ -147,4 +147,21 @@ describe("SystemHubPage (L5.8)", () => {
     expect(replaceMock).not.toHaveBeenCalled();
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("redirects unauthenticated visitors to /login (auth settled, user=null)", () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: null as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+
+    const { container } = render(<SystemHubPage />);
+    expect(replaceMock).toHaveBeenCalledWith("/login");
+    // Component returns null while gated; no headings or cards rendered.
+    expect(container).toBeEmptyDOMElement();
+  });
 });

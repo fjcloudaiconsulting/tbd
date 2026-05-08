@@ -70,8 +70,19 @@ export default function SystemPlansPage() {
   // page shell before the redirect.
   const canManagePlans = hasPlatformPermission(user, "plans.manage");
 
+  // Two-branch guard: AppShell can't redirect from a null render, so we
+  // explicitly send unauthenticated visitors to /login and authenticated
+  // users without plans.manage to /dashboard.
   useEffect(() => {
-    if (!loading && user && !canManagePlans) router.replace("/dashboard");
+    if (loading) return;
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+    if (!canManagePlans) {
+      router.replace("/dashboard");
+      return;
+    }
   }, [loading, user, canManagePlans, router]);
 
   useEffect(() => {

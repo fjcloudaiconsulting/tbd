@@ -104,9 +104,19 @@ export default function AdminDashboardPage() {
   // keeps a regular user from seeing a 403 error screen when they
   // somehow land on the URL (old bookmark, manual typing).
   const canViewAdmin = hasPlatformPermission(user, "admin.view");
+  // Two-branch guard: AppShell can't redirect from a null render, so we
+  // explicitly send unauthenticated visitors to /login and authenticated
+  // users without admin.view to /dashboard. Pre-existing bug: previous
+  // single-branch effect skipped the !user case entirely.
   useEffect(() => {
-    if (!authLoading && user && !canViewAdmin) {
+    if (authLoading) return;
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+    if (!canViewAdmin) {
       router.replace("/dashboard");
+      return;
     }
   }, [user, authLoading, canViewAdmin, router]);
 

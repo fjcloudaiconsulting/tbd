@@ -40,9 +40,19 @@ export default function SystemHubPage() {
   // the hub shell to a user who can't open any sub-page.
   const canViewHub = hasPlatformPermission(user, "admin.view");
 
+  // Two-branch guard: AppShell can't redirect from a null render, so we
+  // explicitly send unauthenticated visitors to /login and authenticated
+  // users without admin.view to /dashboard. Render-null below stays put
+  // while either redirect resolves.
   useEffect(() => {
-    if (!loading && user && !canViewHub) {
+    if (loading) return;
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+    if (!canViewHub) {
       router.replace("/dashboard");
+      return;
     }
   }, [user, loading, canViewHub, router]);
 
