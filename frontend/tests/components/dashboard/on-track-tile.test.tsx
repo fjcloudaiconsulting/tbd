@@ -58,9 +58,9 @@ describe("OnTrackTile — verdict thresholds (current period, anchored on actual
 });
 
 describe("OnTrackTile — verdict ignores projection (the user-reported bug)", () => {
-  // Bug: a fully-pending month (executed=0) used to read as OVER BUDGET because
-  // the projected expense (settled + pending + remaining recurring fires)
-  // exceeded the plan. The verdict now anchors on settled spending only.
+  // Bug history: a fully-pending month (executed=0) used to read as OVER
+  // BUDGET because projected expense exceeded the plan. Verdict anchors
+  // on settled spending only — projection is supporting info.
 
   it("ON TRACK when nothing has actually been spent yet, even with projected > plan", () => {
     render(
@@ -72,11 +72,10 @@ describe("OnTrackTile — verdict ignores projection (the user-reported bug)", (
       />,
     );
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^ON TRACK/);
-    // Projected stat still shows the number, but muted (informational only).
-    const projectedLabel = screen.getByText(/^PROJECTED$/);
-    const projectedValue = projectedLabel.parentElement?.querySelectorAll("p")[1];
-    expect(projectedValue?.textContent).toMatch(/1,050/);
-    expect(projectedValue?.className).toMatch(/text-text-muted/);
+    const expectedLabel = screen.getByText(/^Expected spending$/i);
+    const expectedValue = expectedLabel.parentElement?.querySelectorAll("p")[1];
+    expect(expectedValue?.textContent).toMatch(/1,050/);
+    expect(expectedValue?.className).toMatch(/text-text-muted/);
   });
 
   it("OVER BUDGET when settled spending alone exceeds the plan", () => {
@@ -90,67 +89,10 @@ describe("OnTrackTile — verdict ignores projection (the user-reported bug)", (
     );
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^OVER BUDGET/);
   });
-
-  it("ON TRACK with projected over plan: variance is favorable, no danger color anywhere", () => {
-    const { container } = render(
-      <OnTrackTile
-        {...defaults({
-          forecastPlan: { total_planned_expense: "561.86" },
-          projection: { executed_expense: "300", forecast_expense: "900" },
-        })}
-      />,
-    );
-    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^ON TRACK/);
-    // Variance under plan, accent (favorable) color, no danger.
-    expect(screen.getByText(/under plan/i)).toBeInTheDocument();
-    expect(container.querySelector(".text-danger")).toBeNull();
-  });
-
-  it("PROJECTED stat carries 'projected end-of-month' sublabel and is muted", () => {
-    render(
-      <OnTrackTile
-        {...defaults({
-          forecastPlan: PLAN_1000,
-          projection: { executed_expense: "300", forecast_expense: "900" },
-        })}
-      />,
-    );
-    expect(screen.getByText(/projected end-of-month/i)).toBeInTheDocument();
-    const projectedLabel = screen.getByText(/^PROJECTED$/);
-    const projectedValue = projectedLabel.parentElement?.querySelectorAll("p")[1];
-    expect(projectedValue?.className).toMatch(/text-text-muted/);
-  });
 });
 
-describe("OnTrackTile — variance and column labels", () => {
-  it("renders Variance with brass + 'under plan' sublabel when projection is favorable", () => {
-    render(
-      <OnTrackTile
-        {...defaults({
-          forecastPlan: PLAN_1000,
-          projection: { executed_expense: "300", forecast_expense: "850" },
-        })}
-      />,
-    );
-    expect(screen.getByText(/^\+/)).toHaveClass("text-accent");
-    expect(screen.getByText(/under plan/i)).toBeInTheDocument();
-  });
-
-  it("renders Variance with danger + 'over plan' sublabel when actual spending is unfavorable", () => {
-    render(
-      <OnTrackTile
-        {...defaults({
-          forecastPlan: PLAN_1000,
-          projection: { executed_expense: "1200", forecast_expense: "1200" },
-        })}
-      />,
-    );
-    const variance = screen.getByText(/^−/);
-    expect(variance).toHaveClass("text-danger");
-    expect(screen.getByText(/over plan/i)).toBeInTheDocument();
-  });
-
-  it("uses 'Projected spend' (not 'end-of-period balance') and renders four columns", () => {
+describe("OnTrackTile — simplified column set", () => {
+  it("current period with plan + projection renders three plain-language columns", () => {
     render(
       <OnTrackTile
         {...defaults({
@@ -159,26 +101,53 @@ describe("OnTrackTile — variance and column labels", () => {
         })}
       />,
     );
-    expect(screen.getByText(/^PLAN$/)).toBeInTheDocument();
-    expect(screen.getByText(/^SPENT SO FAR$/)).toBeInTheDocument();
-    expect(screen.getByText(/^VARIANCE$/)).toBeInTheDocument();
-    expect(screen.getByText(/^PROJECTED$/)).toBeInTheDocument();
-    expect(screen.queryByText(/end.of.period balance/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/^Planned spending$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Spent so far$/i)).toBeInTheDocument();
+    expect(screen.getByText(/^Expected spending$/i)).toBeInTheDocument();
+  });
+
+  it("does not surface VARIANCE, source labels, or technical (?) markers", () => {
+    const { container } = render(
+      <OnTrackTile
+        {...defaults({
+          forecastPlan: PLAN_1000,
+          projection: { executed_expense: "500", forecast_expense: "950" },
+        })}
+      />,
+    );
+    expect(screen.queryByText(/^VARIANCE$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^PROJECTED$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^under plan$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^over plan$/i)).not.toBeInTheDocument();
+    expect(container.textContent).not.toContain("(?)");
+  });
+
+  it("renders a single 'View forecast details' link routing to /forecast-plans", () => {
+    render(
+      <OnTrackTile
+        {...defaults({
+          forecastPlan: PLAN_1000,
+          projection: { executed_expense: "500", forecast_expense: "950" },
+        })}
+      />,
+    );
+    const link = screen.getByRole("link", { name: /view forecast details/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute("href", "/forecast-plans");
   });
 });
 
 describe("OnTrackTile — degraded states", () => {
-  it("no-plan state: suppresses Spent so far (no source independent of projection) and shows the Set-one-up CTA", () => {
+  it("no-plan state: suppresses Spent so far and shows the Set-one-up CTA", () => {
     render(<OnTrackTile {...defaults({ forecastPlan: null, projection: null })} />);
     expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
     expect(screen.getByText(/No plan for this period\. Set one up/)).toBeInTheDocument();
-    // Spent so far renders the muted em-dash placeholder, not a number
-    const spentLabel = screen.getByText(/^SPENT SO FAR$/);
+    const spentLabel = screen.getByText(/^Spent so far$/i);
     const spentValue = spentLabel.parentElement?.querySelectorAll("p")[1];
     expect(spentValue?.textContent).toBe("—");
   });
 
-  it("projection-fail state: plan stays, Spent/Variance/Projected suppress, retry button visible", () => {
+  it("projection-fail state: plan stays, retry button visible, no verdict heading", () => {
     render(
       <OnTrackTile
         {...defaults({
@@ -189,12 +158,9 @@ describe("OnTrackTile — degraded states", () => {
       />,
     );
     expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
-    expect(screen.getByText(/Projection unavailable\./)).toBeInTheDocument();
+    expect(screen.getByText(/Forecast unavailable\./)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
-    // Plan column shows real value
-    expect(screen.getByText(/PLAN$/i)).toBeInTheDocument();
-    // Spent so far is suppressed — em-dash placeholder
-    const spentLabel = screen.getByText(/^SPENT SO FAR$/);
+    const spentLabel = screen.getByText(/^Spent so far$/i);
     const spentValue = spentLabel.parentElement?.querySelectorAll("p")[1];
     expect(spentValue?.textContent).toBe("—");
   });
@@ -214,7 +180,7 @@ describe("OnTrackTile — degraded states", () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
-  it("future period: shows Plan ahead CTA, suppresses verdict + variance + projected", () => {
+  it("future period: shows Plan ahead CTA, suppresses verdict + Expected spending", () => {
     render(
       <OnTrackTile
         {...defaults({
@@ -225,14 +191,12 @@ describe("OnTrackTile — degraded states", () => {
     );
     expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /plan ahead/i })).toBeInTheDocument();
+    expect(screen.queryByText(/^Expected spending$/i)).not.toBeInTheDocument();
   });
 });
 
 describe("OnTrackTile — past period", () => {
   it("uses executed_expense (not forecast_expense) for the verdict on closed periods", () => {
-    // executed_expense alone = 1100/1000 = 1.10 → OVER BUDGET.
-    // forecast_expense (used in current period) would be 800/1000 = 0.80 → ON TRACK.
-    // Past-period branch must NOT pick the projection.
     render(
       <OnTrackTile
         {...defaults({
@@ -275,7 +239,7 @@ describe("OnTrackTile — past period", () => {
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(/^ENDED ON TRACK/);
   });
 
-  it("renders FINAL SPENT column and suppresses PROJECTED column", () => {
+  it("renders Final spent, no Expected spending column", () => {
     render(
       <OnTrackTile
         {...defaults({
@@ -285,9 +249,9 @@ describe("OnTrackTile — past period", () => {
         })}
       />,
     );
-    expect(screen.getByText(/^FINAL SPENT$/)).toBeInTheDocument();
-    expect(screen.queryByText(/^PROJECTED$/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^SPENT SO FAR$/)).not.toBeInTheDocument();
+    expect(screen.getByText(/^Final spent$/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Expected spending$/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Spent so far$/i)).not.toBeInTheDocument();
   });
 });
 
