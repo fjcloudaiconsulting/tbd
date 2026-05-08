@@ -207,15 +207,15 @@ export default function CategoriesPage() {
             const Icon = (master.slug && CATEGORY_ICONS[master.slug]) || Tag;
             return (
               <div key={master.id} className={card}>
-                <div className={`flex flex-wrap items-center justify-between gap-2 ${cardHeader}`}>
-                  <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                <div data-testid={`master-row-${master.id}`} className={`flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between ${cardHeader}`}>
+                  <div className="flex min-w-0 w-full items-center gap-2.5 sm:w-auto sm:flex-1">
                     <Icon className="h-4 w-4 flex-shrink-0 text-text-muted" />
                     {editingCatId === master.id ? (
                       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                         <input type="text" value={editCatName} onChange={(e) => setEditCatName(e.target.value)} className={`min-w-0 flex-1 text-sm ${input}`} autoFocus
                           onKeyDown={(e) => { if (e.key === "Enter") handleEditCat(master.id); if (e.key === "Escape") setEditingCatId(null); }} />
-                        <button onClick={() => handleEditCat(master.id)} className="text-xs text-accent min-h-[44px] md:min-h-0">Save</button>
-                        <button onClick={() => setEditingCatId(null)} className="text-xs text-text-muted min-h-[44px] md:min-h-0">Cancel</button>
+                        <button onClick={() => handleEditCat(master.id)} className="inline-flex min-h-[44px] items-center px-1 text-xs text-accent md:min-h-0">Save</button>
+                        <button onClick={() => setEditingCatId(null)} className="inline-flex min-h-[44px] items-center px-1 text-xs text-text-muted md:min-h-0">Cancel</button>
                       </div>
                     ) : (
                       <>
@@ -225,15 +225,15 @@ export default function CategoriesPage() {
                       </>
                     )}
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 md:gap-3">
+                  <div data-testid={`master-actions-${master.id}`} className="flex flex-wrap items-center gap-1 sm:gap-2 md:gap-3">
                     <button
                       onClick={() => { setAddingToMaster(addingToMaster === master.id ? null : master.id); setNewSubName(""); setNewSubDesc(""); }}
-                      className="text-xs text-accent hover:text-accent-hover min-h-[44px] md:min-h-0"
+                      className="inline-flex min-h-[44px] items-center px-2 text-xs text-accent hover:text-accent-hover md:min-h-0 md:px-0"
                     >
                       {addingToMaster === master.id ? "Cancel" : "+ Add Sub"}
                     </button>
-                    <button onClick={() => { setEditingCatId(master.id); setEditCatName(master.name); }} className="text-xs text-text-muted hover:text-accent min-h-[44px] md:min-h-0">Edit</button>
-                    <button onClick={() => setConfirmDeleteId(master.id)} aria-label={`Delete ${master.name}`} className="text-xs text-text-muted hover:text-danger min-h-[44px] md:min-h-0">Delete</button>
+                    <button onClick={() => { setEditingCatId(master.id); setEditCatName(master.name); }} className="inline-flex min-h-[44px] items-center px-2 text-xs text-text-muted hover:text-accent md:min-h-0 md:px-0">Edit</button>
+                    <button onClick={() => setConfirmDeleteId(master.id)} aria-label={`Delete ${master.name}`} className="inline-flex min-h-[44px] items-center px-2 text-xs text-text-muted hover:text-danger md:min-h-0 md:px-0">Delete</button>
                   </div>
                 </div>
 
@@ -259,13 +259,13 @@ export default function CategoriesPage() {
                   {subs.length > 0 ? (
                     <div className="space-y-0.5">
                       {subs.map((sub) => (
-                        <div key={sub.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md px-3 py-2 transition-colors hover:bg-surface-raised">
+                        <div key={sub.id} data-testid={`sub-row-${sub.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md px-3 py-2 transition-colors hover:bg-surface-raised">
                           {editingCatId === sub.id ? (
                             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                               <input type="text" value={editCatName} onChange={(e) => setEditCatName(e.target.value)} className={`min-w-0 flex-1 text-sm ${input}`} autoFocus
                                 onKeyDown={(e) => { if (e.key === "Enter") handleEditCat(sub.id); if (e.key === "Escape") setEditingCatId(null); }} />
-                              <button onClick={() => handleEditCat(sub.id)} className="text-xs text-accent min-h-[44px] md:min-h-0">Save</button>
-                              <button onClick={() => setEditingCatId(null)} className="text-xs text-text-muted min-h-[44px] md:min-h-0">Cancel</button>
+                              <button onClick={() => handleEditCat(sub.id)} className="inline-flex min-h-[44px] items-center px-2 text-xs text-accent md:min-h-0 md:px-0">Save</button>
+                              <button onClick={() => setEditingCatId(null)} className="inline-flex min-h-[44px] items-center px-2 text-xs text-text-muted md:min-h-0 md:px-0">Cancel</button>
                             </div>
                           ) : (
                             <>
@@ -274,9 +274,9 @@ export default function CategoriesPage() {
                                 {sub.description && <span className="ml-2 text-xs text-text-muted">{sub.description}</span>}
                                 <span className="ml-2 text-xs text-text-muted" title={`${sub.transaction_count} transaction(s)`}>{sub.transaction_count}</span>
                               </div>
-                              <div className="flex flex-wrap gap-2">
-                                <button onClick={() => { setEditingCatId(sub.id); setEditCatName(sub.name); }} className="text-xs text-text-muted hover:text-accent min-h-[44px] md:min-h-0">Edit</button>
-                                <button onClick={() => setConfirmDeleteId(sub.id)} aria-label={`Delete ${sub.name}`} className="text-xs text-text-muted hover:text-danger min-h-[44px] md:min-h-0">Delete</button>
+                              <div data-testid={`sub-actions-${sub.id}`} className="flex flex-wrap gap-1 sm:gap-2">
+                                <button onClick={() => { setEditingCatId(sub.id); setEditCatName(sub.name); }} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center px-2 text-xs text-text-muted hover:text-accent md:min-h-0 md:min-w-0 md:px-0">Edit</button>
+                                <button onClick={() => setConfirmDeleteId(sub.id)} aria-label={`Delete ${sub.name}`} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center px-2 text-xs text-text-muted hover:text-danger md:min-h-0 md:min-w-0 md:px-0">Delete</button>
                               </div>
                             </>
                           )}
