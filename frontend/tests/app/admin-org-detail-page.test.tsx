@@ -17,8 +17,9 @@ vi.mock("@/components/auth/AuthProvider", async () => {
 });
 
 const pushMock = vi.fn();
+const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: pushMock, replace: vi.fn() }),
+  useRouter: () => ({ push: pushMock, replace: replaceMock }),
   useParams: () => ({ id: "42" }),
   usePathname: () => "/admin/orgs/42",
 }));
@@ -66,11 +67,49 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
   beforeEach(() => {
     apiFetchMock.mockReset();
     pushMock.mockReset();
+    replaceMock.mockReset();
     useAuthMock.mockReturnValue({
       user: SUPERADMIN as never,
       loading: false, needsSetup: false,
       login: vi.fn(), register: vi.fn(), logout: vi.fn(), refreshMe: vi.fn(),
     });
+  });
+
+  it("redirects non-superadmin users without orgs.manage away from the page", async () => {
+    useAuthMock.mockReturnValue({
+      user: { ...SUPERADMIN, is_superadmin: false } as never,
+      loading: false, needsSetup: false,
+      login: vi.fn(), register: vi.fn(), logout: vi.fn(), refreshMe: vi.fn(),
+    });
+
+    render(<AdminOrgDetailPage />);
+
+    await waitFor(() => {
+      expect(replaceMock).toHaveBeenCalledWith("/dashboard");
+    });
+  });
+
+  it("renders for a non-superadmin who carries orgs.manage in permissions", async () => {
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === `/api/v1/admin/orgs/42/feature-state`) return Promise.resolve(FEATURE_STATE);
+      if (url.startsWith("/api/v1/admin/orgs/42")) return Promise.resolve(DETAIL);
+      if (url === "/api/v1/plans") return Promise.resolve([{ id: 1, slug: "free", name: "Free" }]);
+      return Promise.resolve(undefined);
+    }) as never);
+    useAuthMock.mockReturnValue({
+      user: {
+        ...SUPERADMIN,
+        is_superadmin: false,
+        permissions: ["orgs.manage"],
+      } as never,
+      loading: false, needsSetup: false,
+      login: vi.fn(), register: vi.fn(), logout: vi.fn(), refreshMe: vi.fn(),
+    });
+
+    render(<AdminOrgDetailPage />);
+
+    await screen.findByRole("heading", { name: "Acme" });
+    expect(replaceMock).not.toHaveBeenCalledWith("/dashboard");
   });
 
   it("disables the delete button until the org name is typed exactly", async () => {

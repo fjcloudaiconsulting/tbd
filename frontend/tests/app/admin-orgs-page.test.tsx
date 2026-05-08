@@ -72,7 +72,7 @@ describe("AdminOrgsPage", () => {
     expect(screen.getByText("2 / 3")).toBeInTheDocument();
   });
 
-  it("redirects non-superadmin users away from the page", async () => {
+  it("redirects non-superadmin users without orgs.view away from the page", async () => {
     useAuthMock.mockReturnValue({
       user: { ...SUPERADMIN, is_superadmin: false } as never,
       loading: false, needsSetup: false,
@@ -84,6 +84,35 @@ describe("AdminOrgsPage", () => {
     await waitFor(() => {
       expect(replaceMock).toHaveBeenCalledWith("/dashboard");
     });
+  });
+
+  it("renders for a non-superadmin who carries orgs.view in permissions", async () => {
+    apiFetchMock.mockResolvedValueOnce({
+      items: [
+        {
+          id: 11, name: "Beta Co", plan_slug: "free",
+          subscription_status: "active", trial_end: null,
+          user_count: 1, active_user_count: 1,
+          created_at: "2026-04-15T10:00:00",
+          last_user_created_at: "2026-04-15T10:00:00",
+        },
+      ],
+      total: 1, limit: 50, offset: 0,
+    } as never);
+    useAuthMock.mockReturnValue({
+      user: {
+        ...SUPERADMIN,
+        is_superadmin: false,
+        permissions: ["orgs.view"],
+      } as never,
+      loading: false, needsSetup: false,
+      login: vi.fn(), register: vi.fn(), logout: vi.fn(), refreshMe: vi.fn(),
+    });
+
+    render(<AdminOrgsPage />);
+
+    await screen.findByText("Beta Co");
+    expect(replaceMock).not.toHaveBeenCalledWith("/dashboard");
   });
 
   it("sweeps expired overrides and shows the deleted count", async () => {

@@ -8,7 +8,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { isSuperadmin } from "@/lib/auth";
+import { hasPlatformPermission } from "@/lib/auth";
 import {
   btnSecondary,
   card,
@@ -77,13 +77,13 @@ export default function AdminOrgsPage() {
       router.replace("/login");
       return;
     }
-    if (!isSuperadmin(user)) {
+    if (!hasPlatformPermission(user, "orgs.view")) {
       router.replace("/dashboard");
     }
   }, [loading, user, router]);
 
   useEffect(() => {
-    if (loading || !user || !isSuperadmin(user)) return;
+    if (loading || !user || !hasPlatformPermission(user, "orgs.view")) return;
     setFetching(true);
     const params = new URLSearchParams({
       limit: String(PAGE_SIZE),
@@ -96,7 +96,7 @@ export default function AdminOrgsPage() {
       .finally(() => setFetching(false));
   }, [loading, user, q, offset]);
 
-  if (loading || !user || !isSuperadmin(user)) {
+  if (loading || !user || !hasPlatformPermission(user, "orgs.view")) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Spinner />

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { hasPlatformPermission } from "@/lib/auth";
 import { card, cardTitle, error as errorCls } from "@/lib/styles";
 
 type HealthCell = { ok: boolean; latency_ms?: number; error?: string };
@@ -64,18 +65,19 @@ export default function AdminDashboardPage() {
   const [error, setError] = useState("");
   const [fetching, setFetching] = useState(true);
 
-  // Client-side guard: redirect non-superadmins to /dashboard. The
-  // backend gate on admin.view is still authoritative — this just
+  // Client-side guard: redirect users without admin.view to /dashboard.
+  // The backend gate on admin.view is still authoritative — this just
   // keeps a regular user from seeing a 403 error screen when they
   // somehow land on the URL (old bookmark, manual typing).
+  const canViewAdmin = hasPlatformPermission(user, "admin.view");
   useEffect(() => {
-    if (!authLoading && user && !user.is_superadmin) {
+    if (!authLoading && user && !canViewAdmin) {
       router.replace("/dashboard");
     }
-  }, [user, authLoading, router]);
+  }, [user, authLoading, canViewAdmin, router]);
 
   useEffect(() => {
-    if (authLoading || !user?.is_superadmin) return;
+    if (authLoading || !canViewAdmin) return;
     let cancelled = false;
     (async () => {
       try {
@@ -90,13 +92,13 @@ export default function AdminDashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, user]);
+  }, [authLoading, canViewAdmin]);
 
   // Match the guard pattern used by /system/plans: render nothing until
-  // auth has settled AND the user is confirmed superadmin. Prevents a
-  // non-superadmin from briefly seeing the admin page shell before the
-  // effect above redirects them to /dashboard.
-  if (authLoading || !user?.is_superadmin) return null;
+  // auth has settled AND the user is confirmed to hold admin.view.
+  // Prevents a non-permitted user from briefly seeing the admin page
+  // shell before the effect above redirects them to /dashboard.
+  if (authLoading || !canViewAdmin) return null;
 
   return (
     <AppShell>

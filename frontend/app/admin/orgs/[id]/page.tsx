@@ -9,7 +9,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import ChangePlanModal from "@/components/admin/ChangePlanModal";
 import FeatureOverridesCard from "@/components/admin/FeatureOverridesCard";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
-import { isSuperadmin } from "@/lib/auth";
+import { hasPlatformPermission } from "@/lib/auth";
 import {
   btnPrimary,
   btnSecondary,
@@ -90,7 +90,7 @@ export default function AdminOrgDetailPage() {
       router.replace("/login");
       return;
     }
-    if (!isSuperadmin(user)) {
+    if (!hasPlatformPermission(user, "orgs.manage")) {
       router.replace("/dashboard");
     }
   }, [loading, user, router]);
@@ -113,7 +113,7 @@ export default function AdminOrgDetailPage() {
   }
 
   useEffect(() => {
-    if (loading || !user || !isSuperadmin(user) || !orgId) return;
+    if (loading || !user || !hasPlatformPermission(user, "orgs.manage") || !orgId) return;
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, user, orgId]);
@@ -161,7 +161,7 @@ export default function AdminOrgDetailPage() {
     }
   }
 
-  if (loading || !user || !isSuperadmin(user)) {
+  if (loading || !user || !hasPlatformPermission(user, "orgs.manage")) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Spinner />

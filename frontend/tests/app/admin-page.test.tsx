@@ -29,7 +29,7 @@ vi.mock("@/lib/api", async () => {
 });
 
 
-function makeUser(isSuperadmin: boolean) {
+function makeUser(opts: { isSuperadmin?: boolean; permissions?: string[] } = {}) {
   return {
     id: 1,
     username: "alice",
@@ -43,12 +43,13 @@ function makeUser(isSuperadmin: boolean) {
     org_id: 1,
     org_name: "Test Org",
     billing_cycle_day: 1,
-    is_superadmin: isSuperadmin,
+    is_superadmin: opts.isSuperadmin ?? false,
     is_active: true,
     mfa_enabled: false,
     subscription_status: null,
     subscription_plan: null,
     trial_end: null,
+    permissions: opts.permissions,
   };
 }
 
@@ -62,9 +63,9 @@ describe("/admin page", () => {
     vi.mocked(useRouter).mockReturnValue({ replace } as never);
   });
 
-  it("redirects non-superadmins without rendering the admin shell", async () => {
+  it("redirects users without admin.view without rendering the admin shell", async () => {
     vi.mocked(useAuth).mockReturnValue({
-      user: makeUser(false),
+      user: makeUser({ isSuperadmin: false }),
       loading: false,
     } as never);
 
@@ -75,9 +76,34 @@ describe("/admin page", () => {
     expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
   });
 
+  it("loads and renders dashboard data for non-superadmins who carry admin.view", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: makeUser({ isSuperadmin: false, permissions: ["admin.view"] }),
+      loading: false,
+    } as never);
+    vi.mocked(apiFetch).mockResolvedValue({
+      kpis: {
+        total_orgs: 2,
+        total_users: 5,
+        active_subscriptions: 1,
+        signups_last_7d: 0,
+      },
+      health: {
+        db: { ok: true, latency_ms: 1.2 },
+        redis: { ok: true, latency_ms: 0.4 },
+      },
+    });
+
+    render(<AdminDashboardPage />);
+
+    expect(await screen.findByText("Admin")).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
+    expect(apiFetch).toHaveBeenCalledWith("/api/v1/admin/dashboard");
+  });
+
   it("loads and renders dashboard data for superadmins", async () => {
     vi.mocked(useAuth).mockReturnValue({
-      user: makeUser(true),
+      user: makeUser({ isSuperadmin: true }),
       loading: false,
     } as never);
     vi.mocked(apiFetch).mockResolvedValue({
@@ -110,7 +136,7 @@ describe("/admin page", () => {
 
   it("surfaces fetch failures for superadmins", async () => {
     vi.mocked(useAuth).mockReturnValue({
-      user: makeUser(true),
+      user: makeUser({ isSuperadmin: true }),
       loading: false,
     } as never);
     vi.mocked(apiFetch).mockRejectedValue(new Error("dashboard blew up"));

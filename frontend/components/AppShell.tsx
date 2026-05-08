@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import TrialBanner from "@/components/ui/TrialBanner";
-import { isSuperadmin as checkSuperadmin } from "@/lib/auth";
+import { hasPlatformPermission } from "@/lib/auth";
 
 const navItems = [
   {
@@ -76,10 +76,23 @@ const navItems = [
   },
 ];
 
-const systemItems = [
+// Per-item permission gating: each System nav link declares the
+// platform permission its destination requires. AppShell renders only
+// the items whose permission the current user holds. A user with one
+// permission (e.g. audit.view) sees just that link; the System section
+// header itself appears whenever the filtered list is non-empty.
+type SystemNavItem = {
+  href: string;
+  label: string;
+  permission: string;
+  icon: React.ReactNode;
+};
+
+const systemItems: readonly SystemNavItem[] = [
   {
     href: "/admin",
     label: "Admin",
+    permission: "admin.view",
     icon: (
       <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 6a7.5 7.5 0 1 0 7.5 7.5h-7.5V6Z" />
@@ -90,6 +103,7 @@ const systemItems = [
   {
     href: "/admin/orgs",
     label: "Organizations",
+    permission: "orgs.view",
     icon: (
       <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21" />
@@ -99,6 +113,7 @@ const systemItems = [
   {
     href: "/admin/audit",
     label: "Audit log",
+    permission: "audit.view",
     icon: (
       <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2Z" />
@@ -108,6 +123,7 @@ const systemItems = [
   {
     href: "/system/plans",
     label: "Plans",
+    permission: "plans.manage",
     icon: (
       <svg className="h-[18px] w-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z" />
@@ -142,7 +158,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const superadmin = checkSuperadmin(user);
+  // Filter System nav items per-link. A user with `audit.view` but no
+  // `orgs.view` should see Audit log without seeing Organizations — and
+  // a user with no platform permissions should not see the System
+  // section at all (visibleSystemItems is empty, header hidden).
+  const visibleSystemItems = systemItems.filter((item) =>
+    hasPlatformPermission(user, item.permission),
+  );
+  const showSystemSection = visibleSystemItems.length > 0;
 
   // All hrefs that could potentially match the current pathname.
   // Used to break ties: when both `/admin` and `/admin/orgs` would
@@ -198,14 +221,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </Link>
           ))}
 
-          {superadmin && (
+          {showSystemSection && (
             <>
               <div className="pb-1 pt-6 px-3">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-sidebar-muted">
                   System
                 </span>
               </div>
-              {systemItems.map((item) => (
+              {visibleSystemItems.map((item) => (
                 <Link
                   key={item.href}
                   href={item.href}
