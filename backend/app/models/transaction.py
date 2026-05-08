@@ -12,9 +12,10 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    event,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Mapper, mapped_column, relationship
 
 from app.models.base import Base
 
@@ -113,3 +114,24 @@ class Transaction(Base):
     linked_transaction: Mapped[Optional["Transaction"]] = relationship(
         foreign_keys=[linked_transaction_id], remote_side="Transaction.id"
     )
+
+
+def _enforce_settled_implies_settled_date(_mapper: Mapper, _conn, target: Transaction) -> None:
+    """SETTLED-implies-settled_date invariant guard at flush time.
+
+    Mirrors the DB CHECK constraint added in migration 036, but raises
+    a clear ValueError before the row hits the database so callers see
+    a typed Python error instead of an opaque IntegrityError. Runs at
+    flush time (not on attribute assignment) so the check sees the
+    final, post-construction state of both columns and is independent
+    of kwarg ordering in ``Transaction(...)`` constructors.
+    """
+    if target.status == TransactionStatus.SETTLED and target.settled_date is None:
+        raise ValueError(
+            "Transaction with status=SETTLED must have a settled_date "
+            "(SETTLED-implies-settled_date invariant)."
+        )
+
+
+event.listen(Transaction, "before_insert", _enforce_settled_implies_settled_date)
+event.listen(Transaction, "before_update", _enforce_settled_implies_settled_date)

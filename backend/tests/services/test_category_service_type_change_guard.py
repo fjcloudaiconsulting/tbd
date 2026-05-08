@@ -120,7 +120,7 @@ async def test_change_to_both_always_safe(db_session: AsyncSession) -> None:
         org_id=seed["org_id"], account_id=seed["acct_id"],
         category_id=cat.id, description="x", amount=Decimal("10"),
         type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
-        date=date(2026, 5, 1),
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
     ))
     await db_session.commit()
     await category_service.validate_category_type_change(
@@ -151,7 +151,7 @@ async def test_change_rejected_when_expense_transaction_blocks(
         org_id=seed["org_id"], account_id=seed["acct_id"],
         category_id=cat.id, description="x", amount=Decimal("10"),
         type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
-        date=date(2026, 5, 1),
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
     ))
     await db_session.commit()
     with pytest.raises(ValidationError):
@@ -170,7 +170,7 @@ async def test_both_to_expense_rejected_when_income_txn_exists(
         org_id=seed["org_id"], account_id=seed["acct_id"],
         category_id=cat.id, description="pay", amount=Decimal("100"),
         type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
-        date=date(2026, 5, 1),
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
     ))
     await db_session.commit()
     with pytest.raises(ValidationError):
@@ -189,7 +189,7 @@ async def test_both_to_income_rejected_when_expense_txn_exists(
         org_id=seed["org_id"], account_id=seed["acct_id"],
         category_id=cat.id, description="buy", amount=Decimal("10"),
         type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
-        date=date(2026, 5, 1),
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
     ))
     await db_session.commit()
     with pytest.raises(ValidationError):
@@ -290,13 +290,13 @@ async def test_transfer_leg_blocks_any_move_off_both(
         org_id=seed["org_id"], account_id=seed["acct_id"],
         category_id=cat.id, description="xfer", amount=Decimal("50"),
         type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
-        date=date(2026, 5, 1),
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
     )
     leg_in = Transaction(
         org_id=seed["org_id"], account_id=acct2.id,
         category_id=cat.id, description="xfer", amount=Decimal("50"),
         type=TransactionType.INCOME, status=TransactionStatus.SETTLED,
-        date=date(2026, 5, 1),
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
     )
     db_session.add_all([leg_out, leg_in])
     await db_session.flush()
@@ -336,7 +336,7 @@ async def test_master_change_rejected_by_child_reference(
         org_id=seed["org_id"], account_id=seed["acct_id"],
         category_id=child.id, description="x", amount=Decimal("10"),
         type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
-        date=date(2026, 5, 1),
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
     ))
     await db_session.commit()
     with pytest.raises(ValidationError):
@@ -362,7 +362,7 @@ async def test_master_change_succeeds_when_children_compatible(
         org_id=seed["org_id"], account_id=seed["acct_id"],
         category_id=child.id, description="x", amount=Decimal("10"),
         type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
-        date=date(2026, 5, 1),
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
     ))
     await db_session.commit()
     await category_service.validate_category_type_change(

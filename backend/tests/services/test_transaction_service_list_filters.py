@@ -191,24 +191,12 @@ async def test_pending_no_settled_date_falls_back_to_date(db_session, world):
     assert [r.description for r in rows] == ["pending-null"]
 
 
-async def test_settled_no_settled_date_defensive_fallback(db_session, world):
-    """SETTLED, settled_date IS NULL, date inside -> INCLUDED.
-
-    Legacy/COALESCE defensive fallback: if a settled row predates the
-    settled_date column or was inserted without one, the period bucket
-    falls back to ``date``.
-    """
-    tx = _make_tx(
-        world, dt=date(2026, 5, 12), settled_date=None,
-        status=TransactionStatus.SETTLED, description="settled-null",
-    )
-    db_session.add(tx)
-    await db_session.flush()
-
-    rows = await transaction_service.list_transactions(
-        db_session, world["org"].id, date_from=MAY_FROM, date_to=MAY_TO,
-    )
-    assert [r.description for r in rows] == ["settled-null"]
+# ``test_settled_no_settled_date_defensive_fallback`` was removed when the
+# SETTLED-implies-settled_date invariant was added (migration 036): a SETTLED
+# row with settled_date=NULL is no longer a state the database accepts, so the
+# COALESCE fallback for that case is now unreachable by construction.
+# The COALESCE in ``effective_period_date_expr()`` still serves PENDING rows
+# without an estimate, exercised by ``test_pending_no_settled_date_falls_back_to_date``.
 
 
 async def test_sort_order_uses_effective_date(db_session, world):
@@ -217,9 +205,9 @@ async def test_sort_order_uses_effective_date(db_session, world):
     Construct rows whose ``date`` order disagrees with their effective-date
     order so the assertion fails if the ORDER BY still uses ``Transaction.date``.
     """
-    # tx_a: settled, date=05-15, no settled_date  -> effective 05-15
+    # tx_a: settled, date=05-15, settled_date=05-15  -> effective 05-15
     tx_a = _make_tx(
-        world, dt=date(2026, 5, 15), settled_date=None,
+        world, dt=date(2026, 5, 15), settled_date=date(2026, 5, 15),
         status=TransactionStatus.SETTLED, description="A",
     )
     # tx_b: pending, date=05-05, settled_date=05-25  -> effective 05-25
