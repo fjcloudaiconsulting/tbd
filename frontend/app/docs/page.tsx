@@ -151,6 +151,14 @@ export default function DocsPage() {
               into a recurring template, so the same charge generates
               automatically next period.
             </p>
+            <p>
+              Removing a recurring template only drops future,
+              un-materialized occurrences. Past occurrences stay in
+              your transaction history because they are real money
+              movements, so balances are not affected. This is
+              intentional: the template only schedules what has not
+              happened yet.
+            </p>
 
             <h3>Marking transactions as a transfer pair</h3>
             <p>
