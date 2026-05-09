@@ -708,9 +708,11 @@ export default function DashboardPage() {
           {/* ═══ ROW 2: Accounts sidebar + Forecast card, side-by-side ═══
               Tiles share ONE card with internal divider rows; the
               Forecast card on the right is the numeric authority for
-              Balance + EOMF. 1fr/3fr split — forecast dominates.
+              Balance + EOMF. Layout is three-tier: stacks vertically
+              below `md`, equal 2-up columns from `md` to `lg`, then
+              the 1fr/3fr split (forecast dominates) at `lg` and above.
               items-start so each card sits at its natural height
-              (mismatch is intentional). Stacks vertically below `lg`. */}
+              (mismatch is intentional). */}
           {(() => {
             // Non-primary accounts sort alphabetically by name (locale-
             // aware, case-insensitive). Stable across transactions: a
