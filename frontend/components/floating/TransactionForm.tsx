@@ -17,7 +17,7 @@ import type { Account, Category } from "@/lib/types";
 /**
  * Quick-entry transaction form used inside the FAB SlideInPanel.
  *
- * NOTE — duplication tech debt: the canonical add-transaction form
+ * NOTE, duplication tech debt: the canonical add-transaction form
  * still lives inline inside `frontend/app/transactions/page.tsx` and
  * `frontend/app/dashboard/page.tsx`. Extracting those would touch
  * files currently in flight (Sort/Filters Persistence and Transactions
@@ -104,7 +104,7 @@ export default function TransactionForm({
   // an empty selection.
   useEffect(() => {
     if (accountId === "" && initialAccountId) setAccountId(initialAccountId);
-    // Intentionally not reacting to subsequent activeAccounts changes —
+    // Intentionally not reacting to subsequent activeAccounts changes,
     // we don't want to overwrite a user's manual selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialAccountId]);
@@ -123,7 +123,7 @@ export default function TransactionForm({
   function clearForm() {
     setDescription("");
     setAmount("");
-    // Keep account selection — most users add multiple txs to the same
+    // Keep account selection, most users add multiple txs to the same
     // account in one sitting. Reset category since type may change.
     setCategoryId(defaultCategoryId ?? "");
     setType("expense");

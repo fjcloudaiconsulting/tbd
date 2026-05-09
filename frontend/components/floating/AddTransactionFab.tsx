@@ -10,7 +10,7 @@ import type { Account, Category } from "@/lib/types";
 
 /**
  * Floating "Add Transaction" button. Lives in the bottom-right anchor
- * zone (primary slot — sits at the bottom of the cluster, closest to
+ * zone (primary slot, sits at the bottom of the cluster, closest to
  * the thumb on mobile). Click opens a SlideInPanel with the
  * TransactionForm inside.
  *
@@ -53,7 +53,7 @@ export default function AddTransactionFab({
       setCategories(cats ?? []);
       setLoaded(true);
     } catch {
-      // Swallow load errors silently — the form will render an empty
+      // Swallow load errors silently, the form will render an empty
       // state ("Create at least one account and one category...").
       // Any submit error surfaces inline in the form.
       setLoaded(true);

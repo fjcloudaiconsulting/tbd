@@ -1036,7 +1036,7 @@ export default function DashboardPage() {
         </div>
       )}
       {/*
-        FAB demo mount — Dashboard only for this PR. Broader rollout
+        FAB demo mount, Dashboard only for this PR. Broader rollout
         (FAB on every core money page, Dashboard Quick Add card removal)
         is a follow-up integration PR that waits for Sort/Filters and
         Transactions Layout to stabilize, since both touch the same

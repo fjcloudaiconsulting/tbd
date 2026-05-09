@@ -42,10 +42,10 @@ describe("SlideInPanel", () => {
   it("closes on overlay click but stays open when clicking inside", () => {
     render(<Harness initialOpen={true} />);
     const dialog = screen.getByRole("dialog");
-    // Click inside the dialog — should NOT close.
+    // Click inside the dialog, should NOT close.
     fireEvent.click(dialog);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    // Click on the overlay (the parent of the dialog) — should close.
+    // Click on the overlay (the parent of the dialog), should close.
     const overlay = dialog.parentElement!;
     fireEvent.click(overlay);
     expect(screen.queryByRole("dialog")).toBeNull();

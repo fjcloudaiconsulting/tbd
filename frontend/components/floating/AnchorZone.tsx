@@ -81,7 +81,7 @@ export default function AnchorZone({ children, testId }: AnchorZoneProps) {
     .map(rankChild)
     // Visually we want primary (rank 0) at the BOTTOM. Flex-col-reverse
     // would invert tab order, so we sort descending instead and keep the
-    // natural column. Tab order: secondary first, then primary — matches
+    // natural column. Tab order: secondary first, then primary, matches
     // the visual top-to-bottom flow.
     .sort((a, b) => {
       if (b.rank !== a.rank) return b.rank - a.rank;

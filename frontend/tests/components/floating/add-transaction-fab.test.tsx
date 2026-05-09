@@ -74,7 +74,7 @@ describe("AddTransactionFab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("add-transaction-panel")).toBeInTheDocument();
     });
-    // The panel header surfaces "Add transaction" — distinct from the
+    // The panel header surfaces "Add transaction", distinct from the
     // button's aria-label.
     expect(screen.getByRole("dialog")).toHaveTextContent("Add transaction");
   });
