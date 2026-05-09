@@ -3,6 +3,7 @@
 import { FormEvent, Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
+import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { input, label, btnPrimary, error as errorCls, success } from "@/lib/styles";
@@ -76,9 +77,8 @@ function ResetPasswordForm() {
         {error && <div className={errorCls}>{error}</div>}
         <div>
           <label htmlFor="reset-password" className={label}>New Password</label>
-          <input
+          <PasswordInput
             id="reset-password"
-            type="password"
             required
             minLength={8}
             value={password}
@@ -89,9 +89,8 @@ function ResetPasswordForm() {
         </div>
         <div>
           <label htmlFor="reset-password2" className={label}>Confirm Password</label>
-          <input
+          <PasswordInput
             id="reset-password2"
-            type="password"
             required
             value={password2}
             onChange={(e) => setPassword2(e.target.value)}

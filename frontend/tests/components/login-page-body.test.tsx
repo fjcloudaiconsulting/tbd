@@ -63,7 +63,7 @@ describe("LoginPageBody — email-not-verified flow", () => {
     render(<LoginPageBody />);
 
     const idInput = screen.getByLabelText(/Email or Username/i) as HTMLInputElement;
-    const pwInput = screen.getByLabelText(/Password/i) as HTMLInputElement;
+    const pwInput = screen.getByLabelText("Password") as HTMLInputElement;
 
     fireEvent.change(idInput, { target: { value: "alice" } });
     fireEvent.change(pwInput, { target: { value: "S3cret-Pass!" } });
@@ -102,7 +102,7 @@ describe("LoginPageBody — email-not-verified flow", () => {
     render(<LoginPageBody />);
 
     const idInput = screen.getByLabelText(/Email or Username/i) as HTMLInputElement;
-    const pwInput = screen.getByLabelText(/Password/i) as HTMLInputElement;
+    const pwInput = screen.getByLabelText("Password") as HTMLInputElement;
 
     fireEvent.change(idInput, { target: { value: "alice" } });
     fireEvent.change(pwInput, { target: { value: "S3cret-Pass!" } });
@@ -129,7 +129,7 @@ describe("LoginPageBody — email-not-verified flow", () => {
     fireEvent.change(screen.getByLabelText(/Email or Username/i), {
       target: { value: "alice" },
     });
-    fireEvent.change(screen.getByLabelText(/Password/i), {
+    fireEvent.change(screen.getByLabelText("Password"), {
       target: { value: "wrong" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Sign In" }));
