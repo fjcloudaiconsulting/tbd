@@ -613,7 +613,7 @@ async def promote_to_recurring(
             type=tx.type.value,
             frequency=Frequency(body.frequency),
             next_due_date=body.next_due_date,
-            auto_settle=False,
+            auto_settle=body.auto_settle,
             is_active=True,
         )
         db.add(template)

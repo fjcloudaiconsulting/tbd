@@ -101,14 +101,18 @@ class PromoteToRecurringRequest(BaseModel):
     transaction.recurring_id to the new template).
 
     Account, category, amount, type, and description come from the source
-    transaction. Out of scope: promoting transfer legs, demoting, editing
-    the new template's auto_settle (defaults False — match recurring create).
+    transaction. ``auto_settle`` is optional and defaults to False to match
+    the standalone recurring-create flow; the create-transaction-with-repeat
+    UI passes it through so the user's choice is preserved without needing
+    a separate POST /recurring round-trip. Out of scope: promoting transfer
+    legs, demoting.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     frequency: Literal["weekly", "biweekly", "monthly", "quarterly", "yearly"]
     next_due_date: datetime.date
+    auto_settle: bool = False
 
     @field_validator("next_due_date")
     @classmethod
