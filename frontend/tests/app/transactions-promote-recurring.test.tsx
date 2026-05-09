@@ -305,6 +305,150 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     expect(screen.queryAllByLabelText("Make recurring").length).toBe(0);
   });
 
+  it("create-with-repeat: POST /transactions then POST /promote-to-recurring (NOT POST /recurring)", async () => {
+    // Punch-list ITEM 1 root cause: the old create flow did POST /transactions
+    // followed by POST /api/v1/recurring as INDEPENDENT entities, so the new
+    // tx's recurring_id stayed NULL and a subsequent edit saw the toggle (not
+    // the chip). The fix routes through promote-to-recurring instead so the
+    // source tx is linked to the template via recurring_id immediately.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
+      if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+      if (url === "/api/v1/transactions" && method === "POST") {
+        return makeTx({ id: 555, description: "Repeats coffee" }) as never;
+      }
+      if (
+        url === "/api/v1/transactions/555/promote-to-recurring" &&
+        method === "POST"
+      ) {
+        return makeTx({
+          id: 555,
+          description: "Repeats coffee",
+          recurring_id: 9001,
+        }) as never;
+      }
+      if (url.startsWith("/api/v1/transactions") && method === "GET") return [] as never;
+      return null as never;
+    });
+
+    render(<TransactionsPage />);
+
+    // Open the create form.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /\+ New Transaction/i }),
+      ).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /\+ New Transaction/i }));
+
+    // Fill required fields.
+    fireEvent.change(screen.getByLabelText(/^Description$/i), {
+      target: { value: "Repeats coffee" },
+    });
+    fireEvent.change(screen.getByLabelText(/^Amount$/i), {
+      target: { value: "10.00" },
+    });
+
+    // Tick "Repeats" then submit.
+    fireEvent.click(screen.getByLabelText(/^Repeats$/));
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Add Transaction$/i }),
+    );
+
+    await waitFor(() => {
+      const promoteCall = apiFetchMock.mock.calls.find(
+        (c) =>
+          c[0] === "/api/v1/transactions/555/promote-to-recurring" &&
+          (c[1] as RequestInit | undefined)?.method === "POST",
+      );
+      expect(promoteCall).toBeTruthy();
+    });
+
+    // Crucially, the legacy POST /api/v1/recurring path must NOT be called
+    // — that's what created the orphan template + duplicate-on-edit bug.
+    const legacyCall = apiFetchMock.mock.calls.find(
+      (c) =>
+        c[0] === "/api/v1/recurring" &&
+        (c[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(legacyCall).toBeUndefined();
+
+    // Promote payload carries the form's frequency + auto_settle.
+    const promoteCall = apiFetchMock.mock.calls.find(
+      (c) =>
+        c[0] === "/api/v1/transactions/555/promote-to-recurring" &&
+        (c[1] as RequestInit | undefined)?.method === "POST",
+    )!;
+    const body = JSON.parse((promoteCall[1] as RequestInit).body as string);
+    expect(body.frequency).toBe("monthly");
+    expect(body.next_due_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(body.auto_settle).toBe(false);
+  });
+
+  it("create-with-repeat: forwards auto_settle when the user ticks the box", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
+      if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+      if (url === "/api/v1/transactions" && method === "POST") {
+        return makeTx({ id: 556, description: "Auto-settle me" }) as never;
+      }
+      if (
+        url === "/api/v1/transactions/556/promote-to-recurring" &&
+        method === "POST"
+      ) {
+        return makeTx({
+          id: 556,
+          description: "Auto-settle me",
+          recurring_id: 9002,
+        }) as never;
+      }
+      if (url.startsWith("/api/v1/transactions") && method === "GET") return [] as never;
+      return null as never;
+    });
+
+    render(<TransactionsPage />);
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /\+ New Transaction/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/^Description$/i), {
+      target: { value: "Auto-settle me" },
+    });
+    fireEvent.change(screen.getByLabelText(/^Amount$/i), {
+      target: { value: "20.00" },
+    });
+    fireEvent.click(screen.getByLabelText(/^Repeats$/));
+    fireEvent.click(screen.getByLabelText(/^Auto-settle$/));
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Add Transaction$/i }),
+    );
+
+    await waitFor(() => {
+      const promoteCall = apiFetchMock.mock.calls.find(
+        (c) =>
+          c[0] === "/api/v1/transactions/556/promote-to-recurring" &&
+          (c[1] as RequestInit | undefined)?.method === "POST",
+      );
+      expect(promoteCall).toBeTruthy();
+    });
+
+    const promoteCall = apiFetchMock.mock.calls.find(
+      (c) =>
+        c[0] === "/api/v1/transactions/556/promote-to-recurring" &&
+        (c[1] as RequestInit | undefined)?.method === "POST",
+    )!;
+    const body = JSON.parse((promoteCall[1] as RequestInit).body as string);
+    expect(body.auto_settle).toBe(true);
+  });
+
   it("transfer-leg row: no recurring controls or chip rendered", async () => {
     const expenseLeg = makeTx({
       id: 80, account_id: ACCT_A.id, account_name: ACCT_A.name,

@@ -231,7 +231,7 @@ function TransactionsPageContent() {
           }),
         });
       } else {
-        await apiFetch("/api/v1/transactions", {
+        const created = await apiFetch<Transaction>("/api/v1/transactions", {
           method: "POST",
           body: JSON.stringify({
             account_id: formAccountId,
@@ -243,21 +243,30 @@ function TransactionsPageContent() {
             date: formDate,
           }),
         });
-        // Create recurring template if repeat is enabled
-        if (formRecurring && formMode === "transaction") {
-          await apiFetch("/api/v1/recurring", {
-            method: "POST",
-            body: JSON.stringify({
-              account_id: formAccountId,
-              category_id: formCategoryId,
-              description: formDescription,
-              amount: formAmount,
-              type: formType,
-              frequency: formFrequency,
-              next_due_date: formDate,
-              auto_settle: formAutoSettle,
-            }),
-          });
+        // Promote the new tx to recurring if repeat is enabled. Using
+        // promote-to-recurring (vs a separate POST /recurring) sets
+        // tx.recurring_id on the source transaction so a subsequent edit
+        // shows the "Recurring" chip — preventing the duplicate-template
+        // bug where re-toggling "Make recurring" on edit would create a
+        // second template because the source row stayed unlinked.
+        if (formRecurring && formMode === "transaction" && created?.id) {
+          // next_due_date must be today-or-later (server-side guard).
+          // The Date input is already constrained to today via min=,
+          // but defensively bump back-dated rows to today so the user's
+          // tx still saves cleanly.
+          const today = todayISO();
+          const nextDue = formDate < today ? today : formDate;
+          await apiFetch<Transaction>(
+            `/api/v1/transactions/${created.id}/promote-to-recurring`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                frequency: formFrequency,
+                next_due_date: nextDue,
+                auto_settle: formAutoSettle,
+              }),
+            },
+          );
         }
       }
       setFormDescription("");
@@ -474,8 +483,12 @@ function TransactionsPageContent() {
             },
           );
           // Optimistically reflect the new recurring_id locally so the chip
-          // appears immediately even before loadTransactions resolves.
-          if (promoted) {
+          // appears immediately even before loadTransactions resolves. Only
+          // patch when the response actually includes a non-null recurring_id
+          // — if the body is missing or malformed, fall through to the
+          // loadTransactions(page) refetch below so the row reconciles to
+          // server truth instead of staying optimistically wrong.
+          if (promoted && promoted.recurring_id != null) {
             setTransactions((prev) =>
               prev.map((t) =>
                 t.id === editingId
@@ -1064,7 +1077,21 @@ function TransactionsPageContent() {
                           )}
                         </div>
                       ) : (
-                        <div key={tx.id} className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${tx.status === "pending" ? "opacity-60" : ""}`}>
+                        <div
+                          key={tx.id}
+                          className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${
+                            tx.status === "pending"
+                              ? "[&>*:not(.tx-status-cell)]:opacity-60"
+                              : ""
+                          }`}
+                        >
+                          {/* Pending rows dim every cell except the status pill
+                              via the [&>*:not(.tx-status-cell)] selector above.
+                              CSS opacity composites with ancestor opacity, so a
+                              naive `opacity-60` on the parent + `opacity-100` on
+                              the pill would still paint the pill at 60% (60×100).
+                              Splitting per-child preserves the pill's vivid amber
+                              while keeping the rest of the row dimmed. */}
                           <span className="col-span-1 flex items-center">
                             <input
                               type="checkbox"
@@ -1082,7 +1109,7 @@ function TransactionsPageContent() {
                               : tx.account_name}
                           </span>
                           <span className="col-span-1 text-sm text-text-secondary truncate">{tx.category_name}</span>
-                          <span className="col-span-1 text-center">
+                          <span className="tx-status-cell col-span-1 text-center">
                             {isTransfer ? (
                               <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
                                 {tx.status}
@@ -1279,9 +1306,20 @@ function TransactionsPageContent() {
                       return (
                         <article
                           key={tx.id}
-                          className={`flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm ${tx.status === "pending" ? "opacity-60" : ""}`}
+                          className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm"
                         >
-                          <div className="flex items-start justify-between gap-2">
+                          {/* Pending rows dim the row contents but keep the
+                              status pill at full opacity. CSS opacity composites
+                              with ancestor opacity (60%×100% still paints at
+                              60%), so we cannot rely on a parent opacity-60 +
+                              child opacity-100 override; instead each row segment
+                              that should dim sets its own opacity, and the pill
+                              cell stays untouched. */}
+                          <div
+                            className={`flex items-start justify-between gap-2 ${
+                              tx.status === "pending" ? "opacity-60" : ""
+                            }`}
+                          >
                             <input
                               type="checkbox"
                               aria-label={`Select transaction ${tx.id}`}
@@ -1303,7 +1341,11 @@ function TransactionsPageContent() {
                           </div>
                           <div className="flex items-center gap-2">
                             {tx.category_name && (
-                              <div className="text-xs text-text-secondary truncate">
+                              <div
+                                className={`text-xs text-text-secondary truncate ${
+                                  tx.status === "pending" ? "opacity-60" : ""
+                                }`}
+                              >
                                 {tx.category_name}
                               </div>
                             )}
@@ -1331,7 +1373,11 @@ function TransactionsPageContent() {
                               </button>
                             )}
                           </div>
-                          <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
+                          <div
+                            className={`flex flex-wrap gap-2 pt-2 border-t border-border-subtle ${
+                              tx.status === "pending" ? "opacity-60" : ""
+                            }`}
+                          >
                             <button
                               onClick={() => startEdit(tx)}
                               aria-label={`Edit: ${tx.description}`}

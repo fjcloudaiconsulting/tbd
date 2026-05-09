@@ -232,6 +232,9 @@ async def test_promote_to_recurring_happy_path(session_factory):
 
 @pytest.mark.asyncio
 async def test_promote_to_recurring_rejects_extra_fields(session_factory):
+    """``auto_settle`` is now an accepted field (frontend create-with-repeat
+    forwards the user's toggle). Anything else still gets rejected by
+    `model_config = ConfigDict(extra="forbid")`."""
     seed = await _seed(session_factory)
     tx_id = await _add_tx(
         session_factory,
@@ -246,7 +249,7 @@ async def test_promote_to_recurring_rejects_extra_fields(session_factory):
             json={
                 "frequency": "monthly",
                 "next_due_date": _future_date(),
-                "auto_settle": True,
+                "is_active": False,  # not part of the schema
             },
         )
     assert res.status_code == 422
@@ -374,3 +377,139 @@ async def test_promote_to_recurring_rejects_already_promoted(session_factory):
         )
     assert res.status_code == 400
     assert "already" in res.json()["detail"].lower()
+
+
+# ── round-trip: promote → edit → re-promote rejected ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_promote_then_edit_then_repromote_rejected(session_factory):
+    """Reproduces the punch-list ITEM 1 bug from the API side.
+
+    Scenario:
+      1. Caller has an existing tx
+      2. POST /promote-to-recurring → tx.recurring_id is set, template A created
+      3. PUT /transactions/{id} (edit description) → recurring_id MUST persist
+      4. POST /promote-to-recurring again → MUST 400 (no template B)
+
+    Pre-fix the frontend create flow side-stepped this guard by creating an
+    independent /recurring template on the create form (never linking the
+    source tx via recurring_id). When the user later edited and re-toggled
+    "Make recurring", the row's recurring_id was still NULL so promote
+    succeeded — yielding two templates. This API-level test pins the
+    backend invariant; the create-flow fix lives in the frontend.
+    """
+    seed = await _seed(session_factory)
+    tx_id = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"],
+        amount=Decimal("12.50"), description="Initial",
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        # Step 1: promote
+        first = client.post(
+            f"/api/v1/transactions/{tx_id}/promote-to-recurring",
+            json={"frequency": "monthly", "next_due_date": _future_date()},
+        )
+        assert first.status_code == 201, first.text
+        first_template_id = first.json()["recurring_id"]
+        assert first_template_id is not None
+
+        # Step 2: edit description (a routine PUT). recurring_id must NOT
+        # be cleared by update_transaction.
+        edited = client.put(
+            f"/api/v1/transactions/{tx_id}",
+            json={"description": "Renamed"},
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["recurring_id"] == first_template_id
+
+        # Step 3: re-promote MUST 400
+        second = client.post(
+            f"/api/v1/transactions/{tx_id}/promote-to-recurring",
+            json={"frequency": "monthly", "next_due_date": _future_date()},
+        )
+    assert second.status_code == 400
+    assert "already" in second.json()["detail"].lower()
+
+    # And only ONE template exists for this tx.
+    async with session_factory() as db:
+        from sqlalchemy import select as _select
+        rows = (
+            await db.execute(
+                _select(RecurringTransaction).where(
+                    RecurringTransaction.org_id == seed["org_id"]
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].id == first_template_id
+
+
+# ── auto_settle pass-through (create-with-recurring frontend fix) ─────────
+
+
+@pytest.mark.asyncio
+async def test_promote_to_recurring_passes_auto_settle_true(session_factory):
+    """Frontend create-with-recurring sends auto_settle so the user's
+    "Auto-settle" toggle on the create form survives the round-trip."""
+    seed = await _seed(session_factory)
+    tx_id = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"],
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/transactions/{tx_id}/promote-to-recurring",
+            json={
+                "frequency": "monthly",
+                "next_due_date": _future_date(),
+                "auto_settle": True,
+            },
+        )
+    assert res.status_code == 201, res.text
+    rec_id = res.json()["recurring_id"]
+    assert rec_id is not None
+
+    async with session_factory() as db:
+        from sqlalchemy import select as _select
+        rec = await db.scalar(
+            _select(RecurringTransaction).where(RecurringTransaction.id == rec_id)
+        )
+    assert rec is not None
+    assert rec.auto_settle is True
+
+
+@pytest.mark.asyncio
+async def test_promote_to_recurring_auto_settle_defaults_false(session_factory):
+    """Omitting auto_settle keeps the historical default (matches the edit
+    flow's promote which doesn't surface the toggle)."""
+    seed = await _seed(session_factory)
+    tx_id = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a1_id"],
+        category_id=seed["cat_groceries_id"],
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            f"/api/v1/transactions/{tx_id}/promote-to-recurring",
+            json={"frequency": "monthly", "next_due_date": _future_date()},
+        )
+    assert res.status_code == 201, res.text
+    rec_id = res.json()["recurring_id"]
+
+    async with session_factory() as db:
+        from sqlalchemy import select as _select
+        rec = await db.scalar(
+            _select(RecurringTransaction).where(RecurringTransaction.id == rec_id)
+        )
+    assert rec is not None
+    assert rec.auto_settle is False
