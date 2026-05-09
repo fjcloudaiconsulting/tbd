@@ -288,6 +288,22 @@ export default function AccountsPage() {
                   <button type="submit" className={`w-full min-h-[44px] sm:w-auto sm:min-h-0 ${btnPrimary}`}>Create Account</button>
                 </form>
               )}
+              {/* Column header — visible only on md+ where the row uses
+                  the same outer grid template. Mirrors the Account
+                  Types card's header pattern but at md: because the
+                  account row's mobile-to-desktop break is md:, not sm:.
+                  Action header is sr-only since the column is button
+                  links rather than tabular data. */}
+              {accounts.length > 0 && (
+                <div
+                  data-testid="accounts-list-header"
+                  className="hidden border-b border-border-subtle px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted md:grid md:grid-cols-[minmax(0,1fr)_8rem_auto] md:items-center md:gap-4"
+                >
+                  <span>Account</span>
+                  <span className="text-right">Balance</span>
+                  <span className="sr-only">Actions</span>
+                </div>
+              )}
               <div className="space-y-1">
                 {accounts.map((a) => editAcctId === a.id ? (
                   <div key={a.id} className="flex flex-col gap-2 rounded-md bg-surface-raised px-3 py-2.5 sm:flex-row sm:items-center sm:gap-3">
@@ -302,12 +318,16 @@ export default function AccountsPage() {
                     </div>
                   </div>
                 ) : (
-                  <article key={a.id} className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:flex-row md:items-center md:gap-4 ${!a.is_active ? "opacity-40" : ""}`}>
+                  <article
+                    key={a.id}
+                    data-testid={`account-row-${a.id}`}
+                    className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:grid md:grid-cols-[minmax(0,1fr)_8rem_auto] md:items-center md:gap-4 ${!a.is_active ? "opacity-40" : ""}`}
+                  >
                     {/* Description column: name + meta. The "DEFAULT"
                         badge is a fixed-width inline pill (NOT trailing
                         "· default" text), so toggling default never
                         changes how much room neighbouring text gets. */}
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 md:flex-none">
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                         <span className="truncate text-sm font-medium text-text-primary">{a.name}</span>
                         {a.is_default && (
@@ -320,13 +340,11 @@ export default function AccountsPage() {
                         {!a.is_active && <span className="text-xs text-danger">inactive</span>}
                       </div>
                     </div>
-                    {/* Fixed-width balance column — w-32 keeps the
-                        column position stable whether the row owns a
-                        "Default" action button or not, so toggling
-                        default no longer shifts numbers into adjacent
-                        cells. tabular-nums + text-right keep digits
-                        aligned across rows. */}
-                    <div className="flex shrink-0 flex-col items-start gap-0.5 md:w-32 md:items-end">
+                    {/* Fixed-width balance column — the outer grid
+                        reserves an 8rem slot at md:, so toggling
+                        Default never shifts the numbers. tabular-nums
+                        + text-right keep digits aligned across rows. */}
+                    <div className="flex shrink-0 flex-col items-start gap-0.5 md:items-end">
                       <span className="text-sm tabular-nums text-text-primary">
                         {formatAmount(a.balance)}{" "}
                         <span className="text-text-muted">{a.currency}</span>
@@ -337,26 +355,48 @@ export default function AccountsPage() {
                         </span>
                       ) : null}
                     </div>
-                    <div className="flex flex-wrap gap-3 md:justify-end">
-                      <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
-                      {canAdjustBalance && a.is_active && (
-                        <button
-                          onClick={() => setAdjustingAccount(a)}
-                          aria-label={`Adjust balance of ${a.name}`}
-                          className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0"
-                        >
-                          Adjust balance
-                        </button>
+                    {/* Action column with fixed slots so links don't
+                        shift when an action is conditionally absent
+                        (e.g. "Set default" disappears once the row IS
+                        the default). Each conditional action renders an
+                        empty placeholder span when omitted, keeping
+                        every action's column position stable across
+                        rows. The "Adjust balance" slot is omitted from
+                        the template entirely when the user lacks the
+                        permission, so non-admin views aren't padded. */}
+                    <div
+                      data-testid={`account-row-actions-${a.id}`}
+                      className={`flex flex-wrap gap-3 md:grid md:items-center md:justify-end md:gap-3 ${
+                        canAdjustBalance
+                          ? "md:grid-cols-[3rem_7rem_5rem_5.5rem_4rem]"
+                          : "md:grid-cols-[3rem_5rem_5.5rem_4rem]"
+                      }`}
+                    >
+                      <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="min-h-[44px] text-left text-xs text-text-muted hover:text-accent md:min-h-0 md:text-center">Edit</button>
+                      {canAdjustBalance && (
+                        a.is_active ? (
+                          <button
+                            onClick={() => setAdjustingAccount(a)}
+                            aria-label={`Adjust balance of ${a.name}`}
+                            className="min-h-[44px] text-left text-xs text-text-muted hover:text-accent md:min-h-0 md:text-center"
+                          >
+                            Adjust balance
+                          </button>
+                        ) : (
+                          <span aria-hidden="true" className="hidden md:block" />
+                        )
                       )}
-                      {!a.is_default && a.is_active && (
-                        <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">
+                      {!a.is_default && a.is_active ? (
+                        <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="min-h-[44px] text-left text-xs text-text-muted hover:text-accent md:min-h-0 md:text-center">
                           Set default
                         </button>
+                      ) : (
+                        <span aria-hidden="true" className="hidden md:block" />
                       )}
-                      <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-text-secondary md:min-h-0">
+                      <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="min-h-[44px] text-left text-xs text-text-muted hover:text-text-secondary md:min-h-0 md:text-center">
                         {a.is_active ? "Deactivate" : "Activate"}
                       </button>
-                      <button onClick={() => setConfirmDeleteAcctId(a.id)} aria-label={`Delete ${a.name}`} className="min-h-[44px] text-xs text-text-muted hover:text-danger md:min-h-0">Delete</button>
+                      <button onClick={() => setConfirmDeleteAcctId(a.id)} aria-label={`Delete ${a.name}`} className="min-h-[44px] text-left text-xs text-text-muted hover:text-danger md:min-h-0 md:text-center">Delete</button>
                     </div>
                   </article>
                 ))}
