@@ -179,7 +179,7 @@ export default function AccountsPage() {
       {fetching ? (
         <Spinner />
       ) : (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-2">
           {/* Account Types */}
           <div className={card}>
             <div className={cardHeader}>
