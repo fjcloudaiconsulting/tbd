@@ -6,10 +6,13 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
-import { input, btnPrimary, card, cardHeader, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, btnPrimary, btnSecondary, card, cardHeader, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import AddMasterWithSubsModal from "@/components/ui/AddMasterWithSubsModal";
+import BatchActionBar from "@/components/categories/BatchActionBar";
+import BatchMoveModal from "@/components/categories/BatchMoveModal";
+import BatchDeleteModal from "@/components/categories/BatchDeleteModal";
 import {
   Wallet, Home, Zap, UtensilsCrossed, Car, HeartPulse,
   Scissors, Gamepad2, Target, CreditCard, Gift, HelpCircle, Tag,
@@ -66,6 +69,43 @@ export default function CategoriesPage() {
   // the same pattern used by Transactions/Accounts/Forecast Plans/Budgets.
   const [refreshError, setRefreshError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
+  // ── C2 UI: Edit-mode + batch select (C2a + C2c) ──────────────────────────
+  // C2a: page-level Edit toggle. C2c: batch select for move/delete.
+  // Selection is subcategory-only by design (C0 spec section 4.7: master
+  // delete with children returns 409, so master rows do not participate in
+  // batch operations). Selection clears on Edit-mode exit.
+  const [editMode, setEditMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [batchMoveOpen, setBatchMoveOpen] = useState(false);
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+
+  const exitEditMode = useCallback(() => {
+    setEditMode(false);
+    setSelectedIds([]);
+    setBatchMoveOpen(false);
+    setBatchDeleteOpen(false);
+  }, []);
+
+  const toggleSelected = useCallback((id: number) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }, []);
+
+  // Esc exits Edit mode (only when no modal is open — modals own their own Esc).
+  useEffect(() => {
+    if (!editMode) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (batchMoveOpen || batchDeleteOpen || confirmDeleteId !== null) return;
+      if (editingCatId !== null || addingToMaster !== null) return;
+      exitEditMode();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [editMode, batchMoveOpen, batchDeleteOpen, confirmDeleteId, editingCatId, addingToMaster, exitEditMode]);
+  // ── /C2 UI ──────────────────────────────────────────────────────────────
 
   const reload = useCallback(async () => {
     const data = await apiFetch<Category[]>("/api/v1/categories");
@@ -162,14 +202,26 @@ export default function CategoriesPage() {
 
   return (
     <AppShell>
-      <div className="mb-8 flex items-center justify-between">
+      <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className={`${pageTitle} mb-0`}>Categories</h1>
-        <button
-          onClick={() => setShowAddMasterModal(true)}
-          className={btnPrimary}
-        >
-          + Add Master
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* C2a: Edit-mode toggle. Owned by Team Categories C2 UI. */}
+          <button
+            type="button"
+            data-testid="categories-edit-toggle"
+            aria-pressed={editMode}
+            onClick={() => (editMode ? exitEditMode() : setEditMode(true))}
+            className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
+          >
+            {editMode ? "Cancel Edit" : "Edit"}
+          </button>
+          <button
+            onClick={() => setShowAddMasterModal(true)}
+            className={btnPrimary}
+          >
+            + Add Master
+          </button>
+        </div>
       </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
@@ -278,6 +330,16 @@ export default function CategoriesPage() {
                     <div className="space-y-0.5">
                       {subs.map((sub) => (
                         <div key={sub.id} data-testid={`sub-row-${sub.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md px-3 py-2 transition-colors hover:bg-surface-raised">
+                          {editMode && editingCatId !== sub.id && (
+                            <input
+                              type="checkbox"
+                              data-testid={`sub-checkbox-${sub.id}`}
+                              aria-label={`Select ${sub.name}`}
+                              checked={selectedIds.includes(sub.id)}
+                              onChange={() => toggleSelected(sub.id)}
+                              className="mr-2 h-4 w-4 flex-shrink-0 cursor-pointer"
+                            />
+                          )}
                           {editingCatId === sub.id ? (
                             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                               <input type="text" value={editCatName} onChange={(e) => setEditCatName(e.target.value)} className={`min-w-0 flex-1 text-sm ${input}`} autoFocus
@@ -324,6 +386,48 @@ export default function CategoriesPage() {
         variant="danger"
         onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
         onCancel={() => setConfirmDeleteId(null)}
+      />
+
+      {/* C2c: batch select infrastructure. Owned by Team Categories C2 UI. */}
+      {editMode && (
+        <BatchActionBar
+          count={selectedIds.length}
+          onMove={() => setBatchMoveOpen(true)}
+          onDelete={() => setBatchDeleteOpen(true)}
+          onClear={() => setSelectedIds([])}
+        />
+      )}
+      <BatchMoveModal
+        open={batchMoveOpen}
+        selectedIds={selectedIds}
+        categories={categories}
+        onCancel={() => setBatchMoveOpen(false)}
+        onSuccess={async () => {
+          setBatchMoveOpen(false);
+          exitEditMode();
+          await reload();
+        }}
+      />
+      <BatchDeleteModal
+        open={batchDeleteOpen}
+        selectedIds={selectedIds}
+        categories={categories}
+        onCancel={() => {
+          setBatchDeleteOpen(false);
+          // Reload so any partial successes show through, even on cancel.
+          void reload();
+        }}
+        onSuccess={async (failures) => {
+          if (failures.length === 0) {
+            setBatchDeleteOpen(false);
+            exitEditMode();
+          } else {
+            // Drop succeeded ids from selection so user can retry only failures.
+            const failedIds = new Set(failures.map((f) => f.category_id));
+            setSelectedIds((prev) => prev.filter((id) => failedIds.has(id)));
+          }
+          await reload();
+        }}
       />
     </AppShell>
   );
