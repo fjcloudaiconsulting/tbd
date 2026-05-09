@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import SettingsLayout from "@/components/SettingsLayout";
+import PasswordInput from "@/components/ui/PasswordInput";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { input, label, btnPrimary, btnSecondary, card, cardTitle, error as errorCls, success as successCls } from "@/lib/styles";
@@ -200,9 +201,8 @@ export default function SettingsProfilePage() {
                 <label htmlFor="profile-current-password" className={label}>
                   Current password <span className="text-xs text-text-muted">(required to change email)</span>
                 </label>
-                <input
+                <PasswordInput
                   id="profile-current-password"
-                  type="password"
                   autoComplete="current-password"
                   required
                   value={currentPassword}

@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
+import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { ApiResponseError, apiFetch } from "@/lib/api";
 import { input, label, btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
@@ -124,7 +125,7 @@ export default function LoginPageBody() {
           </div>
           <div>
             <label htmlFor="login-password" className={label}>Password</label>
-            <input id="login-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="current-password" />
+            <PasswordInput id="login-password" required value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="current-password" />
           </div>
           <div className="text-right">
             <Link href="/forgot-password" className="text-xs text-accent hover:text-accent-hover">Forgot your password?</Link>

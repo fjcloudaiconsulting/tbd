@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
+import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 import {
@@ -92,11 +93,11 @@ export default function SetupPage() {
             </div>
             <div>
               <label htmlFor="setup-password" className={label}>Password</label>
-              <input id="setup-password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="new-password" />
+              <PasswordInput id="setup-password" required value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="new-password" />
             </div>
             <div>
               <label htmlFor="setup-password2" className={label}>Confirm Password</label>
-              <input id="setup-password2" type="password" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
+              <PasswordInput id="setup-password2" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
             </div>
             <button type="submit" disabled={submitting} className={`w-full ${btnPrimary}`}>
               {submitting ? "Setting up..." : "Create Admin Account"}

@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import SettingsLayout from "@/components/SettingsLayout";
+import PasswordInput from "@/components/ui/PasswordInput";
 import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
@@ -294,7 +295,7 @@ export default function SecurityPage() {
             {passwordSet && (
               <div>
                 <label htmlFor="pwd-current" className={label}>Current Password</label>
-                <input id="pwd-current" type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={input} autoComplete="current-password" />
+                <PasswordInput id="pwd-current" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={input} autoComplete="current-password" />
               </div>
             )}
             {!passwordSet && (
@@ -323,11 +324,11 @@ export default function SecurityPage() {
             )}
             <div>
               <label htmlFor="pwd-new" className={label}>New Password</label>
-              <input id="pwd-new" type="password" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={input} autoComplete="new-password" />
+              <PasswordInput id="pwd-new" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={input} autoComplete="new-password" />
             </div>
             <div>
               <label htmlFor="pwd-confirm" className={label}>Confirm New Password</label>
-              <input id="pwd-confirm" type="password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={input} autoComplete="new-password" />
+              <PasswordInput id="pwd-confirm" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={input} autoComplete="new-password" />
             </div>
             <button
               type="submit"
@@ -477,7 +478,7 @@ export default function SecurityPage() {
                   {regenErr && <div className={errorCls}>{regenErr}</div>}
                   <div>
                     <label htmlFor="regen-pwd" className={label}>Confirm Password</label>
-                    <input id="regen-pwd" type="password" required value={regenPassword} onChange={(e) => setRegenPassword(e.target.value)} className={input} />
+                    <PasswordInput id="regen-pwd" required value={regenPassword} onChange={(e) => setRegenPassword(e.target.value)} className={input} />
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row">
                     <button type="button" onClick={() => { setShowRegen(false); setRegenPassword(""); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Cancel</button>
@@ -518,7 +519,7 @@ export default function SecurityPage() {
                     {disableErr && <div className={errorCls}>{disableErr}</div>}
                     <div>
                       <label htmlFor="disable-pwd" className={label}>Password</label>
-                      <input id="disable-pwd" type="password" required value={disablePassword} onChange={(e) => setDisablePassword(e.target.value)} className={input} />
+                      <PasswordInput id="disable-pwd" required value={disablePassword} onChange={(e) => setDisablePassword(e.target.value)} className={input} />
                     </div>
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <button type="button" onClick={() => { setShowDisable(false); setDisablePassword(""); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Cancel</button>

@@ -61,7 +61,7 @@ describe("AcceptInviteBody", () => {
     fireEvent.change(screen.getByLabelText(/Username/i), {
       target: { value: "newbie" },
     });
-    fireEvent.change(screen.getByLabelText(/Password/i), {
+    fireEvent.change(screen.getByLabelText("Password"), {
       target: { value: "strong-pw-1234" },
     });
     fireEvent.click(screen.getByRole("button", { name: /Accept/i }));

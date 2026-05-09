@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import Spinner from "@/components/ui/Spinner";
 import { ApiResponseError, apiFetch, setAccessToken } from "@/lib/api";
@@ -163,9 +164,8 @@ export default function AcceptInviteBody() {
               <label htmlFor="invite-password" className={label}>
                 {preview.is_reactivation ? "New password" : "Password"}
               </label>
-              <input
+              <PasswordInput
                 id="invite-password"
-                type="password"
                 required
                 minLength={8}
                 value={password}

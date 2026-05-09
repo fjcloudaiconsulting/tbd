@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, btnSecondary, error as errorCls, success } from "@/lib/styles";
 import {
@@ -189,11 +190,11 @@ export default function RegisterPageBody() {
           </div>
           <div>
             <label htmlFor="reg-password" className={label}>Password</label>
-            <input id="reg-password" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="new-password" />
+            <PasswordInput id="reg-password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} className={input} autoComplete="new-password" />
           </div>
           <div>
             <label htmlFor="reg-password2" className={label}>Confirm Password</label>
-            <input id="reg-password2" type="password" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
+            <PasswordInput id="reg-password2" required value={password2} onChange={(e) => setPassword2(e.target.value)} className={input} autoComplete="new-password" />
           </div>
           <p className="text-xs text-text-muted">
             By creating an account you agree to our{" "}
