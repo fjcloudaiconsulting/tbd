@@ -708,9 +708,11 @@ export default function DashboardPage() {
           {/* ═══ ROW 2: Accounts sidebar + Forecast card, side-by-side ═══
               Tiles share ONE card with internal divider rows; the
               Forecast card on the right is the numeric authority for
-              Balance + EOMF. 1fr/3fr split — forecast dominates.
+              Balance + EOMF. Layout is three-tier: stacks vertically
+              below `md`, equal 2-up columns from `md` to `lg`, then
+              the 1fr/3fr split (forecast dominates) at `lg` and above.
               items-start so each card sits at its natural height
-              (mismatch is intentional). Stacks vertically below `lg`. */}
+              (mismatch is intentional). */}
           {(() => {
             // Non-primary accounts sort alphabetically by name (locale-
             // aware, case-insensitive). Stable across transactions: a
@@ -728,7 +730,7 @@ export default function DashboardPage() {
               : others;
 
             return (
-              <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]">
+              <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]">
                 <AccountTilesCard
                   accounts={orderedAccounts}
                   pendingByAccount={pendingByAccount}
@@ -751,7 +753,7 @@ export default function DashboardPage() {
           })()}
 
           {/* ═══ ROW 3: Three equal charts ═══ */}
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {/* Spending by category (donut) */}
             <div className={`${card} p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
