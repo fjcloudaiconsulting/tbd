@@ -57,3 +57,53 @@ def test_transaction_update_settled_date_optional():
     from app.schemas.transaction import TransactionUpdate
     body = TransactionUpdate(description="x")
     assert body.settled_date is None
+
+
+def test_transaction_create_accepts_settled_date_for_pending():
+    """TransactionCreate must accept settled_date so callers can stamp an
+    expected settlement date on pending rows at creation time (Item 13).
+    """
+    from app.schemas.transaction import TransactionCreate
+    import datetime
+    from decimal import Decimal
+    body = TransactionCreate(
+        account_id=1, category_id=1,
+        description="cc", amount=Decimal("1.00"),
+        type="expense", status="pending",
+        date=datetime.date(2026, 5, 1),
+        settled_date=datetime.date(2026, 6, 1),
+    )
+    assert body.settled_date == datetime.date(2026, 6, 1)
+
+
+def test_transaction_create_settled_date_optional():
+    """settled_date defaults to None — settled rows fall back to date in
+    the service layer, pending rows just don't have an expected date.
+    """
+    from app.schemas.transaction import TransactionCreate
+    import datetime
+    from decimal import Decimal
+    body = TransactionCreate(
+        account_id=1, category_id=1,
+        description="x", amount=Decimal("1.00"),
+        type="expense", status="settled",
+        date=datetime.date(2026, 5, 1),
+    )
+    assert body.settled_date is None
+
+
+def test_transaction_create_rejects_settled_date_before_date():
+    """Cross-field validator: settled_date < date is invalid at the schema."""
+    from app.schemas.transaction import TransactionCreate
+    from pydantic import ValidationError
+    import datetime
+    from decimal import Decimal
+    import pytest as _pytest
+    with _pytest.raises(ValidationError):
+        TransactionCreate(
+            account_id=1, category_id=1,
+            description="x", amount=Decimal("1.00"),
+            type="expense", status="pending",
+            date=datetime.date(2026, 5, 10),
+            settled_date=datetime.date(2026, 5, 1),
+        )

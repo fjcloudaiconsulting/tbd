@@ -72,6 +72,11 @@ function TransactionsPageContent() {
   const [editType, setEditType] = useState<"income" | "expense">("expense");
   const [editStatus, setEditStatus] = useState<"settled" | "pending">("settled");
   const [editDate, setEditDate] = useState("");
+  // Expected settlement date for pending rows. Empty string means "not set"
+  // and the field is only shown when editStatus === "pending". For settled
+  // rows the backend stamps settled_date itself; surfacing it here would
+  // confuse the spreadsheet/forecast model.
+  const [editSettledDate, setEditSettledDate] = useState("");
   const [editAccountId, setEditAccountId] = useState<number | "">("");
   const [editCategoryId, setEditCategoryId] = useState<number | "">("");
   // Edit-time promote-to-recurring (L3.12). Hidden on rows that are already
@@ -110,6 +115,11 @@ function TransactionsPageContent() {
   const [formType, setFormType] = useState<"income" | "expense">("expense");
   const [formStatus, setFormStatus] = useState<"settled" | "pending">("settled");
   const [formDate, setFormDate] = useState(todayISO());
+  // Expected settlement date for pending creates. Pre-filled with the
+  // transaction date so the field is always populated when revealed
+  // (status=pending) — users can shift it forward for credit-card-style
+  // settlement lag without first having to discover the field is empty.
+  const [formSettledDate, setFormSettledDate] = useState("");
   const [formRecurring, setFormRecurring] = useState(false);
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
@@ -216,6 +226,18 @@ function TransactionsPageContent() {
   async function handleAdd(e: FormEvent) {
     e.preventDefault();
     setError("");
+    // Inline validation for the optional pending settled-date field. The
+    // backend repeats the check, but matching the message client-side
+    // keeps the form-submit experience snappy and mirror-consistent.
+    if (
+      formMode === "transaction" &&
+      formStatus === "pending" &&
+      formSettledDate &&
+      formSettledDate < formDate
+    ) {
+      setError("Expected settlement date must be on or after the transaction date");
+      return;
+    }
     try {
       if (formMode === "transfer") {
         await apiFetch("/api/v1/transactions/transfer", {
@@ -241,6 +263,11 @@ function TransactionsPageContent() {
             type: formType,
             status: formStatus,
             date: formDate,
+            // settled_date only travels on pending creates; SETTLED rows
+            // get their settled_date stamped server-side from `date`.
+            ...(formStatus === "pending" && formSettledDate
+              ? { settled_date: formSettledDate }
+              : {}),
           }),
         });
         // Promote the new tx to recurring if repeat is enabled. Using
@@ -278,6 +305,7 @@ function TransactionsPageContent() {
       setFormRecurring(false);
       setFormAutoSettle(false);
       setFormDate(todayISO());
+      setFormSettledDate("");
       setShowForm(false);
       await loadTransactions(page);
     } catch (err) {
@@ -399,6 +427,11 @@ function TransactionsPageContent() {
     setEditType(tx.type);
     setEditStatus(tx.status);
     setEditDate(tx.date);
+    // Pre-fill from server settled_date if present (pending rows can carry
+    // an "expected settlement date"); otherwise blank so the user can opt
+    // in. SETTLED rows hide the field entirely so the existing value is
+    // preserved server-side without the form touching it.
+    setEditSettledDate(tx.status === "pending" && tx.settled_date ? tx.settled_date : "");
     setEditAccountId(tx.account_id);
     setEditCategoryId(tx.category_id);
     setEditPromoteRecurring(false);
@@ -432,6 +465,16 @@ function TransactionsPageContent() {
   async function handleSaveEdit() {
     if (editingId === null) return;
     if (!editDesc.trim()) { setError("Description is required"); return; }
+    // Settled-date sanity check matches backend. Only enforced when the
+    // user surfaced the field (pending status with a value entered).
+    if (
+      editStatus === "pending" &&
+      editSettledDate &&
+      editSettledDate < editDate
+    ) {
+      setError("Expected settlement date must be on or after the transaction date");
+      return;
+    }
     setError("");
     // Capture the row pre-save so we can decide whether the promote step
     // applies (transfer legs and already-recurring rows are excluded).
@@ -461,6 +504,13 @@ function TransactionsPageContent() {
       };
       if (!isLinked) {
         body.type = editType;
+      }
+      // Send settled_date only on pending edits. Settled rows keep their
+      // existing settled_date untouched (the backend stamps it from the
+      // transition transition); piggy-backing the field would risk
+      // overwriting the server's authoritative value.
+      if (editStatus === "pending") {
+        body.settled_date = editSettledDate || null;
       }
       await apiFetch(`/api/v1/transactions/${editingId}`, {
         method: "PUT",
@@ -746,6 +796,24 @@ function TransactionsPageContent() {
               <label htmlFor="tx-date" className={label}>Date</label>
               <input id="tx-date" type="date" required value={formDate} onChange={(e) => setFormDate(e.target.value)} className={input} />
             </div>
+            {formMode === "transaction" && formStatus === "pending" && (
+              <div>
+                <label htmlFor="tx-settled-date" className={label}>
+                  Expected settlement date
+                </label>
+                <input
+                  id="tx-settled-date"
+                  type="date"
+                  min={formDate}
+                  value={formSettledDate}
+                  onChange={(e) => setFormSettledDate(e.target.value)}
+                  className={input}
+                />
+                <p className="mt-1 text-[10px] text-text-muted">
+                  Optional. When the bank actually charges the card.
+                </p>
+              </div>
+            )}
             {formMode === "transaction" && (
               <div className="flex items-end gap-4">
                 <label className="flex items-center gap-2 text-sm text-text-secondary">
@@ -953,26 +1021,49 @@ function TransactionsPageContent() {
                       const isTransfer = tx.linked_transaction_id !== null;
                       const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                       return editingId === tx.id ? (
-                        <div key={tx.id} className="bg-surface-raised">
+                        // Desktop edit mode: switched from a single 12-col row
+                        // (Item 7 audit — Status/Amount cols ~42px clipped both
+                        // the select label and the type/amount split) to a
+                        // labeled stacked form. Fields lay out 4-up so each
+                        // input gets ~22% of the row width — wide enough for
+                        // the descriptive option labels ("Settled"/"Pending",
+                        // "Expense"/"Income") that previously had to be hidden
+                        // behind a !w-14 override.
+                        <div
+                          key={tx.id}
+                          className="bg-surface-raised px-6 py-4"
+                          data-testid={`edit-row-desktop-${tx.id}`}
+                        >
                           {editPartner && (
-                            <div className="px-6 pt-2 pb-1 text-xs text-accent" data-testid={`edit-mirror-notice-${tx.id}`}>
+                            <div className="mb-3 text-xs text-accent" data-testid={`edit-mirror-notice-${tx.id}`}>
                               Editing a transfer leg. Changes to amount apply to both rows.
                             </div>
                           )}
-                          <div className="grid grid-cols-12 items-center gap-2 px-6 py-2">
-                            <span className="col-span-1 flex items-center">
-                              <input
-                                type="checkbox"
-                                aria-label={`Select transaction ${tx.id}`}
-                                checked={selectedIds.has(tx.id)}
-                                onChange={() => toggleOne(tx.id)}
-                                className="h-4 w-4"
-                              />
+                          <div className="flex items-center gap-3 mb-3">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select transaction ${tx.id}`}
+                              checked={selectedIds.has(tx.id)}
+                              onChange={() => toggleOne(tx.id)}
+                              className="h-4 w-4"
+                            />
+                            <span className="text-xs uppercase tracking-wider text-text-muted">
+                              Editing transaction
                             </span>
-                            <span className="col-span-2 min-w-0"><input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm w-full ${input}`} /></span>
-                            <span className="col-span-2"><input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} /></span>
-                            <span className="col-span-2">
+                          </div>
+                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                            <div>
+                              <label htmlFor={`edit-date-${tx.id}`} className={label}>Date</label>
+                              <input id={`edit-date-${tx.id}`} aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} />
+                            </div>
+                            <div className="lg:col-span-2">
+                              <label htmlFor={`edit-desc-${tx.id}`} className={label}>Description</label>
+                              <input id={`edit-desc-${tx.id}`} aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} />
+                            </div>
+                            <div>
+                              <label htmlFor={`edit-account-${tx.id}`} className={label}>Account</label>
                               <select
+                                id={`edit-account-${tx.id}`}
                                 aria-label="Account"
                                 value={editAccountId}
                                 onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))}
@@ -987,42 +1078,61 @@ function TransactionsPageContent() {
                                   })
                                   .map((a) => <option key={a.id} value={a.id}>{a.name}{!a.is_active ? " (inactive)" : ""}</option>)}
                               </select>
-                            </span>
-                            <span className="col-span-1 min-w-0">
+                            </div>
+                            <div>
+                              <label htmlFor={`edit-cat-${tx.id}`} className={label}>Category</label>
                               <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
-                            </span>
-                            <span className="col-span-1">
-                              <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-[11px] ${input}`}>
+                            </div>
+                            <div>
+                              <label htmlFor={`edit-status-${tx.id}`} className={label}>Status</label>
+                              <select id={`edit-status-${tx.id}`} aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-sm ${input}`}>
                                 <option value="settled">Settled</option>
                                 <option value="pending">Pending</option>
                               </select>
-                            </span>
-                            <span className="col-span-1 flex gap-1 min-w-0">
+                            </div>
+                            <div>
+                              <label htmlFor={`edit-type-${tx.id}`} className={label}>Type</label>
                               {editPartner ? (
                                 <span
+                                  id={`edit-type-${tx.id}`}
                                   aria-label="Type"
                                   title="Type is fixed for transfer legs."
-                                  className={`text-[11px] !w-10 shrink-0 inline-flex items-center justify-center rounded border border-border bg-surface px-1 text-text-muted`}
+                                  className="text-sm flex items-center px-3 rounded border border-border bg-surface text-text-muted h-10"
                                 >
-                                  {editType === "expense" ? "-" : "+"}
+                                  {editType === "expense" ? "Expense" : "Income"}
                                 </span>
                               ) : (
-                                <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-[11px] !w-10 shrink-0 ${input}`}>
-                                  <option value="expense">-</option>
-                                  <option value="income">+</option>
+                                <select id={`edit-type-${tx.id}`} aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-sm ${input}`}>
+                                  <option value="expense">Expense</option>
+                                  <option value="income">Income</option>
                                 </select>
                               )}
-                              <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm flex-1 min-w-0 ${input}`} />
-                            </span>
-                            <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
-                              <button onClick={handleSaveEdit} className="whitespace-nowrap text-xs text-accent hover:text-accent-hover">Save</button>
-                              <button onClick={closeEdit} className="whitespace-nowrap text-xs text-text-muted hover:text-text-secondary">Cancel</button>
-                            </span>
+                            </div>
+                            <div>
+                              <label htmlFor={`edit-amount-${tx.id}`} className={label}>Amount</label>
+                              <input id={`edit-amount-${tx.id}`} aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm ${input}`} />
+                            </div>
+                            {editStatus === "pending" && (
+                              <div data-testid={`edit-settled-date-cell-${tx.id}`}>
+                                <label htmlFor={`edit-settled-${tx.id}`} className={label}>
+                                  Expected settlement
+                                </label>
+                                <input
+                                  id={`edit-settled-${tx.id}`}
+                                  aria-label="Expected settlement date"
+                                  type="date"
+                                  min={editDate}
+                                  value={editSettledDate}
+                                  onChange={(e) => setEditSettledDate(e.target.value)}
+                                  className={`text-sm ${input}`}
+                                />
+                              </div>
+                            )}
                           </div>
                           {/* Promote-to-recurring (L3.12). Hidden for transfer legs;
                               shown as a static chip when the row is already recurring. */}
                           {!editPartner && (
-                            <div className="px-6 pb-3 pt-1" data-testid={`edit-recurring-row-${tx.id}`}>
+                            <div className="mt-3" data-testid={`edit-recurring-row-${tx.id}`}>
                               {tx.recurring_id !== null ? (
                                 <span
                                   className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-text-muted"
@@ -1075,6 +1185,10 @@ function TransactionsPageContent() {
                               )}
                             </div>
                           )}
+                          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3">
+                            <button onClick={handleSaveEdit} className="min-h-[36px] rounded-md bg-accent px-4 text-sm font-medium text-accent-text hover:bg-accent-hover">Save</button>
+                            <button onClick={closeEdit} className="min-h-[36px] rounded-md border border-border px-4 text-sm text-text-secondary hover:bg-surface-raised">Cancel</button>
+                          </div>
                         </div>
                       ) : (
                         <div
@@ -1101,7 +1215,22 @@ function TransactionsPageContent() {
                               className="h-4 w-4"
                             />
                           </span>
-                          <span className="col-span-2 text-sm tabular-nums text-text-secondary">{tx.date}</span>
+                          <span className="col-span-2 text-sm tabular-nums text-text-secondary">
+                            {tx.date}
+                            {/* Expected settlement subtext (Item 13). Surfaces
+                                only when the row is pending AND the user set a
+                                custom settlement date that differs from the
+                                transaction date — otherwise the subtext would
+                                be redundant noise. */}
+                            {tx.status === "pending" && tx.settled_date && tx.settled_date !== tx.date && (
+                              <span
+                                className="block text-[10px] text-text-muted"
+                                data-testid={`expected-settled-${tx.id}`}
+                              >
+                                expected settled {tx.settled_date}
+                              </span>
+                            )}
+                          </span>
                           <span className="col-span-2 text-sm text-text-primary">{tx.description}</span>
                           <span className="col-span-2 text-sm text-text-secondary truncate">
                             {isTransfer && linkedTx
@@ -1233,6 +1362,19 @@ function TransactionsPageContent() {
                                 <label className={label}>Amount</label>
                                 <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm ${input}`} />
                               </div>
+                              {editStatus === "pending" && (
+                                <div className="sm:col-span-2" data-testid={`edit-settled-date-cell-mobile-${tx.id}`}>
+                                  <label className={label}>Expected settlement date</label>
+                                  <input
+                                    aria-label="Expected settlement date"
+                                    type="date"
+                                    min={editDate}
+                                    value={editSettledDate}
+                                    onChange={(e) => setEditSettledDate(e.target.value)}
+                                    className={`text-sm ${input}`}
+                                  />
+                                </div>
+                              )}
                             </div>
                             {/* Promote-to-recurring (L3.12) — mobile layout. Hidden on
                                 transfer legs; static chip when already recurring. */}
@@ -1334,6 +1476,14 @@ function TransactionsPageContent() {
                               <div className="mt-0.5 text-xs text-text-muted tabular-nums">
                                 {tx.date} · {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : tx.account_name}
                               </div>
+                              {tx.status === "pending" && tx.settled_date && tx.settled_date !== tx.date && (
+                                <div
+                                  className="mt-0.5 text-[10px] text-text-muted"
+                                  data-testid={`expected-settled-mobile-${tx.id}`}
+                                >
+                                  expected settled {tx.settled_date}
+                                </div>
+                              )}
                             </div>
                             <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                               {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
