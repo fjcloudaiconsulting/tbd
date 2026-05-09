@@ -380,22 +380,16 @@ async def _record_dictionary_contribution(
     if not _is_dictionary_eligible(name_normalized):
         return
 
-    # Step 2: upsert dictionary.
-    dict_row = await db.execute(
-        select(TagDictionary).where(
-            TagDictionary.name_normalized == name_normalized
-        )
-    )
-    dictionary_tag = dict_row.scalar_one_or_none()
-    if dictionary_tag is None:
-        dictionary_tag = TagDictionary(
-            name_normalized=name_normalized,
-            contributor_org_count=0,
-            usage_count=0,
-            is_seed=False,
-        )
-        db.add(dictionary_tag)
-        await db.flush()
+    # Step 2: upsert dictionary. SELECT short-circuits the common case
+    # (the dictionary row already exists). When two opted-in orgs create
+    # the same new tag concurrently, both threads see no row and try to
+    # INSERT, which raises IntegrityError on the UNIQUE(name_normalized)
+    # constraint. Wrap the INSERT in a SAVEPOINT so the collision rolls
+    # back ONLY the savepoint, leaving the user's just-flushed Tag row in
+    # the outer transaction intact. Pattern mirrors
+    # ``_try_insert_contributor`` and existing usages in
+    # transaction_service / routers/accounts / routers/admin_orgs.
+    dictionary_tag = await _get_or_create_dictionary_row(db, name_normalized)
 
     # Step 3 + 4: insert contributor row, increment count if new.
     contributor_was_new = await _try_insert_contributor(
@@ -408,6 +402,52 @@ async def _record_dictionary_contribution(
 
     # Step 5: usage_count increment is unconditional.
     dictionary_tag.usage_count += 1
+
+
+async def _get_or_create_dictionary_row(
+    db: AsyncSession,
+    name_normalized: str,
+) -> TagDictionary:
+    """Fetch the ``tag_dictionary`` row, inserting it if missing.
+
+    The INSERT is guarded by ``db.begin_nested()`` so a concurrent insert
+    from another opted-in org colliding on
+    ``UNIQUE(tag_dictionary.name_normalized)`` rolls back ONLY the
+    savepoint. The outer request transaction (and the user's just-flushed
+    Tag row) survives. After IntegrityError we re-SELECT to pick up the
+    row the racing transaction committed.
+
+    Same pattern as ``_try_insert_contributor`` further down. The table
+    differs but the failure mode is identical.
+    """
+    existing = await db.execute(
+        select(TagDictionary).where(
+            TagDictionary.name_normalized == name_normalized
+        )
+    )
+    dictionary_tag = existing.scalar_one_or_none()
+    if dictionary_tag is not None:
+        return dictionary_tag
+    try:
+        async with db.begin_nested():
+            dictionary_tag = TagDictionary(
+                name_normalized=name_normalized,
+                contributor_org_count=0,
+                usage_count=0,
+                is_seed=False,
+            )
+            db.add(dictionary_tag)
+            await db.flush()
+        return dictionary_tag
+    except IntegrityError:
+        # Another opted-in org won the race. Re-fetch so we can wire the
+        # contributor row to the surviving dictionary id.
+        retry = await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == name_normalized
+            )
+        )
+        return retry.scalar_one()
 
 
 async def _try_insert_contributor(

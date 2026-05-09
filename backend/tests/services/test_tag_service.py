@@ -857,3 +857,200 @@ async def test_contribution_simultaneous_dedupe_via_savepoint(db_session):
     )).scalars().all()
     assert len(contrib_rows) == 1
     assert entry.contributor_org_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Dictionary-row create race regression (Correction 1, follow-up)
+#
+# Two opted-in orgs creating the same NEW tag concurrently can both miss
+# the SELECT on tag_dictionary and try to INSERT, raising IntegrityError
+# on UNIQUE(name_normalized). The previous code did not wrap that INSERT
+# in a savepoint, so the collision rolled back the WHOLE outer
+# transaction including the user's just-flushed Tag row. Fix mirrors the
+# contributor-row pattern: ``db.begin_nested()`` around the dictionary
+# INSERT plus a re-SELECT on IntegrityError to use the row the racing
+# transaction committed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dictionary_row_race_does_not_roll_back_user_tag(db_session):
+    """Forced miss on the dictionary SELECT, followed by an INSERT that
+    collides on UNIQUE(name_normalized). The savepoint must absorb the
+    IntegrityError; the user's local Tag must survive the outer commit;
+    and the contributor row must wire to the surviving dictionary id.
+    """
+    org_a, user_a = await _make_org_user(db_session, "alpha")
+    org_b, user_b = await _make_org_user(db_session, "beta")
+    await _enable_share_tag_data(db_session, org_a.id)
+    await _enable_share_tag_data(db_session, org_b.id)
+    await db_session.commit()
+
+    # Pre-create the dictionary row + contributor for org A. This is the
+    # row that the racing INSERT for org B will collide with.
+    pre_dict = TagDictionary(
+        name_normalized="newshared",
+        contributor_org_count=1,
+        usage_count=1,
+        is_seed=False,
+    )
+    db_session.add(pre_dict)
+    await db_session.flush()
+    db_session.add(TagDictionaryContributor(
+        dictionary_tag_id=pre_dict.id,
+        contributor_org_id=org_a.id,
+    ))
+    await db_session.commit()
+    pre_dict_id = pre_dict.id
+
+    # Force the dictionary SELECT inside _get_or_create_dictionary_row
+    # to claim "no existing row" so the INSERT path runs and the unique
+    # constraint trips.
+    import app.services.tag_service as svc
+
+    orig_get_or_create = svc._get_or_create_dictionary_row
+
+    async def _forced_miss(db, name_normalized):
+        # Inline reproduction of the production path with the SELECT
+        # short-circuit removed so the INSERT always runs.
+        from sqlalchemy.exc import IntegrityError
+        try:
+            async with db.begin_nested():
+                row = TagDictionary(
+                    name_normalized=name_normalized,
+                    contributor_org_count=0,
+                    usage_count=0,
+                    is_seed=False,
+                )
+                db.add(row)
+                await db.flush()
+            return row
+        except IntegrityError:
+            retry = await db.execute(
+                select(TagDictionary).where(
+                    TagDictionary.name_normalized == name_normalized
+                )
+            )
+            return retry.scalar_one()
+
+    svc._get_or_create_dictionary_row = _forced_miss  # type: ignore[assignment]
+    try:
+        # Org B creates the same tag. The dictionary INSERT must collide,
+        # the savepoint must absorb the IntegrityError, the re-SELECT
+        # must return org A's row, and the contributor row for org B
+        # must be added on top.
+        tag = await tag_service.create_tag(
+            db_session,
+            org_id=org_b.id,
+            name="newshared",
+            created_by_user_id=user_b.id,
+        )
+        await db_session.commit()
+    finally:
+        svc._get_or_create_dictionary_row = orig_get_or_create  # type: ignore[assignment]
+
+    # 1. Org B's local Tag survived.
+    persisted = (await db_session.execute(
+        select(Tag).where(
+            Tag.org_id == org_b.id, Tag.name_normalized == "newshared"
+        )
+    )).scalar_one()
+    assert persisted.id == tag.id
+
+    # 2. Exactly one tag_dictionary row exists for "newshared".
+    dict_rows = (await db_session.execute(
+        select(TagDictionary).where(
+            TagDictionary.name_normalized == "newshared"
+        )
+    )).scalars().all()
+    assert len(dict_rows) == 1
+    assert dict_rows[0].id == pre_dict_id
+
+    # 3. Contributor rows for both orgs exist; count reflects 2.
+    contrib_rows = (await db_session.execute(
+        select(TagDictionaryContributor).where(
+            TagDictionaryContributor.dictionary_tag_id == pre_dict_id
+        )
+    )).scalars().all()
+    contributor_org_ids = {row.contributor_org_id for row in contrib_rows}
+    assert contributor_org_ids == {org_a.id, org_b.id}
+    assert dict_rows[0].contributor_org_count == 2
+
+
+@pytest.mark.asyncio
+async def test_dictionary_row_unique_violation_does_not_wipe_user_tag(db_session):
+    """Negative test: a unique-violation on the dictionary INSERT must
+    NOT roll back the user's Tag create. Asserts the savepoint isolates
+    the failure even when called as a unit (no concurrent contributor
+    activity).
+    """
+    org, user = await _make_org_user(db_session, "alpha")
+    await _enable_share_tag_data(db_session, org.id)
+    await db_session.commit()
+
+    # Pre-seed the dictionary row that the upcoming INSERT will collide
+    # with. No contributor yet so the contributor path is a clean insert.
+    pre_dict = TagDictionary(
+        name_normalized="vacation",
+        contributor_org_count=0,
+        usage_count=0,
+        is_seed=False,
+    )
+    db_session.add(pre_dict)
+    await db_session.commit()
+
+    import app.services.tag_service as svc
+
+    orig_get_or_create = svc._get_or_create_dictionary_row
+
+    async def _forced_miss(db, name_normalized):
+        from sqlalchemy.exc import IntegrityError
+        try:
+            async with db.begin_nested():
+                row = TagDictionary(
+                    name_normalized=name_normalized,
+                    contributor_org_count=0,
+                    usage_count=0,
+                    is_seed=False,
+                )
+                db.add(row)
+                await db.flush()
+            return row
+        except IntegrityError:
+            retry = await db.execute(
+                select(TagDictionary).where(
+                    TagDictionary.name_normalized == name_normalized
+                )
+            )
+            return retry.scalar_one()
+
+    svc._get_or_create_dictionary_row = _forced_miss  # type: ignore[assignment]
+    try:
+        tag = await tag_service.create_tag(
+            db_session,
+            org_id=org.id,
+            name="vacation",
+            created_by_user_id=user.id,
+        )
+        await db_session.commit()
+    finally:
+        svc._get_or_create_dictionary_row = orig_get_or_create  # type: ignore[assignment]
+
+    # User tag persisted despite the dictionary INSERT collision.
+    rows = (await db_session.execute(
+        select(Tag).where(
+            Tag.org_id == org.id, Tag.name_normalized == "vacation"
+        )
+    )).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].id == tag.id
+
+    # Contributor row was wired to the surviving (pre-seeded) dictionary
+    # row, and the count was incremented from 0 to 1.
+    refreshed = (await db_session.execute(
+        select(TagDictionary).where(
+            TagDictionary.name_normalized == "vacation"
+        )
+    )).scalar_one()
+    assert refreshed.id == pre_dict.id
+    assert refreshed.contributor_org_count == 1
