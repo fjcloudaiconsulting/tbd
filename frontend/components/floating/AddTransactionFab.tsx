@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { Plus } from "lucide-react";
+
 import AnchorZone, { AnchorZoneSlot } from "@/components/floating/AnchorZone";
 import SlideInPanel from "@/components/floating/SlideInPanel";
 import TransactionForm from "@/components/floating/TransactionForm";
@@ -82,15 +84,7 @@ export default function AddTransactionFab({
             data-testid="add-transaction-fab"
             className="flex h-14 w-14 items-center justify-center rounded-full bg-accent text-accent-text shadow-lg transition-transform hover:scale-105 hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
           >
-            <svg
-              className="h-6 w-6"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-            </svg>
+            <Plus className="h-6 w-6" aria-hidden="true" />
           </button>
         </AnchorZoneSlot>
       </AnchorZone>
