@@ -9,6 +9,7 @@ import AppShell from "@/components/AppShell";
 import CategorySelect from "@/components/ui/CategorySelect";
 import Spinner from "@/components/ui/Spinner";
 import ImportMarkAsTransferModal from "@/components/transactions/ImportMarkAsTransferModal";
+import CsvFormatHelp from "@/components/import/CsvFormatHelp";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type {
   Account,
@@ -337,6 +338,10 @@ function ImportPageContent() {
             Go to Categories
           </Link>
         </div>
+      )}
+
+      {step === "upload" && categories && categories.length > 0 && (
+        <CsvFormatHelp />
       )}
 
       {/* ── Step 1: Upload ──────────────────────────────────────────────── */}
