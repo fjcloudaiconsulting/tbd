@@ -1137,3 +1137,272 @@ async def test_move_with_subcategory_target_returns_400(session_factory):
             json={"target_parent_id": seed["restaurants_id"]},
         )
     assert resp.status_code == 400
+
+
+# === Type-change floor invariant (Invariant 1, cross-ref Invariant 4) =======
+
+
+async def _seed_minimal_floor(factory) -> dict:
+    """Seed an org with EXACTLY 1 income master + 1 income sub, and 1
+    expense master + 1 expense sub. Type-change attempts on these last-
+    in-type masters/subs must be rejected with floor_violation.
+    """
+    async with factory() as db:
+        org = Organization(name="MinFloor", billing_cycle_day=1)
+        db.add(org)
+        await db.flush()
+        user = User(
+            org_id=org.id, username="root", email="r@m.com",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.OWNER, is_superadmin=True, is_active=True,
+            email_verified=True,
+        )
+        db.add(user)
+        income_master = Category(
+            org_id=org.id, name="Income", slug="income", type=CategoryType.INCOME,
+        )
+        expense_master = Category(
+            org_id=org.id, name="Expense", slug="expense_m",
+            type=CategoryType.EXPENSE,
+        )
+        db.add_all([income_master, expense_master])
+        await db.flush()
+        income_sub = Category(
+            org_id=org.id, name="Salary", parent_id=income_master.id,
+            type=CategoryType.INCOME,
+        )
+        expense_sub = Category(
+            org_id=org.id, name="Groceries", parent_id=expense_master.id,
+            type=CategoryType.EXPENSE,
+        )
+        db.add_all([income_sub, expense_sub])
+        await db.commit()
+        return {
+            "org_id": org.id,
+            "user_id": user.id,
+            "income_master_id": income_master.id,
+            "expense_master_id": expense_master.id,
+            "income_sub_id": income_sub.id,
+            "expense_sub_id": expense_sub.id,
+        }
+
+
+@pytest.mark.asyncio
+async def test_type_change_only_income_master_to_expense_returns_409(session_factory):
+    """Cannot change the only INCOME master to EXPENSE: would drop the
+    org below the income master floor."""
+    seed = await _seed_minimal_floor(session_factory)
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{seed['income_master_id']}",
+            json={"type": "expense"},
+        )
+    assert resp.status_code == 409, resp.text
+    body = resp.json()["detail"]
+    assert body["detail"] == "floor_violation"
+    assert body["scope"] == "master"
+    assert body["type"] == "income"
+
+
+@pytest.mark.asyncio
+async def test_type_change_only_expense_master_to_income_returns_409(session_factory):
+    """Cannot change the only EXPENSE master to INCOME."""
+    seed = await _seed_minimal_floor(session_factory)
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{seed['expense_master_id']}",
+            json={"type": "income"},
+        )
+    assert resp.status_code == 409
+    body = resp.json()["detail"]
+    assert body["detail"] == "floor_violation"
+    assert body["scope"] == "master"
+    assert body["type"] == "expense"
+
+
+@pytest.mark.asyncio
+async def test_type_change_only_income_master_to_both_returns_409(session_factory):
+    """BOTH does not satisfy the income floor on its own (Invariant 1).
+    Changing the only income master to BOTH must be rejected.
+    """
+    seed = await _seed_minimal_floor(session_factory)
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{seed['income_master_id']}",
+            json={"type": "both"},
+        )
+    assert resp.status_code == 409, resp.text
+    body = resp.json()["detail"]
+    assert body["detail"] == "floor_violation"
+
+
+@pytest.mark.asyncio
+async def test_type_change_only_expense_master_to_both_returns_409(session_factory):
+    """BOTH does not satisfy the expense floor either."""
+    seed = await _seed_minimal_floor(session_factory)
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{seed['expense_master_id']}",
+            json={"type": "both"},
+        )
+    assert resp.status_code == 409
+    body = resp.json()["detail"]
+    assert body["detail"] == "floor_violation"
+
+
+@pytest.mark.asyncio
+async def test_type_change_master_succeeds_when_two_or_more_of_old_type(session_factory):
+    """When a second master of the same type exists, changing one's
+    type is allowed (the floor is still satisfied after the change)."""
+    seed = await _seed_basic(session_factory)
+    # _seed_basic provides 2 income masters and 2 expense masters.
+    # Changing income_master_2 (no children, no dependents) to BOTH
+    # leaves income_master + its children intact.
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{seed['income_master_2_id']}",
+            json={"type": "both"},
+        )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_type_change_master_cascade_drops_subcategory_floor_returns_409(session_factory):
+    """Cascading the master's new type to its only child drops the
+    income-subs count to zero. Reject."""
+    # Seed an org with one income master that has the only income sub,
+    # PLUS a second income master with no sub. Changing the first to
+    # EXPENSE would: income_masters count remains 1 (the second), but
+    # income_subs would drop to 0 because the only sub belongs to the
+    # one being changed.
+    async with session_factory() as db:
+        org = Organization(name="cascade", billing_cycle_day=1)
+        db.add(org)
+        await db.flush()
+        user = User(
+            org_id=org.id, username="root", email="rc@m.com",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.OWNER, is_superadmin=True, is_active=True,
+            email_verified=True,
+        )
+        db.add(user)
+        m1 = Category(
+            org_id=org.id, name="IncomeA", type=CategoryType.INCOME,
+        )
+        m2 = Category(
+            org_id=org.id, name="IncomeB", type=CategoryType.INCOME,
+        )
+        em = Category(
+            org_id=org.id, name="ExpM", type=CategoryType.EXPENSE,
+        )
+        db.add_all([m1, m2, em])
+        await db.flush()
+        s1 = Category(
+            org_id=org.id, name="OnlyIncomeSub", parent_id=m1.id,
+            type=CategoryType.INCOME,
+        )
+        es = Category(
+            org_id=org.id, name="ExpSub", parent_id=em.id,
+            type=CategoryType.EXPENSE,
+        )
+        db.add_all([s1, es])
+        await db.commit()
+        m1_id = m1.id
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{m1_id}",
+            json={"type": "expense"},
+        )
+    assert resp.status_code == 409, resp.text
+    body = resp.json()["detail"]
+    assert body["detail"] == "floor_violation"
+    assert body["scope"] == "subcategory"
+    assert body["type"] == "income"
+
+
+@pytest.mark.asyncio
+async def test_type_change_master_to_same_type_is_noop_no_floor_check(session_factory):
+    """Changing type to the same value is a no-op; no floor check fires."""
+    seed = await _seed_minimal_floor(session_factory)
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{seed['income_master_id']}",
+            json={"type": "income"},
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_type_change_both_master_to_income_does_not_trip_floor(session_factory):
+    """A BOTH master never contributed to either floor. Changing it to
+    INCOME or EXPENSE only adds to a floor; it cannot drop one."""
+    seed = await _seed_basic(session_factory)
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{seed['both_master_id']}",
+            json={"type": "income"},
+        )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_type_change_master_with_no_children_only_master_returns_409(session_factory):
+    """Even with no children, the master count itself drops below 1.
+    Reject."""
+    # Seed: one INCOME master without children + one EXPENSE master
+    # with one EXPENSE sub + one INCOME sub under a DIFFERENT income
+    # master. The lone target is the unique INCOME master alongside one
+    # other INCOME master (so the "no children" branch is exercised).
+    async with session_factory() as db:
+        org = Organization(name="lone", billing_cycle_day=1)
+        db.add(org)
+        await db.flush()
+        user = User(
+            org_id=org.id, username="r", email="lo@m.com",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.OWNER, is_superadmin=True, is_active=True,
+            email_verified=True,
+        )
+        db.add(user)
+        # The ONLY income master.
+        im = Category(
+            org_id=org.id, name="OnlyIncome", type=CategoryType.INCOME,
+        )
+        em = Category(
+            org_id=org.id, name="ExpM", type=CategoryType.EXPENSE,
+        )
+        db.add_all([im, em])
+        await db.flush()
+        i_sub = Category(
+            org_id=org.id, name="ISub", parent_id=im.id,
+            type=CategoryType.INCOME,
+        )
+        e_sub = Category(
+            org_id=org.id, name="ESub", parent_id=em.id,
+            type=CategoryType.EXPENSE,
+        )
+        db.add_all([i_sub, e_sub])
+        await db.commit()
+        im_id = im.id
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.put(
+            f"/api/v1/categories/{im_id}",
+            json={"type": "expense"},
+        )
+    assert resp.status_code == 409
+    body = resp.json()["detail"]
+    assert body["detail"] == "floor_violation"
+    # Master OR subcategory scope acceptable - the master floor trips
+    # first (only income master) so we get scope=master.
+    assert body["scope"] == "master"

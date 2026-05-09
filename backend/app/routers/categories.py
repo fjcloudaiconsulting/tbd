@@ -329,6 +329,25 @@ async def update_category(
             except ValidationError as exc:
                 raise HTTPException(status_code=400, detail=exc.detail) from exc
 
+            # Floor invariant guard (Invariant 1, cross-ref Invariant 4):
+            # reject if the type change would drop the org below the
+            # 1+1+1+1 floor for masters or subcategories of the OLD type.
+            try:
+                await category_service.assert_min_floor_after_type_change(
+                    db,
+                    org_id=current_user.org_id,
+                    category=cat,
+                    new_type=new_type,
+                )
+            except ConflictError as exc:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail=category_service._parse_floor_violation_detail(
+                        exc.detail
+                    ),
+                ) from exc
+
             # Codebase invariant: child type == master type.
             if cat.parent_id is None:
                 children = (await db.scalars(

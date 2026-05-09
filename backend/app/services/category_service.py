@@ -576,6 +576,134 @@ async def _floor_conflict_detail(
     return _floor_detail("subcategory", master.type.value)
 
 
+def _floor_violation_detail(scope: str, type_: str) -> dict:
+    """Structured 409 detail for a floor_violation (type-change) rejection.
+
+    Distinct from ``last_in_type`` (delete-time): same dimensions, but the
+    operation is a type change rather than a removal. The frontend
+    renders a tailored message ("Cannot change category type: this is the
+    only ...") off this discriminator.
+    """
+    return {"detail": "floor_violation", "scope": scope, "type": type_}
+
+
+async def assert_min_floor_after_type_change(
+    db: AsyncSession, *, org_id: int, category: Category, new_type: CategoryType,
+) -> None:
+    """Reject a type change that would drop the org below the 1+1+1+1 floor.
+
+    Mirrors the defensive pattern of ``assert_min_floor_after_delete``,
+    applied to type changes (Invariant 1, cross-referenced with
+    Invariant 4). Three dimensions:
+
+    1. Master with a floor-contributing type (INCOME or EXPENSE) whose
+       new type no longer satisfies that floor. The master count of the
+       OLD type drops by 1; reject if it would hit 0.
+    2. Same master: every child currently inherits the OLD type via the
+       ``child.type == master.type`` invariant. After cascade the
+       children's master.type changes too, so the subcategory floor for
+       the OLD type drops by ``child_count``. Reject if it would hit 0.
+    3. Subcategory whose new type no longer matches the master.type for
+       a floor-contributing type. (In practice the PUT router rejects
+       sub-type changes that don't match the master, so this branch is
+       defense in depth.)
+
+    Raises ``ConflictError('floor_violation::<scope>::<type>')`` so the
+    router can build the structured 409 detail.
+
+    BOTH does not satisfy either floor on its own (Invariant 1), so a
+    transition INCOME -> BOTH or EXPENSE -> BOTH is treated identically
+    to changing away from the old type for floor purposes.
+    """
+    if new_type == category.type:
+        return
+
+    counts = await _floor_counts_for_org(db, org_id=org_id)
+
+    # Whether the OLD type still satisfies the floor under the new type.
+    # INCOME -> EXPENSE / BOTH: the OLD INCOME masters count drops by 1.
+    # INCOME -> INCOME (no-op already returned above). BOTH -> EXPENSE /
+    # INCOME: BOTH never contributed to either floor, so no change.
+    old_type_loses_one = category.type in (CategoryType.INCOME, CategoryType.EXPENSE)
+    new_type_keeps_old_floor = (
+        category.type == new_type
+        # An INCOME master changing to BOTH no longer satisfies the
+        # INCOME floor. Same for EXPENSE -> BOTH.
+    )
+
+    if not old_type_loses_one or new_type_keeps_old_floor:
+        return
+
+    if category.parent_id is None:
+        # Master type change.
+        if category.type == CategoryType.INCOME:
+            if counts["income_masters"] <= 1:
+                raise ConflictError(
+                    f"floor_violation::master::{category.type.value}"
+                )
+            # Cascade: children would no longer count toward income_subs.
+            child_count = await db.scalar(
+                select(func.count())
+                .select_from(Category)
+                .where(
+                    Category.org_id == org_id,
+                    Category.parent_id == category.id,
+                )
+            ) or 0
+            if counts["income_subs"] - child_count < 1:
+                raise ConflictError(
+                    f"floor_violation::subcategory::{category.type.value}"
+                )
+        elif category.type == CategoryType.EXPENSE:
+            if counts["expense_masters"] <= 1:
+                raise ConflictError(
+                    f"floor_violation::master::{category.type.value}"
+                )
+            child_count = await db.scalar(
+                select(func.count())
+                .select_from(Category)
+                .where(
+                    Category.org_id == org_id,
+                    Category.parent_id == category.id,
+                )
+            ) or 0
+            if counts["expense_subs"] - child_count < 1:
+                raise ConflictError(
+                    f"floor_violation::subcategory::{category.type.value}"
+                )
+        return
+
+    # Subcategory type change. The subcategory's master.type still drives
+    # the floor, but if the sub diverges from its master's type the row
+    # no longer "matches" healthy state. The router rejects mismatched
+    # sub-type changes upstream (line ~305 of routers/categories.py), so
+    # this branch is defensive: when the sub IS converging to a new
+    # parent type via a future move, we still want to refuse if the
+    # convergence drops the floor for the OLD inherited type.
+    master = await db.scalar(
+        select(Category).where(
+            Category.id == category.parent_id,
+            Category.org_id == org_id,
+        )
+    )
+    if master is None:
+        return
+    if master.type == CategoryType.INCOME and new_type != CategoryType.INCOME:
+        if counts["income_subs"] <= 1:
+            raise ConflictError("floor_violation::subcategory::income")
+    elif master.type == CategoryType.EXPENSE and new_type != CategoryType.EXPENSE:
+        if counts["expense_subs"] <= 1:
+            raise ConflictError("floor_violation::subcategory::expense")
+
+
+def _parse_floor_violation_detail(detail: str) -> dict:
+    """Parse the ``floor_violation::scope::type`` ConflictError encoding."""
+    parts = detail.split("::", 2)
+    if len(parts) < 3:
+        return {"detail": "floor_violation"}
+    return _floor_violation_detail(parts[1], parts[2])
+
+
 # ── Move ────────────────────────────────────────────────────────────────────
 
 
