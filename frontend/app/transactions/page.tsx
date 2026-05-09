@@ -1186,8 +1186,13 @@ function TransactionsPageContent() {
                             </div>
                           )}
                           <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-3">
-                            <button onClick={handleSaveEdit} className="min-h-[36px] rounded-md bg-accent px-4 text-sm font-medium text-accent-text hover:bg-accent-hover">Save</button>
-                            <button onClick={closeEdit} className="min-h-[36px] rounded-md border border-border px-4 text-sm text-text-secondary hover:bg-surface-raised">Cancel</button>
+                            {/* 44px touch-target floor matches the mobile edit
+                                form and the project a11y baseline (per PRs
+                                #173/#174). md+ tablet width also lands here, so
+                                36px would land below WCAG 2.5.8 AA (24px) and
+                                comfortably below the project's stricter floor. */}
+                            <button onClick={handleSaveEdit} className="min-h-[44px] rounded-md bg-accent px-4 text-sm font-medium text-accent-text hover:bg-accent-hover">Save</button>
+                            <button onClick={closeEdit} className="min-h-[44px] rounded-md border border-border px-4 text-sm text-text-secondary hover:bg-surface-raised">Cancel</button>
                           </div>
                         </div>
                       ) : (

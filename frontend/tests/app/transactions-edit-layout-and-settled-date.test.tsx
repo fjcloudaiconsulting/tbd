@@ -164,6 +164,32 @@ describe("TransactionsPage — edit row layout (Punch-list Item 7)", () => {
     const typeLabels = Array.from(desktopType!.options).map((o) => o.textContent);
     expect(typeLabels).toEqual(["Expense", "Income"]);
   });
+
+  it("desktop edit form Save/Cancel meet the 44px touch-target floor", async () => {
+    // Tablet portrait (md+) still receives the desktop layout, so a 36px
+    // tap target would fall below the project a11y baseline shipped in
+    // PRs #173/#174. Mirror the mobile-form action floor here.
+    const tx = makeTx({ id: 71, description: "Touch me" });
+    setupApiFetch([tx]);
+    render(<TransactionsPage />);
+
+    await screen.findAllByText("Touch me");
+    await waitFor(() => {
+      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+
+    const editRow = await screen.findByTestId("edit-row-desktop-71");
+    const saves = screen.getAllByRole("button", { name: /^Save$/ });
+    const desktopSave = saves.find((el) => editRow.contains(el));
+    expect(desktopSave).toBeTruthy();
+    expect(desktopSave!.className).toMatch(/min-h-\[44px\]/);
+
+    const cancels = screen.getAllByRole("button", { name: /^Cancel$/ });
+    const desktopCancel = cancels.find((el) => editRow.contains(el));
+    expect(desktopCancel).toBeTruthy();
+    expect(desktopCancel!.className).toMatch(/min-h-\[44px\]/);
+  });
 });
 
 describe("TransactionsPage — settled_date (Punch-list Item 13)", () => {
