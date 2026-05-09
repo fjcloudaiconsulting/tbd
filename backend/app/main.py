@@ -46,9 +46,102 @@ async def _backfill_subscriptions() -> None:
             await logger.ainfo("backfilled subscriptions", count=len(org_ids))
 
 
-def _run_migrations() -> None:
+_ALEMBIC_INI_PATH = "/app/alembic.ini"
+
+
+def _resolve_alembic_head() -> str:
+    """Return the head revision recorded in the alembic versions tree.
+
+    Uses the alembic Python API directly (no subprocess) so this stays
+    cheap enough to call on every dev boot. Returns "unknown" if anything
+    goes wrong; we never want diagnostic logging to gate startup.
+    """
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        cfg = Config(_ALEMBIC_INI_PATH)
+        script = ScriptDirectory.from_config(cfg)
+        heads = script.get_heads()
+        if len(heads) == 1:
+            return heads[0]
+        # Multi-head or no heads: surface the raw shape rather than guess.
+        return ",".join(heads) if heads else "unknown"
+    except Exception:
+        return "unknown"
+
+
+async def _resolve_alembic_current() -> str:
+    """Return the alembic_version row from the live DB.
+
+    Direct SQL via the existing async engine, far cheaper than spinning
+    up a separate alembic context. Returns "unknown" on any error so a
+    log line is still emitted; the actual upgrade run will surface real
+    failures. Returns "none" if alembic_version is empty (fresh DB).
+    """
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT version_num FROM alembic_version LIMIT 1")
+            )
+            row = result.first()
+            if row is None:
+                return "none"
+            return str(row[0])
+    except Exception:
+        return "unknown"
+
+
+def _resolve_git_branch() -> str:
+    """Best-effort current git branch for diagnostic logging.
+
+    The dev container is bind-mounted from the host worktree, so
+    /app/.git resolves to the user's checkout. Falls back to "unknown"
+    if git isn't available or the repo can't be read.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or "unknown"
+    except Exception:
+        pass
+    return "unknown"
+
+
+async def _run_migrations() -> None:
     """Run Alembic migrations on startup. Idempotent — alembic upgrade head
-    is a no-op when already at the latest revision."""
+    is a no-op when already at the latest revision.
+
+    Logs the resolved head + current revision (and best-effort git branch)
+    before invoking alembic so the next drift incident has a breadcrumb
+    pointing at exactly which revision the lifespan was targeting. Skips
+    the subprocess entirely when current == head.
+    """
+    head = _resolve_alembic_head()
+    current = await _resolve_alembic_current()
+    branch = _resolve_git_branch()
+
+    if current == head and head != "unknown":
+        logger.info(
+            "migrate.dev.no_op",
+            current_revision=current,
+            head_revision=head,
+            branch=branch,
+        )
+        return
+
+    logger.info(
+        "migrate.dev.target",
+        current_revision=current,
+        head_revision=head,
+        branch=branch,
+    )
+
     result = subprocess.run(
         ["alembic", "upgrade", "head"],
         capture_output=True,
@@ -67,7 +160,7 @@ async def lifespan(app: FastAPI):
     # equivalent — the alternative is a manual `./pfv migrate` after every
     # rebuild.
     if app_settings.app_env != "production":
-        _run_migrations()
+        await _run_migrations()
     await _backfill_subscriptions()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
