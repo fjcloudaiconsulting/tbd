@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CategoryCreate(BaseModel):
@@ -28,3 +28,42 @@ class CategoryResponse(BaseModel):
     transaction_count: int = 0
 
     model_config = {"from_attributes": True}
+
+
+# ── C0 move / batch-move / delete-with-migration schemas ────────────────────
+
+
+class CategoryMoveRequest(BaseModel):
+    target_parent_id: int
+
+
+class BatchMoveItem(BaseModel):
+    subcategory_id: int
+    target_parent_id: int
+
+
+class BatchMoveRequest(BaseModel):
+    moves: list[BatchMoveItem] = Field(..., min_length=1)
+
+
+class CategoryMoveResult(BaseModel):
+    category_id: int
+    source_master_id: int
+    target_master_id: int
+    affected_transaction_count: int
+    affected_recurring_count: int
+    affected_forecast_item_count: int
+    budget_actuals_shifted: bool
+
+
+class BatchMoveResult(BaseModel):
+    moves: list[CategoryMoveResult]
+
+
+class CategoryDeleteResult(BaseModel):
+    deleted_category_id: int
+    migration_target_id: Optional[int] = None
+    migrated_transaction_count: int = 0
+    migrated_recurring_count: int = 0
+    migrated_forecast_item_count: int = 0
+    deleted_rule_count: int = 0

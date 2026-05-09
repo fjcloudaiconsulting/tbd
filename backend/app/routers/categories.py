@@ -1,22 +1,57 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, func, select
+from typing import Optional
+
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.category import Category, CategoryType
-from app.models.category_rule import CategoryRule
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.schemas.category import CategoryCreate, CategoryResponse, CategoryUpdate
-from app.services.category_service import validate_category_type_change
-from app.services.exceptions import ValidationError
-from app.services.transaction_service import assert_no_dependents
+from app.rate_limit import get_client_ip
+from app.schemas.category import (
+    BatchMoveRequest,
+    BatchMoveResult,
+    CategoryCreate,
+    CategoryDeleteResult,
+    CategoryMoveRequest,
+    CategoryMoveResult,
+    CategoryResponse,
+    CategoryUpdate,
+)
+from app.services import audit_service, category_service
+from app.services.category_service import (
+    batch_move_subcategories,
+    delete_category_with_migration,
+    move_subcategory,
+    preview_move,
+    validate_category_type_change,
+)
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 router = APIRouter(prefix="/api/v1/categories", tags=["categories"])
 
+logger = structlog.stdlib.get_logger()
+
 Parent = aliased(Category)
+
+
+def _request_id() -> str | None:
+    """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
+    return structlog.contextvars.get_contextvars().get("request_id")
+
+
+async def _actor_org_name(db: AsyncSession, org_id: int) -> str:
+    """Snapshot the org name for audit rows."""
+    from app.models.user import Organization
+
+    name = await db.scalar(
+        select(Organization.name).where(Organization.id == org_id)
+    )
+    return name or ""
 
 
 def _to_response(cat: Category, parent_name: str | None, tx_count: int) -> CategoryResponse:
@@ -31,6 +66,110 @@ def _to_response(cat: Category, parent_name: str | None, tx_count: int) -> Categ
         is_system=cat.is_system,
         transaction_count=tx_count,
     )
+
+
+# ── Domain-error mapping helpers ─────────────────────────────────────────────
+
+
+def _name_collision_response(detail_str: str) -> HTTPException:
+    """Parse the ``name_collision`` ConflictError encoding and build the
+    structured 409 response."""
+    parts = detail_str.split("::", 4)
+    # parts: ["name_collision", target_id, conflicting_id, name, normalized]
+    try:
+        target_parent_id = int(parts[1])
+        conflicting_child_id = int(parts[2])
+        conflicting_child_name = parts[3]
+        normalized_name = parts[4]
+    except (IndexError, ValueError):
+        return HTTPException(status_code=409, detail={"detail": "name_collision"})
+    return HTTPException(
+        status_code=409,
+        detail={
+            "detail": "name_collision",
+            "target_parent_id": target_parent_id,
+            "conflicting_child_id": conflicting_child_id,
+            "conflicting_child_name": conflicting_child_name,
+            "normalized_name": normalized_name,
+        },
+    )
+
+
+def _has_children_response(detail_str: str) -> HTTPException:
+    """Parse the ``has_children`` ConflictError encoding."""
+    parts = detail_str.split("::", 1)
+    child_ids: list[int] = []
+    child_names: list[str] = []
+    if len(parts) >= 2:
+        for entry in parts[1].split(":"):
+            if "|" not in entry:
+                continue
+            cid_str, _, name = entry.partition("|")
+            try:
+                child_ids.append(int(cid_str))
+            except ValueError:
+                continue
+            child_names.append(name)
+    return HTTPException(
+        status_code=409,
+        detail={
+            "detail": "has_children",
+            "child_ids": child_ids,
+            "child_names": child_names,
+        },
+    )
+
+
+def _type_mismatch_response(detail_str: str) -> HTTPException:
+    """Parse the ``type_mismatch::source_type::target_type::income::expense`` encoding."""
+    parts = detail_str.split("::", 4)
+    try:
+        source_type = parts[1]
+        target_type = parts[2]
+        income_count = int(parts[3])
+        expense_count = int(parts[4])
+    except (IndexError, ValueError):
+        return HTTPException(
+            status_code=400, detail={"detail": "type_mismatch"},
+        )
+    return HTTPException(
+        status_code=400,
+        detail={
+            "detail": "type_mismatch",
+            "source_type": source_type,
+            "target_type": target_type,
+            "dependent_breakdown": {
+                "income": income_count,
+                "expense": expense_count,
+            },
+        },
+    )
+
+
+def _migration_target_required_response(detail_str: str) -> HTTPException:
+    parts = detail_str.split("::", 3)
+    try:
+        tx_count = int(parts[1])
+        rec_count = int(parts[2])
+        fpi_count = int(parts[3])
+    except (IndexError, ValueError):
+        return HTTPException(
+            status_code=422, detail={"detail": "migration_target_required"},
+        )
+    return HTTPException(
+        status_code=422,
+        detail={
+            "detail": "migration_target_required",
+            "dependent_counts": {
+                "transactions": tx_count,
+                "recurring": rec_count,
+                "forecast_items": fpi_count,
+            },
+        },
+    )
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────────
 
 
 @router.get("", response_model=list[CategoryResponse])
@@ -62,14 +201,12 @@ async def list_categories(
 
 @router.post("", response_model=CategoryResponse, status_code=201)
 async def create_category(
+    request: Request,
     body: CategoryCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Children silently inherit their parent's type. parent_id is the
-    # authoritative signal; body.type is ignored for subcategories so the
-    # codebase invariant ("child type == master type", see
-    # services/category_service.py module docstring) holds at create time.
+    # Children silently inherit their parent's type.
     effective_type = CategoryType(body.type)
     if body.parent_id is not None:
         parent_row = await db.execute(
@@ -92,6 +229,36 @@ async def create_category(
         description=body.description,
     )
     db.add(cat)
+    await db.flush()
+
+    # Audit row staged in same txn (excluded for org-bootstrap-seed,
+    # which never goes through this router).
+    org_name = await _actor_org_name(db, current_user.org_id)
+    audit_service.add_audit_event_to_session(
+        db,
+        event_type="category.created",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=org_name,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={
+            "category_id": cat.id,
+            "name": cat.name,
+            "type": cat.type.value,
+            "parent_id": cat.parent_id,
+            "is_system": False,
+        },
+    )
+    await logger.ainfo(
+        "category.created",
+        category_id=cat.id,
+        type=cat.type.value,
+        parent_id=cat.parent_id,
+    )
+
     await db.commit()
     await db.refresh(cat)
 
@@ -108,6 +275,7 @@ async def create_category(
 
 @router.put("/{category_id}", response_model=CategoryResponse)
 async def update_category(
+    request: Request,
     category_id: int,
     body: CategoryUpdate,
     current_user: User = Depends(get_current_user),
@@ -122,10 +290,7 @@ async def update_category(
     if cat is None:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    # Subcategory invariant: child.type must equal parent.type. Reject any
-    # type change on a child that would diverge from the parent's type;
-    # masters are the only authoritative side of the invariant. Run BEFORE
-    # any field assignment so the rejection is atomic.
+    # Subcategory invariant: child.type must equal parent.type.
     if (
         cat.parent_id is not None
         and body.type is not None
@@ -146,24 +311,25 @@ async def update_category(
                 ),
             )
 
-    if body.name is not None:
+    old_name = cat.name
+    old_type = cat.type
+    rename_changed = False
+    type_changed = False
+    cascaded_child_ids: list[int] = []
+
+    if body.name is not None and body.name != cat.name:
         cat.name = body.name
+        rename_changed = True
+
     if body.type is not None:
         new_type = CategoryType(body.type)
         if new_type != cat.type:
-            # Pre-flight: every existing reference (transactions, recurring
-            # templates, forecast items) on this category — and on every
-            # child if this is a master — must be compatible with the new
-            # type. Closes the third HIGH finding from PR #150 review.
             try:
                 await validate_category_type_change(db, cat, new_type)
             except ValidationError as exc:
                 raise HTTPException(status_code=400, detail=exc.detail) from exc
 
-            # Codebase invariant: child type == master type (see
-            # services/category_service.py module docstring). When a master
-            # changes, cascade the new type to every child in the same
-            # operation so the invariant holds post-write.
+            # Codebase invariant: child type == master type.
             if cat.parent_id is None:
                 children = (await db.scalars(
                     select(Category).where(
@@ -173,10 +339,68 @@ async def update_category(
                 )).all()
                 for child in children:
                     child.type = new_type
+                    cascaded_child_ids.append(child.id)
 
             cat.type = new_type
+            type_changed = True
+
     if body.description is not None:
         cat.description = body.description
+
+    # Audit rows staged before commit (one per logical change). Only
+    # emit when a value actually changed (per §D footer convention).
+    org_name = await _actor_org_name(db, current_user.org_id)
+    if rename_changed:
+        audit_service.add_audit_event_to_session(
+            db,
+            event_type="category.renamed",
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=current_user.org_id,
+            target_org_name=org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail={
+                "category_id": cat.id,
+                "old_name": old_name,
+                "new_name": cat.name,
+                "parent_id": cat.parent_id,
+                "type": cat.type.value,
+            },
+        )
+        await logger.ainfo(
+            "category.renamed",
+            category_id=cat.id,
+            old_name=old_name,
+            new_name=cat.name,
+        )
+    if type_changed:
+        audit_service.add_audit_event_to_session(
+            db,
+            event_type="category.type_changed",
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=current_user.org_id,
+            target_org_name=org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail={
+                "category_id": cat.id,
+                "old_type": old_type.value,
+                "new_type": cat.type.value,
+                "is_master": cat.parent_id is None,
+                "child_ids_cascaded": cascaded_child_ids,
+            },
+        )
+        await logger.ainfo(
+            "category.type_changed",
+            category_id=cat.id,
+            old_type=old_type.value,
+            new_type=cat.type.value,
+        )
+
     await db.commit()
     await db.refresh(cat)
 
@@ -199,41 +423,181 @@ async def update_category(
     return _to_response(cat, parent_name, count_result or 0)
 
 
-@router.delete("/{category_id}", status_code=204)
-async def delete_category(
+# ── C0: move preview / move / batch-move / delete-with-migration ────────────
+
+
+@router.get(
+    "/{category_id}/move/preview",
+    response_model=CategoryMoveResult,
+)
+async def preview_move_endpoint(
     category_id: int,
+    target_parent_id: int = Query(..., description="ID of the proposed new master"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Category).where(
-            Category.id == category_id, Category.org_id == current_user.org_id
+    """Read-only move preview. Issues SELECTs only; no audit row, no
+    structlog event, no writes (§4.1 of the C0 spec)."""
+    try:
+        return await preview_move(
+            db,
+            org_id=current_user.org_id,
+            subcategory_id=category_id,
+            target_parent_id=target_parent_id,
         )
-    )
-    cat = result.scalar_one_or_none()
-    if cat is None:
-        raise HTTPException(status_code=404, detail="Category not found")
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConflictError as exc:
+        if exc.detail.startswith("name_collision::"):
+            raise _name_collision_response(exc.detail) from exc
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
 
-    # Check for child categories
-    await assert_no_dependents(
-        db, Category,
-        [Category.parent_id == cat.id, Category.org_id == current_user.org_id],
-        "subcategory", "category",
-    )
 
-    # Check for transactions
-    await assert_no_dependents(
-        db, Transaction,
-        [Transaction.category_id == cat.id, Transaction.org_id == current_user.org_id],
-        "transaction", "category",
-    )
-
-    # Learned auto-categorization rules reference this category. They're
-    # invisible to the user and become invalid once the category is gone —
-    # delete them silently rather than blocking the category delete.
-    await db.execute(
-        delete(CategoryRule).where(CategoryRule.category_id == cat.id)
-    )
-
-    await db.delete(cat)
+@router.patch("/{category_id}/move", response_model=CategoryMoveResult)
+async def move_category_endpoint(
+    request: Request,
+    category_id: int,
+    body: CategoryMoveRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move a single subcategory under a different master."""
+    org_name = await _actor_org_name(db, current_user.org_id)
+    try:
+        result = await move_subcategory(
+            db,
+            org_id=current_user.org_id,
+            subcategory_id=category_id,
+            target_parent_id=body.target_parent_id,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            actor_org_name=org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+        )
+    except NotFoundError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConflictError as exc:
+        await db.rollback()
+        if exc.detail.startswith("name_collision::"):
+            raise _name_collision_response(exc.detail) from exc
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except ValidationError as exc:
+        await db.rollback()
+        if exc.detail.startswith("type_mismatch"):
+            raise HTTPException(
+                status_code=400,
+                detail={"detail": "type_mismatch", "message": exc.detail},
+            ) from exc
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
     await db.commit()
+    return result
+
+
+@router.post("/batch-move", response_model=BatchMoveResult)
+async def batch_move_endpoint(
+    request: Request,
+    body: BatchMoveRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Atomic batch move of N subcategories."""
+    org_name = await _actor_org_name(db, current_user.org_id)
+    try:
+        return await batch_move_subcategories(
+            db,
+            org_id=current_user.org_id,
+            moves=list(body.moves),
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            actor_org_name=org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConflictError as exc:
+        if exc.detail.startswith("name_collision::"):
+            raise _name_collision_response(exc.detail) from exc
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except ValidationError as exc:
+        if exc.detail.startswith("type_mismatch"):
+            raise HTTPException(
+                status_code=400,
+                detail={"detail": "type_mismatch", "message": exc.detail},
+            ) from exc
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+
+
+@router.delete("/{category_id}")
+async def delete_category(
+    request: Request,
+    category_id: int,
+    target_category_id: Optional[int] = Query(
+        None, description="Migration target ID (required when category has dependents)",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a category, optionally migrating dependents to a target.
+
+    - 200 with ``CategoryDeleteResult`` body: dependents migrated.
+    - 204 (no body): no dependents, nothing to migrate.
+    - 409 ``has_children``: master has child subcategories.
+    - 409 ``last_in_type``: would drop org below 1+1 floor.
+    - 422 ``migration_target_required``: dependents present but target missing.
+    - 400 ``type_mismatch``: target type incompatible with source dependents.
+    """
+    org_name = await _actor_org_name(db, current_user.org_id)
+    try:
+        result, had_dependents = await delete_category_with_migration(
+            db,
+            org_id=current_user.org_id,
+            category_id=category_id,
+            target_category_id=target_category_id,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            actor_org_name=org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+        )
+    except NotFoundError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConflictError as exc:
+        await db.rollback()
+        if exc.detail.startswith("has_children::") or exc.detail == "has_children":
+            raise _has_children_response(exc.detail) from exc
+        if exc.detail == "last_in_type":
+            # Re-fetch the category to compute the structured detail.
+            cat = await db.scalar(
+                select(Category).where(
+                    Category.id == category_id,
+                    Category.org_id == current_user.org_id,
+                )
+            )
+            if cat is not None:
+                detail = await category_service._floor_conflict_detail(
+                    db, org_id=current_user.org_id, category=cat,
+                )
+                raise HTTPException(status_code=409, detail=detail) from exc
+            raise HTTPException(
+                status_code=409, detail={"detail": "last_in_type"},
+            ) from exc
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except ValidationError as exc:
+        await db.rollback()
+        if exc.detail.startswith("migration_target_required::"):
+            raise _migration_target_required_response(exc.detail) from exc
+        if exc.detail.startswith("type_mismatch::"):
+            raise _type_mismatch_response(exc.detail) from exc
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+
+    await db.commit()
+    if had_dependents:
+        return result
+    # 204 No Content for the no-dependents path.
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
