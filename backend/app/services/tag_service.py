@@ -6,11 +6,11 @@ thin delegate (matches the pattern in ``transactions.py`` /
 
 Three responsibilities:
 
-1. **Org-local tags** — create / rename / delete / list with usage
+1. **Org-local tags**: create / rename / delete / list with usage
    counts, normalize names consistently before the unique check.
-2. **Transaction tag set** — replace the join rows for a transaction
+2. **Transaction tag set**: replace the join rows for a transaction
    atomically with a cap of ``MAX_TAGS_PER_TRANSACTION``.
-3. **Cross-org dictionary** — write side (``record_dictionary_contribution``)
+3. **Cross-org dictionary**: write side (``record_dictionary_contribution``)
    gated on ``share_tag_data=true``; read side
    (``suggest_tags`` three-pass query) honoring the k-anonymity floor.
 
@@ -192,7 +192,7 @@ async def create_tag(
     Raises ``ConflictError`` if an existing tag in this org has the same
     normalized form. Triggers the dictionary contribution path when the
     org has ``share_tag_data=true`` and the tag passes the eligibility
-    filter — both inside the same transaction.
+    filter, both inside the same transaction.
     """
     name_normalized = normalize_tag_name(name)
     display_name = _WHITESPACE_RUN_RE.sub(" ", name.strip())
@@ -211,7 +211,7 @@ async def create_tag(
     await db.flush()
 
     # Dictionary contribution side. Failures here raise a typed
-    # exception which rolls back the whole create — that's the right
+    # exception which rolls back the whole create, that's the right
     # behaviour because the caller asked for an atomic "create + maybe
     # contribute" operation.
     if await is_share_tag_data_enabled(db, org_id):
@@ -231,7 +231,7 @@ async def rename_tag(
     """Rename a tag in place, refreshing ``name_normalized``.
 
     No dictionary contribution is triggered on rename (the new name was
-    not "first seen" in the dictionary sense — it could equally be a
+    not "first seen" in the dictionary sense, it could equally be a
     typo correction; we don't want to inflate dictionary counts on
     typo).
     """
@@ -374,7 +374,7 @@ async def _record_dictionary_contribution(
        ``contributor_org_count`` on the dictionary row.
     5. Always increment ``usage_count`` (popularity signal).
 
-    All mutations are staged on the caller's session — commit is the
+    All mutations are staged on the caller's session: commit is the
     caller's job (typically the router after the org-local tag create).
     """
     if not _is_dictionary_eligible(name_normalized):
@@ -426,6 +426,14 @@ async def _try_insert_contributor(
     races. A genuine race would be rare (same user creating the same tag
     twice in parallel sessions) and the IntegrityError path treats the
     duplicate as "already contributed".
+
+    The contributor INSERT runs inside a SAVEPOINT (``db.begin_nested``)
+    so an IntegrityError on a true race rolls back ONLY the savepoint,
+    leaving the outer request transaction (and the user's just-flushed
+    Tag row) intact. Without this guard, a previous version called
+    ``await db.rollback()`` which silently discarded the user's tag
+    create. Pattern matches existing usages in transaction_service /
+    routers/accounts / routers/admin_orgs.
     """
     existing = await db.execute(
         select(TagDictionaryContributor.id).where(
@@ -435,17 +443,19 @@ async def _try_insert_contributor(
     )
     if existing.scalar_one_or_none() is not None:
         return False
-    db.add(TagDictionaryContributor(
-        dictionary_tag_id=dictionary_tag_id,
-        contributor_org_id=contributor_org_id,
-    ))
     try:
-        await db.flush()
+        async with db.begin_nested():
+            db.add(TagDictionaryContributor(
+                dictionary_tag_id=dictionary_tag_id,
+                contributor_org_id=contributor_org_id,
+            ))
+            # Flush forces the INSERT now so the unique-constraint check
+            # fires inside the savepoint scope.
+            await db.flush()
     except IntegrityError:
-        await db.rollback()
-        # Row inserted by a concurrent session; treat as "already
-        # contributed" — no count increment, the other session already
-        # bumped it.
+        # Row inserted by a concurrent session. The savepoint already
+        # rolled back so the outer transaction (and the user's Tag row)
+        # is untouched. Treat as "already contributed", no count bump.
         return False
     return True
 
