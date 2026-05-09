@@ -21,6 +21,7 @@ import AccountMonthEndForecast, {
   type AccountMonthEndForecastResponse,
 } from "@/components/dashboard/AccountMonthEndForecast";
 import AccountTilesCard from "@/components/dashboard/AccountTile";
+import AddTransactionFab from "@/components/floating/AddTransactionFab";
 import type { Account, BillingPeriod, Budget, Category, Transaction } from "@/lib/types";
 
 interface ForecastPlanItem {
@@ -1034,6 +1035,21 @@ export default function DashboardPage() {
           )}
         </div>
       )}
+      {/*
+        FAB demo mount — Dashboard only for this PR. Broader rollout
+        (FAB on every core money page, Dashboard Quick Add card removal)
+        is a follow-up integration PR that waits for Sort/Filters and
+        Transactions Layout to stabilize, since both touch the same
+        page files.
+      */}
+      <AddTransactionFab
+        onTransactionAdded={() => {
+          void loadTransactions(0);
+          void loadForecastProjection();
+          void loadPendingTransactions();
+          void loadAccountMonthEndForecast();
+        }}
+      />
     </AppShell>
   );
 }
