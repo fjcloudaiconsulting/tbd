@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
+import AppShellAddTransactionCta, {
+  shouldShowAddTransactionCta,
+} from "@/components/AppShellAddTransactionCta";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import TrialBanner from "@/components/ui/TrialBanner";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -309,6 +312,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="lg:hidden" />
           <div className="flex items-center gap-3">
             <TrialBanner user={user} />
+            {shouldShowAddTransactionCta(pathname) && <AppShellAddTransactionCta />}
             <Link
               href="/docs"
               className="rounded-md p-2 text-text-muted transition-colors hover:text-text-primary"

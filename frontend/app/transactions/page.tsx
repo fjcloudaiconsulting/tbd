@@ -9,6 +9,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -68,6 +69,10 @@ function TransactionsPageContent() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
+  // Non-blocking refresh-error state for the AppShell post-write event
+  // listener. The page keeps the previous list; banner offers a Retry.
+  const [refreshError, setRefreshError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -262,6 +267,27 @@ function TransactionsPageContent() {
   }, [loading, user, loadTransactions, page]);
 
   useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
+
+  // After a write from the AppShell-level "+ New Transaction" CTA the
+  // page must re-pull the visible list (the new row should appear) and
+  // the refs (a freshly-created category from inside the panel must
+  // show in the filter dropdown). Promise.allSettled keeps both fetches
+  // independent so a transient ref failure doesn't block the list
+  // refresh, and any rejection surfaces the inline retry banner below.
+  const refreshAfterTransactionAdded = useCallback(async () => {
+    if (loading || !user) return;
+    setRefreshing(true);
+    const results = await Promise.allSettled([
+      loadRefs(),
+      loadTransactions(page),
+    ]);
+    setRefreshing(false);
+    setRefreshError(results.some((r) => r.status === "rejected"));
+  }, [loading, user, loadRefs, loadTransactions, page]);
+
+  useTransactionAddedListener(() => {
+    void refreshAfterTransactionAdded();
+  });
 
   useEffect(() => {
     clearSelection();
@@ -793,6 +819,27 @@ function TransactionsPageContent() {
       </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+
+      {refreshError && (
+        <div
+          className={`mb-6 flex items-center justify-between gap-3 ${errorCls}`}
+          role="status"
+          data-testid="transactions-refresh-error"
+        >
+          <span>Failed to refresh after the last update. Try again.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setRefreshError(false);
+              void refreshAfterTransactionAdded();
+            }}
+            disabled={refreshing}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {refreshing ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      )}
 
       {showForm && (
         <div className={`mb-6 ${card} p-6`}>

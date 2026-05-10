@@ -7,8 +7,9 @@ import { X } from "lucide-react";
 /**
  * Right-side slide-in panel for quick-entry flows. Pattern reference:
  * Linear / Notion task quick-add. Side panel was chosen over a centered
- * modal because the FAB lives in the bottom-right and a panel sliding
- * from the same corner reinforces the visual link.
+ * modal because the trigger (Add Transaction CTA in the AppShell top
+ * bar) sits at the right edge and a panel sliding in from the same
+ * edge reinforces the visual link.
  *
  * Behavior:
  *   - Renders nothing when `open` is false (no dead overlay in the DOM).

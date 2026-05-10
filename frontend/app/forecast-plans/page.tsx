@@ -33,6 +33,7 @@ import {
 } from "recharts";
 import type { BillingPeriod, Category, ForecastPlan, ForecastPlanItem } from "@/lib/types";
 import { chartColor } from "@/lib/chart-colors";
+import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 
 // "Auto" is the honest label for source=history (PR #146 #1). populate
 // surfaces both 3-month-average rows AND current-period-only rows under
@@ -82,6 +83,10 @@ export default function ForecastPlansPage() {
   const [periodIdx, setPeriodIdx] = useState(0);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
+  // Non-blocking refresh-error state for the AppShell post-write event
+  // listener. The page keeps the previous plan; banner offers a Retry.
+  const [refreshError, setRefreshError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
   // Add form
@@ -199,6 +204,30 @@ export default function ForecastPlansPage() {
       loadPlan().catch(() => setFetching(false));
     }
   }, [loading, user, loadPlan, periodStart]);
+
+  // After a write from the AppShell-level "+ New Transaction" CTA the
+  // forecast page must reload the plan so per-category actuals and
+  // variance reflect the new transaction. We don't reload refs here:
+  // categories and periods don't change on a transaction add. If the
+  // panel created a new category, the user only sees it the next time
+  // they navigate to /forecast-plans (acceptable, this page is a plan
+  // editor not a category picker).
+  const refreshAfterTransactionAdded = useCallback(async () => {
+    if (loading || !user || !periodStart) return;
+    setRefreshing(true);
+    try {
+      await loadPlan();
+      setRefreshError(false);
+    } catch {
+      setRefreshError(true);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loading, user, periodStart, loadPlan]);
+
+  useTransactionAddedListener(() => {
+    void refreshAfterTransactionAdded();
+  });
 
   // Categories already used in the plan for the currently-selected
   // type. Plan items always reference master categories, but the
@@ -664,6 +693,27 @@ export default function ForecastPlansPage() {
       )}
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+
+      {refreshError && (
+        <div
+          className={`mb-6 flex items-center justify-between gap-3 ${errorCls}`}
+          role="status"
+          data-testid="forecast-plans-refresh-error"
+        >
+          <span>Failed to refresh after the last update. Try again.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setRefreshError(false);
+              void refreshAfterTransactionAdded();
+            }}
+            disabled={refreshing}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {refreshing ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      )}
 
       {/* Add item form (draft only) */}
       {showForm && isDraft && (

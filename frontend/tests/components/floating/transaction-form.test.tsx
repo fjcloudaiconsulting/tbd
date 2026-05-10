@@ -246,4 +246,267 @@ describe("TransactionForm", () => {
     expect(amount.value).toBe("");
     expect(account.value).toBe(String(ACCT.id));
   });
+
+  // Expected settlement date for pending transactions (PR #197 parity).
+  // The canonical /transactions form exposes a settled_date input only
+  // when status=pending, validates settled_date >= date, and only sends
+  // the field on pending creates with a value set. The FAB quick-entry
+  // form must match.
+  describe("expected settlement date (pending parity with #197)", () => {
+    it("does not render the expected settlement date input when status is settled", () => {
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+      // Default account is checking, so status defaults to settled.
+      expect(
+        screen.queryByLabelText(/expected settlement date/i),
+      ).not.toBeInTheDocument();
+    });
+
+    it("renders the expected settlement date input when status flips to pending", () => {
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+      fireEvent.change(screen.getByLabelText("Status"), {
+        target: { value: "pending" },
+      });
+      expect(
+        screen.getByLabelText(/expected settlement date/i),
+      ).toBeInTheDocument();
+    });
+
+    it("rejects submit when settled_date < date and does not call apiFetch", async () => {
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockResolvedValue({} as never);
+
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "Bad date" },
+      });
+      fireEvent.change(screen.getByLabelText("Amount"), {
+        target: { value: "5.00" },
+      });
+      fireEvent.change(screen.getByLabelText("Status"), {
+        target: { value: "pending" },
+      });
+      const dateInput = screen.getByLabelText("Date") as HTMLInputElement;
+      fireEvent.change(dateInput, { target: { value: "2026-05-10" } });
+      const settledDateInput = screen.getByLabelText(
+        /expected settlement date/i,
+      ) as HTMLInputElement;
+      fireEvent.change(settledDateInput, { target: { value: "2026-05-01" } });
+
+      // Submit via the form rather than the Save click. jsdom's HTML5
+      // validation on the date input's `min` attribute can pre-empt the
+      // submit handler when triggered through the button; dispatching
+      // `submit` exercises the same code path React listens to and lets
+      // the JS-level cross-field guard run, mirroring the canonical
+      // /transactions form's test pattern (PR #197).
+      const form = screen
+        .getByRole("button", { name: /^Save$/i })
+        .closest("form")!;
+      await act(async () => {
+        fireEvent.submit(form);
+      });
+
+      // Inline error rendered, no network call attempted.
+      expect(
+        await screen.findByText(
+          /must be on or after the transaction date/i,
+        ),
+      ).toBeInTheDocument();
+      expect(apiFetchMock).not.toHaveBeenCalled();
+    });
+
+    it("includes settled_date in the payload when status=pending and a value is set", async () => {
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockResolvedValue({} as never);
+
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "CC charge" },
+      });
+      fireEvent.change(screen.getByLabelText("Amount"), {
+        target: { value: "42.00" },
+      });
+      fireEvent.change(screen.getByLabelText("Status"), {
+        target: { value: "pending" },
+      });
+      fireEvent.change(screen.getByLabelText("Date"), {
+        target: { value: "2026-05-10" },
+      });
+      fireEvent.change(screen.getByLabelText(/expected settlement date/i), {
+        target: { value: "2026-05-15" },
+      });
+
+      const form = screen
+        .getByRole("button", { name: /^Save$/i })
+        .closest("form")!;
+      await act(async () => {
+        fireEvent.submit(form);
+      });
+
+      await waitFor(() => {
+        expect(apiFetchMock).toHaveBeenCalledTimes(1);
+      });
+      const [, options] = apiFetchMock.mock.calls[0];
+      const body = JSON.parse(String(options?.body));
+      expect(body.status).toBe("pending");
+      expect(body.settled_date).toBe("2026-05-15");
+    });
+
+    it("omits settled_date from the payload when status=settled", async () => {
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockResolvedValue({} as never);
+
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "Cash" },
+      });
+      fireEvent.change(screen.getByLabelText("Amount"), {
+        target: { value: "10.00" },
+      });
+      // Status stays at the default ("settled") for the checking
+      // fixture; do not touch the settled-date field, it shouldn't even
+      // be rendered.
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+      });
+
+      await waitFor(() => {
+        expect(apiFetchMock).toHaveBeenCalledTimes(1);
+      });
+      const [, options] = apiFetchMock.mock.calls[0];
+      const body = JSON.parse(String(options?.body));
+      expect(body.status).toBe("settled");
+      expect(body).not.toHaveProperty("settled_date");
+    });
+
+    it("omits settled_date when status=pending but no value is set", async () => {
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockResolvedValue({} as never);
+
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "No expected" },
+      });
+      fireEvent.change(screen.getByLabelText("Amount"), {
+        target: { value: "1.00" },
+      });
+      fireEvent.change(screen.getByLabelText("Status"), {
+        target: { value: "pending" },
+      });
+      // Settled-date field is rendered but left blank.
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+      });
+
+      await waitFor(() => {
+        expect(apiFetchMock).toHaveBeenCalledTimes(1);
+      });
+      const [, options] = apiFetchMock.mock.calls[0];
+      const body = JSON.parse(String(options?.body));
+      expect(body.status).toBe("pending");
+      expect(body).not.toHaveProperty("settled_date");
+    });
+
+    it("Save and add new clears the settled_date alongside description and amount", async () => {
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockResolvedValue({} as never);
+
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "First pending" },
+      });
+      fireEvent.change(screen.getByLabelText("Amount"), {
+        target: { value: "9.99" },
+      });
+      fireEvent.change(screen.getByLabelText("Status"), {
+        target: { value: "pending" },
+      });
+      fireEvent.change(screen.getByLabelText(/expected settlement date/i), {
+        target: { value: "2026-12-31" },
+      });
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: /save and add new/i }),
+        );
+      });
+
+      await waitFor(() => {
+        expect(apiFetchMock).toHaveBeenCalledTimes(1);
+      });
+      // The settled-date control's render is gated on status==="pending".
+      // clearForm() leaves status alone (it re-derives from the account
+      // selection), so for the checking-default fixture the field
+      // un-renders. Either path is equivalent: the persisted React state
+      // is cleared and any subsequent pending submit re-starts blank.
+      // To assert the cleared state, flip status back to pending.
+      fireEvent.change(screen.getByLabelText("Status"), {
+        target: { value: "pending" },
+      });
+      const settledDateAfter = screen.getByLabelText(
+        /expected settlement date/i,
+      ) as HTMLInputElement;
+      expect(settledDateAfter.value).toBe("");
+    });
+  });
 });

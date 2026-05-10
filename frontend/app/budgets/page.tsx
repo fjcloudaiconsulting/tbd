@@ -14,6 +14,7 @@ import type { BillingPeriod, Budget, Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
+import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
@@ -24,6 +25,10 @@ export default function BudgetsPage() {
   const [periodIdx, setPeriodIdx] = useState(0);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
+  // Non-blocking refresh-error state for the AppShell post-write event
+  // listener. The page keeps the previous list; banner offers a Retry.
+  const [refreshError, setRefreshError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [showForm, setShowForm] = useState(false);
 
   const [formCategoryId, setFormCategoryId] = useState<number | "">("");
@@ -76,6 +81,27 @@ export default function BudgetsPage() {
       loadBudgets().catch(() => setFetching(false));
     }
   }, [loading, user, loadBudgets]);
+
+  // After a write from the AppShell-level "+ New Transaction" CTA the
+  // budgets page reloads its list so per-budget actuals reflect the new
+  // transaction. Refs (categories/periods) don't change on a transaction
+  // add. Single-call reload, plain try/catch is enough.
+  const refreshAfterTransactionAdded = useCallback(async () => {
+    if (loading || !user) return;
+    setRefreshing(true);
+    try {
+      await loadBudgets();
+      setRefreshError(false);
+    } catch {
+      setRefreshError(true);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loading, user, loadBudgets]);
+
+  useTransactionAddedListener(() => {
+    void refreshAfterTransactionAdded();
+  });
 
   // C+ plan: all mutations are current-period-only. If the user
   // navigates to a past period mid-edit, drop any open form/state so
@@ -219,6 +245,27 @@ export default function BudgetsPage() {
               </Link>
             </>
           )}
+        </div>
+      )}
+
+      {refreshError && (
+        <div
+          className={`mb-6 flex items-center justify-between gap-3 ${errorCls}`}
+          role="status"
+          data-testid="budgets-refresh-error"
+        >
+          <span>Failed to refresh after the last update. Try again.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setRefreshError(false);
+              void refreshAfterTransactionAdded();
+            }}
+            disabled={refreshing}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {refreshing ? "Retrying..." : "Retry"}
+          </button>
         </div>
       )}
 

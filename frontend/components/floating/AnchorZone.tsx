@@ -5,13 +5,19 @@ import { Children, isValidElement, ReactElement, ReactNode } from "react";
 /**
  * Bottom-right floating-widget anchor.
  *
- * Stacking convention (locked for the FAB + future feedback widget):
+ * Reserved scaffolding. The Add Transaction FAB that originally owned the
+ * primary slot has been promoted to a top-level CTA inside AppShell
+ * (AppShellAddTransactionCta). AnchorZone is kept in place because the
+ * in-app feedback widget is queued to ship next and it needs the same
+ * bottom-right cluster contract.
+ *
+ * Stacking convention:
  *   - One cluster at the bottom-right corner. NOT two separate zones.
  *   - Children render in a vertical column, gap-3, items-end.
  *   - "primary" slot pins to the bottom (closest to the user's thumb on
- *     mobile). The Add Transaction FAB owns the primary slot.
- *   - "secondary" slot stacks above primary. The future in-app feedback
- *     widget will own this slot.
+ *     mobile). Reserved for the next floating widget mounted here.
+ *   - "secondary" slot stacks above primary. The in-app feedback widget
+ *     will land here.
  *   - "tertiary" exists for one further widget if we ever need it.
  *
  * Adding a new floating widget is a one-component-tree edit: drop a new
@@ -20,7 +26,8 @@ import { Children, isValidElement, ReactElement, ReactNode } from "react";
  * vertical order stays stable regardless of mount order.
  *
  * z-index: 40. Sits below modal overlays (z-50, e.g. ConfirmModal +
- * SlideInPanel which both use z-50) so an open dialog dims the FAB.
+ * SlideInPanel which both use z-50) so an open dialog dims any anchored
+ * widget that lands here later.
  */
 
 export type AnchorSlot = "primary" | "secondary" | "tertiary";
