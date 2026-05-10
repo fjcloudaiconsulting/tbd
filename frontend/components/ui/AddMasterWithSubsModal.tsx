@@ -348,7 +348,7 @@ export default function AddMasterWithSubsModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="add-master-with-subs-title"
-        className={`${card} flex max-h-[90vh] w-full max-w-2xl flex-col p-6 shadow-xl`}
+        className={`${card} flex max-h-[90vh] w-full max-w-[min(32rem,calc(100vw-2rem))] flex-col p-6 shadow-xl`}
       >
         <h2
           id="add-master-with-subs-title"

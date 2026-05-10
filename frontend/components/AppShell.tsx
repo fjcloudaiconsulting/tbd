@@ -201,7 +201,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <Link href="/dashboard" className="font-display text-lg font-semibold text-sidebar-text-bright">
             TBD
           </Link>
-          <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="rounded-md p-1 text-sidebar-muted hover:text-sidebar-text-bright lg:hidden">
+          <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-sidebar-muted hover:text-sidebar-text-bright lg:hidden">
             <X aria-hidden="true" className="h-5 w-5" strokeWidth={2} />
           </button>
         </div>

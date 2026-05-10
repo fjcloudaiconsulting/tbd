@@ -636,7 +636,7 @@ export default function ForecastPlansPage() {
               setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))
             }
             disabled={periodIdx >= periods.length - 1}
-            className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30"
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30 sm:min-h-0 sm:min-w-0"
             aria-label="Older period"
           >
             <svg
@@ -672,7 +672,7 @@ export default function ForecastPlansPage() {
           <button
             onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))}
             disabled={periodIdx <= 0}
-            className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30"
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30 sm:min-h-0 sm:min-w-0"
             aria-label="Newer period"
           >
             <svg

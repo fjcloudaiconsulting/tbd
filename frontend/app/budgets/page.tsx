@@ -8,7 +8,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
-import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle, badgeError } from "@/lib/styles";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -226,14 +226,14 @@ export default function BudgetsPage() {
       {/* Period navigation */}
       {periods.length > 0 && (
         <div className="mb-5 flex flex-wrap items-center gap-3">
-          <button onClick={() => setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))} disabled={periodIdx >= periods.length - 1} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+          <button onClick={() => setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1))} disabled={periodIdx >= periods.length - 1} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30 sm:min-h-0 sm:min-w-0" aria-label="Previous period">
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
           </button>
           <span className="text-sm text-text-secondary">
             {selectedPeriod?.start_date}{selectedPeriod?.end_date ? ` — ${selectedPeriod.end_date}` : ""}
             {isCurrentPeriod && <span className="ml-2 text-xs text-success font-medium">current</span>}
           </span>
-          <button onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))} disabled={periodIdx <= 0} className="rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+          <button onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))} disabled={periodIdx <= 0} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30 sm:min-h-0 sm:min-w-0" aria-label="Next period">
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
           </button>
           {!isCurrentPeriod && (
@@ -315,11 +315,17 @@ export default function BudgetsPage() {
               </div>
               <div className={`flex-1 ${card} p-5`}>
                 <p className={cardTitle}>Total Spent</p>
-                <p className={`mt-1 text-2xl font-semibold tabular-nums ${totalSpent > totalBudget ? "text-danger" : "text-text-primary"}`}>{formatAmount(totalSpent)}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <p className={`text-2xl font-semibold tabular-nums ${totalSpent > totalBudget ? "text-danger" : "text-text-primary"}`}>{formatAmount(totalSpent)}</p>
+                  {totalSpent > totalBudget && <span className={badgeError}>Over budget</span>}
+                </div>
               </div>
               <div className={`flex-1 ${card} p-5`}>
                 <p className={cardTitle}>Remaining</p>
-                <p className={`mt-1 text-2xl font-semibold tabular-nums ${totalBudget - totalSpent < 0 ? "text-danger" : "text-success"}`}>{formatAmount(totalBudget - totalSpent)}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <p className={`text-2xl font-semibold tabular-nums ${totalBudget - totalSpent < 0 ? "text-danger" : "text-success"}`}>{formatAmount(totalBudget - totalSpent)}</p>
+                  {totalBudget - totalSpent < 0 && <span className={badgeError}>Overspent</span>}
+                </div>
               </div>
             </div>
           )}

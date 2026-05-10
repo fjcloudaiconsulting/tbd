@@ -49,7 +49,7 @@ export default function ChangePlanModal({ orgId, currentPlanSlug, onClose, onCha
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
-      <form onSubmit={handleSubmit} className={`${card} w-full max-w-md p-6`}>
+      <form onSubmit={handleSubmit} className={`${card} w-full max-w-[min(28rem,calc(100vw-2rem))] p-6`}>
         <h2 className="mb-4 text-lg font-semibold">Change plan</h2>
         {errorMsg && <div className={`${errorCls} mb-3`}>{errorMsg}</div>}
         <label className={label}>Plan</label>

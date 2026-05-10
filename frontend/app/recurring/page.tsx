@@ -129,8 +129,8 @@ export default function RecurringPage() {
                     {r.type === "income" ? "+" : "-"}{formatAmount(r.amount)}
                   </span>
                   <span className="col-span-2 flex justify-end gap-2">
-                    <button onClick={() => handleStop(r)} className="text-xs text-text-muted hover:text-accent">Stop</button>
-                    <button onClick={() => handleDelete(r.id)} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                    <button onClick={() => handleStop(r)} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Stop</button>
+                    <button onClick={() => handleDelete(r.id)} className="min-h-[44px] text-xs text-text-muted hover:text-danger md:min-h-0">Delete</button>
                   </span>
                 </div>
               ))}
@@ -214,8 +214,8 @@ export default function RecurringPage() {
                       {r.type === "income" ? "+" : "-"}{formatAmount(r.amount)}
                     </span>
                     <span className="col-span-2 flex justify-end gap-2">
-                      <button onClick={() => handleResume(r)} className="text-xs text-text-muted hover:text-accent">Resume</button>
-                      <button onClick={() => handleDelete(r.id)} className="text-xs text-text-muted hover:text-danger">Delete</button>
+                      <button onClick={() => handleResume(r)} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Resume</button>
+                      <button onClick={() => handleDelete(r.id)} className="min-h-[44px] text-xs text-text-muted hover:text-danger md:min-h-0">Delete</button>
                     </span>
                   </div>
                 ))}
