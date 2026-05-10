@@ -231,30 +231,31 @@ describe("AddMasterWithSubsModal", () => {
     expect(apiFetchMock).not.toHaveBeenCalled();
   });
 
-  it("on confirm Yes: POST master, GET previews, PATCH each move (call sequence)", async () => {
-    // Sequence: 1 POST, 2 previews, 2 moves.
+  it("on confirm Yes: POSTs master then a single atomic batch-move call", async () => {
     apiFetchMock
       .mockResolvedValueOnce(newMaster as never) // POST /categories
       .mockResolvedValueOnce({
-        category_id: 11,
-        source_master_id: 1,
-        target_master_id: 99,
-        affected_transaction_count: 12,
-        affected_recurring_count: 1,
-        affected_forecast_item_count: 0,
-        budget_actuals_shifted: true,
-      } as never) // preview sub 11
-      .mockResolvedValueOnce({
-        category_id: 21,
-        source_master_id: 2,
-        target_master_id: 99,
-        affected_transaction_count: 0,
-        affected_recurring_count: 0,
-        affected_forecast_item_count: 1,
-        budget_actuals_shifted: false,
-      } as never) // preview sub 21
-      .mockResolvedValueOnce(undefined as never) // PATCH sub 11
-      .mockResolvedValueOnce(undefined as never); // PATCH sub 21
+        moves: [
+          {
+            category_id: 11,
+            source_master_id: 1,
+            target_master_id: 99,
+            affected_transaction_count: 12,
+            affected_recurring_count: 1,
+            affected_forecast_item_count: 0,
+            budget_actuals_shifted: true,
+          },
+          {
+            category_id: 21,
+            source_master_id: 2,
+            target_master_id: 99,
+            affected_transaction_count: 0,
+            affected_recurring_count: 0,
+            affected_forecast_item_count: 1,
+            budget_actuals_shifted: false,
+          },
+        ],
+      } as never); // POST /batch-move
 
     const onCreated = vi.fn();
     render(
@@ -288,47 +289,27 @@ describe("AddMasterWithSubsModal", () => {
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(newMaster));
 
-    // Verify the call sequence (POST, GET, GET, PATCH, PATCH).
+    // Exactly two calls: POST master + POST batch-move (NO per-row
+    // PATCH loop, NO preview loop).
     const calls = apiFetchMock.mock.calls;
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(2);
     expect(calls[0][0]).toBe("/api/v1/categories");
     expect(calls[0][1]).toMatchObject({ method: "POST" });
-    expect(calls[1][0]).toBe(
-      "/api/v1/categories/11/move/preview?target_parent_id=99",
-    );
-    expect(calls[2][0]).toBe(
-      "/api/v1/categories/21/move/preview?target_parent_id=99",
-    );
-    expect(calls[3][0]).toBe("/api/v1/categories/11/move");
-    expect(calls[3][1]).toMatchObject({
-      method: "PATCH",
-      body: JSON.stringify({ target_parent_id: 99 }),
+    expect(calls[1][0]).toBe("/api/v1/categories/batch-move");
+    expect(calls[1][1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({
+        moves: [
+          { subcategory_id: 11, target_parent_id: 99 },
+          { subcategory_id: 21, target_parent_id: 99 },
+        ],
+      }),
     });
-    expect(calls[4][0]).toBe("/api/v1/categories/21/move");
   });
 
-  it("partial-success: surfaces failed sub with retry affordance and keeps master", async () => {
+  it("atomic failure (409 name_collision) keeps master and surfaces error; no per-row retry/skip UI", async () => {
     apiFetchMock
-      .mockResolvedValueOnce(newMaster as never) // POST master
-      .mockResolvedValueOnce({
-        category_id: 11,
-        source_master_id: 1,
-        target_master_id: 99,
-        affected_transaction_count: 12,
-        affected_recurring_count: 0,
-        affected_forecast_item_count: 0,
-        budget_actuals_shifted: false,
-      } as never) // preview sub 11
-      .mockResolvedValueOnce({
-        category_id: 12,
-        source_master_id: 1,
-        target_master_id: 99,
-        affected_transaction_count: 5,
-        affected_recurring_count: 0,
-        affected_forecast_item_count: 0,
-        budget_actuals_shifted: false,
-      } as never) // preview sub 12
-      .mockResolvedValueOnce(undefined as never) // PATCH 11 ok
+      .mockResolvedValueOnce(newMaster as never) // POST master ok
       .mockRejectedValueOnce(
         new ApiResponseError(
           409,
@@ -336,7 +317,7 @@ describe("AddMasterWithSubsModal", () => {
           undefined,
           { detail: "name_collision" },
         ),
-      ); // PATCH 12 -> 409
+      ); // POST /batch-move -> 409
 
     const onCreated = vi.fn();
     render(
@@ -358,6 +339,7 @@ describe("AddMasterWithSubsModal", () => {
     fireEvent.click(
       screen.getByRole("button", { name: /Create master and move/i }),
     );
+
     const confirmDialog = await screen.findByRole("alertdialog");
     fireEvent.click(
       within(confirmDialog).getByRole("button", {
@@ -365,40 +347,100 @@ describe("AddMasterWithSubsModal", () => {
       }),
     );
 
-    // Wait for the failed sub to render.
-    await screen.findByTestId("sub-failed-12");
-    expect(screen.getByTestId("sub-failed-12")).toHaveTextContent(
-      /name conflicts in target master/i,
+    // Wait for error alert.
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /name conflicts|already has a subcategory|Rename one/i,
+      ),
     );
 
-    // onCreated should NOT have fired yet because we still have a
-    // failure outstanding.
+    // Atomic semantics: onCreated is NOT called (no master returned to
+    // parent) because nothing moved.
     expect(onCreated).not.toHaveBeenCalled();
 
-    // Primary button should now read "Retry failed moves" and the
-    // master input is locked.
-    expect(
-      screen.getByRole("button", { name: /Retry failed moves/i }),
-    ).toBeInTheDocument();
+    // Master input is locked, button switches to retry.
     expect(
       (screen.getByLabelText(/Master name/i) as HTMLInputElement).disabled,
     ).toBe(true);
+    expect(
+      screen.getByRole("button", { name: /Retry move/i }),
+    ).toBeInTheDocument();
 
-    // Successful sub should be unselected (not in the still-selected
-    // set), failed sub should remain selected.
+    // No per-row failed marker, no "Retry failed moves" / "skip"
+    // affordance; the contract is all-or-nothing.
+    expect(screen.queryByTestId("sub-failed-12")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Retry failed moves/i }),
+    ).not.toBeInTheDocument();
+
+    // Both checkboxes remain selected (nothing moved).
     const restaurantsCheckbox = screen.getByLabelText(
       "Move subcategory Restaurants under new master",
     ) as HTMLInputElement;
     const groceriesCheckbox = screen.getByLabelText(
       "Move subcategory Groceries under new master",
     ) as HTMLInputElement;
-    expect(restaurantsCheckbox.checked).toBe(false);
+    expect(restaurantsCheckbox.checked).toBe(true);
     expect(groceriesCheckbox.checked).toBe(true);
+  });
 
-    // Done button (replaces Cancel) calls onCreated with the master so
-    // the parent page refreshes.
-    fireEvent.click(screen.getByRole("button", { name: /^Done$/i }));
-    expect(onCreated).toHaveBeenCalledWith(newMaster);
+  it("retry path: user adjusts selection and the second batch-move succeeds", async () => {
+    apiFetchMock
+      .mockResolvedValueOnce(newMaster as never) // POST master ok
+      .mockRejectedValueOnce(
+        new ApiResponseError(409, "name_collision detail", undefined, {
+          detail: "name_collision",
+        }),
+      ) // first batch-move -> 409
+      .mockResolvedValueOnce({ moves: [] } as never); // second batch-move ok
+
+    const onCreated = vi.fn();
+    render(
+      <AddMasterWithSubsModal
+        categories={cats}
+        onCreated={onCreated}
+        onCancel={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/Master name/i), {
+      target: { value: "Dining out" },
+    });
+    fireEvent.click(
+      screen.getByLabelText("Move subcategory Restaurants under new master"),
+    );
+    fireEvent.click(
+      screen.getByLabelText("Move subcategory Groceries under new master"),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /Create master and move/i }),
+    );
+
+    const confirmDialog = await screen.findByRole("alertdialog");
+    fireEvent.click(
+      within(confirmDialog).getByRole("button", {
+        name: /Yes, create and move/i,
+      }),
+    );
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+
+    // User unchecks Groceries (the colliding one) and clicks Retry move.
+    fireEvent.click(
+      screen.getByLabelText("Move subcategory Groceries under new master"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Retry move/i }));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(newMaster));
+
+    // 3 calls total: POST master, batch-move (failed), batch-move (ok).
+    const calls = apiFetchMock.mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[2][0]).toBe("/api/v1/categories/batch-move");
+    expect(calls[2][1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({
+        moves: [{ subcategory_id: 11, target_parent_id: 99 }],
+      }),
+    });
   });
 
   it("surfaces 409 from POST master without committing any moves", async () => {
@@ -425,7 +467,7 @@ describe("AddMasterWithSubsModal", () => {
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(/already exists/i),
     );
-    // Only the POST happened; no preview, no move.
+    // Only the POST happened; no batch-move.
     expect(apiFetchMock).toHaveBeenCalledTimes(1);
   });
 

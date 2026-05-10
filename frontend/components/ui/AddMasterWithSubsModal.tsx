@@ -16,7 +16,7 @@ import type { Category } from "@/lib/types";
 
 type MasterType = "income" | "expense" | "both";
 
-interface MovePreviewResult {
+interface CategoryMoveResult {
   category_id: number;
   source_master_id: number;
   target_master_id: number;
@@ -26,17 +26,8 @@ interface MovePreviewResult {
   budget_actuals_shifted: boolean;
 }
 
-interface AggregateCounts {
-  transactions: number;
-  recurring: number;
-  forecast_items: number;
-}
-
-interface FailedMove {
-  subcategory_id: number;
-  subcategory_name: string;
-  status: number;
-  message: string;
+interface BatchMoveResult {
+  moves: CategoryMoveResult[];
 }
 
 interface Props {
@@ -45,10 +36,9 @@ interface Props {
    *  grouped by current master.
    */
   categories: Category[];
-  /** Called when the master has been created (and any selected
-   *  subcategories were attempted). The page should refresh its
-   *  category list after this fires. May fire after a partial-success
-   *  retry when the user clicks Done.
+  /** Called when the master has been created and any selected
+   *  subcategories were moved successfully. The page should refresh
+   *  its category list after this fires.
    */
   onCreated: (created: Category) => void;
   onCancel: () => void;
@@ -61,24 +51,19 @@ interface Props {
  *
  * Backend contract (C0 spec, sections 4.1 / 4.2 / 4.5):
  *   1. POST /api/v1/categories                                (create master).
- *   2. GET /api/v1/categories/{id}/move/preview?target_parent_id=N
- *                                                              (preview counts, read-only).
- *   3. PATCH /api/v1/categories/{id}/move {target_parent_id}  (move sub).
+ *   2. POST /api/v1/categories/batch-move                     (atomic
+ *      multi-row move; either all selected subs move or none do).
  *
  * Order of operations when subs are selected:
  *   - Confirm dialog with generic copy ("Affected transactions and
  *     forecast items will be reassigned. Planned budgets are not
  *     changed.") because we cannot preview before the master exists.
- *   - On Yes: POST creates the master, then we GET the preview for
- *     each selected sub against the new master id and accumulate
- *     counts (best-effort, displayed in the success summary), then
- *     PATCH each sub.
- *
- * Partial-success: if the master creates and one or more moves fail
- * (e.g. 409 name_collision), the master is kept, the failed rows are
- * highlighted, and the primary button switches to "Retry failed
- * moves" so the user can adjust selections (rename a colliding sub on
- * the categories page, or unselect it) and try again.
+ *   - On Yes: POST creates the master, then a single POST to
+ *     /batch-move runs all selected moves atomically. On error the
+ *     master remains (it was created in a separate POST that already
+ *     committed) and the user can adjust selections and retry. Error
+ *     messages from the response surface inline; no per-row retry/skip
+ *     flow exists, the contract is all-or-nothing.
  */
 export default function AddMasterWithSubsModal({
   categories,
@@ -90,11 +75,8 @@ export default function AddMasterWithSubsModal({
   const [selectedSubIds, setSelectedSubIds] = useState<Set<number>>(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
-  const [failedMoves, setFailedMoves] = useState<FailedMove[]>([]);
   const [createdMaster, setCreatedMaster] = useState<Category | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [aggregateCounts, setAggregateCounts] =
-    useState<AggregateCounts | null>(null);
   const [mounted, setMounted] = useState(false);
 
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -126,7 +108,7 @@ export default function AddMasterWithSubsModal({
           return;
         }
         if (createdMaster) {
-          // After a partial success the parent should still get the
+          // After a master was created the parent should still get the
           // master so its list refreshes; treat Esc as Done.
           onCreated(createdMaster);
           return;
@@ -212,10 +194,10 @@ export default function AddMasterWithSubsModal({
 
   // Click on the form's primary button. Three flows:
   //   (a) No subs selected and no master yet: create master directly.
-  //   (b) Subs selected and no master yet: open confirm dialog with
-  //       generic copy. Yes triggers create + previews + moves.
-  //   (c) Master already created (partial-success retry path): re-run
-  //       the moves for the still-selected subs only.
+  //   (b) Subs selected and no master yet: open confirm dialog. Yes
+  //       triggers create + atomic batch-move.
+  //   (c) Master already created (post-error retry path): rerun the
+  //       atomic batch-move with the still-selected subs.
   function handlePrimaryClick() {
     if (!nameValid || submitting) return;
     setErrorText(null);
@@ -223,12 +205,14 @@ export default function AddMasterWithSubsModal({
     const subIds = Array.from(selectedSubIds);
 
     if (createdMaster) {
-      // Retry path. Master already exists; just move the selection.
+      // Master already created from a prior attempt; the batch-move
+      // failed atomically (no partial commit). Rerun with the current
+      // selection.
       if (subIds.length === 0) {
         onCreated(createdMaster);
         return;
       }
-      void runMoves(createdMaster, subIds);
+      void runBatchMove(createdMaster, subIds);
       return;
     }
 
@@ -239,7 +223,6 @@ export default function AddMasterWithSubsModal({
     }
 
     // Subs selected: confirm before mutating anything.
-    setAggregateCounts(null);
     setConfirmOpen(true);
   }
 
@@ -249,12 +232,11 @@ export default function AddMasterWithSubsModal({
     await runCreate(subIds);
   }
 
-  // Phase 1: create master. Phase 2: optional previews for the success
-  // summary. Phase 3: move each selected sub.
+  // Phase 1: create master. Phase 2: atomic batch-move of all selected
+  // subs in a single backend call (all-or-nothing per C0 §3.C).
   async function runCreate(subIds: number[]) {
     setSubmitting(true);
     setErrorText(null);
-    setFailedMoves([]);
 
     let master: Category;
     try {
@@ -279,113 +261,63 @@ export default function AddMasterWithSubsModal({
       return;
     }
 
-    // Best-effort preview for the success summary; we already have the
-    // user's intent confirmed, so a preview failure here is silent.
-    let counts: AggregateCounts | null = {
-      transactions: 0,
-      recurring: 0,
-      forecast_items: 0,
-    };
-    try {
-      for (const subId of subIds) {
-        const r = await apiFetch<MovePreviewResult>(
-          `/api/v1/categories/${subId}/move/preview?target_parent_id=${master.id}`,
-        );
-        counts.transactions += r.affected_transaction_count;
-        counts.recurring += r.affected_recurring_count;
-        counts.forecast_items += r.affected_forecast_item_count;
-      }
-    } catch {
-      counts = null;
-    }
-    setAggregateCounts(counts);
-
-    await runMoves(master, subIds);
+    await runBatchMove(master, subIds);
   }
 
-  async function runMoves(master: Category, subIds: number[]) {
-    const masterId = master.id;
+  async function runBatchMove(master: Category, subIds: number[]) {
     setSubmitting(true);
     setErrorText(null);
-    setFailedMoves([]);
 
-    const failures: FailedMove[] = [];
-    const succeededIds: number[] = [];
-    for (const subId of subIds) {
-      const subRecord = categories.find((c) => c.id === subId);
-      try {
-        await apiFetch(`/api/v1/categories/${subId}/move`, {
-          method: "PATCH",
-          body: JSON.stringify({ target_parent_id: masterId }),
-        });
-        succeededIds.push(subId);
-      } catch (err) {
-        const status = err instanceof ApiResponseError ? err.status : 0;
-        const message =
-          err instanceof ApiResponseError
-            ? err.message
-            : extractErrorMessage(err, "Move failed");
-        failures.push({
-          subcategory_id: subId,
-          subcategory_name: subRecord?.name ?? `#${subId}`,
-          status,
-          message,
-        });
-      }
-    }
-
-    // Drop succeeded moves from selection so a retry only repeats the
-    // failures.
-    if (succeededIds.length > 0) {
-      setSelectedSubIds((prev) => {
-        const next = new Set(prev);
-        for (const id of succeededIds) next.delete(id);
-        return next;
+    try {
+      await apiFetch<BatchMoveResult>("/api/v1/categories/batch-move", {
+        method: "POST",
+        body: JSON.stringify({
+          moves: subIds.map((id) => ({
+            subcategory_id: id,
+            target_parent_id: master.id,
+          })),
+        }),
       });
-    }
-
-    setSubmitting(false);
-
-    if (failures.length === 0) {
-      onCreated(master);
+    } catch (err) {
+      const message =
+        err instanceof ApiResponseError
+          ? err.message
+          : extractErrorMessage(err, "Batch move failed");
+      // Atomic semantics: nothing moved. The master row remains because
+      // its POST already committed in the previous step. The user can
+      // adjust the selection (rename a colliding sub, unselect it,
+      // etc.) and click submit again to retry against the same master.
+      setErrorText(message);
+      setSubmitting(false);
       return;
     }
 
-    setFailedMoves(failures);
-    setErrorText(
-      failures.length === subIds.length
-        ? `All ${failures.length} subcategory move${failures.length > 1 ? "s" : ""} failed. The master "${trimmedName}" was created. Adjust your selection and retry.`
-        : `${failures.length} of ${subIds.length} subcategory moves failed. The master "${trimmedName}" was created and ${succeededIds.length} subcategor${succeededIds.length === 1 ? "y was" : "ies were"} moved successfully. Adjust and retry, or click Done.`,
-    );
+    setSubmitting(false);
+    onCreated(master);
   }
 
-  const inRetryState = createdMaster !== null && failedMoves.length > 0;
   const submitLabel = submitting
     ? "Working..."
-    : inRetryState
-      ? "Retry failed moves"
+    : createdMaster !== null
+      ? "Retry move"
       : selectedSubIds.size > 0
         ? "Create master and move"
         : "Create master";
 
-  // In retry state we require at least one selected sub (otherwise the
-  // user should click Done). In initial state we only require a valid
-  // name.
+  // After the master is created, the user is in the post-error retry
+  // state if a batch-move failed. They need to either fix the
+  // selection and retry, or click Done.
   const canSubmit =
     nameValid &&
     !submitting &&
-    (inRetryState ? selectedSubIds.size > 0 : true);
+    (createdMaster !== null ? selectedSubIds.size > 0 : true);
 
   // Confirm dialog copy. Pre-mutation we have no preview yet, so use
   // generic copy per spec section 4.2.
-  const confirmMessage = (() => {
-    const count = selectedSubIds.size;
-    const lead = `Create master "${trimmedName}" and move ${count} subcategor${count === 1 ? "y" : "ies"} under it?`;
-    if (aggregateCounts) {
-      return `${lead}\n\nThis will reassign ${aggregateCounts.transactions} transaction${aggregateCounts.transactions === 1 ? "" : "s"}, ${aggregateCounts.recurring} recurring template${aggregateCounts.recurring === 1 ? "" : "s"}, and ${aggregateCounts.forecast_items} forecast plan item${aggregateCounts.forecast_items === 1 ? "" : "s"} at read time. Planned budgets are not changed; run "Refresh from Forecast" on the Forecast Plans page to re-attribute plans.`;
-    }
-    return `${lead}\n\nAffected transactions and forecast items will be reassigned to the new master. Planned budgets are not changed.`;
-  })();
+  const confirmCount = selectedSubIds.size;
+  const confirmMessage =
+    `Create master "${trimmedName}" and move ${confirmCount} subcategor${confirmCount === 1 ? "y" : "ies"} under it?\n\n` +
+    "Affected transactions and forecast items will be reassigned to the new master. Planned budgets are not changed.";
 
   if (!mounted) return null;
 
@@ -489,53 +421,34 @@ export default function AddMasterWithSubsModal({
                       {master.name}
                     </p>
                     <ul className="space-y-1 pl-2">
-                      {subs.map((sub) => {
-                        const failed = failedMoves.find(
-                          (f) => f.subcategory_id === sub.id,
-                        );
-                        return (
-                          <li key={sub.id}>
-                            <label
-                              data-testid={`sub-row-${sub.id}`}
-                              className={`flex items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-surface ${failed ? "ring-1 ring-danger" : ""}`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={selectedSubIds.has(sub.id)}
-                                onChange={() => toggleSub(sub.id)}
-                                disabled={submitting}
-                                className="mt-0.5"
-                                aria-label={`Move subcategory ${sub.name} under new master`}
-                              />
-                              <span className="flex-1">
-                                <span className="text-text-primary">
-                                  {sub.name}
-                                </span>
-                                {sub.transaction_count > 0 && (
-                                  <span className="ml-2 text-xs text-text-muted">
-                                    {sub.transaction_count} txn
-                                    {sub.transaction_count === 1 ? "" : "s"}
-                                  </span>
-                                )}
-                                {failed && (
-                                  <span
-                                    className="mt-0.5 block text-xs text-danger"
-                                    data-testid={`sub-failed-${sub.id}`}
-                                  >
-                                    Failed
-                                    {failed.status === 409
-                                      ? " (name conflicts in target master)"
-                                      : failed.status
-                                        ? ` (${failed.status})`
-                                        : ""}
-                                    : {failed.message}
-                                  </span>
-                                )}
+                      {subs.map((sub) => (
+                        <li key={sub.id}>
+                          <label
+                            data-testid={`sub-row-${sub.id}`}
+                            className="flex items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-surface"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedSubIds.has(sub.id)}
+                              onChange={() => toggleSub(sub.id)}
+                              disabled={submitting}
+                              className="mt-0.5"
+                              aria-label={`Move subcategory ${sub.name} under new master`}
+                            />
+                            <span className="flex-1">
+                              <span className="text-text-primary">
+                                {sub.name}
                               </span>
-                            </label>
-                          </li>
-                        );
-                      })}
+                              {sub.transaction_count > 0 && (
+                                <span className="ml-2 text-xs text-text-muted">
+                                  {sub.transaction_count} txn
+                                  {sub.transaction_count === 1 ? "" : "s"}
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        </li>
+                      ))}
                     </ul>
                   </li>
                 ))}
