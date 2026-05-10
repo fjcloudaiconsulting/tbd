@@ -153,11 +153,14 @@ export default function AddMasterWithSubsModal({
 
   // Group existing subcategories by their current master so the picker
   // mirrors the page's structure. The list only shows subs whose
-  // effective type is compatible with the target type the user picked.
-  // For type=both the picker shows everything; for income/expense it
-  // shows matching subs plus "both"-typed subs (which are compatible
-  // either way). Cross-type moves would 400 type_mismatch on the move
-  // endpoint per C0 spec section 4.6, so we filter them out in the UI.
+  // effective type matches the target type the user picked. Per the
+  // C0 spec section 4.6 and `category_service.move_subcategory`, the
+  // backend rejects any move where `sub.type != target.type` with 400
+  // type_mismatch. Filter cross-type subs out of the UI to mirror the
+  // backend rule exactly:
+  //   - target=INCOME  -> only INCOME subs are selectable.
+  //   - target=EXPENSE -> only EXPENSE subs are selectable.
+  //   - target=BOTH    -> only BOTH subs are selectable.
   const groups = useMemo(() => {
     const masters = categories.filter((c) => c.parent_id === null);
     const subsByMaster = new Map<number, Category[]>();
@@ -168,11 +171,7 @@ export default function AddMasterWithSubsModal({
         subsByMaster.set(c.parent_id, list);
       }
     }
-    const compatible = (sub: Category): boolean => {
-      if (type === "both") return true;
-      if (sub.type === "both") return true;
-      return sub.type === type;
-    };
+    const compatible = (sub: Category): boolean => sub.type === type;
     return masters
       .map((master) => ({
         master,

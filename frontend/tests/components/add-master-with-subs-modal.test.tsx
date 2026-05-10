@@ -44,6 +44,17 @@ const cats: Category[] = [
     is_system: true,
     transaction_count: 0,
   },
+  {
+    id: 4,
+    name: "Mixed",
+    type: "both",
+    parent_id: null,
+    parent_name: null,
+    description: null,
+    slug: null,
+    is_system: false,
+    transaction_count: 0,
+  },
   // Subcategories.
   {
     id: 11,
@@ -89,6 +100,17 @@ const cats: Category[] = [
     is_system: false,
     transaction_count: 3,
   },
+  {
+    id: 41,
+    name: "Adjustments",
+    type: "both",
+    parent_id: 4,
+    parent_name: "Mixed",
+    description: null,
+    slug: null,
+    is_system: false,
+    transaction_count: 0,
+  },
 ];
 
 const newMaster: Category = {
@@ -128,10 +150,14 @@ describe("AddMasterWithSubsModal", () => {
     expect(screen.getByRole("radio", { name: /both/i })).toBeInTheDocument();
 
     // Default type is expense, so Food + Lifestyle groups should be
-    // present, Income group should not (its sub Salary is income-only).
+    // present. Income group must not (its sub Salary is INCOME), and
+    // Mixed group must not (its sub Adjustments is BOTH). The backend
+    // strict-equal type rule (`sub.type == target.type`) is mirrored
+    // in the UI filter.
     expect(screen.getByTestId("group-1-label")).toHaveTextContent("Food");
     expect(screen.getByTestId("group-2-label")).toHaveTextContent("Lifestyle");
     expect(screen.queryByTestId("group-3-label")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("group-4-label")).not.toBeInTheDocument();
 
     // Each compatible sub renders a checkbox.
     expect(
@@ -146,9 +172,13 @@ describe("AddMasterWithSubsModal", () => {
     expect(
       screen.queryByLabelText("Move subcategory Salary under new master"),
     ).not.toBeInTheDocument();
+    // BOTH-typed subcategory must NOT show under an EXPENSE master.
+    expect(
+      screen.queryByLabelText("Move subcategory Adjustments under new master"),
+    ).not.toBeInTheDocument();
   });
 
-  it("regroups when the user switches type to income (only income subs visible)", async () => {
+  it("INCOME master only shows INCOME subs (BOTH and EXPENSE filtered out)", async () => {
     render(
       <AddMasterWithSubsModal
         categories={cats}
@@ -160,6 +190,38 @@ describe("AddMasterWithSubsModal", () => {
     expect(screen.getByTestId("group-3-label")).toHaveTextContent("Income");
     expect(screen.queryByTestId("group-1-label")).not.toBeInTheDocument();
     expect(screen.queryByTestId("group-2-label")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("group-4-label")).not.toBeInTheDocument();
+    // BOTH sub Adjustments must NOT appear under an INCOME master.
+    expect(
+      screen.queryByLabelText("Move subcategory Adjustments under new master"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("BOTH master only shows BOTH subs (INCOME and EXPENSE filtered out)", async () => {
+    render(
+      <AddMasterWithSubsModal
+        categories={cats}
+        onCreated={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /both/i }));
+    // Only the Mixed group renders; Adjustments (BOTH) is the only
+    // compatible sub.
+    expect(screen.getByTestId("group-4-label")).toHaveTextContent("Mixed");
+    expect(screen.queryByTestId("group-1-label")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("group-2-label")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("group-3-label")).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Move subcategory Adjustments under new master"),
+    ).toBeInTheDocument();
+    // INCOME and EXPENSE subs are NOT compatible with a BOTH master.
+    expect(
+      screen.queryByLabelText("Move subcategory Restaurants under new master"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Move subcategory Salary under new master"),
+    ).not.toBeInTheDocument();
   });
 
   it("disables submit when name is empty", async () => {
