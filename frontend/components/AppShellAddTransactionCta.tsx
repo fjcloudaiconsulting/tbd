@@ -123,7 +123,7 @@ export default function AppShellAddTransactionCta() {
  * for unit tests to assert the predicate without rendering the shell.
  *
  * Show on the core money routes; hide on settings/admin/system. The
- * empty-string fallback ("/") is treated as not-a-money-route — the
+ * empty-string fallback ("/") is treated as not-a-money-route, the
  * /login redirect runs before AppShell mounts, so we won't see "/" in
  * practice, but the predicate stays well-defined.
  */

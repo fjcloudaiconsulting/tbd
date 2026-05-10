@@ -53,7 +53,7 @@ const BASE_USER = {
 
 async function renderShell() {
   // The AppShell-level CTA fires apiFetch in a useEffect. Wrap render
-  // in act() so the resulting state updates flush before assertions —
+  // in act() so the resulting state updates flush before assertions,
   // skipping this trips the React act() warning in the existing
   // synchronous tests.
   await act(async () => {

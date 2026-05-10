@@ -47,7 +47,7 @@ function setupRefs() {
   return apiFetchMock;
 }
 
-describe("shouldShowAddTransactionCta — route gate", () => {
+describe("shouldShowAddTransactionCta route gate", () => {
   // Each entry is the locked allow-list from the redesign brief. Keep
   // these in lockstep with SHOW_ON inside AppShellAddTransactionCta.
   const SHOW_PATHS: ReadonlyArray<string> = [
@@ -101,7 +101,7 @@ describe("shouldShowAddTransactionCta — route gate", () => {
   });
 });
 
-describe("AppShellAddTransactionCta — component", () => {
+describe("AppShellAddTransactionCta component", () => {
   it("renders the CTA with an accessible name", async () => {
     setupRefs();
     await act(async () => {
