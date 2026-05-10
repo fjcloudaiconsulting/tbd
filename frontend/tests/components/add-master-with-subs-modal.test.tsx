@@ -286,10 +286,16 @@ describe("AddMasterWithSubsModal", () => {
     );
 
     // Confirm dialog appears with generic copy (no preview yet because
-    // the master hasn't been created).
-    const confirmMsg = await screen.findByTestId("confirm-message");
-    expect(confirmMsg).toHaveTextContent(/Create master "Dining out"/);
-    expect(confirmMsg).toHaveTextContent(/Affected transactions and forecast items/);
+    // the master hasn't been created). ConfirmModal renders the title
+    // as an h3 and the message in a p alongside it.
+    expect(
+      await screen.findByText(
+        /Create "Dining out" and move 1 subcategory\?/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Affected transactions and forecast items/i),
+    ).toBeInTheDocument();
     expect(apiFetchMock).not.toHaveBeenCalled();
   });
 
@@ -342,7 +348,12 @@ describe("AddMasterWithSubsModal", () => {
       screen.getByRole("button", { name: /Create master and move/i }),
     );
 
-    const confirmDialog = await screen.findByRole("alertdialog");
+    // ConfirmModal uses role=dialog. Find the dialog containing the
+    // Yes button and click it.
+    const dialogs = await screen.findAllByRole("dialog");
+    const confirmDialog = dialogs.find((d) =>
+      within(d).queryByRole("button", { name: /Yes, create and move/i }),
+    ) as HTMLElement;
     fireEvent.click(
       within(confirmDialog).getByRole("button", {
         name: /Yes, create and move/i,
@@ -402,7 +413,12 @@ describe("AddMasterWithSubsModal", () => {
       screen.getByRole("button", { name: /Create master and move/i }),
     );
 
-    const confirmDialog = await screen.findByRole("alertdialog");
+    // ConfirmModal uses role=dialog. Find the dialog containing the
+    // Yes button and click it.
+    const dialogs = await screen.findAllByRole("dialog");
+    const confirmDialog = dialogs.find((d) =>
+      within(d).queryByRole("button", { name: /Yes, create and move/i }),
+    ) as HTMLElement;
     fireEvent.click(
       within(confirmDialog).getByRole("button", {
         name: /Yes, create and move/i,
@@ -477,7 +493,12 @@ describe("AddMasterWithSubsModal", () => {
       screen.getByRole("button", { name: /Create master and move/i }),
     );
 
-    const confirmDialog = await screen.findByRole("alertdialog");
+    // ConfirmModal uses role=dialog. Find the dialog containing the
+    // Yes button and click it.
+    const dialogs = await screen.findAllByRole("dialog");
+    const confirmDialog = dialogs.find((d) =>
+      within(d).queryByRole("button", { name: /Yes, create and move/i }),
+    ) as HTMLElement;
     fireEvent.click(
       within(confirmDialog).getByRole("button", {
         name: /Yes, create and move/i,
@@ -558,5 +579,40 @@ describe("AddMasterWithSubsModal", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
     expect(onCancel).toHaveBeenCalled();
+  });
+
+  it("confirm dialog autofocuses its confirm button so keyboard users can reach it", async () => {
+    render(
+      <AddMasterWithSubsModal
+        categories={cats}
+        onCreated={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(/Master name/i), {
+      target: { value: "Dining out" },
+    });
+    fireEvent.click(
+      screen.getByLabelText("Move subcategory Restaurants under new master"),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /Create master and move/i }),
+    );
+
+    // ConfirmModal autofocuses its confirm button on open. The
+    // previous inline alertdialog left focus trapped in the parent
+    // modal, making the confirm/cancel buttons unreachable. With
+    // ConfirmModal, focus moves to the Yes button automatically.
+    const confirmBtn = await screen.findByRole("button", {
+      name: /Yes, create and move/i,
+    });
+    await waitFor(() => expect(document.activeElement).toBe(confirmBtn));
+    expect(confirmBtn).not.toBeDisabled();
+
+    // Cancel buttons are present and reachable. The confirm dialog's
+    // Cancel and the parent modal's Cancel both have accessible names.
+    const cancelBtns = screen.getAllByRole("button", { name: /^Cancel$/i });
+    expect(cancelBtns.length).toBeGreaterThanOrEqual(1);
+    cancelBtns.forEach((b) => expect(b).not.toBeDisabled());
   });
 });

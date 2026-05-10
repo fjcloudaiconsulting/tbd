@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import { ApiResponseError, apiFetch, extractErrorMessage } from "@/lib/api";
 import {
   btnPrimary,
@@ -97,16 +98,15 @@ export default function AddMasterWithSubsModal({
     };
   }, [mounted]);
 
-  // Escape closes the confirm dialog if open, otherwise the parent
-  // modal. Tab trap stays inside the parent modal.
+  // Escape closes the parent modal. ConfirmModal owns its own Escape
+  // and Tab handling when it is open, so we gate this trap on
+  // !confirmOpen to avoid stealing keyboard input from the confirm
+  // dialog (which previously trapped Tab inside the parent modal and
+  // made Confirm/Cancel buttons unreachable).
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !submitting) {
+      if (e.key === "Escape" && !submitting && !confirmOpen) {
         e.stopPropagation();
-        if (confirmOpen) {
-          setConfirmOpen(false);
-          return;
-        }
         if (createdMaster) {
           // After a master was created the parent should still get the
           // master so its list refreshes; treat Esc as Done.
@@ -116,7 +116,7 @@ export default function AddMasterWithSubsModal({
         onCancel();
         return;
       }
-      if (e.key === "Tab") {
+      if (e.key === "Tab" && !confirmOpen) {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
           'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
         );
@@ -487,70 +487,17 @@ export default function AddMasterWithSubsModal({
         </form>
       </div>
 
-      {confirmOpen && (
-        <ConfirmInline
-          title={`Create "${trimmedName || "master"}" and move ${selectedSubIds.size} subcategor${selectedSubIds.size === 1 ? "y" : "ies"}?`}
-          message={confirmMessage}
-          onYes={handleConfirmYes}
-          onNo={() => setConfirmOpen(false)}
-        />
-      )}
+      <ConfirmModal
+        open={confirmOpen}
+        title={`Create "${trimmedName || "master"}" and move ${selectedSubIds.size} subcategor${selectedSubIds.size === 1 ? "y" : "ies"}?`}
+        message={confirmMessage}
+        confirmLabel="Yes, create and move"
+        cancelLabel="Cancel"
+        onConfirm={handleConfirmYes}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 
   return createPortal(modal, document.body);
-}
-
-/**
- * Tiny confirm dialog stacked over the parent modal. Self-contained so
- * we don't import ConfirmModal and create a portal-inside-portal mess.
- */
-function ConfirmInline(props: {
-  title: string;
-  message: string;
-  onYes: () => void;
-  onNo: () => void;
-}) {
-  const { title, message, onYes, onNo } = props;
-  return (
-    <div
-      className="fixed inset-0 z-[110] flex items-center justify-center bg-bg/80 p-4"
-      onClick={onNo}
-    >
-      <div
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="add-master-confirm-title"
-        className="w-full max-w-md rounded-lg border border-border bg-surface p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3
-          id="add-master-confirm-title"
-          className="text-lg font-semibold text-text-primary"
-        >
-          {title}
-        </h3>
-        <p
-          className="mt-2 whitespace-pre-line text-sm text-text-secondary"
-          data-testid="confirm-message"
-        >
-          {message}
-        </p>
-        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <button
-            onClick={onNo}
-            className={`${btnSecondary} min-h-[44px] sm:w-auto`}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onYes}
-            className={`${btnPrimary} min-h-[44px] sm:w-auto`}
-          >
-            Yes, create and move
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
