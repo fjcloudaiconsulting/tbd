@@ -199,3 +199,7 @@ jobs:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: EV[1:PW7zpRXasYFhIiOoqMNopBxpqujwXZCO:LB8zQbjWAG4N99+0Q3m4fwakl3DTHqrPo9PH5r+JkSVSouY4n8pTl0ISC5FLVUBMPo92zTCxPIzGnfiKKbDEq5oxbKyM1g+jyVdUoXOBgogEWvJ84R5yvWC8SQVNQrdKsplwP2YScTPlpewRMw==]
+      - key: JWT_SECRET_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: EV[1:yu+iyIxbSwoJpe7aEGuEBSJ8judQo26F:Ogb2sdGetlKniX5UaHeObIhPiYej4c4W1fccXr1By5mIGy1LI4dn8R6NPR1CGfnUAo5fslDt7qV48MNdMnGwk1A9qlp8GxCcKD2fdYcm7f8=]
