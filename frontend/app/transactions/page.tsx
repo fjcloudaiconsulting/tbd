@@ -15,6 +15,13 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
 import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
 import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
+import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
+import {
+  FILTERS_KEY_TRANSACTIONS,
+  SORT_KEY_TRANSACTIONS,
+} from "@/lib/hooks/persisted-keys";
+import { usePersistedFilters } from "@/lib/hooks/use-persisted-filters";
+import { usePersistedSort } from "@/lib/hooks/use-persisted-sort";
 
 
 
@@ -89,20 +96,78 @@ function TransactionsPageContent() {
   >("monthly");
   const [editRecNextDue, setEditRecNextDue] = useState("");
 
-  // Filters
-  const [filterAccount, setFilterAccount] = useState<number | "">("");
-  const [filterCategory, setFilterCategory] = useState<number | "">("");
-  const [filterType, setFilterType] = useState<string>("");
-  const [filterStatus, setFilterStatus] = useState<string>("");
-  const [filterDateFrom, setFilterDateFrom] = useState("");
-  const [filterDateTo, setFilterDateTo] = useState("");
-  const [filterSearch, setFilterSearch] = useState("");
-  const [sortField, setSortField] = useState<SortField>("date");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // Filters: persisted via localStorage so a navigate-away-and-back, or a
+  // tab reload, lands the user back on the same view. Item 6 of the
+  // launch-prep punch list.
+  type TxFilters = {
+    filterAccount: number | "";
+    filterCategory: number | "";
+    filterType: string;
+    filterStatus: string;
+    filterDateFrom: string;
+    filterDateTo: string;
+    filterSearch: string;
+    filterPeriod: string;
+  };
+  const TX_FILTER_DEFAULTS: TxFilters = {
+    filterAccount: "",
+    filterCategory: "",
+    filterType: "",
+    filterStatus: "",
+    filterDateFrom: "",
+    filterDateTo: "",
+    filterSearch: "",
+    filterPeriod: "",
+  };
+  const persistedFilters = usePersistedFilters<TxFilters>(
+    FILTERS_KEY_TRANSACTIONS,
+    TX_FILTER_DEFAULTS,
+  );
+  const {
+    filterAccount,
+    filterCategory,
+    filterType,
+    filterStatus,
+    filterDateFrom,
+    filterDateTo,
+    filterSearch,
+    filterPeriod,
+  } = persistedFilters.filters;
+  const setFilterAccount = (v: number | "") =>
+    persistedFilters.setField("filterAccount", v);
+  const setFilterCategory = (v: number | "") =>
+    persistedFilters.setField("filterCategory", v);
+  const setFilterType = (v: string) =>
+    persistedFilters.setField("filterType", v);
+  const setFilterStatus = (v: string) =>
+    persistedFilters.setField("filterStatus", v);
+  const setFilterDateFrom = (v: string) =>
+    persistedFilters.setField("filterDateFrom", v);
+  const setFilterDateTo = (v: string) =>
+    persistedFilters.setField("filterDateTo", v);
+  const setFilterSearch = (v: string) =>
+    persistedFilters.setField("filterSearch", v);
+  const setFilterPeriod = (v: string) =>
+    persistedFilters.setField("filterPeriod", v);
+
+  const persistedSort = usePersistedSort<SortField>(
+    SORT_KEY_TRANSACTIONS,
+    "date",
+    "desc",
+    [
+      "date",
+      "description",
+      "account_name",
+      "category_name",
+      "status",
+      "amount",
+    ] as const,
+  );
+  const sortField = persistedSort.field;
+  const sortDir = persistedSort.dir;
 
   // Billing periods for filter
   const [periods, setPeriods] = useState<{ id: number; start_date: string; end_date: string | null }[]>([]);
-  const [filterPeriod, setFilterPeriod] = useState<string>("");
 
   // Form
   const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
@@ -587,10 +652,9 @@ function TransactionsPageContent() {
   // their previous direction was "dropped".
   function toggleSort(field: SortField) {
     if (sortField === field) {
-      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+      persistedSort.setSort(field, sortDir === "asc" ? "desc" : "asc");
     } else {
-      setSortField(field);
-      setSortDir(SORT_DEFAULTS[field]);
+      persistedSort.setSort(field, SORT_DEFAULTS[field]);
     }
   }
   const sortedTransactions = [...transactions].sort((a, b) => {
@@ -917,6 +981,16 @@ function TransactionsPageContent() {
               </button>
             ));
           })()}
+          {/* Item 6: Reset affordance. Visible only when sort or any filter
+              differs from defaults so the toolbar stays clean for new
+              users. Clears localStorage for both keys. */}
+          <ResetSortFiltersButton
+            visible={!persistedFilters.isDefault || !persistedSort.isDefault}
+            onClick={() => {
+              persistedFilters.reset();
+              persistedSort.reset();
+            }}
+          />
         </div>
       </div>
       <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-3">
