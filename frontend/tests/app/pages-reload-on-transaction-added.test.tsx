@@ -3,6 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 
 import AccountsPage from "@/app/accounts/page";
 import BudgetsPage from "@/app/budgets/page";
+import CategoriesPage from "@/app/categories/page";
 import ForecastPlansPage from "@/app/forecast-plans/page";
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -306,6 +307,52 @@ describe("Budgets page subscribes to pfv:transaction-added", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("budgets-refresh-error")).toBeTruthy();
+    });
+  });
+});
+
+describe("Categories page subscribes to pfv:transaction-added", () => {
+  it("re-fetches categories after the event fires", async () => {
+    vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+      if (url.startsWith("/api/v1/categories")) return [CAT] as never;
+      return null as never;
+    });
+
+    render(<CategoriesPage />);
+
+    await waitFor(() => {
+      expect(countCalls("/api/v1/categories")).toBeGreaterThanOrEqual(1);
+    });
+    const before = countCalls("/api/v1/categories");
+
+    dispatchTransactionAdded();
+
+    await waitFor(() => {
+      expect(countCalls("/api/v1/categories")).toBeGreaterThan(before);
+    });
+  });
+
+  it("surfaces the inline retry banner when reload rejects", async () => {
+    let calls = 0;
+    vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+      if (url.startsWith("/api/v1/categories")) {
+        calls += 1;
+        if (calls >= 2) throw new Error("nope");
+        return [CAT] as never;
+      }
+      return null as never;
+    });
+
+    render(<CategoriesPage />);
+
+    await waitFor(() => {
+      expect(countCalls("/api/v1/categories")).toBe(1);
+    });
+
+    dispatchTransactionAdded();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("categories-refresh-error")).toBeTruthy();
     });
   });
 });
