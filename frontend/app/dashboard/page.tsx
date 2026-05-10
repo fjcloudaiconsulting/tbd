@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
@@ -10,11 +10,11 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
-import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
+import { btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
+import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
-import CategorySelect from "@/components/ui/CategorySelect";
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import OnTrackTile from "@/components/dashboard/OnTrackTile";
@@ -22,7 +22,6 @@ import AccountMonthEndForecast, {
   type AccountMonthEndForecastResponse,
 } from "@/components/dashboard/AccountMonthEndForecast";
 import AccountTilesCard from "@/components/dashboard/AccountTile";
-import AddTransactionFab from "@/components/floating/AddTransactionFab";
 import {
   SORT_KEY_DASHBOARD_SPENDING,
   SORT_KEY_DASHBOARD_TRANSACTIONS,
@@ -144,22 +143,14 @@ export default function DashboardPage() {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState("");
-
-  // Quick-add form
-  const [showForm, setShowForm] = useState(false);
-  const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
-  const [formAccountId, setFormAccountId] = useState<number | "">("");
-  const [formToAccountId, setFormToAccountId] = useState<number | "">("");
-  const [formCategoryId, setFormCategoryId] = useState<number | "">("");
-  const [formDescription, setFormDescription] = useState("");
-  const [formAmount, setFormAmount] = useState("");
-  const [formType, setFormType] = useState<"income" | "expense">("expense");
-  const [formStatus, setFormStatus] = useState<"settled" | "pending">("settled");
-  const [formDate, setFormDate] = useState(todayISO());
-  const [formRecurring, setFormRecurring] = useState(false);
-  const [formFrequency, setFormFrequency] = useState("monthly");
-  const [formAutoSettle, setFormAutoSettle] = useState(false);
-  const [formTransferCatId, setFormTransferCatId] = useState<number | "">("");
+  // Non-blocking error from a post-write refresh. The initial-load
+  // banner above (`error`) keeps its hard-fail semantics: blank page +
+  // banner, no data. This one shows alongside the existing data: the
+  // user keeps the previous good snapshot, sees a "Refresh failed"
+  // affordance with a Retry button, and can reissue the same
+  // post-write reloads without losing scroll, selection, or filters.
+  const [refreshError, setRefreshError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [chartFilter, setChartFilter] = useState<string | null>(null);
   // Item 6 (system-wide sort persistence): the dashboard transactions table
@@ -386,101 +377,53 @@ export default function DashboardPage() {
     }
   }, [loading, user, loadAccountMonthEndForecast]);
 
-  function handleTypeChange(t: "income" | "expense") {
-    setFormType(t);
-    setFormCategoryId("");
-  }
+  // After a write from the AppShell-level "+ New Transaction" CTA, the
+  // CTA dispatches `pfv:transaction-added` and we re-fetch the same
+  // dashboard surfaces the old inline Quick Add form refreshed: refs
+  // (account balances), period transactions, the projection (drives the
+  // hero verdict), all-time pending, and per-account month-end balance.
+  //
+  // Promise.allSettled rather than fire-and-forget: a single failed
+  // reload (network blip, backend hiccup) used to silently leave the
+  // dashboard stale with no signal. Now we keep the optimistic UX
+  // (interaction never blocks, prior snapshot stays on screen) and
+  // surface a non-blocking inline banner with a Retry button when any
+  // settled promise rejected. loadPendingTransactions and
+  // loadAccountMonthEndForecast already swallow their own errors
+  // internally, so we read their status from allSettled to detect any
+  // backend hiccup uniformly.
+  const refreshAllPostWrite = useCallback(async () => {
+    if (loading || !user) return;
+    setRefreshing(true);
+    const results = await Promise.allSettled([
+      loadRefs(),
+      loadTransactions(0),
+      loadForecastProjection(),
+      loadPendingTransactions(),
+      loadAccountMonthEndForecast(),
+    ]);
+    setRefreshing(false);
+    setRefreshError(results.some((r) => r.status === "rejected"));
+  }, [
+    loading,
+    user,
+    loadRefs,
+    loadTransactions,
+    loadForecastProjection,
+    loadPendingTransactions,
+    loadAccountMonthEndForecast,
+  ]);
 
-  async function handleQuickAdd(e: FormEvent) {
-    e.preventDefault();
-    setError("");
-    try {
-      if (formMode === "transfer") {
-        await apiFetch("/api/v1/transactions/transfer", {
-          method: "POST",
-          body: JSON.stringify({
-            from_account_id: formAccountId,
-            to_account_id: formToAccountId,
-            description: formDescription,
-            amount: formAmount,
-            status: formStatus,
-            date: formDate,
-            ...(formTransferCatId !== "" ? { category_id: formTransferCatId } : {}),
-          }),
-        });
-      } else {
-        await apiFetch("/api/v1/transactions", {
-          method: "POST",
-          body: JSON.stringify({
-            account_id: formAccountId,
-            category_id: formCategoryId,
-            description: formDescription,
-            amount: formAmount,
-            type: formType,
-            status: formStatus,
-            date: formDate,
-          }),
-        });
-        if (formRecurring && formMode === "transaction") {
-          await apiFetch("/api/v1/recurring", {
-            method: "POST",
-            body: JSON.stringify({
-              account_id: formAccountId,
-              category_id: formCategoryId,
-              description: formDescription,
-              amount: formAmount,
-              type: formType,
-              frequency: formFrequency,
-              next_due_date: formDate,
-              auto_settle: formAutoSettle,
-            }),
-          });
-        }
-      }
-      setFormDescription("");
-      setFormAmount("");
-      setFormType("expense");
-      setFormStatus("settled");
-      setFormToAccountId("");
-      setFormTransferCatId("");
-      setFormRecurring(false);
-      setFormAutoSettle(false);
-      setFormDate(todayISO());
-      setShowForm(false);
-      await loadRefs();
-      await loadTransactions(0);
-      // The hero verdict is computed from the projection's executed_expense
-      // and forecast_expense. After a write those numbers are stale until
-      // we re-call /api/v1/forecast, otherwise the page's primary answer
-      // ("are we on track?") can be wrong.
-      void loadForecastProjection();
-      // Pending charges may have changed (a settled-on-create or a manual
-      // pending entry); refresh independent of the visible page index.
-      void loadPendingTransactions();
-      void loadAccountMonthEndForecast();
-    } catch (err) {
-      setError(extractErrorMessage(err));
-    }
-  }
+  useTransactionAddedListener(() => {
+    void refreshAllPostWrite();
+  });
 
   const activeAccounts = accounts.filter((a) => a.is_active);
-  const defaultAccount = activeAccounts.find((a) => a.is_default);
+  // Empty-state copy for the recent-transactions list. Pre-PR this was
+  // also used to gate the inline Quick Add button; the AppShell-level
+  // CTA owns that now and gates itself, so this stays purely as the
+  // "no rows yet" hint.
   const canAdd = activeAccounts.length > 0 && categories.length > 0;
-
-  // Pre-select default account when opening form
-  useEffect(() => {
-    if (showForm && formAccountId === "" && defaultAccount) {
-      setFormAccountId(defaultAccount.id);
-      if (defaultAccount.account_type_slug === "credit_card") setFormStatus("pending");
-    }
-  }, [showForm, formAccountId, defaultAccount]);
-
-  function handleAccountChange(id: number | "") {
-    setFormAccountId(id);
-    if (formToAccountId === id) setFormToAccountId("");
-    const acct = accounts.find((a) => a.id === id);
-    setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
-  }
 
   // Total balance by currency (settled only — what's in the accounts)
   const balanceByCurrency = activeAccounts.reduce<Record<string, number>>(
@@ -600,11 +543,6 @@ export default function DashboardPage() {
       <div className="mb-6 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
         <div className="flex items-center gap-2">
-          {canAdd && (
-            <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
-              {showForm ? "Cancel" : "+ Quick Add"}
-            </button>
-          )}
           <Link href="/import" className={btnSecondary}>
             Import
           </Link>
@@ -632,112 +570,31 @@ export default function DashboardPage() {
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
 
+      {refreshError && (
+        <div
+          className={`mb-6 flex items-center justify-between gap-3 ${errorCls}`}
+          role="status"
+          data-testid="dashboard-refresh-error"
+        >
+          <span>Failed to refresh after the last update. Try again.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setRefreshError(false);
+              void refreshAllPostWrite();
+            }}
+            disabled={refreshing}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {refreshing ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      )}
+
       {fetching ? (
         <Spinner />
       ) : (
         <div className="space-y-5">
-          {/* Quick-add form */}
-          {showForm && (
-            <div className={`${card} p-6`}>
-              <div className="mb-4 flex items-center gap-4">
-                <h2 className={cardTitle}>{formMode === "transfer" ? "Quick Transfer" : "Quick Add"}</h2>
-                <div className="flex rounded-md border border-border text-xs">
-                  <button type="button" onClick={() => setFormMode("transaction")} className={`px-3 py-1 rounded-l-md ${formMode === "transaction" ? "bg-surface-overlay text-text-primary" : "text-text-muted hover:bg-surface-raised"}`}>Transaction</button>
-                  <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-surface-overlay text-text-primary" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
-                </div>
-              </div>
-              <form onSubmit={handleQuickAdd} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div>
-                  <label htmlFor="da-account" className={label}>{formMode === "transfer" ? "From" : "Account"}</label>
-                  <select id="da-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
-                    <option value="">Select account</option>
-                    {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                  </select>
-                </div>
-                {formMode === "transfer" ? (
-                  <div>
-                    <label htmlFor="da-to-account" className={label}>To</label>
-                    <select id="da-to-account" required value={formToAccountId} onChange={(e) => setFormToAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
-                      <option value="">Select account</option>
-                      {activeAccounts.filter((a) => a.id !== formAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                    </select>
-                  </div>
-                ) : (
-                  <div>
-                    <label htmlFor="da-type" className={label}>Type</label>
-                    <select id="da-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                      <option value="expense">Expense</option>
-                      <option value="income">Income</option>
-                    </select>
-                  </div>
-                )}
-                {formMode === "transaction" && (
-                  <div>
-                    <label htmlFor="da-category" className={label}>Category</label>
-                    <CategorySelect id="da-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
-                  </div>
-                )}
-                {formMode === "transfer" && (
-                  <div>
-                    <label className={label}>Category (optional)</label>
-                    <CategorySelect
-                      id="da-transfer-cat"
-                      categories={categories}
-                      value={formTransferCatId}
-                      onChange={setFormTransferCatId}
-                      className={input}
-                      onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])}
-                    />
-                    <p className="mt-1 text-[10px] text-text-muted">Defaults to Transfer. Override to track in budgets.</p>
-                  </div>
-                )}
-                <div>
-                  <label htmlFor="da-desc" className={label}>Description</label>
-                  <input id="da-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Auto: Transfer from X to Y" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
-                </div>
-                <div>
-                  <label htmlFor="da-amount" className={label}>Amount</label>
-                  <input id="da-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
-                </div>
-                <div>
-                  <label htmlFor="da-status" className={label}>Status</label>
-                  <select id="da-status" value={formStatus} onChange={(e) => setFormStatus(e.target.value as "settled" | "pending")} className={input}>
-                    <option value="settled">Settled</option>
-                    <option value="pending">Pending</option>
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="da-date" className={label}>Date</label>
-                  <input id="da-date" type="date" required value={formDate} onChange={(e) => setFormDate(e.target.value)} className={input} />
-                </div>
-                {formMode === "transaction" ? (
-                  <div className="flex items-end gap-3">
-                    <label className="flex items-center gap-2 text-sm text-text-secondary">
-                      <input type="checkbox" checked={formRecurring} onChange={(e) => setFormRecurring(e.target.checked)} className="rounded border-border" />
-                      Repeats
-                    </label>
-                    {formRecurring && (
-                      <select value={formFrequency} onChange={(e) => setFormFrequency(e.target.value)} aria-label="Frequency" className={`w-28 text-xs ${input}`}>
-                        <option value="monthly">Monthly</option>
-                        <option value="weekly">Weekly</option>
-                        <option value="yearly">Yearly</option>
-                      </select>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex items-end">
-                    <button type="submit" className={btnPrimary}>Transfer</button>
-                  </div>
-                )}
-                {formMode === "transaction" && (
-                  <div className="flex items-end">
-                    <button type="submit" className={btnPrimary}>Add</button>
-                  </div>
-                )}
-              </form>
-            </div>
-          )}
-
           {/* ═══ BILLING PERIOD — standalone nav bar ═══ */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -1227,21 +1084,6 @@ export default function DashboardPage() {
           )}
         </div>
       )}
-      {/*
-        FAB demo mount, Dashboard only for this PR. Broader rollout
-        (FAB on every core money page, Dashboard Quick Add card removal)
-        is a follow-up integration PR that waits for Sort/Filters and
-        Transactions Layout to stabilize, since both touch the same
-        page files.
-      */}
-      <AddTransactionFab
-        onTransactionAdded={() => {
-          void loadTransactions(0);
-          void loadForecastProjection();
-          void loadPendingTransactions();
-          void loadAccountMonthEndForecast();
-        }}
-      />
     </AppShell>
   );
 }

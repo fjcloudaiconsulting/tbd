@@ -5,6 +5,7 @@ import AppShell from "@/components/AppShell";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -60,6 +61,13 @@ export default function CategoriesPage() {
   const [newMasterDesc, setNewMasterDesc] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
+  // Refresh banner state for the AppShell-level "transaction added" event.
+  // Adding a transaction can change `transaction_count` on any category, so
+  // the categories list must reload when the global event fires. Mirrors
+  // the same pattern used by Transactions/Accounts/Forecast Plans/Budgets.
+  const [refreshError, setRefreshError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
   const reload = useCallback(async () => {
     const data = await apiFetch<Category[]>("/api/v1/categories");
     setCategories(data ?? []);
@@ -69,6 +77,23 @@ export default function CategoriesPage() {
   useEffect(() => {
     if (!loading && user) reload().catch(() => setFetching(false));
   }, [loading, user, reload]);
+
+  const refreshAfterTransactionAdded = useCallback(async () => {
+    if (loading || !user) return;
+    setRefreshing(true);
+    try {
+      await reload();
+      setRefreshError(false);
+    } catch {
+      setRefreshError(true);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loading, user, reload]);
+
+  useTransactionAddedListener(() => {
+    void refreshAfterTransactionAdded();
+  });
 
   const { allMasters, childrenMap } = useMemo(() => {
     const masters = categories.filter((c) => c.parent_id === null);
@@ -165,6 +190,27 @@ export default function CategoriesPage() {
       </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+
+      {refreshError && (
+        <div
+          className={`mb-6 flex items-center justify-between gap-3 ${errorCls}`}
+          role="status"
+          data-testid="categories-refresh-error"
+        >
+          <span>Failed to refresh after the last update. Try again.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setRefreshError(false);
+              void refreshAfterTransactionAdded();
+            }}
+            disabled={refreshing}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {refreshing ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      )}
 
       {showAddMaster && (
         <div className={`mb-6 ${card} p-6`}>

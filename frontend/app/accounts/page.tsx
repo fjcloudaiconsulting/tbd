@@ -9,6 +9,7 @@ import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import type { Account, AccountType, Transaction } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
@@ -41,6 +42,10 @@ export default function AccountsPage() {
   const selectedType = accountTypes.find((t) => t.id === acctTypeId) ?? null;
 
   const [error, setError] = useState("");
+  // Non-blocking refresh-error state for the AppShell post-write event
+  // listener. The page keeps the previous list; banner offers a Retry.
+  const [refreshError, setRefreshError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [confirmDeleteTypeId, setConfirmDeleteTypeId] = useState<number | null>(null);
   const [confirmDeleteAcctId, setConfirmDeleteAcctId] = useState<number | null>(null);
   // Track E: account being adjusted (or null when the modal is closed).
@@ -76,6 +81,28 @@ export default function AccountsPage() {
   useEffect(() => {
     if (!loading && user) reload().catch(() => setFetching(false));
   }, [loading, user, reload]);
+
+  // After a write from the AppShell-level "+ New Transaction" CTA the
+  // accounts page must refresh balances and pending totals (a new
+  // expense/income mutates the relevant account's balance and may add
+  // a new pending row). reload() is a single composite call; a plain
+  // try/catch is enough to drive the inline retry banner.
+  const refreshAfterTransactionAdded = useCallback(async () => {
+    if (loading || !user) return;
+    setRefreshing(true);
+    try {
+      await reload();
+      setRefreshError(false);
+    } catch {
+      setRefreshError(true);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loading, user, reload]);
+
+  useTransactionAddedListener(() => {
+    void refreshAfterTransactionAdded();
+  });
 
   async function handleAddType(e: FormEvent) {
     e.preventDefault();
@@ -175,6 +202,27 @@ export default function AccountsPage() {
       <h1 className={pageTitle}>Accounts</h1>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+
+      {refreshError && (
+        <div
+          className={`mb-6 flex items-center justify-between gap-3 ${errorCls}`}
+          role="status"
+          data-testid="accounts-refresh-error"
+        >
+          <span>Failed to refresh after the last update. Try again.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setRefreshError(false);
+              void refreshAfterTransactionAdded();
+            }}
+            disabled={refreshing}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {refreshing ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      )}
 
       {fetching ? (
         <Spinner />

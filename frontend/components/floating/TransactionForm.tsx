@@ -15,24 +15,26 @@ import {
 import type { Account, Category } from "@/lib/types";
 
 /**
- * Quick-entry transaction form used inside the FAB SlideInPanel.
+ * Quick-entry transaction form used inside the AppShell-level Add
+ * Transaction CTA's SlideInPanel.
  *
  * NOTE, duplication tech debt: the canonical add-transaction form
- * still lives inline inside `frontend/app/transactions/page.tsx` and
- * `frontend/app/dashboard/page.tsx`. Extracting those would touch
- * files currently in flight (Sort/Filters Persistence and Transactions
- * Layout), so this PR ships a focused subset (transaction-only, no
- * transfer mode, no edit-time promote-to-recurring) sized for quick
- * entry. Once the in-flight PRs land, a follow-up should fold the
- * page-level forms into this component.
+ * still lives inline inside `frontend/app/transactions/page.tsx`. The
+ * Dashboard's inline Quick Add form was removed when the AppShell CTA
+ * shipped, so the Transactions page is now the only remaining inline
+ * caller. Extracting it would touch files recently in flight, so this
+ * component ships a focused subset (transaction-only, no transfer
+ * mode, no edit-time promote-to-recurring) sized for quick entry. A
+ * follow-up should fold the page-level form into this component.
  *
  * Scope:
- *   - Transaction-only (no transfer mode in the FAB; transfers belong
- *     on the Transactions page where both legs are visible).
+ *   - Transaction-only (no transfer mode in the quick-entry panel;
+ *     transfers belong on the Transactions page where both legs are
+ *     visible).
  *   - Posts to POST /api/v1/transactions exactly like the page-level
  *     form. No new backend endpoints.
- *   - Repeats / promote-to-recurring: deferred to v2 of the FAB. The
- *     primary FAB use case is "I just spent something, log it."
+ *   - Repeats / promote-to-recurring: deferred to a later iteration.
+ *     The primary use case is "I just spent something, log it."
  *
  * "Save & add new" behavior:
  *   - Default Save submits + closes the panel via onSaved().
@@ -90,6 +92,12 @@ export default function TransactionForm({
     return acct?.account_type_slug === "credit_card" ? "pending" : "settled";
   });
   const [date, setDate] = useState(todayISO());
+  // Expected settlement date for pending creates. Left empty by default so
+  // the user explicitly picks a settlement date when status=pending; this
+  // mirrors the canonical /transactions create form (PR #197) and keeps
+  // credit-card-style settlement lag a deliberate choice instead of
+  // silently inheriting the transaction date.
+  const [settledDate, setSettledDate] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   const descRef = useRef<HTMLInputElement>(null);
@@ -128,10 +136,24 @@ export default function TransactionForm({
     setCategoryId(defaultCategoryId ?? "");
     setType("expense");
     setDate(todayISO());
+    // Clear the optional pending settled-date so the next entry starts
+    // fresh. Status default re-derives from the (preserved) account on
+    // its own, so we leave that alone.
+    setSettledDate("");
     setErrMsg("");
   }
 
   async function submit(addAnother: boolean) {
+    // Inline validation for the optional pending settled-date field.
+    // Mirrors the canonical /transactions create form (PR #197) and the
+    // backend cross-field check; validating client-side keeps the form
+    // submit experience snappy when the user picks an earlier date.
+    if (status === "pending" && settledDate && settledDate < date) {
+      setErrMsg(
+        "Expected settlement date must be on or after the transaction date",
+      );
+      return;
+    }
     setSubmitting(true);
     setErrMsg("");
     try {
@@ -145,6 +167,12 @@ export default function TransactionForm({
           type,
           status,
           date,
+          // settled_date only travels on pending creates with a value
+          // set; settled rows get their settled_date stamped server-side
+          // from `date` (PR #197 contract).
+          ...(status === "pending" && settledDate
+            ? { settled_date: settledDate }
+            : {}),
         }),
       });
       onTransactionAdded?.();
@@ -317,6 +345,25 @@ export default function TransactionForm({
           />
         </div>
       </div>
+
+      {status === "pending" && (
+        <div>
+          <label htmlFor="fab-tx-settled-date" className={label}>
+            Expected settlement date
+          </label>
+          <input
+            id="fab-tx-settled-date"
+            type="date"
+            min={date}
+            value={settledDate}
+            onChange={(e) => setSettledDate(e.target.value)}
+            className={input}
+          />
+          <p className="mt-1 text-[10px] text-text-muted">
+            Optional. When the bank actually charges the card.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
         <button
