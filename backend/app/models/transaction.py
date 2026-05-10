@@ -114,6 +114,16 @@ class Transaction(Base):
     linked_transaction: Mapped[Optional["Transaction"]] = relationship(
         foreign_keys=[linked_transaction_id], remote_side="Transaction.id"
     )
+    # PR-Tags-A: many-to-many to Tag through transaction_tags. Service
+    # callers eager-load via selectinload(Transaction.tags) on list /
+    # get queries; without that, accessing .tags on a detached
+    # transaction raises MissingGreenlet. The TransactionTag join
+    # ON DELETE CASCADE handles cleanup on either side.
+    tags: Mapped[list["Tag"]] = relationship(
+        secondary="transaction_tags",
+        order_by="Tag.name_normalized",
+        viewonly=True,
+    )
 
 
 def _enforce_settled_implies_settled_date(_mapper: Mapper, _conn, target: Transaction) -> None:
