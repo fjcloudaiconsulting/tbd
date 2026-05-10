@@ -16,6 +16,12 @@ from app.models.feature_override import OrgFeatureOverride  # noqa: F401
 from app.models.org_data_reset_lock import OrgDataResetLock  # noqa: F401
 from app.models.audit_event import AuditEvent, AuditOutcome  # noqa: F401
 from app.models.role import PlatformRole, RolePermission  # noqa: F401
+from app.models.tag import (  # noqa: F401
+    Tag,
+    TagDictionary,
+    TagDictionaryContributor,
+    TransactionTag,
+)
 
 __all__ = [
     "Base",
@@ -52,4 +58,8 @@ __all__ = [
     "AuditOutcome",
     "PlatformRole",
     "RolePermission",
+    "Tag",
+    "TransactionTag",
+    "TagDictionary",
+    "TagDictionaryContributor",
 ]

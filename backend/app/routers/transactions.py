@@ -41,9 +41,38 @@ async def list_transactions(
     date_from: datetime.date | None = Query(default=None),
     date_to: datetime.date | None = Query(default=None),
     search: str | None = Query(default=None),
+    tags: str | None = Query(
+        default=None,
+        description=(
+            "Comma-separated tag names. Default semantics: AND (all "
+            "named tags must be attached). Set tag_match=any for OR."
+        ),
+    ),
+    tags_exclude: str | None = Query(
+        default=None,
+        description=(
+            "Comma-separated tag names. Transactions tagged with ANY "
+            "of these are excluded."
+        ),
+    ),
+    tag_match: Literal["all", "any"] = Query(
+        default="all",
+        description=(
+            "Match mode for the ``tags`` filter. 'all' (default) "
+            "requires every named tag; 'any' requires at least one."
+        ),
+    ),
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
 ):
+    tag_list = (
+        [t for t in (s.strip() for s in tags.split(",")) if t]
+        if tags else None
+    )
+    excl_list = (
+        [t for t in (s.strip() for s in tags_exclude.split(",")) if t]
+        if tags_exclude else None
+    )
     txns = await svc.list_transactions(
         db, current_user.org_id,
         account_id=account_id,
@@ -53,6 +82,9 @@ async def list_transactions(
         date_from=date_from,
         date_to=date_to,
         search=search,
+        tags=tag_list,
+        tags_exclude=excl_list,
+        tag_match=tag_match,
         limit=limit,
         offset=offset,
     )

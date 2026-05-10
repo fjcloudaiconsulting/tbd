@@ -4,6 +4,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.tag import TagResponse
+
 
 class TransactionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -89,6 +91,11 @@ class TransactionResponse(BaseModel):
     # Frontend can use this to render a distinct visual treatment (deferred
     # to a follow-up PR per the architect spec).
     is_manual_adjustment: bool = False
+    # PR-Tags-A contract: list/detail responses include the tags
+    # attached to a transaction. Empty list when none. Populated via a
+    # selectinload in transaction_service.list_transactions /
+    # get_transaction so the join is one extra query, not N+1.
+    tags: list[TagResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

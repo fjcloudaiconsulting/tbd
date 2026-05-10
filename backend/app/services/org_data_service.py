@@ -30,8 +30,67 @@ from app.models.category import Category
 from app.models.category_rule import CategoryRule
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem
 from app.models.recurring import RecurringTransaction
+from app.models.tag import Tag, TagDictionary, TagDictionaryContributor, TransactionTag
 from app.models.transaction import Transaction
 from app.services.org_bootstrap_service import seed_org_defaults
+
+
+async def _decrement_dictionary_counts_for_org(
+    db: AsyncSession, *, org_id: int
+) -> int:
+    """Decrement ``tag_dictionary.contributor_org_count`` for every
+    dictionary tag this org has contributed to, then delete the
+    contributor rows.
+
+    This keeps the k-anonymity invariant
+    (``contributor_org_count == COUNT(DISTINCT contributor_org_id)``)
+    intact when an org goes away. Without it, below-floor tags can
+    still surface as suggestions even though the org no longer exists.
+
+    Order:
+        1. SELECT every ``dictionary_tag_id`` this org contributed to.
+        2. UPDATE ``tag_dictionary`` to ``contributor_org_count - 1``
+           for each one (one statement per tag id is fine, the count
+           is per-org so the worst case is the number of distinct
+           dictionary tags this org touched, which is bounded by the
+           org's tag count).
+        3. DELETE the contributor rows for this org.
+
+    Returns the number of contributor rows that were deleted.
+
+    Notes:
+    - The contributor FK on ``contributor_org_id`` already has
+      ``ON DELETE CASCADE`` so the rows would disappear when the
+      org is deleted, but the count would NOT be decremented
+      automatically. This function provides the explicit sync.
+    - ``GREATEST(count - 1, 0)`` would be safer against count drift
+      from any historical bug, but we deliberately surface the
+      drift here (subtract straight) so a regression test would
+      catch it. Counts are non-negative by invariant.
+    """
+    contributor_ids = (
+        await db.execute(
+            select(TagDictionaryContributor.dictionary_tag_id).where(
+                TagDictionaryContributor.contributor_org_id == org_id
+            )
+        )
+    ).scalars().all()
+    for dict_tag_id in contributor_ids:
+        await db.execute(
+            update(TagDictionary)
+            .where(TagDictionary.id == dict_tag_id)
+            .values(
+                contributor_org_count=TagDictionary.contributor_org_count - 1
+            )
+        )
+    deleted = (
+        await db.execute(
+            delete(TagDictionaryContributor).where(
+                TagDictionaryContributor.contributor_org_id == org_id
+            )
+        )
+    ).rowcount or 0
+    return deleted
 
 
 async def wipe_org_data(
@@ -41,11 +100,16 @@ async def wipe_org_data(
 
     Preserves the org shell (organizations, users, subscriptions,
     org_settings, org_feature_overrides, invitations). Never touches
-    cross-org tables (e.g. merchant_dictionary). Caller commits.
+    cross-org PUBLIC tables (e.g. merchant_dictionary, tag_dictionary)
+    other than to decrement the per-tag contributor count so the
+    k-anonymity invariant survives org deletion. Caller commits.
 
     Returns a dict of ``{table: rowcount}``. Single source of truth
     for the wipe-order across both this service's reset path AND
     ``admin_orgs_service.delete_org_cascade``.
+
+    Convention: every new org-scoped data table goes through this
+    function. See ``project_roadmap.md`` TECHNICAL DEBT section.
     """
     counts: dict[str, int] = {}
 
@@ -99,6 +163,32 @@ async def wipe_org_data(
     )
     counts["categories"] = (
         await db.execute(delete(Category).where(Category.org_id == org_id))
+    ).rowcount or 0
+
+    # Tags + transaction_tags + tag_dictionary_contributors.
+    # transaction_tags has ON DELETE CASCADE on both FKs, so deleting
+    # transactions above already wiped the join rows; the explicit
+    # DELETE here is defense in depth and a non-zero rowcount on a
+    # row that survived (e.g. an orphan from an earlier bug).
+    counts["transaction_tags"] = (
+        await db.execute(
+            delete(TransactionTag).where(
+                TransactionTag.tag_id.in_(
+                    select(Tag.id).where(Tag.org_id == org_id)
+                )
+            )
+        )
+    ).rowcount or 0
+
+    # Decrement tag_dictionary.contributor_org_count for every entry
+    # this org contributed to, then delete the contributor rows. Keeps
+    # the k-anonymity invariant intact when the org goes away.
+    counts["tag_dictionary_contributors"] = (
+        await _decrement_dictionary_counts_for_org(db, org_id=org_id)
+    )
+
+    counts["tags"] = (
+        await db.execute(delete(Tag).where(Tag.org_id == org_id))
     ).rowcount or 0
 
     return counts
@@ -216,6 +306,29 @@ async def reset_org_data(
     counts["categories"] = await _batch_delete_by_pk(
         db, Category, org_id, "categories", batch_size
     )
+
+    # Tags: explicit join wipe (CASCADE on transaction delete already
+    # cleared transaction_tags rows tied to deleted transactions, but
+    # an explicit pass guarantees no orphan join rows survive). Then
+    # decrement contributor counts and delete contributor rows so the
+    # k-anonymity invariant on tag_dictionary stays accurate after the
+    # reset.
+    counts["transaction_tags"] = (
+        await db.execute(
+            delete(TransactionTag).where(
+                TransactionTag.tag_id.in_(
+                    select(Tag.id).where(Tag.org_id == org_id)
+                )
+            )
+        )
+    ).rowcount or 0
+    counts["tag_dictionary_contributors"] = (
+        await _decrement_dictionary_counts_for_org(db, org_id=org_id)
+    )
+    counts["tags"] = (
+        await db.execute(delete(Tag).where(Tag.org_id == org_id))
+    ).rowcount or 0
+    await db.commit()
 
     # Re-seed the post-registration defaults. Idempotent: if the
     # caller is retrying after a partial wipe, existing defaults are

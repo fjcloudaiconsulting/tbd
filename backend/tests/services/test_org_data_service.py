@@ -33,6 +33,9 @@ from app.models.settings import OrgSetting
 from app.models.subscription import (
     BillingInterval, Plan, Subscription, SubscriptionStatus,
 )
+from app.models.tag import (
+    Tag, TagDictionary, TagDictionaryContributor, TransactionTag,
+)
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization, Role, User
 from app.security import hash_password
@@ -194,6 +197,43 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
         db.add_all([plan_item, invite, rule, override])
         await db.commit()
 
+        # Tags: one local tag attached to the seeded transaction, plus a
+        # dictionary entry the org has contributed to. Lets the wipe
+        # tests assert the count decrements + cascade behaviour.
+        tag = Tag(
+            org_id=org.id,
+            name="insurance",
+            name_normalized="insurance",
+            created_by_user_id=owner.id,
+        )
+        db.add(tag)
+        await db.flush()
+        db.add(TransactionTag(transaction_id=tx.id, tag_id=tag.id))
+
+        dict_tag = (
+            await db.execute(
+                select(TagDictionary).where(
+                    TagDictionary.name_normalized == "insurance"
+                )
+            )
+        ).scalar_one_or_none()
+        if dict_tag is None:
+            dict_tag = TagDictionary(
+                name_normalized="insurance",
+                contributor_org_count=0,
+                usage_count=0,
+                is_seed=False,
+            )
+            db.add(dict_tag)
+            await db.flush()
+        # Bump the count to reflect this org's contribution.
+        dict_tag.contributor_org_count += 1
+        db.add(TagDictionaryContributor(
+            dictionary_tag_id=dict_tag.id,
+            contributor_org_id=org.id,
+        ))
+        await db.commit()
+
         return {"org_id": org.id, "owner_id": owner.id}
 
 
@@ -219,18 +259,34 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
         "transactions", "forecast_plan_items", "budgets",
         "recurring_transactions", "forecast_plans", "billing_periods",
         "accounts", "account_types", "category_rules", "categories",
+        "tags", "transaction_tags", "tag_dictionary_contributors",
     }
     assert set(counts.keys()) == expected_keys
     for key, n in counts.items():
+        # transaction_tags is wiped by CASCADE when transactions are
+        # deleted earlier in the same wipe pass, so the explicit DELETE
+        # at the end has no work to do. Tolerate a 0 there; the
+        # assertion below confirms the join rows are actually gone.
+        if key == "transaction_tags":
+            assert n >= 0
+            continue
         assert n >= 1, f"expected >=1 row deleted from {key}, got {n}"
 
     async with session_factory() as db:
         for model in (Transaction, ForecastPlanItem, Budget, RecurringTransaction,
                       ForecastPlan, BillingPeriod, Account, AccountType,
-                      CategoryRule, Category):
+                      CategoryRule, Category, Tag):
             assert await _count(db, model, org_id=seeded["org_id"]) == 0, (
                 f"{model.__name__} not wiped"
             )
+        # Contributor rows for this org are gone too.
+        assert (await db.scalar(
+            select(func.count()).select_from(TagDictionaryContributor).where(
+                TagDictionaryContributor.contributor_org_id == seeded["org_id"]
+            )
+        )) == 0
+        # Join rows are gone (asserted independently of the rowcount).
+        assert (await db.execute(select(TransactionTag))).all() == []
 
 
 @pytest.mark.asyncio
@@ -337,6 +393,7 @@ async def test_reset_returns_counts_and_wipes_data(session_factory):
         "transactions", "forecast_plan_items", "budgets",
         "recurring_transactions", "forecast_plans", "billing_periods",
         "accounts", "account_types", "category_rules", "categories",
+        "tags", "transaction_tags", "tag_dictionary_contributors",
         "seeded_account_types", "seeded_categories",
     }
     assert set(counts.keys()) == expected_keys
@@ -508,3 +565,241 @@ async def test_admin_delete_still_uses_unbatched_wipe_path(session_factory):
     # The org itself is gone (admin-delete cascade ran to completion).
     async with session_factory() as db:
         assert await _count(db, Organization, id=org_id) == 0
+
+
+# -- Tags lifecycle (Correction 2 + Correction 3) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_wipe_clears_tags_and_join_rows(session_factory):
+    """Self-service reset must wipe tags + transaction_tags + the
+    contributor rows for the org. Without this, tags survive when the
+    user runs ``/api/v1/orgs/data/reset``.
+    """
+    seeded = await _seed_full_org(session_factory)
+    org_id = seeded["org_id"]
+
+    async with session_factory() as db:
+        await org_data_service.wipe_org_data(db, org_id=org_id)
+        await db.commit()
+
+    async with session_factory() as db:
+        assert await _count(db, Tag, org_id=org_id) == 0
+        # The transaction_tags rows tied to this org's tags are gone.
+        # (We can only filter by tag_id since transaction_tags has no
+        # org_id column; if all tags are deleted, the join rows must
+        # also be gone.)
+        join_rows = (await db.execute(select(TransactionTag))).all()
+        assert join_rows == []
+        # Contributor rows for this org are removed.
+        assert (await db.scalar(
+            select(func.count()).select_from(TagDictionaryContributor).where(
+                TagDictionaryContributor.contributor_org_id == org_id
+            )
+        )) == 0
+
+
+@pytest.mark.asyncio
+async def test_wipe_decrements_dictionary_count_for_contributing_org(
+    session_factory,
+):
+    """Correction 3 invariant: ``contributor_org_count`` matches
+    ``COUNT(DISTINCT contributor_org_id)`` after an org goes away. The
+    fixture seeds one contributor for "insurance"; wipe must drop the
+    count back to 0.
+    """
+    seeded = await _seed_full_org(session_factory)
+    org_id = seeded["org_id"]
+
+    async with session_factory() as db:
+        before = (await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == "insurance"
+            )
+        )).scalar_one()
+        assert before.contributor_org_count == 1
+
+    async with session_factory() as db:
+        await org_data_service.wipe_org_data(db, org_id=org_id)
+        await db.commit()
+
+    async with session_factory() as db:
+        after = (await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == "insurance"
+            )
+        )).scalar_one()
+        # Count went from 1 to 0 because the only contributor was wiped.
+        assert after.contributor_org_count == 0
+
+
+@pytest.mark.asyncio
+async def test_wipe_decrement_only_touches_dict_tags_org_contributed(
+    session_factory,
+):
+    """The decrement must apply ONLY to the dictionary tags this org
+    contributed to, never to other dictionary entries.
+    """
+    seeded_a = await _seed_full_org(session_factory, name="A")
+    seeded_b = await _seed_full_org(session_factory, name="B")
+
+    # Add a separate dictionary tag that ONLY org A contributed to.
+    async with session_factory() as db:
+        only_a_dict = TagDictionary(
+            name_normalized="only-a",
+            contributor_org_count=1,
+            usage_count=0,
+            is_seed=False,
+        )
+        db.add(only_a_dict)
+        await db.flush()
+        db.add(TagDictionaryContributor(
+            dictionary_tag_id=only_a_dict.id,
+            contributor_org_id=seeded_a["org_id"],
+        ))
+        await db.commit()
+
+    # Wipe org B; org A's "only-a" count must remain at 1.
+    async with session_factory() as db:
+        await org_data_service.wipe_org_data(db, org_id=seeded_b["org_id"])
+        await db.commit()
+
+    async with session_factory() as db:
+        only_a_after = (await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == "only-a"
+            )
+        )).scalar_one()
+        assert only_a_after.contributor_org_count == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_clears_tags_via_cascade(session_factory):
+    """Admin delete must cascade through tags so the FK chain doesn't
+    block ``delete_org_cascade``. Combined with the model-level
+    ``ondelete="CASCADE"`` on Tag.org_id, this gives belt-and-braces
+    coverage.
+    """
+    from app.services import admin_orgs_service
+    seeded = await _seed_full_org(session_factory)
+    org_id = seeded["org_id"]
+
+    async with session_factory() as db:
+        await admin_orgs_service.delete_org_cascade(db, org_id=org_id)
+        await db.commit()
+
+    async with session_factory() as db:
+        assert await _count(db, Organization, id=org_id) == 0
+        # Tags for the deleted org are gone.
+        assert (await db.scalar(
+            select(func.count()).select_from(Tag).where(Tag.org_id == org_id)
+        )) == 0
+        # Contributor rows for the deleted org are gone (CASCADE on
+        # contributor_org_id FK + the explicit pre-delete decrement
+        # both contribute, but only one of them needs to fire for the
+        # count to be zero).
+        assert (await db.scalar(
+            select(func.count()).select_from(TagDictionaryContributor).where(
+                TagDictionaryContributor.contributor_org_id == org_id
+            )
+        )) == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_restores_k_anonymity_invariant(session_factory):
+    """K-anonymity scenario: an "insurance" tag with 3 contributors
+    sits AT the floor (3) and would surface in suggestions. After we
+    delete one contributor org, the count must drop to 2 (below the
+    floor of 3) so the tag stops surfacing.
+    """
+    from app.services import admin_orgs_service
+    from app.schemas.tag import SHARED_DICTIONARY_MIN_CONTRIBUTORS
+    assert SHARED_DICTIONARY_MIN_CONTRIBUTORS == 3
+
+    # Seed 3 orgs all contributing the same dictionary tag.
+    seeded_orgs = []
+    for name in ("a", "b", "c"):
+        seeded = await _seed_full_org(session_factory, name=name)
+        seeded_orgs.append(seeded)
+
+    # Promote the dictionary entry to count == 3 to match the floor.
+    async with session_factory() as db:
+        dict_tag = (await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == "insurance"
+            )
+        )).scalar_one()
+        # Each _seed_full_org call adds 1 contributor row. 3 orgs => 3.
+        assert dict_tag.contributor_org_count == 3
+
+    # Delete org A.
+    async with session_factory() as db:
+        await admin_orgs_service.delete_org_cascade(
+            db, org_id=seeded_orgs[0]["org_id"]
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        dict_tag_after = (await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == "insurance"
+            )
+        )).scalar_one()
+        assert dict_tag_after.contributor_org_count == 2
+        # Below the k-anonymity floor: a suggestion query for an org
+        # with share_tag_data on would now exclude this entry.
+        assert (
+            dict_tag_after.contributor_org_count
+            < SHARED_DICTIONARY_MIN_CONTRIBUTORS
+        )
+
+
+@pytest.mark.asyncio
+async def test_org_re_creation_re_increments_count_on_contribution(
+    session_factory,
+):
+    """Edge case: deleting an org's contribution and then having a
+    new org contribute the same tag re-increments the count. Orgs
+    with the same name do not share IDs (the model has no uniqueness
+    on Organization.name), so a new org always gets a new contributor
+    row.
+    """
+    from app.services import admin_orgs_service
+    seeded = await _seed_full_org(session_factory, name="First")
+    org_id = seeded["org_id"]
+
+    async with session_factory() as db:
+        before = (await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == "insurance"
+            )
+        )).scalar_one()
+        assert before.contributor_org_count == 1
+
+    # Full admin delete (org row + users + everything) so the next
+    # _seed_full_org call cannot collide on user email.
+    async with session_factory() as db:
+        await admin_orgs_service.delete_org_cascade(db, org_id=org_id)
+        await db.commit()
+
+    async with session_factory() as db:
+        after_delete = (await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == "insurance"
+            )
+        )).scalar_one()
+        assert after_delete.contributor_org_count == 0
+
+    # Re-seed under a fresh name (model has no uniqueness on org name,
+    # but the fixture keys user emails off ``name`` so reusing the
+    # original name would collide). The new contribution increments
+    # the count back.
+    await _seed_full_org(session_factory, name="Reborn")
+
+    async with session_factory() as db:
+        re_count = (await db.execute(
+            select(TagDictionary).where(
+                TagDictionary.name_normalized == "insurance"
+            )
+        )).scalar_one()
+        assert re_count.contributor_org_count == 1

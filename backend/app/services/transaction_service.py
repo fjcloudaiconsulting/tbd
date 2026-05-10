@@ -21,7 +21,9 @@ from sqlalchemy.orm import selectinload
 
 from app.models.account import Account
 from app.models.category import Category, CategoryType
+from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
+from app.schemas.tag import TagResponse
 from app.schemas.transaction import (
     PromoteToRecurringRequest,
     TransactionCreate,
@@ -42,7 +44,34 @@ logger = structlog.get_logger()
 # ── Response helpers ──────────────────────────────────────────────────────────
 
 def _load_opts():
-    return [selectinload(Transaction.account), selectinload(Transaction.category)]
+    return [
+        selectinload(Transaction.account),
+        selectinload(Transaction.category),
+        selectinload(Transaction.tags),
+    ]
+
+
+def _tag_responses(tx: Transaction) -> list[TagResponse]:
+    """Build the embedded tag list for the response.
+
+    Reads ``tx.tags`` which must be eager-loaded via
+    :func:`_load_opts` (otherwise SQLAlchemy raises MissingGreenlet
+    on attribute access from the async context). ``usage_count`` is
+    deliberately set to 0 in the embedded shape: per-transaction
+    response doesn't carry the global org usage count for each tag,
+    only the tag identity. Frontend reads the dedicated
+    ``GET /api/v1/tags`` endpoint when it needs counts.
+    """
+    tags = getattr(tx, "tags", None) or []
+    return [
+        TagResponse(
+            id=t.id,
+            name=t.name,
+            name_normalized=t.name_normalized,
+            usage_count=0,
+        )
+        for t in tags
+    ]
 
 
 def to_response(tx: Transaction) -> TransactionResponse:
@@ -62,6 +91,7 @@ def to_response(tx: Transaction) -> TransactionResponse:
         settled_date=tx.settled_date,
         is_imported=tx.is_imported,
         is_manual_adjustment=tx.is_manual_adjustment,
+        tags=_tag_responses(tx),
     )
 
 
@@ -1664,6 +1694,9 @@ async def list_transactions(
     date_from: datetime.date | None = None,
     date_to: datetime.date | None = None,
     search: str | None = None,
+    tags: list[str] | None = None,
+    tags_exclude: list[str] | None = None,
+    tag_match: str = "all",
     limit: int = 50,
     offset: int = 0,
 ) -> list[Transaction]:
@@ -1686,6 +1719,59 @@ async def list_transactions(
         q = q.where(effective_period_date_expr() <= date_to)
     if search is not None:
         q = q.where(Transaction.description.ilike(f"%{search}%"))
+
+    # Tag filters (PR-Tags-A contract).
+    #
+    # ``tags`` and ``tags_exclude`` are lists of normalized tag names
+    # (caller is expected to pre-normalize, but we lowercase + strip
+    # defensively here too). ``tag_match`` is "all" (default, AND
+    # semantics) or "any" (OR semantics) for the ``tags`` filter.
+    # ``tags_exclude`` is always AND-NOT.
+    if tags:
+        tag_names = [t.strip().lower() for t in tags if t and t.strip()]
+        if tag_names:
+            if tag_match == "any":
+                # OR: transaction is included if it has at least one
+                # of the named tags.
+                q = q.where(
+                    Transaction.id.in_(
+                        select(TransactionTag.transaction_id)
+                        .join(Tag, Tag.id == TransactionTag.tag_id)
+                        .where(
+                            Tag.org_id == org_id,
+                            Tag.name_normalized.in_(tag_names),
+                        )
+                    )
+                )
+            else:
+                # AND: transaction must have ALL of the named tags.
+                # One IN-subquery per name keeps the SQL flat and
+                # the planner happy on small result sets.
+                for name in tag_names:
+                    q = q.where(
+                        Transaction.id.in_(
+                            select(TransactionTag.transaction_id)
+                            .join(Tag, Tag.id == TransactionTag.tag_id)
+                            .where(
+                                Tag.org_id == org_id,
+                                Tag.name_normalized == name,
+                            )
+                        )
+                    )
+    if tags_exclude:
+        excl = [t.strip().lower() for t in tags_exclude if t and t.strip()]
+        if excl:
+            q = q.where(
+                ~Transaction.id.in_(
+                    select(TransactionTag.transaction_id)
+                    .join(Tag, Tag.id == TransactionTag.tag_id)
+                    .where(
+                        Tag.org_id == org_id,
+                        Tag.name_normalized.in_(excl),
+                    )
+                )
+            )
+
     q = q.order_by(effective_period_date_expr().desc(), Transaction.id.desc())
     q = q.limit(limit).offset(offset)
 
