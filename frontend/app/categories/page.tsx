@@ -6,9 +6,10 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
-import { input, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, btnPrimary, card, cardHeader, error as errorCls, pageTitle } from "@/lib/styles";
 import type { Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import AddMasterWithSubsModal from "@/components/ui/AddMasterWithSubsModal";
 import {
   Wallet, Home, Zap, UtensilsCrossed, Car, HeartPulse,
   Scissors, Gamepad2, Target, CreditCard, Gift, HelpCircle, Tag,
@@ -54,11 +55,9 @@ export default function CategoriesPage() {
   // Search
   const [search, setSearch] = useState("");
 
-  // Add custom master form
-  const [showAddMaster, setShowAddMaster] = useState(false);
-  const [newMasterName, setNewMasterName] = useState("");
-  const [newMasterType, setNewMasterType] = useState<"income" | "expense" | "both">("expense");
-  const [newMasterDesc, setNewMasterDesc] = useState("");
+  // Add Master modal (C1: create master that reuses existing
+  // subcategories via batch move).
+  const [showAddMasterModal, setShowAddMasterModal] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   // Refresh banner state for the AppShell-level "transaction added" event.
@@ -139,25 +138,6 @@ export default function CategoriesPage() {
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
-  async function handleAddMaster(e: FormEvent) {
-    e.preventDefault();
-    setError("");
-    try {
-      await apiFetch("/api/v1/categories", {
-        method: "POST",
-        body: JSON.stringify({
-          name: newMasterName,
-          type: newMasterType,
-          description: newMasterDesc || null,
-        }),
-      });
-      setNewMasterName("");
-      setNewMasterDesc("");
-      setShowAddMaster(false);
-      await reload();
-    } catch (err) { setError(extractErrorMessage(err)); }
-  }
-
   async function handleEditCat(id: number) {
     if (!editCatName.trim()) return;
     setError("");
@@ -184,8 +164,11 @@ export default function CategoriesPage() {
     <AppShell>
       <div className="mb-8 flex items-center justify-between">
         <h1 className={`${pageTitle} mb-0`}>Categories</h1>
-        <button onClick={() => setShowAddMaster(!showAddMaster)} className={btnPrimary}>
-          {showAddMaster ? "Cancel" : "+ Custom Category"}
+        <button
+          onClick={() => setShowAddMasterModal(true)}
+          className={btnPrimary}
+        >
+          + Add Master
         </button>
       </div>
 
@@ -212,29 +195,18 @@ export default function CategoriesPage() {
         </div>
       )}
 
-      {showAddMaster && (
-        <div className={`mb-6 ${card} p-6`}>
-          <h2 className={`mb-4 ${cardTitle}`}>New Master Category</h2>
-          <form onSubmit={handleAddMaster} className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
-            <div className="flex-1 w-full sm:min-w-[200px]">
-              <label htmlFor="master-name" className="sr-only">Name</label>
-              <input id="master-name" type="text" required placeholder="Category name" value={newMasterName} onChange={(e) => setNewMasterName(e.target.value)} className={input} />
-            </div>
-            <div className="w-full sm:w-32">
-              <label htmlFor="master-type" className="sr-only">Type</label>
-              <select id="master-type" value={newMasterType} onChange={(e) => setNewMasterType(e.target.value as typeof newMasterType)} className={input}>
-                <option value="expense">Expense</option>
-                <option value="income">Income</option>
-                <option value="both">Both</option>
-              </select>
-            </div>
-            <div className="flex-1 w-full sm:min-w-[200px]">
-              <label htmlFor="master-desc" className="sr-only">Description</label>
-              <input id="master-desc" type="text" placeholder="Description (optional)" value={newMasterDesc} onChange={(e) => setNewMasterDesc(e.target.value)} className={input} />
-            </div>
-            <button type="submit" className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Add</button>
-          </form>
-        </div>
+      {showAddMasterModal && (
+        <AddMasterWithSubsModal
+          categories={categories}
+          onCreated={async () => {
+            // Reload first; only close the modal if the reload
+            // succeeded so the modal can surface a retry-refresh
+            // affordance on failure.
+            await reload();
+            setShowAddMasterModal(false);
+          }}
+          onCancel={() => setShowAddMasterModal(false)}
+        />
       )}
 
       {!fetching && allMasters.length > 6 && (
