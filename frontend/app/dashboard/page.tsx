@@ -891,25 +891,37 @@ export default function DashboardPage() {
               {(() => {
                 const expenseItems = forecast?.items.filter((it) => it.type === "expense") ?? [];
                 if (forecast && expenseItems.length > 0) {
+                  const chartRows = expenseItems.slice(0, 8).map((it) => ({
+                    name: it.category_name.length > 12 ? it.category_name.slice(0, 12) + "..." : it.category_name,
+                    planned: Number(it.planned_amount),
+                    actual: Number(it.actual_amount),
+                  }));
                   return (
                     <div className="w-full min-w-0" style={{ height: Math.max(Math.min(expenseItems.length, 8) * 32, 100) }}>
                       <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                         <BarChart
-                          data={expenseItems.slice(0, 8).map((it) => ({
-                            name: it.category_name.length > 12 ? it.category_name.slice(0, 12) + "…" : it.category_name,
-                            planned: Number(it.planned_amount),
-                            actual: Number(it.actual_amount),
-                          }))}
+                          data={chartRows}
                           layout="vertical"
                           margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
                         >
                           <XAxis type="number" hide />
                           <YAxis type="category" dataKey="name" width={90} tick={{ fill: chartColor.axisTick, fontSize: 10 }} />
                           <Tooltip
-                            formatter={(v, name) => [
-                              formatAmount(Number(v)),
-                              name === "planned" ? <span style={{ color: chartColor.planned }}>Planned</span> : <span style={{ color: chartColor.actual }}>Actual</span>,
-                            ]}
+                            formatter={(v, name, item) => {
+                              if (name === "planned") {
+                                return [
+                                  formatAmount(Number(v)),
+                                  <span style={{ color: chartColor.planned }}>Planned</span>,
+                                ];
+                              }
+                              const row = (item as { payload?: { planned: number; actual: number } } | undefined)?.payload;
+                              const isOver = row ? row.actual > row.planned : false;
+                              const labelColor = isOver ? chartColor.over : chartColor.actual;
+                              return [
+                                formatAmount(Number(v)),
+                                <span style={{ color: labelColor }}>Actual</span>,
+                              ];
+                            }}
                             contentStyle={{ fontSize: "11px" }}
                           />
                           <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={600}
@@ -919,7 +931,14 @@ export default function DashboardPage() {
                               if (name) setChartFilter(chartFilter === name ? null : name);
                             }}
                           />
-                          <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={600} />
+                          <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={600}>
+                            {chartRows.map((d, i) => (
+                              <Cell
+                                key={i}
+                                fill={d.actual > d.planned ? chartColor.over : chartColor.actual}
+                              />
+                            ))}
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -936,9 +955,10 @@ export default function DashboardPage() {
                   </p>
                 );
               })()}
-              <div className="mt-2 flex gap-3 text-[10px] text-text-muted">
+              <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-text-muted">
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.planned }} /> Planned</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.actual }} /> Actual</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.actual }} /> Under plan</span>
+                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over plan</span>
               </div>
             </div>
           </div>
