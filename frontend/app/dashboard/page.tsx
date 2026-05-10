@@ -11,6 +11,7 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
 import { btnSecondary, card, cardHeader, cardTitle, pageTitle, error as errorCls } from "@/lib/styles";
+import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
@@ -142,6 +143,14 @@ export default function DashboardPage() {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState("");
+  // Non-blocking error from a post-write refresh. The initial-load
+  // banner above (`error`) keeps its hard-fail semantics: blank page +
+  // banner, no data. This one shows alongside the existing data: the
+  // user keeps the previous good snapshot, sees a "Refresh failed"
+  // affordance with a Retry button, and can reissue the same
+  // post-write reloads without losing scroll, selection, or filters.
+  const [refreshError, setRefreshError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [chartFilter, setChartFilter] = useState<string | null>(null);
   // Item 6 (system-wide sort persistence): the dashboard transactions table
@@ -373,21 +382,28 @@ export default function DashboardPage() {
   // dashboard surfaces the old inline Quick Add form refreshed: refs
   // (account balances), period transactions, the projection (drives the
   // hero verdict), all-time pending, and per-account month-end balance.
-  useEffect(() => {
+  //
+  // Promise.allSettled rather than fire-and-forget: a single failed
+  // reload (network blip, backend hiccup) used to silently leave the
+  // dashboard stale with no signal. Now we keep the optimistic UX
+  // (interaction never blocks, prior snapshot stays on screen) and
+  // surface a non-blocking inline banner with a Retry button when any
+  // settled promise rejected. loadPendingTransactions and
+  // loadAccountMonthEndForecast already swallow their own errors
+  // internally, so we read their status from allSettled to detect any
+  // backend hiccup uniformly.
+  const refreshAllPostWrite = useCallback(async () => {
     if (loading || !user) return;
-    function refresh() {
-      loadRefs().catch(() => {
-        // loadRefs already surfaces its own errors via setError on the
-        // initial load path; here we let the page keep its prior state
-        // rather than blanking it on a transient post-write blip.
-      });
-      void loadTransactions(0);
-      void loadForecastProjection();
-      void loadPendingTransactions();
-      void loadAccountMonthEndForecast();
-    }
-    window.addEventListener("pfv:transaction-added", refresh);
-    return () => window.removeEventListener("pfv:transaction-added", refresh);
+    setRefreshing(true);
+    const results = await Promise.allSettled([
+      loadRefs(),
+      loadTransactions(0),
+      loadForecastProjection(),
+      loadPendingTransactions(),
+      loadAccountMonthEndForecast(),
+    ]);
+    setRefreshing(false);
+    setRefreshError(results.some((r) => r.status === "rejected"));
   }, [
     loading,
     user,
@@ -397,6 +413,10 @@ export default function DashboardPage() {
     loadPendingTransactions,
     loadAccountMonthEndForecast,
   ]);
+
+  useTransactionAddedListener(() => {
+    void refreshAllPostWrite();
+  });
 
   const activeAccounts = accounts.filter((a) => a.is_active);
   // Empty-state copy for the recent-transactions list. Pre-PR this was
@@ -549,6 +569,27 @@ export default function DashboardPage() {
       )}
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+
+      {refreshError && (
+        <div
+          className={`mb-6 flex items-center justify-between gap-3 ${errorCls}`}
+          role="status"
+          data-testid="dashboard-refresh-error"
+        >
+          <span>Failed to refresh after the last update. Try again.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setRefreshError(false);
+              void refreshAllPostWrite();
+            }}
+            disabled={refreshing}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {refreshing ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      )}
 
       {fetching ? (
         <Spinner />
