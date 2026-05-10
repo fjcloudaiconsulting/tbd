@@ -56,13 +56,10 @@ specific tags (``vacation-divorce-trip``, ``kids-school-2026``) are
 intentionally absent: they would only enter the dictionary via the
 contribution path, which has its own length/hyphen-group guard.
 
-**Migration ordering note (rebase expected).** This migration's
-``down_revision`` is ``036_settled_implies_settled_date`` as of writing.
-The Categories C0 backend team is also adding a migration in parallel.
-After C0's migration lands on main, this migration must be rebased so
-its ``down_revision`` points at C0's revision. The PR body documents
-this expectation; coordinate with the Tags B team (frontend) so they
-pick up the rebased revision in their fixtures.
+**Migration ordering.** ``down_revision`` is
+``037_categories_floor_backfill`` (the Categories C0 backend migration
+that landed on main ahead of this one). The Tags B team should pick up
+this revision in their fixtures.
 """
 from __future__ import annotations
 
