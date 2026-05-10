@@ -189,3 +189,18 @@ a, button { transition: all 0.15s ease; }
 .recharts-tooltip-wrapper .recharts-default-tooltip .recharts-tooltip-item {
   color: var(--theme-text-primary) !important;
 }
+
+/* Honor user's reduced-motion preference. WCAG 2.2 AA + PRODUCT.md
+   commitment. Disables animations, transitions, and smooth-scroll for
+   anyone with the OS-level preference set. Placed last so it wins
+   over earlier transition rules (a, button) and library overrides. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
