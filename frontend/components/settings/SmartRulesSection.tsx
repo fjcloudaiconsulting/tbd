@@ -85,7 +85,7 @@ export default function SmartRulesSection() {
             disabled={loading || saving}
             onClick={toggle}
             className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50 ${
-              enabled ? "bg-emerald-500" : "bg-gray-300"
+              enabled ? "bg-success" : "bg-border"
             }`}
           >
             <span

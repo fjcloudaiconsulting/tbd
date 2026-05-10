@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { btnPrimary, btnSecondary } from "@/lib/styles";
 import HeroDashboard from "./HeroDashboard";
 
 export default function Hero() {
@@ -22,13 +23,13 @@ export default function Hero() {
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Link
               href="/register"
-              className="rounded-md bg-accent px-6 py-3 text-sm font-medium text-accent-text hover:bg-accent-hover"
+              className={`${btnPrimary} px-6 py-3`}
             >
               Get started free
             </Link>
             <Link
               href="/login"
-              className="rounded-md border border-border px-6 py-3 text-sm font-medium text-text-primary hover:bg-surface-raised"
+              className={`${btnSecondary} px-6 py-3`}
             >
               Sign in
             </Link>

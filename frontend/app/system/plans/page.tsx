@@ -314,7 +314,7 @@ export default function SystemPlansPage() {
                     <div className="flex items-center gap-1 text-[11px] text-text-muted">
                       {plan.slug}
                       {plan.is_custom && (
-                        <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-400">CUSTOM</span>
+                        <span className="inline-flex items-center rounded bg-warning-dim px-1.5 py-0.5 text-[10px] font-medium text-warning">CUSTOM</span>
                       )}
                     </div>
                   </td>

@@ -10,7 +10,7 @@ import CategorySelect from "@/components/ui/CategorySelect";
 import Spinner from "@/components/ui/Spinner";
 import ImportMarkAsTransferModal from "@/components/transactions/ImportMarkAsTransferModal";
 import CsvFormatHelp from "@/components/import/CsvFormatHelp";
-import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle, badgeWarning, badgeError, badgeInfo } from "@/lib/styles";
 import type {
   Account,
   Category,
@@ -430,17 +430,17 @@ function ImportPageContent() {
                 </span>
               )}
               {preview.suggested_pair_count > 0 && (
-                <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-800">
+                <span className={badgeWarning}>
                   {preview.suggested_pair_count} possible transfers
                 </span>
               )}
               {preview.multi_candidate_count > 0 && (
-                <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-800">
+                <span className={badgeWarning}>
                   {preview.multi_candidate_count} need a pick
                 </span>
               )}
               {preview.duplicate_of_linked_count > 0 && (
-                <span className="rounded bg-rose-100 px-2 py-0.5 text-rose-800">
+                <span className={badgeError}>
                   {preview.duplicate_of_linked_count} dup of linked leg
                 </span>
               )}
@@ -545,7 +545,7 @@ function ImportPageContent() {
                   if (previewRow.is_duplicate_of_linked_leg) {
                     pill = {
                       text: "Drop as duplicate",
-                      classes: "bg-rose-100 text-rose-800 hover:bg-rose-200",
+                      classes: "inline-flex items-center gap-1 rounded bg-danger-dim px-2 py-0.5 text-xs font-medium text-danger hover:bg-danger-dim/80",
                     };
                   } else if (previewRow.transfer_match_action === "pair_with") {
                     pill = {
@@ -557,12 +557,12 @@ function ImportPageContent() {
                     const days = cand ? Math.abs(cand.date_diff_days) : 0;
                     pill = {
                       text: `Possible transfer (±${days} day${days === 1 ? "" : "s"})`,
-                      classes: "bg-amber-100 text-amber-800 hover:bg-amber-200",
+                      classes: "inline-flex items-center gap-1 rounded bg-warning-dim px-2 py-0.5 text-xs font-medium text-warning hover:bg-warning-dim/80",
                     };
                   } else if (previewRow.transfer_match_action === "choose_candidate") {
                     pill = {
                       text: "Multiple candidates",
-                      classes: "bg-amber-100 text-amber-800 hover:bg-amber-200",
+                      classes: "inline-flex items-center gap-1 rounded bg-warning-dim px-2 py-0.5 text-xs font-medium text-warning hover:bg-warning-dim/80",
                     };
                   }
 
@@ -709,7 +709,7 @@ function ImportPageContent() {
                                   · {previewRow.duplicate_candidate.description}
                                 </div>
                                 {previewRow.duplicate_candidate.existing_leg_is_imported === false && (
-                                  <span className="inline-block rounded bg-violet-100 px-2 py-0.5 text-xs text-violet-800">
+                                  <span className={badgeInfo}>
                                     Synthetic leg from convert-to-transfer
                                   </span>
                                 )}
@@ -784,7 +784,7 @@ function ImportPageContent() {
                                               isSelected
                                                 ? "border-accent bg-accent/5"
                                                 : isClosest
-                                                ? "border-amber-300"
+                                                ? "border-warning/40"
                                                 : "border-border"
                                             }`}
                                           >
@@ -806,7 +806,7 @@ function ImportPageContent() {
                                               </span>{" "}
                                               · {cand.description}
                                               {isClosest && (
-                                                <span className="ml-2 text-xs text-amber-700">closest</span>
+                                                <span className="ml-2 text-xs text-warning">closest</span>
                                               )}
                                             </span>
                                           </label>

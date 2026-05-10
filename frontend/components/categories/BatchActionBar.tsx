@@ -1,6 +1,6 @@
 "use client";
 
-import { btnPrimary, btnSecondary } from "@/lib/styles";
+import { btnDangerSolid, btnSecondary } from "@/lib/styles";
 
 interface Props {
   count: number;
@@ -21,7 +21,7 @@ export default function BatchActionBar({ count, onMove, onDelete, onClear }: Pro
       data-testid="batch-action-bar"
       role="toolbar"
       aria-label="Batch actions"
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-surface/95 backdrop-blur supports-[backdrop-filter]:bg-surface/85"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-surface-raised"
     >
       <div className="mx-auto flex max-w-6xl flex-col items-stretch gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 md:px-6">
         <div className="flex items-center gap-3">
@@ -52,7 +52,7 @@ export default function BatchActionBar({ count, onMove, onDelete, onClear }: Pro
             type="button"
             data-testid="batch-delete-button"
             onClick={onDelete}
-            className={`${btnPrimary} min-h-[44px] sm:min-h-0 !bg-danger hover:!bg-red-600`}
+            className={`${btnDangerSolid} min-h-[44px] sm:min-h-0`}
           >
             Delete {count}
           </button>
