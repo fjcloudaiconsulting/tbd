@@ -1,6 +1,6 @@
 "use client";
 
-// usePersistedSort — sort field + direction, persisted to localStorage so a
+// usePersistedSort: sort field + direction, persisted to localStorage so a
 // user's chosen order survives navigation and reloads. Punch list item 6
 // (system-wide sort persistence) and item 16 (Dashboard Spending card)
 // consume this hook.

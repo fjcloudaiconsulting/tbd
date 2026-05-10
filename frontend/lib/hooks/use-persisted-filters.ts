@@ -1,6 +1,6 @@
 "use client";
 
-// usePersistedFilters — per-surface filter object persisted to localStorage.
+// usePersistedFilters: per-surface filter object persisted to localStorage.
 // Designed for the Transactions page (account/category/type/status/date
 // range/search/period) but generic over any plain JSON-serializable filter
 // shape. Punch list item 6 covers filter persistence alongside sort.

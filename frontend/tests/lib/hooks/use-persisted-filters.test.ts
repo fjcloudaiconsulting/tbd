@@ -93,7 +93,7 @@ describe("usePersistedFilters", () => {
   });
 
   it("merges over defaults so a stale payload missing a field still works", () => {
-    // `account` is missing — should keep the default.
+    // `account` is missing; should keep the default.
     window.localStorage.setItem(
       KEY,
       JSON.stringify({ search: "groceries", status: "settled" }),

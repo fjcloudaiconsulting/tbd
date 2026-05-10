@@ -96,7 +96,7 @@ function TransactionsPageContent() {
   >("monthly");
   const [editRecNextDue, setEditRecNextDue] = useState("");
 
-  // Filters — persisted via localStorage so a navigate-away-and-back, or a
+  // Filters: persisted via localStorage so a navigate-away-and-back, or a
   // tab reload, lands the user back on the same view. Item 6 of the
   // launch-prep punch list.
   type TxFilters = {

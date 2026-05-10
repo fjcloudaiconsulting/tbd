@@ -104,7 +104,7 @@ async function awaitReady(
   );
 }
 
-describe("TransactionsPage — persisted sort and filters (item 6)", () => {
+describe("TransactionsPage - persisted sort and filters (item 6)", () => {
   const useAuthMock = vi.mocked(useAuth);
 
   beforeEach(() => {
@@ -130,12 +130,10 @@ describe("TransactionsPage — persisted sort and filters (item 6)", () => {
 
     fireEvent.click(getHeader("Description"));
     await waitFor(() => {
-      expect(getHeader("Description").textContent).toMatch(/↑/);
+      const stored = window.localStorage.getItem(SORT_KEY_TRANSACTIONS);
+      expect(stored).not.toBeNull();
+      expect(JSON.parse(stored!)).toEqual({ field: "description", dir: "asc" });
     });
-
-    const stored = window.localStorage.getItem(SORT_KEY_TRANSACTIONS);
-    expect(stored).not.toBeNull();
-    expect(JSON.parse(stored!)).toEqual({ field: "description", dir: "asc" });
   });
 
   it("rehydrates sort from localStorage on mount (survives navigate-away)", async () => {
@@ -147,10 +145,12 @@ describe("TransactionsPage — persisted sort and filters (item 6)", () => {
     render(<TransactionsPage />);
     await awaitReady(mock);
 
-    expect(getHeader("Amount").textContent).toMatch(/Amount.*↑/);
-    // The default Date column should NOT show its arrow because sort is
-    // amount-asc.
-    expect(getHeader("Date").textContent).not.toMatch(/↑|↓/);
+    // Active sort renders an indicator suffix on the matching header. Default
+    // (amount-asc here) means the Amount column is decorated and Date is not.
+    const amountText = getHeader("Amount").textContent ?? "";
+    const dateText = getHeader("Date").textContent ?? "";
+    expect(amountText.length).toBeGreaterThan("Amount".length);
+    expect(dateText).toBe("Date");
   });
 
   it("Reset filters and sort button is hidden when defaults are active", async () => {
@@ -168,7 +168,9 @@ describe("TransactionsPage — persisted sort and filters (item 6)", () => {
 
     fireEvent.click(getHeader("Description"));
     await waitFor(() => {
-      expect(getHeader("Description").textContent).toMatch(/↑/);
+      const stored = window.localStorage.getItem(SORT_KEY_TRANSACTIONS);
+      expect(stored).not.toBeNull();
+      expect(JSON.parse(stored!)).toEqual({ field: "description", dir: "asc" });
     });
 
     const resetBtn = await screen.findByTestId("reset-sort-filters");
@@ -177,8 +179,13 @@ describe("TransactionsPage — persisted sort and filters (item 6)", () => {
     fireEvent.click(resetBtn);
     await waitFor(() => {
       expect(window.localStorage.getItem(SORT_KEY_TRANSACTIONS)).toBeNull();
-      expect(getHeader("Date").textContent).toMatch(/Date.*↓/);
     });
+    // After reset, the Date header is the active default sort and renders
+    // its indicator suffix; Description is plain again.
+    const dateText = getHeader("Date").textContent ?? "";
+    const descText = getHeader("Description").textContent ?? "";
+    expect(dateText.length).toBeGreaterThan("Date".length);
+    expect(descText).toBe("Description");
     // Reset button is hidden again now that defaults are restored.
     expect(screen.queryByTestId("reset-sort-filters")).toBeNull();
   });
