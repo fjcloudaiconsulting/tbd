@@ -90,7 +90,25 @@ export default function BatchMoveModal({
     ? ([...selectedTypes][0] as Category["type"])
     : null;
 
-  const candidateMasters = useMemo(() => {
+  // Source masters of the current selection. Backend rejects a move where
+  // `target_parent_id == sub.parent_id` as a no-op
+  // (`category_service.move_subcategory` line 748). We strip these IDs from
+  // the candidate list so the UI never offers a target that would 400. When
+  // the selection spans multiple masters, ALL source masters are excluded.
+  const sourceParentIds = useMemo(
+    () =>
+      new Set(
+        selectedSubs
+          .map((s) => s.parent_id)
+          .filter((id): id is number => id !== null),
+      ),
+    [selectedSubs],
+  );
+
+  // Type-compat candidates BEFORE source-parent exclusion. We keep this
+  // separate so we can detect the "all compat masters are sources" empty
+  // state (no target would be valid even if the user retried).
+  const typeCompatMasters = useMemo(() => {
     if (mixedSelection) return [];
     if (soleType === null) return [];
     const sq = filter.trim().toLowerCase();
@@ -99,6 +117,25 @@ export default function BatchMoveModal({
       .filter((c) => c.type === soleType)
       .filter((m) => (sq ? m.name.toLowerCase().includes(sq) : true));
   }, [categories, filter, mixedSelection, soleType]);
+
+  const candidateMasters = useMemo(
+    () => typeCompatMasters.filter((m) => !sourceParentIds.has(m.id)),
+    [typeCompatMasters, sourceParentIds],
+  );
+
+  // True only when the unfiltered (no search) compat list is non-empty but
+  // every entry is a source parent. Distinct from "no compat masters at
+  // all" so the inline message can be specific.
+  const allCompatAreSources = useMemo(() => {
+    if (mixedSelection) return false;
+    if (soleType === null) return false;
+    if (filter.trim().length > 0) return false;
+    const allCompat = categories
+      .filter((c) => c.parent_id === null)
+      .filter((c) => c.type === soleType);
+    if (allCompat.length === 0) return false;
+    return allCompat.every((m) => sourceParentIds.has(m.id));
+  }, [categories, filter, mixedSelection, soleType, sourceParentIds]);
 
   // Reset internal state when the modal closes or the selection changes.
   useEffect(() => {
@@ -290,12 +327,17 @@ export default function BatchMoveModal({
           className="mt-3 max-h-56 overflow-y-auto rounded-md border border-border"
         >
           {candidateMasters.length === 0 ? (
-            <p className="p-4 text-xs text-text-muted">
+            <p
+              data-testid="batch-move-empty-message"
+              className="p-4 text-xs text-text-muted"
+            >
               {mixedSelection
                 ? "No targets while the selection mixes types."
-                : soleType
-                  ? `No compatible masters. Selected subcategories require a target of type ${soleType}.`
-                  : "No subcategories selected."}
+                : allCompatAreSources
+                  ? "All compatible target masters are already parents of the selected subcategories."
+                  : soleType
+                    ? `No compatible masters. Selected subcategories require a target of type ${soleType}.`
+                    : "No subcategories selected."}
             </p>
           ) : (
             candidateMasters.map((m) => (
