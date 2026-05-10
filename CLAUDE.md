@@ -55,6 +55,36 @@ docker compose exec frontend npm test -- tests/...
 docker compose exec frontend npx tsc --noEmit
 ```
 
+### Running backend tests in parallel agent sessions
+
+When dispatched as a parallel agent, NEVER run backend tests against the user's
+default `pfv` docker compose stack. Always use an isolated compose project:
+
+```bash
+docker compose -p team-<unique-name> up -d backend mysql redis
+docker compose -p team-<unique-name> exec backend pytest tests/...
+```
+
+Every `compose` and `docker exec` call must carry the same `-p team-<name>`
+flag, on every command in the session. A single command that omits it falls
+back to the default `pfv` project name and will write to the user's MySQL
+volume. See `~/.claude/projects/-Users-fjorge-src-pfv/memory/reference_shared_mysql_volume_trap.md`
+for the 2026-05-09 incident this rule prevents.
+
+`./pfv migrate` is for the user's local stack only. Do not invoke it from an
+agent session; it has no `-p` flag and always targets the default project.
+
+### Lifespan migration branch guard
+
+`./pfv start`, `./pfv restart`, and `./pfv rebuild` boot the backend, whose
+FastAPI lifespan calls `_run_migrations()` against the shared MySQL volume in
+dev. To prevent the same drift class `./pfv migrate`'s CLI guard catches, the
+lifespan reads `/app/.git/HEAD` and refuses to migrate when the host checkout
+is on a non-main branch (or is detached / unreadable). If you genuinely need
+to run lifespan migrations from a feature branch in dev, set
+`PFV_MIGRATE_OK_OFF_MAIN=1` in `.env` or the shell. Default is to refuse,
+since the same env var name pairs with `./pfv migrate`'s CLI guard.
+
 ## Seeding
 
 For a repeatable local dataset (accounts, transactions, budgets, recurring templates), run `./pfv seed`. See the Seeding Mock Data section of CONTRIBUTING.md for the full workflow and the `SEED_*` environment variables that let you customize the seeded user.

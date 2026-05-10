@@ -86,6 +86,29 @@ cmd_reset() {
 }
 
 cmd_migrate() {
+  # Guard: refuse to run migrations from a non-main checkout unless the
+  # operator opts in via PFV_MIGRATE_OK_OFF_MAIN=1. A migration run from a
+  # feature branch can leave alembic_version pointing at a revision that
+  # only exists on that branch, which then breaks `./pfv start` on main
+  # until the version row is hand-patched. See
+  # ~/.claude/projects/-Users-fjorge-src-pfv/memory/reference_shared_mysql_volume_trap.md
+  # for the 2026-05-09 incident this guard prevents.
+  local branch
+  branch="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
+  if [[ "$branch" != "main" && "${PFV_MIGRATE_OK_OFF_MAIN:-}" != "1" ]]; then
+    cat >&2 <<EOF
+WARNING: ./pfv migrate is about to run migrations against the local dev DB
+while the repo is on branch '${branch}'. Migrations from feature branches
+can leave alembic_version pointing at revisions that do not exist on main,
+breaking ./pfv start until repaired (see reference_shared_mysql_volume_trap.md).
+
+If you intend to migrate from this branch, re-run with:
+  PFV_MIGRATE_OK_OFF_MAIN=1 ./pfv migrate
+
+Aborting.
+EOF
+    exit 1
+  fi
   docker compose exec backend python /app/scripts/migrate.py
 }
 

@@ -52,6 +52,11 @@ services:
       # repo-root .github/workflows/deploy.yml and .do/app.yaml.
       - ./.github:/app/.github:ro
       - ./.do:/app/.do:ro
+      # Read-only .git so the lifespan branch guard in app.main can
+      # detect the host checkout's branch and refuse to migrate from
+      # a non-main feature branch (the same drift class PFV_MIGRATE_OK_OFF_MAIN
+      # protects on the CLI side).
+      - ./.git:/app/.git:ro
 
   frontend:
     build:
