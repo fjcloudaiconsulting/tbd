@@ -106,10 +106,34 @@ async def _seed(factory) -> dict:
             org_id=org.id, name="Groceries", slug="groceries",
             type=CategoryType.EXPENSE,
         )
+        # Second expense master so the C0 floor invariant
+        # (>= 1 income master + 1 expense master + 1 of each sub) does
+        # not block type changes on ``expense_master``. This test is
+        # about the type-compatibility guard, not the floor invariant.
+        expense_master_2 = Category(
+            org_id=org.id, name="Other Exp", slug="other_exp",
+            type=CategoryType.EXPENSE,
+        )
+        # Income master + sub so the floor is satisfied for income too.
+        income_master = Category(
+            org_id=org.id, name="Income", slug="income_m",
+            type=CategoryType.INCOME,
+        )
         both_master = Category(
             org_id=org.id, name="Flex", slug="flex", type=CategoryType.BOTH,
         )
-        db.add_all([acct, expense_master, both_master])
+        db.add_all([acct, expense_master, expense_master_2, income_master, both_master])
+        await db.flush()
+        # Subs to satisfy the subcategory floor for both types.
+        income_sub = Category(
+            org_id=org.id, name="Salary", parent_id=income_master.id,
+            type=CategoryType.INCOME,
+        )
+        expense_sub = Category(
+            org_id=org.id, name="ESub", parent_id=expense_master_2.id,
+            type=CategoryType.EXPENSE,
+        )
+        db.add_all([income_sub, expense_sub])
         await db.flush()
         # An expense transaction on the BOTH master.
         db.add(Transaction(

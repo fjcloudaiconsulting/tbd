@@ -115,14 +115,30 @@ async def _seed(factory) -> dict:
             org_id=org.id, name="Groceries", slug="groceries",
             type=CategoryType.EXPENSE,
         )
+        # Second expense master + sub so the C0 floor invariant
+        # (>= 1 expense master + 1 expense sub, BOTH does not satisfy
+        # the floor) does not block type changes that target the
+        # primary expense master in these tests.
+        expense_master_2 = Category(
+            org_id=org.id, name="Other Exp", slug="other_exp_m",
+            type=CategoryType.EXPENSE,
+        )
         income_master = Category(
             org_id=org.id, name="Salary", slug="salary",
+            type=CategoryType.INCOME,
+        )
+        # Second income master + sub for symmetric floor satisfaction.
+        income_master_2 = Category(
+            org_id=org.id, name="Other Inc", slug="other_inc_m",
             type=CategoryType.INCOME,
         )
         both_master = Category(
             org_id=org.id, name="Flex", slug="flex", type=CategoryType.BOTH,
         )
-        db.add_all([acct, expense_master, income_master, both_master])
+        db.add_all([
+            acct, expense_master, expense_master_2,
+            income_master, income_master_2, both_master,
+        ])
         await db.flush()
         # A pre-existing expense child under the expense master (mirrors
         # what org_bootstrap seeds: child.type == master.type).
@@ -130,7 +146,21 @@ async def _seed(factory) -> dict:
             org_id=org.id, name="Supermarket", slug="supermarket",
             type=CategoryType.EXPENSE, parent_id=expense_master.id,
         )
-        db.add(expense_child)
+        # Floor-satisfying second sub on each side so the floor stays
+        # at >= 1 even when expense_master cascades to BOTH.
+        expense_child_2 = Category(
+            org_id=org.id, name="OtherExpSub", slug="other_exp_s",
+            type=CategoryType.EXPENSE, parent_id=expense_master_2.id,
+        )
+        income_child = Category(
+            org_id=org.id, name="IncSub", slug="inc_s",
+            type=CategoryType.INCOME, parent_id=income_master.id,
+        )
+        income_child_2 = Category(
+            org_id=org.id, name="OtherIncSub", slug="other_inc_s",
+            type=CategoryType.INCOME, parent_id=income_master_2.id,
+        )
+        db.add_all([expense_child, expense_child_2, income_child, income_child_2])
         await db.commit()
         return {
             "org_id": org.id,
