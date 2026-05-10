@@ -199,8 +199,11 @@ export default function CategoriesPage() {
         <AddMasterWithSubsModal
           categories={categories}
           onCreated={async () => {
-            setShowAddMasterModal(false);
+            // Reload first; only close the modal if the reload
+            // succeeded so the modal can surface a retry-refresh
+            // affordance on failure.
             await reload();
+            setShowAddMasterModal(false);
           }}
           onCancel={() => setShowAddMasterModal(false)}
         />

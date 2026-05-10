@@ -39,9 +39,11 @@ interface Props {
   categories: Category[];
   /** Called when the master has been created and any selected
    *  subcategories were moved successfully. The page should refresh
-   *  its category list after this fires.
+   *  its category list after this fires. May be async; the modal
+   *  awaits it and surfaces reload errors inline so the page never
+   *  silently drops a refresh failure.
    */
-  onCreated: (created: Category) => void;
+  onCreated: (created: Category) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -78,6 +80,7 @@ export default function AddMasterWithSubsModal({
   const [errorText, setErrorText] = useState<string | null>(null);
   const [createdMaster, setCreatedMaster] = useState<Category | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [reloadError, setReloadError] = useState(false);
   const [mounted, setMounted] = useState(false);
 
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -110,7 +113,7 @@ export default function AddMasterWithSubsModal({
         if (createdMaster) {
           // After a master was created the parent should still get the
           // master so its list refreshes; treat Esc as Done.
-          onCreated(createdMaster);
+          void finishWithMaster(createdMaster);
           return;
         }
         onCancel();
@@ -208,7 +211,7 @@ export default function AddMasterWithSubsModal({
       // failed atomically (no partial commit). Rerun with the current
       // selection.
       if (subIds.length === 0) {
-        onCreated(createdMaster);
+        void finishWithMaster(createdMaster);
         return;
       }
       void runBatchMove(createdMaster, subIds);
@@ -256,7 +259,7 @@ export default function AddMasterWithSubsModal({
 
     if (subIds.length === 0) {
       setSubmitting(false);
-      onCreated(master);
+      await finishWithMaster(master);
       return;
     }
 
@@ -292,7 +295,25 @@ export default function AddMasterWithSubsModal({
     }
 
     setSubmitting(false);
-    onCreated(master);
+    await finishWithMaster(master);
+  }
+
+  // Final step: notify the parent. The parent reload may be async and
+  // may fail (network blip during the post-mutation refresh). Surface
+  // the error inline with a Retry-refresh button instead of dropping
+  // the promise silently.
+  async function finishWithMaster(master: Category) {
+    try {
+      await onCreated(master);
+      setReloadError(false);
+    } catch (err) {
+      setReloadError(true);
+      setErrorText(
+        err instanceof Error
+          ? `Master created but the page failed to refresh: ${err.message}`
+          : "Master created but the page failed to refresh.",
+      );
+    }
   }
 
   const submitLabel = submitting
@@ -458,6 +479,16 @@ export default function AddMasterWithSubsModal({
           {errorText && (
             <div role="alert" className={errorCls}>
               {errorText}
+              {reloadError && createdMaster && (
+                <button
+                  type="button"
+                  onClick={() => void finishWithMaster(createdMaster)}
+                  className="ml-3 underline"
+                  data-testid="retry-refresh"
+                >
+                  Retry refresh
+                </button>
+              )}
             </div>
           )}
 
@@ -466,7 +497,7 @@ export default function AddMasterWithSubsModal({
               type="button"
               onClick={() => {
                 if (createdMaster) {
-                  onCreated(createdMaster);
+                  void finishWithMaster(createdMaster);
                   return;
                 }
                 onCancel();

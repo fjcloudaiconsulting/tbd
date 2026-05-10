@@ -581,6 +581,46 @@ describe("AddMasterWithSubsModal", () => {
     expect(onCancel).toHaveBeenCalled();
   });
 
+  it("awaits async onCreated; reload errors surface inline with retry-refresh", async () => {
+    apiFetchMock.mockResolvedValueOnce(newMaster as never);
+    let onCreatedCallCount = 0;
+    const onCreated = vi.fn(async () => {
+      onCreatedCallCount += 1;
+      if (onCreatedCallCount === 1) {
+        throw new Error("network blip");
+      }
+    });
+
+    render(
+      <AddMasterWithSubsModal
+        categories={cats}
+        onCreated={onCreated}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText(/Master name/i), {
+      target: { value: "Dining out" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Create master$/i }));
+
+    // Reload error surfaces in the alert region with a Retry-refresh
+    // button. The modal awaits onCreated rather than dropping the
+    // promise on the floor.
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /failed to refresh/i,
+      ),
+    );
+    expect(screen.getByTestId("retry-refresh")).toBeInTheDocument();
+    expect(onCreated).toHaveBeenCalledTimes(1);
+
+    // Clicking Retry refresh re-invokes onCreated; the second call
+    // resolves and clears the error.
+    fireEvent.click(screen.getByTestId("retry-refresh"));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(2));
+  });
+
   it("confirm dialog autofocuses its confirm button so keyboard users can reach it", async () => {
     render(
       <AddMasterWithSubsModal
