@@ -2,7 +2,7 @@ import datetime
 from decimal import Decimal
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TransactionCreate(BaseModel):
@@ -15,6 +15,14 @@ class TransactionCreate(BaseModel):
     type: Literal["income", "expense"]
     status: Literal["settled", "pending"] = "settled"
     date: datetime.date
+    # Optional expected settlement date for pending rows. When status=pending
+    # and the user provides this, it surfaces in the period bucket
+    # (effective_period_date_expr) so forecasts and period filters see the
+    # row in its expected month rather than its purchase month. Stored
+    # as-is for SETTLED rows when explicitly supplied; the service layer
+    # falls back to the transaction date if omitted on SETTLED creates so
+    # the SETTLED-implies-settled_date invariant holds.
+    settled_date: Optional[datetime.date] = None
 
     @field_validator("description")
     @classmethod
@@ -22,6 +30,12 @@ class TransactionCreate(BaseModel):
         if not v.strip():
             raise ValueError("Description is required")
         return v.strip()
+
+    @model_validator(mode="after")
+    def _settled_date_not_before_date(self) -> "TransactionCreate":
+        if self.settled_date is not None and self.settled_date < self.date:
+            raise ValueError("settled_date must be on or after date")
+        return self
 
 
 class TransferCreate(BaseModel):

@@ -267,6 +267,16 @@ async def _create_transaction_no_commit(
         acct = await get_account_for_update(db, body.account_id, org_id)
         apply_balance(acct, body.amount, tx_type)
 
+    # settled_date resolution:
+    # - SETTLED: prefer caller-supplied settled_date, else fall back to date
+    #   (matches the SETTLED-implies-settled_date model invariant).
+    # - PENDING: pass through caller-supplied settled_date as-is. Treated as
+    #   "expected settlement date" by the period bucketing in
+    #   effective_period_date_expr; None falls back to date there.
+    if tx_status == TransactionStatus.SETTLED:
+        resolved_settled_date = body.settled_date or body.date
+    else:
+        resolved_settled_date = body.settled_date
     tx = Transaction(
         org_id=org_id,
         account_id=body.account_id,
@@ -276,7 +286,7 @@ async def _create_transaction_no_commit(
         type=tx_type,
         status=tx_status,
         date=body.date,
-        settled_date=body.date if tx_status == TransactionStatus.SETTLED else None,
+        settled_date=resolved_settled_date,
         is_imported=is_imported,
         is_manual_adjustment=is_manual_adjustment,
     )
@@ -455,21 +465,41 @@ async def update_transaction(
             tx.account_id = body.account_id
         if body.status is not None:
             tx.status = new_status
-        # settled_date semantics (§5.2):
-        # - status pending → settled_date = None
-        # - status settled with body.settled_date → use it
-        # - transition to settled with no settled_date → today
-        if body.status is not None and new_status == TransactionStatus.PENDING:
-            tx.settled_date = None
-        elif new_status == TransactionStatus.SETTLED:
+        # settled_date semantics:
+        # - SETTLED rows: settled_date is required (model + DB invariant).
+        #   Use body.settled_date if provided, else stamp today on transition,
+        #   else leave existing value alone.
+        # - PENDING rows: settled_date is an "expected settlement date" for
+        #   forecast/period bucketing. The caller can SET it (non-null), CLEAR
+        #   it (explicit null), or LEAVE it alone (key omitted from body). We
+        #   distinguish "explicit null" from "key omitted" via model_fields_set
+        #   because Pydantic v2 collapses both to attribute value None
+        #   otherwise. Without this, clearing the field via the edit form would
+        #   silently no-op against the persisted value.
+        settled_date_supplied = "settled_date" in body.model_fields_set
+        if new_status == TransactionStatus.SETTLED:
+            # SETTLED rows must have a settled_date (clearing is illegal).
+            # An explicit null on transition gets the today fallback below.
             if body.settled_date is not None:
                 tx.settled_date = body.settled_date
             elif old_status != TransactionStatus.SETTLED:
                 tx.settled_date = datetime.date.today()
-        elif body.settled_date is not None:
-            # Status unchanged but settled_date provided
-            if tx.status == TransactionStatus.SETTLED:
+        else:
+            # Pending after this update. Honor explicit null (clear) and
+            # explicit value (set); leave alone when the key is omitted.
+            if settled_date_supplied:
                 tx.settled_date = body.settled_date
+            elif body.status is not None and old_status == TransactionStatus.SETTLED:
+                # Transitioning settled to pending without a supplied settled_date:
+                # clear the historical actual so it doesn't leak as an
+                # "expected" date for the now-pending row.
+                tx.settled_date = None
+
+        # Validate date ordering after the partial update is applied. Use
+        # the resolved date+settled_date pair so a request that touches
+        # only one of them is still checked against the persisted other.
+        if tx.settled_date is not None and tx.settled_date < tx.date:
+            raise ValidationError("settled_date must be on or after date")
 
         # 4d: amount mirror to partner
         if partner is not None and amount_was_changed:

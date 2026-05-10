@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { waitForStableTxList } from "../utils/wait-for-stable-tx-list";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -119,10 +120,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Promo me");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     // Toggle present, frequency + date hidden by default.
@@ -148,10 +146,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     });
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Save me");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     // Tick the recurring toggle on the desktop layout (first match).
@@ -226,10 +221,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
 
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Partial save");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     fireEvent.click(screen.getAllByLabelText("Make recurring")[0]);
@@ -261,10 +253,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     });
     render(<TransactionsPage />);
 
-    await screen.findAllByText("No promote");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
     fireEvent.click(screen.getAllByRole("button", { name: /^Save$/i })[0]);
 
@@ -291,10 +280,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Already promo");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     // Chip rendered (desktop + mobile each render once).
@@ -463,10 +449,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     setupApiFetch([expenseLeg, incomeLeg]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Linked out");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     // Mirror notice present (sanity: we are in the linked edit path).
