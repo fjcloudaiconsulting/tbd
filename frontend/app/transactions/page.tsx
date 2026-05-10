@@ -115,10 +115,10 @@ function TransactionsPageContent() {
   const [formType, setFormType] = useState<"income" | "expense">("expense");
   const [formStatus, setFormStatus] = useState<"settled" | "pending">("settled");
   const [formDate, setFormDate] = useState(todayISO());
-  // Expected settlement date for pending creates. Pre-filled with the
-  // transaction date so the field is always populated when revealed
-  // (status=pending). Users can shift it forward for credit-card-style
-  // settlement lag without first having to discover the field is empty.
+  // Expected settlement date for pending creates. Left empty by default so
+  // the user explicitly picks a settlement date when status=pending; this
+  // keeps credit-card-style settlement lag a deliberate choice instead of
+  // silently inheriting the transaction date.
   const [formSettledDate, setFormSettledDate] = useState("");
   const [formRecurring, setFormRecurring] = useState(false);
   const [formFrequency, setFormFrequency] = useState("monthly");
@@ -507,8 +507,8 @@ function TransactionsPageContent() {
       }
       // Send settled_date only on pending edits. Settled rows keep their
       // existing settled_date untouched (the backend stamps it from the
-      // transition transition); piggy-backing the field would risk
-      // overwriting the server's authoritative value.
+      // transition); piggy-backing the field would risk overwriting the
+      // server's authoritative value.
       if (editStatus === "pending") {
         body.settled_date = editSettledDate || null;
       }
