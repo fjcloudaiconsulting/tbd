@@ -2,7 +2,7 @@ export default function HeroDashboard() {
   return (
     <div
       aria-hidden
-      className="rounded-xl border border-border bg-surface-raised p-6 shadow-2xl"
+      className="rounded-xl border border-border bg-surface-raised p-6"
     >
       <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
         April balance

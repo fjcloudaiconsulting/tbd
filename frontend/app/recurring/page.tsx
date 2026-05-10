@@ -145,7 +145,7 @@ export default function RecurringPage() {
               {activeItems.map((r) => (
                 <article
                   key={r.id}
-                  className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm"
+                  className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
@@ -225,7 +225,7 @@ export default function RecurringPage() {
                 {pausedItems.map((r) => (
                   <article
                     key={r.id}
-                    className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm opacity-60"
+                    className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 opacity-60"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
