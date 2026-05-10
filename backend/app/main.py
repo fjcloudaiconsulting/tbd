@@ -1,3 +1,4 @@
+import os
 import subprocess
 from contextlib import asynccontextmanager
 
@@ -46,9 +47,152 @@ async def _backfill_subscriptions() -> None:
             await logger.ainfo("backfilled subscriptions", count=len(org_ids))
 
 
-def _run_migrations() -> None:
-    """Run Alembic migrations on startup. Idempotent — alembic upgrade head
-    is a no-op when already at the latest revision."""
+_ALEMBIC_INI_PATH = "/app/alembic.ini"
+
+
+def _resolve_alembic_head() -> str:
+    """Return the head revision recorded in the alembic versions tree.
+
+    Uses the alembic Python API directly (no subprocess) so this stays
+    cheap enough to call on every dev boot. Returns "unknown" if anything
+    goes wrong; we never want diagnostic logging to gate startup.
+    """
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        cfg = Config(_ALEMBIC_INI_PATH)
+        script = ScriptDirectory.from_config(cfg)
+        heads = script.get_heads()
+        if len(heads) == 1:
+            return heads[0]
+        # Multi-head or no heads: surface the raw shape rather than guess.
+        return ",".join(heads) if heads else "unknown"
+    except Exception:
+        return "unknown"
+
+
+async def _resolve_alembic_current() -> str:
+    """Return the alembic_version row from the live DB.
+
+    Direct SQL via the existing async engine, far cheaper than spinning
+    up a separate alembic context. Returns "unknown" on any error so a
+    log line is still emitted; the actual upgrade run will surface real
+    failures. Returns "none" if alembic_version is empty (fresh DB).
+    """
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT version_num FROM alembic_version LIMIT 1")
+            )
+            row = result.first()
+            if row is None:
+                return "none"
+            return str(row[0])
+    except Exception:
+        return "unknown"
+
+
+_GIT_HEAD_PATH = "/app/.git/HEAD"
+
+
+def _detect_branch() -> str | None:
+    """Read the current branch directly from /app/.git/HEAD.
+
+    docker-compose mounts the host repo's .git directory read-only into
+    /app/.git, so this is a file read with no subprocess and no git
+    binary required in the container. Returns:
+
+      * the branch name, when HEAD is a symbolic ref (the normal case)
+      * None, when HEAD is detached (a raw SHA), the file is missing,
+        or anything else goes wrong (worktree gitdir indirection,
+        permissions, etc.)
+
+    Callers MUST treat None as "couldn't tell" - the lifespan guard
+    refuses to migrate in that case so we fail closed, not open.
+    """
+    try:
+        with open(_GIT_HEAD_PATH) as f:
+            head = f.read().strip()
+    except (OSError, ValueError):
+        return None
+    prefix = "ref: refs/heads/"
+    if head.startswith(prefix):
+        return head[len(prefix):] or None
+    return None
+
+
+def _resolve_git_branch() -> str:
+    """String-returning wrapper around `_detect_branch()` for diagnostic
+    logging. Returns "unknown" rather than None so structured log fields
+    stay typed.
+    """
+    return _detect_branch() or "unknown"
+
+
+def _migrate_off_main_override_set() -> bool:
+    """True when the operator has opted in to lifespan migrations from
+    a non-main checkout. Mirrors the CLI guard in `./pfv migrate`. Same
+    env var name on purpose so a single export covers both surfaces.
+    """
+    return os.environ.get("PFV_MIGRATE_OK_OFF_MAIN", "").strip() == "1"
+
+
+async def _run_migrations() -> None:
+    """Run Alembic migrations on startup. Idempotent: alembic upgrade head
+    is a no-op when already at the latest revision.
+
+    Refuses to run when the host checkout is on a non-main branch unless
+    `PFV_MIGRATE_OK_OFF_MAIN=1` is set. A migrate from a feature branch
+    can leave alembic_version pointing at a revision that only exists on
+    that branch, which then breaks the next `./pfv start` on main until
+    the version row is hand-patched. Same drift class the 2026-05-09
+    incident demonstrated. Detached HEAD / unreadable HEAD also refuses
+    (fail closed). See
+    ~/.claude/projects/-Users-fjorge-src-pfv/memory/reference_shared_mysql_volume_trap.md.
+
+    Logs the resolved head + current revision (and best-effort git branch)
+    before invoking alembic so the next drift incident has a breadcrumb
+    pointing at exactly which revision the lifespan was targeting. Skips
+    the subprocess entirely when current == head.
+    """
+    branch = _detect_branch()
+    if branch != "main" and not _migrate_off_main_override_set():
+        logger.error(
+            "migrate.dev.refused",
+            branch=branch if branch is not None else "unknown",
+            reason=(
+                "branch_not_main" if branch is not None else "branch_undetectable"
+            ),
+            override_env_var="PFV_MIGRATE_OK_OFF_MAIN",
+        )
+        raise RuntimeError(
+            "Refusing to run dev lifespan migrations from non-main branch "
+            f"({'detached/unknown' if branch is None else branch!r}). "
+            "Set PFV_MIGRATE_OK_OFF_MAIN=1 in .env or the shell to override. "
+            "See reference_shared_mysql_volume_trap.md."
+        )
+
+    head = _resolve_alembic_head()
+    current = await _resolve_alembic_current()
+    branch_for_log = branch or "unknown"
+
+    if current == head and head != "unknown":
+        logger.info(
+            "migrate.dev.no_op",
+            current_revision=current,
+            head_revision=head,
+            branch=branch_for_log,
+        )
+        return
+
+    logger.info(
+        "migrate.dev.target",
+        current_revision=current,
+        head_revision=head,
+        branch=branch_for_log,
+    )
+
     result = subprocess.run(
         ["alembic", "upgrade", "head"],
         capture_output=True,
@@ -64,10 +208,10 @@ async def lifespan(app: FastAPI):
     # PRE_DEPLOY job in .do/app.yaml; initContainer in k8s/templates/
     # backend.yaml) so they don't gate uvicorn's port-bind. Dev runs them
     # inline because the dev orchestrator (docker-compose) has no PRE_DEPLOY
-    # equivalent — the alternative is a manual `./pfv migrate` after every
+    # equivalent. The alternative is a manual `./pfv migrate` after every
     # rebuild.
     if app_settings.app_env != "production":
-        _run_migrations()
+        await _run_migrations()
     await _backfill_subscriptions()
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
