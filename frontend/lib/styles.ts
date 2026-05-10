@@ -13,8 +13,11 @@ export const btnSecondary =
 export const btnDanger =
   "text-xs text-text-muted hover:text-danger";
 
+export const btnDangerSolid =
+  "rounded-md bg-danger px-4 py-2 text-sm font-medium text-danger-text hover:bg-danger-hover disabled:opacity-50";
+
 export const btnWarning =
-  "rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50";
+  "rounded-md bg-warning px-4 py-2 text-sm font-medium text-warning-text hover:bg-warning-hover disabled:opacity-50";
 
 export const btnLink =
   "text-xs text-text-muted hover:text-accent";
@@ -36,3 +39,24 @@ export const success =
 
 export const pageTitle =
   "mb-8 font-display text-2xl text-text-primary";
+
+export const badgeBase =
+  "inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium";
+
+export const badgeWarning =
+  `${badgeBase} bg-warning-dim text-warning`;
+
+export const badgeError =
+  `${badgeBase} bg-danger-dim text-danger`;
+
+export const badgeInfo =
+  `${badgeBase} bg-info-dim text-info`;
+
+export const badgeSuccess =
+  `${badgeBase} bg-success-dim text-success`;
+
+export const badgeNeutral =
+  `${badgeBase} bg-surface-raised text-text-secondary`;
+
+export const stickyBar =
+  "sticky top-0 z-20 -mx-4 sm:-mx-8 border-b border-border bg-surface-raised px-4 sm:px-8";
