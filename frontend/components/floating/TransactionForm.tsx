@@ -15,24 +15,26 @@ import {
 import type { Account, Category } from "@/lib/types";
 
 /**
- * Quick-entry transaction form used inside the FAB SlideInPanel.
+ * Quick-entry transaction form used inside the AppShell-level Add
+ * Transaction CTA's SlideInPanel.
  *
  * NOTE, duplication tech debt: the canonical add-transaction form
- * still lives inline inside `frontend/app/transactions/page.tsx` and
- * `frontend/app/dashboard/page.tsx`. Extracting those would touch
- * files currently in flight (Sort/Filters Persistence and Transactions
- * Layout), so this PR ships a focused subset (transaction-only, no
- * transfer mode, no edit-time promote-to-recurring) sized for quick
- * entry. Once the in-flight PRs land, a follow-up should fold the
- * page-level forms into this component.
+ * still lives inline inside `frontend/app/transactions/page.tsx`. The
+ * Dashboard's inline Quick Add form was removed when the AppShell CTA
+ * shipped, so the Transactions page is now the only remaining inline
+ * caller. Extracting it would touch files recently in flight, so this
+ * component ships a focused subset (transaction-only, no transfer
+ * mode, no edit-time promote-to-recurring) sized for quick entry. A
+ * follow-up should fold the page-level form into this component.
  *
  * Scope:
- *   - Transaction-only (no transfer mode in the FAB; transfers belong
- *     on the Transactions page where both legs are visible).
+ *   - Transaction-only (no transfer mode in the quick-entry panel;
+ *     transfers belong on the Transactions page where both legs are
+ *     visible).
  *   - Posts to POST /api/v1/transactions exactly like the page-level
  *     form. No new backend endpoints.
- *   - Repeats / promote-to-recurring: deferred to v2 of the FAB. The
- *     primary FAB use case is "I just spent something, log it."
+ *   - Repeats / promote-to-recurring: deferred to a later iteration.
+ *     The primary use case is "I just spent something, log it."
  *
  * "Save & add new" behavior:
  *   - Default Save submits + closes the panel via onSaved().
