@@ -223,13 +223,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_tag_dictionary_contributors_org",
-        table_name="tag_dictionary_contributors",
-    )
+    # Drop tables in FK-safe order so InnoDB does not reject any drop
+    # because a child still references the parent (errno 1553 / 1217):
+    #   tag_dictionary_contributors -> tag_dictionary  (FK)
+    #   transaction_tags            -> tags             (FK)
+    # Children first, then parents.
+    #
+    # Explicit ``op.drop_index`` calls were intentionally removed from
+    # this downgrade. MySQL InnoDB also rejects dropping an index that
+    # still covers an FK with errno 1553, and these indexes
+    # (``ix_tag_dictionary_contributors_org``, ``ix_transaction_tags_tag``,
+    # ``ix_tags_org_id``) are only relevant while their parent table
+    # exists. Dropping the table drops its indexes automatically, and we
+    # do not need the indexes after the tables themselves are gone.
+    # Cross-reference: ``reference_mysql_fk_index_cover.md``.
     op.drop_table("tag_dictionary_contributors")
-    op.drop_table("tag_dictionary")
-    op.drop_index("ix_transaction_tags_tag", table_name="transaction_tags")
     op.drop_table("transaction_tags")
-    op.drop_index("ix_tags_org_id", table_name="tags")
+    op.drop_table("tag_dictionary")
     op.drop_table("tags")
