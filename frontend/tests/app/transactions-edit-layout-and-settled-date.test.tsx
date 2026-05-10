@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { waitForStableTxList } from "../utils/wait-for-stable-tx-list";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -124,10 +125,7 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Edit me");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     // The new desktop edit row has the data-testid we added.
@@ -173,10 +171,7 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Touch me");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     const editRow = await screen.findByTestId("edit-row-desktop-71");
@@ -315,12 +310,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Pending CC");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(
-        0,
-      );
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     const inputs = await screen.findAllByLabelText(/Expected settlement/i);
@@ -338,12 +328,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Pending CC");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(
-        0,
-      );
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     const expectedFields = await screen.findAllByLabelText(/Expected settlement/i);
@@ -381,12 +366,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Plain settled");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(
-        0,
-      );
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     // Field is hidden when settled.
@@ -460,10 +440,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Pending CC clearable");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     // Pre-fill confirms the wired-from-server path.
@@ -508,12 +485,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
     setupApiFetch([tx]);
     render(<TransactionsPage />);
 
-    await screen.findAllByText("Pending edit bad");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(
-        0,
-      );
-    });
+    await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
     const expectedFields = await screen.findAllByLabelText(/Expected settlement/i);
