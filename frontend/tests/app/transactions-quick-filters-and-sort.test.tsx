@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
+import { FILTERS_KEY_TRANSACTIONS } from "@/lib/hooks/persisted-keys";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -121,7 +122,7 @@ describe("TransactionsPage — quick filter buttons", () => {
 
   it("Today button sends date_from=date_to=today and clears any prior period filter", async () => {
     const periods: Period[] = [
-      { id: 7, start_date: "2026-05-01", end_date: null }, // current/open
+      { id: 7, start_date: "2026-04-01", end_date: "2026-04-30" },
     ];
     const mock = setupApiFetch(periods);
 
@@ -132,14 +133,14 @@ describe("TransactionsPage — quick filter buttons", () => {
       expect(lastListUrl(mock)).not.toBeNull();
     });
 
-    // Pre-select "Current Period" via the dropdown to seed the state, then
+    // Pre-select a closed period via the dropdown to seed the state, then
     // confirm clicking Today swaps it to a date_from/date_to pair.
     const periodSelect = await screen.findByLabelText("Billing period");
     fireEvent.change(periodSelect, { target: { value: "7" } });
 
     await waitFor(() => {
       const url = lastListUrl(mock);
-      expect(url).toContain("date_from=2026-05-01");
+      expect(url).toContain("date_from=2026-04-01");
     });
 
     const todayBtn = screen.getByRole("button", { name: "Today" });
@@ -156,7 +157,7 @@ describe("TransactionsPage — quick filter buttons", () => {
     });
   });
 
-  it("This Month button sends date_from=first-of-month and date_to=today", async () => {
+  it("This Month button sends date_from=first-of-month and date_to=last-of-month", async () => {
     const mock = setupApiFetch();
 
     render(<TransactionsPage />);
@@ -168,13 +169,13 @@ describe("TransactionsPage — quick filter buttons", () => {
 
     const now = new Date();
     const firstOfMonth = isoLocal(new Date(now.getFullYear(), now.getMonth(), 1));
-    const today = todayLocal();
+    const lastOfMonth = isoLocal(new Date(now.getFullYear(), now.getMonth() + 1, 0));
     await waitFor(() => {
       const after = listUrlsAfter(mock, startIdx);
       expect(after.length).toBeGreaterThan(0);
       const last = after[after.length - 1];
       expect(last).toContain(`date_from=${firstOfMonth}`);
-      expect(last).toContain(`date_to=${today}`);
+      expect(last).toContain(`date_to=${lastOfMonth}`);
     });
   });
 
@@ -207,19 +208,19 @@ describe("TransactionsPage — quick filter buttons", () => {
 
   it("All button drops every date constraint, including a previously-selected period", async () => {
     const periods: Period[] = [
-      { id: 7, start_date: "2026-05-01", end_date: null },
+      { id: 7, start_date: "2026-04-01", end_date: "2026-04-30" },
     ];
     const mock = setupApiFetch(periods);
 
     render(<TransactionsPage />);
     await waitFor(() => expect(lastListUrl(mock)).not.toBeNull());
 
-    // Seed: pick the open period from the dropdown.
+    // Seed: pick a closed period from the dropdown.
     const periodSelect = await screen.findByLabelText("Billing period");
     fireEvent.change(periodSelect, { target: { value: "7" } });
     await waitFor(() => {
       const url = lastListUrl(mock);
-      expect(url).toContain("date_from=2026-05-01");
+      expect(url).toContain("date_from=2026-04-01");
     });
 
     const startIdx = mock.mock.calls.length;
@@ -234,7 +235,37 @@ describe("TransactionsPage — quick filter buttons", () => {
     });
   });
 
-  it("Current Period button is shown when an open period exists and pins the period filter", async () => {
+  it("does not expose open/current periods as quick filter or dropdown options", async () => {
+    const periods: Period[] = [
+      { id: 5, start_date: "2026-04-01", end_date: "2026-04-30" },
+      { id: 6, start_date: "2026-05-01", end_date: null },
+    ];
+    setupApiFetch(periods);
+
+    render(<TransactionsPage />);
+
+    expect(screen.queryByRole("button", { name: /current period/i })).toBeNull();
+
+    const periodSelect = await screen.findByLabelText("Billing period");
+    expect(periodSelect).toHaveTextContent("2026-04-01");
+    expect(periodSelect).not.toHaveTextContent("2026-05-01");
+    expect(periodSelect).not.toHaveTextContent("current");
+  });
+
+  it("clears a persisted open period after billing periods load", async () => {
+    window.localStorage.setItem(
+      FILTERS_KEY_TRANSACTIONS,
+      JSON.stringify({
+        filterAccount: "",
+        filterCategory: "",
+        filterType: "",
+        filterStatus: "",
+        filterDateFrom: "",
+        filterDateTo: "",
+        filterSearch: "",
+        filterPeriod: "6",
+      }),
+    );
     const periods: Period[] = [
       { id: 5, start_date: "2026-04-01", end_date: "2026-04-30" },
       { id: 6, start_date: "2026-05-01", end_date: null },
@@ -242,50 +273,29 @@ describe("TransactionsPage — quick filter buttons", () => {
     const mock = setupApiFetch(periods);
 
     render(<TransactionsPage />);
-    await waitFor(() => expect(lastListUrl(mock)).not.toBeNull());
 
-    const currentBtn = await screen.findByRole("button", { name: /current period/i });
-    const startIdx = mock.mock.calls.length;
-    fireEvent.click(currentBtn);
-
+    await screen.findByLabelText("Billing period");
     await waitFor(() => {
-      const after = listUrlsAfter(mock, startIdx);
-      expect(after.length).toBeGreaterThan(0);
-      const last = after[after.length - 1];
-      // Open period: only date_from is sent; date_to is omitted because
-      // end_date is null on the current/open billing period.
-      expect(last).toContain("date_from=2026-05-01");
-      expect(last).not.toContain("date_to=");
+      const stored = window.localStorage.getItem(FILTERS_KEY_TRANSACTIONS);
+      expect(stored).not.toBeNull();
+      expect(JSON.parse(stored!).filterPeriod).toBe("");
+      expect(lastListUrl(mock)).not.toContain("date_from=2026-05-01");
     });
   });
 
-  it("Current Period button is NOT rendered when no open billing period exists", async () => {
-    // All periods closed (every end_date is set) — no open period to pin.
-    const periods: Period[] = [
-      { id: 5, start_date: "2026-04-01", end_date: "2026-04-30" },
-    ];
-    setupApiFetch(periods);
-
-    render(<TransactionsPage />);
-
-    // Sanity: the dropdown loads (so periods are present), but no quick button.
-    await screen.findByLabelText("Billing period");
-    expect(screen.queryByRole("button", { name: /current period/i })).toBeNull();
-  });
-
   it("Manually editing the From-date input clears any pinned period filter", async () => {
-    const periods: Period[] = [{ id: 7, start_date: "2026-05-01", end_date: null }];
+    const periods: Period[] = [{ id: 7, start_date: "2026-04-01", end_date: "2026-04-30" }];
     const mock = setupApiFetch(periods);
 
     render(<TransactionsPage />);
     await waitFor(() => expect(lastListUrl(mock)).not.toBeNull());
 
-    // Pin the open period via the dropdown first.
+    // Pin a closed period via the dropdown first.
     const periodSelect = await screen.findByLabelText("Billing period");
     fireEvent.change(periodSelect, { target: { value: "7" } });
     await waitFor(() => {
       const url = lastListUrl(mock);
-      expect(url).toContain("date_from=2026-05-01");
+      expect(url).toContain("date_from=2026-04-01");
     });
 
     // Now type a different From-date — this must drop the period and use
