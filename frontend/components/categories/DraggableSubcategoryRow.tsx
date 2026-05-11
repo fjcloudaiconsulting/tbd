@@ -55,11 +55,11 @@ export default function DraggableSubcategoryRow({
           type="button"
           data-testid={`sub-drag-handle-${subcategoryId}`}
           aria-label={`Drag ${subcategoryName}`}
-          className="flex h-8 w-6 cursor-grab touch-none items-center justify-center text-text-muted hover:text-accent active:cursor-grabbing"
+          className="flex min-h-[44px] min-w-[44px] cursor-grab touch-none items-center justify-center text-text-muted hover:text-accent active:cursor-grabbing md:min-h-8 md:min-w-6"
           {...attributes}
           {...listeners}
         >
-          <GripVertical className="h-4 w-4" />
+          <GripVertical className="h-4 w-4" aria-hidden="true" />
         </button>
       )}
       <div className="min-w-0 flex-1">{children}</div>

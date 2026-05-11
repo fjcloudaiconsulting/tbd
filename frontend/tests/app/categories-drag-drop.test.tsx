@@ -20,6 +20,7 @@ import { describe, beforeEach, it, expect, vi } from "vitest";
 import * as React from "react";
 
 import CategoriesPage from "@/app/categories/page";
+import DragMoveConfirmModal from "@/components/categories/DragMoveConfirmModal";
 import { apiFetch, ApiResponseError } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 import {
@@ -374,5 +375,340 @@ describe("CategoriesPage -C2b render-level gates", () => {
     const urls = vi.mocked(apiFetch).mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes("/move/preview"))).toBe(false);
     expect(urls.some((u) => /\/move(\?|$)/.test(u))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------
+// DragMoveConfirmModal — modal a11y contract.
+//
+// Asserts the modal wires the focus-trap / Escape / focus-restore /
+// scroll-lock pattern the remediation wave (PRs #203-#209)
+// standardized. Tests render the modal directly so we don't have to
+// drive a real drag to inspect its a11y behavior.
+// ---------------------------------------------------------------------
+
+describe("DragMoveConfirmModal -modal a11y", () => {
+  const NOOP = () => {};
+  const PREVIEW = {
+    affected_transaction_count: 5,
+    affected_recurring_count: 1,
+    affected_forecast_item_count: 2,
+    budget_actuals_shifted: false,
+  };
+
+  it("returns null and does not lock body scroll when closed", () => {
+    document.body.style.overflow = "";
+    const { container } = render(
+      <DragMoveConfirmModal
+        open={false}
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={null}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(document.body.style.overflow).toBe("");
+  });
+
+  it("renders with role=dialog + aria-modal when open and locks body scroll", () => {
+    document.body.style.overflow = "";
+    render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(dialog.getAttribute("aria-labelledby")).toBe("drag-move-confirm-title");
+    expect(document.body.style.overflow).toBe("hidden");
+  });
+
+  it("moves focus to the Cancel button on open (avoids accidental confirm)", async () => {
+    render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    await waitFor(() => {
+      const cancel = screen.getByRole("button", { name: "Cancel" });
+      expect(document.activeElement).toBe(cancel);
+    });
+  });
+
+  it("Escape calls onCancel", () => {
+    const onCancel = vi.fn();
+    render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={onCancel}
+      />,
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("clicking the backdrop calls onCancel; clicking inside the dialog does not", () => {
+    const onCancel = vi.fn();
+    render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={onCancel}
+      />,
+    );
+    // Click inside the dialog body — should not bubble to backdrop.
+    fireEvent.click(screen.getByRole("dialog"));
+    expect(onCancel).not.toHaveBeenCalled();
+
+    // Click on the backdrop wrapper (the testid container is the
+    // backdrop because it's the outer .fixed inset-0).
+    fireEvent.click(screen.getByTestId("drag-move-confirm"));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores body scroll on unmount", () => {
+    document.body.style.overflow = "";
+    const { unmount } = render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    expect(document.body.style.overflow).toBe("hidden");
+    unmount();
+    expect(document.body.style.overflow).toBe("");
+  });
+
+  it("restores focus to the previously-focused element after close", async () => {
+    const prior = document.createElement("button");
+    prior.setAttribute("data-testid", "prior-focus");
+    prior.textContent = "prior";
+    document.body.appendChild(prior);
+    prior.focus();
+    expect(document.activeElement).toBe(prior);
+
+    const { rerender } = render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    // Focus moved into the dialog.
+    await waitFor(() => {
+      expect(document.activeElement).not.toBe(prior);
+    });
+
+    // Close.
+    rerender(
+      <DragMoveConfirmModal
+        open={false}
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    await waitFor(() => {
+      expect(document.activeElement).toBe(prior);
+    });
+
+    document.body.removeChild(prior);
+  });
+
+  it("Tab key is captured by the focus trap (defaultPrevented) when at a trap edge", () => {
+    // jsdom's `offsetParent === null` filter inside the focus-trap
+    // hook makes the wrap-around assertion unreliable in a unit test
+    // (every focusable element looks 'hidden' to the hook). What we
+    // can prove deterministically is that the hook is installed: a
+    // Tab keydown is observed by the document-level listener while
+    // the modal is open. The wrap-around itself is covered by the
+    // same `useFocusTrap` hook tests that ship with the rest of the
+    // modal family.
+    render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    document.dispatchEvent(ev);
+    // The hook calls preventDefault when there are no real focusable
+    // matches (jsdom) OR when at a trap edge (real browser). Either
+    // way, the trap is engaged.
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  it("disables Confirm while preview is loading or absent", () => {
+    const { rerender } = render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={null}
+        previewLoading
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Move" })).toBeDisabled();
+
+    rerender(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError=""
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Move" })).not.toBeDisabled();
+  });
+
+  it("surfaces moveError in an alert region without dismissing the modal", () => {
+    render(
+      <DragMoveConfirmModal
+        open
+        subcategoryName="Restaurants"
+        targetMasterName="Lifestyle"
+        preview={PREVIEW}
+        previewLoading={false}
+        previewError=""
+        moveError="Cannot move: name collision."
+        submitting={false}
+        onConfirm={NOOP}
+        onCancel={NOOP}
+      />,
+    );
+    const err = screen.getByTestId("drag-move-error");
+    expect(err.getAttribute("role")).toBe("alert");
+    expect(err.textContent).toContain("name collision");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------
+// Touch target — the drag handle must meet 44x44px on mobile (Edit
+// mode supports TouchSensor and the row is the only drag activator).
+// md+ may shrink to a more compact size for desktop density.
+// ---------------------------------------------------------------------
+
+describe("DraggableSubcategoryRow -touch target", () => {
+  beforeEach(() => {
+    vi.mocked(apiFetch).mockReset();
+    vi.mocked(useAuth).mockReturnValue({
+      user: USER as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+    setupApi();
+  });
+
+  it("drag handle has min-h-[44px] / min-w-[44px] for mobile touch", async () => {
+    render(<CategoriesPage />);
+    await waitFor(() => expect(screen.getByText("Restaurants")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("categories-edit-toggle"));
+
+    const handle = screen.getByTestId("sub-drag-handle-101");
+    const classes = handle.className;
+    expect(classes).toContain("min-h-[44px]");
+    expect(classes).toContain("min-w-[44px]");
+    // Compact density allowed at md+.
+    expect(classes).toMatch(/md:min-h-8/);
+    expect(classes).toMatch(/md:min-w-6/);
+  });
+
+  it("drag handle icon is aria-hidden (the button itself owns the label)", async () => {
+    render(<CategoriesPage />);
+    await waitFor(() => expect(screen.getByText("Restaurants")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("categories-edit-toggle"));
+
+    const handle = screen.getByTestId("sub-drag-handle-101");
+    const svg = handle.querySelector("svg");
+    expect(svg).not.toBeNull();
+    expect(svg?.getAttribute("aria-hidden")).toBe("true");
   });
 });

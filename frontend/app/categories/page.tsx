@@ -15,6 +15,7 @@ import BatchMoveModal from "@/components/categories/BatchMoveModal";
 import BatchDeleteModal from "@/components/categories/BatchDeleteModal";
 import DraggableSubcategoryRow from "@/components/categories/DraggableSubcategoryRow";
 import MasterDropZone from "@/components/categories/MasterDropZone";
+import DragMoveConfirmModal from "@/components/categories/DragMoveConfirmModal";
 import { buildMoveErrorMessage, classifyDrop } from "@/components/categories/dragMoveHelpers";
 import {
   DndContext,
@@ -651,88 +652,18 @@ export default function CategoriesPage() {
         }}
       />
 
-      {pendingDrag !== null && (
-        <div
-          data-testid="drag-move-confirm"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4"
-          onClick={handleCancelDragMove}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="drag-move-confirm-title"
-            className="w-full max-w-[min(28rem,calc(100vw-2rem))] max-h-[90vh] overflow-y-auto rounded-lg border border-border bg-surface p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 id="drag-move-confirm-title" className="text-lg font-semibold text-text-primary">
-              Move subcategory
-            </h3>
-            <p className="mt-2 text-sm text-text-secondary">
-              Move <strong>{pendingDrag.subcategoryName}</strong> to <strong>{pendingDrag.targetMasterName}</strong>?
-            </p>
-
-            <div
-              data-testid="drag-move-preview"
-              className="mt-4 rounded-md border border-border bg-surface-raised p-3 text-sm text-text-secondary"
-            >
-              {pendingPreviewLoading ? (
-                <span>Loading preview...</span>
-              ) : pendingPreviewError ? (
-                <span className="text-danger">{pendingPreviewError}</span>
-              ) : pendingPreview ? (
-                <>
-                  <p>
-                    Reassigns <strong>{pendingPreview.affected_transaction_count}</strong> transaction
-                    {pendingPreview.affected_transaction_count === 1 ? "" : "s"},{" "}
-                    <strong>{pendingPreview.affected_recurring_count}</strong> recurring template
-                    {pendingPreview.affected_recurring_count === 1 ? "" : "s"}, and{" "}
-                    <strong>{pendingPreview.affected_forecast_item_count}</strong> forecast plan item
-                    {pendingPreview.affected_forecast_item_count === 1 ? "" : "s"}.
-                  </p>
-                  {pendingPreview.budget_actuals_shifted && (
-                    <p className="mt-1 text-xs text-text-muted">
-                      Current-period budget actuals will shift attribution. Planned amounts are unchanged.
-                    </p>
-                  )}
-                </>
-              ) : null}
-            </div>
-
-            {dragMoveError && (
-              <div
-                data-testid="drag-move-error"
-                role="alert"
-                className="mt-4 whitespace-pre-line rounded-md bg-danger-dim px-4 py-3 text-sm text-danger"
-              >
-                {dragMoveError}
-              </div>
-            )}
-
-            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button
-                type="button"
-                onClick={handleCancelDragMove}
-                className={`${btnSecondary} w-full sm:w-auto min-h-[44px]`}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                data-testid="drag-move-confirm-button"
-                onClick={() => void handleConfirmDragMove()}
-                disabled={
-                  pendingMoveSubmitting
-                  || pendingPreviewLoading
-                  || pendingPreview === null
-                }
-                className={`${btnPrimary} w-full sm:w-auto min-h-[44px]`}
-              >
-                {pendingMoveSubmitting ? "Moving..." : "Move"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DragMoveConfirmModal
+        open={pendingDrag !== null}
+        subcategoryName={pendingDrag?.subcategoryName ?? ""}
+        targetMasterName={pendingDrag?.targetMasterName ?? ""}
+        preview={pendingPreview}
+        previewLoading={pendingPreviewLoading}
+        previewError={pendingPreviewError}
+        moveError={dragMoveError}
+        submitting={pendingMoveSubmitting}
+        onConfirm={() => void handleConfirmDragMove()}
+        onCancel={handleCancelDragMove}
+      />
     </AppShell>
   );
 }
