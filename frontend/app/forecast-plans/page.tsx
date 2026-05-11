@@ -260,12 +260,26 @@ export default function ForecastPlansPage() {
     return cat.parent_id ?? cat.id;
   };
 
-  // Filtered items
-  const items = (plan?.items ?? []).filter(
-    (i) => viewFilter === "all" || i.type === viewFilter
+  // Filtered items. Memoized on the stable upstream `plan?.items` reference
+  // so downstream `chartData` (and the income/expense list renders below)
+  // don't churn on every parent re-render. Without this, the `.filter()`
+  // calls produced a fresh array reference every render and the
+  // `useMemo([expenseItems])` for `chartData` never hit.
+  const items = useMemo(
+    () =>
+      (plan?.items ?? []).filter(
+        (i) => viewFilter === "all" || i.type === viewFilter
+      ),
+    [plan?.items, viewFilter],
   );
-  const incomeItems = items.filter((i) => i.type === "income");
-  const expenseItems = items.filter((i) => i.type === "expense");
+  const incomeItems = useMemo(
+    () => items.filter((i) => i.type === "income"),
+    [items],
+  );
+  const expenseItems = useMemo(
+    () => items.filter((i) => i.type === "expense"),
+    [items],
+  );
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
@@ -470,12 +484,20 @@ export default function ForecastPlansPage() {
     });
   }
 
-  // Chart data
-  const chartData = expenseItems.map((i) => ({
-    name: i.category_name,
-    planned: Number(i.planned_amount),
-    actual: Number(i.actual_amount),
-  }));
+  // Chart data. Memoized so the BarChart only re-layouts when the underlying
+  // expense items change, not on every parent render (period nav, form
+  // toggles, details-toggle, etc.). `categoryId` is preserved so the Cells
+  // below can use a stable key instead of the array index.
+  const chartData = useMemo(
+    () =>
+      expenseItems.map((i) => ({
+        categoryId: i.category_id,
+        name: i.category_name,
+        planned: Number(i.planned_amount),
+        actual: Number(i.actual_amount),
+      })),
+    [expenseItems],
+  );
 
   const plannedNet =
     Number(plan?.total_planned_income ?? 0) -
@@ -877,9 +899,9 @@ export default function ForecastPlansPage() {
                       radius={[4, 4, 4, 4]}
                       animationDuration={600}
                     >
-                      {chartData.map((d, i) => (
+                      {chartData.map((d) => (
                         <Cell
-                          key={i}
+                          key={d.categoryId}
                           fill={d.actual > d.planned ? chartColor.over : chartColor.actual}
                         />
                       ))}

@@ -18,6 +18,7 @@ import {
   label,
   btnPrimary,
   btnSecondary,
+  btnDangerSolid,
   card,
   cardHeader,
   cardTitle,
@@ -646,7 +647,7 @@ export default function OrganizationSettingsPage() {
                     }
                   }}
                   disabled={!resetPhraseMatches || resetting}
-                  className="rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-50"
+                  className={btnDangerSolid}
                 >
                   {resetting ? (
                     <span className="inline-flex items-center gap-2">

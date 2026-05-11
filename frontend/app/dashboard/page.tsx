@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
@@ -455,18 +455,31 @@ export default function DashboardPage() {
   // Spending by category from all period transactions. Transfer expense
   // halves carry linked_transaction_id; excluding them here stops transfers
   // from polluting the Spending by Category donut.
-  const spendingByCategory = allTransactions
-    .filter((tx) => tx.type === "expense" && tx.status === "settled" && tx.linked_transaction_id == null)
-    .reduce<Record<string, number>>((acc, tx) => {
-      acc[tx.category_name] = (acc[tx.category_name] || 0) + Number(tx.amount);
-      return acc;
-    }, {});
+  //
   // donutData drives both the donut chart (always rendered in amount-desc
   // order so the largest slice starts at 12 o'clock) and the legend list
   // (sortable by name | percent | amount, persisted via spendingSort).
-  const donutDataRaw = Object.entries(spendingByCategory)
-    .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value);
+  //
+  // Memoized so unrelated parent renders (period nav, filter toggles,
+  // edit-mode flips) don't rebuild the array reference and force Recharts
+  // to re-layout the donut on every render.
+  const donutDataRaw = useMemo(() => {
+    if (!Array.isArray(allTransactions)) return [];
+    const spendingByCategory = allTransactions
+      .filter(
+        (tx) =>
+          tx.type === "expense" &&
+          tx.status === "settled" &&
+          tx.linked_transaction_id == null,
+      )
+      .reduce<Record<string, number>>((acc, tx) => {
+        acc[tx.category_name] = (acc[tx.category_name] || 0) + Number(tx.amount);
+        return acc;
+      }, {});
+    return Object.entries(spendingByCategory)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [allTransactions]);
   const donutData = donutDataRaw;
   const totalSpend = donutDataRaw.reduce((s, d) => s + d.value, 0);
   const sortedSpending = (() => {
@@ -497,6 +510,50 @@ export default function DashboardPage() {
     if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) hiddenIds.add(tx.id);
   }
   const visibleTxs = txSource.filter((tx) => !hiddenIds.has(tx.id));
+
+  // First six budgets feed the "Budget Overview" mini bar chart on the
+  // dashboard. Memoizing prevents Recharts from re-laying out the bars
+  // every time an unrelated piece of dashboard state (sort toggle,
+  // expansion, hover) re-renders the parent.
+  //
+  // Defensive Array.isArray guard: some API responses return objects on
+  // empty/error paths, and the chart is only rendered when budgets is
+  // actually populated — we just don't want this hoisted slice to throw
+  // before that conditional renders.
+  const dashBudgets = useMemo(
+    () => (Array.isArray(budgets) ? budgets.slice(0, 6) : []),
+    [budgets],
+  );
+  const budgetChartData = useMemo(
+    () =>
+      dashBudgets.map((b) => ({
+        name: b.category_name,
+        spent: Number(b.spent),
+        remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
+        pct: b.percent_used,
+      })),
+    [dashBudgets],
+  );
+
+  // First eight expense items feed the "Forecast by Category" mini bar
+  // chart. Same memoization rationale as the donut and budget charts.
+  const forecastExpenseItems = useMemo(
+    () => forecast?.items.filter((it) => it.type === "expense") ?? [],
+    [forecast],
+  );
+  const forecastChartRows = useMemo(
+    () =>
+      forecastExpenseItems.slice(0, 8).map((it) => ({
+        categoryId: it.category_id,
+        name:
+          it.category_name.length > 12
+            ? it.category_name.slice(0, 12) + "..."
+            : it.category_name,
+        planned: Number(it.planned_amount),
+        actual: Number(it.actual_amount),
+      })),
+    [forecastExpenseItems],
+  );
 
 
   function toggleDashSort(field: DashTxSort) {
@@ -697,7 +754,7 @@ export default function DashboardPage() {
                           }}
                         >
                           {donutData.map((d, i) => (
-                            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]}
+                            <Cell key={d.name} fill={CHART_COLORS[i % CHART_COLORS.length]}
                               opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
                           ))}
                         </Pie>
@@ -853,14 +910,9 @@ export default function DashboardPage() {
               </div>
               {budgets.length > 0 ? (
                 <>
-                <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.slice(0, 6).length * 40, 100) }}>
+                <div className="w-full min-w-0 p-4" style={{ height: Math.max(dashBudgets.length * 40, 100) }}>
                   <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
-                    <BarChart data={budgets.slice(0, 6).map((b) => ({
-                      name: b.category_name,
-                      spent: Number(b.spent),
-                      remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
-                      pct: b.percent_used,
-                    }))} layout="vertical" margin={{ left: 0, right: 20, top: 0, bottom: 0 }}>
+                    <BarChart data={budgetChartData} layout="vertical" margin={{ left: 0, right: 20, top: 0, bottom: 0 }}>
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
                       <Tooltip
@@ -881,12 +933,12 @@ export default function DashboardPage() {
                           <BudgetSpentBarShape {...props} />
                         )}
                         onClick={(_, idx) => {
-                          const name = budgets.slice(0, 6)[idx]?.category_name;
+                          const name = dashBudgets[idx]?.category_name;
                           if (name) setChartFilter(chartFilter === name ? null : name);
                         }}
                       >
-                        {budgets.slice(0, 6).map((b, i) => (
-                          <Cell key={i} fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent} />
+                        {dashBudgets.map((b) => (
+                          <Cell key={b.category_id} fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent} />
                         ))}
                       </Bar>
                       <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={600} />
@@ -916,18 +968,12 @@ export default function DashboardPage() {
             <div className={`${card} overflow-hidden p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Forecast by Category</h2>
               {(() => {
-                const expenseItems = forecast?.items.filter((it) => it.type === "expense") ?? [];
-                if (forecast && expenseItems.length > 0) {
-                  const chartRows = expenseItems.slice(0, 8).map((it) => ({
-                    name: it.category_name.length > 12 ? it.category_name.slice(0, 12) + "..." : it.category_name,
-                    planned: Number(it.planned_amount),
-                    actual: Number(it.actual_amount),
-                  }));
+                if (forecast && forecastExpenseItems.length > 0) {
                   return (
-                    <div className="w-full min-w-0" style={{ height: Math.max(Math.min(expenseItems.length, 8) * 32, 100) }}>
+                    <div className="w-full min-w-0" style={{ height: Math.max(Math.min(forecastExpenseItems.length, 8) * 32, 100) }}>
                       <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                         <BarChart
-                          data={chartRows}
+                          data={forecastChartRows}
                           layout="vertical"
                           margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
                         >
@@ -954,14 +1000,14 @@ export default function DashboardPage() {
                           <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={600}
                             cursor="pointer"
                             onClick={(_, idx) => {
-                              const name = expenseItems[idx]?.category_name;
+                              const name = forecastExpenseItems[idx]?.category_name;
                               if (name) setChartFilter(chartFilter === name ? null : name);
                             }}
                           />
                           <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={600}>
-                            {chartRows.map((d, i) => (
+                            {forecastChartRows.map((d) => (
                               <Cell
-                                key={i}
+                                key={d.categoryId}
                                 fill={d.actual > d.planned ? chartColor.over : chartColor.actual}
                               />
                             ))}

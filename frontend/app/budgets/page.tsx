@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -188,6 +188,20 @@ export default function BudgetsPage() {
   const totalBudget = budgets.reduce((s, b) => s + Number(b.amount), 0);
   const totalSpent = budgets.reduce((s, b) => s + Number(b.spent), 0);
 
+  // Memoize the chart data so unrelated parent renders (period nav, form
+  // toggles) don't rebuild the array reference and force Recharts to
+  // re-layout every bar.
+  const budgetChartData = useMemo(
+    () =>
+      budgets.map((b) => ({
+        name: b.category_name,
+        spent: Number(b.spent),
+        remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
+        over: Math.max(Number(b.spent) - Number(b.amount), 0),
+      })),
+    [budgets],
+  );
+
   return (
     <AppShell>
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -321,12 +335,7 @@ export default function BudgetsPage() {
               </div>
               <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
                 <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
-                  <BarChart data={budgets.map((b) => ({
-                    name: b.category_name,
-                    spent: Number(b.spent),
-                    remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
-                    over: Math.max(Number(b.spent) - Number(b.amount), 0),
-                  }))} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
+                  <BarChart data={budgetChartData} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
                     <XAxis type="number" hide />
                     <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
                     <Tooltip
@@ -355,9 +364,9 @@ export default function BudgetsPage() {
                         if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
                       }}
                     >
-                      {budgets.map((b, i) => (
+                      {budgets.map((b) => (
                         <Cell
-                          key={i}
+                          key={b.category_id}
                           fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent}
                         />
                       ))}
