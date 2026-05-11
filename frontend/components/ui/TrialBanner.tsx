@@ -34,14 +34,14 @@ export default function TrialBanner({ user }: Props) {
   // Trial expiring — urgent
   if (subscription_status === "trialing" && daysLeft <= 3) {
     return (
-      <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-1">
-        <span className="text-xs font-medium text-amber-400">Trial ending</span>
-        <span className="text-[11px] text-amber-300">
+      <div className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning-dim px-3 py-1">
+        <span className="text-xs font-medium text-warning">Trial ending</span>
+        <span className="text-[11px] text-warning/80">
           {daysLeft === 0 ? "today" : `${daysLeft} day${daysLeft !== 1 ? "s" : ""} left`}
         </span>
         <Link
           href="/settings/billing"
-          className="text-[11px] font-medium text-amber-400 underline hover:text-amber-300"
+          className="text-[11px] font-medium text-warning underline hover:text-warning-hover"
         >
           Upgrade
         </Link>

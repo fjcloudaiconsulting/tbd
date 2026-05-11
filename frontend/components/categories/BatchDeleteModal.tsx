@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch, ApiResponseError, extractErrorMessage } from "@/lib/api";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
-import { btnSecondary, input } from "@/lib/styles";
+import { btnDangerSolid, btnSecondary, input } from "@/lib/styles";
 import type { Category } from "@/lib/types";
 
 interface CategoryDeleteResult {
@@ -377,7 +377,7 @@ export default function BatchDeleteModal({
               data-testid="batch-delete-confirm"
               onClick={handleConfirm}
               disabled={submitting || !allTargetsPicked}
-              className="rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50 w-full sm:w-auto min-h-[44px]"
+              className={`${btnDangerSolid} w-full sm:w-auto min-h-[44px]`}
             >
               {submitting
                 ? "Deleting..."

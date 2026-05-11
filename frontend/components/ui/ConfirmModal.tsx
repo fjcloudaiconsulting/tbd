@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { btnPrimary, btnSecondary } from "@/lib/styles";
+import { btnPrimary, btnSecondary, btnWarning, btnDangerSolid } from "@/lib/styles";
 
 interface Props {
   open: boolean;
@@ -16,8 +16,8 @@ interface Props {
 
 const variantClasses: Record<string, string> = {
   default: btnPrimary,
-  warning: "rounded-md bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600",
-  danger: "rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-red-600",
+  warning: btnWarning,
+  danger: btnDangerSolid,
 };
 
 export default function ConfirmModal({

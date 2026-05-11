@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { btnPrimary } from "@/lib/styles";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 
 export default function TopNav() {
@@ -25,7 +26,7 @@ export default function TopNav() {
         </Link>
         <Link
           href="/register"
-          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text hover:bg-accent-hover"
+          className={btnPrimary}
         >
           Get started
         </Link>

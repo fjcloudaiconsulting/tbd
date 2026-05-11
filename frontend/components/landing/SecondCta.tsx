@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { btnPrimary } from "@/lib/styles";
 
 export default function SecondCta() {
   return (
@@ -12,7 +13,7 @@ export default function SecondCta() {
       </p>
       <Link
         href="/register"
-        className="mt-8 inline-block rounded-md bg-accent px-6 py-3 text-sm font-medium text-accent-text hover:bg-accent-hover"
+        className={`${btnPrimary} mt-8 inline-block px-6 py-3`}
       >
         Get started free
       </Link>
