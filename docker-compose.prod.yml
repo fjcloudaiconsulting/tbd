@@ -51,6 +51,10 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=
       - HOSTNAME=0.0.0.0
+      # Server-side (RSC) reach to the backend. Browser requests use the
+      # nginx ingress (relative URLs); server-side fetches must hit the
+      # backend service directly inside the compose network.
+      - BACKEND_INTERNAL_URL=http://backend:8000
     depends_on:
       - backend
     volumes: []  # Override dev volume mounts — immutable container
