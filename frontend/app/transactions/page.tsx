@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useCallback, useEffect, useState } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -8,7 +8,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
-import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, btnDangerSolid, card, cardHeader, cardTitle, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
@@ -408,13 +408,22 @@ function TransactionsPageContent() {
   // rendered as a single row — the hidden half cascades server-side). Using
   // visibleTxs here keeps allPageSelected / togglePage consistent with what
   // the user actually sees.
-  const selectionHiddenIds = new Set<number>();
-  for (const t of transactions) {
-    if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
-      selectionHiddenIds.add(t.id);
+  //
+  // Memoized: only the `transactions` array shape matters here, so we
+  // shouldn't rebuild the Set on every keystroke into the filter inputs.
+  const selectionHiddenIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const t of transactions) {
+      if (t.linked_transaction_id && t.id > t.linked_transaction_id) {
+        ids.add(t.id);
+      }
     }
-  }
-  const selectableTxs = transactions.filter((t) => !selectionHiddenIds.has(t.id));
+    return ids;
+  }, [transactions]);
+  const selectableTxs = useMemo(
+    () => transactions.filter((t) => !selectionHiddenIds.has(t.id)),
+    [transactions, selectionHiddenIds],
+  );
 
   const allPageSelected =
     selectableTxs.length > 0 && selectableTxs.every((t) => selectedIds.has(t.id));
@@ -683,16 +692,39 @@ function TransactionsPageContent() {
       persistedSort.setSort(field, SORT_DEFAULTS[field]);
     }
   }
-  const sortedTransactions = [...transactions].sort((a, b) => {
-    let cmp = 0;
-    if (sortField === "date") cmp = a.date.localeCompare(b.date);
-    else if (sortField === "description") cmp = a.description.localeCompare(b.description);
-    else if (sortField === "account_name") cmp = a.account_name.localeCompare(b.account_name);
-    else if (sortField === "category_name") cmp = a.category_name.localeCompare(b.category_name);
-    else if (sortField === "status") cmp = a.status.localeCompare(b.status);
-    else if (sortField === "amount") cmp = Number(a.amount) - Number(b.amount);
-    return sortDir === "asc" ? cmp : -cmp;
-  });
+  // Memoize the sort. On a typed-into-search render, only `filter*` state
+  // changes — the same `transactions` array shouldn't be re-sorted, and the
+  // result shouldn't get a new reference (which would invalidate every
+  // downstream map() identity check).
+  const sortedTransactions = useMemo(() => {
+    const copy = [...transactions];
+    copy.sort((a, b) => {
+      let cmp = 0;
+      if (sortField === "date") cmp = a.date.localeCompare(b.date);
+      else if (sortField === "description") cmp = a.description.localeCompare(b.description);
+      else if (sortField === "account_name") cmp = a.account_name.localeCompare(b.account_name);
+      else if (sortField === "category_name") cmp = a.category_name.localeCompare(b.category_name);
+      else if (sortField === "status") cmp = a.status.localeCompare(b.status);
+      else if (sortField === "amount") cmp = Number(a.amount) - Number(b.amount);
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return copy;
+  }, [transactions, sortField, sortDir]);
+
+  // Visible rows are sortedTransactions minus the cascaded "duplicate" half
+  // of any transfer pair. Memoized so the array reference is stable across
+  // unrelated renders (typing in the new-transaction form, hover, etc.).
+  const visibleTxs = useMemo(
+    () => sortedTransactions.filter((t) => !selectionHiddenIds.has(t.id)),
+    [sortedTransactions, selectionHiddenIds],
+  );
+
+  // Tx lookup map for O(1) linked-row resolution. Recomputed only when the
+  // transactions array itself changes.
+  const txMap = useMemo(
+    () => new Map(transactions.map((t) => [t.id, t] as const)),
+    [transactions],
+  );
   const defaultAccount = activeAccounts.find((a) => a.is_default);
 
   // Pre-select default account when opening form
@@ -765,7 +797,7 @@ function TransactionsPageContent() {
   return (
     <AppShell>
       {selectedIds.size > 0 && (
-        <div className="sticky top-0 z-20 -mx-4 sm:-mx-8 mb-4 flex items-center justify-between gap-3 border-b border-border bg-surface-raised/95 px-4 sm:px-8 py-3 backdrop-blur">
+        <div className={`${stickyBar} mb-4 flex items-center justify-between gap-3 py-3`}>
           <span className="text-sm font-medium" aria-live="polite">
             {selectedIds.size} selected
           </span>
@@ -795,7 +827,7 @@ function TransactionsPageContent() {
             )}
             <button
               type="button"
-              className="inline-flex min-h-[44px] items-center rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
+              className={`${btnDangerSolid} inline-flex min-h-[44px] items-center`}
               onClick={() => setConfirmBulkDelete(true)}
               disabled={bulkDeleting}
             >
@@ -1129,11 +1161,9 @@ function TransactionsPageContent() {
               </div>
             </div>
             {(() => {
-              // Precompute tx map for O(1) lookups. The dedupe set is hoisted
-              // above (selectionHiddenIds) so the selection helpers see the
-              // same hidden-half rule as the render.
-              const txMap = new Map(transactions.map((t) => [t.id, t]));
-              const visibleTxs = sortedTransactions.filter((t) => !selectionHiddenIds.has(t.id));
+              // txMap + visibleTxs are memoized at the top of the component
+              // so unrelated renders (typing in filter inputs, hover, edit
+              // mode flips) don't rebuild these on every pass.
               return (
                 <>
                   {/* Desktop/tablet grid rows (md+) */}

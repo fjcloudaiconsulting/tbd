@@ -13,6 +13,7 @@ import { hasPlatformPermission } from "@/lib/auth";
 import {
   btnPrimary,
   btnSecondary,
+  btnDangerSolid,
   card,
   cardHeader,
   cardTitle,
@@ -376,7 +377,7 @@ export default function AdminOrgDetailPage() {
               type="button"
               onClick={handleDelete}
               disabled={!confirmMatches || deleting}
-              className="rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/90 disabled:opacity-50"
+              className={btnDangerSolid}
             >
               {deleting ? "Deleting…" : "Delete organization"}
             </button>
