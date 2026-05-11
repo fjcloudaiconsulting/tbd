@@ -8,7 +8,7 @@ export default function ThemeToggle({ className = "" }: { className?: string }) 
     <button
       onClick={toggle}
       aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-      className={`rounded-md p-1.5 text-text-muted hover:bg-surface-overlay hover:text-text-secondary ${className}`}
+      className={`inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-text-muted hover:bg-surface-overlay hover:text-text-secondary md:min-h-0 md:min-w-0 md:p-1.5 ${className}`}
     >
       {theme === "light" ? (
         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>

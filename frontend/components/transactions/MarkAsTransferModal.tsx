@@ -223,7 +223,7 @@ export default function MarkAsTransferModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="mark-transfer-title"
-        className={`${card} w-full max-w-md p-6 shadow-xl`}
+        className={`${card} w-full max-w-[min(28rem,calc(100vw-2rem))] p-6 shadow-xl`}
       >
         <h2
           id="mark-transfer-title"
