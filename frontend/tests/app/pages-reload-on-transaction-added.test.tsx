@@ -4,7 +4,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import AccountsPage from "@/app/accounts/page";
 import BudgetsPage from "@/app/budgets/page";
 import CategoriesPage from "@/app/categories/page";
-import ForecastPlansPage from "@/app/forecast-plans/page";
+import ForecastPlansClient from "@/app/forecast-plans/ForecastPlansClient";
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
@@ -225,31 +225,49 @@ describe("Accounts page subscribes to pfv:transaction-added", () => {
 
 describe("Forecast Plans page subscribes to pfv:transaction-added", () => {
   it("re-fetches the plan after the event fires", async () => {
+    // /forecast-plans is now an RSC shell that hands initial props to
+    // <ForecastPlansClient />. The listener-driven re-fetch lives on the
+    // client component, so we mount it directly with the same initial
+    // plan the server would have seeded.
+    const initialPlan = {
+      id: 1,
+      billing_period_id: 1,
+      period_start: "2026-05-01",
+      period_end: null,
+      status: "draft" as const,
+      total_planned_income: "0",
+      total_planned_expense: "0",
+      total_actual_income: "0",
+      total_actual_expense: "0",
+      items: [],
+    };
+
     vi.mocked(apiFetch).mockImplementation(async (url: string) => {
       if (url.startsWith("/api/v1/settings/billing-periods/ensure-future")) return null as never;
       if (url.startsWith("/api/v1/categories")) return [CAT] as never;
       if (url.startsWith("/api/v1/settings/billing-periods")) return [PERIOD_OPEN] as never;
       if (url.startsWith("/api/v1/forecast-plans")) {
-        return {
-          id: 1,
-          billing_period_id: 1,
-          period_start: "2026-05-01",
-          period_end: null,
-          status: "draft",
-          total_planned_income: "0",
-          total_planned_expense: "0",
-          total_actual_income: "0",
-          total_actual_expense: "0",
-          items: [],
-        } as never;
+        return initialPlan as never;
       }
       return null as never;
     });
 
-    render(<ForecastPlansPage />);
+    render(
+      <ForecastPlansClient
+        initialPeriods={[PERIOD_OPEN]}
+        initialCategories={[CAT]}
+        initialPlan={initialPlan as never}
+      />,
+    );
 
+    // First paint already has the seeded plan; SWR's `fallbackData` means
+    // there's no initial network call. The listener-driven mutate() is
+    // the call we're observing.
     await waitFor(() => {
-      expect(countCalls("/api/v1/forecast-plans")).toBeGreaterThanOrEqual(1);
+      // ensure-future POST runs once on mount; wait for at least one
+      // mock call so the listener-attach effect has settled before we
+      // dispatch the event.
+      expect(vi.mocked(apiFetch).mock.calls.length).toBeGreaterThanOrEqual(1);
     });
     const before = countCalls("/api/v1/forecast-plans");
 
