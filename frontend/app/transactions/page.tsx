@@ -1453,7 +1453,7 @@ function TransactionsPageContent() {
                       const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                       if (editingId === tx.id) {
                         return (
-                          <article key={tx.id} className="flex flex-col gap-3 rounded-lg border border-border bg-surface-raised p-4 shadow-sm">
+                          <article key={tx.id} className="flex flex-col gap-3 rounded-lg border border-border bg-surface-raised p-4">
                             {editPartner && (
                               <div className="text-xs text-accent" data-testid={`edit-mirror-notice-mobile-${tx.id}`}>
                                 Editing a transfer leg. Changes to amount apply to both rows.
@@ -1604,7 +1604,7 @@ function TransactionsPageContent() {
                       return (
                         <article
                           key={tx.id}
-                          className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 shadow-sm"
+                          className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4"
                         >
                           {/* Pending rows dim the row contents but keep the
                               status pill at full opacity. CSS opacity composites

@@ -66,7 +66,7 @@ function KpiCard({ label, value }: { label: string; value: number }) {
       <p className="text-xs font-medium uppercase tracking-[0.08em] text-text-muted">
         {label}
       </p>
-      <p className="mt-2 font-display text-3xl text-text-primary">{nf.format(value)}</p>
+      <p className="mt-2 text-3xl font-semibold tabular-nums text-text-primary">{nf.format(value)}</p>
     </div>
   );
 }
