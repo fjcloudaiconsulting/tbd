@@ -286,12 +286,34 @@ async def login(
     return TokenResponse(access_token=access_token)
 
 
-@router.post("/refresh", response_model=TokenResponse)
-async def refresh(
-    response: Response,
-    refresh_token: str | None = Cookie(default=None),
-    db: AsyncSession = Depends(get_db),
-):
+SESSION_EXPIRED_DETAIL = "Session expired — please sign in again"
+
+
+async def _validate_refresh_cookie(
+    refresh_token: str | None,
+    db: AsyncSession,
+) -> tuple[User, dict, datetime | None]:
+    """Validate a refresh-token cookie. Returns (user, payload, session_start)
+    or raises ``HTTPException(401)`` on any failure.
+
+    Shared between ``/auth/refresh`` (rotating) and ``/auth/verify`` (non-
+    rotating). Performs identical checks for both endpoints so the contract
+    cannot drift:
+
+      1. cookie presence
+      2. JWT decode + ``type == "refresh"``
+      3. user exists + ``is_active``
+      4. ``iat < token_cutoff(user)`` rejects tokens issued before the
+         user's last logout / password change / password reset
+      5. absolute session lifetime (per-org ``session_lifetime_days``
+         setting or system default) — raises with detail
+         ``SESSION_EXPIRED_DETAIL`` so callers can recognize and act
+         (e.g. ``/refresh`` clears the cookie; ``/verify`` does not)
+
+    Note: this helper never writes a cookie. Cookie management is the
+    caller's responsibility so the no-Set-Cookie invariant on ``/verify``
+    is absolute.
+    """
     if refresh_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -308,14 +330,14 @@ async def refresh(
     user_id = int(payload["sub"])
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
 
-    # Reject refresh tokens issued before the session cutoff (logout / password change)
+    # Reject tokens issued before the user's session cutoff
+    # (logout / password change / password reset)
     iat = payload.get("iat")
     if iat is not None:
         token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
@@ -325,12 +347,12 @@ async def refresh(
                 detail="Session has been invalidated",
             )
 
-    # Enforce absolute session lifetime
+    # Enforce absolute session lifetime (per-org setting or system default)
     session_created_at = payload.get("session_created_at")
+    session_start: datetime | None = None
     if session_created_at:
         session_start = datetime.fromtimestamp(session_created_at, tz=timezone.utc)
 
-        # Check org-level override first, fall back to system default
         max_days = app_settings.session_lifetime_days
         org_setting = await db.scalar(
             select(OrgSetting.value).where(
@@ -345,21 +367,57 @@ async def refresh(
                 pass
 
         if datetime.now(timezone.utc) - session_start > timedelta(days=max_days):
-            response.delete_cookie("refresh_token", path="/")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Session expired — please sign in again",
+                detail=SESSION_EXPIRED_DETAIL,
             )
 
-    # Carry forward session_created_at from the original login
-    original_session = (
-        datetime.fromtimestamp(session_created_at, tz=timezone.utc)
-        if session_created_at
-        else None
-    )
+    return user, payload, session_start
 
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(
+    response: Response,
+    refresh_token: str | None = Cookie(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rotate the refresh cookie + issue a fresh access token.
+
+    Shares the full validation chain with ``/verify`` via
+    ``_validate_refresh_cookie``. On session-lifetime expiry this endpoint
+    additionally clears the stale cookie before returning 401; ``/verify``
+    deliberately does not (it must never emit Set-Cookie).
+
+    NOTE: FastAPI does NOT merge cookies set on the injected ``response``
+    parameter into the JSONResponse it builds from a raised HTTPException
+    (the same gotcha the SSO callback works around by writing cookies
+    onto a directly-returned RedirectResponse). For the session-expiry
+    path we therefore return a JSONResponse directly so the
+    delete-cookie header actually reaches the browser.
+    """
+    try:
+        user, _payload, session_start = await _validate_refresh_cookie(
+            refresh_token, db
+        )
+    except HTTPException as exc:
+        # Clear the stale cookie on absolute session-lifetime expiry so the
+        # browser stops sending it. Other 401s leave the cookie in place;
+        # they may be transient (e.g. invalid-but-recoverable) or carry
+        # their own meaning.
+        if exc.detail == SESSION_EXPIRED_DETAIL:
+            from fastapi.responses import JSONResponse
+
+            expired_response = JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+            )
+            expired_response.delete_cookie("refresh_token", path="/")
+            return expired_response
+        raise
+
+    # Carry forward session_created_at from the original login
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    new_refresh_token = create_refresh_token(user.id, session_created_at=original_session)
+    new_refresh_token = create_refresh_token(user.id, session_created_at=session_start)
 
     response.set_cookie(
         key="refresh_token",
@@ -384,30 +442,20 @@ async def verify(
     """Server-side session verification for RSC consumers.
 
     Validates the refresh cookie without rotating it. Returns the same
-    `UserResponse` shape as `/auth/me` plus a fresh access token. No
-    `Set-Cookie`. No audit log on success.
+    ``UserResponse`` shape as ``/auth/me`` plus a fresh access token.
+
+    Invariants (load-bearing for RSC callers):
+    - never emits ``Set-Cookie`` — even on session-lifetime expiry, the
+      stale cookie is left in place (it will expire by its own ``max_age``)
+    - no audit log on success
+
+    Shares the full validation chain with ``/auth/refresh`` via
+    ``_validate_refresh_cookie`` so the security contract cannot drift
+    between the two endpoints.
     """
-    if refresh_token is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No refresh token",
-        )
-
-    payload = decode_token(refresh_token)
-    if payload is None or payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token",
-        )
-
-    user_id = int(payload["sub"])
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if user is None or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid session",
-        )
+    user, _payload, _session_start = await _validate_refresh_cookie(
+        refresh_token, db
+    )
 
     await db.refresh(user, ["organization"])
     await subscription_service.check_trial_expiry(db, user.org_id)

@@ -278,6 +278,54 @@ async def test_accept_creates_user_and_returns_token(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_invite_accept_sets_root_path_refresh_cookie(session_factory):
+    """Pins Finding 2 from PR #211 review: invite-accept must use Path=/
+    on the refresh_token cookie so the browser sends it on regular page
+    requests (needed for Next.js RSC to read via /auth/verify). Previously
+    used the legacy Path=/api/v1/auth/refresh.
+    """
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=seed["org_id"], created_by=seed["owner_id"],
+            email="cookieaccept@acme.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    app.dependency_overrides.pop(get_current_user, None)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/orgs/invitations/accept",
+            json={"token": token, "username": "cookieuser", "password": "strong-pw-1234"},
+        )
+    assert res.status_code == 200, res.text
+
+    # Locate the refresh_token Set-Cookie value and assert Path=/
+    raw = None
+    for raw_value in (
+        res.headers.get_list("set-cookie")
+        if hasattr(res.headers, "get_list")
+        else res.headers.raw
+    ):
+        if isinstance(raw_value, tuple):
+            key, value = raw_value
+            if key.decode().lower() != "set-cookie":
+                continue
+            value = value.decode()
+        else:
+            value = raw_value
+        if value.split("=", 1)[0].strip().lower() == "refresh_token":
+            raw = value
+            break
+    assert raw is not None, (
+        f"Invite-accept must emit a refresh_token Set-Cookie. Got: {dict(res.headers)}"
+    )
+    assert "Path=/" in raw
+    assert "Path=/api/v1/auth/refresh" not in raw
+
+
+@pytest.mark.asyncio
 async def test_accept_410_for_revoked(session_factory):
     seed = await _seed(session_factory)
     async with session_factory() as db:

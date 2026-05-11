@@ -213,7 +213,8 @@ async def test_verify_inactive_user_returns_401(session_factory):
         )
 
     assert res.status_code == 401
-    assert res.json()["detail"] == "Invalid session"
+    # Detail is identical to /refresh — both endpoints share the validator.
+    assert res.json()["detail"] == "User not found or inactive"
 
 
 # ── Critical invariant: /verify never rotates or sets a cookie ───────────────
@@ -310,3 +311,153 @@ async def test_cookie_path_is_root_on_logout_delete(session_factory):
     )
     assert "Path=/" in raw
     assert "Path=/api/v1/auth/refresh" not in raw
+
+
+# ── Full validation chain on /verify ────────────────────────────────────────
+#
+# These pin Finding 1 from PR #211 review: `/verify` must run the SAME
+# validator as `/refresh`. Skipping the `iat < token_cutoff` and
+# absolute-session-lifetime checks would let a logged-out user mint
+# access tokens via `/verify` until the refresh token's natural exp.
+
+
+async def _seed_user_with_session_cutoff(
+    factory,
+    invalidated_at,
+) -> int:
+    """Seed an active user whose sessions_invalidated_at is set to now-ish.
+
+    Tokens issued before `invalidated_at` must be rejected by token_cutoff.
+    """
+    async with factory() as db:
+        from sqlalchemy import select
+
+        org = Organization(name="org-cutoff", billing_cycle_day=1)
+        db.add(org)
+        await db.commit()
+        user = User(
+            org_id=org.id,
+            username="bob",
+            email="bob@example.com",
+            password_hash=hash_password(PASSWORD),
+            role=Role.OWNER,
+            is_superadmin=False,
+            is_active=True,
+            email_verified=True,
+            sessions_invalidated_at=invalidated_at,
+        )
+        db.add(user)
+        await db.commit()
+        return user.id
+
+
+async def test_verify_rejects_invalidated_refresh_token(session_factory):
+    """Token issued BEFORE the user's session cutoff (logout / password
+    change / password reset) must be rejected by /verify — same as /refresh.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    # Mint the refresh token first, then bump the cutoff to "after" it.
+    user_id = await _seed_user(session_factory)
+    refresh = create_refresh_token(user_id)
+
+    # Bump sessions_invalidated_at to a future timestamp so any token
+    # already in hand has iat < cutoff.
+    async with session_factory() as db:
+        from sqlalchemy import select
+
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        user.sessions_invalidated_at = datetime.now(timezone.utc) + timedelta(
+            seconds=60
+        )
+        await db.commit()
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/verify",
+            cookies={"refresh_token": refresh},
+        )
+
+    assert res.status_code == 401
+    assert res.json()["detail"] == "Session has been invalidated"
+    # Invariant: even on this failure, /verify does NOT touch the cookie.
+    header_keys_lower = {k.lower() for k in res.headers.keys()}
+    assert "set-cookie" not in header_keys_lower
+
+
+async def test_verify_rejects_expired_session_lifetime(session_factory):
+    """Refresh tokens whose session_created_at is older than the org's
+    (or system) session_lifetime_days must be rejected by /verify.
+
+    Additionally pins that /verify does NOT emit Set-Cookie on this path —
+    only /refresh clears the cookie. The browser's stale cookie will
+    eventually expire by its own max_age.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import settings as app_settings
+    from app.security import create_refresh_token as _crt
+
+    user_id = await _seed_user(session_factory)
+
+    # Build a refresh token whose session_created_at is far older than the
+    # absolute lifetime cap. Using session_lifetime_days + 30 days of slack.
+    long_ago = datetime.now(timezone.utc) - timedelta(
+        days=app_settings.session_lifetime_days + 30
+    )
+    refresh = _crt(user_id, session_created_at=long_ago)
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/verify",
+            cookies={"refresh_token": refresh},
+        )
+
+    assert res.status_code == 401
+    assert res.json()["detail"].startswith("Session expired")
+    # Invariant: /verify must not emit Set-Cookie even on session-expiry.
+    header_keys_lower = {k.lower() for k in res.headers.keys()}
+    assert "set-cookie" not in header_keys_lower, (
+        "verify must never emit Set-Cookie, even on session-lifetime expiry; "
+        f"got headers: {dict(res.headers)}"
+    )
+
+
+async def test_refresh_clears_cookie_on_session_lifetime_expiry(session_factory):
+    """Counterpart to the /verify expiry test: /refresh DOES clear the
+    stale cookie on the session-lifetime-expired path. This pins the
+    behavior asymmetry that motivated putting cookie-clear in the route
+    rather than the shared validator.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import settings as app_settings
+    from app.security import create_refresh_token as _crt
+
+    user_id = await _seed_user(session_factory)
+
+    long_ago = datetime.now(timezone.utc) - timedelta(
+        days=app_settings.session_lifetime_days + 30
+    )
+    refresh = _crt(user_id, session_created_at=long_ago)
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/refresh",
+            cookies={"refresh_token": refresh},
+        )
+
+    assert res.status_code == 401
+    assert res.json()["detail"].startswith("Session expired")
+    raw = _set_cookie_for(res.headers, "refresh_token")
+    assert raw is not None, (
+        "/refresh must emit a delete-cookie Set-Cookie header on session-expiry; "
+        f"got: {dict(res.headers)}"
+    )
+    # Delete-cookie carries an empty value + Path=/ (matches the path the
+    # cookie was originally set on, post-widening).
+    assert "Path=/" in raw
