@@ -984,7 +984,7 @@ export default function DashboardPage() {
                               if (name === "planned") {
                                 return [
                                   formatAmount(Number(v)),
-                                  <span style={{ color: chartColor.planned }}>Planned</span>,
+                                  <span key="planned" style={{ color: chartColor.planned }}>Planned</span>,
                                 ];
                               }
                               const row = (item as { payload?: { planned: number; actual: number } } | undefined)?.payload;
@@ -992,7 +992,7 @@ export default function DashboardPage() {
                               const labelColor = isOver ? chartColor.over : chartColor.actual;
                               return [
                                 formatAmount(Number(v)),
-                                <span style={{ color: labelColor }}>Actual</span>,
+                                <span key="actual" style={{ color: labelColor }}>Actual</span>,
                               ];
                             }}
                             contentStyle={{ fontSize: "11px" }}
