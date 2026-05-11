@@ -71,7 +71,7 @@ function MetricRow({ label, total, avg, series }: MetricRowProps) {
             {label}
           </div>
           <div className="mt-1 flex items-baseline gap-3">
-            <span className="font-display text-2xl text-text-primary tabular-nums">
+            <span className="text-2xl font-semibold tabular-nums text-text-primary">
               {total.toLocaleString()}
             </span>
             <span className="text-xs text-text-muted">
@@ -83,7 +83,7 @@ function MetricRow({ label, total, avg, series }: MetricRowProps) {
           <div className="text-xs uppercase tracking-wider text-text-muted">
             avg/day
           </div>
-          <div className="font-display text-lg text-text-secondary tabular-nums">
+          <div className="text-lg font-semibold tabular-nums text-text-primary">
             {formatAvg(avg)}
           </div>
         </div>
@@ -304,7 +304,9 @@ export default function AdminAnalyticsPage() {
                     {formatLastActivity(row.last_tx_at)}
                   </td>
                   <td className="px-6 py-3 text-right font-mono text-text-secondary tabular-nums">
-                    {row.days_since_last_activity ?? "—"}
+                    {row.days_since_last_activity ?? (
+                      <span className="text-text-muted">never</span>
+                    )}
                   </td>
                 </tr>
               ))}
