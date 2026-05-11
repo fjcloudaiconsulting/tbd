@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import AppShell from "@/components/AppShell";
+import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import CategorySelect from "@/components/ui/CategorySelect";
@@ -595,7 +596,10 @@ export default function ForecastPlansClient({
     <AppShell>
       {/* Header */}
       <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-        <h1 className={`${pageTitle} mb-0`}>Forecast Plans</h1>
+        <div className="flex items-center gap-1">
+          <h1 className={`${pageTitle} mb-0`}>Forecast Plans</h1>
+          <HelpAnchor section="forecast-plans" label="Forecast Plans" />
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Show/hide details toggle. Hides variance/source/chart/refresh
               and the technical (?) help markers when off. */}

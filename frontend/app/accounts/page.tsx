@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
+import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -199,7 +200,10 @@ export default function AccountsPage() {
 
   return (
     <AppShell>
-      <h1 className={pageTitle}>Accounts</h1>
+      <div className="mb-8 flex items-center gap-1">
+        <h1 className={`${pageTitle} mb-0`}>Accounts</h1>
+        <HelpAnchor section="accounts" label="Accounts" />
+      </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
 

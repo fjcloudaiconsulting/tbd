@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
+import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -203,7 +204,10 @@ export default function CategoriesPage() {
   return (
     <AppShell>
       <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className={`${pageTitle} mb-0`}>Categories</h1>
+        <div className="flex items-center gap-1">
+          <h1 className={`${pageTitle} mb-0`}>Categories</h1>
+          <HelpAnchor section="categories" label="Categories" />
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* C2a: Edit-mode toggle. Owned by Team Categories C2 UI. */}
           <button

@@ -4,6 +4,7 @@ import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
+import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -837,7 +838,10 @@ function TransactionsPageContent() {
         </div>
       )}
       <div className="mb-8 flex items-center justify-between">
-        <h1 className={`${pageTitle} mb-0`}>Transactions</h1>
+        <div className="flex items-center gap-1">
+          <h1 className={`${pageTitle} mb-0`}>Transactions</h1>
+          <HelpAnchor section="transactions" label="Transactions" />
+        </div>
         <div className="flex items-center gap-2">
           {activeAccounts.length > 0 && categories.length > 0 && (
             <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>

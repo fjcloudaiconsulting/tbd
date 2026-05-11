@@ -27,6 +27,13 @@ const sections = [
   { id: "forecasts", label: "Forecasts: planning vs projecting" },
   { id: "admin-workflows", label: "Admin workflows" },
   { id: "system-health", label: "System health" },
+  { id: "dashboard", label: "Dashboard" },
+  { id: "transactions", label: "Transactions" },
+  { id: "accounts", label: "Accounts" },
+  { id: "categories", label: "Categories" },
+  { id: "budgets", label: "Budgets" },
+  { id: "forecast-plans", label: "Forecast Plans" },
+  { id: "admin", label: "Admin" },
   { id: "whats-next", label: "What's next" },
 ];
 
@@ -386,6 +393,118 @@ export default function DocsPage() {
               status of the database and Redis, including latency.
               Failures there usually explain whatever the rest of the
               app is doing.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="dashboard">Dashboard</h2>
+            <p>
+              The Dashboard is the household summary screen. The On Track
+              hero tile reads from what has actually settled in the
+              current billing period, so it stays calm even when pending
+              charges or upcoming recurring bills make the projection
+              jumpy. Below the hero, the Accounts strip shows balance
+              plus pending per account, and a Forecast card shows the
+              expected month-end balance for each account. Three cards
+              underneath summarize spending by category, budget
+              progress, and forecast by category. Use the period nav at
+              the top to step through past or future periods; the donut
+              and bars are filterable by category. For variance numbers,
+              source attribution, and the planned-vs-actual chart, open
+              Forecast Plans and turn on Show details.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="transactions">Transactions</h2>
+            <p>
+              The Transactions page lists every booked row in the
+              selected billing period. Click a row to expand the inline
+              editor, where you can change description, amount, dates,
+              category, status, and notes without leaving the list. From
+              the same row you can promote a transaction to a recurring
+              template, convert it into a transfer leg by selecting its
+              counterparty account, or attach tags. Use the toolbar to
+              filter by status, account, or category, and to sort the
+              columns. Imports land here as a preview first, so nothing
+              is committed until you confirm.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="accounts">Accounts</h2>
+            <p>
+              Accounts represent your real-world money containers: bank
+              accounts, credit cards, cash, savings. Each account has a
+              type, a currency, and a balance derived from its
+              transactions plus pending items. Credit-card accounts also
+              carry a close day, which drives the billing period for
+              charges on that card. From here you can add new accounts,
+              set the default one (it shows first on the Dashboard
+              strip), close an account, or post a manual balance
+              adjustment when the in-app total drifts from the bank's.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="categories">Categories</h2>
+            <p>
+              Categories are the backbone of budgets and forecasts. They
+              are hierarchical: master categories group related
+              subcategories, and each category has a type (income,
+              expense, or both) that constrains where it can be used.
+              Edit mode unlocks batch selection so you can move or
+              delete multiple subcategories at once. Renaming is
+              live-reference, so existing transactions update
+              automatically. Deleting a category that is in use prompts
+              you to migrate its rows to another category in the same
+              type. Master categories cannot be removed while they have
+              children.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="budgets">Budgets</h2>
+            <p>
+              Budgets are the current-period control surface: a number
+              per category that represents the cap you want to spend
+              against for this period. The bar chart on the Budgets page
+              colors each row by utilization (under, near, over), and
+              the Dashboard's Budget Progress card pulls the same
+              numbers. Budgets are scoped to the open billing period.
+              For future periods, use Forecast Plans instead, and click
+              From Forecast to seed the current period's budgets from
+              the matching plan.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="forecast-plans">Forecast Plans</h2>
+            <p>
+              Forecast Plans is where you build and adjust the wish list
+              of what you expect to spend and earn per category for a
+              billing period. Auto-populate fills the plan from
+              recurring bills, your last 3 months of activity, and
+              anything already booked in the period. The Show details
+              toggle reveals variance, source attribution, the planned
+              vs actual chart, and Refresh from sources, which re-runs
+              auto-population while preserving rows you typed yourself.
+              See the Forecasts section above for the full mental model
+              of plan vs projected vs variance.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="admin">Admin</h2>
+            <p>
+              The Admin area is the platform-ops hub, visible only to
+              users with platform permissions. The header summarizes
+              live database and Redis health; the totals strip tracks
+              orgs, users, active subscriptions, and recent signups. The
+              tiles below open the Organizations browser, the Audit log,
+              and the Roles editor. Most destructive actions
+              (subscription overrides, org deletes, tenant resets) are
+              captured in the audit log automatically.
             </p>
           </section>
 

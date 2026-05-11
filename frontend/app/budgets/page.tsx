@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
+import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -205,7 +206,10 @@ export default function BudgetsPage() {
   return (
     <AppShell>
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className={`${pageTitle} mb-0`}>Budgets</h1>
+        <div className="flex items-center gap-1">
+          <h1 className={`${pageTitle} mb-0`}>Budgets</h1>
+          <HelpAnchor section="budgets" label="Budgets" />
+        </div>
         <div className="flex flex-wrap gap-2">
           {isCurrentPeriod && (
             <button

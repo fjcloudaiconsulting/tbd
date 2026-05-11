@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import AppShell from "@/components/AppShell";
+import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -598,7 +599,10 @@ export default function DashboardPage() {
   return (
     <AppShell>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
+        <div className="flex items-center gap-1">
+          <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
+          <HelpAnchor section="dashboard" label="Dashboard" />
+        </div>
         <div className="flex items-center gap-2">
           <Link href="/import" className={btnSecondary}>
             Import

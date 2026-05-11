@@ -13,6 +13,7 @@ import {
   XCircle,
 } from "lucide-react";
 import AppShell from "@/components/AppShell";
+import HelpAnchor from "@/components/HelpAnchor";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -353,7 +354,10 @@ export default function AdminDashboardPage() {
       <div className="space-y-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="font-display text-2xl text-text-primary">Admin</h1>
+            <div className="flex items-center gap-1">
+              <h1 className="font-display text-2xl text-text-primary">Admin</h1>
+              <HelpAnchor section="admin" label="Admin" />
+            </div>
             <p className="mt-1 text-sm text-text-muted">
               Platform ops hub, totals and shortcuts across all organizations.
             </p>
