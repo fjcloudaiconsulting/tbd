@@ -75,6 +75,12 @@ class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class VerifyResponse(BaseModel):
+    user: UserResponse
+    access_token: str
+    token_type: str = "bearer"
+
+
 class UsernameCheckResponse(BaseModel):
     available: bool
     suggestion: str | None = None

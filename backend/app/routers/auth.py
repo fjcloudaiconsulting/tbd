@@ -42,6 +42,7 @@ from app.schemas.auth import (
     UsernameCheckResponse,
     UserResponse,
     VerifyEmailRequest,
+    VerifyResponse,
 )
 from app.config import settings as app_settings
 from app import redis_client
@@ -279,7 +280,7 @@ async def login(
         secure=app_settings.cookie_secure,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/api/v1/auth/refresh",
+        path="/",
     )
 
     return TokenResponse(access_token=access_token)
@@ -344,7 +345,7 @@ async def refresh(
                 pass
 
         if datetime.now(timezone.utc) - session_start > timedelta(days=max_days):
-            response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
+            response.delete_cookie("refresh_token", path="/")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session expired — please sign in again",
@@ -367,10 +368,60 @@ async def refresh(
         secure=app_settings.cookie_secure,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/api/v1/auth/refresh",
+        path="/",
     )
 
     return TokenResponse(access_token=access_token)
+
+
+@router.post("/verify", response_model=VerifyResponse)
+@limiter.limit("120/minute")
+async def verify(
+    request: Request,
+    refresh_token: str | None = Cookie(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Server-side session verification for RSC consumers.
+
+    Validates the refresh cookie without rotating it. Returns the same
+    `UserResponse` shape as `/auth/me` plus a fresh access token. No
+    `Set-Cookie`. No audit log on success.
+    """
+    if refresh_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No refresh token",
+        )
+
+    payload = decode_token(refresh_token)
+    if payload is None or payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+        )
+
+    user_id = int(payload["sub"])
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid session",
+        )
+
+    await db.refresh(user, ["organization"])
+    await subscription_service.check_trial_expiry(db, user.org_id)
+    pair = await subscription_service.get_subscription_with_plan(db, user.org_id)
+    sub, plan = pair if pair else (None, None)
+    user_resp = _user_response(user, user.organization, sub, plan)
+
+    access_token = create_access_token(user.id, user.org_id, user.role.value)
+
+    return VerifyResponse(
+        user=user_resp,
+        access_token=access_token,
+        token_type="bearer",
+    )
 
 
 @router.get("/me", response_model=UserResponse)
@@ -411,7 +462,7 @@ async def logout(
         except Exception:
             # Missing/expired/malformed token: still clear the cookie below.
             pass
-    response.delete_cookie("refresh_token", path="/api/v1/auth/refresh")
+    response.delete_cookie("refresh_token", path="/")
     return {"detail": "Logged out"}
 
 
@@ -595,7 +646,7 @@ def _issue_tokens(user: User, response: Response) -> TokenResponse:
         secure=app_settings.cookie_secure,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/api/v1/auth/refresh",
+        path="/",
     )
     return TokenResponse(access_token=access_token)
 
@@ -1060,7 +1111,7 @@ async def google_callback(
         secure=app_settings.cookie_secure,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/api/v1/auth/refresh",
+        path="/",
     )
     return resp
 
