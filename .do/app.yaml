@@ -169,6 +169,13 @@ services:
       - key: HOSTNAME
         scope: RUN_AND_BUILD_TIME
         value: "0.0.0.0"
+      # Server-side (RSC) reach to the backend. Browser requests use the App
+      # Platform ingress (relative URLs); server-side fetches must hit the
+      # backend component via its private URL. RUN_TIME scope only — the
+      # value isn't needed at build time and isn't resolvable then either.
+      - key: BACKEND_INTERNAL_URL
+        scope: RUN_TIME
+        value: ${backend.PRIVATE_URL}
 
 # Pre-deploy job: run Alembic migrations exactly once before any backend
 # replica starts. This is the canonical "init container" pattern for App
