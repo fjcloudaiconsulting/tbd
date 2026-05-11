@@ -1,10 +1,20 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { SWRConfig } from "swr";
 
-import ForecastPlansPage from "@/app/forecast-plans/page";
-import { useAuth } from "@/components/auth/AuthProvider";
+import ForecastPlansClient from "@/app/forecast-plans/ForecastPlansClient";
 import { apiFetch } from "@/lib/api";
-import type { ForecastPlan } from "@/lib/types";
+import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
+
+// The page itself is now an async Server Component (RSC) — it calls
+// getServerSession(), parallel-fetches initial categories/periods/plan,
+// and hands them down to <ForecastPlansClient />. Vitest + jsdom can't
+// natively render async server components, and the page contains no
+// interactive UI of its own beyond the redirect/seed wiring. We mount
+// the client directly with synthetic initial props instead; the wiring
+// itself is exercised by the production build's `server-only` import
+// boundary on `lib/auth-server.ts` (a client-side leak would fail
+// `npm run build`).
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -16,10 +26,6 @@ vi.mock("@/components/AppShell", () => ({
   default: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="app-shell">{children}</div>
   ),
-}));
-
-vi.mock("@/components/auth/AuthProvider", () => ({
-  useAuth: vi.fn(),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -43,18 +49,9 @@ vi.mock("recharts", () => ({
   Cell: () => null,
 }));
 
-const USER = {
-  id: 1, username: "user", email: "user@example.com",
-  first_name: null, last_name: null, phone: null, avatar_url: null,
-  email_verified: true, role: "owner" as const, org_id: 1, org_name: "Org",
-  billing_cycle_day: 1, is_superadmin: false, is_active: true,
-  mfa_enabled: false, subscription_status: null, subscription_plan: null,
-  trial_end: null,
-};
-
 // Master + sub categories of both types so we can prove the dropdown
 // shows masters AND subs that match the selected type.
-const CATEGORIES = [
+const CATEGORIES: Category[] = [
   // Income side
   {
     id: 10, name: "Salary", type: "income", parent_id: null,
@@ -84,7 +81,7 @@ const CATEGORIES = [
   },
 ];
 
-const PERIOD = {
+const PERIOD: BillingPeriod = {
   id: 1, start_date: "2026-05-01", end_date: null,
 };
 
@@ -93,7 +90,7 @@ function makePlan(items: Array<{
   type: "income" | "expense"; planned_amount: number;
   source?: "manual" | "recurring" | "history";
   parent_id?: number | null; actual_amount?: number; variance?: number;
-}> = []) {
+}> = []): ForecastPlan {
   return {
     id: 100,
     billing_period_id: PERIOD.id,
@@ -119,23 +116,16 @@ function makePlan(items: Array<{
   };
 }
 
-function setupAuth() {
-  (useAuth as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
-    user: USER, loading: false, login: vi.fn(), logout: vi.fn(),
-    refresh: vi.fn(),
-  });
-}
-
-function mockInitialFetches(plan: ReturnType<typeof makePlan>) {
-  // ensure-future-periods POST happens first, then categories + periods,
-  // then GET /forecast-plans?period_start=...
+// All apiFetch traffic from the client is mutating (ensure-future POST,
+// /populate, /refresh-from-sources, item CRUD, plan lifecycle). Plus, the
+// post-mount ensure-future block re-fetches /billing-periods. Default
+// mock implementation handles all of these and echoes back the supplied
+// plan on plan-mutating writes so the test can assert UI updates.
+function mockApiFetch(plan: ForecastPlan) {
   (apiFetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     (path: string, init?: RequestInit) => {
       if (path.startsWith("/api/v1/settings/billing-periods/ensure-future")) {
         return Promise.resolve([]);
-      }
-      if (path === "/api/v1/categories") {
-        return Promise.resolve(CATEGORIES);
       }
       if (path === "/api/v1/settings/billing-periods") {
         return Promise.resolve([PERIOD]);
@@ -146,31 +136,42 @@ function mockInitialFetches(plan: ReturnType<typeof makePlan>) {
       if (path.startsWith("/api/v1/forecast-plans/refresh-from-sources")) {
         return Promise.resolve(plan);
       }
-      // populate is exercised in a separate test
       if (path.includes("/populate")) {
         return Promise.resolve(plan);
       }
-      // default — return whatever was requested as empty plan-like
       void init;
       return Promise.resolve(plan);
     },
   );
 }
 
-describe("ForecastPlansPage — dropdown + refresh", () => {
+function renderClient(plan: ForecastPlan | null) {
+  // Each render gets a fresh SWR cache so state doesn't leak between
+  // tests (the default cache is module-scoped and would let an earlier
+  // empty-plan test paint stale data into a later with-items test).
+  return render(
+    <SWRConfig value={{ provider: () => new Map() }}>
+      <ForecastPlansClient
+        initialPeriods={[PERIOD]}
+        initialCategories={CATEGORIES}
+        initialPlan={plan}
+      />
+    </SWRConfig>,
+  );
+}
+
+describe("ForecastPlansClient — dropdown + refresh", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
-    setupAuth();
   });
 
   it("Bug 1: income type shows master AND sub categories in the dropdown", async () => {
-    mockInitialFetches(makePlan());
+    mockApiFetch(makePlan());
+    renderClient(makePlan());
 
-    render(<ForecastPlansPage />);
-
-    // Wait for the page to render the Auto-populate header button,
-    // which means the initial fetches have settled.
+    // Initial paint already has the plan via fallbackData; the
+    // Auto-populate button must be present on a draft.
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: "Auto-populate" }),
@@ -202,19 +203,17 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
 
   it("Bug 4: a category already in the plan renders as disabled with '(already added)'", async () => {
     // Plan has "Side gigs" (master, no children) already added as income
-    mockInitialFetches(
-      makePlan([
-        {
-          category_id: 12,
-          category_name: "Side gigs",
-          type: "income",
-          planned_amount: 500,
-          source: "manual",
-        },
-      ]),
-    );
-
-    render(<ForecastPlansPage />);
+    const plan = makePlan([
+      {
+        category_id: 12,
+        category_name: "Side gigs",
+        type: "income",
+        planned_amount: 500,
+        source: "manual",
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /\+ Add Item/ })).toBeTruthy();
@@ -254,19 +253,17 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
     // Bonus is a child of Salary; picking Bonus would roll up to Salary,
     // which is a no-op against the existing item — so Bonus should be
     // shown as disabled too.
-    mockInitialFetches(
-      makePlan([
-        {
-          category_id: 10,
-          category_name: "Salary",
-          type: "income",
-          planned_amount: 3000,
-          source: "manual",
-        },
-      ]),
-    );
-
-    render(<ForecastPlansPage />);
+    const plan = makePlan([
+      {
+        category_id: 10,
+        category_name: "Salary",
+        type: "income",
+        planned_amount: 3000,
+        source: "manual",
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /\+ Add Item/ })).toBeTruthy();
@@ -291,19 +288,17 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
   });
 
   it("Bug 5: Refresh from sources renders a confirm modal with the locked copy", async () => {
-    mockInitialFetches(
-      makePlan([
-        {
-          category_id: 20,
-          category_name: "Groceries",
-          type: "expense",
-          planned_amount: 500,
-          source: "recurring",
-        },
-      ]),
-    );
-
-    render(<ForecastPlansPage />);
+    const plan = makePlan([
+      {
+        category_id: 20,
+        category_name: "Groceries",
+        type: "expense",
+        planned_amount: 500,
+        source: "recurring",
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
 
     // Refresh from sources is gated behind the Show details toggle
     // (defaults off post-PR-B forecasts UX restructure). Flip it on
@@ -344,9 +339,8 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
   });
 
   it("Bug 5: Refresh button is hidden on an empty draft plan", async () => {
-    mockInitialFetches(makePlan());
-
-    render(<ForecastPlansPage />);
+    mockApiFetch(makePlan());
+    renderClient(makePlan());
 
     await waitFor(() => {
       expect(
@@ -360,9 +354,8 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
   });
 
   it("flipping the form type clears a previously selected category", async () => {
-    mockInitialFetches(makePlan());
-
-    render(<ForecastPlansPage />);
+    mockApiFetch(makePlan());
+    renderClient(makePlan());
 
     await waitFor(() => {
       expect(
@@ -400,21 +393,19 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
   });
 
   it("Show details toggle defaults off: Variance/Source columns and Refresh-from-sources are hidden on a draft plan", async () => {
-    mockInitialFetches(
-      makePlan([
-        {
-          category_id: 20,
-          category_name: "Groceries",
-          type: "expense",
-          planned_amount: 500,
-          source: "history",
-          actual_amount: 300,
-          variance: -200,
-        },
-      ]),
-    );
-
-    render(<ForecastPlansPage />);
+    const plan = makePlan([
+      {
+        category_id: 20,
+        category_name: "Groceries",
+        type: "expense",
+        planned_amount: 500,
+        source: "history",
+        actual_amount: 300,
+        variance: -200,
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
 
     await waitFor(() => {
       expect(screen.getByText("Groceries")).toBeTruthy();
@@ -436,9 +427,8 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
   });
 
   it("Show details toggle persists in localStorage and rehydrates on reload", async () => {
-    mockInitialFetches(makePlan());
-
-    const { unmount } = render(<ForecastPlansPage />);
+    mockApiFetch(makePlan());
+    const { unmount } = renderClient(makePlan());
 
     await waitFor(() => {
       expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
@@ -453,14 +443,14 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
 
     // Re-render with the same localStorage state — the toggle should
     // come back as "Hide details" (i.e. on).
-    render(<ForecastPlansPage />);
+    renderClient(makePlan());
     await waitFor(() => {
       expect(screen.getByRole("switch", { name: /hide details/i })).toBeTruthy();
     });
   });
 
   it("Finalized plan + details on: Refresh from sources opens 'Edit and refresh plan' modal with locked copy and confirm label", async () => {
-    const finalized = {
+    const finalized: ForecastPlan = {
       ...makePlan([
         {
           category_id: 20,
@@ -472,12 +462,11 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
           variance: -300,
         },
       ]),
-      status: "active" as const,
+      status: "active",
     };
 
-    mockInitialFetches(finalized);
-
-    render(<ForecastPlansPage />);
+    mockApiFetch(finalized);
+    renderClient(finalized);
 
     await waitFor(() => {
       expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
@@ -510,7 +499,7 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
   });
 
   it("Finalized refresh confirm calls /revert then /refresh-from-sources in order", async () => {
-    const finalized = {
+    const finalized: ForecastPlan = {
       ...makePlan([
         {
           category_id: 20,
@@ -522,7 +511,7 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
           variance: -300,
         },
       ]),
-      status: "active" as const,
+      status: "active",
     };
 
     const calls: string[] = [];
@@ -530,7 +519,6 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
       (path: string) => {
         if (path.startsWith("/api/v1/settings/billing-periods/ensure-future"))
           return Promise.resolve([]);
-        if (path === "/api/v1/categories") return Promise.resolve(CATEGORIES);
         if (path === "/api/v1/settings/billing-periods")
           return Promise.resolve([PERIOD]);
         if (path.startsWith("/api/v1/forecast-plans?"))
@@ -547,7 +535,7 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
       },
     );
 
-    render(<ForecastPlansPage />);
+    renderClient(finalized);
 
     await waitFor(() => {
       expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
@@ -572,7 +560,7 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
   });
 
   it("Finalized refresh: revert ok + refresh fail leaves plan in draft and surfaces error (no silent fallback)", async () => {
-    const finalized = {
+    const finalized: ForecastPlan = {
       ...makePlan([
         {
           category_id: 20,
@@ -584,27 +572,33 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
           variance: -300,
         },
       ]),
-      status: "active" as const,
+      status: "active",
     };
-    const draftCopy = { ...finalized, status: "draft" as const };
+    const draftCopy: ForecastPlan = { ...finalized, status: "draft" };
+    // Backend state — flips from active to draft after the revert call
+    // succeeds. A background SWR revalidate (or post-write reload) must
+    // see the new state, not the original `finalized` object.
+    let currentBackendPlan: ForecastPlan = finalized;
 
     (apiFetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
       (path: string) => {
         if (path.startsWith("/api/v1/settings/billing-periods/ensure-future"))
           return Promise.resolve([]);
-        if (path === "/api/v1/categories") return Promise.resolve(CATEGORIES);
         if (path === "/api/v1/settings/billing-periods")
           return Promise.resolve([PERIOD]);
         if (path.startsWith("/api/v1/forecast-plans?"))
-          return Promise.resolve(finalized);
-        if (path.includes("/revert")) return Promise.resolve(draftCopy);
+          return Promise.resolve(currentBackendPlan);
+        if (path.includes("/revert")) {
+          currentBackendPlan = draftCopy;
+          return Promise.resolve(draftCopy);
+        }
         if (path.startsWith("/api/v1/forecast-plans/refresh-from-sources"))
           return Promise.reject(new Error("Refresh blew up"));
-        return Promise.resolve(finalized);
+        return Promise.resolve(currentBackendPlan);
       },
     );
 
-    render(<ForecastPlansPage />);
+    renderClient(finalized);
 
     await waitFor(() => {
       expect(screen.getByRole("switch", { name: /show details/i })).toBeTruthy();
@@ -641,19 +635,17 @@ describe("ForecastPlansPage — dropdown + refresh", () => {
     // current period (one-off furniture purchase, etc.) but writes them
     // with source=history. "Avg (3mo)" lied; rename to "Auto" — broader
     // and matches the L3.10 import preview "Auto" badge.
-    mockInitialFetches(
-      makePlan([
-        {
-          category_id: 20,
-          category_name: "Groceries",
-          type: "expense",
-          planned_amount: 250,
-          source: "history",
-        },
-      ]),
-    );
-
-    render(<ForecastPlansPage />);
+    const plan = makePlan([
+      {
+        category_id: 20,
+        category_name: "Groceries",
+        type: "expense",
+        planned_amount: 250,
+        source: "history",
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
 
     // Source column is gated behind Show details (off by default
     // post-PR-B). Flip it on so the label is visible.
