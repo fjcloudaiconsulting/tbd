@@ -19,6 +19,7 @@ from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import AVATAR_URL_MAX_LENGTH, Organization, Role, User
 from app.models.subscription import Subscription, Plan
 from app.services import subscription_service
+from app.services.user_service import normalize_email
 from app.schemas.auth import (
     USERNAME_MAX_LENGTH,
     USERNAME_MIN_LENGTH,
@@ -182,8 +183,9 @@ async def register(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
+    email_norm = normalize_email(body.email)
     existing = await db.execute(
-        select(User).where(or_(User.username == body.username, User.email == body.email))
+        select(User).where(or_(User.username == body.username, User.email == email_norm))
     )
     if existing.scalar_one_or_none():
         raise HTTPException(
@@ -203,7 +205,7 @@ async def register(
     user = User(
         org_id=org.id,
         username=body.username,
-        email=body.email,
+        email=email_norm,
         first_name=body.first_name,
         last_name=body.last_name,
         password_hash=hash_password(body.password),
@@ -539,7 +541,7 @@ async def forgot_password(
     db: AsyncSession = Depends(get_db),
 ):
     """Send a password reset email. Always returns 200 to prevent email enumeration."""
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(select(User).where(User.email == normalize_email(body.email)))
     user = result.scalar_one_or_none()
 
     if user and user.is_active:
@@ -1095,7 +1097,7 @@ async def google_callback(
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Failed to communicate with Google")
 
-    email = google_user.get("email", "")
+    email = normalize_email(google_user.get("email", ""))
     if not email:
         raise HTTPException(status_code=400, detail="Google account has no email")
 

@@ -35,6 +35,7 @@ from app.schemas.auth import (
 )
 from app.security import decode_token, hash_password
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.user_service import normalize_email as _normalize_email_shared
 
 
 class InvitationUnavailable(Exception):
@@ -47,7 +48,10 @@ INVITATION_TTL = datetime.timedelta(days=7)
 
 
 def _normalize_email(value: str) -> str:
-    return value.strip().lower()
+    # Thin wrapper preserving the historical name used throughout this
+    # module. The canonical implementation lives in user_service so
+    # every user-creation site shares the same rule.
+    return _normalize_email_shared(value)
 
 
 async def _clear_expired_open_invites(
