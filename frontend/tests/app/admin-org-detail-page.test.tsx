@@ -197,13 +197,14 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
     // Modal opens; wait for the modal heading to confirm it mounted, then for
     // the Pro option to load (modal fetches /api/v1/plans/all asynchronously).
     await screen.findByRole("heading", { name: /Change plan/i });
-    await screen.findByRole("option", { name: /Pro \(pro\)/i });
+    const proOption = await screen.findByRole("option", { name: /Pro \(pro\)/i });
 
-    // Pick the Pro plan via the modal's select. The page also has a Status
-    // <select>, so grab all comboboxes and pick the modal's (rendered last).
-    const comboboxes = screen.getAllByRole("combobox");
-    const planSelect = comboboxes[comboboxes.length - 1];
-    fireEvent.change(planSelect, { target: { value: "2" } });
+    // Pick the Pro plan via the modal's select. The page has multiple
+    // <select> elements (Status, per-member Role, modal Plan), so find
+    // the one containing the Pro option rather than indexing.
+    const planSelect = proOption.closest("select");
+    expect(planSelect).not.toBeNull();
+    fireEvent.change(planSelect as HTMLSelectElement, { target: { value: "2" } });
 
     // Submit: there are now two "Save" buttons (the page's + the modal's).
     // The modal's submit button is the last one rendered.
