@@ -702,8 +702,20 @@ export default function DashboardPage() {
           </div>
           </TourAnchor>
 
-          {/* ═══ ROW 1: On Track hero — single full-width tile ═══ */}
-          <TourAnchor id="dashboard.on-track-tile">
+          {/* ═══ ROW 1: On Track hero — single full-width tile ═══
+              `as="child"` is REQUIRED. The child is a block-level
+              `<div className="flex items-start gap-2">` that sits as a
+              direct child of `<div className="space-y-5">`. Without
+              `as="child"`, TourAnchor wraps it in a bare inline
+              `<span>`. Tailwind's `space-y-5` rule applies
+              `margin-block-end: 1.25rem` to every direct child except
+              the last, but vertical margins on inline elements are
+              ignored by the CSS box model. The gap between the period
+              nav, this hero, and the accounts/forecast grid below
+              therefore collapses (PR #226 regression visible on prod).
+              Every other TourAnchor on this page already uses
+              `as="child"`; this one was the lone exception. */}
+          <TourAnchor id="dashboard.on-track-tile" as="child">
             <div className="flex items-start gap-2">
               <div className="flex-1">
                 <OnTrackTile
