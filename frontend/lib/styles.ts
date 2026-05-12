@@ -60,3 +60,9 @@ export const badgeNeutral =
 
 export const stickyBar =
   "sticky top-0 z-20 -mx-4 sm:-mx-8 border-b border-border bg-surface-raised px-4 sm:px-8";
+
+// Brand foundation (L5.10) constants and copy live in `./brand.ts`. They
+// were moved out of this file so the design-token check can keep
+// `lib/styles.ts` free of hex literals while brand surfaces (OG image,
+// apple-icon, landing hero) continue to use a single locked palette
+// that does NOT theme-switch. Import from "@/lib/brand".

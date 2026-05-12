@@ -1,0 +1,81 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`<Logo /> > renders identically in dark and light theme (snapshot) > logo-dark 1`] = `
+<span
+  class="inline-flex items-center gap-2"
+>
+  <svg
+    aria-hidden="true"
+    focusable="false"
+    height="24"
+    viewBox="0 0 32 32"
+    width="24"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <path
+      d="M 9 8 L 18 16 L 9 24"
+      fill="none"
+      opacity="0.55"
+      stroke="var(--color-text-muted)"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2.5"
+    />
+    <path
+      d="M 14 8 L 23 16 L 14 24"
+      fill="none"
+      opacity="1"
+      stroke="var(--color-accent)"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2.5"
+    />
+  </svg>
+  <span
+    aria-label="The Better Decision"
+    class="font-display font-semibold tracking-tight text-text-primary"
+  >
+    The Better Decision
+  </span>
+</span>
+`;
+
+exports[`<Logo /> > renders identically in dark and light theme (snapshot) > logo-light 1`] = `
+<span
+  class="inline-flex items-center gap-2"
+>
+  <svg
+    aria-hidden="true"
+    focusable="false"
+    height="24"
+    viewBox="0 0 32 32"
+    width="24"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <path
+      d="M 9 8 L 18 16 L 9 24"
+      fill="none"
+      opacity="0.55"
+      stroke="var(--color-text-muted)"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2.5"
+    />
+    <path
+      d="M 14 8 L 23 16 L 14 24"
+      fill="none"
+      opacity="1"
+      stroke="var(--color-accent)"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2.5"
+    />
+  </svg>
+  <span
+    aria-label="The Better Decision"
+    class="font-display font-semibold tracking-tight text-text-primary"
+  >
+    The Better Decision
+  </span>
+</span>
+`;
