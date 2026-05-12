@@ -28,7 +28,7 @@ workflow we don't have yet. Out of scope here.
 from __future__ import annotations
 
 import structlog
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_event import AuditEvent
@@ -36,7 +36,7 @@ from app.models.feature_override import OrgFeatureOverride
 from app.models.invitation import Invitation
 from app.models.org_data_reset_lock import OrgDataResetLock
 from app.models.tag import Tag
-from app.models.user import User
+from app.models.user import Role, User
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
@@ -86,6 +86,41 @@ async def merge_users(
             "source user is a superadmin; promote target first or pick a "
             "different target"
         )
+
+    # Last-active-owner invariant. Deleting source must not leave its
+    # org without an active OWNER. Mirrors the guard
+    # ``invitation_service.remove_member`` enforces at the org-member
+    # endpoint level; an admin must not be able to do via merge what
+    # they can't do via the regular member removal flow.
+    #
+    # Scope is source.org_id only. Target's org membership preserves
+    # the invariant naturally when target is in the SAME org AND is
+    # an active OWNER. Otherwise, after the delete, source's org is
+    # ownerless — even if target happens to be an owner of a different
+    # org. Refuse with 409 so the operator promotes another user
+    # first.
+    if source.role == Role.OWNER and source.is_active:
+        other_active_owners_in_source_org = await db.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(
+                User.org_id == source.org_id,
+                User.role == Role.OWNER,
+                User.is_active.is_(True),
+                User.id != source.id,
+            )
+        )
+        target_preserves_invariant = (
+            target.org_id == source.org_id
+            and target.role == Role.OWNER
+            and target.is_active
+        )
+        if (other_active_owners_in_source_org or 0) == 0 and not target_preserves_invariant:
+            raise ConflictError(
+                f"Cannot merge: source is the only active owner of org "
+                f"{source.org_id}. Promote another user to owner in that "
+                f"org first, then retry."
+            )
 
     counts: dict[str, int] = {}
 

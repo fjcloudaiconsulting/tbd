@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -58,15 +58,17 @@ async def _seed_user(
     email: str,
     is_superadmin: bool = False,
     email_verified: bool = False,
+    role: Role = Role.OWNER,
+    is_active: bool = True,
 ) -> User:
     user = User(
         org_id=org_id,
         username=username,
         email=email,
         password_hash=hash_password("pw"),
-        role=Role.OWNER,
+        role=role,
         is_superadmin=is_superadmin,
-        is_active=True,
+        is_active=is_active,
         email_verified=email_verified,
     )
     db.add(user)
@@ -281,3 +283,184 @@ async def test_merge_carries_email_verified_to_target(session_factory) -> None:
         target_after = await db.scalar(select(User).where(User.id == target_id))
         assert target_after is not None
         assert target_after.email_verified is True
+
+
+# ── last-active-owner invariant ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_merge_blocked_when_source_is_sole_owner_and_target_in_different_org(
+    session_factory,
+) -> None:
+    """Source is the only active owner of org X; target lives in org Y.
+    Refuse with 409 — the merge would orphan org X.
+
+    In practice the cross-org guard catches this scenario first
+    (target.org_id != source.org_id), but the contract the operator
+    sees is identical: ``ConflictError`` + source row preserved. This
+    test pins both signals at once. If the cross-org guard is ever
+    relaxed, the last-owner guard catches the same orphan case.
+    """
+    async with session_factory() as db:
+        org_x = await _seed_org(db)
+        org_y = Organization(name="Other", billing_cycle_day=1)
+        db.add(org_y)
+        await db.flush()
+        source = await _seed_user(
+            db, org_id=org_x.id, username="sole-x", email="sx@x.io",
+            role=Role.OWNER, is_active=True,
+        )
+        target = await _seed_user(
+            db, org_id=org_y.id, username="t-y", email="ty@x.io",
+            role=Role.OWNER, is_active=True,
+        )
+        await db.commit()
+        source_id, target_id = source.id, target.id
+
+        with pytest.raises(ConflictError):
+            await user_merge_service.merge_users(
+                db, source_user_id=source_id, target_user_id=target_id
+            )
+
+        # Source row preserved — guard fired before any FK reassignment.
+        await db.rollback()
+        async with session_factory() as fresh:
+            kept = await fresh.scalar(select(User).where(User.id == source_id))
+            assert kept is not None
+            assert kept.is_active is True
+            assert kept.role == Role.OWNER
+
+
+@pytest.mark.asyncio
+async def test_merge_blocked_when_source_is_sole_owner_and_target_is_same_org_member(
+    session_factory,
+) -> None:
+    """Source is the only active owner of org X; target is a MEMBER of
+    org X (not OWNER). Deleting source would still orphan the org —
+    refuse with 409 with the last-active-owner error message.
+    """
+    async with session_factory() as db:
+        org = await _seed_org(db)
+        source = await _seed_user(
+            db, org_id=org.id, username="sole", email="s@x.io",
+            role=Role.OWNER, is_active=True,
+        )
+        target = await _seed_user(
+            db, org_id=org.id, username="member", email="m@x.io",
+            role=Role.MEMBER, is_active=True,
+        )
+        await db.commit()
+        source_id, target_id = source.id, target.id
+
+        with pytest.raises(ConflictError, match="only active owner"):
+            await user_merge_service.merge_users(
+                db, source_user_id=source_id, target_user_id=target_id
+            )
+
+
+@pytest.mark.asyncio
+async def test_merge_blocked_when_target_is_inactive_owner_in_same_org(
+    session_factory,
+) -> None:
+    """Same-org case where target IS an OWNER but is inactive.
+    The invariant counts active owners only, so target cannot
+    preserve it — block.
+    """
+    async with session_factory() as db:
+        org = await _seed_org(db)
+        source = await _seed_user(
+            db, org_id=org.id, username="sole-active", email="sa@x.io",
+            role=Role.OWNER, is_active=True,
+        )
+        target = await _seed_user(
+            db, org_id=org.id, username="inactive-owner", email="io@x.io",
+            role=Role.OWNER, is_active=False,
+        )
+        await db.commit()
+        source_id, target_id = source.id, target.id
+
+        with pytest.raises(ConflictError, match="only active owner"):
+            await user_merge_service.merge_users(
+                db, source_user_id=source_id, target_user_id=target_id
+            )
+
+
+@pytest.mark.asyncio
+async def test_merge_allowed_when_source_is_one_of_multiple_active_owners(
+    session_factory,
+) -> None:
+    """Org has two active owners; merging one into a member is fine —
+    the other owner keeps the invariant.
+    """
+    async with session_factory() as db:
+        org = await _seed_org(db)
+        source = await _seed_user(
+            db, org_id=org.id, username="owner-a", email="a@x.io",
+            role=Role.OWNER, is_active=True,
+        )
+        _other_owner = await _seed_user(
+            db, org_id=org.id, username="owner-b", email="b@x.io",
+            role=Role.OWNER, is_active=True,
+        )
+        target = await _seed_user(
+            db, org_id=org.id, username="member", email="m@x.io",
+            role=Role.MEMBER, is_active=True,
+        )
+        await db.commit()
+        source_id, target_id = source.id, target.id
+
+        # No raise — guard does not fire.
+        await user_merge_service.merge_users(
+            db, source_user_id=source_id, target_user_id=target_id
+        )
+        await db.commit()
+
+        # Source row gone; org still has an active owner.
+        assert (
+            await db.scalar(select(User).where(User.id == source_id))
+        ) is None
+        active_owners = await db.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(
+                User.org_id == org.id,
+                User.role == Role.OWNER,
+                User.is_active.is_(True),
+            )
+        )
+        assert (active_owners or 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_merge_allowed_when_source_is_not_owner_regardless_of_org_owner_count(
+    session_factory,
+) -> None:
+    """Source is a MEMBER, not an owner. The owner-count invariant is
+    irrelevant — merge proceeds.
+    """
+    async with session_factory() as db:
+        org = await _seed_org(db)
+        # Single active owner of the org (NOT the source).
+        _sole_owner = await _seed_user(
+            db, org_id=org.id, username="owner", email="o@x.io",
+            role=Role.OWNER, is_active=True,
+        )
+        source = await _seed_user(
+            db, org_id=org.id, username="src-member", email="sm@x.io",
+            role=Role.MEMBER, is_active=True,
+        )
+        target = await _seed_user(
+            db, org_id=org.id, username="tgt-member", email="tm@x.io",
+            role=Role.MEMBER, is_active=True,
+        )
+        await db.commit()
+        source_id, target_id = source.id, target.id
+
+        await user_merge_service.merge_users(
+            db, source_user_id=source_id, target_user_id=target_id
+        )
+        await db.commit()
+
+        assert (
+            await db.scalar(select(User).where(User.id == source_id))
+        ) is None

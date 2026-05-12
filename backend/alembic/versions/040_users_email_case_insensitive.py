@@ -17,6 +17,35 @@ is a defense-in-depth measure paired with the Python-side
 The change is a no-op for SQLite (the testing engine). The
 ``with op.batch_alter_table`` form is portable; MySQL receives an
 ``ALTER TABLE ... MODIFY COLUMN`` under the hood.
+
+=============================================================
+Deployment preflight — REQUIRED before applying in production
+=============================================================
+
+If the target database was created on a case-sensitive collation
+(``utf8mb4_bin``, ``utf8mb4_0900_as_cs``, or similar) it may
+already contain rows that differ only in email casing or
+whitespace. Switching the column to ``utf8mb4_0900_ai_ci`` rebuilds
+the UNIQUE index over the new comparison rules and will FAIL the
+``ALTER TABLE`` with a duplicate-key error if such rows exist.
+
+Run this query against the target DB BEFORE deploying:
+
+    SELECT LOWER(TRIM(email)) AS normalized_email, COUNT(*) AS n
+    FROM users
+    GROUP BY normalized_email
+    HAVING COUNT(*) > 1;
+
+Any row in the result is a collision. Resolve every one of them
+via ``POST /api/v1/admin/users/merge`` (the recovery endpoint
+shipped in the same PR as this migration) BEFORE running the
+migration. Otherwise the unique-constraint rebuild aborts and
+``alembic upgrade`` exits non-zero.
+
+The migration intentionally does NOT run this check itself — a
+runbook entry the operator reads is clearer than a driver-level
+abort, and keeps the migration code portable across MySQL /
+SQLite without dialect-specific preflight branching.
 """
 from typing import Sequence, Union
 
