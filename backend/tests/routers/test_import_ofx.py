@@ -293,20 +293,68 @@ async def test_ofx_preview_timeout_returns_400(session_factory, monkeypatch):
 # ── Row-count cap → 413 ──
 
 
+class _FakeTx:
+    """Minimal STMTTRN stand-in for the row-cap test.
+
+    We mock at the ``_parse_in_executor`` boundary so the test exercises
+    the post-parse row-cap branch deterministically, without racing
+    against ofxtools' wall-clock parse time on slow CI runners.
+    """
+
+    def __init__(self, i: int):
+        from datetime import datetime, timezone
+        from decimal import Decimal
+        self.fitid = f"FAKE{i:06d}"
+        self.dtposted = datetime(2026, 4, 1, tzinfo=timezone.utc)
+        self.trnamt = Decimal("-1.00")
+        self.name = f"Row{i}"
+        self.memo = None
+        self.trntype = "DEBIT"
+        self.payee = None
+
+
+class _FakeAccount:
+    bankid = "FAKEBANK"
+    accttype = "CHECKING"
+
+
+class _FakeStatement:
+    def __init__(self, count: int):
+        self.account = _FakeAccount()
+        self.transactions = [_FakeTx(i) for i in range(count)]
+
+
+class _FakeOFX:
+    def __init__(self, count: int):
+        self.statements = [_FakeStatement(count)]
+
+
 @pytest.mark.asyncio
 async def test_ofx_preview_too_many_rows_returns_413(session_factory):
-    """Files with > 10 000 rows fail post-parse with 413 (spec §1.5)."""
+    """Post-parse row cap (>10 000) → 413 (spec §1.5).
+
+    We stub ``_parse_in_executor`` so the test does not depend on
+    ofxtools' wall-clock parse speed. Slow CI runners would otherwise
+    hit the 10s timeout (400) before reaching the row-cap branch (413);
+    mocking keeps the assertion deterministic.
+    """
     seed = await _seed(session_factory)
     app = _make_app(session_factory)
-    payload = _read_fixture("large_10k_rows.ofx")
-    with TestClient(app) as client:
-        resp = client.post(
-            "/api/v1/import/ofx/preview",
-            files={"file": ("big.ofx", io.BytesIO(payload), "application/x-ofx")},
-            data={"account_id": str(seed["account_id"])},
-        )
+
+    def fake_parse(_raw: bytes):
+        return _FakeOFX(10_001)
+
+    with patch.object(import_ofx_service, "_parse_in_executor", fake_parse):
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/import/ofx/preview",
+                files={"file": ("big.ofx", io.BytesIO(b"<OFX>stub</OFX>"), "application/x-ofx")},
+                data={"account_id": str(seed["account_id"])},
+            )
     assert resp.status_code == 413
-    assert "10000" in resp.json()["detail"] or "10001" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert "10001" in detail or "10000" in detail
+    assert "transactions" in detail.lower()
 
 
 # ── Auth gate ──
