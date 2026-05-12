@@ -4,10 +4,11 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/components/auth/AuthProvider";
+import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
 import { apiFetch } from "@/lib/api";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
-import { input, label, btnPrimary, btnSecondary, error as errorCls, success } from "@/lib/styles";
+import { input, label, btnPrimary, error as errorCls, success } from "@/lib/styles";
 import {
   USERNAME_MAX_LENGTH,
   USERNAME_MIN_LENGTH,
@@ -42,6 +43,7 @@ export default function RegisterPageBody() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [registered, setRegistered] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
 
   // Auto-suggest username from name
   useEffect(() => {
@@ -100,10 +102,12 @@ export default function RegisterPageBody() {
   }
 
   async function handleGoogleLogin() {
+    setGoogleLoading(true);
     try {
       const data = await apiFetch<{ redirect_url: string }>("/api/v1/auth/google");
       window.location.href = data.redirect_url;
     } catch (err) {
+      setGoogleLoading(false);
       setError(err instanceof Error ? err.message : "Google sign-in is not available");
     }
   }
@@ -210,14 +214,20 @@ export default function RegisterPageBody() {
           <button type="submit" disabled={submitting || usernameStatus === "taken"} className={`w-full ${btnPrimary}`}>
             {submitting ? "Creating account..." : "Create Account"}
           </button>
-          <div className="flex items-center gap-3 my-4">
-            <div className="flex-1 border-t border-border" />
-            <span className="text-xs text-text-muted">or</span>
-            <div className="flex-1 border-t border-border" />
-          </div>
-          <button onClick={handleGoogleLogin} className={btnSecondary + " w-full"} type="button">
-            Sign up with Google
-          </button>
+          {process.env.NEXT_PUBLIC_GOOGLE_SSO_ENABLED === "true" && (
+            <>
+              <div className="flex items-center gap-3 my-4">
+                <div className="flex-1 border-t border-border" />
+                <span className="text-xs text-text-muted">or</span>
+                <div className="flex-1 border-t border-border" />
+              </div>
+              <GoogleSSOButton
+                mode="signup"
+                loading={googleLoading}
+                onClick={handleGoogleLogin}
+              />
+            </>
+          )}
         </form>
         <p className="mt-6 text-center text-sm text-text-muted">
           Already have an account?{" "}

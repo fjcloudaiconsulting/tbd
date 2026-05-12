@@ -40,6 +40,10 @@ ROOTS=(app components lib)
 #   - app/apple-icon.tsx — Next.js dynamic icon route, inline styles only.
 #   - app/global-error.tsx — root error boundary; runs without globals.css.
 #   - lib/brand.ts — canonical brand constants, not theme tokens.
+#   - components/auth/GoogleSSOButton.tsx — Google's official SVG mark
+#     uses Google's locked 4-color brand hexes (#4285F4 / #34A853 /
+#     #FBBC05 / #EA4335) and provider-spec surface colors that MUST NOT
+#     theme-switch. Google's branding guide forbids recolor.
 EXCLUDES=(
   --exclude-dir=node_modules
   --exclude-dir=.next
@@ -48,6 +52,7 @@ EXCLUDES=(
   --exclude=apple-icon.tsx
   --exclude=global-error.tsx
   --exclude=brand.ts
+  --exclude=GoogleSSOButton.tsx
 )
 
 PALETTES='(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)'
