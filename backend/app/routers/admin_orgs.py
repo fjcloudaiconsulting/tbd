@@ -694,12 +694,17 @@ async def get_feature_state(
 
 
 def _audit_event_type_for_member_update(changes: list[str], after: dict) -> Optional[str]:
-    """Pick the single most specific event type for a member PATCH.
+    """Pick the single event type for a member PATCH.
 
-    Order of specificity (most → least): activation/deactivation,
-    role change. If both changed in one PATCH we emit both; if only
-    one changed we emit one; if nothing changed we emit none (the
-    route returns 200 with the same body but writes no audit row).
+    Emits one event type per request; the UI sends one field at a
+    time, so role and is_active changes never combine in a single
+    PATCH today. If a future caller sends both in one body, the
+    activation/deactivation flip takes precedence (it's the more
+    operationally significant signal — a deactivated member can't
+    use any role), and the role change is still captured in the
+    ``before`` / ``after`` / ``changed_fields`` detail of the same
+    audit row. If nothing actually changed the route returns 200
+    without writing an audit row.
     """
     if "is_active" in changes:
         return (

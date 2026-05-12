@@ -384,7 +384,7 @@ export default function AdminOrgDetailPage() {
                 const lockedReason = isSelf
                   ? "You cannot modify your own membership here."
                   : isPlatformSuperadmin
-                  ? "Platform superadmin — managed elsewhere."
+                  ? "Platform superadmin, managed elsewhere."
                   : null;
                 const busy = memberBusyId === m.id;
                 return (
@@ -489,19 +489,19 @@ export default function AdminOrgDetailPage() {
         <div className="grid grid-cols-2 gap-4 px-6 py-5 sm:grid-cols-4">
           <div>
             <p className="text-xs text-text-muted">Transactions</p>
-            <p className="font-display text-2xl text-text-primary">{detail.counts.transactions}</p>
+            <p className="text-2xl font-semibold tabular-nums text-text-primary">{detail.counts.transactions}</p>
           </div>
           <div>
             <p className="text-xs text-text-muted">Accounts</p>
-            <p className="font-display text-2xl text-text-primary">{detail.counts.accounts}</p>
+            <p className="text-2xl font-semibold tabular-nums text-text-primary">{detail.counts.accounts}</p>
           </div>
           <div>
             <p className="text-xs text-text-muted">Budgets</p>
-            <p className="font-display text-2xl text-text-primary">{detail.counts.budgets}</p>
+            <p className="text-2xl font-semibold tabular-nums text-text-primary">{detail.counts.budgets}</p>
           </div>
           <div>
             <p className="text-xs text-text-muted">Forecast plans</p>
-            <p className="font-display text-2xl text-text-primary">{detail.counts.forecast_plans}</p>
+            <p className="text-2xl font-semibold tabular-nums text-text-primary">{detail.counts.forecast_plans}</p>
           </div>
         </div>
       </section>
