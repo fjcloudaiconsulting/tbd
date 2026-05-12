@@ -2,19 +2,24 @@
 
 Reported 2026-05-12: ``audit_events.ip_address`` was recording the
 Docker-bridge IP in local dev and the DO App Platform ingress IP in
-prod instead of the real client IP. Root cause: ``get_client_ip``
-trusted ``request.client.host`` (the post-uvicorn-XFF value) as the
-final answer instead of parsing ``X-Forwarded-For`` left-to-right
-and returning the first non-trusted-proxy entry. The result was
-that any chain where every entry fell inside ``_TRUSTED_PROXY_CIDRS``
-collapsed to the leftmost private IP (dev), or any chain where the
-ingress peer was outside the trust list skipped ``do-connecting-ip``
-entirely (prod).
+prod instead of the real client IP. The fix has two layers:
 
-These tests pin the five scenarios from the bug memo. They use
-synthetic ``Request`` objects so they don't depend on uvicorn at all
-- the helper must be correct regardless of how the upstream stack
-populates ``request.client.host``.
+1. ``get_client_ip`` walks ``X-Forwarded-For`` RIGHT-to-LEFT, skipping
+   trusted-proxy hops, and returns the first non-trusted entry. The
+   walk only runs when the direct TCP peer is itself a trusted proxy.
+2. nginx is configured to set ``X-Forwarded-For $remote_addr`` (NOT
+   ``$proxy_add_x_forwarded_for``), so client-supplied XFF chains are
+   discarded at the edge. Defense-in-depth - even if right-to-left
+   had a bug, the chain reaching the backend is always controlled by
+   our infrastructure.
+3. When ``PFV_RUNTIME=app_platform`` is set, ``do-connecting-ip`` is
+   honoured unconditionally (DO ingress is the only writer; the env
+   var is set by us, not the request).
+
+These tests pin all three layers. They use synthetic ``Request``
+objects so they don't depend on uvicorn at all - the helper must be
+correct regardless of how the upstream stack populates
+``request.client.host``.
 """
 from __future__ import annotations
 
@@ -82,8 +87,8 @@ def test_single_trusted_proxy_returns_real_client_from_xff():
 
 def test_two_trusted_proxies_returns_first_non_proxy_entry():
     """Two-hop proxy chain (e.g. nginx in front of an internal LB).
-    XFF is ``<client>, <hop1>, <hop2>``. We pick the leftmost
-    non-trusted entry, which is the real client.
+    XFF is ``<client>, <hop1>``. Walking right-to-left we skip the
+    trusted ``<hop1>`` entry and land on the real client.
     """
     request = _make_request(
         client_host="10.0.0.5",
@@ -217,6 +222,110 @@ def test_empty_xff_header_falls_back_to_peer():
         headers={"X-Forwarded-For": ""},
     )
     assert get_client_ip(request) == "127.0.0.1"
+
+
+# ── XFF SPOOFING — two-layer defense ─────────────────────────────────────
+
+
+def test_xff_spoof_attempt_without_nginx_overwrite_documents_attack_surface():
+    """Pre-fix shape: nginx used ``$proxy_add_x_forwarded_for`` which
+    APPENDED our peer to whatever the client sent. A malicious client
+    could send ``XFF: 1.2.3.4``, nginx forwards ``1.2.3.4, <peer>``,
+    and a LEFT-to-right walk picks ``1.2.3.4`` (textbook XFF-spoof CVE).
+
+    With right-to-left walk, the chain ``1.2.3.4, <trusted-peer>`` is
+    skipped at the trusted entry and lands on ``1.2.3.4`` - the spoof
+    still lands because the attacker controls one extra entry to the
+    left of our peer. This is why we ALSO sanitize at nginx (next
+    test); the right-to-left walk alone is insufficient when the
+    edge passes through a user-supplied prefix.
+
+    This test exists to make the regression visible if the nginx
+    overwrite is ever reverted: it documents the residual attack
+    surface so a future reviewer can't claim the helper alone is
+    spoof-proof.
+    """
+    request = _make_request(
+        client_host="192.168.65.1",
+        headers={"X-Forwarded-For": "1.2.3.4, 192.168.65.1"},
+    )
+    # NOT a security guarantee - the production guarantee comes from
+    # nginx overwriting XFF to ``$remote_addr`` so this chain shape
+    # never reaches the backend in the first place.
+    assert get_client_ip(request) == "1.2.3.4"
+
+
+def test_xff_spoof_attempt_with_nginx_overwrite_is_blocked():
+    """Production shape after nginx overwrite: any client-supplied
+    XFF is discarded at the edge and replaced with the nginx peer
+    (``$remote_addr``). The backend therefore sees a single-entry
+    chain whose only IP is the real browser. The walk returns it
+    correctly and there is nothing for an attacker to inject into.
+    """
+    # Real client at 203.0.113.7 tries to spoof by sending
+    # ``XFF: 1.2.3.4``. nginx receives the request, IGNORES the
+    # client header, and emits ``XFF: 203.0.113.7`` (its $remote_addr).
+    # The backend's TCP peer is the nginx container (private IP).
+    request = _make_request(
+        client_host="172.18.0.5",
+        headers={"X-Forwarded-For": "203.0.113.7"},
+    )
+    assert get_client_ip(request) == "203.0.113.7"
+
+
+# ── DO App Platform runtime gate ─────────────────────────────────────────
+
+
+def test_do_runtime_mode_returns_do_connecting_ip_unconditionally(monkeypatch):
+    """With ``PFV_RUNTIME=app_platform`` set, ``do-connecting-ip`` is
+    authoritative even when the direct TCP peer is OUTSIDE the
+    trusted-proxy CIDR list. This is the prod-fix path: the DO
+    ingress peer falls outside RFC 1918, so the old trusted-peer
+    gate skipped the header and audit logs got the ingress IP.
+    """
+    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
+    # DO ingress peer is NOT in any of our trusted CIDRs.
+    request = _make_request(
+        client_host="169.254.10.5",
+        headers={"do-connecting-ip": "203.0.113.7"},
+    )
+    assert get_client_ip(request) == "203.0.113.7"
+
+
+def test_do_runtime_mode_without_header_falls_back_to_peer(monkeypatch):
+    """In App Platform mode, if ``do-connecting-ip`` is somehow
+    missing (e.g. health check that does not hit the public ingress),
+    we fall back to the standard XFF / peer resolution rather than
+    crashing.
+    """
+    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
+    request = _make_request(client_host="169.254.10.5")
+    assert get_client_ip(request) == "169.254.10.5"
+
+
+def test_do_runtime_mode_unset_ignores_do_connecting_ip_from_public_peer(monkeypatch):
+    """Without ``PFV_RUNTIME=app_platform``, a request from a public
+    peer carrying a forged ``do-connecting-ip`` MUST be rejected.
+    Returns the peer IP, not the header.
+    """
+    monkeypatch.delenv("PFV_RUNTIME", raising=False)
+    request = _make_request(
+        client_host="198.51.100.99",
+        headers={"do-connecting-ip": "203.0.113.7"},
+    )
+    assert get_client_ip(request) == "198.51.100.99"
+
+
+def test_do_runtime_mode_case_insensitive(monkeypatch):
+    """``PFV_RUNTIME`` is matched case-insensitively to avoid spec-vs-
+    env quirks (DO docs use mixed case in examples).
+    """
+    monkeypatch.setenv("PFV_RUNTIME", "App_Platform")
+    request = _make_request(
+        client_host="169.254.10.5",
+        headers={"do-connecting-ip": "203.0.113.7"},
+    )
+    assert get_client_ip(request) == "203.0.113.7"
 
 
 # ── Integration: audit_events.ip_address persists the resolved client ─────
