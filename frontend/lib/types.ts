@@ -441,3 +441,34 @@ export interface PermissionCatalogResponse {
   namespaces: Record<string, string[]>;
   keys: string[];
 }
+
+// L4.6 — System usage analytics (counts-only first slice).
+
+export interface DailyCount {
+  date: string; // ISO date (YYYY-MM-DD).
+  count: number;
+}
+
+export interface OrgTxVolume {
+  rank: number;
+  org_id: number;
+  org_name: string;
+  tx_count: number;
+}
+
+export interface DormantOrg {
+  org_id: number;
+  org_name: string;
+  last_tx_at: string | null;
+  days_since_last_activity: number | null;
+}
+
+export interface AnalyticsResponse {
+  window_days: number;
+  generated_at: string;
+  logins_by_day: DailyCount[];
+  tx_writes_by_day: DailyCount[];
+  imports_by_day: DailyCount[];
+  top_orgs_by_tx_volume: OrgTxVolume[];
+  dormant_orgs: DormantOrg[];
+}

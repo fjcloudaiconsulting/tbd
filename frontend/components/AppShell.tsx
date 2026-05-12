@@ -110,6 +110,12 @@ const systemItems: readonly SystemNavItem[] = [
     icon: <FileText {...NAV_ICON_PROPS} />,
   },
   {
+    href: "/admin/analytics",
+    label: "Analytics",
+    permission: "analytics.view",
+    icon: <BarChart3 {...NAV_ICON_PROPS} />,
+  },
+  {
     href: "/system/plans",
     label: "Plans",
     permission: "plans.manage",
