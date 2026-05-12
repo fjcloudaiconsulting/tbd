@@ -5,13 +5,14 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
+import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, Cookie, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import func, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.settings import OrgSetting
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
@@ -59,7 +60,8 @@ from app.security import (
     token_cutoff,
     verify_password,
 )
-from app.rate_limit import limiter
+from app.rate_limit import get_client_ip, limiter
+from app.services import audit_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
 from app.services.mfa_service import (
     MfaConfigError,
@@ -234,7 +236,11 @@ async def register(
 @router.post("/login", response_model=TokenResponse | MfaChallengeResponse)
 @limiter.limit("10/minute")
 async def login(
-    request: Request, body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)
+    request: Request,
+    body: LoginRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     # Accept username or email
     result = await db.execute(
@@ -265,7 +271,10 @@ async def login(
             },
         )
 
-    # If MFA is enabled, return a challenge token instead of access tokens
+    # If MFA is enabled, return a challenge token instead of access tokens.
+    # The login.success audit fires AFTER MFA completes (in /mfa/*), not
+    # here, so the analytics count reflects "user actually signed in" not
+    # "user passed first factor".
     if user.mfa_enabled:
         mfa_token = create_mfa_challenge_token(user.id)
         return MfaChallengeResponse(mfa_token=mfa_token)
@@ -281,6 +290,10 @@ async def login(
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
         path="/",
+    )
+
+    await _record_login_success(
+        session_factory, user=user, request=request, method="password"
     )
 
     return TokenResponse(access_token=access_token)
@@ -699,6 +712,38 @@ def _issue_tokens(user: User, response: Response) -> TokenResponse:
     return TokenResponse(access_token=access_token)
 
 
+async def _record_login_success(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user: User,
+    request: Request,
+    method: str,
+) -> None:
+    """Persist a ``user.login.success`` audit event.
+
+    Fire-and-forget contract — ``record_audit_event`` swallows DB
+    errors so a transient audit write failure can never block a
+    successful sign-in. ``method`` distinguishes ``password``,
+    ``mfa_totp``, ``mfa_recovery``, ``mfa_email``, and ``google_sso``
+    so the L4.6 analytics surface can disaggregate later without a
+    schema change. PII (e.g. password, TOTP code) is never recorded;
+    only the actor identity, request id, and IP travel into the row.
+    """
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="user.login.success",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=user.org_id,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"method": method},
+    )
+
+
 @router.post("/mfa/setup", response_model=MfaSetupResponse)
 async def mfa_setup(
     current_user: User = Depends(get_current_user),
@@ -795,6 +840,7 @@ async def mfa_verify(
     body: MfaVerifyRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Verify TOTP code during login to complete authentication."""
     user = await _resolve_mfa_user(body.mfa_token, db)
@@ -809,7 +855,11 @@ async def mfa_verify(
     if not verify_totp(secret, body.code):
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
-    return _issue_tokens(user, response)
+    tokens = _issue_tokens(user, response)
+    await _record_login_success(
+        session_factory, user=user, request=request, method="mfa_totp"
+    )
+    return tokens
 
 
 @router.post("/mfa/recovery", response_model=TokenResponse)
@@ -819,6 +869,7 @@ async def mfa_recovery(
     body: MfaRecoveryRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Use a recovery code during login to complete authentication."""
     user = await _resolve_mfa_user(body.mfa_token, db)
@@ -836,7 +887,11 @@ async def mfa_recovery(
     user.recovery_codes = ",".join(hashed_codes) if hashed_codes else None
     await db.commit()
 
-    return _issue_tokens(user, response)
+    tokens = _issue_tokens(user, response)
+    await _record_login_success(
+        session_factory, user=user, request=request, method="mfa_recovery"
+    )
+    return tokens
 
 
 @router.post("/mfa/email-code")
@@ -883,6 +938,7 @@ async def mfa_email_verify(
     body: MfaEmailVerifyRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Verify an email-based MFA code to complete authentication."""
     user = await _resolve_mfa_user(body.mfa_token, db)
@@ -925,7 +981,11 @@ async def mfa_email_verify(
         if not consumed:
             raise HTTPException(status_code=401, detail="Invalid or expired email code")
 
-    return _issue_tokens(user, response)
+    tokens = _issue_tokens(user, response)
+    await _record_login_success(
+        session_factory, user=user, request=request, method="mfa_email"
+    )
+    return tokens
 
 
 # ── Google SSO ───────────────────────────────────────────────────────────────
@@ -986,9 +1046,11 @@ async def google_login(response: Response):
 
 @router.get("/google/callback")
 async def google_callback(
+    request: Request,
     code: str,
     state: str,
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
     oauth_state: str | None = Cookie(default=None),
 ):
     """Handle Google OAuth callback — exchange code for tokens, create or login user.
@@ -1160,6 +1222,9 @@ async def google_callback(
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
         path="/",
+    )
+    await _record_login_success(
+        session_factory, user=user, request=request, method="google_sso"
     )
     return resp
 
