@@ -85,8 +85,10 @@ where the visitor's theme is unknown.
 | `--color-accent` | `#D4A64A` | `#B88A2E` | Primary CTAs, focus rings |
 | `--color-info` | `#5FA8D3` | `#2d7db3` | Informational chips |
 
-**Brand surface constants** — `frontend/lib/styles.ts`. These do NOT
-theme-switch.
+**Brand surface constants** — `frontend/lib/brand.ts`. These do NOT
+theme-switch. They live in a dedicated module (separate from
+`lib/styles.ts`) so the design-token check can keep the runtime UI
+surface free of hex literals while brand surfaces stay locked.
 
 | Constant | Hex | Role |
 |---|---|---|
@@ -182,7 +184,7 @@ shipped raster.
 | Team | Use |
 |---|---|
 | Landing (L5.1) | Replace inline "The Better Decision" text in `TopNav.tsx` / `LandingFooter.tsx` with `<Logo />` (footer with `tone="muted" size="sm"`). |
-| Email templates | Import the brand surface constants (`BRAND_INK`, `BRAND_BRASS`, etc.) inline; email clients can't load external SVG, so render the chevron mark inline per template. Copy from `Logo.tsx`. |
+| Email templates | Import the brand surface constants (`BRAND_INK`, `BRAND_BRASS`, etc.) from `@/lib/brand` inline; email clients can't load external SVG, so render the chevron mark inline per template. Copy from `Logo.tsx`. |
 | SSO branding | Use `BRAND_BRASS` for the Google sign-in border accent. Keep Google's official button per their brand guidelines — the brand here applies only to the surrounding chrome. |
 | Header/Footer pass | Replace any "PFV" / "PFV2" remnants with `<Wordmark />`. Audit grep: `grep -ri 'pfv' frontend/app frontend/components`. |
 | Onboarding voice | Pull copy seeds from `BRAND_DESCRIPTION` and the Voice section above. |
