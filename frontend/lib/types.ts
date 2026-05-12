@@ -83,6 +83,15 @@ export interface Account {
   is_active: boolean;
   close_day: number | null;
   is_default: boolean;
+  // L3.2 Wave 2A — user-stated starting amount. 0 for accounts that
+  // pre-date migration 041; new accounts may set a non-zero value at
+  // create time and edit it later. Marked optional on the TS type so
+  // existing test fixtures and legacy-shape payloads keep compiling;
+  // the runtime API always serializes both fields on AccountResponse.
+  opening_balance?: number | string;
+  // ISO-8601 yyyy-mm-dd. Set to today on existing rows by the
+  // migration; user-editable in the account-edit form.
+  opening_balance_date?: string | null;
 }
 
 export interface Category {
@@ -267,6 +276,43 @@ export interface ImportConfirmResponse {
   skipped_count: number;
   error_count: number;
   errors: ImportRowError[];
+}
+
+// L3.2 Wave 2A manual batch transaction entry. Wraps a TransactionCreate
+// payload with a stable row_number for per-row outcome mapping.
+export interface BatchTransactionRowInput {
+  row_number: number;
+  transaction: {
+    account_id: number;
+    category_id: number;
+    description: string;
+    amount: string;
+    type: "income" | "expense";
+    date: string;
+    status?: "settled" | "pending";
+    settled_date?: string | null;
+  };
+}
+
+export interface BatchTransactionsRequestBody {
+  rows: BatchTransactionRowInput[];
+}
+
+export interface BatchRowResult {
+  row_number: number;
+  transaction_id: number;
+}
+
+export interface BatchRowError {
+  row_number: number;
+  error: string;
+}
+
+export interface BatchTransactionsResponse {
+  imported_count: number;
+  error_count: number;
+  results: BatchRowResult[];
+  errors: BatchRowError[];
 }
 
 export interface Plan {
