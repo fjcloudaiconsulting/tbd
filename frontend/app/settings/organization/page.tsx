@@ -9,6 +9,11 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import { Loader2 } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import {
+  mapBillingCycleError,
+  mapBillingPeriodCloseError,
+  validateBillingCycleDay,
+} from "@/lib/formErrors";
 import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
 import MembersSection from "@/components/settings/MembersSection";
@@ -54,6 +59,15 @@ export default function OrganizationSettingsPage() {
   // resurrect a stale value right after a fast Save.
   const userEditedCycleDayRef = useRef(false);
   const [savingCycle, setSavingCycle] = useState(false);
+  // Inline error for the billing-cycle field. Surfaced under the input
+  // (not the page-level error banner) so the admin sees exactly which
+  // field needs fixing.
+  const [cycleFieldError, setCycleFieldError] = useState<string | null>(null);
+  // Cached server-confirmed value used to disable Save when nothing
+  // changed. Updated after a successful save or a successful GET.
+  const [savedCycleDay, setSavedCycleDay] = useState<string>(
+    user?.billing_cycle_day != null ? String(user.billing_cycle_day) : ""
+  );
   const [currentPeriod, setCurrentPeriod] = useState<{
     id: number;
     start_date: string;
@@ -170,8 +184,10 @@ export default function OrganizationSettingsPage() {
       ).then(setCurrentPeriod).catch(() => {});
       apiFetch<{ billing_cycle_day: number }>("/api/v1/settings/billing-cycle")
         .then((r) => {
+          const next = String(r.billing_cycle_day);
+          setSavedCycleDay(next);
           if (!userEditedCycleDayRef.current) {
-            setBillingCycleDay(String(r.billing_cycle_day));
+            setBillingCycleDay(next);
           }
         })
         .catch(() => {
@@ -234,29 +250,39 @@ export default function OrganizationSettingsPage() {
 
   async function handleSaveCycle(e: FormEvent) {
     e.preventDefault();
+    if (savingCycle) return;
     setError("");
-    const day = Number(billingCycleDay);
-    if (!Number.isInteger(day) || day < 1 || day > 28) {
-      setError("Billing cycle day must be a whole number between 1 and 28");
+    const fieldErr = validateBillingCycleDay(billingCycleDay);
+    if (fieldErr) {
+      setCycleFieldError(fieldErr);
       return;
     }
+    setCycleFieldError(null);
+    const day = Number(billingCycleDay);
     setSavingCycle(true);
     try {
       await apiFetch("/api/v1/settings/billing-cycle", {
         method: "PUT",
         body: JSON.stringify({ billing_cycle_day: day }),
       });
-      // Server now matches local state — clear the dirty flag so a future GET
-      // (e.g., on revisit) can re-sync without being treated as a stale overwrite.
+      // Server now matches local state. Clear the dirty flag so a future
+      // GET (e.g., on revisit) can re-sync without being treated as a
+      // stale overwrite, and update the cached server value so the Save
+      // button correctly disables again until the next edit.
       userEditedCycleDayRef.current = false;
+      setSavedCycleDay(String(day));
       const period = await apiFetch<{ id: number; start_date: string; end_date: string | null }>(
         "/api/v1/settings/billing-period"
       );
       setCurrentPeriod(period);
-      setSuccessMsg("Billing cycle updated");
-      setTimeout(() => setSuccessMsg(""), 3000);
+      setSuccessMsg(`Billing cycle saved. Periods now start on day ${day} of each month.`);
+      setTimeout(() => setSuccessMsg(""), 4000);
     } catch (err) {
-      setError(extractErrorMessage(err));
+      // Map known status codes to friendly copy; the raw server message
+      // is only kept when it is already a safe sentence.
+      setError(mapBillingCycleError(err));
+      // Leave the form filled with the admin's input so they can correct
+      // it without re-typing.
     } finally {
       setSavingCycle(false);
     }
@@ -264,10 +290,13 @@ export default function OrganizationSettingsPage() {
 
   function handleClosePeriod() {
     setConfirmAction({
-      title: "Close Billing Period",
-      message: `Close the current billing period starting ${currentPeriod?.start_date}?\nA new period will open automatically.`,
+      title: "Close billing period",
+      message:
+        `Close the current billing period starting ${currentPeriod?.start_date}? ` +
+        "A new period will open automatically. Closing a period cannot be undone.",
       variant: "warning",
       action: async () => {
+        if (closingPeriod) return;
         setClosingPeriod(true);
         try {
           await apiFetch("/api/v1/settings/billing-period/close", { method: "POST" });
@@ -275,10 +304,14 @@ export default function OrganizationSettingsPage() {
             "/api/v1/settings/billing-period"
           );
           setCurrentPeriod(p);
-          setSuccessMsg("Period closed");
-          setTimeout(() => setSuccessMsg(""), 3000);
+          setSuccessMsg(
+            p?.start_date
+              ? `Previous period closed. New period opened on ${p.start_date}.`
+              : "Previous period closed. A new period is now open.",
+          );
+          setTimeout(() => setSuccessMsg(""), 4000);
         } catch (err) {
-          setError(extractErrorMessage(err));
+          setError(mapBillingPeriodCloseError(err));
         } finally {
           setClosingPeriod(false);
         }
@@ -347,8 +380,16 @@ export default function OrganizationSettingsPage() {
 
   return (
     <SettingsLayout activeTab="/settings/organization">
-      {error && <p className={errorCls}>{error}</p>}
-      {successMsg && <p className={successCls}>{successMsg}</p>}
+      {error && (
+        <p role="alert" aria-live="polite" className={errorCls}>
+          {error}
+        </p>
+      )}
+      {successMsg && (
+        <p role="status" aria-live="polite" className={successCls}>
+          {successMsg}
+        </p>
+      )}
 
       <div className="space-y-6">
         {/* Organization Name */}
@@ -431,48 +472,97 @@ export default function OrganizationSettingsPage() {
         {/* Billing Period */}
         <div className={card}>
           <div className={cardHeader}>
-            <h2 className={cardTitle}>Billing Period</h2>
+            <h2 className={cardTitle}>Billing period</h2>
           </div>
           <div className="p-6 space-y-4">
             {currentPeriod && (
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-sm text-text-primary">
                     Current: {currentPeriod.start_date}
-                    {currentPeriodEndDisplay ? ` — ${currentPeriodEndDisplay}` : " — open"}
+                    {currentPeriodEndDisplay ? `, ${currentPeriodEndDisplay}` : ", open"}
                   </p>
                   <p className="text-xs text-text-muted">
-                    {currentPeriod.end_date ? "Closed" : "Open, transactions are being recorded"}
+                    {currentPeriod.end_date
+                      ? "Closed. Transactions in this range are locked from period rollover."
+                      : "Open. New transactions are being recorded in this period."}
                   </p>
                 </div>
                 {!currentPeriod.end_date && (
                   <button
+                    type="button"
                     onClick={handleClosePeriod}
                     disabled={closingPeriod}
-                    className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                    aria-busy={closingPeriod}
+                    className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
                   >
-                    {closingPeriod ? "Closing..." : "Close Period"}
+                    {closingPeriod && (
+                      <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                    )}
+                    {closingPeriod ? "Closing..." : "Close period"}
                   </button>
                 )}
               </div>
             )}
 
-            <form onSubmit={handleSaveCycle} className="flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-3">
-              <div>
-                <label className={label}>Billing cycle day</label>
+            <form
+              onSubmit={handleSaveCycle}
+              className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-3"
+              aria-busy={savingCycle}
+            >
+              <div className="flex-1">
+                <label htmlFor="billing-cycle-day" className={label}>
+                  Billing cycle day
+                </label>
                 <input
+                  id="billing-cycle-day"
                   type="number"
                   min={1}
                   max={28}
+                  inputMode="numeric"
                   value={billingCycleDay}
                   onChange={(e) => {
                     userEditedCycleDayRef.current = true;
                     setBillingCycleDay(e.target.value);
+                    // Re-validate live so the error clears the moment the
+                    // value becomes valid (and surfaces on the first
+                    // out-of-range keystroke).
+                    setCycleFieldError(validateBillingCycleDay(e.target.value));
                   }}
                   className={`${input} w-full sm:w-24`}
+                  aria-describedby={
+                    cycleFieldError ? "billing-cycle-day-err billing-cycle-day-hint" : "billing-cycle-day-hint"
+                  }
+                  aria-invalid={cycleFieldError ? true : undefined}
                 />
+                <p id="billing-cycle-day-hint" className="mt-1.5 text-xs text-text-muted">
+                  Day of the month each new period starts. Days 1 to 28 only, so every month has it.
+                </p>
+                {cycleFieldError && (
+                  <p
+                    id="billing-cycle-day-err"
+                    role="alert"
+                    aria-live="polite"
+                    className="mt-1.5 text-xs text-danger"
+                  >
+                    {cycleFieldError}
+                  </p>
+                )}
               </div>
-              <button type="submit" disabled={savingCycle} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
+              <button
+                type="submit"
+                disabled={
+                  savingCycle ||
+                  cycleFieldError !== null ||
+                  billingCycleDay.trim() === "" ||
+                  billingCycleDay === savedCycleDay
+                }
+                aria-busy={savingCycle}
+                className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2 sm:mt-[26px]`}
+              >
+                {savingCycle && (
+                  <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                )}
                 {savingCycle ? "Saving..." : "Save"}
               </button>
             </form>
