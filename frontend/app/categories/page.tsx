@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import Tooltip from "@/components/Tooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -380,21 +381,37 @@ export default function CategoriesPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* C2a: Edit-mode toggle. Owned by Team Categories C2 UI. */}
-          <button
-            type="button"
-            data-testid="categories-edit-toggle"
-            aria-pressed={editMode}
-            onClick={() => (editMode ? exitEditMode() : setEditMode(true))}
-            className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
-          >
-            {editMode ? "Cancel Edit" : "Edit"}
-          </button>
-          <button
-            onClick={() => setShowAddMasterModal(true)}
-            className={btnPrimary}
-          >
-            + Add Master
-          </button>
+          <span className="inline-flex items-center gap-1">
+            <button
+              type="button"
+              data-testid="categories-edit-toggle"
+              aria-pressed={editMode}
+              onClick={() => (editMode ? exitEditMode() : setEditMode(true))}
+              className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
+            >
+              {editMode ? "Cancel Edit" : "Edit"}
+            </button>
+            {!editMode && (
+              <Tooltip
+                content="Edit mode unlocks drag and drop reordering, moving subcategories between masters, and batch select for delete or move."
+                learnMoreSection="categories"
+                triggerLabel="What does Edit mode unlock?"
+              />
+            )}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <button
+              onClick={() => setShowAddMasterModal(true)}
+              className={btnPrimary}
+            >
+              + Add Master
+            </button>
+            <Tooltip
+              content="Master categories anchor budgets. Subcategories nest under a master and act as tags on individual transactions."
+              learnMoreSection="categories"
+              triggerLabel="What is a Master category?"
+            />
+          </span>
         </div>
       </div>
 

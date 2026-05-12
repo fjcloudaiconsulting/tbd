@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import HelpTooltip from "@/components/Tooltip";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import CategorySelect from "@/components/ui/CategorySelect";
@@ -603,6 +604,11 @@ export default function ForecastPlansClient({
         <div className="flex flex-wrap items-center gap-2">
           {/* Show/hide details toggle. Hides variance/source/chart/refresh
               and the technical (?) help markers when off. */}
+          <HelpTooltip
+            content="Show details reveals variance vs plan, source breakdowns, the chart, and refresh from sources. Hide details keeps the page light."
+            learnMoreSection="forecast-plans"
+            triggerLabel="What does Show details include?"
+          />
           <button
             type="button"
             role="switch"

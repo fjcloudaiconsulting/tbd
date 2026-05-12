@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import Tooltip from "@/components/Tooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -887,19 +888,26 @@ function TransactionsPageContent() {
               Clear
             </button>
             {linkSelection.visible && (
-              <button
-                type="button"
-                className={btnSecondary}
-                title={linkSelection.reason ?? "Link the two selected rows as a transfer"}
-                disabled={!linkSelection.enabled || bulkDeleting}
-                onClick={() => {
-                  if (linkSelection.enabled && linkSelection.expense && linkSelection.income) {
-                    setLinkModalLegs({ expense: linkSelection.expense, income: linkSelection.income });
-                  }
-                }}
-              >
-                Link as transfer
-              </button>
+              <span className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  className={btnSecondary}
+                  title={linkSelection.reason ?? "Link the two selected rows as a transfer"}
+                  disabled={!linkSelection.enabled || bulkDeleting}
+                  onClick={() => {
+                    if (linkSelection.enabled && linkSelection.expense && linkSelection.income) {
+                      setLinkModalLegs({ expense: linkSelection.expense, income: linkSelection.income });
+                    }
+                  }}
+                >
+                  Link as transfer
+                </button>
+                <Tooltip
+                  content="Pair one expense and one income of the same amount across two accounts so the app treats them as a single transfer instead of two separate transactions."
+                  learnMoreSection="transactions"
+                  triggerLabel="More about transfer pairing"
+                />
+              </span>
             )}
             <button
               type="button"
@@ -1008,7 +1016,14 @@ function TransactionsPageContent() {
               <input id="tx-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
             </div>
             <div>
-              <label htmlFor="tx-status" className={label}>Status</label>
+              <span className="mb-1.5 flex items-center gap-1">
+                <label htmlFor="tx-status" className={`${label} mb-0`}>Status</label>
+                <Tooltip
+                  content="Settled transactions count toward your balance today. Pending transactions affect forecasts but not the current balance until they settle."
+                  learnMoreSection="transactions"
+                  triggerLabel="What is the difference between Settled and Pending?"
+                />
+              </span>
               <select id="tx-status" value={formStatus} onChange={(e) => setFormStatus(e.target.value as "settled" | "pending")} className={input}>
                 <option value="settled">Settled</option>
                 <option value="pending">Pending</option>
