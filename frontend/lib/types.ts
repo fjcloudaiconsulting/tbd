@@ -78,6 +78,15 @@ export interface Account {
   is_active: boolean;
   close_day: number | null;
   is_default: boolean;
+  // L3.2 Wave 2A — user-stated starting amount. 0 for accounts that
+  // pre-date migration 041; new accounts may set a non-zero value at
+  // create time and edit it later. Marked optional on the TS type so
+  // existing test fixtures and legacy-shape payloads keep compiling;
+  // the runtime API always serializes both fields on AccountResponse.
+  opening_balance?: number | string;
+  // ISO-8601 yyyy-mm-dd. Set to today on existing rows by the
+  // migration; user-editable in the account-edit form.
+  opening_balance_date?: string | null;
 }
 
 export interface Category {

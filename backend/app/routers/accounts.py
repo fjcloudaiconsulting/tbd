@@ -2,11 +2,11 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.account import Account, AccountType
 from app.models.transaction import Transaction
 from app.models.user import Organization, Role, User
@@ -19,6 +19,7 @@ from app.schemas.account import (
     BalanceAdjustmentResponse,
     ReconcileResponse,
 )
+from app.services import audit_service
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.transaction_service import (
     adjust_account_balance,
@@ -52,6 +53,8 @@ def _to_response(account: Account) -> AccountResponse:
         is_active=account.is_active,
         close_day=account.close_day,
         is_default=account.is_default,
+        opening_balance=account.opening_balance,
+        opening_balance_date=account.opening_balance_date,
     )
 
 
@@ -84,14 +87,22 @@ async def create_account(
     if at_result.scalar_one_or_none() is None:
         raise HTTPException(status_code=400, detail="Invalid account type")
 
-    account = Account(
+    # opening_balance_date: caller may omit (and ride the DB default of
+    # CURRENT_DATE) or supply an explicit date. We pass it through only
+    # when supplied so the column-level server_default applies on omission.
+    kwargs = dict(
         org_id=current_user.org_id,
         account_type_id=body.account_type_id,
         name=body.name,
         balance=body.balance,
         currency=body.currency,
         close_day=body.close_day,
+        opening_balance=body.opening_balance,
     )
+    if body.opening_balance_date is not None:
+        kwargs["opening_balance_date"] = body.opening_balance_date
+
+    account = Account(**kwargs)
     db.add(account)
     await db.commit()
 
@@ -124,8 +135,10 @@ async def get_account(
 async def update_account(
     account_id: int,
     body: AccountUpdate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     result = await db.execute(
         select(Account)
@@ -135,6 +148,12 @@ async def update_account(
     account = result.scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    # Snapshot opening fields BEFORE mutation so the audit detail can
+    # compare old vs new even after commit-time refresh / expire.
+    old_opening_balance = account.opening_balance
+    old_opening_balance_date = account.opening_balance_date
+    opening_changed = False
 
     if body.name is not None:
         account.name = body.name
@@ -168,7 +187,56 @@ async def update_account(
     elif body.is_default is False:
         account.is_default = False
 
+    # Opening balance fields. Both fields are optional in the body; we
+    # only mutate when explicitly supplied. The audit-event is emitted
+    # iff at least one of the two fields actually changed.
+    if body.opening_balance is not None and body.opening_balance != account.opening_balance:
+        account.opening_balance = body.opening_balance
+        opening_changed = True
+    if (
+        body.opening_balance_date is not None
+        and body.opening_balance_date != account.opening_balance_date
+    ):
+        account.opening_balance_date = body.opening_balance_date
+        opening_changed = True
+
+    # Capture identity NOW so any post-commit expire doesn't break the
+    # audit-event payload.
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+    actor_org_id = current_user.org_id
+    req_id = _request_id()
+    ip = get_client_ip(request)
+    new_opening_balance = account.opening_balance
+    new_opening_balance_date = account.opening_balance_date
+
     await db.commit()
+
+    if opening_changed:
+        # Fire-and-forget audit row in its own session. Matches the
+        # convention in tags / admin_users / auth.
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="account.opening_balance.update",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=actor_org_id,
+            target_org_name=None,
+            request_id=req_id,
+            ip_address=ip,
+            outcome="success",
+            detail={
+                "account_id": account_id,
+                "old_opening_balance": str(old_opening_balance),
+                "new_opening_balance": str(new_opening_balance),
+                "old_opening_balance_date": old_opening_balance_date.isoformat()
+                if old_opening_balance_date is not None
+                else None,
+                "new_opening_balance_date": new_opening_balance_date.isoformat()
+                if new_opening_balance_date is not None
+                else None,
+            },
+        )
 
     result = await db.execute(
         select(Account)
