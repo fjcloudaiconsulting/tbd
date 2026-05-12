@@ -1,10 +1,20 @@
-"""Import router — CSV upload, preview, and confirm endpoints."""
+"""Import router — CSV upload, preview, and confirm endpoints.
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+Wave 1 contract additions (2026-05-12, L3.2): OFX preview endpoint and
+post-import reconciliation endpoint. Both stubbed at 501 — Wave 2 teams
+implement against the frozen schemas. See spec at
+``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``.
+"""
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db
 from app.models.user import User
+from app.schemas.import_reconciliation import (
+    ReconcileBatchRequest,
+    ReconcileBatchResponse,
+)
 from app.schemas.import_schemas import (
     ImportConfirmRequest,
     ImportConfirmResponse,
@@ -63,4 +73,88 @@ async def confirm_import(
         db,
         org_id=current_user.org_id,
         body=body,
+    )
+
+
+# ── L3.2 Wave 1 contract stubs ───────────────────────────────────────────────
+# These endpoints exist to publish the OpenAPI shape so downstream Wave 2
+# teams (OFX Parser, Reconciliation UI) can build against frozen contracts.
+# Each stub returns 501 with a pointer to the L3.2 dispatch. Auth and
+# org-scoping are wired so contract tests can assert them.
+
+
+@router.post(
+    "/ofx/preview",
+    response_model=ImportPreviewResponse,
+    status_code=501,
+)
+async def preview_ofx_import(
+    file: UploadFile = File(...),
+    account_id: int = Form(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """**STUB** — OFX preview endpoint, Wave 2 deliverable.
+
+    Contract: parses an OFX 1.x (SGML) or 2.x (XML) file, emits the same
+    ``ImportPreviewResponse`` shape as the CSV path with OFX-specific
+    extras (``fitid``, ``bank_id``, ``account_type_ofx``) on each row.
+
+    Frozen contract: see spec at
+    ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
+    §1 (OFX Parser Contract).
+
+    Wave 2 OFX Parser team owns implementation: pin ``ofxtools ~= 0.9.5``,
+    wrap parse in ``asyncio.wait_for(timeout=10)``, hard-fail at >10k
+    rows, never log raw OFX content.
+    """
+    # Touch ``current_user`` / ``db`` / ``account_id`` so static analyzers
+    # see them used and contract tests can verify the auth dependency
+    # fires (without actually reading the file body — the upload limit
+    # check is the OFX team's responsibility).
+    _ = (current_user.org_id, db, account_id, file.filename)
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "OFX import not implemented — see L3.2 dispatch "
+            "(specs/2026-05-12-l3-2-import-contracts.md §1)"
+        ),
+    )
+
+
+@router.post(
+    "/{import_id}/reconcile",
+    response_model=ReconcileBatchResponse,
+    status_code=501,
+)
+async def reconcile_import_batch(
+    import_id: int,
+    body: ReconcileBatchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """**STUB** — Post-import reconciliation endpoint, Wave 2 deliverable.
+
+    Contract: applies state transitions to imported rows. All transitions
+    in a request commit atomically (one savepoint). The batch
+    auto-closes when ``remaining_pending`` hits 0.
+
+    Frozen contract: see spec at
+    ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
+    §3 (Reconciliation State Machine).
+
+    Wave 2 Reconciliation UI team owns:
+        - Migration: ``transactions.reconciliation_state`` enum column,
+          ``transactions.import_batch_id`` FK, new ``import_batches`` table.
+        - Service: state-transition validation, atomic apply, batch-close
+          side-effect.
+        - Frontend: inbox UX, per-row transition controls.
+    """
+    _ = (current_user.org_id, db, import_id, len(body.transitions))
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Reconciliation not implemented — see L3.2 dispatch "
+            "(specs/2026-05-12-l3-2-import-contracts.md §3)"
+        ),
     )

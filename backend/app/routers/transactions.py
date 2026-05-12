@@ -1,7 +1,7 @@
 import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,10 @@ from app.deps import get_current_user
 from app.models.account import Account
 from app.models.transaction import TransactionType
 from app.models.user import User
+from app.schemas.import_batch import (
+    BatchTransactionsRequest,
+    BatchTransactionsResponse,
+)
 from app.schemas.transaction import (
     BulkDeleteRequest,
     BulkDeleteResponse,
@@ -23,6 +27,9 @@ from app.schemas.transaction import (
     TransferCandidatesResponse,
     TransferCreate,
     UnpairTransactionRequest,
+)
+from app.schemas.transaction_suggestions import (
+    DescriptionSuggestionsResponse,
 )
 from app.services import transaction_service as svc
 from app.services.exceptions import NotFoundError, ValidationError
@@ -252,6 +259,86 @@ async def transfer_candidates(
             )
         )
     return TransferCandidatesResponse(candidates=out)
+
+
+# ── L3.2 Wave 1 contract stubs ───────────────────────────────────────────────
+# Both routes MUST appear before ``/{transaction_id}`` so FastAPI's path
+# matcher resolves the literal segments first. Returning 501 with the
+# proper Pydantic response models keeps the OpenAPI schema honest for
+# Wave 2 downstream teams.
+
+
+@router.post(
+    "/batch",
+    response_model=BatchTransactionsResponse,
+    status_code=501,
+)
+async def batch_create_transactions(
+    body: BatchTransactionsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """**STUB** — Manual batch transaction entry, Wave 2 deliverable.
+
+    Contract: accept ``list[TransactionCreate]`` (wrapped in
+    ``BatchTransactionRow`` with a stable ``row_number``), process each
+    row in its own savepoint, return per-row results + aggregate counters.
+    Rows are NOT flagged ``is_imported`` — they're user-typed, not bank
+    sourced.
+
+    Frozen contract: see spec at
+    ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
+    §0.2 (Manual batch entry shape) and ``app/schemas/import_batch.py``.
+
+    Wave 2 Manual Batch Entry team owns implementation.
+    """
+    _ = (current_user.org_id, db, len(body.rows))
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Batch transaction entry not implemented — see L3.2 dispatch "
+            "(specs/2026-05-12-l3-2-import-contracts.md §0.2)"
+        ),
+    )
+
+
+@router.get(
+    "/suggestions/descriptions",
+    response_model=DescriptionSuggestionsResponse,
+    status_code=501,
+)
+async def suggest_descriptions(
+    type: Literal["income", "expense", "transfer"] = Query(...),
+    q: str | None = Query(default=None, min_length=2, max_length=255),
+    limit: int = Query(default=10, ge=1, le=25),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """**STUB** — Description autocomplete, Wave 2 deliverable.
+
+    Contract: return the user's most-used descriptions for ``type``,
+    ranked by prefix-match → frequency → recency. Org-scoped (never
+    leaks across orgs). Never logs raw descriptions or raw query strings.
+
+    When ``q`` is omitted, returns top-N most-used descriptions (useful
+    for the manual-entry form's "recent descriptions" hint).
+
+    Frozen contract: see spec at
+    ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
+    §5 (Description Suggestions Contract) and
+    ``app/schemas/transaction_suggestions.py``.
+
+    Wave 2 Description Suggestions team owns implementation. Frontend
+    is expected to debounce 300 ms and skip requests when q.length < 2.
+    """
+    _ = (current_user.org_id, db, type, q, limit)
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Description suggestions not implemented — see L3.2 dispatch "
+            "(specs/2026-05-12-l3-2-import-contracts.md §5)"
+        ),
+    )
 
 
 @router.get("/{transaction_id}", response_model=TransactionResponse)
