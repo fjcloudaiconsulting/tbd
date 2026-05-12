@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.user import Organization, Role, User
 from app.routers.import_router import router as import_router
@@ -108,6 +108,12 @@ def _make_app(session_factory, *, authenticated: bool = True) -> FastAPI:
         app.dependency_overrides[get_current_user] = reject_user
 
     app.dependency_overrides[get_db] = override_get_db
+    # Audit writes go through ``record_audit_event(session_factory, ...)``
+    # which opens its own transaction. Point that factory at the same
+    # in-memory engine the rest of the test uses so audit rows land in
+    # the same DB (and a missing override doesn't silently surface as
+    # a 500 in the new manual-batch path).
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
 
     # Wire the same domain exception handlers main.py installs so the
     # Pydantic 422 / domain-error mapping is identical to production.
@@ -247,8 +253,14 @@ async def test_reconcile_validates_extra_fields_forbidden(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_batch_returns_501_when_authenticated(session_factory):
-    """Batch endpoint returns 501."""
+async def test_batch_returns_200_with_per_row_errors(session_factory):
+    """Batch endpoint is implemented: returns 200 with per-row outcomes.
+
+    Calling with an account_id / category_id that doesn't exist in the
+    seeded org returns a per-row error rather than a 5xx. The endpoint
+    now lives — the previous 501 contract gate is replaced by a
+    per-row outcome assertion.
+    """
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     payload = {
@@ -268,8 +280,11 @@ async def test_batch_returns_501_when_authenticated(session_factory):
     }
     with TestClient(app) as client:
         resp = client.post("/api/v1/transactions/batch", json=payload)
-    assert resp.status_code == 501
-    assert "not implemented" in resp.json()["detail"].lower()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["imported_count"] == 0
+    assert body["error_count"] == 1
+    assert body["errors"][0]["row_number"] == 1
 
 
 @pytest.mark.asyncio

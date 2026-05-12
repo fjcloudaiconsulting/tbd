@@ -1,15 +1,20 @@
 import datetime
-from typing import Literal
+from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+)
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.account import Account
 from app.models.transaction import TransactionType
 from app.models.user import User
+from app.rate_limit import get_client_ip
 from app.schemas.import_batch import (
     BatchTransactionsRequest,
     BatchTransactionsResponse,
@@ -31,8 +36,17 @@ from app.schemas.transaction import (
 from app.schemas.transaction_suggestions import (
     DescriptionSuggestionsResponse,
 )
-from app.services import transaction_service as svc
+from app.services import (
+    audit_service,
+    transaction_batch_service,
+    transaction_service as svc,
+)
 from app.services.exceptions import NotFoundError, ValidationError
+
+
+def _request_id() -> Optional[str]:
+    """Return the structlog-bound request_id, if any."""
+    return structlog.contextvars.get_contextvars().get("request_id")
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
@@ -271,35 +285,69 @@ async def transfer_candidates(
 @router.post(
     "/batch",
     response_model=BatchTransactionsResponse,
-    status_code=501,
+    status_code=200,
 )
 async def batch_create_transactions(
     body: BatchTransactionsRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
 ):
-    """**STUB** — Manual batch transaction entry, Wave 2 deliverable.
+    """Manual batch transaction entry (L3.2 Wave 2A).
 
-    Contract: accept ``list[TransactionCreate]`` (wrapped in
-    ``BatchTransactionRow`` with a stable ``row_number``), process each
-    row in its own savepoint, return per-row results + aggregate counters.
-    Rows are NOT flagged ``is_imported`` — they're user-typed, not bank
-    sourced.
+    Accepts up to 500 rows, each wrapped in ``BatchTransactionRow`` with
+    a stable ``row_number``. Each row is processed inside its own
+    savepoint; failures roll back that one savepoint and surface as a
+    ``BatchRowError`` while surviving rows commit on the outer
+    transaction at the end of the request.
+
+    Rows are user-typed, NOT imported — ``is_imported=False``. Per-row
+    validation mirrors the single-row ``POST /api/v1/transactions``
+    path (account + category org-scope, category-type compatibility,
+    amount/date bounds enforced by the shared ``TransactionCreate``
+    schema). Duplicate ``row_number`` values are rejected with 422 at
+    schema validation time (validator on
+    ``BatchTransactionsRequest``).
+
+    One audit event is emitted per batch invocation summarizing
+    imported / error counts. The audit row is written in its own
+    transaction (``record_audit_event``) so it persists even if the
+    outer commit fails midway — matching the audit semantics elsewhere
+    in the codebase.
 
     Frozen contract: see spec at
     ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
-    §0.2 (Manual batch entry shape) and ``app/schemas/import_batch.py``.
-
-    Wave 2 Manual Batch Entry team owns implementation.
+    §0.2 and ``app/schemas/import_batch.py``.
     """
-    _ = (current_user.org_id, db, len(body.rows))
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Batch transaction entry not implemented — see L3.2 dispatch "
-            "(specs/2026-05-12-l3-2-import-contracts.md §0.2)"
-        ),
+    response = await transaction_batch_service.create_batch(
+        db, current_user.org_id, body
     )
+    await db.commit()
+
+    # One audit event per batch invocation. Carries counters + the
+    # length of the input list so a future regression in the request
+    # parser (e.g. silent row truncation) is visible in the audit log.
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="transactions.batch_create",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success" if response.error_count == 0 else "failure",
+        detail={
+            "row_count": len(body.rows),
+            "imported_count": response.imported_count,
+            "error_count": response.error_count,
+        },
+    )
+
+    return response
 
 
 @router.get(
