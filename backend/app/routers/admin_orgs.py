@@ -13,6 +13,8 @@ message client-side, full detail server-side.
 """
 
 from datetime import datetime
+from typing import Optional
+
 from app._time import utcnow_naive
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -27,12 +29,22 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.feature_override import OrgFeatureOverride
 from app.models.subscription import Plan, Subscription, SubscriptionStatus
-from app.models.user import Organization, User
+from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip
-from app.schemas.admin_orgs import OrgDeleteRequest, SubscriptionUpdateRequest
+from app.schemas.admin_orgs import (
+    AdminMemberResponse,
+    AdminMemberUpdateRequest,
+    OrgDeleteRequest,
+    SubscriptionUpdateRequest,
+)
 from app.schemas.feature_override import FeatureOverrideUpsert, OrgFeatureOverrideResponse
 from app.schemas.feature_state import FeatureStateResponse
-from app.services import admin_orgs_service, audit_service, feature_service
+from app.services import (
+    admin_org_members_service,
+    admin_orgs_service,
+    audit_service,
+    feature_service,
+)
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 logger = structlog.stdlib.get_logger()
@@ -676,3 +688,239 @@ async def get_feature_state(
         })
 
     return {"plan": plan_summary, "features": feature_rows}
+
+
+# ── Org members (L4.4 — superadmin escape hatch) ─────────────────────────
+
+
+def _audit_event_type_for_member_update(changes: list[str], after: dict) -> Optional[str]:
+    """Pick the single event type for a member PATCH.
+
+    Emits one event type per request; the UI sends one field at a
+    time, so role and is_active changes never combine in a single
+    PATCH today. If a future caller sends both in one body, the
+    activation/deactivation flip takes precedence (it's the more
+    operationally significant signal — a deactivated member can't
+    use any role), and the role change is still captured in the
+    ``before`` / ``after`` / ``changed_fields`` detail of the same
+    audit row. If nothing actually changed the route returns 200
+    without writing an audit row.
+    """
+    if "is_active" in changes:
+        return (
+            "admin.org.member.reactivated"
+            if after["is_active"]
+            else "admin.org.member.deactivated"
+        )
+    if "role" in changes:
+        return "admin.org.member.role_changed"
+    return None
+
+
+async def _ensure_target_org(db: AsyncSession, org_id: int) -> Organization:
+    org = (
+        await db.execute(select(Organization).where(Organization.id == org_id))
+    ).scalar_one_or_none()
+    if org is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found",
+        )
+    return org
+
+
+@router.get(
+    "/{org_id}/members",
+    response_model=list[AdminMemberResponse],
+    dependencies=[Depends(require_permission("orgs.view"))],
+)
+async def list_org_members(
+    org_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await admin_org_members_service.list_members(db, org_id=org_id)
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organization not found",
+        )
+
+
+@router.patch(
+    "/{org_id}/members/{user_id}",
+    response_model=AdminMemberResponse,
+)
+async def update_org_member(
+    org_id: int,
+    user_id: int,
+    body: AdminMemberUpdateRequest,
+    request: Request,
+    current_user: User = Depends(require_permission("orgs.manage")),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    org = await _ensure_target_org(db, org_id)
+    target_org_name = org.name
+
+    role_arg: Optional[Role] = None
+    if body.role is not None:
+        try:
+            role_arg = Role(body.role)
+        except ValueError:
+            # Pydantic Literal already constrains to the three roles,
+            # but a defensive translation keeps the contract honest.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown role {body.role!r}",
+            )
+
+    try:
+        target, before, after, changes = await admin_org_members_service.update_member(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            actor=current_user,
+            role=role_arg,
+            is_active=body.is_active,
+        )
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found",
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ConflictError as e:
+        # The "platform superadmin" guard surfaces here as a
+        # ConflictError; HTTP-wise it belongs at 403 because the
+        # superadmin status is an authorization boundary, not a
+        # transient conflict. Detect by message.
+        msg = str(e)
+        if "superadmin" in msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=msg
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=msg
+        )
+
+    event_type = _audit_event_type_for_member_update(changes, after)
+
+    await db.commit()
+
+    member_payload = {
+        "id": target.id,
+        "username": target.username,
+        "email": target.email,
+        "role": target.role.value,
+        "is_active": target.is_active,
+        "email_verified": target.email_verified,
+        "is_superadmin": target.is_superadmin,
+        "created_at": target.created_at.isoformat() if target.created_at else None,
+    }
+
+    if event_type is not None:
+        detail: dict[str, object] = {
+            "target_user_id": target.id,
+            "target_username": target.username,
+            "target_email": target.email,
+            "before": before,
+            "after": after,
+            "changed_fields": changes,
+        }
+        await logger.ainfo(
+            event_type,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=org_id,
+            target_org_name=target_org_name,
+            target_user_id=target.id,
+            before=before,
+            after=after,
+            changed_fields=changes,
+        )
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type=event_type,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=org_id,
+            target_org_name=target_org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail=detail,
+        )
+
+    return member_payload
+
+
+@router.delete(
+    "/{org_id}/members/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_org_member(
+    org_id: int,
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_permission("orgs.manage")),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    org = await _ensure_target_org(db, org_id)
+    target_org_name = org.name
+
+    try:
+        target, snapshot = await admin_org_members_service.remove_member(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            actor=current_user,
+        )
+    except NotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found",
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ConflictError as e:
+        msg = str(e)
+        if "superadmin" in msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=msg
+            )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=msg
+        )
+
+    await db.commit()
+
+    # Idempotent on already-inactive targets — no audit row to avoid
+    # phantom "removed" events for a member who was already removed
+    # previously. The structlog signal is enough for the trace.
+    if snapshot["was_active"]:
+        await logger.ainfo(
+            "admin.org.member.removed",
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=org_id,
+            target_org_name=target_org_name,
+            target_user_id=target.id,
+            snapshot=snapshot,
+        )
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="admin.org.member.removed",
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=org_id,
+            target_org_name=target_org_name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail={"snapshot": snapshot},
+        )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

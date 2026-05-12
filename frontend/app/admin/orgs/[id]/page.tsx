@@ -8,6 +8,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ChangePlanModal from "@/components/admin/ChangePlanModal";
 import FeatureOverridesCard from "@/components/admin/FeatureOverridesCard";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
 import {
@@ -43,7 +44,13 @@ type Member = {
   is_active: boolean;
   email_verified: boolean;
   created_at: string | null;
+  // Optional in the legacy /api/v1/admin/orgs/{id} payload; the
+  // dedicated /members endpoint includes it. Default `false` if
+  // absent so existing call sites still narrow correctly.
+  is_superadmin?: boolean;
 };
+
+const ROLE_OPTIONS = ["owner", "admin", "member"] as const;
 
 type OrgDetail = {
   id: number;
@@ -85,6 +92,11 @@ export default function AdminOrgDetailPage() {
   const [confirmName, setConfirmName] = useState("");
   const [deleting, setDeleting] = useState(false);
 
+  // Member management state (L4.4 slice).
+  const [memberBusyId, setMemberBusyId] = useState<number | null>(null);
+  const [memberError, setMemberError] = useState("");
+  const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
+
   useEffect(() => {
     if (loading) return;
     if (!user) {
@@ -98,11 +110,19 @@ export default function AdminOrgDetailPage() {
 
   async function refresh() {
     try {
-      const [d, planList] = await Promise.all([
+      const [d, planList, members] = await Promise.all([
         apiFetch<OrgDetail>(`/api/v1/admin/orgs/${orgId}`),
         apiFetch<PlanOption[]>("/api/v1/plans"),
+        // The dedicated members endpoint carries the superset shape
+        // (is_superadmin in particular) so admin affordances render
+        // correctly. Falls back gracefully to d.members if it errors
+        // or returns a non-array shape (older API / mocks).
+        apiFetch<Member[]>(`/api/v1/admin/orgs/${orgId}/members`).catch(
+          () => null,
+        ),
       ]);
-      setDetail(d);
+      const useMembers = Array.isArray(members) ? members : d.members;
+      setDetail({ ...d, members: useMembers });
       setPlans(planList ?? []);
       const sub = d.subscription as Subscription;
       setSubStatus(sub.status ?? "");
@@ -143,6 +163,44 @@ export default function AdminOrgDetailPage() {
       await refresh();
     } catch (err) {
       setError(extractErrorMessage(err, "Update failed"));
+    }
+  }
+
+  async function patchMember(
+    member: Member,
+    body: { role?: string; is_active?: boolean },
+  ) {
+    setMemberError("");
+    setMemberBusyId(member.id);
+    try {
+      await apiFetch(
+        `/api/v1/admin/orgs/${orgId}/members/${member.id}`,
+        { method: "PATCH", body: JSON.stringify(body) },
+      );
+      await refresh();
+    } catch (err) {
+      setMemberError(extractErrorMessage(err, "Update failed"));
+    } finally {
+      setMemberBusyId(null);
+    }
+  }
+
+  async function confirmRemoveMember() {
+    if (!removeTarget) return;
+    const member = removeTarget;
+    setMemberError("");
+    setMemberBusyId(member.id);
+    try {
+      await apiFetch(
+        `/api/v1/admin/orgs/${orgId}/members/${member.id}`,
+        { method: "DELETE" },
+      );
+      setRemoveTarget(null);
+      await refresh();
+    } catch (err) {
+      setMemberError(extractErrorMessage(err, "Remove failed"));
+    } finally {
+      setMemberBusyId(null);
     }
   }
 
@@ -299,6 +357,11 @@ export default function AdminOrgDetailPage() {
         <div className={cardHeader}>
           <h2 className={cardTitle}>Members ({detail.members.length})</h2>
         </div>
+        {memberError && (
+          <div className="px-6 pt-4">
+            <div className={errorCls} role="alert">{memberError}</div>
+          </div>
+        )}
         <div className="overflow-x-auto px-6 py-4">
           <table className="w-full text-sm">
             <thead>
@@ -307,23 +370,116 @@ export default function AdminOrgDetailPage() {
                 <th className="py-2 pr-4">Email</th>
                 <th className="py-2 pr-4">Role</th>
                 <th className="py-2 pr-4">Active</th>
-                <th className="py-2">Verified</th>
+                <th className="py-2 pr-4">Verified</th>
+                <th className="py-2">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {detail.members.map((m) => (
-                <tr key={m.id} className="border-b border-border-subtle">
-                  <td className="py-2 pr-4 text-text-primary">{m.username}</td>
-                  <td className="py-2 pr-4 text-text-secondary">{m.email}</td>
-                  <td className="py-2 pr-4 text-text-secondary">{m.role}</td>
-                  <td className="py-2 pr-4 text-text-secondary">{m.is_active ? "yes" : "no"}</td>
-                  <td className="py-2 text-text-secondary">{m.email_verified ? "yes" : "no"}</td>
-                </tr>
-              ))}
+              {detail.members.map((m) => {
+                const isSelf = m.id === user?.id;
+                const isPlatformSuperadmin = m.is_superadmin === true;
+                // Locking actions for self + platform superadmin
+                // matches the backend guard semantics so the UI
+                // doesn't dangle affordances that would 400/403.
+                const lockedReason = isSelf
+                  ? "You cannot modify your own membership here."
+                  : isPlatformSuperadmin
+                  ? "Platform superadmin, managed elsewhere."
+                  : null;
+                const busy = memberBusyId === m.id;
+                return (
+                  <tr key={m.id} className="border-b border-border-subtle align-middle">
+                    <td className="py-2 pr-4 text-text-primary">{m.username}</td>
+                    <td className="py-2 pr-4 text-text-secondary">{m.email}</td>
+                    <td className="py-2 pr-4 text-text-secondary">
+                      {lockedReason ? (
+                        <span>{m.role}</span>
+                      ) : (
+                        <label className="sr-only" htmlFor={`role-${m.id}`}>
+                          Role for {m.username}
+                        </label>
+                      )}
+                      {!lockedReason && (
+                        <select
+                          id={`role-${m.id}`}
+                          aria-label={`Role for ${m.username}`}
+                          value={m.role}
+                          disabled={busy}
+                          onChange={(e) => {
+                            if (e.target.value !== m.role) {
+                              patchMember(m, { role: e.target.value });
+                            }
+                          }}
+                          className={`${input} max-w-[10rem]`}
+                        >
+                          {ROLE_OPTIONS.map((r) => (
+                            <option key={r} value={r}>{r}</option>
+                          ))}
+                        </select>
+                      )}
+                    </td>
+                    <td className="py-2 pr-4 text-text-secondary">
+                      {m.is_active ? "yes" : "no"}
+                    </td>
+                    <td className="py-2 pr-4 text-text-secondary">
+                      {m.email_verified ? "yes" : "no"}
+                    </td>
+                    <td className="py-2">
+                      {lockedReason ? (
+                        <span className="text-xs text-text-muted">
+                          {lockedReason}
+                        </span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() =>
+                              patchMember(m, { is_active: !m.is_active })
+                            }
+                            className={`${btnSecondary} min-h-[44px]`}
+                            aria-label={
+                              m.is_active
+                                ? `Deactivate ${m.username}`
+                                : `Reactivate ${m.username}`
+                            }
+                          >
+                            {m.is_active ? "Deactivate" : "Reactivate"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || !m.is_active}
+                            onClick={() => setRemoveTarget(m)}
+                            className={`${btnDangerSolid} min-h-[44px]`}
+                            aria-label={`Remove ${m.username} from org`}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       </section>
+
+      <ConfirmModal
+        open={removeTarget !== null}
+        title="Remove member from organization"
+        message={
+          removeTarget
+            ? `Remove ${removeTarget.username} (${removeTarget.email}) from ${detail.name}? They will lose access immediately. This action is recorded in the audit log.`
+            : ""
+        }
+        confirmLabel="Remove"
+        cancelLabel="Cancel"
+        variant="danger"
+        onConfirm={confirmRemoveMember}
+        onCancel={() => setRemoveTarget(null)}
+      />
 
       {/* Counts card */}
       <section className={`${card} mb-6`}>
@@ -333,19 +489,19 @@ export default function AdminOrgDetailPage() {
         <div className="grid grid-cols-2 gap-4 px-6 py-5 sm:grid-cols-4">
           <div>
             <p className="text-xs text-text-muted">Transactions</p>
-            <p className="font-display text-2xl text-text-primary">{detail.counts.transactions}</p>
+            <p className="text-2xl font-semibold tabular-nums text-text-primary">{detail.counts.transactions}</p>
           </div>
           <div>
             <p className="text-xs text-text-muted">Accounts</p>
-            <p className="font-display text-2xl text-text-primary">{detail.counts.accounts}</p>
+            <p className="text-2xl font-semibold tabular-nums text-text-primary">{detail.counts.accounts}</p>
           </div>
           <div>
             <p className="text-xs text-text-muted">Budgets</p>
-            <p className="font-display text-2xl text-text-primary">{detail.counts.budgets}</p>
+            <p className="text-2xl font-semibold tabular-nums text-text-primary">{detail.counts.budgets}</p>
           </div>
           <div>
             <p className="text-xs text-text-muted">Forecast plans</p>
-            <p className="font-display text-2xl text-text-primary">{detail.counts.forecast_plans}</p>
+            <p className="text-2xl font-semibold tabular-nums text-text-primary">{detail.counts.forecast_plans}</p>
           </div>
         </div>
       </section>
