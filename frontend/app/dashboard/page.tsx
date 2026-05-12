@@ -80,11 +80,18 @@ interface ForecastProjection {
 const PAGE_SIZE = 10;
 
 function transactionHighlightHref(tx: Transaction) {
+  // The transactions list filters by `effective_period_date_expr =
+  // COALESCE(settled_date, date)`, so a deep link built from `tx.date`
+  // misses any row whose settled_date differs from its purchase date —
+  // notably every credit-card transaction settling on a later statement
+  // close. Use the same coalesce here so the row we want highlighted
+  // actually lands inside the queried window.
+  const effectiveDate = tx.settled_date ?? tx.date;
   const params = new URLSearchParams({
     account_id: String(tx.account_id),
     transaction_id: String(tx.id),
-    date_from: tx.date,
-    date_to: tx.date,
+    date_from: effectiveDate,
+    date_to: effectiveDate,
   });
 
   return `/transactions?${params.toString()}`;
