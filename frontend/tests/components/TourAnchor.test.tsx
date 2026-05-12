@@ -41,7 +41,7 @@ describe("useTour stub", () => {
     expect(result.current.totalSteps).toBe(0);
 
     // Method calls should not throw and should be no-ops.
-    expect(() => result.current.start("dashboard.balance-tile")).not.toThrow();
+    expect(() => result.current.start(["dashboard.balance-tile"])).not.toThrow();
     expect(() => result.current.next()).not.toThrow();
     expect(() => result.current.prev()).not.toThrow();
     expect(() => result.current.close()).not.toThrow();

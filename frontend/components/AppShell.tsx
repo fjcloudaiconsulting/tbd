@@ -137,6 +137,21 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (!loading && !user) router.replace("/login");
   }, [user, loading, router]);
 
+  // L3.3 first-run wizard. Bounce authenticated users whose backend
+  // explicitly tells us they have not onboarded yet (`onboarded_at`
+  // === null). `undefined` means the field is absent from this
+  // response shape (test fixtures, forward/backwards compat) — treat
+  // those as already-onboarded so the redirect does not hijack
+  // unrelated flows.
+  useEffect(() => {
+    if (loading || !user) return;
+    if (user.onboarded_at !== null) return;
+    if (pathname === "/onboarding") return;
+    if (pathname.startsWith("/accept-invite")) return;
+    if (pathname.startsWith("/verify-email")) return;
+    router.replace("/onboarding");
+  }, [user, loading, pathname, router]);
+
   useEffect(() => {
     if (!userExpanded) return;
     const close = () => setUserExpanded(false);

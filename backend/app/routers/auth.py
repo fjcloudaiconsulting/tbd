@@ -100,6 +100,7 @@ def _user_response(user: User, org: Organization, sub: Subscription | None = Non
         is_active=user.is_active,
         mfa_enabled=user.mfa_enabled,
         password_set=user.password_set,
+        onboarded_at=user.onboarded_at.isoformat() if user.onboarded_at else None,
         allow_manual_balance_adjustment=org.allow_manual_balance_adjustment,
         subscription_status=sub.status.value if sub else None,
         subscription_plan=plan.slug if plan else None,

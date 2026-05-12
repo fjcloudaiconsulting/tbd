@@ -92,6 +92,14 @@ class User(Base):
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="0")
     totp_secret: Mapped[str | None] = mapped_column(String(256), nullable=True)
     recovery_codes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # L3.3 first-run wizard: NULL means the user has not finished the
+    # onboarding flow yet; a timestamp means "completed at <ts>". The
+    # frontend redirects to ``/onboarding`` while this is NULL. The
+    # ``POST /api/v1/users/me/onboarding/complete`` endpoint sets it.
+    # Existing rows are backfilled with ``created_at`` by migration 041.
+    onboarded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
