@@ -21,9 +21,12 @@ describe("<LandingFooter />", () => {
     expect(
       screen.getByRole("link", { name: /^terms$/i }),
     ).toHaveAttribute("href", "/terms");
+    // The "Help" label routes to /docs (the existing in-app user manual
+    // from PR #159) — there is no /help route, and a public 404 is not
+    // acceptable for launch polish.
     expect(
       screen.getByRole("link", { name: /^help$/i }),
-    ).toHaveAttribute("href", "/help");
+    ).toHaveAttribute("href", "/docs");
   });
 
   it("exposes the contact mailto", () => {

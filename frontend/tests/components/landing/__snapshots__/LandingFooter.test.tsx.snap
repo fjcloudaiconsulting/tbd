@@ -47,8 +47,14 @@ exports[`<LandingFooter /> > snapshot stays stable in dark + light > footer-dark
           The Better Decision
         </span>
       </span>
-      <span>
-        © 
+      <span
+        class="inline-flex items-center gap-1"
+      >
+        <span
+          aria-hidden="true"
+        >
+          ©
+        </span>
         <span>
           2026
         </span>
@@ -72,7 +78,7 @@ exports[`<LandingFooter /> > snapshot stays stable in dark + light > footer-dark
       </a>
       <a
         class="hover:text-text-primary"
-        href="/help"
+        href="/docs"
       >
         Help
       </a>
@@ -134,8 +140,14 @@ exports[`<LandingFooter /> > snapshot stays stable in dark + light > footer-ligh
           The Better Decision
         </span>
       </span>
-      <span>
-        © 
+      <span
+        class="inline-flex items-center gap-1"
+      >
+        <span
+          aria-hidden="true"
+        >
+          ©
+        </span>
         <span>
           2026
         </span>
@@ -159,7 +171,7 @@ exports[`<LandingFooter /> > snapshot stays stable in dark + light > footer-ligh
       </a>
       <a
         class="hover:text-text-primary"
-        href="/help"
+        href="/docs"
       >
         Help
       </a>
