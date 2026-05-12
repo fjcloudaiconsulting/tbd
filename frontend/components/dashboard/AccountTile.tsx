@@ -13,7 +13,7 @@ export interface AccountTilesCardProps {
 // Compact identity/status/navigation column for the dashboard. ONE
 // shared card with internal divider rows, mirroring the Forecast card
 // idiom on the right side of the row. Each row is a click-through to
-// /accounts. The Forecast card is the numeric authority; the muted
+// /transactions filtered by account. The Forecast card is the numeric authority; the muted
 // balance hint here is secondary text only, NOT the primary visual
 // anchor of the row.
 export default function AccountTilesCard({
@@ -52,7 +52,7 @@ export function AccountTileRow({ account, pendingAmount }: AccountTileRowProps) 
 
   return (
     <Link
-      href="/accounts"
+      href={`/transactions?account_id=${account.id}`}
       data-testid="account-tile"
       data-account-id={account.id}
       className="flex items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
