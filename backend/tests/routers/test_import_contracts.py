@@ -132,8 +132,14 @@ def _make_app(session_factory, *, authenticated: bool = True) -> FastAPI:
 
 
 @pytest.mark.asyncio
-async def test_ofx_preview_returns_501_when_authenticated(session_factory):
-    """OFX preview stub returns 501 with a pointer to the spec."""
+async def test_ofx_preview_rejects_malformed_with_400(session_factory):
+    """OFX preview rejects a structurally invalid file with 400.
+
+    Updated 2026-05-12 (L3.2 Wave 2A): the endpoint is now implemented
+    (see ``app.services.import_ofx_service``). A bare ``<OFX></OFX>``
+    body has no header, no STMTTRNRS and no transactions — ParseError
+    → 400 via the domain-exception shim, no stack trace leaked.
+    """
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -142,10 +148,11 @@ async def test_ofx_preview_returns_501_when_authenticated(session_factory):
             files={"file": ("test.ofx", io.BytesIO(b"<OFX></OFX>"), "application/x-ofx")},
             data={"account_id": "1"},
         )
-    assert resp.status_code == 501
+    assert resp.status_code == 400
     body = resp.json()
-    assert "not implemented" in body["detail"].lower()
-    assert "l3.2" in body["detail"].lower()
+    assert "ofx" in body["detail"].lower()
+    # No stack trace / no raw file content leaks.
+    assert "traceback" not in body["detail"].lower()
 
 
 @pytest.mark.asyncio
