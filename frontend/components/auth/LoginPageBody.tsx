@@ -4,10 +4,11 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
+import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { ApiResponseError, apiFetch } from "@/lib/api";
-import { input, label, btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
+import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
 
 type ResendState = "idle" | "sending" | "sent" | "failed";
 
@@ -23,6 +24,7 @@ export default function LoginPageBody() {
   // if they edit the input afterward.
   const [unverifiedLogin, setUnverifiedLogin] = useState<string | null>(null);
   const [resendState, setResendState] = useState<ResendState>("idle");
+  const [googleLoading, setGoogleLoading] = useState(false);
 
   useEffect(() => {
     if (!loading && needsSetup) router.replace("/setup");
@@ -68,10 +70,12 @@ export default function LoginPageBody() {
   }
 
   async function handleGoogleLogin() {
+    setGoogleLoading(true);
     try {
       const data = await apiFetch<{ redirect_url: string }>("/api/v1/auth/google");
       window.location.href = data.redirect_url;
     } catch (err) {
+      setGoogleLoading(false);
       setError(err instanceof Error ? err.message : "Google sign-in is not available");
     }
   }
@@ -133,14 +137,20 @@ export default function LoginPageBody() {
           <button type="submit" disabled={submitting} className={`w-full ${btnPrimary}`}>
             {submitting ? "Signing in..." : "Sign In"}
           </button>
-          <div className="flex items-center gap-3 my-4">
-            <div className="flex-1 border-t border-border" />
-            <span className="text-xs text-text-muted">or</span>
-            <div className="flex-1 border-t border-border" />
-          </div>
-          <button onClick={handleGoogleLogin} className={btnSecondary + " w-full"} type="button">
-            Sign in with Google
-          </button>
+          {process.env.NEXT_PUBLIC_GOOGLE_SSO_ENABLED === "true" && (
+            <>
+              <div className="flex items-center gap-3 my-4">
+                <div className="flex-1 border-t border-border" />
+                <span className="text-xs text-text-muted">or</span>
+                <div className="flex-1 border-t border-border" />
+              </div>
+              <GoogleSSOButton
+                mode="signin"
+                loading={googleLoading}
+                onClick={handleGoogleLogin}
+              />
+            </>
+          )}
         </form>
         <p className="mt-6 text-center text-sm text-text-muted">
           Don&apos;t have an account?{" "}

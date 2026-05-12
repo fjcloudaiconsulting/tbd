@@ -190,6 +190,35 @@ a, button { transition: all 0.15s ease; }
   color: var(--theme-text-primary) !important;
 }
 
+/* Google "Sign in with Google" button (L5.9). Surface colors are locked
+   by Google's branding guide and do NOT consume product theme tokens.
+   The button is dark-by-default (the app's default theme) and lightens
+   when the html root carries data-theme="light". Sizing, focus, and
+   typography are owned by the component className; only the brand
+   surface lives here so the values are reviewable in one place. */
+.gsi-button {
+  background-color: #131314;
+  color: #e3e3e3;
+  border: 1px solid transparent;
+}
+.gsi-button:hover {
+  background-color: #1e1f20;
+}
+.gsi-button:active {
+  background-color: #2a2b2d;
+}
+[data-theme="light"] .gsi-button {
+  background-color: #ffffff;
+  color: #1f1f1f;
+  border-color: #dadce0;
+}
+[data-theme="light"] .gsi-button:hover {
+  background-color: #f8f9fa;
+}
+[data-theme="light"] .gsi-button:active {
+  background-color: #f1f3f4;
+}
+
 /* Honor user's reduced-motion preference. WCAG 2.2 AA + PRODUCT.md
    commitment. Disables animations, transitions, and smooth-scroll for
    anyone with the OS-level preference set. Placed last so it wins
