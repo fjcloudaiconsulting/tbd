@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BRAND_NAME } from "@/lib/brand";
+import { signinHref, signupHref } from "@/lib/links";
 import { btnPrimary, btnSecondary } from "@/lib/styles";
 import HeroDashboard from "./HeroDashboard";
 
@@ -29,13 +30,13 @@ export default function Hero() {
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Link
-              href="/register"
+              href={signupHref()}
               className={`${btnPrimary} px-6 py-3 text-base`}
             >
               Get started free
             </Link>
             <Link
-              href="/login"
+              href={signinHref()}
               className={`${btnSecondary} px-6 py-3 text-base`}
             >
               Sign in
