@@ -3,7 +3,7 @@ import {
   BRAND_BRASS,
   BRAND_INK,
   BRAND_SLATE,
-} from "@/lib/styles";
+} from "@/lib/brand";
 
 // Next.js App Router file convention. Generates the 180×180 PNG that
 // iOS uses for "Add to home screen". Mirrors `icon.svg` visually so a

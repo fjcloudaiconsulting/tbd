@@ -7,7 +7,7 @@ import {
   BRAND_INK_RAISED,
   BRAND_PARCHMENT,
   BRAND_SLATE,
-} from "@/lib/styles";
+} from "@/lib/brand";
 import { siteDescription, siteName } from "@/lib/site";
 
 export const alt = `${siteName}: know your money, plan what's next`;

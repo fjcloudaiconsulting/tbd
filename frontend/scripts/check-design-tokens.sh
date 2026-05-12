@@ -37,13 +37,17 @@ ROOTS=(app components lib)
 #   - tests/
 #   - node_modules / .next (never present under app/components/lib but defensive)
 #   - app/opengraph-image.tsx — Next.js OG image route, only inline styles work.
+#   - app/apple-icon.tsx — Next.js dynamic icon route, inline styles only.
 #   - app/global-error.tsx — root error boundary; runs without globals.css.
+#   - lib/brand.ts — canonical brand constants, not theme tokens.
 EXCLUDES=(
   --exclude-dir=node_modules
   --exclude-dir=.next
   --exclude-dir=tests
   --exclude=opengraph-image.tsx
+  --exclude=apple-icon.tsx
   --exclude=global-error.tsx
+  --exclude=brand.ts
 )
 
 PALETTES='(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)'

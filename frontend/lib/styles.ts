@@ -61,42 +61,8 @@ export const badgeNeutral =
 export const stickyBar =
   "sticky top-0 z-20 -mx-4 sm:-mx-8 border-b border-border bg-surface-raised px-4 sm:px-8";
 
-// ─── Brand foundation (L5.10) ───
-// Additive tokens for canonical brand surfaces. Do NOT use these for app
-// chrome — they exist to keep marketing surfaces (landing hero, OG image,
-// email headers) on a single tightly-controlled visual track that does
-// NOT drift with theme changes. See BRAND.md for usage rules.
-//
-// Brand surfaces are always presented on the navy ground regardless of
-// the visitor's chosen theme, because they appear in screenshots, social
-// shares, and email clients where theme is not a meaningful concept.
-export const BRAND_INK = "#0B1F3A"; // primary brand ground
-export const BRAND_INK_DEEP = "#070d18"; // page background under brand surfaces
-export const BRAND_INK_RAISED = "#122a4a"; // raised surface on brand ground
-export const BRAND_BRASS = "#D4A64A"; // primary accent
-export const BRAND_BRASS_HOVER = "#B88A2E"; // accent on hover / pressed
-export const BRAND_BRASS_DIM = "rgba(212, 166, 74, 0.12)"; // tinted brass surface
-export const BRAND_PARCHMENT = "#E6EAF0"; // primary text on brand ground
-export const BRAND_FOG = "#9ba8bd"; // secondary text on brand ground
-export const BRAND_SLATE = "#5a6a82"; // muted text / glyph echo
-
-// Brand voice copy constants — single source of truth for the lockable
-// strings. Downstream teams (landing, email templates, SSO, onboarding)
-// should import these rather than re-typing the strings.
-export const BRAND_NAME = "The Better Decision";
-export const BRAND_NAME_SHORT = "TBD";
-export const BRAND_TAGLINE = "There's no best decision. Only better ones.";
-export const BRAND_DESCRIPTION =
-  "A finance app for normal people. Know what you have, what's coming, and where it goes.";
-export const BRAND_DOMAIN = "thebetterdecision.com";
-export const BRAND_CONTACT_EMAIL = "hello@thebetterdecision.com";
-
-// Tailwind class strings for the canonical brand surface. Use on the
-// landing hero, OG-image fallback, and any opt-in "brand ground"
-// section that must NOT theme-switch.
-export const brandSurface =
-  "bg-[#0B1F3A] text-[#E6EAF0]"; // navy ground, parchment text
-export const brandSurfaceMuted =
-  "text-[#9ba8bd]"; // secondary copy on brand ground
-export const brandAccentText =
-  "text-[#D4A64A]"; // brass emphasis on brand ground
+// Brand foundation (L5.10) constants and copy live in `./brand.ts`. They
+// were moved out of this file so the design-token check can keep
+// `lib/styles.ts` free of hex literals while brand surfaces (OG image,
+// apple-icon, landing hero) continue to use a single locked palette
+// that does NOT theme-switch. Import from "@/lib/brand".
