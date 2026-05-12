@@ -59,6 +59,38 @@ describe("Tooltip", () => {
     });
   });
 
+  it("stays open when a mouse click fires focus then click in the same tick (browser order)", async () => {
+    // Real browsers fire `focus` immediately before `click` when a user
+    // mouse-clicks an unfocused element. The naive toggle-on-click made
+    // the focus-open immediately toggle closed, inverting clicks. This
+    // test guards against that regression.
+    render(<Tooltip content="Browser order" />);
+    const trigger = screen.getByTestId("tooltip-trigger");
+
+    // First gesture: focus fires, then click fires in the same tick.
+    act(() => {
+      fireEvent.focus(trigger);
+      fireEvent.click(trigger);
+    });
+    expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+
+    // Second click (trigger already focused): now this should toggle
+    // closed since it is a deliberate click without a fresh focus.
+    act(() => {
+      fireEvent.click(trigger);
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    });
+
+    // Third click: focus is still on the trigger from the second click,
+    // so this is a standalone click and should reopen.
+    act(() => {
+      fireEvent.click(trigger);
+    });
+    expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+  });
+
   it("renders a Learn more link to /docs#<section> when learnMoreSection is provided", async () => {
     render(
       <Tooltip

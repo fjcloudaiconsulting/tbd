@@ -119,6 +119,14 @@ export default function Tooltip({
 
   const triggerRef = useRef<HTMLSpanElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
+  // Set by handleFocus, read + cleared by handleClick. Browsers fire
+  // `focus` immediately before `click` when a user mouse-clicks an
+  // unfocused element. Without this flag, the focus opens the tooltip
+  // and the click in the same tick toggles it back closed — inverting
+  // every other click. handleFocus arms the flag, the next click clears
+  // it instead of toggling, and a queued microtask resets the flag so a
+  // deliberate second click (with no fresh focus) still toggles.
+  const justOpenedByFocus = useRef(false);
   const reducedMotion = useReducedMotion();
 
   useEffect(() => {
@@ -270,13 +278,35 @@ export default function Tooltip({
     if (related && tooltipRef.current?.contains(related)) return;
     setOpen(false);
   }, []);
-  const handleFocus = useCallback(() => setOpen(true), []);
+  const handleFocus = useCallback(() => {
+    setOpen(true);
+    // Arm the focus-then-click suppressor. Queued microtask resets the
+    // flag after the same-tick click handler runs. requestAnimationFrame
+    // would also work; setTimeout(0) is the conservative cross-browser
+    // pick for "next tick" and matches what testing-library's
+    // act-flushing expects.
+    justOpenedByFocus.current = true;
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        justOpenedByFocus.current = false;
+      }, 0);
+    }
+  }, []);
   const handleBlur = useCallback((e: React.FocusEvent) => {
     const next = e.relatedTarget as Node | null;
     if (next && tooltipRef.current?.contains(next)) return;
     setOpen(false);
   }, []);
-  const handleClick = useCallback(() => setOpen((v) => !v), []);
+  const handleClick = useCallback(() => {
+    // Suppress the click that fires in the same tick as focus (browser
+    // mouse-click order is focus -> click). Clear the flag so the next
+    // click toggles normally.
+    if (justOpenedByFocus.current) {
+      justOpenedByFocus.current = false;
+      return;
+    }
+    setOpen((v) => !v);
+  }, []);
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent) => {
       if (e.key === "Escape" && open) {
