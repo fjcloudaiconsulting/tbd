@@ -198,4 +198,49 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
       "/transactions?account_id=10&transaction_id=999&date_from=2026-05-01&date_to=2026-05-01",
     );
   });
+
+  it("uses settled_date in the deep link when it differs from purchase date (CC row)", async () => {
+    // A credit-card purchase on 2026-05-01 that doesn't post to the
+    // statement until 2026-05-15. The transactions list filters by
+    // COALESCE(settled_date, date), so a deep link built from `tx.date`
+    // would query for [2026-05-01, 2026-05-01] and skip this row
+    // entirely. The href must use settled_date instead.
+    const CC_TX = {
+      ...SETTLED_TX,
+      id: 482,
+      account_id: 15,
+      date: "2026-05-01",
+      settled_date: "2026-05-15",
+      description: "Restaurant",
+      account_name: "Amex Gold",
+    };
+
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([]);
+      if (url === "/api/v1/categories") return Promise.resolve([]);
+      if (url === "/api/v1/budgets" || url.startsWith("/api/v1/budgets?"))
+        return Promise.resolve([]);
+      if (url === "/api/v1/settings/billing-cycle")
+        return Promise.resolve({ billing_cycle_day: 1 });
+      if (url === "/api/v1/settings/billing-period")
+        return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
+      if (url === "/api/v1/settings/billing-periods")
+        return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
+      if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
+      if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+      if (url.startsWith("/api/v1/transactions?limit=200")) return Promise.resolve([CC_TX]);
+      if (url.startsWith("/api/v1/transactions?limit=11&offset=0"))
+        return Promise.resolve([CC_TX]);
+      return Promise.resolve({});
+    }) as never);
+
+    render(<DashboardPage />);
+
+    const link = await screen.findByRole("link", { name: /Restaurant Amex Gold/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "/transactions?account_id=15&transaction_id=482&date_from=2026-05-15&date_to=2026-05-15",
+    );
+  });
 });
