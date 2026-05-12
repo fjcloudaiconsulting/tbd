@@ -47,7 +47,7 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
-                var t = localStorage.getItem('pfv2-theme');
+                var t = localStorage.getItem('tbd-theme');
                 if (t === 'light') {
                   document.documentElement.setAttribute('data-theme', 'light');
                 }

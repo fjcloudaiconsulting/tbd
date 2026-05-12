@@ -19,7 +19,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>("dark");
 
   useEffect(() => {
-    const stored = localStorage.getItem("pfv2-theme");
+    const stored = localStorage.getItem("tbd-theme");
     if (stored === "light" || stored === "dark") {
       setTheme(stored);
       if (stored === "light") {
@@ -38,7 +38,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } else {
       document.documentElement.removeAttribute("data-theme");
     }
-    localStorage.setItem("pfv2-theme", next);
+    localStorage.setItem("tbd-theme", next);
   }, [theme]);
 
   return (
