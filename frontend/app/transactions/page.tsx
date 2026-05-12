@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -28,6 +28,7 @@ import { usePersistedSort } from "@/lib/hooks/use-persisted-sort";
 
 
 const PAGE_SIZE = 20;
+const DATE_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Column-aware sort defaults. When the user clicks a different column, that
 // column's natural default direction is applied (Option B in the data-table
@@ -65,6 +66,10 @@ export default function TransactionsPage() {
 function TransactionsPageContent() {
   const { user, loading } = useAuth();
   const searchParams = useSearchParams();
+  const urlFiltersSyncedRef = useRef(false);
+  const categoryUrlSyncedRef = useRef(false);
+  const targetDesktopRowRef = useRef<HTMLDivElement | null>(null);
+  const targetMobileRowRef = useRef<HTMLElement | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -174,6 +179,7 @@ function TransactionsPageContent() {
 
   // Billing periods for filter
   const [periods, setPeriods] = useState<{ id: number; start_date: string; end_date: string | null }[]>([]);
+  const [periodsLoaded, setPeriodsLoaded] = useState(false);
 
   // Form
   const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
@@ -217,6 +223,7 @@ function TransactionsPageContent() {
     setAccounts(accts ?? []);
     setCategories(cats ?? []);
     setPeriods(pers ?? []);
+    setPeriodsLoaded(true);
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
@@ -229,9 +236,9 @@ function TransactionsPageContent() {
     // Period filter overrides date_from/date_to
     if (filterPeriod) {
       const per = periods.find((p) => String(p.id) === filterPeriod);
-      if (per) {
+      if (per && per.end_date !== null) {
         url += `&date_from=${per.start_date}`;
-        if (per.end_date) url += `&date_to=${per.end_date}`;
+        url += `&date_to=${per.end_date}`;
       }
     } else {
       if (filterDateFrom) url += `&date_from=${filterDateFrom}`;
@@ -249,16 +256,61 @@ function TransactionsPageContent() {
     if (!loading && user) loadRefs().catch(() => {});
   }, [loading, user, loadRefs]);
 
+  // Apply supported URL params once so dashboard deep links don't fight
+  // user-edited filters after initial hydration.
+  useEffect(() => {
+    if (urlFiltersSyncedRef.current) return;
+    urlFiltersSyncedRef.current = true;
+
+    const patch: Partial<TxFilters> = {};
+    const accountId = Number(searchParams.get("account_id"));
+    if (Number.isInteger(accountId) && accountId > 0) {
+      patch.filterAccount = accountId;
+    }
+
+    const dateFrom = searchParams.get("date_from");
+    const dateTo = searchParams.get("date_to");
+    if (dateFrom && DATE_PARAM_RE.test(dateFrom)) {
+      patch.filterDateFrom = dateFrom;
+      patch.filterPeriod = "";
+    }
+    if (dateTo && DATE_PARAM_RE.test(dateTo)) {
+      patch.filterDateTo = dateTo;
+      patch.filterPeriod = "";
+    }
+
+    if (Object.keys(patch).length > 0) {
+      persistedFilters.set(patch);
+    }
+  }, [persistedFilters, searchParams]);
+
   // Apply ?category= URL param once categories are loaded
   useEffect(() => {
+    if (categoryUrlSyncedRef.current) return;
     const categoryName = searchParams.get("category");
     if (categoryName && categories.length > 0) {
       const match = categories.find(
         (c) => c.name.toLowerCase() === categoryName.toLowerCase()
       );
-      if (match) setFilterCategory(match.id);
+      if (match) {
+        categoryUrlSyncedRef.current = true;
+        setFilterCategory(match.id);
+      }
     }
   }, [categories, searchParams]);
+
+  const closedPeriods = useMemo(
+    () => periods.filter((p) => p.end_date !== null),
+    [periods],
+  );
+
+  useEffect(() => {
+    if (!periodsLoaded || !filterPeriod) return;
+    const selectedClosedPeriod = closedPeriods.some(
+      (p) => String(p.id) === filterPeriod,
+    );
+    if (!selectedClosedPeriod) setFilterPeriod("");
+  }, [closedPeriods, filterPeriod, periodsLoaded]);
 
   useEffect(() => {
     if (!loading && user) {
@@ -719,6 +771,29 @@ function TransactionsPageContent() {
     () => sortedTransactions.filter((t) => !selectionHiddenIds.has(t.id)),
     [sortedTransactions, selectionHiddenIds],
   );
+  const targetTransactionId = useMemo(() => {
+    const raw = searchParams.get("transaction_id");
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (
+      targetTransactionId === null ||
+      !visibleTxs.some((tx) => tx.id === targetTransactionId)
+    ) {
+      return;
+    }
+    const prefersDesktop =
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function" ||
+      window.matchMedia("(min-width: 768px)").matches;
+    const row = prefersDesktop
+      ? targetDesktopRowRef.current ?? targetMobileRowRef.current
+      : targetMobileRowRef.current ?? targetDesktopRowRef.current;
+    row?.scrollIntoView({ block: "center", behavior: "auto" });
+  }, [targetTransactionId, visibleTxs]);
 
   // Tx lookup map for O(1) linked-row resolution. Recomputed only when the
   // transactions array itself changes.
@@ -1035,7 +1110,7 @@ function TransactionsPageContent() {
                   const now = new Date();
                   setRange(
                     formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 1)),
-                    todayISO(),
+                    formatLocalDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
                   );
                 },
               },
@@ -1044,20 +1119,6 @@ function TransactionsPageContent() {
                 fn: () => setRange("", ""),
               },
             ];
-            // Optional "Current Period" preset, only when an open billing
-            // period exists. It sets the period filter (which the URL builder
-            // already prefers) and clears any explicit date range.
-            const currentPeriod = periods.find((p) => p.end_date === null);
-            if (currentPeriod) {
-              presets.push({
-                label: "Current Period",
-                fn: () => {
-                  setFilterDateFrom("");
-                  setFilterDateTo("");
-                  setFilterPeriod(String(currentPeriod.id));
-                },
-              });
-            }
             return presets.map((p) => (
               <button key={p.label} type="button" onClick={p.fn} className="rounded-md border border-border px-2.5 py-1 text-[11px] text-text-secondary hover:bg-surface-raised min-h-[44px] sm:min-h-0">
                 {p.label}
@@ -1115,14 +1176,14 @@ function TransactionsPageContent() {
           <label htmlFor="f-to" className="sr-only">To date</label>
           <input id="f-to" type="date" value={filterDateTo} onChange={(e) => { setFilterPeriod(""); setFilterDateTo(e.target.value); }} className={`w-full sm:w-32 ${input}`} placeholder="To" />
         </div>
-        {periods.length > 0 && (
+        {closedPeriods.length > 0 && (
           <div className="w-full sm:w-auto">
             <label htmlFor="f-period" className="sr-only">Billing period</label>
             <select id="f-period" value={filterPeriod} onChange={(e) => { setFilterPeriod(e.target.value); if (e.target.value) { setFilterDateFrom(""); setFilterDateTo(""); } }} className={`w-full sm:w-40 ${input}`}>
               <option value="">All periods</option>
-              {periods.map((p) => (
+              {closedPeriods.map((p) => (
                 <option key={p.id} value={String(p.id)}>
-                  {p.start_date}{p.end_date ? ` — ${p.end_date}` : " (current)"}
+                  {p.start_date} — {p.end_date}
                 </option>
               ))}
             </select>
@@ -1175,6 +1236,7 @@ function TransactionsPageContent() {
                     {visibleTxs.map((tx) => {
                       const isTransfer = tx.linked_transaction_id !== null;
                       const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                      const isTarget = targetTransactionId === tx.id;
                       return editingId === tx.id ? (
                         // Desktop edit mode: switched from a single 12-col row
                         // (Item 7 audit: Status/Amount cols ~42px clipped both
@@ -1353,11 +1415,14 @@ function TransactionsPageContent() {
                       ) : (
                         <div
                           key={tx.id}
+                          ref={isTarget ? targetDesktopRowRef : null}
+                          id={`transaction-${tx.id}`}
+                          data-testid={`tx-row-desktop-${tx.id}`}
                           className={`grid grid-cols-12 items-center gap-4 px-6 py-3 transition-colors hover:bg-surface-raised ${
                             tx.status === "pending"
                               ? "[&>*:not(.tx-status-cell)]:opacity-60"
                               : ""
-                          }`}
+                          } ${isTarget ? "bg-accent-dim ring-2 ring-accent ring-inset" : ""}`}
                         >
                           {/* Pending rows dim every cell except the status pill
                               via the [&>*:not(.tx-status-cell)] selector above.
@@ -1455,6 +1520,7 @@ function TransactionsPageContent() {
                     {visibleTxs.map((tx) => {
                       const isTransfer = tx.linked_transaction_id !== null;
                       const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                      const isTarget = targetTransactionId === tx.id;
                       if (editingId === tx.id) {
                         return (
                           <article key={tx.id} className="flex flex-col gap-3 rounded-lg border border-border bg-surface-raised p-4">
@@ -1608,7 +1674,12 @@ function TransactionsPageContent() {
                       return (
                         <article
                           key={tx.id}
-                          className="flex flex-col gap-2 rounded-lg border border-border bg-surface p-4"
+                          ref={isTarget ? targetMobileRowRef : null}
+                          id={`transaction-mobile-${tx.id}`}
+                          data-testid={`tx-row-mobile-${tx.id}`}
+                          className={`flex flex-col gap-2 rounded-lg border border-border bg-surface p-4 ${
+                            isTarget ? "bg-accent-dim ring-2 ring-accent" : ""
+                          }`}
                         >
                           {/* Pending rows dim the row contents but keep the
                               status pill at full opacity. CSS opacity composites
