@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -60,6 +61,16 @@ class Account(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     close_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # User-stated opening balance for the account. Migration 041 sets
+    # this to 0 for every existing account (canonical backfill, see
+    # contract §4.4). New accounts may set it at create time; existing
+    # accounts may edit it via PATCH /api/v1/accounts/{id}.
+    opening_balance: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, default=Decimal("0.00"), server_default="0"
+    )
+    opening_balance_date: Mapped[date] = mapped_column(
+        Date, nullable=False, server_default=func.current_date()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

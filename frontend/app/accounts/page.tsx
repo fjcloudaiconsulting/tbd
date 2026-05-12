@@ -34,6 +34,9 @@ export default function AccountsPage() {
   const [editAcctId, setEditAcctId] = useState<number | null>(null);
   const [editAcctName, setEditAcctName] = useState("");
   const [editAcctCloseDay, setEditAcctCloseDay] = useState("");
+  // L3.2 Wave 2A — opening balance fields are editable from the row.
+  const [editAcctOpeningBalance, setEditAcctOpeningBalance] = useState("0.00");
+  const [editAcctOpeningBalanceDate, setEditAcctOpeningBalanceDate] = useState("");
 
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [acctName, setAcctName] = useState("");
@@ -41,6 +44,13 @@ export default function AccountsPage() {
   const [acctBalance, setAcctBalance] = useState("0.00");
   const [acctCurrency, setAcctCurrency] = useState("EUR");
   const [acctCloseDay, setAcctCloseDay] = useState("");
+  // L3.2 Wave 2A — opening balance + date on the create form. The date
+  // input defaults to today so most users skip the picker; the contract
+  // (§4.4) backfills 0 for existing accounts, so the create form is the
+  // first chance to state a real starting amount.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const [acctOpeningBalance, setAcctOpeningBalance] = useState("0.00");
+  const [acctOpeningBalanceDate, setAcctOpeningBalanceDate] = useState(todayIso);
   const selectedType = accountTypes.find((t) => t.id === acctTypeId) ?? null;
 
   const [error, setError] = useState("");
@@ -144,9 +154,13 @@ export default function AccountsPage() {
           name: acctName, account_type_id: acctTypeId, balance: acctBalance,
           currency: acctCurrency,
           close_day: selectedType?.slug === "credit_card" && acctCloseDay ? Number(acctCloseDay) : null,
+          opening_balance: acctOpeningBalance || "0.00",
+          opening_balance_date: acctOpeningBalanceDate || null,
         }),
       });
-      setAcctName(""); setAcctTypeId(""); setAcctBalance("0.00"); setAcctCloseDay(""); setShowAccountForm(false);
+      setAcctName(""); setAcctTypeId(""); setAcctBalance("0.00"); setAcctCloseDay("");
+      setAcctOpeningBalance("0.00"); setAcctOpeningBalanceDate(todayIso);
+      setShowAccountForm(false);
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -164,6 +178,8 @@ export default function AccountsPage() {
     setEditAcctId(a.id);
     setEditAcctName(a.name);
     setEditAcctCloseDay(a.close_day ? String(a.close_day) : "");
+    setEditAcctOpeningBalance(String(a.opening_balance ?? "0.00"));
+    setEditAcctOpeningBalanceDate(a.opening_balance_date ?? "");
   }
 
   async function handleSaveAcct() {
@@ -175,6 +191,8 @@ export default function AccountsPage() {
         body: JSON.stringify({
           name: editAcctName,
           close_day: editAcctCloseDay ? Number(editAcctCloseDay) : null,
+          opening_balance: editAcctOpeningBalance || "0.00",
+          opening_balance_date: editAcctOpeningBalanceDate || null,
         }),
       });
       setEditAcctId(null);
@@ -338,6 +356,37 @@ export default function AccountsPage() {
                       <input id="acct-close" type="number" min={1} max={28} value={acctCloseDay} onChange={(e) => setAcctCloseDay(e.target.value)} className={`w-24 ${input}`} placeholder="15" />
                     </div>
                   )}
+                  {/* L3.2 Wave 2A — opening balance + date. Optional;
+                      defaults are 0 / today. Helper text aimed at the
+                      pre-launch friends-only audience: most users won't
+                      know their starting balance and that's fine, we
+                      simply count from 0. */}
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                    <div className="w-full sm:flex-1">
+                      <label htmlFor="acct-opening-balance" className={label}>Opening balance</label>
+                      <input
+                        id="acct-opening-balance"
+                        type="number"
+                        step="0.01"
+                        value={acctOpeningBalance}
+                        onChange={(e) => setAcctOpeningBalance(e.target.value)}
+                        className={input}
+                      />
+                    </div>
+                    <div className="w-full sm:w-44">
+                      <label htmlFor="acct-opening-balance-date" className={label}>Starting from</label>
+                      <input
+                        id="acct-opening-balance-date"
+                        type="date"
+                        value={acctOpeningBalanceDate}
+                        onChange={(e) => setAcctOpeningBalanceDate(e.target.value)}
+                        className={input}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-text-muted">
+                    Your account&apos;s starting amount. Leave at 0 if you don&apos;t know.
+                  </p>
                   <button type="submit" className={`w-full min-h-[44px] sm:w-auto sm:min-h-0 ${btnPrimary}`}>Create Account</button>
                 </form>
               )}
@@ -359,12 +408,39 @@ export default function AccountsPage() {
               )}
               <div className="space-y-1">
                 {accounts.map((a) => editAcctId === a.id ? (
-                  <div key={a.id} className="flex flex-col gap-2 rounded-md bg-surface-raised px-3 py-2.5 sm:flex-row sm:items-center sm:gap-3">
-                    <input aria-label="Account name" type="text" value={editAcctName} onChange={(e) => setEditAcctName(e.target.value)} className={`w-full text-sm sm:flex-1 ${input}`}
-                      onKeyDown={(e) => { if (e.key === "Enter") handleSaveAcct(); if (e.key === "Escape") setEditAcctId(null); }} autoFocus />
-                    {a.account_type_slug === "credit_card" && (
-                      <input aria-label="Close day" type="number" min={1} max={28} value={editAcctCloseDay} onChange={(e) => setEditAcctCloseDay(e.target.value)} placeholder="Close day" className={`w-full text-sm sm:w-24 ${input}`} />
-                    )}
+                  <div key={a.id} className="flex flex-col gap-3 rounded-md bg-surface-raised px-3 py-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                      <input aria-label="Account name" type="text" value={editAcctName} onChange={(e) => setEditAcctName(e.target.value)} className={`w-full text-sm sm:flex-1 ${input}`}
+                        onKeyDown={(e) => { if (e.key === "Enter") handleSaveAcct(); if (e.key === "Escape") setEditAcctId(null); }} autoFocus />
+                      {a.account_type_slug === "credit_card" && (
+                        <input aria-label="Close day" type="number" min={1} max={28} value={editAcctCloseDay} onChange={(e) => setEditAcctCloseDay(e.target.value)} placeholder="Close day" className={`w-full text-sm sm:w-24 ${input}`} />
+                      )}
+                    </div>
+                    {/* L3.2 Wave 2A — opening balance edit row. Two
+                        compact fields, audit-logged on the backend. */}
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
+                      <div className="w-full sm:flex-1">
+                        <label htmlFor={`edit-acct-opening-balance-${a.id}`} className={label}>Opening balance</label>
+                        <input
+                          id={`edit-acct-opening-balance-${a.id}`}
+                          type="number"
+                          step="0.01"
+                          value={editAcctOpeningBalance}
+                          onChange={(e) => setEditAcctOpeningBalance(e.target.value)}
+                          className={input}
+                        />
+                      </div>
+                      <div className="w-full sm:w-44">
+                        <label htmlFor={`edit-acct-opening-balance-date-${a.id}`} className={label}>Starting from</label>
+                        <input
+                          id={`edit-acct-opening-balance-date-${a.id}`}
+                          type="date"
+                          value={editAcctOpeningBalanceDate}
+                          onChange={(e) => setEditAcctOpeningBalanceDate(e.target.value)}
+                          className={input}
+                        />
+                      </div>
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       <button onClick={handleSaveAcct} className="min-h-[44px] text-xs text-accent hover:text-accent-hover sm:min-h-0">Save</button>
                       <button onClick={() => setEditAcctId(null)} className="min-h-[44px] text-xs text-text-muted sm:min-h-0">Cancel</button>
@@ -410,6 +486,17 @@ export default function AccountsPage() {
                             learnMoreSection="accounts"
                             triggerLabel="What does Pending mean for this account?"
                           />
+                        </span>
+                      ) : null}
+                      {/* L3.2 Wave 2A — opening balance hint. Only
+                          surface when the user set a non-zero value;
+                          accounts left at the 0 backfill stay quiet so
+                          the column doesn't fill with "Opening: 0.00"
+                          noise. */}
+                      {Number(a.opening_balance) !== 0 ? (
+                        <span className="text-xs tabular-nums text-text-muted">
+                          Opening: {formatAmount(Number(a.opening_balance))}
+                          {a.opening_balance_date ? ` since ${a.opening_balance_date}` : ""}
                         </span>
                       ) : null}
                     </div>
