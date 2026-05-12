@@ -42,6 +42,16 @@ class ImportPreviewRow(BaseModel):
     pair_with_transaction_id: int | None = None
     transfer_candidates: list[TransferCandidate] = []
 
+    # L3.2 Wave 1 contract: OFX-specific extras (populated only by the OFX
+    # preview path; NULL on the CSV path). Declared here so OpenAPI exposes
+    # the wire shape Wave 2 teams build against. See spec
+    # ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
+    # §1 for field semantics; ``fitid`` is the primary OFX dedup signal
+    # (per OFX spec §11.4.4, unique within bank+account).
+    fitid: str | None = None
+    bank_id: str | None = None
+    account_type_ofx: Literal["CHECKING", "SAVINGS", "CREDITLINE", "MONEYMRKT"] | None = None
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -88,6 +98,13 @@ class ImportConfirmRow(BaseModel):
     # Echoed back from preview for accept-vs-override detection
     suggested_category_id: int | None = None
     suggestion_source: Literal["org_rule", "shared_dictionary", "default"] | None = None
+
+    # L3.2 Wave 1 contract: OFX-specific extras echoed from the preview row
+    # so the confirm payload can carry them through to audit / future
+    # locale dispatch. Always NULL on the CSV path.
+    fitid: str | None = None
+    bank_id: str | None = None
+    account_type_ofx: Literal["CHECKING", "SAVINGS", "CREDITLINE", "MONEYMRKT"] | None = None
 
     model_config = ConfigDict(extra="forbid")
 
