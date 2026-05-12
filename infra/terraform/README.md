@@ -4,6 +4,14 @@ Terraform Cloud workspace `FlamaCorp/pfv` managing the DigitalOcean
 infrastructure for the self-hosted MySQL + Redis pair behind `pfv`. State
 and runs live in TFC; this directory holds the configuration.
 
+> The apex landing (AWS S3 + CloudFront + ACM + IAM OIDC) lives in a
+> separate workspace `FlamaCorp/pfv-apex` with working directory
+> `infra/terraform/apex/` and trigger pattern `infra/terraform/apex/**`.
+> Keeping the AWS provisioning isolated from this DigitalOcean workspace
+> contains the blast radius and lets each workspace use its own auth
+> path (DO API token here, AWS OIDC there). See
+> [`apex/README.md`](apex/README.md) for the apex setup.
+
 ## Resources managed
 
 | Resource | Purpose |

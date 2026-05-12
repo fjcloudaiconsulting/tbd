@@ -1,0 +1,17 @@
+# Reference only. Production runs happen in Terraform Cloud
+# (FlamaCorp/pfv-apex); variables are set as workspace variables there.
+# Use this file ONLY for local-CLI debug runs (`terraform login` then
+# `terraform plan` from a laptop); terraform.tfvars stays gitignored.
+#
+# Required:
+# aws_account_id = "123456789012"
+#
+# Optional overrides (defaults live in variables.tf):
+# aws_region                         = "eu-west-1"
+# domain                             = "thebetterdecision.com"
+# github_repo                        = "flamarion/pfv"
+# github_main_branch                 = "main"
+# github_pr_subject_pattern          = "pull_request"
+# tfc_organization                   = "FlamaCorp"
+# tfc_workspace_pattern              = "pfv-apex*"
+# noncurrent_version_expiration_days = 90
