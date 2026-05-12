@@ -59,10 +59,12 @@ export interface DescriptionAutocompleteProps {
   disabled?: boolean;
   className?: string;
   ariaLabel?: string;
-  /** Override fetch in tests. */
+  /** Override fetch in tests. Receives an AbortSignal so tests can
+   *  observe the cancel path the production fetch uses. */
   fetcher?: (
     type: DescriptionAutocompleteProps["type"],
     q: string,
+    signal: AbortSignal,
   ) => Promise<DescriptionSuggestion[]>;
   /** Override the debounce in tests (default 300ms). */
   debounceMs?: number;
@@ -77,12 +79,30 @@ const DEFAULT_MAX_ITEMS = 8;
 async function defaultFetcher(
   type: DescriptionAutocompleteProps["type"],
   q: string,
+  signal: AbortSignal,
 ): Promise<DescriptionSuggestion[]> {
   const params = new URLSearchParams({ type, q, limit: "25" });
   const data = await apiFetch<ApiResponse>(
     `/api/v1/transactions/suggestions/descriptions?${params}`,
+    { signal },
   );
   return data.suggestions ?? [];
+}
+
+/** True when an error came from a cancelled fetch (DOMException of name
+ *  ``AbortError``). Used to silently swallow expected cancellations
+ *  without conflating them with real network failures. */
+function isAbortError(e: unknown): boolean {
+  if (e instanceof DOMException && e.name === "AbortError") return true;
+  if (
+    typeof e === "object" &&
+    e !== null &&
+    "name" in e &&
+    (e as { name?: string }).name === "AbortError"
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export default function DescriptionAutocomplete({
@@ -106,24 +126,37 @@ export default function DescriptionAutocomplete({
   const [highlightIdx, setHighlightIdx] = useState(-1);
   const [loading, setLoading] = useState(false);
   const [announce, setAnnounce] = useState("");
-  const lastRequestId = useRef(0);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Debounced fetch on value change.
+  //
+  // Each effect invocation owns one AbortController. The cleanup
+  // function (running on every dependency change, including when the
+  // user's input drops back below the 2-char minimum) aborts both the
+  // debounce timer AND any in-flight fetch. This is what prevents a
+  // stale response from re-opening the dropdown after the user has
+  // already cleared their query: the cancelled fetch rejects with an
+  // AbortError, which our catch swallows without touching state.
   useEffect(() => {
     if (disabled) return;
     if (!value || value.trim().length < MIN_QUERY_LENGTH) {
+      // Below the minimum: clear visible suggestions immediately.
+      // Any prior in-flight fetch was already aborted by the previous
+      // cleanup before this effect re-ran.
       setSuggestions([]);
       setHighlightIdx(-1);
       return;
     }
-    const requestId = ++lastRequestId.current;
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       setLoading(true);
       try {
-        const list = await fetcher(type, value.trim());
-        // Drop stale responses if a newer request fired.
-        if (requestId !== lastRequestId.current) return;
+        const list = await fetcher(type, value.trim(), controller.signal);
+        // Double-guard: even when a request is in flight at the moment
+        // the user mutates the input, ``controller.signal.aborted``
+        // becomes true before any later setState lands. We never
+        // commit results from an aborted request.
+        if (controller.signal.aborted) return;
         setSuggestions(list.slice(0, maxItems));
         setHighlightIdx(list.length > 0 ? 0 : -1);
         setOpen(true);
@@ -132,17 +165,25 @@ export default function DescriptionAutocomplete({
             ? "No suggestions"
             : `${list.length} ${list.length === 1 ? "suggestion" : "suggestions"} available`,
         );
-      } catch {
-        // Silent failure: autocomplete is non-critical UX. The user
-        // can keep typing; the field still accepts free-form input.
-        if (requestId !== lastRequestId.current) return;
+      } catch (err) {
+        if (isAbortError(err) || controller.signal.aborted) {
+          // Expected cancellation. No state update; the next effect
+          // run (or the input-below-minimum branch above) owns the
+          // dropdown's new state.
+          return;
+        }
+        // Real failure: silently clear. Autocomplete is non-critical
+        // UX; the field still accepts free-form input.
         setSuggestions([]);
         setHighlightIdx(-1);
       } finally {
-        if (requestId === lastRequestId.current) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }, debounceMs);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [value, type, debounceMs, fetcher, maxItems, disabled]);
 
   // Close on click outside.
