@@ -77,7 +77,7 @@ export default function DocsPage() {
           <section>
             <h2 id="overview">What is The Better Decision</h2>
             <p>
-              The Better Decision (codename pfv) is a personal finance
+              The Better Decision is a personal finance
               app for households and individuals. It tracks accounts,
               transactions, budgets, and forecasts, all scoped to your
               organization. Categories are the backbone of the model:
