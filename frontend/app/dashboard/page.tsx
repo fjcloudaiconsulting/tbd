@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import HelpTooltip from "@/components/Tooltip";
+import TourAnchor from "@/components/tour/TourAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -616,17 +618,21 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <div className="mb-6 flex items-center justify-between">
-        <div className="flex items-center gap-1">
-          <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
-          <HelpAnchor section="dashboard" label="Dashboard" />
+      <TourAnchor id="dashboard.header" as="child">
+        <div className="mb-6 flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
+            <HelpAnchor section="dashboard" label="Dashboard" />
+          </div>
+          <div className="flex items-center gap-2">
+            <TourAnchor id="dashboard.import-cta" as="child">
+              <Link href="/import" className={btnSecondary}>
+                Import
+              </Link>
+            </TourAnchor>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Link href="/import" className={btnSecondary}>
-            Import
-          </Link>
-        </div>
-      </div>
+      </TourAnchor>
 
       {resetBanner && (
         <div
@@ -675,6 +681,7 @@ export default function DashboardPage() {
       ) : (
         <div className="space-y-5">
           {/* ═══ BILLING PERIOD — standalone nav bar ═══ */}
+          <TourAnchor id="dashboard.period-nav" as="child">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
@@ -693,17 +700,31 @@ export default function DashboardPage() {
             </div>
             <Link href="/transactions" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">View All Transactions</Link>
           </div>
+          </TourAnchor>
 
           {/* ═══ ROW 1: On Track hero — single full-width tile ═══ */}
-          <OnTrackTile
-            forecastPlan={forecast}
-            projection={forecastProjection}
-            projectionFailed={projectionFailed}
-            projectionLoading={projectionLoading}
-            onRetryProjection={() => void loadForecastProjection()}
-            isPastPeriod={isPastSelectedPeriod}
-            isFuturePeriod={isFutureSelectedPeriod}
-          />
+          <TourAnchor id="dashboard.on-track-tile">
+            <div className="flex items-start gap-2">
+              <div className="flex-1">
+                <OnTrackTile
+                  forecastPlan={forecast}
+                  projection={forecastProjection}
+                  projectionFailed={projectionFailed}
+                  projectionLoading={projectionLoading}
+                  onRetryProjection={() => void loadForecastProjection()}
+                  isPastPeriod={isPastSelectedPeriod}
+                  isFuturePeriod={isFutureSelectedPeriod}
+                />
+              </div>
+              <div className="pt-3">
+                <HelpTooltip
+                  content="On Track compares spent so far to your planned spending for this period. Watch warns at 95 percent, Over at 105 percent."
+                  learnMoreSection="forecasts"
+                  triggerLabel="What does On Track mean?"
+                />
+              </div>
+            </div>
+          </TourAnchor>
 
           {/* ═══ ROW 2: Accounts sidebar + Forecast card, side-by-side ═══
               Tiles share ONE card with internal divider rows; the
@@ -735,19 +756,30 @@ export default function DashboardPage() {
                   accounts={orderedAccounts}
                   pendingByAccount={pendingByAccount}
                 />
-                <AccountMonthEndForecast
-                  forecast={accountMonthEndForecast}
-                  isCurrentPeriod={isCurrentSelectedPeriod}
-                  hasAnyAccounts={activeAccounts.length > 0}
-                  hasError={accountMonthEndForecastError}
-                  onJumpToCurrent={() => {
-                    const idx = periods.findIndex((p) => p.end_date === null);
-                    if (idx >= 0) {
-                      setPeriodIdx(idx);
-                      setChartFilter(null);
-                    }
-                  }}
-                />
+                <TourAnchor id="dashboard.account-forecast" as="child">
+                  <div className="relative">
+                    <AccountMonthEndForecast
+                      forecast={accountMonthEndForecast}
+                      isCurrentPeriod={isCurrentSelectedPeriod}
+                      hasAnyAccounts={activeAccounts.length > 0}
+                      hasError={accountMonthEndForecastError}
+                      onJumpToCurrent={() => {
+                        const idx = periods.findIndex((p) => p.end_date === null);
+                        if (idx >= 0) {
+                          setPeriodIdx(idx);
+                          setChartFilter(null);
+                        }
+                      }}
+                    />
+                    <div className="absolute right-3 top-3">
+                      <HelpTooltip
+                        content="Each account's current balance plus its pending transactions in this billing period. Recurring activity is not factored in."
+                        learnMoreSection="forecasts"
+                        triggerLabel="How is the end of month forecast calculated?"
+                      />
+                    </div>
+                  </div>
+                </TourAnchor>
               </div>
             );
           })()}

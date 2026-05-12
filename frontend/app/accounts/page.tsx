@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import Tooltip from "@/components/Tooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -402,8 +403,13 @@ export default function AccountsPage() {
                         <span className="text-text-muted">{a.currency}</span>
                       </span>
                       {pendingByAccount[a.id] ? (
-                        <span className="text-xs tabular-nums text-text-muted">
-                          Pending: {formatAmount(Math.abs(pendingByAccount[a.id]))}
+                        <span className="inline-flex items-center gap-1 text-xs tabular-nums text-text-muted">
+                          <span>Pending: {formatAmount(Math.abs(pendingByAccount[a.id]))}</span>
+                          <Tooltip
+                            content="Sum of transactions still marked Pending on this account. They do not move the balance yet, but they shape the end of month forecast."
+                            learnMoreSection="accounts"
+                            triggerLabel="What does Pending mean for this account?"
+                          />
                         </span>
                       ) : null}
                     </div>
