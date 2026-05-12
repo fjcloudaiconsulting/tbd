@@ -1,11 +1,17 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 import SettingsLayout from "@/components/SettingsLayout";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
+import {
+  mapMfaSetupError,
+  mapMfaDisableError,
+  mapMfaRegenerateError,
+} from "@/lib/formErrors";
 import {
   input,
   label,
@@ -195,6 +201,7 @@ export default function SecurityPage() {
   }
 
   async function handleSetup() {
+    if (mfaLoading) return; // guard against double-submit on rapid clicks
     setMfaErr(""); setMfaLoading(true);
     try {
       const data = await apiFetch<MfaSetupResponse>("/api/v1/auth/mfa/setup", {
@@ -202,12 +209,19 @@ export default function SecurityPage() {
       });
       setSetupData(data);
       setMfaStep("qr");
-    } catch (err) { setMfaErr(extractErrorMessage(err)); }
+    } catch (err) { setMfaErr(mapMfaSetupError(err)); }
     finally { setMfaLoading(false); }
   }
 
   async function handleVerifyCode(e: FormEvent) {
     e.preventDefault();
+    if (mfaLoading) return;
+    if (totpCode.length !== 6) {
+      // Should be unreachable because the submit button is disabled, but
+      // belt-and-suspenders for the keyboard-Enter path.
+      setMfaErr("Code must be 6 digits.");
+      return;
+    }
     setMfaErr(""); setMfaLoading(true);
     try {
       const data = await apiFetch<MfaEnableResponse>("/api/v1/auth/mfa/enable", {
@@ -216,7 +230,12 @@ export default function SecurityPage() {
       });
       setRecoveryCodes(data.recovery_codes);
       setMfaStep("codes");
-    } catch (err) { setMfaErr(extractErrorMessage(err)); }
+      setTotpCode(""); // wipe the code now that it's been accepted
+    } catch (err) {
+      setMfaErr(mapMfaSetupError(err));
+      // Keep the input filled so the user can correct it; the code may
+      // simply be one tick stale.
+    }
     finally { setMfaLoading(false); }
   }
 
@@ -226,7 +245,9 @@ export default function SecurityPage() {
     setTotpCode("");
     setRecoveryCodes([]);
     setCodesSaved(false);
-    setMfaMsg("Two-factor authentication enabled");
+    setMfaMsg(
+      "Two-factor authentication is on. You will need your authenticator app the next time you sign in.",
+    );
     refreshMe();
   }
 
@@ -247,6 +268,11 @@ export default function SecurityPage() {
 
   async function handleDisable(e: FormEvent) {
     e.preventDefault();
+    if (disabling) return;
+    if (!disablePassword) {
+      setDisableErr("Enter your password to confirm.");
+      return;
+    }
     setDisableErr(""); setDisabling(true);
     try {
       await apiFetch("/api/v1/auth/mfa/disable", {
@@ -255,14 +281,25 @@ export default function SecurityPage() {
       });
       setShowDisable(false);
       setDisablePassword("");
-      setMfaMsg("Two-factor authentication disabled");
+      setMfaMsg(
+        "Two-factor authentication is off. Your account is now protected by your password only.",
+      );
       refreshMe();
-    } catch (err) { setDisableErr(extractErrorMessage(err)); }
+    } catch (err) {
+      // Keep the password field filled so the user can retry. Only the
+      // server can decide whether the password was wrong.
+      setDisableErr(mapMfaDisableError(err));
+    }
     finally { setDisabling(false); }
   }
 
   async function handleRegenerate(e: FormEvent) {
     e.preventDefault();
+    if (regenerating) return;
+    if (!regenPassword) {
+      setRegenErr("Enter your password to confirm.");
+      return;
+    }
     setRegenErr(""); setRegenerating(true);
     try {
       const data = await apiFetch<MfaEnableResponse>("/api/v1/auth/mfa/recovery-codes", {
@@ -271,7 +308,11 @@ export default function SecurityPage() {
       });
       setRegenCodes(data.recovery_codes);
       setRegenPassword("");
-    } catch (err) { setRegenErr(extractErrorMessage(err)); }
+    } catch (err) {
+      // Preserve the typed password on error so the user can correct
+      // and resubmit without re-typing.
+      setRegenErr(mapMfaRegenerateError(err));
+    }
     finally { setRegenerating(false); }
   }
 
@@ -346,8 +387,16 @@ export default function SecurityPage() {
         <div className={`${card} p-6`}>
           <h2 className={`mb-5 ${cardTitle}`}>Two-Factor Authentication</h2>
 
-          {mfaMsg && <div className={`mb-4 ${successCls}`}>{mfaMsg}</div>}
-          {mfaErr && <div className={`mb-4 ${errorCls}`}>{mfaErr}</div>}
+          {mfaMsg && (
+            <div role="status" aria-live="polite" className={`mb-4 ${successCls}`}>
+              {mfaMsg}
+            </div>
+          )}
+          {mfaErr && (
+            <div role="alert" aria-live="polite" className={`mb-4 ${errorCls}`}>
+              {mfaErr}
+            </div>
+          )}
 
           {/* ── Idle: Not enabled ─────────────────────────────────── */}
           {!mfaEnabled && mfaStep === "idle" && (
@@ -355,7 +404,15 @@ export default function SecurityPage() {
               <p className="mb-4 text-sm text-text-muted">
                 Add an extra layer of security to your account by requiring a verification code when you sign in.
               </p>
-              <button onClick={handleSetup} disabled={mfaLoading} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
+              <button
+                onClick={handleSetup}
+                disabled={mfaLoading}
+                aria-busy={mfaLoading}
+                className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+              >
+                {mfaLoading && (
+                  <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                )}
                 {mfaLoading ? "Setting up..." : "Set Up Two-Factor Authentication"}
               </button>
             </div>
@@ -395,7 +452,7 @@ export default function SecurityPage() {
 
           {/* ── Step 2: Verify code ───────────────────────────────── */}
           {mfaStep === "verify" && (
-            <form onSubmit={handleVerifyCode} className="space-y-4">
+            <form onSubmit={handleVerifyCode} className="space-y-4" aria-busy={mfaLoading}>
               <p className="text-sm text-text-muted">
                 Enter the 6-digit code from your authenticator app to confirm it&apos;s working.
               </p>
@@ -413,14 +470,35 @@ export default function SecurityPage() {
                   className={`${input} text-center text-lg tracking-[0.3em]`}
                   placeholder="000000"
                   autoFocus
+                  aria-describedby="mfa-setup-code-hint"
+                  aria-invalid={mfaErr ? true : undefined}
                 />
+                <p id="mfa-setup-code-hint" className="mt-1.5 text-xs text-text-muted">
+                  Codes refresh every 30 seconds. If one fails, wait for the next one.
+                </p>
               </div>
               <div className="flex flex-col gap-3 sm:flex-row">
-                <button type="button" onClick={() => setMfaStep("qr")} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
+                <button
+                  type="button"
+                  onClick={() => setMfaStep("qr")}
+                  disabled={mfaLoading}
+                  className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                >
                   Back
                 </button>
-                <button type="submit" disabled={mfaLoading || totpCode.length !== 6} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
-                  {mfaLoading ? "Verifying..." : "Verify & Enable"}
+                <button
+                  type="submit"
+                  disabled={mfaLoading || totpCode.length !== 6}
+                  aria-busy={mfaLoading}
+                  aria-describedby={
+                    totpCode.length !== 6 && !mfaLoading ? "mfa-setup-code-hint" : undefined
+                  }
+                  className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                >
+                  {mfaLoading && (
+                    <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                  )}
+                  {mfaLoading ? "Verifying..." : "Verify and Enable"}
                 </button>
               </div>
             </form>
@@ -433,7 +511,7 @@ export default function SecurityPage() {
                 Save your recovery codes
               </p>
               <p className="text-sm text-text-muted">
-                If you lose access to your authenticator app, you can use these codes to sign in. Each code can only be used once.
+                If you lose access to your authenticator app, you can use these codes to sign in. Each code can only be used once. We will not show them again.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-surface-raised p-4">
                 {recoveryCodes.map((code, i) => (
@@ -442,14 +520,33 @@ export default function SecurityPage() {
                   </code>
                 ))}
               </div>
-              <button onClick={() => downloadCodes(recoveryCodes)} className={`w-full ${btnSecondary}`}>
-                Download Codes
+              <button
+                type="button"
+                onClick={() => downloadCodes(recoveryCodes)}
+                className={`w-full ${btnSecondary}`}
+              >
+                Download codes
               </button>
               <label className="flex items-center gap-2 text-sm text-text-muted">
-                <input type="checkbox" checked={codesSaved} onChange={(e) => setCodesSaved(e.target.checked)} className="rounded border-border" />
-                I&apos;ve saved these recovery codes
+                <input
+                  type="checkbox"
+                  checked={codesSaved}
+                  onChange={(e) => setCodesSaved(e.target.checked)}
+                  className="rounded border-border"
+                  aria-describedby="codes-saved-hint"
+                />
+                I have saved these recovery codes
               </label>
-              <button onClick={handleFinishSetup} disabled={!codesSaved} className={`w-full ${btnPrimary}`}>
+              <p id="codes-saved-hint" className="text-xs text-text-muted">
+                Check the box to confirm. The Done button stays disabled until you do.
+              </p>
+              <button
+                type="button"
+                onClick={handleFinishSetup}
+                disabled={!codesSaved}
+                aria-describedby={!codesSaved ? "codes-saved-hint" : undefined}
+                className={`w-full ${btnPrimary}`}
+              >
                 Done
               </button>
             </div>
@@ -468,21 +565,61 @@ export default function SecurityPage() {
 
               {/* Regenerate recovery codes */}
               {!showRegen && regenCodes.length === 0 && (
-                <button onClick={() => setShowRegen(true)} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
-                  Regenerate Recovery Codes
+                <button
+                  type="button"
+                  onClick={() => setShowRegen(true)}
+                  className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                >
+                  Regenerate recovery codes
                 </button>
               )}
               {showRegen && regenCodes.length === 0 && (
-                <form onSubmit={handleRegenerate} className="space-y-3 rounded-lg border border-border p-4">
-                  <p className="text-xs text-text-muted">This will invalidate your existing recovery codes.</p>
-                  {regenErr && <div className={errorCls}>{regenErr}</div>}
+                <form
+                  onSubmit={handleRegenerate}
+                  className="space-y-3 rounded-lg border border-border p-4"
+                  aria-busy={regenerating}
+                >
+                  <p className="text-sm text-text-primary font-medium">
+                    Regenerating will invalidate your existing recovery codes.
+                  </p>
+                  <p className="text-xs text-text-muted">
+                    Any codes you saved before will stop working as soon as new ones are generated. Save the new set before leaving this page.
+                  </p>
+                  {regenErr && (
+                    <div id="regen-err" role="alert" aria-live="polite" className={errorCls}>
+                      {regenErr}
+                    </div>
+                  )}
                   <div>
-                    <label htmlFor="regen-pwd" className={label}>Confirm Password</label>
-                    <PasswordInput id="regen-pwd" required value={regenPassword} onChange={(e) => setRegenPassword(e.target.value)} className={input} />
+                    <label htmlFor="regen-pwd" className={label}>Confirm password</label>
+                    <PasswordInput
+                      id="regen-pwd"
+                      required
+                      value={regenPassword}
+                      onChange={(e) => setRegenPassword(e.target.value)}
+                      className={input}
+                      aria-describedby={regenErr ? "regen-err" : undefined}
+                      aria-invalid={regenErr ? true : undefined}
+                    />
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row">
-                    <button type="button" onClick={() => { setShowRegen(false); setRegenPassword(""); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Cancel</button>
-                    <button type="submit" disabled={regenerating} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
+                    <button
+                      type="button"
+                      onClick={() => { setShowRegen(false); setRegenPassword(""); setRegenErr(""); }}
+                      disabled={regenerating}
+                      className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={regenerating || !regenPassword}
+                      aria-busy={regenerating}
+                      className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                    >
+                      {regenerating && (
+                        <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                      )}
                       {regenerating ? "Generating..." : "Regenerate"}
                     </button>
                   </div>
@@ -490,7 +627,10 @@ export default function SecurityPage() {
               )}
               {regenCodes.length > 0 && (
                 <div className="space-y-3">
-                  <p className="text-sm font-medium text-text-primary">New Recovery Codes</p>
+                  <p className="text-sm font-medium text-text-primary">New recovery codes</p>
+                  <p className="text-xs text-text-muted">
+                    These replace any codes you saved before. Old codes will not work anymore.
+                  </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-lg bg-surface-raised p-4">
                     {regenCodes.map((code, i) => (
                       <code key={i} className="text-sm text-text-primary font-mono">
@@ -498,10 +638,18 @@ export default function SecurityPage() {
                       </code>
                     ))}
                   </div>
-                  <button onClick={() => downloadCodes(regenCodes)} className={`w-full ${btnSecondary}`}>
-                    Download Codes
+                  <button
+                    type="button"
+                    onClick={() => downloadCodes(regenCodes)}
+                    className={`w-full ${btnSecondary}`}
+                  >
+                    Download codes
                   </button>
-                  <button onClick={() => { setRegenCodes([]); setShowRegen(false); }} className={`w-full ${btnPrimary}`}>
+                  <button
+                    type="button"
+                    onClick={() => { setRegenCodes([]); setShowRegen(false); }}
+                    className={`w-full ${btnPrimary}`}
+                  >
                     Done
                   </button>
                 </div>
@@ -510,21 +658,57 @@ export default function SecurityPage() {
               {/* Disable MFA */}
               <div className="border-t border-border pt-4">
                 {!showDisable ? (
-                  <button onClick={() => setShowDisable(true)} className={`${btnDanger} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
-                    Disable Two-Factor Authentication
+                  <button
+                    type="button"
+                    onClick={() => setShowDisable(true)}
+                    className={`${btnDanger} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                  >
+                    Disable two-factor authentication
                   </button>
                 ) : (
-                  <form onSubmit={handleDisable} className="space-y-3">
-                    <p className="text-xs text-text-muted">Enter your password to disable two-factor authentication.</p>
-                    {disableErr && <div className={errorCls}>{disableErr}</div>}
+                  <form onSubmit={handleDisable} className="space-y-3" aria-busy={disabling}>
+                    <p className="text-sm text-text-primary font-medium">
+                      Confirm with your password to turn off two-factor.
+                    </p>
+                    <p className="text-xs text-text-muted">
+                      Your account will be protected by your password only. You can turn it back on at any time.
+                    </p>
+                    {disableErr && (
+                      <div id="disable-err" role="alert" aria-live="polite" className={errorCls}>
+                        {disableErr}
+                      </div>
+                    )}
                     <div>
                       <label htmlFor="disable-pwd" className={label}>Password</label>
-                      <PasswordInput id="disable-pwd" required value={disablePassword} onChange={(e) => setDisablePassword(e.target.value)} className={input} />
+                      <PasswordInput
+                        id="disable-pwd"
+                        required
+                        value={disablePassword}
+                        onChange={(e) => setDisablePassword(e.target.value)}
+                        className={input}
+                        aria-describedby={disableErr ? "disable-err" : undefined}
+                        aria-invalid={disableErr ? true : undefined}
+                      />
                     </div>
                     <div className="flex flex-col gap-2 sm:flex-row">
-                      <button type="button" onClick={() => { setShowDisable(false); setDisablePassword(""); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Cancel</button>
-                      <button type="submit" disabled={disabling} className={`${btnPrimary} !bg-danger hover:!bg-danger/80 w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
-                        {disabling ? "Disabling..." : "Disable MFA"}
+                      <button
+                        type="button"
+                        onClick={() => { setShowDisable(false); setDisablePassword(""); setDisableErr(""); }}
+                        disabled={disabling}
+                        className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={disabling || !disablePassword}
+                        aria-busy={disabling}
+                        className={`${btnPrimary} !bg-danger hover:!bg-danger/80 w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                      >
+                        {disabling && (
+                          <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                        )}
+                        {disabling ? "Disabling..." : "Disable two-factor"}
                       </button>
                     </div>
                   </form>
@@ -537,9 +721,9 @@ export default function SecurityPage() {
         {/* ── Email Fallback Info ──────────────────────────────────────── */}
         {mfaEnabled && mfaStep === "idle" && (
           <div className={`${card} p-6`}>
-            <h2 className={`mb-3 ${cardTitle}`}>Email Fallback</h2>
+            <h2 className={`mb-3 ${cardTitle}`}>Email fallback</h2>
             <p className="text-sm text-text-muted">
-              If you can&apos;t access your authenticator app or recovery codes, a verification code can be sent to <span className="font-medium text-text-primary">{user?.email}</span>.
+              If you cannot access your authenticator app or recovery codes, a verification code can be sent to <span className="font-medium text-text-primary">{user?.email}</span>.
             </p>
           </div>
         )}
@@ -547,15 +731,23 @@ export default function SecurityPage() {
         {/* ── Session Lifetime (admin only) ────────────────────────────── */}
         {admin && (
           <div className={`${card} p-6`}>
-            <h2 className={`mb-5 ${cardTitle}`}>Session Lifetime</h2>
+            <h2 className={`mb-5 ${cardTitle}`}>Session lifetime</h2>
             <p className="mb-4 text-sm text-text-muted">
               Maximum number of days a user can stay signed in before being required to re-authenticate. Applies to all users in your organization.
             </p>
-            <form onSubmit={handleSessionSubmit} className="space-y-4">
-              {sessionMsg && <div className={successCls}>{sessionMsg}</div>}
-              {sessionErr && <div className={errorCls}>{sessionErr}</div>}
+            <form onSubmit={handleSessionSubmit} className="space-y-4" aria-busy={savingSession}>
+              {sessionMsg && (
+                <div role="status" aria-live="polite" className={successCls}>
+                  {sessionMsg}
+                </div>
+              )}
+              {sessionErr && (
+                <div id="session-err" role="alert" aria-live="polite" className={errorCls}>
+                  {sessionErr}
+                </div>
+              )}
               <div>
-                <label htmlFor="session-days" className={label}>Maximum Session Duration (days)</label>
+                <label htmlFor="session-days" className={label}>Maximum session duration (days)</label>
                 <input
                   id="session-days"
                   type="number"
@@ -565,9 +757,22 @@ export default function SecurityPage() {
                   value={sessionDays}
                   onChange={(e) => setSessionDays(e.target.value)}
                   className={`${input} w-full sm:max-w-[200px]`}
+                  aria-describedby={sessionErr ? "session-err session-hint" : "session-hint"}
+                  aria-invalid={sessionErr ? true : undefined}
                 />
+                <p id="session-hint" className="mt-1.5 text-xs text-text-muted">
+                  Between 1 and 365 days.
+                </p>
               </div>
-              <button type="submit" disabled={savingSession} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
+              <button
+                type="submit"
+                disabled={savingSession}
+                aria-busy={savingSession}
+                className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+              >
+                {savingSession && (
+                  <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                )}
                 {savingSession ? "Saving..." : "Save"}
               </button>
             </form>
