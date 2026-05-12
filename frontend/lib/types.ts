@@ -264,6 +264,43 @@ export interface ImportConfirmResponse {
   errors: ImportRowError[];
 }
 
+// L3.2 Wave 2A manual batch transaction entry. Wraps a TransactionCreate
+// payload with a stable row_number for per-row outcome mapping.
+export interface BatchTransactionRowInput {
+  row_number: number;
+  transaction: {
+    account_id: number;
+    category_id: number;
+    description: string;
+    amount: string;
+    type: "income" | "expense";
+    date: string;
+    status?: "settled" | "pending";
+    settled_date?: string | null;
+  };
+}
+
+export interface BatchTransactionsRequestBody {
+  rows: BatchTransactionRowInput[];
+}
+
+export interface BatchRowResult {
+  row_number: number;
+  transaction_id: number;
+}
+
+export interface BatchRowError {
+  row_number: number;
+  error: string;
+}
+
+export interface BatchTransactionsResponse {
+  imported_count: number;
+  error_count: number;
+  results: BatchRowResult[];
+  errors: BatchRowError[];
+}
+
 export interface Plan {
   id: number;
   name: string;

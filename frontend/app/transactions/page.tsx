@@ -931,6 +931,9 @@ function TransactionsPageContent() {
               {showForm ? "Cancel" : "+ New Transaction"}
             </button>
           )}
+          <Link href="/transactions/batch" className={btnSecondary}>
+            Batch entry
+          </Link>
           <Link href="/import" className={btnSecondary}>
             Import
           </Link>
