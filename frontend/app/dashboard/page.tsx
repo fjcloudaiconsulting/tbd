@@ -79,6 +79,17 @@ interface ForecastProjection {
 
 const PAGE_SIZE = 10;
 
+function transactionHighlightHref(tx: Transaction) {
+  const params = new URLSearchParams({
+    account_id: String(tx.account_id),
+    transaction_id: String(tx.id),
+    date_from: tx.date,
+    date_to: tx.date,
+  });
+
+  return `/transactions?${params.toString()}`;
+}
+
 export default function DashboardPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
@@ -1059,7 +1070,10 @@ export default function DashboardPage() {
                 const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
                 return (
                   <div key={tx.id} className="flex items-center justify-between px-5 py-2.5">
-                    <div className="flex items-center gap-3 min-w-0">
+                    <Link
+                      href={transactionHighlightHref(tx)}
+                      className="-mx-2 -my-1.5 flex min-w-0 items-center gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                    >
                       <span className="text-xs tabular-nums text-text-muted w-16 shrink-0">{tx.date.slice(5)}</span>
                       <div className="min-w-0">
                         <p className="text-sm text-text-primary truncate">{tx.description}</p>
@@ -1067,7 +1081,7 @@ export default function DashboardPage() {
                           {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : <>{tx.account_name} · {tx.category_name}</>}
                         </p>
                       </div>
-                    </div>
+                    </Link>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className={`text-sm font-medium tabular-nums ${isTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                         {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}

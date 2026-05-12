@@ -168,4 +168,34 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
     // refetch.
     await waitFor(() => expect(pendingCalls).toBeGreaterThan(pendingCallsBeforeToggle));
   });
+
+  it("links recent transaction identity to the filtered transaction highlight target", async () => {
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([]);
+      if (url === "/api/v1/categories") return Promise.resolve([]);
+      if (url === "/api/v1/budgets" || url.startsWith("/api/v1/budgets?"))
+        return Promise.resolve([]);
+      if (url === "/api/v1/settings/billing-cycle")
+        return Promise.resolve({ billing_cycle_day: 1 });
+      if (url === "/api/v1/settings/billing-period")
+        return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
+      if (url === "/api/v1/settings/billing-periods")
+        return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
+      if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
+      if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+      if (url.startsWith("/api/v1/transactions?limit=200")) return Promise.resolve([SETTLED_TX]);
+      if (url.startsWith("/api/v1/transactions?limit=11&offset=0"))
+        return Promise.resolve([SETTLED_TX]);
+      return Promise.resolve({});
+    }) as never);
+
+    render(<DashboardPage />);
+
+    const link = await screen.findByRole("link", { name: /Coffee Amex Primary/i });
+    expect(link).toHaveAttribute(
+      "href",
+      "/transactions?account_id=10&transaction_id=999&date_from=2026-05-01&date_to=2026-05-01",
+    );
+  });
 });

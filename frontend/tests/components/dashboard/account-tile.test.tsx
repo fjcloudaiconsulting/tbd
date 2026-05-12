@@ -99,11 +99,11 @@ describe("AccountTileRow — identity/status/navigation surface", () => {
     expect(screen.getByText(/Pending: 200\.00/)).toBeInTheDocument();
   });
 
-  it("renders as a link to /accounts (click-through navigation)", () => {
+  it("renders as a link to transactions filtered by account", () => {
     render(<AccountTileRow account={PRIMARY_CHECKING} pendingAmount={0} />);
     const link = screen.getByTestId("account-tile");
     expect(link.tagName).toBe("A");
-    expect(link).toHaveAttribute("href", "/accounts");
+    expect(link).toHaveAttribute("href", "/transactions?account_id=1");
   });
 
   it("balance text is muted (forecast card is the numeric authority, tile is secondary)", () => {
