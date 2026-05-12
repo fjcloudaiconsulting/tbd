@@ -55,6 +55,15 @@ async def merge_users(
     audit event on success and ``admin.user.merge.failed`` on
     failure.
     """
+    # Snapshot actor identity BEFORE any commit/rollback. SQLAlchemy
+    # expires ORM attributes on commit/rollback; subsequent
+    # ``actor.id`` / ``actor.email`` access would trigger a lazy
+    # load, which raises ``MissingGreenlet`` outside the greenlet
+    # context the audit-write opens — turning every error path into
+    # a 500 and breaking the success-path audit row too.
+    actor_id = actor.id
+    actor_email = actor.email
+
     try:
         counts = await user_merge_service.merge_users(
             db,
@@ -67,8 +76,8 @@ async def merge_users(
         await audit_service.record_audit_event(
             session_factory,
             event_type="admin.user.merge.failed",
-            actor_user_id=actor.id,
-            actor_email=actor.email,
+            actor_user_id=actor_id,
+            actor_email=actor_email,
             target_org_id=None,
             target_org_name=None,
             request_id=_request_id(),
@@ -93,8 +102,8 @@ async def merge_users(
         await audit_service.record_audit_event(
             session_factory,
             event_type="admin.user.merge.failed",
-            actor_user_id=actor.id,
-            actor_email=actor.email,
+            actor_user_id=actor_id,
+            actor_email=actor_email,
             target_org_id=None,
             target_org_name=None,
             request_id=_request_id(),
@@ -118,8 +127,8 @@ async def merge_users(
         await audit_service.record_audit_event(
             session_factory,
             event_type="admin.user.merge.failed",
-            actor_user_id=actor.id,
-            actor_email=actor.email,
+            actor_user_id=actor_id,
+            actor_email=actor_email,
             target_org_id=None,
             target_org_name=None,
             request_id=_request_id(),
@@ -139,8 +148,8 @@ async def merge_users(
     await audit_service.record_audit_event(
         session_factory,
         event_type="admin.user.merged",
-        actor_user_id=actor.id,
-        actor_email=actor.email,
+        actor_user_id=actor_id,
+        actor_email=actor_email,
         target_org_id=None,
         target_org_name=None,
         request_id=_request_id(),
