@@ -76,11 +76,15 @@ class ImportSourceFormat(str, enum.Enum):
 
     Used for telemetry and to drive format-specific UX in the
     Reconciliation UI (e.g., show ``fitid`` column for OFX imports).
+
+    NOTE: Manual batch entry (``POST /api/v1/transactions/batch``) is NOT
+    a reconciliation source. Manual-batch rows are not flagged
+    ``is_imported=True`` and they ship in Wave 2A before the
+    ``import_batches`` table exists. They never appear in this enum.
     """
 
     CSV = "csv"
     OFX = "ofx"
-    MANUAL_BATCH = "manual_batch"
 
 
 # ── Import-batch header (response shape) ──
@@ -95,8 +99,9 @@ class ImportBatchHeader(BaseModel):
     Fields:
         id: Batch primary key.
         account_id: Account the batch was imported into.
-        source_format: Origin format (CSV / OFX / manual batch).
-        file_name: User-provided file name (or synthesized for manual batch).
+        source_format: Origin format (CSV or OFX). Manual batch entry is
+            not a reconciliation source and never appears here.
+        file_name: User-provided file name from the upload.
         created_at: When the batch was created.
         created_by_user_id: User who created the batch.
         status: ``open`` while any row is still ``PENDING_REVIEW``,
