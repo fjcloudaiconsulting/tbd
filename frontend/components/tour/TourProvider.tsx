@@ -210,29 +210,23 @@ function TourOverlay({ api }: { api: TourApi }) {
       }}
     >
       {/* Soft backdrop. pointer-events stays off so the underlying UI
-          remains interactive — the tour is informative, not modal. */}
+          remains interactive: the tour is informative, not modal. The
+          scrim color comes from a theme token so it darkens
+          appropriately in light vs dark. */}
       <div
-        style={{
-          position: "absolute",
-          inset: 0,
-          background: "rgba(15, 23, 42, 0.35)",
-          transition,
-        }}
+        className="absolute inset-0 bg-scrim"
+        style={{ transition }}
       />
       {rect ? (
         <div
           aria-hidden
+          className="absolute rounded-[10px] border-2 border-warning pointer-events-none"
           style={{
-            position: "absolute",
             top: rect.top - 6,
             left: rect.left - 6,
             width: rect.width + 12,
             height: rect.height + 12,
-            border: "2px solid #f59e0b",
-            borderRadius: 10,
-            boxShadow: "0 0 0 9999px rgba(0,0,0,0)",
             transition,
-            pointerEvents: "none",
           }}
         />
       ) : null}
@@ -240,73 +234,36 @@ function TourOverlay({ api }: { api: TourApi }) {
         role="region"
         aria-live="polite"
         data-testid="tour-card"
+        className="absolute w-[340px] rounded-xl bg-surface text-text-primary shadow-card p-5 pointer-events-auto border border-border"
         style={{
-          position: "absolute",
-          width: 340,
-          background: "white",
-          color: "#0f172a",
-          borderRadius: 12,
-          boxShadow: "0 18px 48px rgba(15,23,42,0.25)",
-          padding: 20,
-          pointerEvents: "auto",
           transition,
           ...cardStyle,
         }}
       >
-        <div
-          style={{
-            fontSize: 12,
-            textTransform: "uppercase",
-            letterSpacing: "0.06em",
-            color: "#64748b",
-            marginBottom: 6,
-          }}
-        >
+        <div className="mb-1.5 text-xs uppercase tracking-[0.06em] text-text-muted">
           {stepLabel}
         </div>
-        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>
+        <div className="mb-2 text-lg font-semibold text-text-primary">
           {copy?.title ?? "Tour"}
         </div>
-        <div style={{ fontSize: 14, lineHeight: 1.5, marginBottom: 16 }}>
+        <div className="mb-4 text-sm leading-relaxed text-text-secondary">
           {copy?.body ?? ""}
         </div>
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
+        <div className="flex items-center justify-between gap-2">
           <button
             type="button"
             onClick={api.close}
-            style={{
-              background: "transparent",
-              border: 0,
-              color: "#64748b",
-              fontSize: 13,
-              cursor: "pointer",
-              padding: "6px 8px",
-            }}
+            className="border-0 bg-transparent px-2 py-1.5 text-[13px] text-text-muted hover:text-text-primary cursor-pointer"
             data-testid="tour-skip"
           >
             Skip tour
           </button>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="flex gap-2">
             <button
               type="button"
               onClick={api.prev}
               disabled={api.currentIndex <= 0}
-              style={{
-                background: "transparent",
-                border: "1px solid #cbd5f5",
-                borderRadius: 8,
-                padding: "6px 12px",
-                fontSize: 13,
-                cursor: api.currentIndex <= 0 ? "not-allowed" : "pointer",
-                color: "#0f172a",
-              }}
+              className="rounded-lg border border-border bg-transparent px-3 py-1.5 text-[13px] text-text-primary hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
               data-testid="tour-prev"
             >
               Back
@@ -315,15 +272,7 @@ function TourOverlay({ api }: { api: TourApi }) {
               <button
                 type="button"
                 onClick={api.finish}
-                style={{
-                  background: "#0f172a",
-                  color: "white",
-                  border: 0,
-                  borderRadius: 8,
-                  padding: "6px 16px",
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
+                className="rounded-lg border-0 bg-accent px-4 py-1.5 text-[13px] font-medium text-accent-text hover:bg-accent-hover cursor-pointer"
                 data-testid="tour-finish"
               >
                 Done
@@ -332,15 +281,7 @@ function TourOverlay({ api }: { api: TourApi }) {
               <button
                 type="button"
                 onClick={api.next}
-                style={{
-                  background: "#0f172a",
-                  color: "white",
-                  border: 0,
-                  borderRadius: 8,
-                  padding: "6px 16px",
-                  fontSize: 13,
-                  cursor: "pointer",
-                }}
+                className="rounded-lg border-0 bg-accent px-4 py-1.5 text-[13px] font-medium text-accent-text hover:bg-accent-hover cursor-pointer"
                 data-testid="tour-next"
               >
                 Next

@@ -48,6 +48,14 @@
   --theme-sidebar-active-text: #D4A64A;
   --theme-sidebar-border: rgba(212, 166, 74, 0.08);
   --theme-sidebar-muted: #3d4f68;
+
+  /* Tour-overlay chrome (L3.3). `scrim` is the semi-opaque backdrop
+     painted under the overlay; `card-shadow` is the elevation shadow
+     under the floating tour card. Both theme-switch — the dark theme
+     uses a deeper scrim and a stronger drop shadow to keep the card
+     legible against the dark page. */
+  --theme-scrim: rgba(7, 13, 24, 0.55);
+  --theme-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 }
 
 /* ─── Light theme ─── */
@@ -89,6 +97,12 @@
   --theme-sidebar-active-text: #D4A64A;
   --theme-sidebar-border: rgba(212, 166, 74, 0.08);
   --theme-sidebar-muted: #3d4f68;
+
+  /* L3.3 tour overlay. The light scrim is a softer slate wash so the
+     page underneath stays readable; the card shadow drops the
+     elevation a touch since white-on-white needs less punch. */
+  --theme-scrim: rgba(11, 31, 58, 0.20);
+  --theme-card-shadow: 0 18px 48px rgba(11, 31, 58, 0.18);
 }
 
 @theme {
@@ -129,6 +143,12 @@
   --color-sidebar-active-text: var(--theme-sidebar-active-text);
   --color-sidebar-border: var(--theme-sidebar-border);
   --color-sidebar-muted: var(--theme-sidebar-muted);
+
+  /* L3.3 tour-overlay tokens. `scrim` is a Tailwind background color
+     so `bg-scrim` works directly; `card` is a named shadow so
+     `shadow-card` resolves against the theme variable. */
+  --color-scrim: var(--theme-scrim);
+  --shadow-card: var(--theme-card-shadow);
 
   /* Chart palette. Aliases of the themed status + neutral tokens above so
      theme switches cascade automatically. Brass is intentionally excluded
