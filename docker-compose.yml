@@ -70,6 +70,9 @@ services:
       # nginx ingress (relative URLs); server-side fetches must hit the
       # backend service directly inside the compose network.
       - BACKEND_INTERNAL_URL=http://backend:8000
+      # Pull NEXT_PUBLIC_* envs from host .env so dev mode mirrors prod.
+      # Add new NEXT_PUBLIC_* envs here too.
+      - NEXT_PUBLIC_GOOGLE_SSO_ENABLED=${NEXT_PUBLIC_GOOGLE_SSO_ENABLED:-}
     depends_on:
       - backend
     volumes:
