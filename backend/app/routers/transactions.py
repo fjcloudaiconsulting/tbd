@@ -2,7 +2,7 @@ import datetime
 from typing import Literal, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -40,6 +40,7 @@ from app.services import (
     audit_service,
     transaction_batch_service,
     transaction_service as svc,
+    transaction_suggestions_service as suggestions_svc,
 )
 from app.services.exceptions import NotFoundError, ValidationError
 
@@ -47,6 +48,16 @@ from app.services.exceptions import NotFoundError, ValidationError
 def _request_id() -> Optional[str]:
     """Return the structlog-bound request_id, if any."""
     return structlog.contextvars.get_contextvars().get("request_id")
+
+
+# Dedicated logger for the suggestions endpoint so its events are easy
+# to filter in structured logs without colliding with general
+# transactions handlers. Privacy rules in §5.4 of the L3.2 import
+# contract: we log only org_id, type, query_length, result_count,
+# never the raw ``q`` or returned descriptions.
+suggestions_logger = structlog.stdlib.get_logger(
+    "app.routers.transactions.suggestions"
+)
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
@@ -353,40 +364,53 @@ async def batch_create_transactions(
 @router.get(
     "/suggestions/descriptions",
     response_model=DescriptionSuggestionsResponse,
-    status_code=501,
 )
 async def suggest_descriptions(
+    response: Response,
     type: Literal["income", "expense", "transfer"] = Query(...),
     q: str | None = Query(default=None, min_length=2, max_length=255),
     limit: int = Query(default=10, ge=1, le=25),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """**STUB** — Description autocomplete, Wave 2 deliverable.
+    """Description autocomplete for the manual-entry form (L3.2 Wave 2A).
 
-    Contract: return the user's most-used descriptions for ``type``,
-    ranked by prefix-match → frequency → recency. Org-scoped (never
-    leaks across orgs). Never logs raw descriptions or raw query strings.
+    Returns the user's most-used descriptions for ``type``, ranked by
+    prefix-match → frequency → recency. Org-scoped — never leaks
+    across orgs. When ``q`` is omitted, returns the top-N most-used
+    descriptions for ``type`` (useful for the "recent descriptions"
+    hint on an empty input).
 
-    When ``q`` is omitted, returns top-N most-used descriptions (useful
-    for the manual-entry form's "recent descriptions" hint).
+    Privacy (§5.4): the raw query string ``q`` and the returned
+    descriptions MUST NOT appear in logs. We log only ``org_id``,
+    ``type``, ``query_length``, ``result_count``.
+
+    Cache: ``Cache-Control: private, max-age=60`` — per-user, no shared
+    CDN cache (§5.4).
 
     Frozen contract: see spec at
     ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
-    §5 (Description Suggestions Contract) and
-    ``app/schemas/transaction_suggestions.py``.
-
-    Wave 2 Description Suggestions team owns implementation. Frontend
-    is expected to debounce 300 ms and skip requests when q.length < 2.
+    §5 and ``app/schemas/transaction_suggestions.py``.
     """
-    _ = (current_user.org_id, db, type, q, limit)
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Description suggestions not implemented — see L3.2 dispatch "
-            "(specs/2026-05-12-l3-2-import-contracts.md §5)"
-        ),
+    suggestions = await suggestions_svc.get_description_suggestions(
+        db,
+        org_id=current_user.org_id,
+        type=type,
+        q=q,
+        limit=limit,
     )
+    # No-PII log line (§5.4): never log raw descriptions or the raw
+    # query string. ``query_length`` is the only signal we keep about
+    # ``q``; ``result_count`` reflects what we're returning.
+    suggestions_logger.info(
+        "transactions.suggestions.descriptions",
+        org_id=current_user.org_id,
+        type=type,
+        query_length=len(q) if q else 0,
+        result_count=len(suggestions),
+    )
+    response.headers["Cache-Control"] = "private, max-age=60"
+    return DescriptionSuggestionsResponse(suggestions=suggestions)
 
 
 @router.get("/{transaction_id}", response_model=TransactionResponse)

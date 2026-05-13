@@ -406,8 +406,15 @@ async def test_batch_validates_max_rows(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_suggestions_returns_501_when_authenticated(session_factory):
-    """Description-suggestions endpoint returns 501."""
+async def test_suggestions_returns_200_with_empty_payload_for_seeded_user(
+    session_factory,
+):
+    """Description-suggestions endpoint is now implemented (L3.2 Wave 2A).
+
+    With no transactions seeded for the contract user, the endpoint
+    returns 200 with an empty suggestions list — confirming the
+    handler is no longer the 501 stub but is wired to the service.
+    """
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -415,8 +422,9 @@ async def test_suggestions_returns_501_when_authenticated(session_factory):
             "/api/v1/transactions/suggestions/descriptions",
             params={"type": "expense", "q": "alb", "limit": 10},
         )
-    assert resp.status_code == 501
-    assert "not implemented" in resp.json()["detail"].lower()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"suggestions": []}
 
 
 @pytest.mark.asyncio
@@ -473,7 +481,7 @@ async def test_suggestions_validates_max_limit(session_factory):
 
 @pytest.mark.asyncio
 async def test_suggestions_q_omitted_is_valid_at_contract_layer(session_factory):
-    """When q is omitted, request shape is valid (server returns 501)."""
+    """When q is omitted, request shape is valid (server returns 200)."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -481,8 +489,10 @@ async def test_suggestions_q_omitted_is_valid_at_contract_layer(session_factory)
             "/api/v1/transactions/suggestions/descriptions",
             params={"type": "income"},
         )
-    # 501, not 422 — q is optional per contract.
-    assert resp.status_code == 501
+    # 200, not 422 — q is optional per contract; the live handler
+    # returns an empty list when the org has no transactions seeded.
+    assert resp.status_code == 200
+    assert resp.json() == {"suggestions": []}
 
 
 # ── OpenAPI surface check ───────────────────────────────────────────────────
