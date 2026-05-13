@@ -204,8 +204,10 @@ async def lifespan(app: FastAPI):
     if app_settings.app_env != "production":
         await _run_migrations()
     # NOTE: subscription backfill used to run here on every boot. It now
-    # lives in alembic migration 043_backfill_subscriptions (idempotent
-    # via sentinel row in org_settings). Multi-replica safe.
+    # lives in alembic migration 043_backfill_subscriptions, idempotent
+    # via a per-row HAS_SUBSCRIPTION existence check (plus the UNIQUE
+    # constraint on subscriptions.org_id). Multi-replica safe. For manual
+    # re-runs, see `backend/scripts/backfill_subscriptions.py`.
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
     await redis_client.close_client()
