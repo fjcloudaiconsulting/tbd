@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -25,11 +25,17 @@ import {
 //   The query string is the source of truth for filter state. On
 //   mount we read q / org_id / role / status / offset from
 //   ``useSearchParams`` and seed React state from them. Filter
-//   changes are mirrored back to the URL via ``router.replace`` (no
-//   history entry per keystroke). That means:
+//   changes are mirrored back to the URL via ``router.replace`` so:
 //     - refreshing keeps the filters
-//     - the back button restores the previous filter state
 //     - a filtered URL is shareable / linkable
+//   Filter changes do NOT create separate history entries. The
+//   choice is deliberate ``router.replace`` rather than
+//   ``router.push``: every keystroke or chip tap would otherwise
+//   become a back-button stop, and admin filter UX rarely benefits
+//   from that. Back-button restoration of filter state is therefore
+//   out of contract; it requires a future ``router.push``-on-commit
+//   path (debounce settled, URL actually changed).
+//
 //   The URL write is debounced through the same 300 ms ``q``
 //   debounce so a keypress sequence does not stomp ``router.replace``
 //   on every character. Other (single-tap) filters update the URL
@@ -167,8 +173,22 @@ function AdminUsersPageContent() {
       });
   }, [loading, user]);
 
-  // Debounce the search input. Resets offset to 0 whenever q changes.
+  // Debounce the search input. Resets offset to 0 whenever the user
+  // types a new query.
+  //
+  // First-mount guard: the effect fires once on mount because qInput
+  // was seeded from the URL. Without the guard, that first run would
+  // call ``setOffset(0)`` after the debounce window and clobber an
+  // ``offset=50`` (or any non-zero) value we just seeded from the
+  // URL. The ref flips on the first run so subsequent (user-driven)
+  // qInput changes still reset the offset, which is the contract for
+  // a new search.
+  const isInitialDebounceRunRef = useRef(true);
   useEffect(() => {
+    if (isInitialDebounceRunRef.current) {
+      isInitialDebounceRunRef.current = false;
+      return;
+    }
     const handle = setTimeout(() => {
       setQ(qInput.trim());
       setOffset(0);
@@ -196,10 +216,11 @@ function AdminUsersPageContent() {
   }, [loading, user, q, orgId, role, status, offset]);
 
   // Mirror filter state back to the URL. Uses ``router.replace`` so
-  // the back button steps through user-visible state changes, not
-  // every intermediate keystroke. ``q`` is already debounced upstream
-  // (the qInput effect commits to ``q`` after 300 ms); other filters
-  // tap and apply, so they write to the URL eagerly.
+  // filter changes do not pile up as back-button stops (see the
+  // top-of-file URL state contract for the trade-off). ``q`` is
+  // already debounced upstream (the qInput effect commits to ``q``
+  // after 300 ms); other filters tap and apply, so they write to
+  // the URL eagerly.
   //
   // ``scroll: false`` keeps the table position stable across writes;
   // without it Next 15 scrolls to the top of the page on every

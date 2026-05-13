@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import AdminUsersPage from "@/app/admin/users/page";
 import { apiFetch } from "@/lib/api";
@@ -286,4 +286,73 @@ describe("AdminUsersPage", () => {
       }
     });
   });
+
+  it("seeds offset from URL and preserves it after the debounce window", async () => {
+    // Regression for the bug where the qInput-debounce effect would
+    // fire once on mount (because qInput was seeded from the URL)
+    // and clobber the seeded offset back to 0. Owner reviewed the
+    // first L4.4 URL-state pass and caught this; the fix is a
+    // first-mount ref guard in the debounce effect.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      currentSearchParams = new URLSearchParams("q=ada&offset=50");
+      apiFetchMock.mockImplementation((url: string) => {
+        if (url.startsWith("/api/v1/admin/orgs")) {
+          return Promise.resolve({ items: [], total: 0 } as never);
+        }
+        return Promise.resolve(SAMPLE_USERS as never);
+      });
+
+      render(<AdminUsersPage />);
+
+      // First fetch carries the seeded offset.
+      await waitFor(() => {
+        const userCalls = apiFetchMock.mock.calls
+          .map((c) => c[0] as string)
+          .filter((u) => u.startsWith("/api/v1/admin/users"));
+        expect(userCalls[0]).toContain("offset=50");
+        expect(userCalls[0]).toContain("q=ada");
+      });
+
+      // Advance past the debounce window. If the first-mount guard
+      // is missing, the debounce effect fires here and calls
+      // setOffset(0), which would trigger a fresh fetch with
+      // offset=0 and a router.replace that drops the offset param.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS + 100);
+      });
+
+      // No subsequent /api/v1/admin/users fetch may carry offset=0.
+      // Every user fetch must still carry offset=50.
+      const allUserCalls = apiFetchMock.mock.calls
+        .map((c) => c[0] as string)
+        .filter((u) => u.startsWith("/api/v1/admin/users"));
+      for (const u of allUserCalls) {
+        expect(u).toContain("offset=50");
+      }
+
+      // The URL writer must NEVER have rewritten the URL to drop
+      // offset. If it ran, the only acceptable form contains offset=50.
+      for (const call of replaceMock.mock.calls) {
+        const url = call[0] as string;
+        // If the URL has a query string, it must keep offset=50.
+        // If there is no query string at all the writer dropped
+        // offset, which is the failure mode this test catches.
+        if (url.includes("?")) {
+          expect(url).toContain("offset=50");
+        } else {
+          throw new Error(
+            `router.replace called with no query string (offset dropped): ${url}`,
+          );
+        }
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
+// Constant duplicated from the page module so the test can advance
+// fake timers past the page's debounce window without importing
+// implementation detail across a module boundary.
+const SEARCH_DEBOUNCE_MS = 300;
