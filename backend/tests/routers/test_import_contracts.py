@@ -554,3 +554,142 @@ async def test_openapi_exposes_ofx_row_fields(session_factory):
                 f"OpenAPI {row_schema_name} missing OFX field: {field}. "
                 "Wave 2 OFX team builds against these — they must surface."
             )
+
+
+# ── PR #247 P0: CSV confirm → import_batches header → GET reconcile ─────────
+
+
+@pytest.mark.asyncio
+async def test_confirm_creates_import_batch_and_response_includes_id(
+    session_factory,
+):
+    """End-to-end wiring proof. A real CSV confirm payload (with the
+    new required ``file_name`` + ``source_format``) creates an
+    ``import_batches`` row, links the imported transaction to it, and
+    returns the batch id on the response so the frontend can deep-link
+    to ``/import/{import_id}/reconcile``. The 501-stub-shaped issue
+    that PR #247's owner review flagged is precisely this seam."""
+    from app.models import (
+        Account,
+        AccountType,
+        Category,
+        CategoryType,
+        ImportBatch,
+    )
+    from app.models.transaction import Transaction
+
+    org_id, user_id = await _seed_user(session_factory)
+    async with session_factory() as db:
+        atype = AccountType(
+            org_id=org_id, name="Checking", slug="checking", is_system=True
+        )
+        db.add(atype)
+        await db.flush()
+        acct = Account(
+            org_id=org_id,
+            name="Cash",
+            account_type_id=atype.id,
+            balance=0,
+            currency="EUR",
+        )
+        db.add(acct)
+        await db.flush()
+        cat = Category(
+            org_id=org_id,
+            name="Groceries",
+            slug="groceries",
+            type=CategoryType.EXPENSE,
+        )
+        db.add(cat)
+        await db.commit()
+        account_id = acct.id
+        category_id = cat.id
+
+    app = _make_app(session_factory)
+    payload = {
+        "account_id": account_id,
+        "default_category_id": category_id,
+        "file_name": "real-export.csv",
+        "source_format": "csv",
+        "rows": [
+            {
+                "row_number": 1,
+                "date": "2026-05-10",
+                "description": "Albert Heijn",
+                "amount": 12.50,
+                "type": "expense",
+                "category_id": category_id,
+                "action": "create",
+            }
+        ],
+    }
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/import/confirm", json=payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["imported_count"] == 1
+    assert body["import_id"] is not None
+    import_id = body["import_id"]
+
+    # The batch row exists with row_count=1 (the one imported tx).
+    async with session_factory() as db:
+        batch = await db.scalar(
+            select(ImportBatch).where(ImportBatch.id == import_id)
+        )
+        assert batch is not None
+        assert batch.org_id == org_id
+        assert batch.source_format.value == "csv"
+        assert batch.file_name == "real-export.csv"
+        assert batch.row_count == 1
+        # The transaction was linked.
+        tx = await db.scalar(
+            select(Transaction).where(
+                Transaction.import_batch_id == import_id
+            )
+        )
+        assert tx is not None
+        assert tx.description == "Albert Heijn"
+
+    # The reconcile inbox is reachable via GET.
+    with TestClient(app) as client:
+        get_resp = client.get(f"/api/v1/import/{import_id}")
+    assert get_resp.status_code == 200, get_resp.text
+    detail = get_resp.json()
+    assert detail["batch"]["id"] == import_id
+    assert len(detail["rows"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_missing_file_name(session_factory):
+    """Schema gate: ``file_name`` is REQUIRED. A confirm payload that
+    omits it returns 422 -- this is the regression gate that prevents
+    the bug from coming back (frontend silently skipping the field)."""
+    await _seed_user(session_factory)
+    app = _make_app(session_factory)
+    payload = {
+        "account_id": 1,
+        "default_category_id": 1,
+        "source_format": "csv",
+        "rows": [],
+    }
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/import/confirm", json=payload)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_bad_source_format(session_factory):
+    """Schema gate: ``source_format`` only accepts ``'csv'`` or
+    ``'ofx'``. Anything else is a typed 422 at the wire boundary."""
+    await _seed_user(session_factory)
+    app = _make_app(session_factory)
+    payload = {
+        "account_id": 1,
+        "default_category_id": 1,
+        "file_name": "x.csv",
+        "source_format": "xlsx",
+        "rows": [],
+    }
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/import/confirm", json=payload)
+    assert resp.status_code == 422

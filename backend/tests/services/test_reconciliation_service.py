@@ -522,6 +522,238 @@ async def test_create_import_batch_rejects_empty_ids(db_session):
 # ── Auto-close idempotency ──────────────────────────────────────────────────
 
 
+# ── PR #247 P1: Edit integrity (balance + category ownership) ───────────────
+
+
+@pytest.mark.asyncio
+async def test_edit_amount_recomputes_account_balance(db_session):
+    """Editing the amount of a SETTLED row reverts the old delta and
+    applies the new one so ``accounts.balance`` cannot drift from the
+    ledger. We pre-apply the seed's three 12.50 expenses to the account
+    balance so the starting state is known, then edit row 0 from 12.50
+    to 22.50 -- the balance must drop another 10.00."""
+    seed = await _seed(db_session)
+
+    # Pre-apply the seed's row 0 expense to the account so the test
+    # starts from a known cached balance. (The seed inserts the rows
+    # but does not run the balance bookkeeping the create path would.)
+    acct = await db_session.scalar(
+        select(Account).where(Account.id == seed["account_id"])
+    )
+    acct.balance = acct.balance - Decimal("12.50")
+    await db_session.commit()
+    starting_balance = acct.balance
+
+    body = ReconcileBatchRequest(
+        transitions=[
+            ReconciliationTransition(
+                transaction_id=seed["tx_ids"][0],
+                to_state=ReconciliationState.EDITED,
+                edits=ReconciliationEdits(amount=Decimal("22.50")),
+            )
+        ]
+    )
+    await reconciliation_service.reconcile_request(
+        db_session,
+        org_id=seed["org_id"],
+        batch_id=seed["batch_id"],
+        request=body,
+    )
+
+    refreshed_acct = await db_session.scalar(
+        select(Account).where(Account.id == seed["account_id"])
+    )
+    # Expense amount went UP by 10.00, so balance went DOWN by 10.00.
+    assert refreshed_acct.balance == starting_balance - Decimal("10.00")
+
+
+@pytest.mark.asyncio
+async def test_edit_with_cross_org_category_is_rejected(db_session):
+    """A category ID from another org is refused with ``ValidationError``
+    (-> 422). The transaction must not mutate."""
+    seed = await _seed(db_session)
+
+    # Spin up another org with its own category.
+    other_org = Organization(name="Other", billing_cycle_day=1)
+    db_session.add(other_org)
+    await db_session.flush()
+    other_cat = Category(
+        org_id=other_org.id,
+        name="Other Cat",
+        slug="other-cat",
+        type=CategoryType.EXPENSE,
+    )
+    db_session.add(other_cat)
+    await db_session.commit()
+
+    body = ReconcileBatchRequest(
+        transitions=[
+            ReconciliationTransition(
+                transaction_id=seed["tx_ids"][0],
+                to_state=ReconciliationState.EDITED,
+                edits=ReconciliationEdits(category_id=other_cat.id),
+            )
+        ]
+    )
+    with pytest.raises(ValidationError):
+        await reconciliation_service.reconcile_request(
+            db_session,
+            org_id=seed["org_id"],
+            batch_id=seed["batch_id"],
+            request=body,
+        )
+
+    refreshed = await db_session.scalar(
+        select(Transaction).where(Transaction.id == seed["tx_ids"][0])
+    )
+    assert refreshed.category_id == seed["category_id"]
+    assert refreshed.reconciliation_state == "pending_review"
+
+
+@pytest.mark.asyncio
+async def test_edit_with_incompatible_category_type_is_rejected(db_session):
+    """An INCOME category on an EXPENSE transaction is refused (the
+    same compatibility check ``transaction_service`` uses on CRUD)."""
+    seed = await _seed(db_session)
+
+    income_cat = Category(
+        org_id=seed["org_id"],
+        name="Salary",
+        slug="salary",
+        type=CategoryType.INCOME,
+    )
+    db_session.add(income_cat)
+    await db_session.commit()
+
+    body = ReconcileBatchRequest(
+        transitions=[
+            ReconciliationTransition(
+                transaction_id=seed["tx_ids"][0],
+                to_state=ReconciliationState.EDITED,
+                edits=ReconciliationEdits(category_id=income_cat.id),
+            )
+        ]
+    )
+    with pytest.raises(ValidationError):
+        await reconciliation_service.reconcile_request(
+            db_session,
+            org_id=seed["org_id"],
+            batch_id=seed["batch_id"],
+            request=body,
+        )
+
+    refreshed = await db_session.scalar(
+        select(Transaction).where(Transaction.id == seed["tx_ids"][0])
+    )
+    assert refreshed.category_id == seed["category_id"]
+
+
+# ── PR #247 P2: FITID dedup scope + NULL-batch coverage ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fitid_dup_warning_scoped_to_account(db_session):
+    """FITID uniqueness is **per account** (OFX spec §11.4.4). A row in
+    this batch should NOT light the duplicate-warning when the matching
+    FITID lives on a DIFFERENT account in the same org (two different
+    banks can legitimately share a FITID string)."""
+    seed = await _seed(db_session)
+
+    # Make a second account in the same org.
+    at = await db_session.scalar(
+        select(AccountType).where(
+            AccountType.org_id == seed["org_id"]
+        )
+    )
+    other_acct = Account(
+        org_id=seed["org_id"],
+        name="Other Account",
+        account_type_id=at.id,
+        balance=Decimal("0"),
+        currency="EUR",
+    )
+    db_session.add(other_acct)
+    await db_session.flush()
+
+    # Existing transaction on the OTHER account with a FITID we'll
+    # reuse on the batch row.
+    existing_other = Transaction(
+        org_id=seed["org_id"],
+        account_id=other_acct.id,
+        category_id=seed["category_id"],
+        description="Bank A",
+        amount=Decimal("1.00"),
+        type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1),
+        settled_date=date(2026, 5, 1),
+        is_imported=True,
+        fitid="SHARED-FITID",
+        reconciliation_state="accepted",
+    )
+    # Tag the batch row 0 with the same FITID -- but on the original
+    # (batch-owning) account.
+    batch_row = await db_session.scalar(
+        select(Transaction).where(Transaction.id == seed["tx_ids"][0])
+    )
+    batch_row.fitid = "SHARED-FITID"
+    db_session.add(existing_other)
+    await db_session.commit()
+
+    detail = await reconciliation_service.get_batch_detail(
+        db_session, org_id=seed["org_id"], batch_id=seed["batch_id"]
+    )
+    target_row = next(
+        r for r in detail.rows if r.transaction_id == seed["tx_ids"][0]
+    )
+    # Different account -> no warning despite same FITID.
+    assert target_row.duplicate_warning is False
+    assert target_row.duplicate_warning_target is None
+
+
+@pytest.mark.asyncio
+async def test_fitid_dup_warning_covers_null_batch_legacy_rows(db_session):
+    """Legacy transactions imported pre-batches feature have
+    ``import_batch_id IS NULL``. The cross-batch FITID warning MUST
+    include them (SQL three-valued logic would otherwise exclude
+    NULL-batch rows from ``import_batch_id != batch_id``)."""
+    seed = await _seed(db_session)
+
+    # Insert a pre-batches transaction with a known FITID on the SAME
+    # account as the batch. import_batch_id stays NULL.
+    legacy = Transaction(
+        org_id=seed["org_id"],
+        account_id=seed["account_id"],
+        category_id=seed["category_id"],
+        description="Legacy import",
+        amount=Decimal("5.00"),
+        type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED,
+        date=date(2026, 4, 1),
+        settled_date=date(2026, 4, 1),
+        is_imported=True,
+        import_batch_id=None,
+        fitid="LEGACY-FITID",
+        reconciliation_state="accepted",
+    )
+    batch_row = await db_session.scalar(
+        select(Transaction).where(Transaction.id == seed["tx_ids"][0])
+    )
+    batch_row.fitid = "LEGACY-FITID"
+    db_session.add(legacy)
+    await db_session.commit()
+
+    detail = await reconciliation_service.get_batch_detail(
+        db_session, org_id=seed["org_id"], batch_id=seed["batch_id"]
+    )
+    target_row = next(
+        r for r in detail.rows if r.transaction_id == seed["tx_ids"][0]
+    )
+    # NULL-batch legacy row IS considered -> warning fires.
+    assert target_row.duplicate_warning is True
+    assert target_row.duplicate_warning_target == legacy.id
+
+
 @pytest.mark.asyncio
 async def test_close_batch_is_idempotent(db_session):
     """Calling ``close_batch_if_complete`` on an already-CLOSED batch

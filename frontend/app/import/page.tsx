@@ -269,6 +269,13 @@ function ImportPageContent() {
           account_id: preview.account_id,
           default_category_id: defaultCategoryId,
           rows: payloadRows,
+          // L3.2 Wave 2B (PR #247 P0 fix): backend now REQUIRES these
+          // so every confirm creates an ``import_batches`` row. We
+          // echo what the preview returned (``source_format`` defaults
+          // to ``"csv"`` for legacy preview responses that pre-date
+          // the field).
+          file_name: preview.file_name,
+          source_format: preview.source_format ?? "csv",
         }),
       });
       setResults(data);
@@ -929,16 +936,29 @@ function ImportPageContent() {
           <div className="flex flex-col-reverse gap-2 border-t border-border px-6 py-4 sm:flex-row sm:gap-4">
             <button
               onClick={() => { setStep("upload"); setPreview(null); setResults(null); setFile(null); }}
-              className={btnSecondary + " min-h-[44px] w-full sm:order-2 sm:min-h-0 sm:w-auto"}
+              className={btnSecondary + " min-h-[44px] w-full sm:order-3 sm:min-h-0 sm:w-auto"}
             >
               Import Another File
             </button>
             <button
               onClick={() => router.push("/transactions")}
-              className={btnPrimary + " min-h-[44px] w-full sm:order-1 sm:min-h-0 sm:w-auto"}
+              className={btnSecondary + " min-h-[44px] w-full sm:order-2 sm:min-h-0 sm:w-auto"}
             >
               View Transactions
             </button>
+            {/* L3.2 Wave 2B (PR #247 P0): deep-link straight to the
+                reconciliation inbox for the batch we just created.
+                Shown only when the backend created a batch (i.e. at
+                least one row committed), per the contract. */}
+            {results.import_id != null && (
+              <button
+                onClick={() => router.push(`/import/${results.import_id}/reconcile`)}
+                className={btnPrimary + " min-h-[44px] w-full sm:order-1 sm:min-h-0 sm:w-auto"}
+                data-testid="go-reconcile"
+              >
+                Reconcile import
+              </button>
+            )}
           </div>
         </div>
       )}

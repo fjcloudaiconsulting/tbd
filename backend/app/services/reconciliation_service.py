@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 import structlog
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.import_batch import (
@@ -272,11 +272,26 @@ async def get_batch_detail(
     fitids_in_batch = [t.fitid for t in transactions if t.fitid]
     dup_warning_map: dict[str, int] = {}
     if fitids_in_batch:
+        # PR #247 P2 fix: SQL three-valued logic excludes NULL rows from
+        # ``import_batch_id != batch_id``. Legacy transactions (pre-
+        # batches feature, ``import_batch_id IS NULL``) and any future
+        # row whose FK was cleared by ``ON DELETE SET NULL`` must still
+        # surface as duplicate candidates. ``or_(... , is_(None))``
+        # widens the predicate to catch them.
+        #
+        # Account scope: bank FITIDs are unique within an account, so
+        # we restrict the dup lookup to the same account as the batch
+        # to avoid flagging legitimately-distinct rows on other
+        # accounts that happen to share a FITID string.
         dup_result = await db.execute(
             select(Transaction.id, Transaction.fitid).where(
                 Transaction.org_id == org_id,
+                Transaction.account_id == batch.account_id,
                 Transaction.fitid.in_(fitids_in_batch),
-                Transaction.import_batch_id != batch_id,
+                or_(
+                    Transaction.import_batch_id != batch_id,
+                    Transaction.import_batch_id.is_(None),
+                ),
             )
         )
         for row in dup_result.all():
@@ -390,36 +405,88 @@ def _validate_transition(
 async def _apply_edits(
     db: AsyncSession,
     *,
+    org_id: int,
     tx: Transaction,
     transition: ReconciliationTransition,
 ) -> None:
     """Apply ``ReconciliationEdits`` to a transaction in place.
 
     Only updates the fields the user actually changed (the schema lets
-    every field be ``None`` to mean "leave it alone"). The standard
-    transaction validation lives in ``transaction_service.update_transaction``
-    and is intentionally NOT routed through here: the reconciliation
-    edits surface is narrow (description / amount / date / category)
-    and doesn't need the partner-locking dance the transfer-pair
-    invariant requires. A future iteration can promote the call to
-    the full update path; for now, direct attribute writes keep the
-    state-machine flow simple and small.
+    every field be ``None`` to mean "leave it alone"). Integrity rules
+    (owner-review fix on PR #247):
+
+    * **Balance bookkeeping** -- an ``amount`` edit on a SETTLED row
+      reverts the original delta from ``accounts.balance`` and applies
+      the new delta. This reuses the same ``revert_balance`` +
+      ``apply_balance`` primitives that ``transaction_service`` uses on
+      transaction CRUD, so the cached balance can never drift from the
+      ledger.
+
+    * **Category ownership + type compatibility** -- a ``category_id``
+      edit routes through ``transaction_service.validate_category_for_type``
+      which rejects cross-org and incompatible-type categories with
+      ``ValidationError`` (-> 422 at the wire). We do NOT trust the
+      payload to carry a legitimate ID.
+
+    * **PENDING / TRANSFER guardrails** -- transfer-leg edits would
+      need the partner-locking dance from
+      ``transaction_service.update_transaction`` and are out of scope
+      for the inbox; we refuse them. PENDING rows DO get their balance
+      change deferred to settlement just like fresh PENDING rows do.
+
+    Date / description edits are direct attribute writes. SETTLED
+    rows mirror ``settled_date = date`` so the SETTLED-implies-
+    settled_date model invariant holds.
     """
+    # Import here to avoid a circular import: reconciliation_service is
+    # imported by import_service, and transaction_service imports a
+    # few schemas that touch import paths.
+    from app.services.transaction_service import (
+        apply_balance,
+        get_account_for_update,
+        revert_balance,
+        validate_category_for_type,
+    )
+
     edits = transition.edits
     if edits is None:
         return
+
+    # Refuse transfer-leg edits: the cached partner row would drift.
+    if tx.linked_transaction_id is not None:
+        raise ValidationError(
+            "Cannot edit a transfer leg from the reconciliation inbox; "
+            "edit via the transactions page."
+        )
+
     if edits.description is not None:
         tx.description = edits.description
-    if edits.amount is not None:
-        # Note: amount changes here do NOT replay account-balance
-        # bookkeeping. The reconciliation inbox is for fixing typos on
-        # rows that already landed; the balance has already absorbed the
-        # original amount. The PR description tracks this caveat.
+
+    # ── Category: validate ownership + type compatibility BEFORE write ──
+    if edits.category_id is not None:
+        await validate_category_for_type(
+            db, edits.category_id, org_id, tx.type
+        )
+        tx.category_id = edits.category_id
+
+    # ── Amount: revert old delta, apply new, never let balance drift ──
+    if edits.amount is not None and edits.amount != tx.amount:
+        if tx.status.value == "settled":
+            # Lock the account row so a concurrent transaction can't
+            # interleave between revert and apply.
+            acct = await get_account_for_update(
+                db, tx.account_id, org_id
+            )
+            revert_balance(acct, tx.amount, tx.type)
+            apply_balance(acct, edits.amount, tx.type)
         tx.amount = edits.amount
+
+    # ── Date: mirror to settled_date when SETTLED so the model
+    # invariant (and the period-bucket query) stay coherent ──
     if edits.date is not None:
         tx.date = edits.date
-    if edits.category_id is not None:
-        tx.category_id = edits.category_id
+        if tx.status.value == "settled":
+            tx.settled_date = edits.date
 
 
 async def _apply_match(
@@ -514,7 +581,7 @@ async def _reconcile_one(
     # so a payload validation error doesn't leave the row in a half-
     # updated state.
     if target_state == ReconciliationState.EDITED.value:
-        await _apply_edits(db, tx=tx, transition=transition)
+        await _apply_edits(db, org_id=org_id, tx=tx, transition=transition)
     elif target_state == ReconciliationState.MATCHED.value:
         await _apply_match(
             db, org_id=org_id, tx=tx, transition=transition

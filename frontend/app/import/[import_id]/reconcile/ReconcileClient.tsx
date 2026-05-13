@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type FormEvent } from "react";
 import useSWR from "swr";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
@@ -69,8 +69,12 @@ const STATE_LABEL: Record<ReconciliationState, string> = {
 // buttons for transitions the server will actually accept, so the user
 // never sees a 409 from the inbox.
 const ALLOWED_NEXT: Record<ReconciliationState, ReconciliationState[]> = {
-  pending_review: ["accepted", "skipped", "rejected"],
-  unmatched: ["accepted", "skipped", "rejected"],
+  // PR #247 P1: Match + Edit are now first-class actions from a
+  // pending row. Order matters for visual hierarchy: primary action
+  // (Accept) first, secondary (Edit / Match / Skip) middle, danger
+  // (Reject) last.
+  pending_review: ["accepted", "edited", "matched", "skipped", "rejected"],
+  unmatched: ["accepted", "edited", "matched", "skipped", "rejected"],
   matched: ["accepted"],
   edited: ["accepted"],
   // Terminal-ish states: only Accepted permits a reopen.
@@ -138,6 +142,13 @@ export default function ReconcileClient({
     {},
   );
   const [globalError, setGlobalError] = useState<string | null>(null);
+  // PR #247 P1: modal state for the new Edit + Match actions. Only one
+  // modal is open at a time; ``modalRow`` carries the row payload so
+  // the dialog can prefill description / amount / date / category.
+  const [editModalRow, setEditModalRow] =
+    useState<ReconciliationRow | null>(null);
+  const [matchModalRow, setMatchModalRow] =
+    useState<ReconciliationRow | null>(null);
 
   const applyTransition = useCallback(
     async (
@@ -320,17 +331,278 @@ export default function ReconcileClient({
                     key={row.transaction_id}
                     row={row}
                     busy={rowState[row.transaction_id]?.busy ?? false}
-                    onAction={(target) =>
-                      applyTransition(row.transaction_id, target)
-                    }
+                    onAction={(target) => {
+                      // PR #247 P1: Edit and Match need extra payload
+                      // (the modal collects it). The other targets
+                      // commit immediately.
+                      if (target === "edited") {
+                        setEditModalRow(row);
+                      } else if (target === "matched") {
+                        setMatchModalRow(row);
+                      } else {
+                        applyTransition(row.transaction_id, target);
+                      }
+                    }}
                   />
                 ))}
               </ul>
             )}
           </>
         ) : null}
+
+        {/* ── Edit modal (PR #247 P1) ──────────────────────────────── */}
+        {editModalRow ? (
+          <EditModal
+            row={editModalRow}
+            onClose={() => setEditModalRow(null)}
+            onSave={async (edits) => {
+              const target = editModalRow.transaction_id;
+              setEditModalRow(null);
+              await applyTransition(target, "edited", { edits });
+            }}
+          />
+        ) : null}
+
+        {/* ── Match modal (PR #247 P1) ─────────────────────────────── */}
+        {matchModalRow ? (
+          <MatchModal
+            row={matchModalRow}
+            onClose={() => setMatchModalRow(null)}
+            onSave={async (matchId) => {
+              const target = matchModalRow.transaction_id;
+              setMatchModalRow(null);
+              await applyTransition(target, "matched", {
+                match_with_transaction_id: matchId,
+              });
+            }}
+          />
+        ) : null}
       </div>
     </AppShell>
+  );
+}
+
+// ── Edit modal ──────────────────────────────────────────────────────────────
+
+function EditModal({
+  row,
+  onClose,
+  onSave,
+}: {
+  row: ReconciliationRow;
+  onClose: () => void;
+  onSave: (edits: {
+    description?: string;
+    amount?: string;
+    date?: string;
+  }) => Promise<void>;
+}) {
+  const [description, setDescription] = useState(row.description);
+  const [amount, setAmount] = useState(row.amount);
+  const [date, setDate] = useState(row.date);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    try {
+      // Only send fields the user actually changed. The backend reads
+      // None as "leave alone", so omitting unchanged fields is the
+      // right contract.
+      const edits: { description?: string; amount?: string; date?: string } = {};
+      if (description !== row.description) edits.description = description;
+      if (amount !== row.amount) edits.amount = amount;
+      if (date !== row.date) edits.date = date;
+      if (Object.keys(edits).length === 0) {
+        setErr("Make a change before saving, or close this dialog.");
+        setBusy(false);
+        return;
+      }
+      await onSave(edits);
+    } catch (caught) {
+      setErr(extractErrorMessage(caught, "Edit failed"));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="recon-edit-title"
+      data-testid="edit-modal"
+    >
+      <div className={`${card} w-full max-w-md`}>
+        <div className={cardHeader}>
+          <h2 id="recon-edit-title" className="text-base font-semibold text-text-primary">
+            Edit imported row
+          </h2>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-3 px-6 py-4">
+          <div>
+            <label htmlFor="recon-edit-description" className="mb-1 block text-xs text-text-muted">
+              Description
+            </label>
+            <input
+              id="recon-edit-description"
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-sm text-text-primary"
+              data-testid="edit-description"
+            />
+          </div>
+          <div>
+            <label htmlFor="recon-edit-amount" className="mb-1 block text-xs text-text-muted">
+              Amount
+            </label>
+            <input
+              id="recon-edit-amount"
+              type="text"
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              className="w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-sm text-text-primary"
+              data-testid="edit-amount"
+            />
+          </div>
+          <div>
+            <label htmlFor="recon-edit-date" className="mb-1 block text-xs text-text-muted">
+              Date
+            </label>
+            <input
+              id="recon-edit-date"
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-sm text-text-primary"
+              data-testid="edit-date"
+            />
+          </div>
+          {err ? <p className={errorCls}>{err}</p> : null}
+          <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className={`${btnPrimary} min-h-[44px] sm:min-h-0`}
+              data-testid="edit-save"
+            >
+              {busy ? "Saving..." : "Save edits"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Match modal ─────────────────────────────────────────────────────────────
+
+function MatchModal({
+  row,
+  onClose,
+  onSave,
+}: {
+  row: ReconciliationRow;
+  onClose: () => void;
+  onSave: (matchId: number) => Promise<void>;
+}) {
+  const [matchId, setMatchId] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    const parsed = Number(matchId);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      setErr("Enter a valid transaction ID to match against.");
+      setBusy(false);
+      return;
+    }
+    if (parsed === row.transaction_id) {
+      setErr("Match target must differ from this transaction.");
+      setBusy(false);
+      return;
+    }
+    try {
+      await onSave(parsed);
+    } catch (caught) {
+      setErr(extractErrorMessage(caught, "Match failed"));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="recon-match-title"
+      data-testid="match-modal"
+    >
+      <div className={`${card} w-full max-w-md`}>
+        <div className={cardHeader}>
+          <h2 id="recon-match-title" className="text-base font-semibold text-text-primary">
+            Match to existing transaction
+          </h2>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-3 px-6 py-4">
+          <p className="text-sm text-text-secondary">
+            Enter the ID of the existing transaction this imported row should
+            link to. The match is informational; both rows remain in the
+            ledger.
+          </p>
+          <div>
+            <label htmlFor="recon-match-id" className="mb-1 block text-xs text-text-muted">
+              Existing transaction ID
+            </label>
+            <input
+              id="recon-match-id"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              value={matchId}
+              onChange={(e) => setMatchId(e.target.value)}
+              className="w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-sm text-text-primary"
+              data-testid="match-id-input"
+              placeholder="e.g. 1234"
+            />
+          </div>
+          {err ? <p className={errorCls}>{err}</p> : null}
+          <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              className={`${btnPrimary} min-h-[44px] sm:min-h-0`}
+              data-testid="match-save"
+            >
+              {busy ? "Saving..." : "Save match"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 

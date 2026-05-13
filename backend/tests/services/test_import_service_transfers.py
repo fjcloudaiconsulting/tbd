@@ -486,6 +486,8 @@ async def test_confirm_pair_with_existing_creates_and_links_atomically(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="ATM WITHDRAW", amount=Decimal("50"),
@@ -549,6 +551,8 @@ async def test_confirm_pair_with_existing_atomicity_rollback(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="ATM WITHDRAW", amount=Decimal("75"),
@@ -617,6 +621,8 @@ async def test_confirm_drop_as_duplicate_revalidates_server_side(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="ATM", amount=Decimal("10"),
@@ -665,6 +671,8 @@ async def test_confirm_response_counters_match_actions(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[
             # plain create
             ImportConfirmRow(
@@ -738,6 +746,8 @@ async def test_confirm_pair_with_existing_rejects_pending_partner(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="ATM WITHDRAW", amount=Decimal("60"),
@@ -787,6 +797,8 @@ async def test_confirm_create_transfer_pair_creates_both_legs_and_links(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="TO SAVINGS", amount=Decimal("80"),
@@ -853,6 +865,8 @@ async def test_confirm_create_transfer_pair_atomicity_rollback(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="TO SAVINGS", amount=Decimal("80"),
@@ -900,6 +914,8 @@ async def test_confirm_create_transfer_pair_validates_currency_mismatch(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="TO SAVINGS", amount=Decimal("50"),
@@ -932,6 +948,8 @@ async def test_confirm_create_transfer_pair_validates_same_account(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="SELF TRANSFER", amount=Decimal("30"),
@@ -965,6 +983,8 @@ async def test_confirm_create_transfer_pair_increments_paired_count(
     body = ImportConfirmRequest(
         account_id=seed["src_id"],
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[
             ImportConfirmRow(
                 row_number=1, date=when,
@@ -1046,6 +1066,8 @@ async def test_create_transfer_pair_locks_accounts_in_sorted_order(
     body = ImportConfirmRequest(
         account_id=src_id,
         default_category_id=seed["transfer_cat_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=when,
             description="TO SAVINGS", amount=Decimal("80"),

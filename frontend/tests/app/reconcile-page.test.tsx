@@ -126,7 +126,7 @@ describe("ReconcileClient", () => {
     expect(warning).toHaveTextContent("#999");
   });
 
-  it("offers Accept / Skip / Reject buttons on a pending row", async () => {
+  it("offers Accept / Edit / Match / Skip / Reject buttons on a pending row", async () => {
     renderClient({ batchId: 7, initialBatch: makeBatch() });
     const rows = await screen.findAllByTestId("reconcile-row");
     const pendingRow = rows[0];
@@ -134,11 +134,100 @@ describe("ReconcileClient", () => {
       pendingRow.querySelector('[data-testid="action-accepted"]'),
     ).toBeTruthy();
     expect(
+      pendingRow.querySelector('[data-testid="action-edited"]'),
+    ).toBeTruthy();
+    expect(
+      pendingRow.querySelector('[data-testid="action-matched"]'),
+    ).toBeTruthy();
+    expect(
       pendingRow.querySelector('[data-testid="action-skipped"]'),
     ).toBeTruthy();
     expect(
       pendingRow.querySelector('[data-testid="action-rejected"]'),
     ).toBeTruthy();
+  });
+
+  it("opens the Edit modal and posts an edits payload", async () => {
+    const reconcileMock = vi.fn().mockResolvedValue({
+      import_id: 7,
+      transitioned: [100],
+      errors: [],
+      remaining_pending: 1,
+      batch_status: "open",
+    });
+    const getMock = vi.fn().mockResolvedValue(makeBatch());
+    (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (path: string, options?: RequestInit) => {
+        if (options?.method === "POST") return reconcileMock(path, options);
+        return getMock(path);
+      },
+    );
+
+    renderClient({ batchId: 7, initialBatch: makeBatch() });
+    const rows = await screen.findAllByTestId("reconcile-row");
+    const editBtn = rows[0].querySelector(
+      '[data-testid="action-edited"]',
+    ) as HTMLButtonElement;
+    fireEvent.click(editBtn);
+
+    const modal = await screen.findByTestId("edit-modal");
+    expect(modal).toBeInTheDocument();
+    const descInput = modal.querySelector(
+      '[data-testid="edit-description"]',
+    ) as HTMLInputElement;
+    fireEvent.change(descInput, { target: { value: "Corrected" } });
+    const save = modal.querySelector(
+      '[data-testid="edit-save"]',
+    ) as HTMLButtonElement;
+    fireEvent.click(save);
+
+    await waitFor(() => {
+      expect(reconcileMock).toHaveBeenCalled();
+    });
+    const body = JSON.parse(reconcileMock.mock.calls[0][1].body);
+    expect(body.transitions[0].to_state).toBe("edited");
+    expect(body.transitions[0].edits.description).toBe("Corrected");
+  });
+
+  it("opens the Match modal and posts a match payload", async () => {
+    const reconcileMock = vi.fn().mockResolvedValue({
+      import_id: 7,
+      transitioned: [100],
+      errors: [],
+      remaining_pending: 1,
+      batch_status: "open",
+    });
+    const getMock = vi.fn().mockResolvedValue(makeBatch());
+    (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(
+      async (path: string, options?: RequestInit) => {
+        if (options?.method === "POST") return reconcileMock(path, options);
+        return getMock(path);
+      },
+    );
+
+    renderClient({ batchId: 7, initialBatch: makeBatch() });
+    const rows = await screen.findAllByTestId("reconcile-row");
+    const matchBtn = rows[0].querySelector(
+      '[data-testid="action-matched"]',
+    ) as HTMLButtonElement;
+    fireEvent.click(matchBtn);
+
+    const modal = await screen.findByTestId("match-modal");
+    const idInput = modal.querySelector(
+      '[data-testid="match-id-input"]',
+    ) as HTMLInputElement;
+    fireEvent.change(idInput, { target: { value: "555" } });
+    const save = modal.querySelector(
+      '[data-testid="match-save"]',
+    ) as HTMLButtonElement;
+    fireEvent.click(save);
+
+    await waitFor(() => {
+      expect(reconcileMock).toHaveBeenCalled();
+    });
+    const body = JSON.parse(reconcileMock.mock.calls[0][1].body);
+    expect(body.transitions[0].to_state).toBe("matched");
+    expect(body.transitions[0].match_with_transaction_id).toBe(555);
   });
 
   it("fires the reconcile POST when Accept is clicked", async () => {

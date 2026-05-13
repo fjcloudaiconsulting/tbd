@@ -236,6 +236,11 @@ export interface ImportPreviewResponse {
   suggested_pair_count: number;
   multi_candidate_count: number;
   duplicate_of_linked_count: number;
+
+  // L3.2 Wave 2B: ``'csv'`` or ``'ofx'``. The frontend echoes this in
+  // the confirm payload so the backend can stamp the new
+  // ``import_batches`` row with the correct origin.
+  source_format?: "csv" | "ofx";
 }
 
 export interface ImportConfirmRow {
@@ -262,6 +267,11 @@ export interface ImportConfirmRequest {
   account_id: number;
   default_category_id: number;
   rows: ImportConfirmRow[];
+  // L3.2 Wave 2B (PR #247 P0 fix): both REQUIRED on every confirm so
+  // the backend always opens an ``import_batches`` header row for the
+  // imported transactions.
+  file_name: string;
+  source_format: "csv" | "ofx";
 }
 
 export interface ImportRowError {
@@ -276,6 +286,9 @@ export interface ImportConfirmResponse {
   skipped_count: number;
   error_count: number;
   errors: ImportRowError[];
+  // L3.2 Wave 2B: ID of the newly created ``import_batches`` row, or
+  // ``null`` when no transactions were committed.
+  import_id: number | null;
 }
 
 // L3.2 Wave 2A manual batch transaction entry. Wraps a TransactionCreate

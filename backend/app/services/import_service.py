@@ -90,15 +90,15 @@ async def build_preview(
     # ── FITID-aware dedup (L3.2 OFX path) ───────────────────────────────
     # Spec §2.1: when ``fitid`` is present on a parsed row, it overrides
     # the description-based 5-tuple match. Banks guarantee FITID
-    # uniqueness within an account (OFX spec §11.4.4), so re-importing
-    # the same file is caught even if descriptions drift.
+    # uniqueness **within an account** (OFX spec §11.4.4), so the
+    # cross-batch lookup MUST scope by ``account_id`` as well -- two
+    # different banks can legitimately emit the same FITID for unrelated
+    # transactions, and an org-wide lookup would flag those as
+    # duplicates (PR #247 P2 fix).
     #
-    # L3.2 Wave 2B: ``transactions`` now carries a ``fitid`` column, so
-    # this loop also looks up cross-batch matches across the org's
-    # transactions. The org-scoped ``(org_id, fitid)`` index keeps the
-    # lookup cheap. The in-batch seen-set still catches the
-    # hand-edit / double-paste case where the same FITID appears twice
-    # in a single upload before the row hits the DB.
+    # The composite ``(org_id, fitid)`` index still covers the lookup;
+    # the additional ``account_id`` filter is a constant-time
+    # comparison after the index seek.
     parsed_fitids = [r.fitid for r in parsed_rows if getattr(r, "fitid", None)]
     existing_fitids: set[str] = set()
     if parsed_fitids:
@@ -106,6 +106,7 @@ async def build_preview(
             select(Transaction.fitid).where(
                 and_(
                     Transaction.org_id == org_id,
+                    Transaction.account_id == account_id,
                     Transaction.fitid.in_(parsed_fitids),
                 )
             )
@@ -722,45 +723,35 @@ async def execute_import(
                 if token:
                     miss_tokens.add(token)
 
-    # L3.2 Wave 2B: create the ``import_batches`` header and link every
-    # bank-sourced row to it. We do this BEFORE the outer commit so the
-    # batch + the per-row import_batch_id backfill land in the same
-    # transaction. Manual batch entry (``/transactions/batch``) does NOT
-    # go through this path, so it stays unlinked (per spec §3.2 row C).
+    # L3.2 Wave 2B (owner-review fix): ``body.file_name`` and
+    # ``body.source_format`` are REQUIRED by the schema, so every
+    # confirm that committed at least one transaction creates an
+    # ``import_batches`` header row. We do this BEFORE the outer commit
+    # so the batch + the per-row import_batch_id backfill land in the
+    # same transaction. Manual batch entry (``/transactions/batch``)
+    # does NOT go through this path, so it stays unlinked (per spec
+    # §3.2 row C).
     #
-    # Skipped when: (a) the client didn't supply file_name +
-    # source_format (pre-Wave-2B client compat), (b) no transactions
-    # were imported (every row was an error or skipped or
-    # drop_as_duplicate), or (c) we don't have a user_id (test paths
-    # that call execute_import without auth context). The router always
-    # passes user_id, so case (c) is a test-only escape hatch.
-    if (
-        imported_transaction_ids
-        and body.file_name
-        and body.source_format
-        and user_id is not None
-    ):
+    # We skip batch creation only when (a) no transactions were
+    # imported (every row was an error or skipped or
+    # drop_as_duplicate -- nothing to group under a batch), or (b) we
+    # don't have a ``user_id`` (test paths that call ``execute_import``
+    # without auth context). The router always passes ``user_id``, so
+    # case (b) is a test-only escape hatch.
+    batch_id: int | None = None
+    if imported_transaction_ids and user_id is not None:
         from app.services import reconciliation_service  # avoid circular
 
-        try:
-            await reconciliation_service.create_import_batch(
-                db,
-                org_id=org_id,
-                user_id=user_id,
-                account_id=body.account_id,
-                source_format=body.source_format,
-                file_name=body.file_name,
-                transaction_ids=imported_transaction_ids,
-            )
-        except ValidationError as exc:
-            # Bad source_format. The router validated the field, so
-            # reaching here means a programmer error; log + skip so the
-            # import still commits.
-            await logger.awarning(
-                "import.batch_creation_failed",
-                org_id=org_id,
-                error=str(exc),
-            )
+        batch = await reconciliation_service.create_import_batch(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            account_id=body.account_id,
+            source_format=body.source_format,
+            file_name=body.file_name,
+            transaction_ids=imported_transaction_ids,
+        )
+        batch_id = batch.id
 
     # Final commit for any savepoints whose changes haven't been flushed to
     # the outer transaction yet (savepoint commit only releases to the outer
@@ -804,4 +795,5 @@ async def execute_import(
         skipped_count=skipped_count,
         error_count=len(errors),
         errors=errors,
+        import_id=batch_id,
     )
