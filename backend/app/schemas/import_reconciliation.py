@@ -211,6 +211,46 @@ class ReconciliationError(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ReconciliationRow(BaseModel):
+    """Per-transaction snapshot for the reconciliation inbox UI.
+
+    Returned by ``GET /api/v1/import/{import_id}`` (Wave 2B). Carries
+    just enough state for the per-row controls (current state, link
+    target, duplicate signal). The frontend fetches transaction details
+    on demand for the Edit dialog.
+
+    The ``duplicate_warning`` boolean is set when ``fitid`` matches an
+    existing transaction in the org outside this batch -- the "Possible
+    duplicate of ..." callout in the recon UI.
+    """
+
+    transaction_id: int
+    date: datetime.date
+    description: str
+    amount: Decimal
+    type: Literal["income", "expense"]
+    reconciliation_state: ReconciliationState
+    fitid: str | None = None
+    linked_transaction_id: int | None = None
+    duplicate_warning: bool = False
+    duplicate_warning_target: int | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ImportBatchDetail(BaseModel):
+    """Full payload for ``GET /api/v1/import/{import_id}``.
+
+    Combines the batch header with the per-row reconciliation snapshot
+    so the frontend can render the full inbox in a single fetch.
+    """
+
+    batch: ImportBatchHeader
+    rows: list[ReconciliationRow] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ReconcileBatchResponse(BaseModel):
     """Response body for the reconcile endpoint.
 

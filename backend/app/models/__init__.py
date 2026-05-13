@@ -22,6 +22,11 @@ from app.models.tag import (  # noqa: F401
     TagDictionaryContributor,
     TransactionTag,
 )
+from app.models.import_batch import (  # noqa: F401
+    ImportBatch,
+    ImportBatchStatus,
+    ImportSourceFormat,
+)
 
 __all__ = [
     "Base",
@@ -62,4 +67,7 @@ __all__ = [
     "TransactionTag",
     "TagDictionary",
     "TagDictionaryContributor",
+    "ImportBatch",
+    "ImportBatchStatus",
+    "ImportSourceFormat",
 ]

@@ -70,6 +70,11 @@ class ImportPreviewResponse(BaseModel):
     multi_candidate_count: int = 0
     duplicate_of_linked_count: int = 0
 
+    # L3.2 Wave 2B: source format of the parsed file ('csv' or 'ofx').
+    # The frontend echoes this back at confirm so the service can stamp
+    # the new ``import_batches`` row with the correct origin.
+    source_format: str | None = None
+
 
 # ── Confirm Request ──────────────────────────────────────────────────────────
 
@@ -110,11 +115,24 @@ class ImportConfirmRow(BaseModel):
 
 
 class ImportConfirmRequest(BaseModel):
-    """Batch confirm request — the user submits all reviewed rows at once."""
+    """Batch confirm request -- the user submits all reviewed rows at once.
+
+    L3.2 Wave 2B: ``file_name`` and ``source_format`` are optional metadata
+    that drive ``import_batches`` header creation. When provided, the
+    confirm path groups the resulting transactions under a fresh
+    ``ImportBatch`` so the reconciliation inbox can list them. The
+    fields default to ``None`` to preserve backward compatibility with
+    the pre-reconciliation client, which never sent them.
+    """
 
     account_id: int
     default_category_id: int
     rows: list[ImportConfirmRow]
+    # Optional metadata for the new ``import_batches`` header. The frontend
+    # echoes ``file_name`` and ``source_format`` from the preview response;
+    # the service skips batch creation if either is omitted.
+    file_name: str | None = None
+    source_format: str | None = None  # 'csv' or 'ofx'
 
     model_config = ConfigDict(extra="forbid")
 

@@ -193,8 +193,11 @@ async def test_ofx_preview_validates_account_id_present(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_reconcile_returns_501_when_authenticated(session_factory):
-    """Reconcile stub returns 501."""
+async def test_reconcile_returns_404_when_batch_missing(session_factory):
+    """L3.2 Wave 2B: the stub became a real handler. A reconcile call
+    against a non-existent batch ID now returns 404 (the org-scoped
+    ``NotFoundError`` surface). The previous 501 contract test has been
+    repurposed -- the endpoint is no longer a stub."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     payload = {
@@ -203,9 +206,8 @@ async def test_reconcile_returns_501_when_authenticated(session_factory):
         ],
     }
     with TestClient(app) as client:
-        resp = client.post("/api/v1/import/42/reconcile", json=payload)
-    assert resp.status_code == 501
-    assert "not implemented" in resp.json()["detail"].lower()
+        resp = client.post("/api/v1/import/9999999/reconcile", json=payload)
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

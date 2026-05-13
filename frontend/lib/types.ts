@@ -523,3 +523,76 @@ export interface AnalyticsResponse {
   top_orgs_by_tx_volume: OrgTxVolume[];
   dormant_orgs: DormantOrg[];
 }
+
+// L3.2 Wave 2B: post-import reconciliation inbox types.
+//
+// Mirrors the Pydantic shapes in
+// ``backend/app/schemas/import_reconciliation.py``. Keep field names
+// in lock-step with the backend; the recon UI is the only consumer.
+
+export type ReconciliationState =
+  | "pending_review"
+  | "matched"
+  | "unmatched"
+  | "skipped"
+  | "edited"
+  | "accepted"
+  | "rejected";
+
+export type ImportSourceFormat = "csv" | "ofx";
+
+export interface ImportBatchHeader {
+  id: number;
+  account_id: number;
+  source_format: ImportSourceFormat;
+  file_name: string;
+  created_at: string;
+  created_by_user_id: number;
+  status: "open" | "closed";
+  total_rows: number;
+  pending_count: number;
+}
+
+export interface ReconciliationRow {
+  transaction_id: number;
+  date: string;
+  description: string;
+  amount: string;
+  type: "income" | "expense";
+  reconciliation_state: ReconciliationState;
+  fitid: string | null;
+  linked_transaction_id: number | null;
+  duplicate_warning: boolean;
+  duplicate_warning_target: number | null;
+}
+
+export interface ImportBatchDetail {
+  batch: ImportBatchHeader;
+  rows: ReconciliationRow[];
+}
+
+export interface ReconciliationEdits {
+  description?: string;
+  amount?: string;
+  date?: string;
+  category_id?: number;
+}
+
+export interface ReconciliationTransition {
+  transaction_id: number;
+  to_state: ReconciliationState;
+  edits?: ReconciliationEdits;
+  match_with_transaction_id?: number;
+}
+
+export interface ReconcileBatchRequest {
+  transitions: ReconciliationTransition[];
+}
+
+export interface ReconcileBatchResponse {
+  import_id: number;
+  transitioned: number[];
+  errors: { transaction_id: number; error: string }[];
+  remaining_pending: number;
+  batch_status: "open" | "closed";
+}

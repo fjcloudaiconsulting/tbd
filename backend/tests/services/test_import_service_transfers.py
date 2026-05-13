@@ -1031,7 +1031,7 @@ async def test_create_transfer_pair_locks_accounts_in_sorted_order(
         call_log.append(("lock_account", account_id))
         return await real_get_account(db, account_id, org_id)
 
-    async def spy_create(db, org_id, body, *, is_imported=False):
+    async def spy_create(db, org_id, body, *, is_imported=False, fitid=None):
         call_log.append(("create_no_commit", body.account_id))
         return await real_create(db, org_id, body, is_imported=is_imported)
 
