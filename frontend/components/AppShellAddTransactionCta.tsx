@@ -1,48 +1,77 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
-import { Plus } from "lucide-react";
+import { ArrowLeftRight, ChevronDown, Plus, Receipt } from "lucide-react";
 
 import SlideInPanel from "@/components/floating/SlideInPanel";
 import TransactionForm from "@/components/floating/TransactionForm";
+import TransferForm from "@/components/floating/TransferForm";
 import { apiFetch } from "@/lib/api";
 import { btnPrimary } from "@/lib/styles";
 import type { Account, Category } from "@/lib/types";
 
 /**
- * AppShell-level "+ New Transaction" CTA.
+ * AppShell-level quick-add CTA.
  *
- * Replaces the floating Add Transaction FAB shipped in PR #193. The FAB
- * pattern was the wrong vernacular for an editorial-confident, planful
- * financial planner, the brass-action affordance now sits in the page
- * header alongside the existing chrome (Docs, theme toggle, trial
- * banner). One brass moment per region: this CTA owns it on the core
- * money routes.
+ * Two affordances side-by-side as a split button:
+ *   - Primary "+ New transaction" opens the Transaction panel directly
+ *     (one click, preserves prior behavior).
+ *   - Chevron toggles a small popover menu with two items:
+ *       1. New transaction
+ *       2. New transfer
+ *     The Transfer item opens a TransferForm panel that posts to the
+ *     existing POST /api/v1/transactions/transfer endpoint shipped
+ *     with L3.x Transfers (PRs #110-#118). No backend changes.
  *
- * Visibility: AppShell renders this only on the route allow-list (see
- * AppShell.tsx). No need to gate again here.
+ * UX rationale (Approach B variant — split button):
+ *   - Tabs inside the modal (Approach A) would force TransactionForm to
+ *     gain a transfer mode, duplicating the canonical
+ *     /transactions transfer flow inside a quick-entry surface that was
+ *     deliberately built single-purpose (see TransactionForm jsdoc).
+ *   - A plain dropdown that replaces the button (full Approach B)
+ *     regresses the most-common path (add an expense) from one click
+ *     to two.
+ *   - The split button keeps the dominant path one click, makes
+ *     Transfer one extra click and one tab-stop away, and scales for
+ *     future quick-types (Batch entry, recurring template, etc.) by
+ *     just appending menu items.
  *
- * Data refresh after submit: dispatches a `pfv:transaction-added`
- * window event. Pages that care about the post-write state (Dashboard,
- * Transactions, ...) subscribe and re-fetch their own data. Same
- * idiom as `auth:unauthenticated` in lib/api.ts. Decoupled, no prop
- * drilling, no RSC refresh that would skip client-side useEffect
- * fetches.
+ * Keyboard contract (focus order, top to bottom):
+ *   - Tab focuses the primary "New transaction" button.
+ *   - Tab again focuses the chevron toggle.
+ *   - Enter / Space on the chevron opens the menu and focuses item 1.
+ *   - Down / Up arrows cycle menu items.
+ *   - Enter / Space activates the focused item.
+ *   - Escape closes the menu and returns focus to the chevron.
+ *   - Tab from inside the menu closes it (menu is not a focus-trap;
+ *     the SlideInPanel that follows owns its own trap).
  *
- * Responsive label: at narrow viewports the visible label collapses
- * to icon-only, matching the AppShell header's other affordances
- * (Docs, theme toggle) which already collapse to icon-only on mobile.
- * The accessible name stays "New transaction" via aria-label so
- * screen readers and keyboard users keep the same affordance label
- * regardless of viewport.
+ * Data refresh after submit: same `pfv:transaction-added` window event
+ * for both Transaction and Transfer (the Transactions page already
+ * listens for it). Decoupled, no prop drilling.
  */
 
+type PanelKind = "transaction" | "transfer";
+
 export default function AppShellAddTransactionCta() {
-  const [open, setOpen] = useState(false);
+  const [openPanel, setOpenPanel] = useState<PanelKind | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loaded, setLoaded] = useState(false);
+
+  const menuId = useId();
+  const chevronRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const firstMenuItemRef = useRef<HTMLButtonElement>(null);
 
   const loadRefs = useCallback(async () => {
     try {
@@ -54,10 +83,9 @@ export default function AppShellAddTransactionCta() {
       setCategories(cats ?? []);
       setLoaded(true);
     } catch {
-      // Swallow ref-load errors silently. The form falls through to its
-      // empty state ("Create at least one account and one category...")
-      // and any submit error surfaces inline. The CTA itself stays
-      // clickable so the user can retry.
+      // Swallow ref-load errors silently. Forms fall through to their
+      // empty states and any submit error surfaces inline. The CTA
+      // itself stays clickable so the user can retry.
       setLoaded(true);
     }
   }, []);
@@ -66,37 +94,167 @@ export default function AppShellAddTransactionCta() {
     void loadRefs();
   }, [loadRefs]);
 
-  function handleOpen() {
-    // Refresh refs so newly-added accounts/categories show up next time
-    // the user pops the panel without a full page reload.
+  // Close the menu on outside click or Escape (when the menu is open
+  // but no panel is yet open). The SlideInPanel owns its own Escape
+  // handler once a panel is open.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleClick(e: MouseEvent) {
+      const target = e.target as Node;
+      if (
+        menuRef.current?.contains(target) ||
+        chevronRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setMenuOpen(false);
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setMenuOpen(false);
+        chevronRef.current?.focus();
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [menuOpen]);
+
+  // When the menu opens, focus the first item so keyboard users can
+  // drive it without a mouse trip. setTimeout 0 gives the menu a tick
+  // to mount before focus moves.
+  useEffect(() => {
+    if (menuOpen) {
+      const id = window.setTimeout(() => {
+        firstMenuItemRef.current?.focus();
+      }, 0);
+      return () => window.clearTimeout(id);
+    }
+  }, [menuOpen]);
+
+  function openTransaction() {
     void loadRefs();
-    setOpen(true);
+    setMenuOpen(false);
+    setOpenPanel("transaction");
+  }
+
+  function openTransfer() {
+    void loadRefs();
+    setMenuOpen(false);
+    setOpenPanel("transfer");
   }
 
   function handleTransactionAdded() {
-    // Pages subscribe to this on mount and re-fetch their own data. See
-    // AppShellAddTransactionCta jsdoc above for rationale.
     if (typeof window !== "undefined") {
       window.dispatchEvent(new Event("pfv:transaction-added"));
     }
   }
 
+  function onMenuKeyDown(e: ReactKeyboardEvent<HTMLDivElement>) {
+    // Tab closes the menu so focus doesn't slip into page chrome
+    // (theme toggle, sign-out) while the popover is still visually
+    // open. Returns focus to the chevron so the user can re-open
+    // without hunting for the trigger. Mirrors the WAI-ARIA menu
+    // pattern when the menu is not itself a navigation surface.
+    if (e.key === "Tab") {
+      e.preventDefault();
+      setMenuOpen(false);
+      chevronRef.current?.focus();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const items = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]',
+      ) ?? [],
+    );
+    if (items.length === 0) return;
+    const active = document.activeElement as HTMLElement | null;
+    const currentIndex = active ? items.indexOf(active as HTMLButtonElement) : -1;
+    const delta = e.key === "ArrowDown" ? 1 : -1;
+    const nextIndex =
+      currentIndex === -1
+        ? 0
+        : (currentIndex + delta + items.length) % items.length;
+    items[nextIndex].focus();
+  }
+
   return (
-    <>
-      <button
-        type="button"
-        onClick={handleOpen}
-        aria-label="New transaction"
-        data-testid="appshell-add-transaction-cta"
-        className={`${btnPrimary} inline-flex min-h-[44px] items-center gap-1.5`}
-      >
-        <Plus className="h-4 w-4" aria-hidden="true" />
-        <span className="hidden sm:inline">New transaction</span>
-      </button>
+    <div className="relative inline-flex">
+      <div className="inline-flex rounded-md shadow-sm">
+        <button
+          type="button"
+          onClick={openTransaction}
+          aria-label="New transaction"
+          data-testid="appshell-add-transaction-cta"
+          className={`${btnPrimary} inline-flex items-center gap-1.5 rounded-r-none border-r border-accent-text/20`}
+        >
+          <Plus className="h-4 w-4" aria-hidden="true" />
+          <span className="hidden sm:inline">New transaction</span>
+        </button>
+        <button
+          ref={chevronRef}
+          type="button"
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-label="More quick-add options"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          aria-controls={menuId}
+          data-testid="appshell-quick-add-menu-toggle"
+          className={`${btnPrimary} inline-flex min-w-[44px] items-center justify-center rounded-l-none px-2`}
+        >
+          <ChevronDown
+            className={`h-4 w-4 transition-transform ${menuOpen ? "rotate-180" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
+      </div>
+
+      {menuOpen && (
+        <div
+          ref={menuRef}
+          id={menuId}
+          role="menu"
+          aria-label="Quick-add options"
+          data-testid="appshell-quick-add-menu"
+          onKeyDown={onMenuKeyDown}
+          className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-md border border-border bg-surface shadow-lg"
+        >
+          <button
+            ref={firstMenuItemRef}
+            type="button"
+            role="menuitem"
+            onClick={openTransaction}
+            data-testid="appshell-quick-add-menu-transaction"
+            className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-text-primary hover:bg-surface-raised focus:bg-surface-raised focus:outline-none"
+          >
+            <Receipt className="h-4 w-4 text-text-muted" aria-hidden="true" />
+            <span>New transaction</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={openTransfer}
+            data-testid="appshell-quick-add-menu-transfer"
+            className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-text-primary hover:bg-surface-raised focus:bg-surface-raised focus:outline-none"
+          >
+            <ArrowLeftRight
+              className="h-4 w-4 text-text-muted"
+              aria-hidden="true"
+            />
+            <span>New transfer</span>
+          </button>
+        </div>
+      )}
 
       <SlideInPanel
-        open={open}
-        onClose={() => setOpen(false)}
+        open={openPanel === "transaction"}
+        onClose={() => setOpenPanel(null)}
         title="Add transaction"
         testId="add-transaction-panel"
       >
@@ -104,8 +262,10 @@ export default function AppShellAddTransactionCta() {
           <TransactionForm
             accounts={accounts}
             categories={categories}
-            onSaved={() => setOpen(false)}
-            onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])}
+            onSaved={() => setOpenPanel(null)}
+            onCategoryCreated={(cat) =>
+              setCategories((prev) => [...prev, cat])
+            }
             onTransactionAdded={handleTransactionAdded}
           />
         ) : (
@@ -114,7 +274,30 @@ export default function AppShellAddTransactionCta() {
           </div>
         )}
       </SlideInPanel>
-    </>
+
+      <SlideInPanel
+        open={openPanel === "transfer"}
+        onClose={() => setOpenPanel(null)}
+        title="Add transfer"
+        testId="add-transfer-panel"
+      >
+        {loaded ? (
+          <TransferForm
+            accounts={accounts}
+            categories={categories}
+            onSaved={() => setOpenPanel(null)}
+            onCategoryCreated={(cat) =>
+              setCategories((prev) => [...prev, cat])
+            }
+            onTransactionAdded={handleTransactionAdded}
+          />
+        ) : (
+          <div className="flex items-center justify-center py-12 text-sm text-text-muted">
+            Loading...
+          </div>
+        )}
+      </SlideInPanel>
+    </div>
   );
 }
 

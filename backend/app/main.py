@@ -12,17 +12,14 @@ from fastapi.responses import JSONResponse
 from app.middleware.request_context import RequestContextMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from app.config import settings as app_settings
 from app import redis_client
-from app.database import async_session, engine
-from app.models.subscription import Subscription
-from app.models.user import Organization
-from app.services import subscription_service
+from app.database import engine
 from app.logging import setup_logging
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_analytics, admin_audit, admin_orgs, admin_roles, admin_users, auth, budgets, categories, forecast, forecast_plans, import_router, onboarding, org_data, org_members, orgs, plans, recurring, settings, subscriptions, tags, transactions, users
+from app.routers import account_types, accounts, admin, admin_analytics, admin_audit, admin_orgs, admin_roles, admin_users, auth, budgets, categories, feedback, forecast, forecast_plans, import_router, onboarding, org_data, org_members, orgs, plans, recurring, settings, subscriptions, tags, transactions, users
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 # Setup JSON logging early so uvicorn's loggers are captured
@@ -31,20 +28,14 @@ setup_logging()
 logger = structlog.stdlib.get_logger()
 
 
-async def _backfill_subscriptions() -> None:
-    """Create trial subscriptions for any orgs that don't have one yet."""
-    async with async_session() as db:
-        result = await db.execute(
-            select(Organization.id).where(
-                ~Organization.id.in_(select(Subscription.org_id))
-            )
-        )
-        org_ids = [row[0] for row in result.all()]
-        for org_id in org_ids:
-            await subscription_service.create_trial(db, org_id)
-        if org_ids:
-            await db.commit()
-            await logger.ainfo("backfilled subscriptions", count=len(org_ids))
+# K8S-2 (L0.6): subscription backfill was previously run on every lifespan
+# boot via `_backfill_subscriptions`. Under multi-replica (HPA) that races
+# (every replica scanning + inserting on startup). It is now a one-shot
+# alembic data migration (`043_backfill_subscriptions`) made idempotent
+# via a per-row HAS_SUBSCRIPTION guard plus the UNIQUE(org_id) constraint
+# on the subscriptions table. The same backfill function is also reachable
+# as an ops utility at `backend/scripts/backfill_subscriptions.py` for
+# manual recovery.
 
 
 _ALEMBIC_INI_PATH = "/app/alembic.ini"
@@ -212,7 +203,11 @@ async def lifespan(app: FastAPI):
     # rebuild.
     if app_settings.app_env != "production":
         await _run_migrations()
-    await _backfill_subscriptions()
+    # NOTE: subscription backfill used to run here on every boot. It now
+    # lives in alembic migration 043_backfill_subscriptions, idempotent
+    # via a per-row HAS_SUBSCRIPTION existence check (plus the UNIQUE
+    # constraint on subscriptions.org_id). Multi-replica safe. For manual
+    # re-runs, see `backend/scripts/backfill_subscriptions.py`.
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
     yield
     await redis_client.close_client()
@@ -389,6 +384,7 @@ app.include_router(org_data.router)
 app.include_router(orgs.router)
 app.include_router(tags.router)
 app.include_router(tags.transaction_tags_router)
+app.include_router(feedback.router)
 
 
 @app.get("/health")

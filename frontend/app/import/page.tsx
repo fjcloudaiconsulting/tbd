@@ -340,7 +340,7 @@ function ImportPageContent() {
           </p>
           <Link
             href="/categories"
-            className={btnPrimary + " mt-4 inline-flex min-h-[44px] items-center sm:min-h-0"}
+            className={btnPrimary + " mt-4 inline-flex items-center sm:min-h-0"}
           >
             Go to Categories
           </Link>
@@ -385,7 +385,7 @@ function ImportPageContent() {
             <button
               onClick={handleUpload}
               disabled={!file || accountId === "" || loading}
-              className={btnPrimary + " min-h-[44px] w-full sm:min-h-0 sm:w-auto"}
+              className={btnPrimary + " w-full sm:min-h-0 sm:w-auto"}
             >
               {loading ? "Parsing..." : "Upload & Preview"}
             </button>
@@ -863,7 +863,7 @@ function ImportPageContent() {
             <button
               onClick={handleConfirm}
               disabled={defaultCategoryId === "" || activeRows.length === 0 || loading}
-              className={btnPrimary + " min-h-[44px] w-full sm:order-1 sm:min-h-0 sm:w-auto"}
+              className={btnPrimary + " w-full sm:order-1 sm:min-h-0 sm:w-auto"}
             >
               {loading
                 ? "Importing..."

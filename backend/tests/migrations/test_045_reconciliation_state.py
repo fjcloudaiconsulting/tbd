@@ -1,4 +1,4 @@
-"""Migration 043 -- reconciliation_state + import_batches.
+"""Migration 045 -- reconciliation_state + import_batches.
 
 Asserts the CANONICAL contract-locked invariants from
 ``specs/2026-05-12-l3-2-import-contracts.md`` §3.2 / §3.2.2:

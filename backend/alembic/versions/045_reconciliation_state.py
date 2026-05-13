@@ -1,8 +1,13 @@
 """Add reconciliation state machine + import_batches table (L3.2 Wave 2B).
 
-Revision ID: 043_reconciliation_state
-Revises: 042_users_onboarded_at
+Revision ID: 045_reconciliation_state
+Revises: 044_feedback_entries
 Create Date: 2026-05-13
+
+Rebased onto main 2026-05-13: chains off ``044_feedback_entries``
+(PR #250) instead of the original ``042_users_onboarded_at`` head.
+The migration body is unchanged; only the revision string + parent
+pointer move.
 
 Implements the persistence half of the Reconciliation State Machine
 contract (``specs/2026-05-12-l3-2-import-contracts.md`` §3 and §3.2).
@@ -47,7 +52,7 @@ Indexes:
     bank FITID.
 
 Post-upgrade invariant (regression-tested in
-``backend/tests/migrations/test_043_reconciliation_state.py``):
+``backend/tests/migrations/test_045_reconciliation_state.py``):
 
     SELECT COUNT(*) FROM transactions WHERE reconciliation_state IS NULL = 0
 
@@ -62,8 +67,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision: str = "043_reconciliation_state"
-down_revision: Union[str, None] = "042_users_onboarded_at"
+revision: str = "045_reconciliation_state"
+down_revision: Union[str, None] = "044_feedback_entries"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

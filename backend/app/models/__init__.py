@@ -27,6 +27,7 @@ from app.models.import_batch import (  # noqa: F401
     ImportBatchStatus,
     ImportSourceFormat,
 )
+from app.models.feedback import FeedbackCategory, FeedbackEntry  # noqa: F401
 
 __all__ = [
     "Base",
@@ -70,4 +71,6 @@ __all__ = [
     "ImportBatch",
     "ImportBatchStatus",
     "ImportSourceFormat",
+    "FeedbackCategory",
+    "FeedbackEntry",
 ]

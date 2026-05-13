@@ -23,6 +23,19 @@ const ACCT = {
   is_default: true,
 };
 
+const SAVINGS_ACCT = {
+  id: 2,
+  name: "Savings",
+  account_type_id: 2,
+  account_type_name: "Savings",
+  account_type_slug: "savings",
+  balance: 5000,
+  currency: "EUR",
+  is_active: true,
+  close_day: null,
+  is_default: false,
+};
+
 const CAT = {
   id: 10,
   name: "Groceries",
@@ -35,13 +48,15 @@ const CAT = {
   transaction_count: 0,
 };
 
-function setupRefs() {
+function setupRefs(opts: { withSecondAccount?: boolean } = {}) {
   const apiFetchMock = vi.mocked(apiFetch);
   apiFetchMock.mockReset();
+  const accounts = opts.withSecondAccount ? [ACCT, SAVINGS_ACCT] : [ACCT];
   apiFetchMock.mockImplementation(async (url: string) => {
-    if (url.startsWith("/api/v1/accounts")) return [ACCT] as never;
+    if (url.startsWith("/api/v1/accounts")) return accounts as never;
     if (url.startsWith("/api/v1/categories")) return [CAT] as never;
     if (url === "/api/v1/transactions") return { id: 99 } as never;
+    if (url === "/api/v1/transactions/transfer") return { id: 100 } as never;
     return null as never;
   });
   return apiFetchMock;
@@ -185,5 +200,206 @@ describe("AppShellAddTransactionCta component", () => {
     });
 
     dispatchSpy.mockRestore();
+  });
+});
+
+describe("AppShellAddTransactionCta quick-add menu", () => {
+  it("renders both the primary CTA and the chevron toggle", async () => {
+    setupRefs();
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    expect(
+      screen.getByTestId("appshell-add-transaction-cta"),
+    ).toBeInTheDocument();
+    const toggle = screen.getByTestId("appshell-quick-add-menu-toggle");
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-haspopup", "menu");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("chevron toggle meets the 44px touch-target floor on both axes", async () => {
+    setupRefs();
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    const toggle = screen.getByTestId("appshell-quick-add-menu-toggle");
+    // Both axes must clear 44px per DESIGN.md touch-target rule. The
+    // primary CTA's test above already asserts min-h-[44px]; the
+    // chevron has a smaller default footprint so we assert both.
+    expect(toggle.className).toContain("min-h-[44px]");
+    expect(toggle.className).toContain("min-w-[44px]");
+  });
+
+  it("opens the menu when the chevron is clicked and shows both items", async () => {
+    setupRefs();
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    expect(screen.queryByTestId("appshell-quick-add-menu")).toBeNull();
+    fireEvent.click(screen.getByTestId("appshell-quick-add-menu-toggle"));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("appshell-quick-add-menu"),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByTestId("appshell-quick-add-menu-transaction"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("appshell-quick-add-menu-transfer"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("appshell-quick-add-menu-toggle"),
+    ).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("clicking the Transfer menu item opens the transfer panel", async () => {
+    setupRefs({ withSecondAccount: true });
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    fireEvent.click(screen.getByTestId("appshell-quick-add-menu-toggle"));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("appshell-quick-add-menu-transfer"),
+      ).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("appshell-quick-add-menu-transfer"));
+    await waitFor(() => {
+      expect(screen.getByTestId("add-transfer-panel")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("dialog")).toHaveTextContent("Add transfer");
+    expect(screen.getByLabelText("From account")).toBeInTheDocument();
+    expect(screen.getByLabelText("To account")).toBeInTheDocument();
+  });
+
+  it("submitting the transfer form posts to the transfer endpoint and dispatches the refresh event", async () => {
+    const apiFetchMock = setupRefs({ withSecondAccount: true });
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    fireEvent.click(screen.getByTestId("appshell-quick-add-menu-toggle"));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("appshell-quick-add-menu-transfer"),
+      ).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("appshell-quick-add-menu-transfer"));
+    await waitFor(() => {
+      expect(screen.getByLabelText("To account")).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText("To account"), {
+      target: { value: String(SAVINGS_ACCT.id) },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "120.00" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => {
+      const call = apiFetchMock.mock.calls.find(
+        ([url]) => url === "/api/v1/transactions/transfer",
+      );
+      expect(call).toBeTruthy();
+    });
+    await waitFor(() => {
+      const calls = dispatchSpy.mock.calls
+        .map((c) => c[0])
+        .filter(
+          (e): e is Event =>
+            e instanceof Event && e.type === "pfv:transaction-added",
+        );
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    dispatchSpy.mockRestore();
+  });
+
+  it("closes the menu on Escape and returns focus to the chevron", async () => {
+    setupRefs();
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    fireEvent.click(screen.getByTestId("appshell-quick-add-menu-toggle"));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("appshell-quick-add-menu"),
+      ).toBeInTheDocument();
+    });
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Escape" });
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("appshell-quick-add-menu")).toBeNull();
+    });
+    expect(document.activeElement).toBe(
+      screen.getByTestId("appshell-quick-add-menu-toggle"),
+    );
+  });
+
+  it("Tab inside the menu closes it and returns focus to the chevron (P2 menu-Tab contract)", async () => {
+    setupRefs();
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    fireEvent.click(screen.getByTestId("appshell-quick-add-menu-toggle"));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("appshell-quick-add-menu-transaction"),
+      ).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByTestId("appshell-quick-add-menu-transaction"),
+      );
+    });
+    await act(async () => {
+      fireEvent.keyDown(screen.getByTestId("appshell-quick-add-menu"), {
+        key: "Tab",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("appshell-quick-add-menu")).toBeNull();
+    });
+    expect(document.activeElement).toBe(
+      screen.getByTestId("appshell-quick-add-menu-toggle"),
+    );
+  });
+
+  it("ArrowDown / ArrowUp move focus between menu items", async () => {
+    setupRefs();
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    fireEvent.click(screen.getByTestId("appshell-quick-add-menu-toggle"));
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("appshell-quick-add-menu-transaction"),
+      ).toBeInTheDocument();
+    });
+    // Auto-focus lands on item 1 after the open tick.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByTestId("appshell-quick-add-menu-transaction"),
+      );
+    });
+    fireEvent.keyDown(screen.getByTestId("appshell-quick-add-menu"), {
+      key: "ArrowDown",
+    });
+    expect(document.activeElement).toBe(
+      screen.getByTestId("appshell-quick-add-menu-transfer"),
+    );
+    fireEvent.keyDown(screen.getByTestId("appshell-quick-add-menu"), {
+      key: "ArrowUp",
+    });
+    expect(document.activeElement).toBe(
+      screen.getByTestId("appshell-quick-add-menu-transaction"),
+    );
   });
 });

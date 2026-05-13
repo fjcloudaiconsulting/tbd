@@ -436,7 +436,7 @@ export default function BatchMoveModal({
             disabled={
               targetId === null || submitting || previewing || mixedSelection
             }
-            className={`${btnPrimary} w-full sm:w-auto min-h-[44px]`}
+            className={`${btnPrimary} w-full sm:w-auto`}
           >
             {submitting ? "Moving..." : "Move"}
           </button>

@@ -11,6 +11,14 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2"
 
+    # SQLAlchemy connection pool sizing. Single-replica today: defaults
+    # are safe. Multi-replica future (HPA): each replica gets its own
+    # pool, so total concurrent DB connections = replicas * (db_pool_size
+    # + db_max_overflow). Keep the sum well under the managed DB's
+    # max_connections cap. Override via env vars when scaling horizontally.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+
     # Auth
     jwt_secret_key: str = "change-me-generate-a-real-secret"
     jwt_access_token_expire_minutes: int = 15
