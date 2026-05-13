@@ -36,6 +36,7 @@ from app.models.subscription import (
     SubscriptionStatus,
 )
 from app.models.user import Organization, User
+from app.services.admin_users_search_service import _normalize_like
 from app.services.exceptions import NotFoundError
 
 
@@ -122,12 +123,16 @@ async def list_subscriptions(
     if plan_filter:
         where_clauses.append(Plan.slug == plan_filter)
     if q:
-        pattern = f"%{q.strip()}%"
+        # Escape LIKE metacharacters so a raw query like ``%`` or ``_``
+        # can't widen the match. Reuses the helper from the cross-org
+        # user search (admin_users_search_service) to keep one source
+        # of truth for the escape rules.
+        pattern = f"%{_normalize_like(q.strip())}%"
         where_clauses.append(
             or_(
-                Organization.name.ilike(pattern),
-                Plan.slug.ilike(pattern),
-                Plan.name.ilike(pattern),
+                Organization.name.ilike(pattern, escape="\\"),
+                Plan.slug.ilike(pattern, escape="\\"),
+                Plan.name.ilike(pattern, escape="\\"),
             )
         )
 

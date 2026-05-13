@@ -102,13 +102,13 @@ function KpiStrip({ kpis }: { kpis: AdminSubscriptionKPIs }) {
       label: "MRR",
       value: `$${kpis.mock_mrr}`,
       isMock: true,
-      hint: "Mock — real payments not integrated yet (L2.2 parked)",
+      hint: "Mock, real payments not integrated yet (L2.2 parked)",
     },
     {
       label: "ARR",
       value: `$${kpis.mock_arr}`,
       isMock: true,
-      hint: "Mock — real payments not integrated yet (L2.2 parked)",
+      hint: "Mock, real payments not integrated yet (L2.2 parked)",
     },
   ];
   return (
@@ -261,7 +261,7 @@ export default function AdminSubscriptionsPage() {
 
       <p className="mb-4 text-sm text-text-muted">
         Cross-org subscription view. Revenue figures are mock until payments
-        ($0 — payments not live).
+        ($0, payments not live).
       </p>
 
       {error && (

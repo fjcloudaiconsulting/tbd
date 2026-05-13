@@ -181,7 +181,7 @@ export default function AdminSubscriptionDetailPage() {
       <p className="mb-6 text-sm text-text-muted">
         Read-only view. To change the plan, status, trial end, or grant
         feature overrides, use the org page linked above. Revenue figures
-        are mock ($0 — payments not live).
+        are mock ($0, payments not live).
       </p>
 
       {error && (

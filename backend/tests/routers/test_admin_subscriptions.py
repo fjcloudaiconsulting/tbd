@@ -313,9 +313,66 @@ async def test_detail_emits_durable_audit_with_target_org(session_factory):
         assert res.status_code == 200
         assert record.await_count == 1
         kwargs = record.await_args.kwargs
+        # Detail uses a distinct event type from list so the throttle
+        # doesn't suppress this row when an admin drills in within 60s
+        # of viewing the list.
+        assert kwargs["event_type"] == "admin.subscriptions.detail.viewed"
         assert kwargs["target_org_id"] == seeded["target_org_id"]
         assert kwargs["target_org_name"] == "Target Inc"
         assert kwargs["detail"]["view"] == "detail"
+
+
+@pytest.mark.asyncio
+async def test_list_audit_detail_does_not_leak_raw_query(session_factory):
+    """Privacy pin: ``q`` is NEVER stored in the durable audit detail.
+    Only ``query_length`` / ``has_query`` should be present. Mirrors
+    the admin_users.py contract."""
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    raw_q = "secret-search-string"
+    with patch(
+        "app.routers.admin_subscriptions._should_persist_audit",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "app.routers.admin_subscriptions.audit_service.record_audit_event",
+        new=AsyncMock(),
+    ) as record:
+        with TestClient(app) as client:
+            res = client.get(f"/api/v1/admin/subscriptions?q={raw_q}")
+        assert res.status_code == 200
+        kwargs = record.await_args.kwargs
+        filters = kwargs["detail"]["filters"]
+        assert "q" not in filters
+        assert filters["query_length"] == len(raw_q)
+        assert filters["has_query"] is True
+
+
+@pytest.mark.asyncio
+async def test_detail_audit_not_suppressed_after_recent_list_view(session_factory):
+    """The throttle is keyed on (event_type, actor); list and detail
+    use different event types, so a recent list view must not suppress
+    the detail audit row. We simulate by returning True for both calls
+    (the real throttle would, since the keys differ)."""
+    seeded = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with patch(
+        "app.routers.admin_subscriptions._should_persist_audit",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "app.routers.admin_subscriptions.audit_service.record_audit_event",
+        new=AsyncMock(),
+    ) as record:
+        with TestClient(app) as client:
+            assert client.get("/api/v1/admin/subscriptions").status_code == 200
+            assert client.get(
+                f"/api/v1/admin/subscriptions/{seeded['target_sub_id']}"
+            ).status_code == 200
+        assert record.await_count == 2
+        event_types = [c.kwargs["event_type"] for c in record.await_args_list]
+        assert event_types == [
+            "admin.subscriptions.viewed",
+            "admin.subscriptions.detail.viewed",
+        ]
 
 
 @pytest.mark.asyncio

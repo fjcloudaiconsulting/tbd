@@ -8,14 +8,22 @@ Auth via the platform ``subscriptions.view`` permission (superadmin
 short-circuits today; fine-grained roles can land later via L4.8
 without touching this file).
 
-Audit policy: every list and detail hit emits a structlog
-``admin.subscriptions.viewed`` event, but the durable
+Audit policy: every list hit emits a structlog
+``admin.subscriptions.viewed`` event and every detail hit emits
+``admin.subscriptions.detail.viewed``; the durable
 ``audit_events`` row is **rate-throttled** to at most once per admin
-per minute. Otherwise an admin paging through 5,000 subscriptions
-would write 100 audit rows for the same intent. The throttle uses
-Redis ``SET NX EX 60``; when Redis is unconfigured (dev / tests) we
-fall **open** — emit every call — so test assertions can pin the
-event without depending on Redis being up.
+per event-type per minute. List and detail use distinct event types
+so a recent list view does not suppress the detail audit row (the
+detail row carries ``target_org_id`` and must not be lost). Otherwise
+an admin paging through 5,000 subscriptions would write 100 audit
+rows for the same intent. The throttle uses Redis ``SET NX EX 60``;
+when Redis is unconfigured (dev / tests) we fall **open** — emit
+every call — so test assertions can pin the event without depending
+on Redis being up.
+
+Privacy: the raw search ``q`` is NEVER stored in the durable audit
+detail. Only ``query_length`` (and ``has_query``) go in, mirroring
+the cross-org user-search contract on ``admin_users.py``.
 """
 from __future__ import annotations
 
@@ -194,7 +202,10 @@ async def list_subscriptions(
             "filters": {
                 "status": status_filter,
                 "plan": plan,
-                "q": q,
+                # Privacy: never store raw ``q`` (see admin_users.py
+                # pattern). Only the length / presence flag is durable.
+                "query_length": len(q) if q else 0,
+                "has_query": bool(q),
                 "limit": limit,
                 "offset": offset,
             },
@@ -226,7 +237,11 @@ async def get_subscription_detail(
             detail="Subscription not found",
         )
     await _emit_view_audit(
-        event_type="admin.subscriptions.viewed",
+        # Distinct event type from the list handler so the throttle
+        # (keyed on event_type + actor) doesn't suppress this row when
+        # the admin drills in within 60s of the list view. The detail
+        # row carries ``target_org_id`` and must always be persisted.
+        event_type="admin.subscriptions.detail.viewed",
         actor=current_user,
         request=request,
         session_factory=session_factory,
