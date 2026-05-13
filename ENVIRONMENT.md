@@ -278,6 +278,25 @@ scope `RUN_AND_BUILD_TIME` and value `"true"`, then re-deploy
 (`doctl apps update ... --spec .do/app.yaml`). A fresh build is required;
 runtime-only changes do not bake into the JS bundle.
 
+### "NEXT_PUBLIC_* env set in App Platform spec but not visible in client bundle"
+
+Symptom: a `NEXT_PUBLIC_*` env is correctly declared in `.do/app.yaml`
+with `scope: RUN_AND_BUILD_TIME`, `doctl apps update` succeeds, the
+build finishes green, but `process.env.NEXT_PUBLIC_<NAME>` is still
+`undefined` in the served JS bundle (so the feature it gates stays
+hidden). Cause: `frontend/Dockerfile`'s build stage requires an explicit
+`ARG NEXT_PUBLIC_<NAME>` line for every `NEXT_PUBLIC_*` env. Without
+the `ARG`, the build stage does not see the env even though DO App
+Platform's `RUN_AND_BUILD_TIME` scope makes it available to the build
+CONTEXT. Next.js then inlines `undefined === "true"` as `false` and the
+feature stays off. Fix: adding a new `NEXT_PUBLIC_*` env requires
+(a) adding to `.do/app.yaml`, (b) adding an `ARG NEXT_PUBLIC_<NAME>`
+line (and matching `ENV NEXT_PUBLIC_<NAME>=$NEXT_PUBLIC_<NAME>` to
+promote it into the `npm run build` environment) to the build stage of
+`frontend/Dockerfile`, (c) `doctl apps update <APP_ID> --spec .do/app.yaml`
+to trigger a fresh build. This affects every `NEXT_PUBLIC_*` env, not
+just the SSO flag.
+
 ### "Audit log shows ingress IP not user IP in production"
 
 Symptom: `audit_events.ip_address` records `10.x.x.x` or DO ingress IPs.
