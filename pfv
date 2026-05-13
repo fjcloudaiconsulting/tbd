@@ -29,6 +29,68 @@ Commands:
 EOF
 }
 
+# Warn (do not block) when the host's frontend/package-lock.json hash
+# differs from the lockfile baked into the running frontend container.
+# Drift here is the symptom of:
+#   - `npm install` editing the lockfile on the host without a rebuild,
+#   - a teammate's branch landing new deps that haven't been installed
+#     into the running container,
+#   - the frontend image predating a `package-lock.json` change.
+#
+# Skips cleanly when docker / the frontend container / sha256sum is not
+# available so this stays a fast, non-blocking, dev-loop nicety.
+#
+# Override hooks (test seam): set PFV_DEPDRIFT_HOST_HASH and/or
+# PFV_DEPDRIFT_CONTAINER_HASH to bypass the live `sha256sum` and
+# `docker compose exec` calls. Set PFV_DEPDRIFT_SKIP=1 to disable the
+# guard entirely.
+check_frontend_dep_drift() {
+  [[ "${PFV_DEPDRIFT_SKIP:-}" == "1" ]] && return 0
+
+  local host_lock="frontend/package-lock.json"
+  [[ -f "$host_lock" ]] || return 0
+
+  local host_hash
+  if [[ -n "${PFV_DEPDRIFT_HOST_HASH:-}" ]]; then
+    host_hash="$PFV_DEPDRIFT_HOST_HASH"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    host_hash="$(sha256sum "$host_lock" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    host_hash="$(shasum -a 256 "$host_lock" | awk '{print $1}')"
+  else
+    return 0
+  fi
+
+  local container_hash
+  if [[ -n "${PFV_DEPDRIFT_CONTAINER_HASH:-}" ]]; then
+    container_hash="$PFV_DEPDRIFT_CONTAINER_HASH"
+  else
+    command -v docker >/dev/null 2>&1 || return 0
+    # Only probe when the frontend container is actually up; if it
+    # isn't running we have nothing to compare against and we don't
+    # want to pay the docker round-trip on every ./pfv invocation.
+    local fe_id
+    fe_id="$(docker compose ps -q frontend 2>/dev/null || true)"
+    [[ -n "$fe_id" ]] || return 0
+    container_hash="$(docker compose exec -T frontend sha256sum /app/package-lock.json 2>/dev/null | awk '{print $1}')"
+    [[ -n "$container_hash" ]] || return 0
+  fi
+
+  if [[ "$host_hash" != "$container_hash" ]]; then
+    cat >&2 <<EOF
+WARNING: host frontend/package-lock.json differs from the frontend
+container's installed lockfile. Frontend tests, type-check, and build
+may behave inconsistently until the container is rebuilt.
+
+Fix with either:
+  ./pfv rebuild
+  docker compose exec frontend npm ci
+
+(Set PFV_DEPDRIFT_SKIP=1 to silence this check.)
+EOF
+  fi
+}
+
 cmd_start() {
   echo "Starting PFV2 stack..."
   docker compose up --build -d
@@ -37,6 +99,7 @@ cmd_start() {
   echo "  App:      http://localhost"
   echo "  API:      http://localhost/api/"
   echo "  API docs: http://localhost/api/docs"
+  check_frontend_dep_drift
 }
 
 cmd_stop() {
@@ -47,6 +110,7 @@ cmd_stop() {
 cmd_restart() {
   echo "Restarting..."
   docker compose restart
+  check_frontend_dep_drift
 }
 
 cmd_rebuild() {
@@ -114,6 +178,9 @@ EOF
 
 cmd_logs() {
   local svc="${1:-}"
+  if [[ "$svc" == "frontend" ]]; then
+    check_frontend_dep_drift
+  fi
   if [[ -n "$svc" ]]; then
     shift
     docker compose logs "$svc" "$@"
@@ -124,10 +191,14 @@ cmd_logs() {
 
 cmd_status() {
   docker compose ps
+  check_frontend_dep_drift
 }
 
 cmd_shell() {
   local svc="${1:-backend}"
+  if [[ "$svc" == "frontend" ]]; then
+    check_frontend_dep_drift
+  fi
   docker compose exec "$svc" /bin/sh
 }
 

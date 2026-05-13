@@ -197,7 +197,7 @@ export default function SystemPlansPage() {
     <AppShell>
       <div className="flex flex-col gap-2 mb-8 sm:flex-row sm:items-center sm:justify-between">
         <h1 className={pageTitle + " mb-0"}>Plan Management</h1>
-        <button onClick={openCreate} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>+ New Plan</button>
+        <button onClick={openCreate} className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>+ New Plan</button>
       </div>
 
       {error && <p className={`${errorCls} mb-4`}>{error}</p>}
@@ -286,7 +286,7 @@ export default function SystemPlansPage() {
               >
                 Cancel
               </button>
-              <button type="submit" className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>{editing ? "Save" : "Create"}</button>
+              <button type="submit" className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>{editing ? "Save" : "Create"}</button>
             </div>
           </form>
         </div>

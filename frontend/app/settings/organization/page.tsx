@@ -494,7 +494,7 @@ export default function OrganizationSettingsPage() {
                     onClick={handleClosePeriod}
                     disabled={closingPeriod}
                     aria-busy={closingPeriod}
-                    className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                    className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
                   >
                     {closingPeriod && (
                       <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -558,7 +558,7 @@ export default function OrganizationSettingsPage() {
                   billingCycleDay === savedCycleDay
                 }
                 aria-busy={savingCycle}
-                className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2 sm:mt-[26px]`}
+                className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2 sm:mt-[26px]`}
               >
                 {savingCycle && (
                   <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -625,7 +625,7 @@ export default function OrganizationSettingsPage() {
                 <label className={label}>Value</label>
                 <input value={value} onChange={(e) => setValue(e.target.value)} className={`${input} w-full`} placeholder="value" />
               </div>
-              <button type="submit" className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Add</button>
+              <button type="submit" className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>Add</button>
             </form>
 
             {settings.length > 0 && (

@@ -898,7 +898,7 @@ export default function ForecastPlansClient({
             </div>
             <button
               type="submit"
-              className={`${btnPrimary} w-full min-h-[44px] sm:w-auto sm:min-h-0`}
+              className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}
             >
               Add
             </button>

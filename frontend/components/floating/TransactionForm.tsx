@@ -377,7 +377,7 @@ export default function TransactionForm({
         <button
           type="submit"
           disabled={submitting}
-          className={`${btnPrimary} min-h-[44px]`}
+          className={btnPrimary}
         >
           {submitting ? "Saving..." : "Save"}
         </button>

@@ -192,7 +192,7 @@ export default function AppShellAddTransactionCta() {
           onClick={openTransaction}
           aria-label="New transaction"
           data-testid="appshell-add-transaction-cta"
-          className={`${btnPrimary} inline-flex min-h-[44px] items-center gap-1.5 rounded-r-none border-r border-accent-text/20`}
+          className={`${btnPrimary} inline-flex items-center gap-1.5 rounded-r-none border-r border-accent-text/20`}
         >
           <Plus className="h-4 w-4" aria-hidden="true" />
           <span className="hidden sm:inline">New transaction</span>
@@ -206,7 +206,7 @@ export default function AppShellAddTransactionCta() {
           aria-expanded={menuOpen}
           aria-controls={menuId}
           data-testid="appshell-quick-add-menu-toggle"
-          className={`${btnPrimary} inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-l-none px-2`}
+          className={`${btnPrimary} inline-flex min-w-[44px] items-center justify-center rounded-l-none px-2`}
         >
           <ChevronDown
             className={`h-4 w-4 transition-transform ${menuOpen ? "rotate-180" : ""}`}

@@ -40,7 +40,7 @@ export default function GlobalError({
           <button
             type="button"
             onClick={() => reset()}
-            className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+            className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}
           >
             Try again
           </button>

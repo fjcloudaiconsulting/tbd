@@ -220,7 +220,7 @@ export default function BudgetsPage() {
             </button>
           )}
           {isCurrentPeriod && availableCategories.length > 0 && (
-            <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} min-h-[44px] sm:min-h-0`}>
+            <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} sm:min-h-0`}>
               {showForm ? "Cancel" : "+ Add Budget"}
             </button>
           )}
@@ -301,7 +301,7 @@ export default function BudgetsPage() {
               <label htmlFor="b-amount" className={label}>Monthly limit</label>
               <input id="b-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
             </div>
-            <button type="submit" className={`${btnPrimary} min-h-[44px] sm:min-h-0`}>Add</button>
+            <button type="submit" className={`${btnPrimary} sm:min-h-0`}>Add</button>
           </form>
         </div>
       )}

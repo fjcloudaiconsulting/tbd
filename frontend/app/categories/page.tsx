@@ -535,7 +535,7 @@ export default function CategoriesPage() {
                         <label htmlFor={`sub-desc-${master.id}`} className="sr-only">Description</label>
                         <input id={`sub-desc-${master.id}`} type="text" placeholder="Hint / description" value={newSubDesc} onChange={(e) => setNewSubDesc(e.target.value)} className={input} />
                       </div>
-                      <button type="submit" className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>Add</button>
+                      <button type="submit" className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>Add</button>
                     </form>
                   )}
 
