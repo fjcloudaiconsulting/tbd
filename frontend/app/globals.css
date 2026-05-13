@@ -239,6 +239,83 @@ a, button { transition: all 0.15s ease; }
   background-color: #f1f3f4;
 }
 
+/* /transactions/batch responsive table.
+   Under the `md` breakpoint (Tailwind default: 768px), collapse the
+   9-column spreadsheet into one stacked labeled card per row. Each
+   `<td>` exposes its column name through `data-label`, the head row
+   hides, and the `<tr>` becomes a block-level grid that pairs label
+   and field together. Tokens (border, surface-raised, text-muted)
+   stay theme-aware so light + dark both inherit cleanly. */
+@media (max-width: 767.98px) {
+  .batch-grid {
+    display: block;
+  }
+  .batch-grid__head {
+    /* Hide the header row but keep it in the a11y tree for screen
+       readers (visually hidden, not display:none). */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .batch-grid tbody {
+    display: block;
+  }
+  .batch-grid__row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    margin-bottom: 0.75rem;
+    background-color: var(--color-surface-raised);
+  }
+  .batch-grid__row:last-child {
+    margin-bottom: 0;
+  }
+  .batch-grid__row > td {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    width: auto !important;
+  }
+  .batch-grid__row > td::before {
+    content: attr(data-label);
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
+    margin-bottom: 0.25rem;
+  }
+  /* Span the full row width on cells that hold long inputs. */
+  .batch-grid__row > td[data-label="Description"],
+  .batch-grid__row > td[data-label="Account"],
+  .batch-grid__row > td[data-label="Category"],
+  .batch-grid__row > td[data-label="Result"] {
+    grid-column: span 2 / span 2;
+  }
+  .batch-grid__row > td[data-label="Row"] {
+    grid-column: span 2 / span 2;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .batch-grid__row > td[data-label="Row"]::before {
+    margin-bottom: 0;
+  }
+  .batch-grid__remove {
+    grid-column: span 2 / span 2;
+    text-align: right;
+  }
+}
+
 /* Honor user's reduced-motion preference. WCAG 2.2 AA + PRODUCT.md
    commitment. Disables animations, transitions, and smooth-scroll for
    anyone with the OS-level preference set. Placed last so it wins
