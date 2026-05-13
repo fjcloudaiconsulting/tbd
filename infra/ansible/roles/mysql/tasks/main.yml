@@ -72,6 +72,26 @@
     plugin: mysql_native_password
     state: present
 
+# MySQL treats host='%' and host='localhost' as distinct user rows. The
+# host='%' grant covers private-VPC App Platform clients connecting over
+# TCP, but it does NOT match `mysql -u pfv_app -h localhost` (UNIX socket)
+# or `mysql -u pfv_app -h 127.0.0.1` (TCP loopback) on the data droplet
+# itself, both fail with "Access denied". Adding the localhost grant lets
+# the operator drop into a `pfv_app` shell directly on pfv-data-01 without
+# tunnelling through the App Platform pod, which makes routine ops
+# (schema spot-checks, ad-hoc queries) much cheaper. Privileges mirror
+# the host='%' row exactly.
+- name: Create application MySQL user (host=localhost)
+  community.mysql.mysql_user:
+    login_user: root
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    name: "{{ mysql_app_user }}"
+    password: "{{ mysql_app_password }}"
+    host: localhost
+    priv: "{{ mysql_app_db }}.*:ALL"
+    plugin: mysql_native_password
+    state: present
+
 # Drop /root/.my.cnf AFTER all privileged mysql_user / mysql_db tasks complete.
 # The mysql client library reads /root/.my.cnf when present and authenticates
 # as the user listed there (mysql_backup), which does not have CREATE DATABASE
