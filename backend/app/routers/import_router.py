@@ -22,6 +22,7 @@ from app.schemas.import_schemas import (
 )
 from app.services import import_service
 from app.services.exceptions import ValidationError
+from app.services.import_ofx_service import parse_ofx
 from app.services.import_parser import ParseError, parse_csv
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -83,42 +84,32 @@ async def confirm_import(
 # org-scoping are wired so contract tests can assert them.
 
 
-@router.post(
-    "/ofx/preview",
-    response_model=ImportPreviewResponse,
-    status_code=501,
-)
+@router.post("/ofx/preview", response_model=ImportPreviewResponse)
 async def preview_ofx_import(
     file: UploadFile = File(...),
     account_id: int = Form(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """**STUB** — OFX preview endpoint, Wave 2 deliverable.
+    """Upload an OFX 1.x SGML / 2.x XML file and get a preview.
 
-    Contract: parses an OFX 1.x (SGML) or 2.x (XML) file, emits the same
-    ``ImportPreviewResponse`` shape as the CSV path with OFX-specific
-    extras (``fitid``, ``bank_id``, ``account_type_ofx``) on each row.
-
-    Frozen contract: see spec at
+    Same response shape as the CSV preview; OFX-only extras
+    (``fitid``, ``bank_id``, ``account_type_ofx``) populate the
+    nullable fields on each row. Contract spec at
     ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
-    §1 (OFX Parser Contract).
-
-    Wave 2 OFX Parser team owns implementation: pin ``ofxtools ~= 0.9.5``,
-    wrap parse in ``asyncio.wait_for(timeout=10)``, hard-fail at >10k
-    rows, never log raw OFX content.
+    §1. Bounds enforced in ``app.services.import_ofx_service``.
     """
-    # Touch ``current_user`` / ``db`` / ``account_id`` so static analyzers
-    # see them used and contract tests can verify the auth dependency
-    # fires (without actually reading the file body — the upload limit
-    # check is the OFX team's responsibility).
-    _ = (current_user.org_id, db, account_id, file.filename)
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "OFX import not implemented — see L3.2 dispatch "
-            "(specs/2026-05-12-l3-2-import-contracts.md §1)"
-        ),
+    raw = await file.read()
+    try:
+        parsed_rows = await parse_ofx(raw)
+    except ParseError as exc:
+        raise ValidationError(str(exc))
+    return await import_service.build_preview(
+        db,
+        org_id=current_user.org_id,
+        account_id=account_id,
+        file_name=file.filename or "unknown.ofx",
+        parsed_rows=parsed_rows,
     )
 
 

@@ -13,7 +13,15 @@ from decimal import Decimal, InvalidOperation
 
 @dataclass
 class ParsedRow:
-    """A single parsed transaction row from a bank export file."""
+    """A single parsed transaction row from a bank export file.
+
+    OFX-specific fields (``fitid``, ``bank_id``, ``account_type_ofx``) are
+    populated only by the OFX parser path; CSV-parsed rows leave them at
+    None. They ride through to ``ImportPreviewRow`` / ``ImportConfirmRow``
+    unchanged. See spec
+    ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
+    §1 for the wire-level contract.
+    """
 
     row_number: int
     date: date
@@ -23,6 +31,10 @@ class ParsedRow:
     counterparty: str | None = None
     transaction_type: str | None = None  # "Payment terminal", "iDEAL", "Online Banking"
     raw_data: dict = field(default_factory=dict)
+    # OFX-specific extras (NULL on CSV path).
+    fitid: str | None = None
+    bank_id: str | None = None
+    account_type_ofx: str | None = None  # CHECKING / SAVINGS / CREDITLINE / MONEYMRKT
 
 
 class ParseError(Exception):

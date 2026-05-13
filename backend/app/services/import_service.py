@@ -85,12 +85,37 @@ async def build_preview(
         for row in existing_result.all()
     }
 
+    # ── FITID-aware dedup (L3.2 OFX path) ───────────────────────────────
+    # Spec §2.1: when ``fitid`` is present on a parsed row, it overrides
+    # the description-based 5-tuple match. Banks guarantee FITID
+    # uniqueness within an account (OFX spec §11.4.4), so re-importing
+    # the same file is caught even if descriptions drift.
+    #
+    # ``transactions`` does not yet carry a ``fitid`` column (Wave 2B
+    # Reconciliation UI team owns that migration), so the cross-batch
+    # lookup is limited to in-file dedup today. The seen-set below
+    # catches the most common hand-edit / double-paste mistake: two
+    # rows in the same upload sharing a FITID.
+    seen_fitids: set[tuple[int, str]] = set()
+
     preview_rows: list[ImportPreviewRow] = []
     duplicate_count = 0
 
     for row in parsed_rows:
         dup_id = existing_map.get((row.date, row.amount, row.description))
         is_dup = dup_id is not None
+
+        # FITID arm of the dedup key (spec §2.1). When the parsed row
+        # carries a FITID and we've already seen the same
+        # (account_id, fitid) in this batch, mark the second occurrence
+        # as a duplicate regardless of date / amount / description drift.
+        row_fitid: str | None = getattr(row, "fitid", None)
+        if row_fitid:
+            fitid_key = (account_id, row_fitid)
+            if fitid_key in seen_fitids:
+                is_dup = True
+            else:
+                seen_fitids.add(fitid_key)
 
         # ── Smart-rules suggestion ──
         suggested_category_id, suggestion_source = await infer_category(
@@ -197,6 +222,10 @@ async def build_preview(
                 transfer_match_confidence=confidence,
                 pair_with_transaction_id=pair_with_id,
                 transfer_candidates=candidate_models,
+                # OFX-only extras (None on CSV path).
+                fitid=getattr(row, "fitid", None),
+                bank_id=getattr(row, "bank_id", None),
+                account_type_ofx=getattr(row, "account_type_ofx", None),
             )
         )
 

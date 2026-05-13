@@ -16,3 +16,4 @@ pyotp==2.9.0
 qrcode[pil]==8.0
 cryptography==44.0.3
 redis==5.2.1
+ofxtools~=0.9.5
