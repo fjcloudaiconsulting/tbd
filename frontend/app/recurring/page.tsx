@@ -89,24 +89,36 @@ export default function RecurringPage() {
 
   return (
     <AppShell>
-      <div className="mb-8 flex items-center justify-between">
-        <h1 className={`${pageTitle} mb-0`}>Recurring Transactions</h1>
-        {/* Generate Due cluster: the button materializes pending
-            occurrences whose next_due_date has already passed. The
-            HelpAnchor next to it deep-links to the /docs#recurring
-            section so the user can read the full explanation without
-            losing context (opens in a new tab). */}
-        <div className="flex items-center gap-1">
-          <button onClick={handleGenerate} className={btnSecondary}>
-            Generate Due
-          </button>
+      {/* Responsive header: title + HelpAnchor stay together in the
+          heading (inline-title variant from PR #242 expects the
+          HelpAnchor to be a sibling of the heading text). Generate
+          Due is a separate item in the flex row that drops to its
+          own row at <sm so the cluster doesn't overflow on mobile.
+          Pattern: vertical stack on mobile (flex-col), row +
+          space-between at sm+. */}
+      <header
+        data-testid="recurring-page-header"
+        className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <h1 className={`${pageTitle} mb-0 flex items-start gap-1`}>
+          Recurring Transactions
+          {/* HelpAnchor sits next to the title (not the button) so it
+              follows the inline-title variant contract and gives
+              every page the same "title + ?" reading order. Deep-
+              links to /docs#recurring. */}
           <HelpAnchor
             section="recurring"
-            label="Generate due"
+            label="Recurring transactions"
             variant="inline-title"
           />
-        </div>
-      </div>
+        </h1>
+        <button
+          onClick={handleGenerate}
+          className={`${btnSecondary} self-start sm:self-auto`}
+        >
+          Generate Due
+        </button>
+      </header>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
       {successMsg && <div className={`mb-6 ${successCls}`}>{successMsg}</div>}

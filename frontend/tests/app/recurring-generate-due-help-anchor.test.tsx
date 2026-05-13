@@ -56,7 +56,7 @@ function mockApi() {
   }) as never);
 }
 
-describe("RecurringPage — Generate Due HelpAnchor", () => {
+describe("RecurringPage — header layout + Generate Due HelpAnchor", () => {
   beforeEach(() => {
     vi.mocked(apiFetch).mockReset();
     vi.mocked(useAuth).mockReturnValue({
@@ -71,7 +71,7 @@ describe("RecurringPage — Generate Due HelpAnchor", () => {
     mockApi();
   });
 
-  it("renders a HelpAnchor next to the Generate Due button pointing at /docs#recurring", async () => {
+  it("renders a HelpAnchor next to the page title pointing at /docs#recurring", async () => {
     render(<RecurringPage />);
     await waitFor(() =>
       expect(
@@ -79,16 +79,16 @@ describe("RecurringPage — Generate Due HelpAnchor", () => {
       ).toBeInTheDocument(),
     );
 
-    // aria-label includes "Help: Generate due" so screen-reader users
-    // pick up the affordance association before the icon.
-    const helpLink = screen.getByRole("link", { name: /Help: Generate due/ });
+    // aria-label includes "Help: Recurring transactions" so screen-
+    // reader users pick up the topic association before the icon.
+    const helpLink = screen.getByRole("link", { name: /Help: Recurring transactions/ });
     expect(helpLink).toHaveAttribute("href", "/docs#recurring");
     expect(helpLink).toHaveAttribute("target", "_blank");
     expect(helpLink).toHaveAttribute("rel", "noopener noreferrer");
     expect(helpLink).toHaveAttribute("data-section", "recurring");
   });
 
-  it("uses the inline-title HelpAnchor variant (next to the page-title button cluster)", async () => {
+  it("uses the inline-title HelpAnchor variant (next to the page H1)", async () => {
     render(<RecurringPage />);
     await waitFor(() =>
       expect(
@@ -97,20 +97,55 @@ describe("RecurringPage — Generate Due HelpAnchor", () => {
     );
 
     const helpLink = screen.getByTestId("help-anchor");
-    // inline-title sits next to a page-title-level affordance and
-    // self-aligns to cap height of adjacent text. card-corner would
-    // absolutely position, which is wrong here — the surrounding flex
-    // row is not a relative card.
+    // inline-title self-aligns to cap height of adjacent heading
+    // text. card-corner would absolutely position, which is wrong
+    // here since the surrounding flex row is not a relative card.
     expect(helpLink).toHaveAttribute("data-variant", "inline-title");
   });
 
-  it("keeps the Generate Due button clickable next to the help icon", async () => {
+  it("nests the HelpAnchor inside the H1 alongside the title text", async () => {
+    // Geometric promise of the inline-title variant: the icon lives
+    // INSIDE the heading element so it tracks the title across
+    // breakpoints. If the HelpAnchor escaped to a sibling div, it
+    // would no longer wrap with the title on mobile and the mobile
+    // overflow regression would creep back in.
+    render(<RecurringPage />);
+    const heading = await screen.findByRole("heading", { name: /Recurring transactions/i, level: 1 });
+    const helpLink = screen.getByTestId("help-anchor");
+    expect(heading.contains(helpLink)).toBe(true);
+  });
+
+  it("stacks the header vertically on mobile and switches to a row at sm+", async () => {
+    render(<RecurringPage />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /Generate Due/ }),
+      ).toBeInTheDocument(),
+    );
+
+    const header = screen.getByTestId("recurring-page-header");
+    // Default (mobile) stacks the title cluster + Generate Due
+    // button vertically so the row never overflows on 375px-wide
+    // screens.
+    expect(header.className).toMatch(/\bflex-col\b/);
+    expect(header.className).toMatch(/\bgap-3\b/);
+    // sm+ flips to a row with the button right-aligned.
+    expect(header.className).toMatch(/\bsm:flex-row\b/);
+    expect(header.className).toMatch(/\bsm:items-center\b/);
+    expect(header.className).toMatch(/\bsm:justify-between\b/);
+  });
+
+  it("keeps the Generate Due button clickable as a sibling of the title", async () => {
     render(<RecurringPage />);
     const button = await screen.findByRole("button", { name: /Generate Due/ });
 
-    // The HelpAnchor is a sibling of the button inside the title-row
-    // flex cluster, not a wrapper, so the button stays a button.
+    // Button stays a real <button> (not wrapped by the HelpAnchor
+    // link), so the click handler still fires.
     expect(button.tagName).toBe("BUTTON");
     expect(button).not.toBeDisabled();
+    // self-start at <sm so the button doesn't stretch full-width on
+    // mobile; self-auto at sm+ so the row layout takes over.
+    expect(button.className).toMatch(/\bself-start\b/);
+    expect(button.className).toMatch(/\bsm:self-auto\b/);
   });
 });
