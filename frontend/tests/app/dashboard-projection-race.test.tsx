@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import DashboardPage from "@/app/dashboard/page";
 import { apiFetch } from "@/lib/api";
@@ -159,10 +159,14 @@ describe("DashboardPage — projection race protection", () => {
 
     // Now resolve May's stale promise. If the race fix is in place, the
     // late commit must be discarded; the tile must continue to show April.
-    resolveMay(mayStaleData);
-
-    // Flush microtasks + any setState propagation.
-    await new Promise((r) => setTimeout(r, 50));
+    // Wrap in act so any state updates that resolution triggers (even if
+    // they're discarded by the race guard) are flushed inside an act
+    // boundary, eliminating the "not wrapped in act(...)" warnings.
+    await act(async () => {
+      resolveMay(mayStaleData);
+      // Flush microtasks + any setState propagation.
+      await new Promise((r) => setTimeout(r, 50));
+    });
 
     // The hero MUST still show April's verdict, not May's.
     expect(screen.getByText(/ENDED OVER BUDGET/)).toBeInTheDocument();

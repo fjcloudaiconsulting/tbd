@@ -354,7 +354,7 @@ export default function AdminDashboardPage() {
       <div className="space-y-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-start gap-1">
               <h1 className="font-display text-2xl text-text-primary">Admin</h1>
               <HelpAnchor section="admin" label="Admin" />
             </div>

@@ -26,6 +26,8 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import AppShellAddTransactionCta, {
   shouldShowAddTransactionCta,
 } from "@/components/AppShellAddTransactionCta";
+import AppShellFooter from "@/components/AppShellFooter";
+import { Logo } from "@/components/brand/Logo";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import TrialBanner from "@/components/ui/TrialBanner";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -219,8 +221,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       {/* Dark sidebar — fixed height, never scrolls */}
       <aside ref={sidebarRef} className={`fixed inset-y-0 left-0 z-50 flex w-56 flex-col bg-sidebar-bg transition-transform duration-200 lg:relative lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
         <div className="flex items-center justify-between px-5 pt-5 pb-6">
-          <Link href="/dashboard" className="font-display text-lg font-semibold text-sidebar-text-bright">
-            TBD
+          <Link
+            href="/dashboard"
+            aria-label="The Better Decision — Dashboard"
+            className="inline-flex items-center text-sidebar-text-bright"
+          >
+            {/* Sidebar ground is dark; the muted Logo tone keeps the
+                lockup at slate-on-slate weight so it doesn't fight the
+                primary navigation for emphasis. */}
+            <Logo tone="muted" size="sm" short />
           </Link>
           <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-sidebar-muted hover:text-sidebar-text-bright lg:hidden">
             <X aria-hidden="true" className="h-5 w-5" strokeWidth={2} />
@@ -317,11 +326,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface px-4 sm:px-8">
+        {/* Header balances by right-aligning the action row on lg+ where
+            the menu button is hidden and the sidebar already carries the
+            brand. On mobile we keep `justify-between` so the menu button
+            anchors left and actions anchor right (addresses the
+            "AppShell Header Balance" backlog item). */}
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-surface px-4 sm:px-8 lg:justify-end">
           <button onClick={() => setSidebarOpen(true)} className="rounded-md p-2 text-text-muted hover:text-text-primary lg:hidden" aria-label="Open menu">
             <Menu aria-hidden="true" className="h-5 w-5" strokeWidth={2} />
           </button>
-          <div className="lg:hidden" />
           <div className="flex items-center gap-3">
             <TrialBanner user={user} />
             {shouldShowAddTransactionCta(pathname) && <AppShellAddTransactionCta />}
@@ -337,12 +350,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <main className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
-        <footer className="border-t border-border bg-surface px-4 sm:px-8 py-4">
-          <div className="flex items-center justify-between text-xs text-text-muted">
-            <span>The Better Decision</span>
-            <span>&copy; {new Date().getFullYear()}</span>
-          </div>
-        </footer>
+        <AppShellFooter />
       </div>
     </div>
   );

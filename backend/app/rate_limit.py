@@ -1,32 +1,51 @@
-"""Rate limiter shared across routers.
+"""Rate limiter and client-IP resolver shared across routers.
 
 The default ``slowapi.util.get_remote_address`` is wrong for this app's
 production topology. Two environments exist:
 
-1. **Local / docker-compose — nginx in front of backend.** nginx sets
-   ``X-Forwarded-For`` correctly. Uvicorn's ``--proxy-headers`` (trust
-   list: RFC 1918 + loopback; see ``backend/Dockerfile``) walks the
-   header right-to-left and resolves ``request.client.host`` to the real
-   client IP — spoof-resistant because the real upstream appends its
-   source to the chain.
-2. **Production — DigitalOcean App Platform.** DO's ingress puts the
+1. **Local / docker-compose - nginx in front of backend.** nginx sets
+   ``X-Forwarded-For $remote_addr`` (the immediate peer ONLY, NOT
+   ``$proxy_add_x_forwarded_for``). The chain backend sees is therefore
+   always controlled by our infrastructure - client-supplied XFF
+   chains are discarded at the edge. The backend resolves the real
+   client IP by walking the (sanitized) chain right-to-left, skipping
+   trusted-proxy hops, and returning the first non-trusted entry.
+2. **Production - DigitalOcean App Platform.** DO's ingress puts the
    real client IP in the custom ``do-connecting-ip`` header and fills
-   ``X-Forwarded-For`` with the DO ingress server's own IP. Uvicorn's
-   XFF parsing alone therefore resolves ``request.client.host`` to a DO
-   ingress IP, not the client — leaving the rate limiter effectively
-   global per ingress server. Docs:
+   ``X-Forwarded-For`` with the DO ingress server's own IP. The DO
+   ingress peer falls OUTSIDE our private-CIDR trust list (DO uses
+   its own runtime networking), so an XFF-only resolver cannot trust
+   anything in prod. When ``PFV_RUNTIME=app_platform`` is set in the
+   App Platform environment, the resolver consults
+   ``do-connecting-ip`` unconditionally as the primary source. This
+   is safe because (a) the header is only writable by DO's ingress
+   layer, (b) the env var is set by us (terraform / DO spec), not by
+   the request. Docs:
    https://docs.digitalocean.com/support/where-can-i-find-the-client-ip-address-of-a-request-connecting-to-my-app/
 
-The keying function below handles both. It consults ``do-connecting-ip``
-only when the direct TCP source is a trusted private IP (we're actually
-behind an upstream we control), so a caller that manages to hit the
-backend directly with a public source IP can't forge the header to
-bypass rate limits.
+Spoof resistance:
+
+- The XFF walk is right-to-left, not left-to-right. nginx appends the
+  immediate peer to the right (overwritten to ``$remote_addr`` in our
+  config), so the rightmost entries are our own infrastructure.
+  Walking from the right and stopping at the first non-trusted entry
+  returns the IP just outside our trust boundary - the real client.
+  Walking from the LEFT would return whatever the user-controllable
+  side put there, which is the textbook XFF-spoof CVE shape.
+- The XFF walk only runs when the direct TCP peer is itself a
+  trusted proxy. A caller reaching the backend over a public path
+  (bypassing our proxy) cannot trigger the walk, so they cannot
+  forge any value via XFF.
+- ``do-connecting-ip`` is honoured unconditionally only when
+  ``PFV_RUNTIME=app_platform`` is set. In any other runtime it is
+  ignored entirely (the trusted-peer gate from PR #82 no longer
+  applies because the XFF walk replaces it).
 """
 
 from __future__ import annotations
 
 import ipaddress
+import os
 from typing import Iterable
 
 from slowapi import Limiter
@@ -65,27 +84,75 @@ def _is_trusted_proxy(host: str | None) -> bool:
     return any(ip in net for net in _TRUSTED_PROXY_NETWORKS)
 
 
-def get_client_ip(request: Request) -> str:
-    """Resolve the real client IP for rate-limiting purposes.
+def _parse_xff(xff_header: str | None) -> list[str]:
+    """Split an ``X-Forwarded-For`` header into trimmed entries.
 
-    On DO App Platform: ``request.client.host`` after uvicorn's proxy
-    header processing is still the DO ingress IP (private), so we reach
-    for ``do-connecting-ip`` which DO populates with the actual client.
-    Elsewhere (dev behind nginx): ``do-connecting-ip`` is absent and
-    ``request.client.host`` already holds the resolved client IP.
-
-    The ``do-connecting-ip`` lookup is gated on the direct TCP source
-    being a trusted private IP to prevent header forgery by callers
-    that reach the backend over a public network path.
+    Returns an empty list when the header is absent or contains only
+    whitespace. Each entry has leading/trailing whitespace stripped.
     """
+    if not xff_header:
+        return []
+    return [entry.strip() for entry in xff_header.split(",") if entry.strip()]
+
+
+def _is_app_platform_runtime() -> bool:
+    """Read at call time (not import time) so tests using
+    ``monkeypatch.setenv`` see the change without reloading the module.
+    """
+    return os.environ.get("PFV_RUNTIME", "").lower() == "app_platform"
+
+
+def get_client_ip(request: Request) -> str:
+    """Resolve the real client IP for rate limiting and audit logging.
+
+    Resolution order:
+
+    1. **DO App Platform mode.** When ``PFV_RUNTIME=app_platform`` is
+       set, consult ``do-connecting-ip`` unconditionally. DO's ingress
+       is the only writer of that header in App Platform, and the env
+       var is set by us (not by the request) so this is not spoofable.
+    2. **XFF right-to-left walk** when the direct TCP peer is a
+       trusted proxy. The rightmost entry was appended by our own
+       nginx (set to ``$remote_addr``); walk leftward, skipping
+       trusted-proxy hops, and return the first non-trusted entry.
+       That is the IP immediately outside our trust boundary - the
+       real client. Returns ``request.client.host`` if every entry
+       in the chain is a trusted proxy.
+    3. **Direct peer** otherwise. A caller reaching the backend over
+       a public path is its own client IP; we refuse to honour any
+       forwarded-by headers in that case.
+    """
+    # 1. DO App Platform runtime: do-connecting-ip is authoritative.
+    if _is_app_platform_runtime():
+        do_ip = request.headers.get("do-connecting-ip")
+        if do_ip:
+            return do_ip
+        # Header missing - fall through to the standard path so
+        # platform health checks etc. still resolve sensibly.
+
     client = request.client
     client_host = client.host if client else None
+    peer_trusted = _is_trusted_proxy(client_host)
 
-    if _is_trusted_proxy(client_host):
+    # 2. Trusted peer + XFF chain: walk RIGHT-to-LEFT.
+    # nginx's ``X-Forwarded-For $remote_addr`` plus any intermediate
+    # proxies produce a chain where the rightmost entries are ours.
+    # The first non-trusted entry from the right is the real client.
+    if peer_trusted:
+        xff_entries = _parse_xff(request.headers.get("x-forwarded-for"))
+        for entry in reversed(xff_entries):
+            if not _is_trusted_proxy(entry):
+                return entry
+        # Every entry in the chain was a trusted proxy (or chain was
+        # empty). Fall back to ``do-connecting-ip`` for older DO
+        # deployments not yet running with PFV_RUNTIME set, then to
+        # the direct peer.
         do_ip = request.headers.get("do-connecting-ip")
         if do_ip:
             return do_ip
 
+    # 3. Direct public peer (or no client). Return the peer IP and
+    # refuse to honour any forwarded-by headers (they could be forged).
     return client_host or "127.0.0.1"
 
 

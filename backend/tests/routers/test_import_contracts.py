@@ -138,8 +138,14 @@ def _make_app(session_factory, *, authenticated: bool = True) -> FastAPI:
 
 
 @pytest.mark.asyncio
-async def test_ofx_preview_returns_501_when_authenticated(session_factory):
-    """OFX preview stub returns 501 with a pointer to the spec."""
+async def test_ofx_preview_rejects_malformed_with_400(session_factory):
+    """OFX preview rejects a structurally invalid file with 400.
+
+    Updated 2026-05-12 (L3.2 Wave 2A): the endpoint is now implemented
+    (see ``app.services.import_ofx_service``). A bare ``<OFX></OFX>``
+    body has no header, no STMTTRNRS and no transactions — ParseError
+    → 400 via the domain-exception shim, no stack trace leaked.
+    """
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -148,10 +154,11 @@ async def test_ofx_preview_returns_501_when_authenticated(session_factory):
             files={"file": ("test.ofx", io.BytesIO(b"<OFX></OFX>"), "application/x-ofx")},
             data={"account_id": "1"},
         )
-    assert resp.status_code == 501
+    assert resp.status_code == 400
     body = resp.json()
-    assert "not implemented" in body["detail"].lower()
-    assert "l3.2" in body["detail"].lower()
+    assert "ofx" in body["detail"].lower()
+    # No stack trace / no raw file content leaks.
+    assert "traceback" not in body["detail"].lower()
 
 
 @pytest.mark.asyncio
@@ -399,8 +406,15 @@ async def test_batch_validates_max_rows(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_suggestions_returns_501_when_authenticated(session_factory):
-    """Description-suggestions endpoint returns 501."""
+async def test_suggestions_returns_200_with_empty_payload_for_seeded_user(
+    session_factory,
+):
+    """Description-suggestions endpoint is now implemented (L3.2 Wave 2A).
+
+    With no transactions seeded for the contract user, the endpoint
+    returns 200 with an empty suggestions list — confirming the
+    handler is no longer the 501 stub but is wired to the service.
+    """
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -408,8 +422,9 @@ async def test_suggestions_returns_501_when_authenticated(session_factory):
             "/api/v1/transactions/suggestions/descriptions",
             params={"type": "expense", "q": "alb", "limit": 10},
         )
-    assert resp.status_code == 501
-    assert "not implemented" in resp.json()["detail"].lower()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"suggestions": []}
 
 
 @pytest.mark.asyncio
@@ -466,7 +481,7 @@ async def test_suggestions_validates_max_limit(session_factory):
 
 @pytest.mark.asyncio
 async def test_suggestions_q_omitted_is_valid_at_contract_layer(session_factory):
-    """When q is omitted, request shape is valid (server returns 501)."""
+    """When q is omitted, request shape is valid (server returns 200)."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
@@ -474,8 +489,10 @@ async def test_suggestions_q_omitted_is_valid_at_contract_layer(session_factory)
             "/api/v1/transactions/suggestions/descriptions",
             params={"type": "income"},
         )
-    # 501, not 422 — q is optional per contract.
-    assert resp.status_code == 501
+    # 200, not 422 — q is optional per contract; the live handler
+    # returns an empty list when the org has no transactions seeded.
+    assert resp.status_code == 200
+    assert resp.json() == {"suggestions": []}
 
 
 # ── OpenAPI surface check ───────────────────────────────────────────────────

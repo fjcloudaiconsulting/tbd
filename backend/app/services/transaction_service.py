@@ -14,7 +14,7 @@ import datetime
 from decimal import Decimal
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -1708,7 +1708,26 @@ async def list_transactions(
     if account_id is not None:
         q = q.where(Transaction.account_id == account_id)
     if category_id is not None:
-        q = q.where(Transaction.category_id == category_id)
+        # Master-includes-subs semantics: the /transactions filter
+        # dropdown lists masters and subs flat, so a user picking a
+        # master expects every row in that bucket (direct hits AND
+        # rows tagged with any of the master's subcategories). Subs
+        # remain exact-match (one-directional inclusion). Regression
+        # guard for the 2026-05-13 user report that the category
+        # filter "did not filter anything".
+        sub_ids_q = (
+            select(Category.id)
+            .where(
+                Category.org_id == org_id,
+                Category.parent_id == category_id,
+            )
+        )
+        q = q.where(
+            or_(
+                Transaction.category_id == category_id,
+                Transaction.category_id.in_(sub_ids_q),
+            )
+        )
     if tx_type is not None:
         q = q.where(Transaction.type == TransactionType(tx_type))
     if status is not None:

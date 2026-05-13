@@ -1,0 +1,223 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`<AppShellFooter /> > snapshot stays stable in dark + light > app-footer-dark 1`] = `
+<footer
+  class="border-t border-border bg-surface px-4 sm:px-8 py-4"
+>
+  <div
+    class="mx-auto flex max-w-screen-xl flex-col gap-2 text-[11px] text-text-muted sm:flex-row sm:items-center sm:justify-between sm:text-xs"
+  >
+    <div
+      class="flex items-center gap-3"
+    >
+      <span
+        class="inline-flex items-center gap-2"
+      >
+        <svg
+          aria-hidden="true"
+          focusable="false"
+          height="16"
+          viewBox="0 0 32 32"
+          width="16"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M 9 8 L 18 16 L 9 24"
+            fill="none"
+            opacity="0.55"
+            stroke="var(--color-text-muted)"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2.5"
+          />
+          <path
+            d="M 14 8 L 23 16 L 14 24"
+            fill="none"
+            opacity="1"
+            stroke="var(--color-text-muted)"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2.5"
+          />
+        </svg>
+        <span
+          aria-label="The Better Decision"
+          class="font-display font-semibold tracking-tight text-text-muted"
+        >
+          The Better Decision
+        </span>
+      </span>
+      <span
+        class="inline-flex items-center gap-1"
+      >
+        <span
+          aria-hidden="true"
+        >
+          ©
+        </span>
+        <span>
+          2026
+        </span>
+      </span>
+    </div>
+    <nav
+      aria-label="App footer"
+      class="flex flex-wrap items-center gap-x-2 gap-y-1"
+    >
+      <a
+        class="hover:text-text-primary"
+        href="/privacy"
+      >
+        Privacy
+      </a>
+      <span
+        aria-hidden="true"
+        class="text-text-muted/60"
+      >
+        ·
+      </span>
+      <a
+        class="hover:text-text-primary"
+        href="/terms"
+      >
+        Terms
+      </a>
+      <span
+        aria-hidden="true"
+        class="text-text-muted/60"
+      >
+        ·
+      </span>
+      <a
+        class="hover:text-text-primary"
+        href="/docs"
+      >
+        Help
+      </a>
+      <span
+        aria-hidden="true"
+        class="text-text-muted/60"
+      >
+        ·
+      </span>
+      <a
+        class="hover:text-text-primary"
+        href="mailto:hello@thebetterdecision.com"
+      >
+        hello@thebetterdecision.com
+      </a>
+    </nav>
+  </div>
+</footer>
+`;
+
+exports[`<AppShellFooter /> > snapshot stays stable in dark + light > app-footer-light 1`] = `
+<footer
+  class="border-t border-border bg-surface px-4 sm:px-8 py-4"
+>
+  <div
+    class="mx-auto flex max-w-screen-xl flex-col gap-2 text-[11px] text-text-muted sm:flex-row sm:items-center sm:justify-between sm:text-xs"
+  >
+    <div
+      class="flex items-center gap-3"
+    >
+      <span
+        class="inline-flex items-center gap-2"
+      >
+        <svg
+          aria-hidden="true"
+          focusable="false"
+          height="16"
+          viewBox="0 0 32 32"
+          width="16"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M 9 8 L 18 16 L 9 24"
+            fill="none"
+            opacity="0.55"
+            stroke="var(--color-text-muted)"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2.5"
+          />
+          <path
+            d="M 14 8 L 23 16 L 14 24"
+            fill="none"
+            opacity="1"
+            stroke="var(--color-text-muted)"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2.5"
+          />
+        </svg>
+        <span
+          aria-label="The Better Decision"
+          class="font-display font-semibold tracking-tight text-text-muted"
+        >
+          The Better Decision
+        </span>
+      </span>
+      <span
+        class="inline-flex items-center gap-1"
+      >
+        <span
+          aria-hidden="true"
+        >
+          ©
+        </span>
+        <span>
+          2026
+        </span>
+      </span>
+    </div>
+    <nav
+      aria-label="App footer"
+      class="flex flex-wrap items-center gap-x-2 gap-y-1"
+    >
+      <a
+        class="hover:text-text-primary"
+        href="/privacy"
+      >
+        Privacy
+      </a>
+      <span
+        aria-hidden="true"
+        class="text-text-muted/60"
+      >
+        ·
+      </span>
+      <a
+        class="hover:text-text-primary"
+        href="/terms"
+      >
+        Terms
+      </a>
+      <span
+        aria-hidden="true"
+        class="text-text-muted/60"
+      >
+        ·
+      </span>
+      <a
+        class="hover:text-text-primary"
+        href="/docs"
+      >
+        Help
+      </a>
+      <span
+        aria-hidden="true"
+        class="text-text-muted/60"
+      >
+        ·
+      </span>
+      <a
+        class="hover:text-text-primary"
+        href="mailto:hello@thebetterdecision.com"
+      >
+        hello@thebetterdecision.com
+      </a>
+    </nav>
+  </div>
+</footer>
+`;

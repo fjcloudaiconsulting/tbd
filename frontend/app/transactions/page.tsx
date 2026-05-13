@@ -18,6 +18,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
 import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
 import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
+import DescriptionAutocomplete from "@/components/transactions/DescriptionAutocomplete";
 import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
 import {
   FILTERS_KEY_TRANSACTIONS,
@@ -921,7 +922,7 @@ function TransactionsPageContent() {
         </div>
       )}
       <div className="mb-8 flex items-center justify-between">
-        <div className="flex items-center gap-1">
+        <div className="flex items-start gap-1">
           <h1 className={`${pageTitle} mb-0`}>Transactions</h1>
           <HelpAnchor section="transactions" label="Transactions" />
         </div>
@@ -1012,7 +1013,34 @@ function TransactionsPageContent() {
             )}
             <div>
               <label htmlFor="tx-desc" className={label}>Description</label>
-              <input id="tx-desc" type="text" required={formMode === "transaction"} placeholder={formMode === "transfer" ? "Auto: Transfer from X to Y" : "What was it for?"} value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
+              {formMode === "transaction" ? (
+                <DescriptionAutocomplete
+                  id="tx-desc"
+                  type={formType}
+                  value={formDescription}
+                  onChange={setFormDescription}
+                  onPick={(s) => {
+                    // Pre-fill category from the most-common pair for
+                    // this description, but only if the user has not
+                    // already chosen one. Matches the spec's "optional
+                    // pre-populate" rule for the category hint.
+                    if (formCategoryId === "") {
+                      setFormCategoryId(s.category_id);
+                    }
+                  }}
+                  placeholder="What was it for?"
+                  required
+                />
+              ) : (
+                <input
+                  id="tx-desc"
+                  type="text"
+                  placeholder="Auto: Transfer from X to Y"
+                  value={formDescription}
+                  onChange={(e) => setFormDescription(e.target.value)}
+                  className={input}
+                />
+              )}
             </div>
             <div>
               <label htmlFor="tx-amount" className={label}>Amount</label>

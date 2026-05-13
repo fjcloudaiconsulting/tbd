@@ -597,7 +597,7 @@ export default function ForecastPlansClient({
     <AppShell>
       {/* Header */}
       <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-1">
+        <div className="flex items-start gap-1">
           <h1 className={`${pageTitle} mb-0`}>Forecast Plans</h1>
           <HelpAnchor section="forecast-plans" label="Forecast Plans" />
         </div>
