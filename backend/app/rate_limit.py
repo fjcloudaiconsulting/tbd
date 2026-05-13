@@ -48,8 +48,13 @@ import ipaddress
 import os
 from typing import Iterable
 
+import structlog
 from slowapi import Limiter
 from starlette.requests import Request
+
+from app.config import settings
+
+logger = structlog.stdlib.get_logger()
 
 
 # Kept in lockstep with ``--forwarded-allow-ips`` in backend/Dockerfile,
@@ -156,4 +161,44 @@ def get_client_ip(request: Request) -> str:
     return client_host or "127.0.0.1"
 
 
-limiter = Limiter(key_func=get_client_ip)
+def _build_limiter() -> Limiter:
+    """Construct the slowapi ``Limiter`` with Redis-backed storage when
+    ``settings.redis_url`` is configured, else fall back to in-memory.
+
+    Cross-replica accuracy (K8S-1, L0.6 audit). slowapi's default
+    in-memory storage keeps counters per-process, so once we scale
+    horizontally each replica enforces its own private budget. Pointing
+    the limiter at the same Redis the rest of the app already uses
+    (see ``redis_client.py``) makes the budget shared across replicas.
+
+    Storage shape: ``storage_uri="redis://..."`` is passed to the
+    ``Limiter`` constructor. slowapi delegates to ``limits`` which
+    instantiates its own Redis client from the URI. The app's
+    ``redis_client.get_client()`` is not directly reused because the
+    ``slowapi.Limiter`` constructor (v0.1.9) accepts only a URI string
+    plus ``storage_options: Dict[str, str]``, not an already-built
+    client/pool.
+
+    Fallback: if ``settings.redis_url`` is empty (local dev without the
+    compose Redis service), we keep the in-memory storage and warn so
+    the gap is visible in logs. Production / compose always set the URL.
+    """
+    redis_url = settings.redis_url
+    if redis_url:
+        logger.info(
+            "rate_limit.storage",
+            backend="redis",
+            multi_replica_safe=True,
+        )
+        return Limiter(key_func=get_client_ip, storage_uri=redis_url)
+
+    logger.warning(
+        "rate_limit.storage",
+        backend="memory",
+        multi_replica_safe=False,
+        reason="settings.redis_url empty; per-replica counters only",
+    )
+    return Limiter(key_func=get_client_ip)
+
+
+limiter = _build_limiter()
