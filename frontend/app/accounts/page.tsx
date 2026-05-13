@@ -341,9 +341,17 @@ export default function AccountsPage() {
       {fetching ? (
         <Spinner />
       ) : (
-        <div className="flex flex-col gap-6">
+        // Layout: stacks vertically on mobile/tablet (default flex-col),
+        // splits into a 1/3 + 2/3 grid at lg+ so the short Account Types
+        // table no longer leaves a wide whitespace band above the
+        // Accounts list. Items align to start so the Types card keeps its
+        // intrinsic height instead of stretching to match Accounts.
+        <div
+          data-testid="accounts-page-grid"
+          className="flex flex-col gap-6 lg:grid lg:grid-cols-3 lg:items-start lg:gap-6"
+        >
           {/* Account Types */}
-          <div className={card}>
+          <div className={`${card} lg:col-span-1`}>
             <div className={cardHeader}>
               <h2 className={cardTitle}>Account Types</h2>
             </div>
@@ -408,7 +416,7 @@ export default function AccountsPage() {
           </div>
 
           {/* Accounts */}
-          <div className={card}>
+          <div className={`${card} lg:col-span-2`}>
             <div className={`flex items-center justify-between ${cardHeader}`}>
               <h2 className={cardTitle}>Accounts</h2>
               {accountTypes.length > 0 && (

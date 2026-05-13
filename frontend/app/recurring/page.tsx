@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
+import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -88,12 +89,36 @@ export default function RecurringPage() {
 
   return (
     <AppShell>
-      <div className="mb-8 flex items-center justify-between">
-        <h1 className={`${pageTitle} mb-0`}>Recurring Transactions</h1>
-        <button onClick={handleGenerate} className={btnSecondary}>
+      {/* Responsive header: title + HelpAnchor stay together in the
+          heading (inline-title variant from PR #242 expects the
+          HelpAnchor to be a sibling of the heading text). Generate
+          Due is a separate item in the flex row that drops to its
+          own row at <sm so the cluster doesn't overflow on mobile.
+          Pattern: vertical stack on mobile (flex-col), row +
+          space-between at sm+. */}
+      <header
+        data-testid="recurring-page-header"
+        className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <h1 className={`${pageTitle} mb-0 flex items-start gap-1`}>
+          Recurring Transactions
+          {/* HelpAnchor sits next to the title (not the button) so it
+              follows the inline-title variant contract and gives
+              every page the same "title + ?" reading order. Deep-
+              links to /docs#recurring. */}
+          <HelpAnchor
+            section="recurring"
+            label="Recurring transactions"
+            variant="inline-title"
+          />
+        </h1>
+        <button
+          onClick={handleGenerate}
+          className={`${btnSecondary} self-start sm:self-auto`}
+        >
           Generate Due
         </button>
-      </div>
+      </header>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
       {successMsg && <div className={`mb-6 ${successCls}`}>{successMsg}</div>}
