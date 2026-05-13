@@ -3,6 +3,18 @@ import { render, screen } from "@testing-library/react";
 
 import AppShellFooter from "@/components/AppShellFooter";
 
+// FeedbackTrigger (mounted in the footer for the in-app feedback
+// widget) reads `useAuth()` to gate on logged-in users. The footer
+// itself does not depend on auth, but the trigger does — so these
+// tests mock the auth hook to return a logged-in user. Tests that
+// need the unauth path live in feedback-trigger.test.tsx.
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: () => ({
+    user: { id: 1, username: "tester", email: "t@x.io" },
+    loading: false,
+  }),
+}));
+
 describe("<AppShellFooter />", () => {
   it("renders the muted brand lockup with a copyright line", () => {
     const { container } = render(<AppShellFooter />);
