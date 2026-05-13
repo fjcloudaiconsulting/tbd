@@ -22,6 +22,7 @@ from app.models.tag import (  # noqa: F401
     TagDictionaryContributor,
     TransactionTag,
 )
+from app.models.feedback import FeedbackCategory, FeedbackEntry  # noqa: F401
 
 __all__ = [
     "Base",
@@ -62,4 +63,6 @@ __all__ = [
     "TransactionTag",
     "TagDictionary",
     "TagDictionaryContributor",
+    "FeedbackCategory",
+    "FeedbackEntry",
 ]

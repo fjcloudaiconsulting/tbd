@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Logo } from "@/components/brand/Logo";
+import FeedbackTrigger from "@/components/feedback/FeedbackTrigger";
 import CurrentYear from "@/components/ui/CurrentYear";
 import { BRAND_CONTACT_EMAIL } from "@/lib/brand";
 
@@ -47,6 +48,12 @@ export default function AppShellFooter() {
           <Link href="/docs" className="hover:text-text-primary">
             Help
           </Link>
+          <span aria-hidden className="text-text-muted/60">
+            &middot;
+          </span>
+          {/* In-app feedback widget trigger. Logged-in only — the
+              component returns null when there is no authed user. */}
+          <FeedbackTrigger />
           <span aria-hidden className="text-text-muted/60">
             &middot;
           </span>
