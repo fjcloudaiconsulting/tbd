@@ -106,6 +106,39 @@ PENDING_STATES: frozenset[str] = frozenset(
     }
 )
 
+# L3.2 Wave 2B (PR #247 P1 round 3) -- balance bookkeeping matrix.
+#
+# Imported SETTLED rows applied ``accounts.balance`` at confirm time
+# (via ``transaction_service.apply_balance``). Each reconciliation
+# state has to decide whether that balance application is still valid
+# in steady state:
+#
+#   ACCEPTED        keep   the row was right as-imported.
+#   PENDING_REVIEW  keep   user has not decided yet; balance reflects
+#                          the bank's view.
+#   UNMATCHED       keep   same as PENDING_REVIEW.
+#   EDITED          keep   ``_apply_edits`` already adjusted the cached
+#                          balance for the amount delta; the row's
+#                          amount IS the truth.
+#   MATCHED         drop   the matched-against row is the canonical
+#                          ledger entry, so this row's amount is a
+#                          duplicate that should not double-count.
+#   SKIPPED         drop   spec: "not counted in budgets/forecasts" --
+#                          and not in the cached balance either.
+#   REJECTED        drop   spec: "deleted entirely" -- soft-deleted
+#                          here for audit recoverability.
+#
+# The state transitions revert balance when moving keep -> drop, and
+# re-apply balance when moving drop -> keep (reopen path).
+_BALANCE_KEPT_STATES: frozenset[str] = frozenset(
+    {
+        ReconciliationState.PENDING_REVIEW.value,
+        ReconciliationState.UNMATCHED.value,
+        ReconciliationState.ACCEPTED.value,
+        ReconciliationState.EDITED.value,
+    }
+)
+
 
 # ── Batch creation (called from CSV / OFX confirm) ──────────────────────────
 
@@ -532,6 +565,90 @@ async def _apply_match(
     tx.linked_transaction_id = match_id
 
 
+# ── Balance bookkeeping (PR #247 round 3 P1) ────────────────────────────────
+
+
+async def _apply_balance_for_transition(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    tx: Transaction,
+    source_state: str,
+    target_state: str,
+) -> None:
+    """Revert or re-apply the row's balance contribution based on the
+    keep/drop matrix in ``_BALANCE_KEPT_STATES``.
+
+    Drop -> keep (e.g. SKIPPED -> PENDING_REVIEW reopen): re-apply
+    ``tx.amount`` to ``accounts.balance``. The row was previously
+    reverted at the drop transition; bringing it back into the
+    reportable set restores the original balance contribution.
+
+    Keep -> drop (e.g. ACCEPTED -> PENDING_REVIEW + SKIPPED, or
+    PENDING_REVIEW -> MATCHED): revert ``tx.amount`` from
+    ``accounts.balance``. The row stays in the DB for audit
+    recoverability but its amount no longer counts.
+
+    Same-side transitions (keep -> keep, drop -> drop) are no-ops --
+    the cached balance already reflects the right answer.
+
+    Only SETTLED rows touched the cached balance at import time, so
+    PENDING rows skip this dance entirely (their balance is virtual
+    until settlement, handled by the existing forecast/pending-delta
+    code path).
+
+    The account row is locked via ``get_account_for_update`` for the
+    duration of the revert/apply pair so two concurrent state
+    transitions on rows in the same account can't interleave and
+    double-mutate the cached balance. The lock is released when the
+    outer transaction commits.
+    """
+    if tx.status.value != "settled":
+        return
+
+    source_kept = source_state in _BALANCE_KEPT_STATES
+    target_kept = target_state in _BALANCE_KEPT_STATES
+    if source_kept == target_kept:
+        # Same side of the matrix; cached balance already correct.
+        return
+
+    # Imports here are deferred so the module-load order stays safe
+    # (transaction_service does NOT import reconciliation_service, but
+    # reconciliation_service is referenced from import_service which
+    # transaction_service touches transitively).
+    from app.services.transaction_service import (
+        apply_balance,
+        get_account_for_update,
+        revert_balance,
+    )
+
+    acct = await get_account_for_update(db, tx.account_id, org_id)
+    if source_kept and not target_kept:
+        # keep -> drop: revert the row's amount from the cached balance.
+        revert_balance(acct, tx.amount, tx.type)
+        direction = "revert"
+    else:
+        # drop -> keep: re-apply the row's amount.
+        apply_balance(acct, tx.amount, tx.type)
+        direction = "reapply"
+
+    # Forensic audit: structured JSON so the user can be told later
+    # "your skipped row on 2026-05-10 moved the cached balance by
+    # -12.50". The router-level ``import.reconcile.applied`` event
+    # summarises the request; this one is per-row.
+    await logger.ainfo(
+        "import.reconcile.balance_changed",
+        org_id=org_id,
+        transaction_id=tx.id,
+        account_id=tx.account_id,
+        source_state=source_state,
+        target_state=target_state,
+        direction=direction,
+        amount=str(tx.amount),
+        tx_type=tx.type.value,
+    )
+
+
 async def _reconcile_one(
     db: AsyncSession,
     *,
@@ -579,13 +696,27 @@ async def _reconcile_one(
 
     # Optional payload application (edits / match) BEFORE the state flip
     # so a payload validation error doesn't leave the row in a half-
-    # updated state.
+    # updated state. ``_apply_edits`` runs its own balance bookkeeping
+    # for amount deltas; ``_apply_match`` does NOT touch the balance --
+    # we handle the MATCHED revert below in the common path.
     if target_state == ReconciliationState.EDITED.value:
         await _apply_edits(db, org_id=org_id, tx=tx, transition=transition)
     elif target_state == ReconciliationState.MATCHED.value:
         await _apply_match(
             db, org_id=org_id, tx=tx, transition=transition
         )
+
+    # Balance bookkeeping (PR #247 round 3 P1). Only SETTLED rows ever
+    # touched the cached balance; PENDING rows are out of scope here.
+    # The state transition decides whether to revert or re-apply via
+    # the keep/drop matrix above.
+    await _apply_balance_for_transition(
+        db,
+        org_id=org_id,
+        tx=tx,
+        source_state=source_state,
+        target_state=target_state,
+    )
 
     tx.reconciliation_state = target_state
 
