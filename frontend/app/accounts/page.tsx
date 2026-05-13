@@ -353,7 +353,7 @@ export default function AccountsPage() {
                   <label htmlFor="type-name" className="sr-only">New type name</label>
                   <input id="type-name" type="text" required placeholder="New type name" value={typeName} onChange={(e) => setTypeName(e.target.value)} className={input} />
                 </div>
-                <button type="submit" className={`w-full min-h-[44px] sm:w-auto sm:min-h-0 ${btnPrimary}`}>Add</button>
+                <button type="submit" className={`w-full sm:w-auto sm:min-h-0 ${btnPrimary}`}>Add</button>
               </form>
               {/* Column header — visible only on sm+ where the row uses
                   the same grid template. Keeps the type name column
@@ -482,7 +482,7 @@ export default function AccountsPage() {
                   <p className="text-xs text-text-muted">
                     Your account&apos;s starting amount. Leave at 0 if you don&apos;t know.
                   </p>
-                  <button type="submit" className={`w-full min-h-[44px] sm:w-auto sm:min-h-0 ${btnPrimary}`}>Create Account</button>
+                  <button type="submit" className={`w-full sm:w-auto sm:min-h-0 ${btnPrimary}`}>Create Account</button>
                 </form>
               )}
               {/* Column header — visible only on md+ where the row uses

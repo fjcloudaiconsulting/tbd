@@ -4,8 +4,12 @@ export const input =
 export const label =
   "mb-1.5 block text-xs font-semibold uppercase tracking-[0.08em] text-text-muted";
 
+// `min-h-[44px]` is baked in to enforce the WCAG / DESIGN.md touch-target
+// floor across every primary button without per-call overrides. Callers
+// that intentionally collapse the floor on larger viewports may still
+// add `sm:min-h-0` (or `md:min-h-0`) after the token.
 export const btnPrimary =
-  "rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50";
+  "min-h-[44px] rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50";
 
 export const btnSecondary =
   "rounded-md border border-border px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-raised transition-colors";
