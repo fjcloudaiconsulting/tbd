@@ -34,7 +34,7 @@ function downloadSample() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "pfv-import-example.csv";
+  a.download = "tbd-import-example.csv";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
