@@ -620,7 +620,7 @@ export default function DashboardPage() {
     <AppShell>
       <TourAnchor id="dashboard.header" as="child">
         <div className="mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-1">
+          <div className="flex items-start gap-1">
             <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
             <HelpAnchor section="dashboard" label="Dashboard" />
           </div>
@@ -715,20 +715,24 @@ export default function DashboardPage() {
               therefore collapses (PR #226 regression visible on prod).
               Every other TourAnchor on this page already uses
               `as="child"`; this one was the lone exception. */}
+          {/* On Track row: the `?` lives INSIDE the tile's top-right
+              corner via a positioned overlay, mirroring the
+              AccountMonthEndForecast tile below. The previous layout
+              put HelpTooltip in a sibling flex column so it visibly
+              protruded outside the card border (owner bug report
+              2026-05-13). */}
           <TourAnchor id="dashboard.on-track-tile" as="child">
-            <div className="flex items-start gap-2">
-              <div className="flex-1">
-                <OnTrackTile
-                  forecastPlan={forecast}
-                  projection={forecastProjection}
-                  projectionFailed={projectionFailed}
-                  projectionLoading={projectionLoading}
-                  onRetryProjection={() => void loadForecastProjection()}
-                  isPastPeriod={isPastSelectedPeriod}
-                  isFuturePeriod={isFutureSelectedPeriod}
-                />
-              </div>
-              <div className="pt-3">
+            <div className="relative">
+              <OnTrackTile
+                forecastPlan={forecast}
+                projection={forecastProjection}
+                projectionFailed={projectionFailed}
+                projectionLoading={projectionLoading}
+                onRetryProjection={() => void loadForecastProjection()}
+                isPastPeriod={isPastSelectedPeriod}
+                isFuturePeriod={isFutureSelectedPeriod}
+              />
+              <div className="absolute right-3 top-3">
                 <HelpTooltip
                   content="On Track compares spent so far to your planned spending for this period. Watch warns at 95 percent, Over at 105 percent."
                   learnMoreSection="forecasts"

@@ -105,11 +105,11 @@ describe("DashboardPage — dashboard.on-track-tile TourAnchor shape (prod align
     mockEmptyDashboard();
   });
 
-  it("places data-tour-id directly on the flex row (not on a wrapping span)", async () => {
+  it("places data-tour-id directly on the on-track wrapper (not on a wrapping span)", async () => {
     const { container } = render(<DashboardPage />);
 
     // Wait for the dashboard to finish loading and render the on-track
-    // anchor. The flex row is the element we'll find by its tour id.
+    // anchor. The wrapper is the element we'll find by its tour id.
     await waitFor(() => {
       const tagged = container.querySelector('[data-tour-id="dashboard.on-track-tile"]');
       expect(tagged).not.toBeNull();
@@ -119,14 +119,16 @@ describe("DashboardPage — dashboard.on-track-tile TourAnchor shape (prod align
       '[data-tour-id="dashboard.on-track-tile"]',
     ) as HTMLElement;
 
-    // Must be the block flex container itself, not a wrapping span.
+    // Must be the block container itself, not a wrapping span.
+    // (PR #226 regression: TourAnchor without `as="child"` wraps the
+    // child in an inline span, which collapses block-level vertical
+    // margins from the parent `space-y-5` rule.)
     expect(tagged.tagName).toBe("DIV");
 
-    // And must carry the layout-critical flex classes that get
-    // collapsed when wrapped in an inline span.
-    expect(tagged.className).toContain("flex");
-    expect(tagged.className).toContain("items-start");
-    expect(tagged.className).toContain("gap-2");
+    // Wrapper must be positioned-relative so the in-card help marker
+    // can dock in the top-right corner via absolute positioning.
+    // Owner spec 2026-05-13: "tooltip inside the cards."
+    expect(tagged.className).toContain("relative");
 
     // Defensive: ensure no sibling span carries the tour id either.
     const taggedSpans = container.querySelectorAll(
