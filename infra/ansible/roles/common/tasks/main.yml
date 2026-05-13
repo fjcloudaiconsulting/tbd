@@ -9,7 +9,6 @@
   ansible.builtin.apt:
     name:
       - python3-pymysql       # required by community.mysql modules
-      - ufw
       - fail2ban
       - unattended-upgrades
       - apt-listchanges
@@ -36,40 +35,22 @@
     group: root
     mode: "0644"
 
-# --- ufw -------------------------------------------------------------------
-# DO Cloud Firewall already restricts inbound traffic at the network edge.
-# ufw is defence in depth on the host itself.
-- name: Allow OpenSSH through ufw
-  community.general.ufw:
-    rule: allow
-    name: OpenSSH
+# --- Firewall --------------------------------------------------------------
+# The DigitalOcean cloud firewall (pfv-data-fw) is the single source of truth
+# for inbound rules. Layering ufw on top risks silent drops during VPC NAT
+# translation (a TCP SYN can reach the droplet's VPC interface from a
+# rewritten source that ufw's CIDR rule no longer matches). We disable ufw
+# explicitly so this task is idempotent on existing droplets that already
+# had ufw enabled by an older revision of this role.
+- name: Check whether ufw is installed
+  ansible.builtin.stat:
+    path: /usr/sbin/ufw
+  register: common_ufw_binary
 
-- name: Allow MySQL from VPC through ufw
+- name: Disable ufw (rely solely on DO cloud firewall)
   community.general.ufw:
-    rule: allow
-    src: "{{ vpc_ip_range }}"
-    port: "3306"
-    proto: tcp
-
-- name: Allow Redis from VPC through ufw
-  community.general.ufw:
-    rule: allow
-    src: "{{ vpc_ip_range }}"
-    port: "6379"
-    proto: tcp
-
-- name: Set default ufw policies (deny incoming, allow outgoing)
-  community.general.ufw:
-    direction: "{{ item.direction }}"
-    policy: "{{ item.policy }}"
-  loop:
-    - { direction: incoming, policy: deny }
-    - { direction: outgoing, policy: allow }
-
-- name: Enable ufw
-  community.general.ufw:
-    state: enabled
-    logging: "on"
+    state: disabled
+  when: common_ufw_binary.stat.exists
 
 # --- fail2ban --------------------------------------------------------------
 - name: Configure fail2ban for sshd (jail.local)

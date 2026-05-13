@@ -10,7 +10,6 @@ all:
       # Made available to roles for binding MySQL/Redis to the VPC interface.
       private_ipv4: REPLACE_PRIVATE_IPV4
   vars:
-    vpc_ip_range: 10.42.0.0/24
     mysql_app_db: pfv2
     mysql_app_user: pfv_app
     # Generate a strong password and (recommended) store via ansible-vault.
