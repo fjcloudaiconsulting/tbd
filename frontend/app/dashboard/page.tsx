@@ -177,12 +177,12 @@ export default function DashboardPage() {
   // Item 6 (system-wide sort persistence): the dashboard transactions table
   // and the Spending by Category card both persist their sort state via
   // localStorage so a navigate-away-and-back lands the user where they were.
-  type DashTxSort = "date" | "description" | "amount";
+  type DashTxSort = "date" | "description" | "status" | "amount";
   const dashTxSort = usePersistedSort<DashTxSort>(
     SORT_KEY_DASHBOARD_TRANSACTIONS,
     "date",
     "desc",
-    ["date", "description", "amount"] as const,
+    ["date", "description", "status", "amount"] as const,
   );
   const dashSortField = dashTxSort.field;
   const dashSortDir = dashTxSort.dir;
@@ -581,6 +581,8 @@ export default function DashboardPage() {
     if (dashSortField === field) {
       dashTxSort.setSort(field, dashSortDir === "asc" ? "desc" : "asc");
     } else {
+      // Default direction per field: date desc (newest first), description /
+      // status asc (alphabetical: pending before settled), amount asc.
       dashTxSort.setSort(field, field === "date" ? "desc" : "asc");
     }
   }
@@ -604,6 +606,10 @@ export default function DashboardPage() {
       let cmp = 0;
       if (dashSortField === "date") cmp = a.date.localeCompare(b.date);
       else if (dashSortField === "description") cmp = a.description.localeCompare(b.description);
+      // Status sort is alphabetical on the enum value: "pending" < "settled"
+      // so asc surfaces pending rows first (what the user wants to act on),
+      // desc surfaces settled first.
+      else if (dashSortField === "status") cmp = a.status.localeCompare(b.status);
       else if (dashSortField === "amount") cmp = Number(a.amount) - Number(b.amount);
       return dashSortDir === "asc" ? cmp : -cmp;
     });
@@ -1111,69 +1117,101 @@ export default function DashboardPage() {
             <div className={`flex items-center justify-between ${cardHeader}`}>
               <h2 className={cardTitle}>Recent Transactions</h2>
             </div>
-            {/* Sortable mini-header */}
-            <div className="flex items-center justify-between px-5 py-1.5 border-b border-border-subtle text-[10px] font-semibold uppercase tracking-wider text-text-muted">
-              <div className="flex items-center gap-3">
-                <button onClick={() => toggleDashSort("date")} className="w-16 text-left min-h-[32px] hover:text-text-primary">Date{dashSortField === "date" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
-                <button onClick={() => toggleDashSort("description")} className="text-left min-h-[32px] hover:text-text-primary">Description{dashSortField === "description" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
+            {/* Sortable mini-header. Column order mirrors /transactions:
+                Date / Description / Status / Amount. Hidden under sm; mobile
+                rows collapse to a two-line layout (see below) where header
+                labels are redundant. */}
+            <div className="hidden sm:block border-b border-border-subtle px-5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <div className="grid grid-cols-12 items-center gap-3">
+                {([
+                  { field: "date" as const, label: "Date", span: "col-span-2", align: "text-left" },
+                  { field: "description" as const, label: "Description", span: "col-span-6", align: "text-left" },
+                  { field: "status" as const, label: "Status", span: "col-span-2", align: "text-center" },
+                  { field: "amount" as const, label: "Amount", span: "col-span-2", align: "text-right" },
+                ]).map((col) => (
+                  <button
+                    key={col.field}
+                    onClick={() => toggleDashSort(col.field)}
+                    className={`${col.span} ${col.align} min-h-[32px] hover:text-text-primary transition-colors`}
+                  >
+                    {col.label}{dashSortField === col.field ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}
+                  </button>
+                ))}
               </div>
-              <button onClick={() => toggleDashSort("amount")} className="min-h-[32px] hover:text-text-primary">Amount{dashSortField === "amount" ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}</button>
             </div>
             <div className="divide-y divide-border-subtle">
               {sortedVisibleTxs.map((tx) => {
                 const isTransfer = tx.linked_transaction_id !== null;
                 const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
+                const amountClass = `text-sm font-medium tabular-nums ${isTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`;
+                const amountText = `${isTransfer ? "" : tx.type === "income" ? "+" : "-"}${formatAmount(tx.amount)}`;
+                const subline = isTransfer && linkedTx ? (
+                  <>{tx.account_name} &rarr; {linkedTx.account_name}</>
+                ) : (
+                  <>{tx.account_name} &middot; {tx.category_name}</>
+                );
+                const statusPill = !isTransfer ? (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await apiFetch(`/api/v1/transactions/${tx.id}`, {
+                          method: "PUT",
+                          body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }),
+                        });
+                        await loadTransactions(page);
+                        await loadRefs();
+                        void loadForecastProjection();
+                        void loadAccountMonthEndForecast();
+                        // Independent of `page`: a toggle on page 2
+                        // still has to refresh the strip's totals.
+                        void loadPendingTransactions();
+                      } catch (err) {
+                        setError(extractErrorMessage(err));
+                      }
+                    }}
+                    aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
+                    aria-pressed={tx.status === "settled"}
+                    className="inline-flex min-h-[44px] items-center"
+                  >
+                    {/* Outer button carries the WCAG 2.5.8 touch target;
+                        inner span matches /transactions' pill visual. */}
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
+                      {tx.status}
+                    </span>
+                  </button>
+                ) : null;
                 return (
-                  <div key={tx.id} className="flex items-center justify-between px-5 py-2.5">
-                    <Link
-                      href={transactionHighlightHref(tx)}
-                      className="-mx-2 -my-1.5 flex min-w-0 items-center gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
-                    >
-                      <span className="text-xs tabular-nums text-text-muted w-16 shrink-0">{tx.date.slice(5)}</span>
-                      <div className="min-w-0">
-                        <p className="text-sm text-text-primary truncate">{tx.description}</p>
-                        <p className="text-[11px] text-text-muted truncate">
-                          {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : <>{tx.account_name} · {tx.category_name}</>}
-                        </p>
+                  <div key={tx.id} className="px-5 py-2.5">
+                    {/* Responsive single-tree row. On sm+, this is a 12-col
+                        grid mirroring the header (Date / Description / Status
+                        / Amount). Below sm, the wrapper drops to a flex
+                        column so we get a two-line layout: line 1 the link
+                        (date + description + subline), line 2 the status
+                        pill + amount on the right. Single Link/pill node so
+                        deep-link tests that match `findByRole("link", ...)`
+                        keep working. */}
+                    <div className="flex flex-col gap-1.5 sm:grid sm:grid-cols-12 sm:items-center sm:gap-3">
+                      <Link
+                        href={transactionHighlightHref(tx)}
+                        className="-mx-2 -my-1.5 flex min-w-0 items-center gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent sm:col-span-8 sm:my-0"
+                      >
+                        <span className="w-16 shrink-0 text-xs tabular-nums text-text-muted sm:w-auto">{tx.date.slice(5)}</span>
+                        <div className="min-w-0">
+                          <p className="text-sm text-text-primary truncate">{tx.description}</p>
+                          <p className="text-[11px] text-text-muted truncate">{subline}</p>
+                        </div>
+                      </Link>
+                      {/* Status + Amount: on desktop these split into their
+                          own columns (col-span-2 each). On mobile they share
+                          one flex row indented under the description. */}
+                      <div className="flex items-center justify-between gap-2 pl-[4.75rem] sm:contents sm:pl-0">
+                        <div className="sm:col-span-2 sm:flex sm:justify-center">
+                          {statusPill}
+                        </div>
+                        <div className="sm:col-span-2 sm:text-right">
+                          <span className={amountClass}>{amountText}</span>
+                        </div>
                       </div>
-                    </Link>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-sm font-medium tabular-nums ${isTransfer ? "text-info" : tx.type === "income" ? "text-success" : "text-danger"}`}>
-                        {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
-                      </span>
-                      {!isTransfer && (
-                        <button
-                          onClick={async () => {
-                            try {
-                              await apiFetch(`/api/v1/transactions/${tx.id}`, {
-                                method: "PUT",
-                                body: JSON.stringify({ status: tx.status === "settled" ? "pending" : "settled" }),
-                              });
-                              await loadTransactions(page);
-                              await loadRefs();
-                              void loadForecastProjection();
-                              void loadAccountMonthEndForecast();
-                              // Independent of `page` — a toggle on page 2
-                              // still has to refresh the strip's totals.
-                              void loadPendingTransactions();
-                            } catch (err) {
-                              setError(extractErrorMessage(err));
-                            }
-                          }}
-                          aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
-                          aria-pressed={tx.status === "settled"}
-                          className="inline-flex min-h-[44px] items-center"
-                        >
-                          {/* Outer button carries the WCAG 2.5.8
-                              touch-target hit area; inner span keeps
-                              the lean visual that matches /transactions.
-                              Pending uses the warning token so it reads
-                              as actionable, not muted gray. */}
-                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${tx.status === "settled" ? "bg-success-dim text-success" : "bg-warning-dim text-warning"}`}>
-                            {tx.status}
-                          </span>
-                        </button>
-                      )}
                     </div>
                   </div>
                 );
