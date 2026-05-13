@@ -218,6 +218,19 @@ describe("AppShellAddTransactionCta quick-add menu", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
   });
 
+  it("chevron toggle meets the 44px touch-target floor on both axes", async () => {
+    setupRefs();
+    await act(async () => {
+      render(<AppShellAddTransactionCta />);
+    });
+    const toggle = screen.getByTestId("appshell-quick-add-menu-toggle");
+    // Both axes must clear 44px per DESIGN.md touch-target rule. The
+    // primary CTA's test above already asserts min-h-[44px]; the
+    // chevron has a smaller default footprint so we assert both.
+    expect(toggle.className).toContain("min-h-[44px]");
+    expect(toggle.className).toContain("min-w-[44px]");
+  });
+
   it("opens the menu when the chevron is clicked and shows both items", async () => {
     setupRefs();
     await act(async () => {

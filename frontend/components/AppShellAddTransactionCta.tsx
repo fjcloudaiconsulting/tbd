@@ -206,7 +206,7 @@ export default function AppShellAddTransactionCta() {
           aria-expanded={menuOpen}
           aria-controls={menuId}
           data-testid="appshell-quick-add-menu-toggle"
-          className={`${btnPrimary} inline-flex min-h-[44px] min-w-[32px] items-center justify-center rounded-l-none px-2`}
+          className={`${btnPrimary} inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-l-none px-2`}
         >
           <ChevronDown
             className={`h-4 w-4 transition-transform ${menuOpen ? "rotate-180" : ""}`}
