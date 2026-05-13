@@ -22,7 +22,7 @@ export default function NotFound() {
         <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
           <Link
             href="/dashboard"
-            className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center`}
+            className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center`}
           >
             Go to dashboard
           </Link>

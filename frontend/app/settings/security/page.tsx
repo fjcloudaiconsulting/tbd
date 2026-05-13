@@ -374,7 +374,7 @@ export default function SecurityPage() {
             <button
               type="submit"
               disabled={savingPwd || (!passwordSet && !stepupToken)}
-              className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+              className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}
             >
               {savingPwd
                 ? (passwordSet ? "Changing..." : "Setting...")
@@ -408,7 +408,7 @@ export default function SecurityPage() {
                 onClick={handleSetup}
                 disabled={mfaLoading}
                 aria-busy={mfaLoading}
-                className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
               >
                 {mfaLoading && (
                   <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -443,7 +443,7 @@ export default function SecurityPage() {
                 <button onClick={() => { setMfaStep("idle"); setSetupData(null); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
                   Cancel
                 </button>
-                <button onClick={() => setMfaStep("verify")} className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
+                <button onClick={() => setMfaStep("verify")} className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>
                   Continue
                 </button>
               </div>
@@ -493,7 +493,7 @@ export default function SecurityPage() {
                   aria-describedby={
                     totpCode.length !== 6 && !mfaLoading ? "mfa-setup-code-hint" : undefined
                   }
-                  className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                  className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
                 >
                   {mfaLoading && (
                     <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -615,7 +615,7 @@ export default function SecurityPage() {
                       type="submit"
                       disabled={regenerating || !regenPassword}
                       aria-busy={regenerating}
-                      className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                      className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
                     >
                       {regenerating && (
                         <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -703,7 +703,7 @@ export default function SecurityPage() {
                         type="submit"
                         disabled={disabling || !disablePassword}
                         aria-busy={disabling}
-                        className={`${btnPrimary} !bg-danger hover:!bg-danger/80 w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                        className={`${btnPrimary} !bg-danger hover:!bg-danger/80 w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
                       >
                         {disabling && (
                           <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -768,7 +768,7 @@ export default function SecurityPage() {
                 type="submit"
                 disabled={savingSession}
                 aria-busy={savingSession}
-                className={`${btnPrimary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
               >
                 {savingSession && (
                   <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />

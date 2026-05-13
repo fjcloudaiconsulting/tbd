@@ -170,7 +170,7 @@ export default function DragMoveConfirmModal({
             data-testid="drag-move-confirm-button"
             onClick={onConfirm}
             disabled={submitting || previewLoading || preview === null}
-            className={`${btnPrimary} w-full sm:w-auto min-h-[44px]`}
+            className={`${btnPrimary} w-full sm:w-auto`}
           >
             {submitting ? "Moving..." : "Move"}
           </button>

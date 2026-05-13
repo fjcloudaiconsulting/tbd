@@ -208,7 +208,7 @@ export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Pro
             <button
               type="submit"
               disabled={submitting || parsedTarget === null}
-              className={`${btnPrimary} w-full sm:w-auto min-h-[44px]`}
+              className={`${btnPrimary} w-full sm:w-auto`}
             >
               {submitting ? (
                 <span className="inline-flex items-center gap-2">
