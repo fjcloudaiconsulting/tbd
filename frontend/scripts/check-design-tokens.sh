@@ -93,6 +93,75 @@ run_check "text-white / text-black (use tokens)" "${WHITE_BLACK_RE}" \
 run_check "Hard-coded hex literals" "${HEX_RE}" \
   --include='*.ts' --include='*.tsx'
 
+# ── Phantom theme-token utilities ────────────────────────────────────
+#
+# Catches Tailwind classes that READ like a project token (e.g.
+# ``bg-bg-elevated`` or ``hover:text-text``) but reference a name that
+# does not exist as ``--color-<name>`` in ``app/globals.css``. These
+# are silent: Tailwind emits no rule for an unknown utility, so the
+# element renders without styling and the bug ships invisibly.
+#
+# The check is scoped to OUR project prefixes (bg, surface, border,
+# text, accent, success, danger, warning, sidebar) so Tailwind's own
+# compound utilities (``text-balance``, ``border-collapse``,
+# ``bg-clip``, etc.) are never flagged. ``text-primary`` would slip
+# through (no hyphen after ``primary``), so the regex requires the
+# project namespace to be the SECOND segment of a 2+-segment class.
+#
+# Added 2026-05-13 after L4.4 cross-org user search shipped phantom
+# ``bg-bg-elevated`` and ``border-border-strong`` utilities (PR #257
+# review comment).
+PROJECT_NAMESPACES='(bg|surface|border|text|accent|success|danger|warning|sidebar)'
+PHANTOM_RE="\\b(hover:)?(bg|text|border|ring|fill|stroke|placeholder|caret|outline|divide|shadow|from|to|via|decoration)-${PROJECT_NAMESPACES}(-[a-z0-9]+)+\\b"
+
+# Harvest the catalog from globals.css. Each --color-<name> line gives
+# us a valid token suffix. ``--color-bg`` and ``--color-text-primary``
+# become catalog entries ``bg`` and ``text-primary``.
+CATALOG_FILE="$(mktemp)"
+trap 'rm -f "${CATALOG_FILE}"' EXIT
+grep -E '^\s+--color-[a-z0-9-]+:' app/globals.css \
+  | sed -E 's/^\s+--color-([a-z0-9-]+):.*/\1/' \
+  | sort -u > "${CATALOG_FILE}"
+
+# Collect candidate phantom utilities from the codebase, normalize to
+# the suffix we can compare against the catalog, then filter.
+candidates="$(grep -rEnH "${PHANTOM_RE}" \
+  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' \
+  "${EXCLUDES[@]}" "${ROOTS[@]}" 2>/dev/null || true)"
+
+if [ -n "${candidates}" ]; then
+  phantom_hits=""
+  while IFS= read -r line; do
+    # Extract every matching utility on the line; one line may carry
+    # several classes inside a single string.
+    while IFS= read -r token; do
+      # Strip the optional ``hover:`` prefix + the Tailwind property
+      # (``bg-``, ``text-``, etc.) so what remains is the token suffix
+      # the catalog stores.
+      suffix="$(echo "${token}" | sed -E 's/^(hover:)?(bg|text|border|ring|fill|stroke|placeholder|caret|outline|divide|shadow|from|to|via|decoration)-//')"
+      if ! grep -qx "${suffix}" "${CATALOG_FILE}"; then
+        phantom_hits+="${line}    (unknown token: ${token} -> --color-${suffix} missing)
+"
+        break  # one hit per line is enough; avoid noisy dupes.
+      fi
+    done < <(echo "${line}" | grep -oE "${PHANTOM_RE}")
+  done <<< "${candidates}"
+
+  if [ -n "${phantom_hits}" ]; then
+    # Phantom-token findings are reported as WARNINGS in this commit
+    # (do not flip ``fail`` to 1). There is one pre-existing offender
+    # in ``app/import/page.tsx`` that predates this check; gating CI
+    # on it would expand scope. Each follow-up PR that touches a
+    # phantom site should drop it from the list. Once the list is
+    # empty, promote this block to ``fail=1`` so the check gates CI
+    # on its own.
+    echo "── Phantom theme-token utilities (no --color-* match) ─────"
+    echo "WARNING (not currently fatal). Fix at first opportunity."
+    printf '%s' "${phantom_hits}"
+    echo
+  fi
+fi
+
 if [ "${fail}" -ne 0 ]; then
   echo "Design-token check failed. Replace the offenders with theme tokens"
   echo "from app/globals.css (e.g. bg-warning, text-danger, etc.) or with"

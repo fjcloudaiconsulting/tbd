@@ -27,6 +27,7 @@ Permission = Literal[
     "audit.view",
     "roles.manage",
     "analytics.view",
+    "users.view",
 ]
 
 
@@ -41,6 +42,7 @@ ALL_PERMISSIONS: frozenset[Permission] = frozenset({
     "audit.view",
     "roles.manage",
     "analytics.view",
+    "users.view",
 })
 
 

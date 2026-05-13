@@ -19,6 +19,7 @@ import {
   Settings,
   Shield,
   Tag,
+  Users,
   Wallet,
   X,
 } from "lucide-react";
@@ -104,6 +105,12 @@ const systemItems: readonly SystemNavItem[] = [
     label: "Organizations",
     permission: "orgs.view",
     icon: <Building2 {...NAV_ICON_PROPS} />,
+  },
+  {
+    href: "/admin/users",
+    label: "Users",
+    permission: "users.view",
+    icon: <Users {...NAV_ICON_PROPS} />,
   },
   {
     href: "/admin/audit",
