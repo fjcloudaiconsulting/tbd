@@ -96,6 +96,8 @@ async def test_accept_learns_user_pick_and_bumps_shared(db_session: AsyncSession
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
         default_category_id=seed["restaurants_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=datetime.date(2026, 5, 1),
             description="POS LIDL *9999", amount=Decimal("12.50"), type="expense",
@@ -119,6 +121,8 @@ async def test_override_learns_user_edit_no_shared_bump(db_session: AsyncSession
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
         default_category_id=seed["restaurants_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=datetime.date(2026, 5, 1),
             description="POS LIDL *9999", amount=Decimal("12.50"), type="expense",
@@ -142,6 +146,8 @@ async def test_accept_without_opt_in_does_not_bump_shared(db_session: AsyncSessi
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
         default_category_id=seed["restaurants_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=datetime.date(2026, 5, 1),
             description="POS LIDL *9999", amount=Decimal("12.50"), type="expense",
@@ -198,6 +204,8 @@ async def test_transfer_row_does_not_learn(db_session: AsyncSession) -> None:
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
         default_category_id=transfer_cat.id,
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=datetime.date(2026, 5, 1),
             description="POS LIDL *9999",  # would normally learn → "LIDL"
@@ -233,6 +241,8 @@ async def test_aggregate_metric_emitted_with_correct_shape(db_session: AsyncSess
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
         default_category_id=seed["restaurants_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[
             # accept
             ImportConfirmRow(
@@ -306,6 +316,8 @@ async def test_learn_failure_does_not_fail_the_import(
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
         default_category_id=seed["restaurants_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=datetime.date(2026, 5, 1),
             description="POS LIDL *9999", amount=Decimal("12.50"), type="expense",
@@ -351,6 +363,8 @@ async def test_default_category_fallthrough_records_miss(
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
         default_category_id=seed["restaurants_id"],
+        file_name="test.csv",
+        source_format="csv",
         rows=[
             ImportConfirmRow(
                 row_number=1, date=datetime.date(2026, 5, 1),
@@ -419,6 +433,8 @@ async def test_create_transfer_pair_does_not_learn(
     body = ImportConfirmRequest(
         account_id=seed["account_id"],
         default_category_id=transfer_cat.id,
+        file_name="test.csv",
+        source_format="csv",
         rows=[ImportConfirmRow(
             row_number=1, date=datetime.date(2026, 5, 1),
             description="POS LIDL *9999",  # would normally learn → "LIDL"

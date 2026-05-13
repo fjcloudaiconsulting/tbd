@@ -270,6 +270,7 @@ async def _create_transaction_no_commit(
     *,
     is_imported: bool = False,
     is_manual_adjustment: bool = False,
+    fitid: str | None = None,
 ) -> Transaction:
     """Internal create primitive that flushes but does NOT commit.
 
@@ -319,6 +320,7 @@ async def _create_transaction_no_commit(
         settled_date=resolved_settled_date,
         is_imported=is_imported,
         is_manual_adjustment=is_manual_adjustment,
+        fitid=fitid,
     )
     db.add(tx)
     await db.flush()

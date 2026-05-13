@@ -53,6 +53,8 @@ async def build_preview(
     account_id: int,
     file_name: str,
     parsed_rows: list[ParsedRow],
+    *,
+    source_format: str = "csv",
 ) -> ImportPreviewResponse:
     """Build a preview response: flag duplicates and potential transfers."""
 
@@ -88,14 +90,28 @@ async def build_preview(
     # ── FITID-aware dedup (L3.2 OFX path) ───────────────────────────────
     # Spec §2.1: when ``fitid`` is present on a parsed row, it overrides
     # the description-based 5-tuple match. Banks guarantee FITID
-    # uniqueness within an account (OFX spec §11.4.4), so re-importing
-    # the same file is caught even if descriptions drift.
+    # uniqueness **within an account** (OFX spec §11.4.4), so the
+    # cross-batch lookup MUST scope by ``account_id`` as well -- two
+    # different banks can legitimately emit the same FITID for unrelated
+    # transactions, and an org-wide lookup would flag those as
+    # duplicates (PR #247 P2 fix).
     #
-    # ``transactions`` does not yet carry a ``fitid`` column (Wave 2B
-    # Reconciliation UI team owns that migration), so the cross-batch
-    # lookup is limited to in-file dedup today. The seen-set below
-    # catches the most common hand-edit / double-paste mistake: two
-    # rows in the same upload sharing a FITID.
+    # The composite ``(org_id, fitid)`` index still covers the lookup;
+    # the additional ``account_id`` filter is a constant-time
+    # comparison after the index seek.
+    parsed_fitids = [r.fitid for r in parsed_rows if getattr(r, "fitid", None)]
+    existing_fitids: set[str] = set()
+    if parsed_fitids:
+        fitid_result = await db.execute(
+            select(Transaction.fitid).where(
+                and_(
+                    Transaction.org_id == org_id,
+                    Transaction.account_id == account_id,
+                    Transaction.fitid.in_(parsed_fitids),
+                )
+            )
+        )
+        existing_fitids = {row.fitid for row in fitid_result.all() if row.fitid}
     seen_fitids: set[tuple[int, str]] = set()
 
     preview_rows: list[ImportPreviewRow] = []
@@ -109,8 +125,13 @@ async def build_preview(
         # carries a FITID and we've already seen the same
         # (account_id, fitid) in this batch, mark the second occurrence
         # as a duplicate regardless of date / amount / description drift.
+        # L3.2 Wave 2B: also marks the row as duplicate when the FITID
+        # already exists in the org's transactions table from a previous
+        # import (cross-batch dedup).
         row_fitid: str | None = getattr(row, "fitid", None)
         if row_fitid:
+            if row_fitid in existing_fitids:
+                is_dup = True
             fitid_key = (account_id, row_fitid)
             if fitid_key in seen_fitids:
                 is_dup = True
@@ -275,6 +296,7 @@ async def build_preview(
         suggested_pair_count=suggested_pair_count,
         multi_candidate_count=multi_candidate_count,
         duplicate_of_linked_count=duplicate_of_linked_count,
+        source_format=source_format,
     )
 
 
@@ -282,6 +304,8 @@ async def execute_import(
     db: AsyncSession,
     org_id: int,
     body: ImportConfirmRequest,
+    *,
+    user_id: int | None = None,
 ) -> ImportConfirmResponse:
     """Create / pair / drop transactions for all confirmed (non-skipped) rows.
 
@@ -306,6 +330,12 @@ async def execute_import(
     dropped_duplicate_count = 0
     skipped_count = 0
     errors: list[ImportRowError] = []
+    # L3.2 Wave 2B: collect the IDs of every transaction this confirm
+    # committed so we can link them to a fresh ``import_batches`` row
+    # at the end. The synthetic partner leg of a create_transfer_pair
+    # is intentionally NOT collected (it didn't come from the bank
+    # file). All other branches contribute their bank-side leg ID.
+    imported_transaction_ids: list[int] = []
 
     # Destination account for currency lookups (used by both pair partner
     # validation and drop_as_duplicate revalidation).
@@ -354,7 +384,7 @@ async def execute_import(
                         date=row.date,
                     )
                     new_tx = await _create_transaction_no_commit(
-                        db, org_id, tx_body, is_imported=True
+                        db, org_id, tx_body, is_imported=True, fitid=row.fitid
                     )
                     action_taken = "create"
 
@@ -373,7 +403,7 @@ async def execute_import(
                         date=row.date,
                     )
                     new_tx = await _create_transaction_no_commit(
-                        db, org_id, tx_body, is_imported=True
+                        db, org_id, tx_body, is_imported=True, fitid=row.fitid
                     )
 
                     # Lock partner row with FOR UPDATE + populate_existing so
@@ -511,7 +541,7 @@ async def execute_import(
                         date=row.date,
                     )
                     csv_leg = await _create_transaction_no_commit(
-                        db, org_id, csv_body, is_imported=True
+                        db, org_id, csv_body, is_imported=True, fitid=row.fitid
                     )
 
                     # Synthetic partner leg — opposite type, same magnitude
@@ -578,6 +608,18 @@ async def execute_import(
                 error_type=type(exc).__name__,
             )
             continue
+
+        # L3.2 Wave 2B: collect the imported leg's ID. ``new_tx`` is the
+        # row that came from the bank file -- the plain create row, the
+        # newly-inserted leg in pair_with_existing, or the CSV leg in
+        # create_transfer_pair. The synthetic partner leg in
+        # create_transfer_pair is intentionally NOT linked. The
+        # drop_as_duplicate branch never creates a row, so we skip.
+        if (
+            action_taken in ("create", "pair_with_existing", "create_transfer_pair")
+            and new_tx is not None
+        ):
+            imported_transaction_ids.append(new_tx.id)
 
         # Per-action counter increments + telemetry (post-savepoint commit).
         if action_taken == "create":
@@ -681,6 +723,36 @@ async def execute_import(
                 if token:
                     miss_tokens.add(token)
 
+    # L3.2 Wave 2B (owner-review fix): ``body.file_name`` and
+    # ``body.source_format`` are REQUIRED by the schema, so every
+    # confirm that committed at least one transaction creates an
+    # ``import_batches`` header row. We do this BEFORE the outer commit
+    # so the batch + the per-row import_batch_id backfill land in the
+    # same transaction. Manual batch entry (``/transactions/batch``)
+    # does NOT go through this path, so it stays unlinked (per spec
+    # §3.2 row C).
+    #
+    # We skip batch creation only when (a) no transactions were
+    # imported (every row was an error or skipped or
+    # drop_as_duplicate -- nothing to group under a batch), or (b) we
+    # don't have a ``user_id`` (test paths that call ``execute_import``
+    # without auth context). The router always passes ``user_id``, so
+    # case (b) is a test-only escape hatch.
+    batch_id: int | None = None
+    if imported_transaction_ids and user_id is not None:
+        from app.services import reconciliation_service  # avoid circular
+
+        batch = await reconciliation_service.create_import_batch(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            account_id=body.account_id,
+            source_format=body.source_format,
+            file_name=body.file_name,
+            transaction_ids=imported_transaction_ids,
+        )
+        batch_id = batch.id
+
     # Final commit for any savepoints whose changes haven't been flushed to
     # the outer transaction yet (savepoint commit only releases to the outer
     # transaction; we still owe the outer commit).
@@ -723,4 +795,5 @@ async def execute_import(
         skipped_count=skipped_count,
         error_count=len(errors),
         errors=errors,
+        import_id=batch_id,
     )

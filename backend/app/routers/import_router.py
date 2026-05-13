@@ -1,17 +1,20 @@
-"""Import router — CSV upload, preview, and confirm endpoints.
+"""Import router -- CSV upload, preview, confirm, and reconciliation.
 
 Wave 1 contract additions (2026-05-12, L3.2): OFX preview endpoint and
-post-import reconciliation endpoint. Both stubbed at 501 — Wave 2 teams
-implement against the frozen schemas. See spec at
-``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``.
+post-import reconciliation endpoint. L3.2 Wave 2B (this PR) replaces
+the 501 reconciliation stub with a working state-machine handler. See
+spec at ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``.
 """
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+import structlog
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db
 from app.models.user import User
+from app.rate_limit import get_client_ip
 from app.schemas.import_reconciliation import (
+    ImportBatchDetail,
     ReconcileBatchRequest,
     ReconcileBatchResponse,
 )
@@ -20,10 +23,12 @@ from app.schemas.import_schemas import (
     ImportConfirmResponse,
     ImportPreviewResponse,
 )
-from app.services import import_service
+from app.services import import_service, reconciliation_service
 from app.services.exceptions import ValidationError
 from app.services.import_ofx_service import parse_ofx
 from app.services.import_parser import ParseError, parse_csv
+
+logger = structlog.get_logger()
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 
@@ -60,6 +65,7 @@ async def preview_import(
         account_id=account_id,
         file_name=file.filename or "unknown.csv",
         parsed_rows=parsed_rows,
+        source_format="csv",
     )
 
 
@@ -69,11 +75,17 @@ async def confirm_import(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Execute the import — create transactions for all confirmed rows."""
+    """Execute the import -- create transactions for all confirmed rows.
+
+    L3.2 Wave 2B: passes ``user_id`` so the service can stamp the
+    ``import_batches.created_by_user_id`` column when grouping the
+    imported rows under a fresh batch header.
+    """
     return await import_service.execute_import(
         db,
         org_id=current_user.org_id,
         body=body,
+        user_id=current_user.id,
     )
 
 
@@ -110,42 +122,68 @@ async def preview_ofx_import(
         account_id=account_id,
         file_name=file.filename or "unknown.ofx",
         parsed_rows=parsed_rows,
+        source_format="ofx",
+    )
+
+
+@router.get(
+    "/{import_id}",
+    response_model=ImportBatchDetail,
+)
+async def get_import_batch(
+    import_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the header + per-row state of an import batch.
+
+    Powers the reconciliation inbox UI. Per-row payload includes the
+    current ``reconciliation_state`` and a ``duplicate_warning`` flag
+    (set when ``fitid`` matches a transaction outside this batch).
+    """
+    return await reconciliation_service.get_batch_detail(
+        db,
+        org_id=current_user.org_id,
+        batch_id=import_id,
     )
 
 
 @router.post(
     "/{import_id}/reconcile",
     response_model=ReconcileBatchResponse,
-    status_code=501,
 )
 async def reconcile_import_batch(
     import_id: int,
     body: ReconcileBatchRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """**STUB** — Post-import reconciliation endpoint, Wave 2 deliverable.
+    """Apply state-machine transitions to rows in an import batch.
 
-    Contract: applies state transitions to imported rows. All transitions
-    in a request commit atomically (one savepoint). The batch
-    auto-closes when ``remaining_pending`` hits 0.
+    Contract: ``specs/2026-05-12-l3-2-import-contracts.md`` §3. All
+    transitions in a request commit atomically (one savepoint). The
+    batch auto-closes when ``remaining_pending`` hits 0.
 
-    Frozen contract: see spec at
-    ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``
-    §3 (Reconciliation State Machine).
-
-    Wave 2 Reconciliation UI team owns:
-        - Migration: ``transactions.reconciliation_state`` enum column,
-          ``transactions.import_batch_id`` FK, new ``import_batches`` table.
-        - Service: state-transition validation, atomic apply, batch-close
-          side-effect.
-        - Frontend: inbox UX, per-row transition controls.
+    Disallowed transitions return 409 with the source + target state in
+    the detail (``ConflictError`` -> global handler). Bad payload
+    (missing edits / match target, transaction belongs to a different
+    batch) returns 422. Missing batch returns 404.
     """
-    _ = (current_user.org_id, db, import_id, len(body.transitions))
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Reconciliation not implemented — see L3.2 dispatch "
-            "(specs/2026-05-12-l3-2-import-contracts.md §3)"
-        ),
+    response = await reconciliation_service.reconcile_request(
+        db,
+        org_id=current_user.org_id,
+        batch_id=import_id,
+        request=body,
     )
+    await logger.ainfo(
+        "import.reconcile.applied",
+        org_id=current_user.org_id,
+        batch_id=import_id,
+        actor_user_id=current_user.id,
+        ip=get_client_ip(request),
+        transitioned=len(response.transitioned),
+        remaining_pending=response.remaining_pending,
+        batch_status=response.batch_status,
+    )
+    return response

@@ -6,11 +6,19 @@ which already imports from transaction_service.
 Excluded from reportable aggregates:
 
 - Transfer legs (``linked_transaction_id IS NOT NULL``): not income/expense.
+  This also covers MATCHED reconciliation rows -- ``_apply_match`` writes
+  ``linked_transaction_id`` on the inbox row so the matched-against row
+  stays canonical and the imported duplicate disappears from reports.
 - Manual balance adjustments (``is_manual_adjustment = True``): controlled
   escape hatch from the "balance from transactions" invariant. Counted by
   ``reconcile_account`` (so stored balance == sum of settled rows holds)
   but excluded from budget/forecast totals because they reflect the act
   of correcting a balance, not actual income or expense activity.
+- Reconciliation SKIPPED / REJECTED rows (L3.2 Wave 2B PR #247 P1 fix):
+  the row stays in the DB for audit + recoverability, but its amount
+  was reverted from ``accounts.balance`` and it must not appear in
+  reportable aggregates. ``_RECON_EXCLUDED_STATES`` pins the list so
+  future state-machine additions stay coherent.
 
 Future-proofed to grow additional reasons (voided, refunded) without
 renaming call sites.
@@ -20,11 +28,26 @@ from sqlalchemy import and_, func
 from app.models.transaction import Transaction
 
 
+# L3.2 Wave 2B (PR #247 P1): states whose rows are excluded from
+# reportable aggregates AND whose balance has been reverted at the
+# state transition. Keep in sync with ``reconciliation_service``.
+_RECON_EXCLUDED_STATES: tuple[str, ...] = ("skipped", "rejected")
+
+
 def reportable_transaction_filter():
-    """SQL clause: rows that count toward income/expense aggregates."""
+    """SQL clause: rows that count toward income/expense aggregates.
+
+    L3.2 Wave 2B (PR #247 P1): SKIPPED and REJECTED reconciliation
+    rows are excluded here in addition to transfer legs and manual
+    balance adjustments. Their balance was reverted at the state
+    transition (see ``reconciliation_service._apply_balance_for_transition``),
+    so the "stored balance == sum of reportable rows" invariant holds
+    across the new states.
+    """
     return and_(
         Transaction.linked_transaction_id.is_(None),
         Transaction.is_manual_adjustment.is_(False),
+        Transaction.reconciliation_state.notin_(_RECON_EXCLUDED_STATES),
     )
 
 
@@ -41,7 +64,11 @@ def effective_period_date_expr():
 
 def is_reportable_transaction(tx: Transaction) -> bool:
     """Python predicate version of reportable_transaction_filter()."""
-    return tx.linked_transaction_id is None and not tx.is_manual_adjustment
+    return (
+        tx.linked_transaction_id is None
+        and not tx.is_manual_adjustment
+        and tx.reconciliation_state not in _RECON_EXCLUDED_STATES
+    )
 
 
 def is_transfer_leg(tx: Transaction) -> bool:

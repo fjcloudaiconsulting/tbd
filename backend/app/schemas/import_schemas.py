@@ -70,6 +70,11 @@ class ImportPreviewResponse(BaseModel):
     multi_candidate_count: int = 0
     duplicate_of_linked_count: int = 0
 
+    # L3.2 Wave 2B: source format of the parsed file ('csv' or 'ofx').
+    # The frontend echoes this back at confirm so the service can stamp
+    # the new ``import_batches`` row with the correct origin.
+    source_format: str | None = None
+
 
 # ── Confirm Request ──────────────────────────────────────────────────────────
 
@@ -110,11 +115,24 @@ class ImportConfirmRow(BaseModel):
 
 
 class ImportConfirmRequest(BaseModel):
-    """Batch confirm request — the user submits all reviewed rows at once."""
+    """Batch confirm request -- the user submits all reviewed rows at once.
+
+    L3.2 Wave 2B owner-review fix: ``file_name`` and ``source_format``
+    are REQUIRED so every confirm produces an ``import_batches`` header
+    row. They were previously optional, which silently disabled batch
+    creation when the frontend forgot to send them (PR #247 P0).
+    Pre-launch state, so no back-compat shim; the frontend must send
+    both fields on every confirm.
+    """
 
     account_id: int
     default_category_id: int
     rows: list[ImportConfirmRow]
+    file_name: str = Field(min_length=1, max_length=255)
+    # ``Literal`` so Pydantic surfaces a typed 422 at the wire boundary
+    # instead of letting the service reach a ValidationError on unknown
+    # values.
+    source_format: Literal["csv", "ofx"]
 
     model_config = ConfigDict(extra="forbid")
 
@@ -143,3 +161,8 @@ class ImportConfirmResponse(BaseModel):
     skipped_count: int           # rows with skip=True
     error_count: int
     errors: list[ImportRowError]
+    # L3.2 Wave 2B: ID of the ``import_batches`` row this confirm
+    # created so the frontend can deep-link straight to
+    # ``/import/{import_id}/reconcile``. ``None`` when no rows were
+    # committed (every row errored, was skipped, or dropped).
+    import_id: int | None = None

@@ -236,6 +236,11 @@ export interface ImportPreviewResponse {
   suggested_pair_count: number;
   multi_candidate_count: number;
   duplicate_of_linked_count: number;
+
+  // L3.2 Wave 2B: ``'csv'`` or ``'ofx'``. The frontend echoes this in
+  // the confirm payload so the backend can stamp the new
+  // ``import_batches`` row with the correct origin.
+  source_format?: "csv" | "ofx";
 }
 
 export interface ImportConfirmRow {
@@ -262,6 +267,11 @@ export interface ImportConfirmRequest {
   account_id: number;
   default_category_id: number;
   rows: ImportConfirmRow[];
+  // L3.2 Wave 2B (PR #247 P0 fix): both REQUIRED on every confirm so
+  // the backend always opens an ``import_batches`` header row for the
+  // imported transactions.
+  file_name: string;
+  source_format: "csv" | "ofx";
 }
 
 export interface ImportRowError {
@@ -276,6 +286,9 @@ export interface ImportConfirmResponse {
   skipped_count: number;
   error_count: number;
   errors: ImportRowError[];
+  // L3.2 Wave 2B: ID of the newly created ``import_batches`` row, or
+  // ``null`` when no transactions were committed.
+  import_id: number | null;
 }
 
 // L3.2 Wave 2A manual batch transaction entry. Wraps a TransactionCreate
@@ -522,4 +535,77 @@ export interface AnalyticsResponse {
   imports_by_day: DailyCount[];
   top_orgs_by_tx_volume: OrgTxVolume[];
   dormant_orgs: DormantOrg[];
+}
+
+// L3.2 Wave 2B: post-import reconciliation inbox types.
+//
+// Mirrors the Pydantic shapes in
+// ``backend/app/schemas/import_reconciliation.py``. Keep field names
+// in lock-step with the backend; the recon UI is the only consumer.
+
+export type ReconciliationState =
+  | "pending_review"
+  | "matched"
+  | "unmatched"
+  | "skipped"
+  | "edited"
+  | "accepted"
+  | "rejected";
+
+export type ImportSourceFormat = "csv" | "ofx";
+
+export interface ImportBatchHeader {
+  id: number;
+  account_id: number;
+  source_format: ImportSourceFormat;
+  file_name: string;
+  created_at: string;
+  created_by_user_id: number;
+  status: "open" | "closed";
+  total_rows: number;
+  pending_count: number;
+}
+
+export interface ReconciliationRow {
+  transaction_id: number;
+  date: string;
+  description: string;
+  amount: string;
+  type: "income" | "expense";
+  reconciliation_state: ReconciliationState;
+  fitid: string | null;
+  linked_transaction_id: number | null;
+  duplicate_warning: boolean;
+  duplicate_warning_target: number | null;
+}
+
+export interface ImportBatchDetail {
+  batch: ImportBatchHeader;
+  rows: ReconciliationRow[];
+}
+
+export interface ReconciliationEdits {
+  description?: string;
+  amount?: string;
+  date?: string;
+  category_id?: number;
+}
+
+export interface ReconciliationTransition {
+  transaction_id: number;
+  to_state: ReconciliationState;
+  edits?: ReconciliationEdits;
+  match_with_transaction_id?: number;
+}
+
+export interface ReconcileBatchRequest {
+  transitions: ReconciliationTransition[];
+}
+
+export interface ReconcileBatchResponse {
+  import_id: number;
+  transitioned: number[];
+  errors: { transaction_id: number; error: string }[];
+  remaining_pending: number;
+  batch_status: "open" | "closed";
 }
