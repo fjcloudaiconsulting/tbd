@@ -98,15 +98,30 @@ def validate_close_day_cascade(
     ``close_day_in_payload=True`` and ``close_day_value=None``.
     """
     target_is_cc = target_slug == _CC
+    source_is_cc = source_slug == _CC
 
-    # Target = credit_card => close_day required.
+    # Target = credit_card branch (spec § 3.1 rows 1 and 3).
     if target_is_cc:
+        if source_is_cc:
+            # CC -> CC: no-op on type per spec § 3.1 row 3. Payload MAY
+            # include close_day to update the day, or MAY omit it (leave
+            # the existing day untouched). Explicit ``close_day: null``
+            # is invalid because a credit_card row must keep a non-null
+            # close_day. PR #246 second-review P1 fix: previously this
+            # branch required close_day in the payload even for no-op
+            # type updates.
+            if close_day_in_payload and close_day_value is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="close_day is required for credit_card accounts",
+                )
+            return
+        # not-CC -> CC: payload MUST carry a non-null close_day
+        # (spec § 3.1 row 1).
         if not close_day_in_payload or close_day_value is None:
             raise HTTPException(
                 status_code=400,
-                detail="close_day is required when changing to credit_card"
-                if source_slug != _CC
-                else "close_day is required for credit_card accounts",
+                detail="close_day is required when changing to credit_card",
             )
         # Range check is enforced by Pydantic (Field(ge=1, le=28)) so
         # by the time we reach this branch close_day is in [1, 28].
@@ -220,9 +235,14 @@ async def apply_type_change_in_session(
     account.account_type_id = target_type_id
 
     if target_slug == _CC:
-        # Entering or staying-in CC: set/update the day from payload.
-        # Validator above guarantees close_day_value is non-null here.
-        account.close_day = close_day_value
+        # CC target: write close_day only when the payload carried it.
+        # The validator guarantees:
+        #   - on not-CC -> CC, ``close_day_in_payload`` is True and
+        #     ``close_day_value`` is non-null;
+        #   - on CC -> CC with omitted close_day, the field stays
+        #     untouched (spec § 3.1 row 3, PR #246 second-review P1 fix).
+        if close_day_in_payload:
+            account.close_day = close_day_value
     else:
         # Server-side clear when leaving CC, regardless of whether the
         # payload carried close_day. Idempotent for non-CC -> non-CC.

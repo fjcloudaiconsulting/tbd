@@ -540,6 +540,87 @@ def test_close_day_only_edit_on_non_cc_account_rejected(session_factory, seeded)
     assert "close_day is only allowed on credit_card accounts" in res.json()["detail"]
 
 
+# ── PR #246 second review: CC -> CC no-op close_day contract ────────────
+
+
+def test_credit_card_to_credit_card_omitted_close_day_preserves_existing_value(
+    session_factory, seeded
+):
+    """Spec § 3.1 row 3 (CC -> CC) — payload MAY omit close_day; the
+    existing value must remain untouched. PR #246 second-review fix:
+    previously the validator required close_day on every CC-target
+    PUT, including pure no-op type updates.
+    """
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={"account_type_id": seeded["cc_type_id"]},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["account_type_id"] == seeded["cc_type_id"]
+    assert body["close_day"] == 15  # original value preserved
+
+    # No type-changed audit (this is a no-op on type).
+    rows = _run(_audit_rows_for_type_changed(session_factory, seeded["cc_acct_id"]))
+    assert rows == []
+
+
+def test_credit_card_to_credit_card_explicit_null_close_day_is_400(
+    session_factory, seeded
+):
+    """Spec § 3.1 row 3 (CC -> CC) with explicit ``close_day: null`` is
+    invalid: a credit_card row must keep a non-null close_day.
+    """
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "close_day": None,
+            },
+        )
+    assert res.status_code == 400
+    assert "close_day is required" in res.json()["detail"]
+
+    # Account unchanged.
+    async def _refetch():
+        async with session_factory() as db:
+            return (
+                await db.execute(
+                    select(Account).where(Account.id == seeded["cc_acct_id"])
+                )
+            ).scalar_one()
+
+    acct = _run(_refetch())
+    assert acct.close_day == 15
+    assert acct.account_type_id == seeded["cc_type_id"]
+
+
+def test_credit_card_to_credit_card_explicit_close_day_updates_value(
+    session_factory, seeded
+):
+    """Spec § 3.1 row 3 (CC -> CC) with an explicit non-null close_day
+    updates the column in-place. No type-changed audit (same type).
+    """
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "close_day": 22,
+            },
+        )
+    assert res.status_code == 200, res.text
+    assert res.json()["close_day"] == 22
+
+    rows = _run(_audit_rows_for_type_changed(session_factory, seeded["cc_acct_id"]))
+    assert rows == []
+
+
 # ── PR #246 review: P1 atomicity regression ─────────────────────────────
 
 
