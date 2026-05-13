@@ -46,10 +46,19 @@ import {
   cardTitle,
   error as errorCls,
   input,
-  label,
   pageTitle,
   success as successCls,
 } from "@/lib/styles";
+
+// `label` (in lib/styles) bakes in `display: block` + `mb-1.5` so it can
+// sit on top of form inputs in stacked single-transaction forms. Apply
+// it to a `<th>` and the cell collapses out of the table row, dragging
+// every header into a vertical stack while the `<td>`s flow as normal
+// table cells (root cause of the 2026-05-13 layout regression).
+// `thLabel` keeps the same typography but lets the browser default
+// `display: table-cell` win.
+const thLabel =
+  "text-xs font-semibold uppercase tracking-[0.08em] text-text-muted";
 import type {
   Account,
   BatchTransactionRowInput,
@@ -65,6 +74,7 @@ const MAX_ROWS = 500;
 // need a non-changing key so React doesn't lose focus when the user
 // removes a row above the cursor.
 type DraftStatus = "idle" | "ok" | "error";
+type TxStatus = "settled" | "pending";
 
 interface DraftRow {
   key: string;
@@ -74,6 +84,7 @@ interface DraftRow {
   type: "expense" | "income";
   account_id: number | "";
   category_id: number | "";
+  tx_status: TxStatus;
   status: DraftStatus;
   errorMessage?: string;
 }
@@ -87,6 +98,7 @@ function blankRow(): DraftRow {
     type: "expense",
     account_id: "",
     category_id: "",
+    tx_status: "settled",
     status: "idle",
   };
 }
@@ -213,6 +225,7 @@ export default function BatchEntryPage() {
           amount: row.amount,
           type: row.type,
           date: row.date,
+          status: row.tx_status,
         },
       })),
     };
@@ -265,6 +278,146 @@ export default function BatchEntryPage() {
     setRows(Array.from({ length: DEFAULT_ROW_COUNT }, blankRow));
     setSummary(null);
     setTopError("");
+  }
+
+  // Render the inputs for a single row once and reuse them across the
+  // desktop `<table>` cells and the mobile labeled-card layout. Handlers
+  // close over `updateRow`, `accounts`, `categories`, `newRowFocusRef`
+  // from the enclosing component so the two layouts stay byte-for-byte
+  // in sync with state, ARIA, and focus management.
+  function renderRowFields(row: DraftRow, idx: number, isNewest: boolean) {
+    return {
+      date: (
+        <input
+          type="date"
+          className={input}
+          value={row.date}
+          onChange={(e) => updateRow(idx, { date: e.target.value })}
+          aria-label={`Row ${idx + 1} date`}
+          ref={isNewest ? newRowFocusRef : undefined}
+        />
+      ),
+      description: (
+        <DescriptionAutocomplete
+          id={`row-${row.key}-description`}
+          type={row.type}
+          value={row.description}
+          onChange={(next) => updateRow(idx, { description: next })}
+          onPick={(s) => {
+            // Pre-fill the category only when the row's category is still
+            // empty, mirroring the single-transaction add form. We never
+            // overwrite a user-chosen category.
+            if (row.category_id === "") {
+              updateRow(idx, {
+                description: s.description,
+                category_id: s.category_id,
+              });
+            }
+          }}
+          placeholder="e.g. Coffee shop"
+          ariaLabel={`Row ${idx + 1} description`}
+        />
+      ),
+      amount: (
+        <input
+          type="number"
+          step="0.01"
+          min="0.01"
+          className={input}
+          value={row.amount}
+          placeholder="0.00"
+          onChange={(e) => updateRow(idx, { amount: e.target.value })}
+          aria-label={`Row ${idx + 1} amount`}
+        />
+      ),
+      type: (
+        <select
+          className={input}
+          value={row.type}
+          onChange={(e) =>
+            updateRow(idx, {
+              type: e.target.value as "expense" | "income",
+              // Type change invalidates current category; clear it.
+              category_id: "",
+            })
+          }
+          aria-label={`Row ${idx + 1} type`}
+        >
+          <option value="expense">Expense</option>
+          <option value="income">Income</option>
+        </select>
+      ),
+      account: (
+        <select
+          className={input}
+          value={row.account_id === "" ? "" : String(row.account_id)}
+          onChange={(e) =>
+            updateRow(idx, {
+              account_id:
+                e.target.value === "" ? "" : Number(e.target.value),
+            })
+          }
+          aria-label={`Row ${idx + 1} account`}
+        >
+          <option value="">Pick account…</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+      ),
+      category: (
+        <CategorySelect
+          id={`row-${row.key}-category`}
+          categories={categories}
+          value={row.category_id}
+          onChange={(cid) => updateRow(idx, { category_id: cid })}
+          filterType={row.type}
+          aria-label={`Row ${idx + 1} category`}
+        />
+      ),
+      status: (
+        <select
+          className={input}
+          value={row.tx_status}
+          onChange={(e) =>
+            updateRow(idx, { tx_status: e.target.value as TxStatus })
+          }
+          aria-label={`Row ${idx + 1} status`}
+        >
+          <option value="settled">Settled</option>
+          <option value="pending">Pending</option>
+        </select>
+      ),
+      result: (
+        <>
+          {row.status === "ok" && (
+            <span
+              className="inline-flex items-center gap-1 text-success"
+              aria-label={`Row ${idx + 1} imported`}
+            >
+              <span aria-hidden>✓</span> Imported
+            </span>
+          )}
+          {row.status === "error" && (
+            <span
+              className="inline-flex items-start gap-1 text-danger"
+              role="alert"
+            >
+              <span aria-hidden>✕</span>
+              <span className="text-xs">{row.errorMessage}</span>
+            </span>
+          )}
+          {row.status === "idle" && !rowIsBlank(row) &&
+            (rowIsValid(row) ? (
+              <span className="text-xs text-text-muted">Ready</span>
+            ) : (
+              <span className="text-xs text-warning">Fill all cells</span>
+            ))}
+        </>
+      ),
+    };
   }
 
   return (
@@ -335,19 +488,32 @@ export default function BatchEntryPage() {
             .
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm" role="grid" aria-label="Batch entry grid">
-              <thead>
-                <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-text-muted">
-                  <th className="w-6 px-2 py-2"></th>
-                  <th className={`${label} w-32 px-2 py-2`}>Date</th>
-                  <th className={`${label} w-64 px-2 py-2`}>Description</th>
-                  <th className={`${label} w-28 px-2 py-2`}>Amount</th>
-                  <th className={`${label} w-28 px-2 py-2`}>Type</th>
-                  <th className={`${label} w-44 px-2 py-2`}>Account</th>
-                  <th className={`${label} w-44 px-2 py-2`}>Category</th>
-                  <th className={`${label} w-32 px-2 py-2`}>Status</th>
-                  <th className="w-10 px-2 py-2"></th>
+          <div className="overflow-x-auto md:overflow-x-auto">
+            {/* Single `<table>` source of truth. On md+ it renders as a
+                spreadsheet. Under md it falls back to one stacked
+                labeled card per row via the `batch-grid` CSS rules in
+                `app/globals.css` (each `<td>` exposes its column name
+                through `data-label`, the header row hides, and rows
+                turn into vertical mini-forms). Keeping a single DOM
+                tree avoids the dup-aria-label trap that the earlier
+                desktop/mobile split surfaced in tests. */}
+            <table
+              className="batch-grid w-full text-sm"
+              role="grid"
+              aria-label="Batch entry grid"
+            >
+              <thead className="batch-grid__head">
+                <tr className="border-b border-border text-left">
+                  <th scope="col" className="w-10 px-2 py-2 text-xs text-text-muted">#</th>
+                  <th scope="col" className={`${thLabel} w-32 px-2 py-2`}>Date</th>
+                  <th scope="col" className={`${thLabel} w-64 px-2 py-2`}>Description</th>
+                  <th scope="col" className={`${thLabel} w-28 px-2 py-2`}>Amount</th>
+                  <th scope="col" className={`${thLabel} w-28 px-2 py-2`}>Type</th>
+                  <th scope="col" className={`${thLabel} w-44 px-2 py-2`}>Account</th>
+                  <th scope="col" className={`${thLabel} w-44 px-2 py-2`}>Category</th>
+                  <th scope="col" className={`${thLabel} w-32 px-2 py-2`}>Status</th>
+                  <th scope="col" className={`${thLabel} w-32 px-2 py-2`}>Result</th>
+                  <th scope="col" className="w-10 px-2 py-2"><span className="sr-only">Remove</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -355,145 +521,25 @@ export default function BatchEntryPage() {
                   const isLast = idx === rows.length - 1;
                   const isNewest =
                     idx === rows.length - 1 && rows.length > DEFAULT_ROW_COUNT;
+                  const fields = renderRowFields(row, idx, isNewest);
                   return (
                     <tr
                       key={row.key}
-                      className="border-b border-border last:border-b-0"
+                      className="batch-grid__row border-b border-border last:border-b-0"
                       data-row-index={idx}
                     >
-                      <td className="px-2 py-2 text-xs text-text-muted">
+                      <td className="px-2 py-2 text-xs text-text-muted" data-label="Row">
                         {idx + 1}
                       </td>
-                      <td className="px-2 py-2">
-                        <input
-                          type="date"
-                          className={input}
-                          value={row.date}
-                          onChange={(e) =>
-                            updateRow(idx, { date: e.target.value })
-                          }
-                          aria-label={`Row ${idx + 1} date`}
-                          ref={isNewest ? newRowFocusRef : undefined}
-                        />
-                      </td>
-                      <td className="px-2 py-2">
-                        <DescriptionAutocomplete
-                          id={`row-${row.key}-description`}
-                          type={row.type}
-                          value={row.description}
-                          onChange={(next) =>
-                            updateRow(idx, { description: next })
-                          }
-                          onPick={(s) => {
-                            // Pre-fill the category only when the row's
-                            // category is still empty, mirroring the
-                            // single-transaction add form. We never
-                            // overwrite a user-chosen category.
-                            if (row.category_id === "") {
-                              updateRow(idx, {
-                                description: s.description,
-                                category_id: s.category_id,
-                              });
-                            }
-                          }}
-                          placeholder="e.g. Coffee shop"
-                          ariaLabel={`Row ${idx + 1} description`}
-                        />
-                      </td>
-                      <td className="px-2 py-2">
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0.01"
-                          className={input}
-                          value={row.amount}
-                          placeholder="0.00"
-                          onChange={(e) =>
-                            updateRow(idx, { amount: e.target.value })
-                          }
-                          aria-label={`Row ${idx + 1} amount`}
-                        />
-                      </td>
-                      <td className="px-2 py-2">
-                        <select
-                          className={input}
-                          value={row.type}
-                          onChange={(e) =>
-                            updateRow(idx, {
-                              type: e.target.value as "expense" | "income",
-                              // Type change invalidates current category; clear it.
-                              category_id: "",
-                            })
-                          }
-                          aria-label={`Row ${idx + 1} type`}
-                        >
-                          <option value="expense">Expense</option>
-                          <option value="income">Income</option>
-                        </select>
-                      </td>
-                      <td className="px-2 py-2">
-                        <select
-                          className={input}
-                          value={row.account_id === "" ? "" : String(row.account_id)}
-                          onChange={(e) =>
-                            updateRow(idx, {
-                              account_id:
-                                e.target.value === ""
-                                  ? ""
-                                  : Number(e.target.value),
-                            })
-                          }
-                          aria-label={`Row ${idx + 1} account`}
-                        >
-                          <option value="">Pick account…</option>
-                          {accounts.map((a) => (
-                            <option key={a.id} value={a.id}>
-                              {a.name}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-2 py-2">
-                        <CategorySelect
-                          id={`row-${row.key}-category`}
-                          categories={categories}
-                          value={row.category_id}
-                          onChange={(cid) =>
-                            updateRow(idx, { category_id: cid })
-                          }
-                          filterType={row.type}
-                          aria-label={`Row ${idx + 1} category`}
-                        />
-                      </td>
-                      <td className="px-2 py-2">
-                        {row.status === "ok" && (
-                          <span
-                            className="inline-flex items-center gap-1 text-success"
-                            aria-label={`Row ${idx + 1} imported`}
-                          >
-                            <span aria-hidden>✓</span> Imported
-                          </span>
-                        )}
-                        {row.status === "error" && (
-                          <span
-                            className="inline-flex items-start gap-1 text-danger"
-                            role="alert"
-                          >
-                            <span aria-hidden>✕</span>
-                            <span className="text-xs">{row.errorMessage}</span>
-                          </span>
-                        )}
-                        {row.status === "idle" && !rowIsBlank(row) && (
-                          rowIsValid(row) ? (
-                            <span className="text-xs text-text-muted">Ready</span>
-                          ) : (
-                            <span className="text-xs text-warning">
-                              Fill all cells
-                            </span>
-                          )
-                        )}
-                      </td>
-                      <td className="px-2 py-2">
+                      <td className="px-2 py-2" data-label="Date">{fields.date}</td>
+                      <td className="px-2 py-2" data-label="Description">{fields.description}</td>
+                      <td className="px-2 py-2" data-label="Amount">{fields.amount}</td>
+                      <td className="px-2 py-2" data-label="Type">{fields.type}</td>
+                      <td className="px-2 py-2" data-label="Account">{fields.account}</td>
+                      <td className="px-2 py-2" data-label="Category">{fields.category}</td>
+                      <td className="px-2 py-2" data-label="Status">{fields.status}</td>
+                      <td className="px-2 py-2" data-label="Result">{fields.result}</td>
+                      <td className="px-2 py-2 batch-grid__remove">
                         <button
                           type="button"
                           onClick={() => removeRow(idx)}
