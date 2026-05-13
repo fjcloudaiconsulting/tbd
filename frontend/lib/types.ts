@@ -609,3 +609,108 @@ export interface ReconcileBatchResponse {
   remaining_pending: number;
   batch_status: "open" | "closed";
 }
+
+// L4.5 — admin subscription & revenue view -----------------------------------
+//
+// These types mirror the schemas in
+// `backend/app/schemas/admin_subscriptions.py`. Names are prefixed
+// `AdminSubscription*` so they never collide with the existing
+// `SubscriptionDetail` (which represents the current user's
+// subscription, not a platform-admin drill-down).
+
+export interface AdminSubscriptionListItem {
+  subscription_id: number;
+  org_id: number;
+  org_name: string;
+  plan_id: number | null;
+  plan_slug: string | null;
+  plan_name: string | null;
+  status: SubscriptionStatus;
+  billing_interval: "monthly" | "yearly";
+  trial_start: string | null;
+  trial_end: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminSubscriptionListResponse {
+  items: AdminSubscriptionListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AdminSubscriptionPlanInfo {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  // Money fields are returned as strings to preserve precision
+  // (see project_decimal_typing_debt.md). The FE formats with
+  // `Intl.NumberFormat` after parsing — never mutates the raw value.
+  price_monthly: string;
+  price_yearly: string;
+  max_users: number | null;
+  retention_days: number | null;
+  features: Record<string, unknown>;
+  is_custom: boolean;
+  is_active: boolean;
+}
+
+export interface AdminSubscriptionOrgInfo {
+  id: number;
+  name: string;
+  billing_cycle_day: number;
+  created_at: string | null;
+  member_count: number;
+}
+
+export interface AdminFeatureOverrideSnapshot {
+  feature_key: string;
+  value: boolean;
+  set_at: string | null;
+  expires_at: string | null;
+  is_expired: boolean;
+  note: string | null;
+}
+
+export interface AdminSubscriptionDetail {
+  subscription_id: number;
+  org: AdminSubscriptionOrgInfo;
+  plan: AdminSubscriptionPlanInfo | null;
+  status: SubscriptionStatus;
+  billing_interval: "monthly" | "yearly";
+  trial_start: string | null;
+  trial_end: string | null;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  created_at: string;
+  updated_at: string;
+  feature_overrides: AdminFeatureOverrideSnapshot[];
+  mock_revenue_amount: string;
+  mock_revenue: boolean;
+}
+
+export interface AdminPlanDistributionItem {
+  plan_id: number | null;
+  plan_slug: string | null;
+  plan_name: string | null;
+  subscription_count: number;
+}
+
+export interface AdminSubscriptionKPIs {
+  total_subscriptions: number;
+  active: number;
+  trial: number;
+  past_due: number;
+  cancelled: number;
+  signups_last_7d: number;
+  trial_expiring_next_7d: number;
+  plan_distribution: AdminPlanDistributionItem[];
+  mock_mrr: string;
+  mock_arr: string;
+  mock_revenue: boolean;
+  generated_at: string;
+}

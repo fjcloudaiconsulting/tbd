@@ -125,6 +125,12 @@ const systemItems: readonly SystemNavItem[] = [
     icon: <BarChart3 {...NAV_ICON_PROPS} />,
   },
   {
+    href: "/admin/subscriptions",
+    label: "Subscriptions",
+    permission: "subscriptions.view",
+    icon: <CreditCard {...NAV_ICON_PROPS} />,
+  },
+  {
     href: "/system/plans",
     label: "Plans",
     permission: "plans.manage",

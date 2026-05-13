@@ -8,6 +8,7 @@ import {
   Building2,
   CheckCircle2,
   ChevronRight,
+  CreditCard,
   ScrollText,
   ShieldCheck,
   XCircle,
@@ -77,6 +78,14 @@ const ADMIN_TILES: readonly AdminTile[] = [
     description: "Manage platform roles and the permissions they grant.",
     permission: "roles.manage",
     Icon: ShieldCheck,
+  },
+  {
+    href: "/admin/subscriptions",
+    title: "Subscriptions",
+    description:
+      "Every subscription across the platform, filterable by status and plan. Revenue figures are mock until payments go live.",
+    permission: "subscriptions.view",
+    Icon: CreditCard,
   },
 ];
 
