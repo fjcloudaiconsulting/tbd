@@ -27,15 +27,9 @@ variable "github_repo" {
 }
 
 variable "github_main_branch" {
-  description = "Branch on github_repo whose workflow runs can assume the deploy role for actual deploys (s3 sync + invalidation). PRs targeting this branch can also assume the role for plan-only operations via the github_pr_subject_pattern."
+  description = "Branch on github_repo whose workflow runs are allowed to assume the deploy role. The OIDC trust policy uses StringEquals on the sub claim, so only this exact branch ref can deploy. PR contexts are rejected at the trust level (not just by workflow-level guards), since PR authors could otherwise edit the workflow to bypass guards."
   type        = string
   default     = "main"
-}
-
-variable "github_pr_subject_pattern" {
-  description = "OIDC subject pattern that pull request workflows on github_repo match. Used to allow plan-only access from PRs while keeping deploy-mutating actions scoped to main pushes. Empty string disables PR access entirely."
-  type        = string
-  default     = "pull_request"
 }
 
 variable "tfc_organization" {

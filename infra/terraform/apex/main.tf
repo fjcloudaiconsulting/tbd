@@ -25,11 +25,12 @@ locals {
   # config; the format matches the AWS console convention.
   s3_origin_id = "S3-${local.bucket_name}"
 
-  # GitHub Actions OIDC subject claims. Push to main = full deploy; PRs get
-  # plan-only access (no s3 put/delete, no invalidation), controlled in the
-  # role's inline policy below by NOT granting mutating actions to PRs.
+  # GitHub Actions OIDC subject claim: ONLY push-to-main can assume the
+  # deploy role. PR-context tokens have a different sub (`pull_request`)
+  # and are rejected by the trust policy's StringEquals match. PR previews,
+  # if ever needed, require a separate read-only role (documented as a
+  # follow-up in apex/README.md).
   github_main_sub = "repo:${var.github_repo}:ref:refs/heads/${var.github_main_branch}"
-  github_pr_sub   = var.github_pr_subject_pattern == "" ? null : "repo:${var.github_repo}:${var.github_pr_subject_pattern}"
 
   # TFC workload identity subject claim. The TFC docs document the run-phase
   # suffix; we accept plan + apply so PR speculative plans and merge applies
@@ -44,6 +45,20 @@ locals {
 data "aws_route53_zone" "apex" {
   name         = var.domain
   private_zone = false
+}
+
+# OIDC thumbprint lookups. AWS does NOT silently rotate OIDC provider
+# thumbprints; whatever Terraform commits is what apply uses. Computing
+# the SHA-1 fingerprint from the live TLS handshake at plan time is the
+# documented HashiCorp pattern for keeping the trust intact across cert
+# rotations (the alternative is a hand-pinned list that bit-rots and
+# silently breaks the trust the next time the issuer rotates).
+data "tls_certificate" "github_oidc" {
+  url = "https://token.actions.githubusercontent.com"
+}
+
+data "tls_certificate" "tfc_oidc" {
+  url = "https://app.terraform.io"
 }
 
 ###############################################################################
@@ -225,17 +240,32 @@ resource "aws_cloudfront_response_headers_policy" "apex" {
   }
 }
 
-# CloudFront Function: redirects www.<apex> -> https://<apex> with a 301.
-# Lightweight (no Lambda@Edge cold start cost); runs at viewer-request.
-resource "aws_cloudfront_function" "www_to_apex_redirect" {
-  name    = "${replace(var.domain, ".", "-")}-www-to-apex"
+# CloudFront Function: single viewer-request handler combining
+# (1) www -> apex 301 redirect and (2) directory-style URL rewrites
+# (e.g. /privacy/ -> /privacy/index.html). CloudFront only allows one
+# viewer-request function per behavior, so both behaviors live in this
+# function with a strict order: REDIRECT runs first (so we don't waste
+# work rewriting URIs for requests we're about to bounce), REWRITE runs
+# second (so requests that survive the redirect have S3-resolvable URIs).
+#
+# Why rewrite is needed: with S3 + OAC (REST origin), requests for
+# "/privacy/" hit S3 looking for an object literally named "privacy/" and
+# get a 404/403. The S3 static-website-hosting endpoint translates this
+# automatically, but it's public + non-HTTPS so we deliberately don't use
+# it. PR-C's static export produces out-apex/privacy/index.html etc.;
+# this function bridges the gap.
+resource "aws_cloudfront_function" "viewer_request" {
+  name    = "${replace(var.domain, ".", "-")}-viewer-request"
   runtime = "cloudfront-js-2.0"
-  comment = "301 redirect www.${var.domain} -> https://${var.domain}"
+  comment = "www->apex redirect + S3 directory index rewrite for ${var.domain}"
   publish = true
 
   code = <<-EOT
 function handler(event) {
   var request = event.request;
+
+  // 1) www -> apex 301 redirect. Runs FIRST so we never spend rewrite
+  //    cycles on requests we're about to bounce to a different host.
   var host = request.headers.host && request.headers.host.value;
   if (host && host.toLowerCase() === "${local.www_fqdn}") {
     return {
@@ -245,6 +275,18 @@ function handler(event) {
         "location": { "value": "https://${local.apex_fqdn}" + request.uri }
       }
     };
+  }
+
+  // 2) S3 directory index rewrite. Runs SECOND so it only applies to
+  //    requests that survived the redirect check. "/privacy/" becomes
+  //    "/privacy/index.html"; "/about" (no trailing slash, no extension)
+  //    becomes "/about/index.html". Requests with an extension (".css",
+  //    ".png", ".js") pass through untouched.
+  var uri = request.uri;
+  if (uri.endsWith("/")) {
+    request.uri += "index.html";
+  } else if (!uri.includes(".")) {
+    request.uri += "/index.html";
   }
   return request;
 }
@@ -287,7 +329,7 @@ resource "aws_cloudfront_distribution" "apex" {
 
     function_association {
       event_type   = "viewer-request"
-      function_arn = aws_cloudfront_function.www_to_apex_redirect.arn
+      function_arn = aws_cloudfront_function.viewer_request.arn
     }
   }
 
@@ -365,16 +407,15 @@ resource "aws_s3_bucket_policy" "apex" {
 # instead of double-creating. The bootstrap notes in README.md cover this.
 ###############################################################################
 
-# GitHub Actions OIDC. Thumbprint list is the published GitHub root cert
-# chain; AWS verifies signed JWTs against these. Source:
-# https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services
+# GitHub Actions OIDC. Thumbprints are computed at plan time from the live
+# TLS handshake against token.actions.githubusercontent.com via the
+# tls_certificate data source above. AWS does NOT auto-rotate OIDC
+# provider thumbprints, so hand-pinning a list is fragile across issuer
+# cert rotations; computing on apply keeps the trust intact.
 resource "aws_iam_openid_connect_provider" "github" {
-  url            = "https://token.actions.githubusercontent.com"
-  client_id_list = ["sts.amazonaws.com"]
-  thumbprint_list = [
-    "6938fd4d98bab03faadb97b34396831e3780aea1",
-    "1c58a3a8518e8759bf075b76b750d4f2df264fcd",
-  ]
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.github_oidc.certificates[0].sha1_fingerprint]
 
   tags = {
     Name = "github-actions-oidc"
@@ -382,15 +423,11 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 # Terraform Cloud workload identity. Single-audience: aws.workload.identity.
+# Thumbprint computed at plan time from app.terraform.io's live cert chain.
 resource "aws_iam_openid_connect_provider" "tfc" {
-  url            = "https://app.terraform.io"
-  client_id_list = ["aws.workload.identity"]
-
-  # TFC's certificate chain rotates; we let AWS resolve the thumbprint from
-  # the JWKS rather than pinning a manual list, by setting a placeholder
-  # that's overwritten on first validation. This matches HashiCorp's
-  # documented pattern for the TFC -> AWS OIDC bridge.
-  thumbprint_list = ["0c8e8c0b6b8e8e8c0b6b8e8e8c0b6b8e8e8c0b6b"]
+  url             = "https://app.terraform.io"
+  client_id_list  = ["aws.workload.identity"]
+  thumbprint_list = [data.tls_certificate.tfc_oidc.certificates[0].sha1_fingerprint]
 
   tags = {
     Name = "tfc-workload-identity"
@@ -399,16 +436,24 @@ resource "aws_iam_openid_connect_provider" "tfc" {
 
 ###############################################################################
 # IAM ROLE: github_actions_apex_deploy
-# Assumable from the pfv repo's GitHub Actions workflows. Main-branch pushes
-# get s3 put/delete + cloudfront invalidation. PRs (if enabled) can ONLY
-# assume the role for plan-style operations because the inline policy below
-# is the only policy attached and it grants mutating actions unconditionally;
-# PR-B's workflow restricts itself further with a job-level `if:` guard.
+# Assumable ONLY from GitHub Actions workflow runs whose OIDC token subject
+# exactly equals `repo:${var.github_repo}:ref:refs/heads/${var.github_main_branch}`.
+# This is the "push to main" subject; PR-context tokens have a different sub
+# (`pull_request`) and cannot match.
+#
+# Why exact-match: workflow-level guards like `if: github.ref == 'refs/heads/main'`
+# are not sufficient because anyone who can open a PR can also rewrite the
+# workflow file in that PR and remove the guard. The trust policy itself
+# must reject non-main subjects.
+#
+# Use `StringEquals` (not StringLike) on the sub claim. NO pull_request
+# patterns. If PR previews are needed later, that requires a SEPARATE
+# read-only role (see follow-up note in apex/README.md).
 ###############################################################################
 
 data "aws_iam_policy_document" "github_actions_trust" {
   statement {
-    sid     = "GitHubActionsFromMain"
+    sid     = "GitHubActionsFromMainOnly"
     effect  = "Allow"
     actions = ["sts:AssumeRoleWithWebIdentity"]
 
@@ -426,7 +471,7 @@ data "aws_iam_policy_document" "github_actions_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = compact([local.github_main_sub, local.github_pr_sub])
+      values   = [local.github_main_sub]
     }
   }
 }
@@ -588,18 +633,26 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
   }
 
   # ACM validation creates _<token>.<domain> CNAMEs in the zone. Without
-  # write access to the zone, PR-A's apply cannot complete. Scoped to the
-  # specific zone; this is the ONLY record-mutating permission granted.
+  # write access to the zone, PR-A's apply cannot complete. The
+  # ForAllValues:StringEquals condition on route53:ChangeResourceRecordSetsRecordTypes
+  # restricts the role to CNAME writes ONLY. The apex A record (and any
+  # other record type) is unreachable through this role. PR-D will widen
+  # the condition to add "A" when it ships the apex ALIAS swap. This
+  # makes "no A records in PR-A" an IAM-enforced invariant, not just a
+  # Terraform code-discipline one.
   statement {
-    sid    = "WriteAcmValidationRecords"
+    sid    = "WriteAcmValidationRecordsCnameOnly"
     effect = "Allow"
     actions = [
       "route53:ChangeResourceRecordSets",
     ]
     resources = ["arn:aws:route53:::hostedzone/${data.aws_route53_zone.apex.zone_id}"]
-    # NOTE: ACM validation records are _<token>.<domain> CNAMEs; the apex
-    # A record is left untouched by this PR. PR-D adds the apex A ALIAS;
-    # that's the cutover step.
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "route53:ChangeResourceRecordSetsRecordTypes"
+      values   = ["CNAME"]
+    }
   }
 
   # IAM management for this role chain (self-management) + the OIDC

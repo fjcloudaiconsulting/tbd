@@ -18,7 +18,7 @@ have landed and been validated against the CloudFront-assigned
 | `aws_s3_bucket` (+ public-access-block, versioning, SSE, lifecycle, ownership) | Private origin bucket for the static export |
 | `aws_cloudfront_distribution` | Edge distribution with HTTPS, HSTS, www -> apex redirect |
 | `aws_cloudfront_origin_access_control` | OAC (NOT legacy OAI) so only this distribution can read the bucket |
-| `aws_cloudfront_function` | Viewer-request function redirecting `www` to apex with 301 |
+| `aws_cloudfront_function` | Viewer-request function: (1) `www` -> apex 301 redirect, then (2) S3 directory-index rewrite (`/privacy/` -> `/privacy/index.html`) |
 | `aws_cloudfront_response_headers_policy` | Security headers: HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy |
 | `aws_acm_certificate` + `_validation` | DNS-validated cert in `us-east-1` (CloudFront requirement) for apex + www |
 | `aws_route53_record.apex_acm_validation` | ACM `_<token>.<domain>` validation CNAMEs in the existing zone. **Does NOT touch the apex A record.** |
@@ -149,16 +149,68 @@ targets; apex has no such reuse story.
 
 - The **GitHub Actions deploy role** can `PutObject`, `DeleteObject`,
   `ListBucket` on the apex bucket only, and `CreateInvalidation` on the
-  apex distribution only. No other bucket, no other distribution.
+  apex distribution only. No other bucket, no other distribution. The
+  trust policy uses `StringEquals` on the OIDC `sub` claim, pinned to
+  exactly `repo:flamarion/pfv:ref:refs/heads/main`. PR-context tokens
+  have a different `sub` and are rejected at the trust level. Workflow
+  `if:` guards alone would be insufficient because PR authors can edit
+  the workflow file; this restriction is IAM-enforced.
+  - **PR previews are not possible with this role.** If a future
+    requirement asks for preview deploys per PR, the correct path is a
+    separate read-only IAM role with its own trust policy (e.g.
+    conditioned on `pull_request` sub patterns and granted only
+    `s3:ListBucket`/`s3:GetObject`). That role is deliberately out of
+    scope for PR-A.
 - The **TFC apex provisioner role** can manage the apex bucket and
   distribution, ACM certs in `us-east-1`, the two IAM OIDC providers,
   and its own + the GH Actions role. Route 53 is **read-only** with the
-  single exception of ACM validation CNAME writes scoped to the apex
-  zone. Apex `A` record writes are **NOT** granted by this module; PR-D
-  widens the policy at cutover.
+  single exception of ACM validation **CNAME** writes, which are scoped
+  to the apex hosted zone AND restricted by an IAM condition on
+  `route53:ChangeResourceRecordSetsRecordTypes` to the `CNAME` type only.
+  Apex `A` record writes are **IAM-blocked**, not just code-discipline
+  blocked. PR-D widens the IAM condition to add `A` at cutover.
 - The **S3 bucket** has all four public-access-block flags ON. Read
   access is granted exclusively to the apex CloudFront distribution
   service-principal, scoped by `SourceArn` condition.
+
+### OIDC thumbprint rotation
+
+Both `aws_iam_openid_connect_provider` resources compute their SHA-1
+thumbprints at plan time via `data "tls_certificate"` lookups against
+the live OIDC issuer endpoints
+(`token.actions.githubusercontent.com` and `app.terraform.io`). AWS does
+NOT auto-rotate OIDC thumbprints, so hand-pinning is fragile across
+issuer cert rotations; computing on apply keeps trust intact. Requires
+the `hashicorp/tls ~> 4.0` provider, declared in `versions.tf`.
+
+### S3 directory-index handling (CloudFront Function)
+
+S3 REST origin (the OAC path) does NOT translate `/privacy/` to
+`/privacy/index.html`. That's only the S3 static-website-hosting
+endpoint, which is public + non-HTTPS and we deliberately avoid. A
+viewer-request CloudFront Function rewrites directory-style URIs:
+
+- `/privacy/` -> `/privacy/index.html`
+- `/about` (no trailing slash, no extension) -> `/about/index.html`
+- `/_next/static/foo.css` (has extension) -> pass through
+
+The function ALSO performs the `www` -> apex 301 redirect. Order
+matters: redirect runs FIRST (so we never spend rewrite cycles on
+requests we're about to bounce to a different host), rewrite runs
+SECOND (so requests that survive the redirect have S3-resolvable URIs).
+
+Expected behaviour, verifiable against the CloudFront-assigned
+`dXXX.cloudfront.net` URL once PR-B has synced PR-C's `out-apex/`:
+
+| URL | Expected response |
+|---|---|
+| `https://<cf-domain>/` | `index.html` (200) |
+| `https://<cf-domain>/privacy/` | `privacy/index.html` (200) |
+| `https://<cf-domain>/privacy` | `privacy/index.html` (200 after rewrite) |
+| `https://<cf-domain>/terms/` | `terms/index.html` (200) |
+| `https://<cf-domain>/docs/` | `docs/index.html` (200) |
+| `https://<cf-domain>/_next/static/foo.css` | 200 (no rewrite) |
+| `https://www.<apex>/privacy` | 301 -> `https://<apex>/privacy` |
 
 ### OAC vs OAI
 
