@@ -29,6 +29,7 @@ const sections = [
   { id: "system-health", label: "System health" },
   { id: "dashboard", label: "Dashboard" },
   { id: "transactions", label: "Transactions" },
+  { id: "recurring", label: "Recurring transactions" },
   { id: "accounts", label: "Accounts" },
   { id: "categories", label: "Categories" },
   { id: "budgets", label: "Budgets" },
@@ -428,6 +429,30 @@ export default function DocsPage() {
               filter by status, account, or category, and to sort the
               columns. Imports land here as a preview first, so nothing
               is committed until you confirm.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="recurring">Recurring transactions</h2>
+            <p>
+              The Recurring page lists every template you have set up,
+              split into Active and Paused. Templates are created by
+              promoting an existing transaction (open the row on the
+              Transactions page and use "Promote to recurring"); they
+              are not authored directly here.
+            </p>
+            <h3>Generate Due</h3>
+            <p>
+              "Generate Due" materializes the next occurrence for every
+              active recurring template whose next due date has already
+              passed. Run it when you want pending rows to appear ahead
+              of their settled date, for example to forecast a credit
+              card statement that has not closed yet. The app also
+              generates rows on its own at the appropriate time, so
+              this is a convenience action rather than a required step.
+              Stopping a template removes its remaining pending future
+              rows; settled past rows are kept because they are real
+              money movements.
             </p>
           </section>
 
