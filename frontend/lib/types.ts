@@ -19,6 +19,11 @@ export interface User {
   // swaps the email-change re-auth from "current password" to a Google
   // step-up flow when this is false.
   password_set: boolean;
+  // L3.3 first-run wizard: ISO-8601 timestamp once the user finishes
+  // (or skips) onboarding, null otherwise. AppShell uses this to bounce
+  // freshly authenticated users to /onboarding. Server-side so the flag
+  // survives device changes.
+  onboarded_at?: string | null;
   // Track E: org-level toggle controlling whether org admins can call
   // POST /api/v1/accounts/{id}/adjust-balance. Off by default. The
   // accounts page uses this (combined with isAdmin()) to gate the

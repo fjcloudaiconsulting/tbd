@@ -68,6 +68,11 @@ class UserResponse(BaseModel):
     # Password" mode and to show the "Verify with Google" button on the
     # email-change form.
     password_set: bool = True
+    # L3.3: ISO-8601 timestamp when the user finished the first-run
+    # wizard, or None if they have not yet seen it. Server-side flag
+    # so it survives device changes; the frontend redirects to
+    # ``/onboarding`` while this is None.
+    onboarded_at: str | None = None
     subscription_status: str | None = None
     subscription_plan: str | None = None
     trial_end: str | None = None

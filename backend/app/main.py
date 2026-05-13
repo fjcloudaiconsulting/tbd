@@ -22,7 +22,7 @@ from app.models.user import Organization
 from app.services import subscription_service
 from app.logging import setup_logging
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_analytics, admin_audit, admin_orgs, admin_roles, admin_users, auth, budgets, categories, forecast, forecast_plans, import_router, org_data, org_members, orgs, plans, recurring, settings, subscriptions, tags, transactions, users
+from app.routers import account_types, accounts, admin, admin_analytics, admin_audit, admin_orgs, admin_roles, admin_users, auth, budgets, categories, forecast, forecast_plans, import_router, onboarding, org_data, org_members, orgs, plans, recurring, settings, subscriptions, tags, transactions, users
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 # Setup JSON logging early so uvicorn's loggers are captured
@@ -365,6 +365,7 @@ async def request_validation_handler(request, exc: RequestValidationError):
 
 app.include_router(auth.router)
 app.include_router(users.router)
+app.include_router(onboarding.router)
 app.include_router(account_types.router)
 app.include_router(accounts.router)
 app.include_router(categories.router)
