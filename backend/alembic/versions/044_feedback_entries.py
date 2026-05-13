@@ -1,7 +1,7 @@
 """Add feedback_entries table for in-app feedback widget.
 
-Revision ID: 043_feedback_entries
-Revises: 042_users_onboarded_at
+Revision ID: 044_feedback_entries
+Revises: 043_backfill_subscriptions
 Create Date: 2026-05-13
 
 Captures user-submitted feedback from the in-app widget. Spec captured
@@ -35,8 +35,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "043_feedback_entries"
-down_revision = "042_users_onboarded_at"
+revision = "044_feedback_entries"
+down_revision = "043_backfill_subscriptions"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
