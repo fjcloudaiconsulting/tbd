@@ -34,9 +34,24 @@ export default function AccountsPage() {
   const [editAcctId, setEditAcctId] = useState<number | null>(null);
   const [editAcctName, setEditAcctName] = useState("");
   const [editAcctCloseDay, setEditAcctCloseDay] = useState("");
+  // Edit Account Type spec § 5.1 — selected type id during inline edit.
+  // The select drives both the close-day input's visibility (§ 5.2) and
+  // the type-change confirm modal (§ 5.3).
+  const [editAcctTypeId, setEditAcctTypeId] = useState<number | "">("");
   // L3.2 Wave 2A — opening balance fields are editable from the row.
   const [editAcctOpeningBalance, setEditAcctOpeningBalance] = useState("0.00");
   const [editAcctOpeningBalanceDate, setEditAcctOpeningBalanceDate] = useState("");
+  // Confirm modal state for type change (spec § 5.3). Holds the
+  // pre-resolved old/new type labels + the change-effect copy so the
+  // modal message can be a plain string (ConfirmModal does not take
+  // rich/JSX content).
+  const [pendingTypeChange, setPendingTypeChange] = useState<{
+    accountName: string;
+    oldTypeLabel: string;
+    newTypeLabel: string;
+    enteringCC: boolean;
+    leavingCC: boolean;
+  } | null>(null);
 
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [acctName, setAcctName] = useState("");
@@ -177,27 +192,103 @@ export default function AccountsPage() {
   function startEditAcct(a: Account) {
     setEditAcctId(a.id);
     setEditAcctName(a.name);
+    setEditAcctTypeId(a.account_type_id);
     setEditAcctCloseDay(a.close_day ? String(a.close_day) : "");
     setEditAcctOpeningBalance(String(a.opening_balance ?? "0.00"));
     setEditAcctOpeningBalanceDate(a.opening_balance_date ?? "");
   }
 
+  // Resolve the currently-selected edit type so render gates (close-day
+  // input visibility, dialog content) can read its slug live. Edit
+  // Account Type spec § 5.2.
+  const editingAcct = accounts.find((a) => a.id === editAcctId) ?? null;
+  const editingTypeSlug =
+    accountTypes.find((t) => t.id === editAcctTypeId)?.slug ?? null;
+
+  // Common PUT body builder for the save action. Pulled out so the
+  // confirm-modal "Change type" handler can re-use it without
+  // duplicating the JSON shape.
+  async function _doSaveAcct() {
+    if (!editAcctId) return;
+    const isCC = editingTypeSlug === "credit_card";
+    const body: Record<string, unknown> = {
+      name: editAcctName,
+      opening_balance: editAcctOpeningBalance || "0.00",
+      opening_balance_date: editAcctOpeningBalanceDate || null,
+    };
+    // Spec § 3.1 — only send close_day when the selected type is CC.
+    // The server forces close_day=null on non-CC types regardless of
+    // payload, but sending a non-null close_day on a non-CC type yields
+    // 400 per the create+update parity rules. So we suppress it
+    // entirely when the user is not on CC.
+    if (isCC) {
+      body.close_day = editAcctCloseDay ? Number(editAcctCloseDay) : null;
+    }
+    // Always send account_type_id so the cascade and audit logic on
+    // the backend trigger. The handler is idempotent when the value
+    // equals the current type (no audit row emitted, per § 6).
+    if (editAcctTypeId !== "") {
+      body.account_type_id = editAcctTypeId;
+    }
+    await apiFetch(`/api/v1/accounts/${editAcctId}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+    setEditAcctId(null);
+    setEditAcctTypeId("");
+    setPendingTypeChange(null);
+    await reload();
+  }
+
   async function handleSaveAcct() {
     if (!editAcctId) return;
     setError("");
-    try {
-      await apiFetch(`/api/v1/accounts/${editAcctId}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          name: editAcctName,
-          close_day: editAcctCloseDay ? Number(editAcctCloseDay) : null,
-          opening_balance: editAcctOpeningBalance || "0.00",
-          opening_balance_date: editAcctOpeningBalanceDate || null,
-        }),
+    // Spec § 5.3 — show the confirm modal ONLY when the type actually
+    // changes. Plain name / close-day / opening-balance edits commit
+    // straight through.
+    if (editingAcct && editAcctTypeId !== "" && editAcctTypeId !== editingAcct.account_type_id) {
+      const oldType = accountTypes.find((t) => t.id === editingAcct.account_type_id) ?? null;
+      const newType = accountTypes.find((t) => t.id === editAcctTypeId) ?? null;
+      setPendingTypeChange({
+        accountName: editingAcct.name,
+        oldTypeLabel: oldType?.name ?? "current type",
+        newTypeLabel: newType?.name ?? "new type",
+        leavingCC: oldType?.slug === "credit_card",
+        enteringCC: newType?.slug === "credit_card",
       });
-      setEditAcctId(null);
-      await reload();
+      return;
+    }
+    try {
+      await _doSaveAcct();
     } catch (err) { setError(extractErrorMessage(err)); }
+  }
+
+  async function confirmTypeChange() {
+    setError("");
+    try {
+      await _doSaveAcct();
+    } catch (err) {
+      setPendingTypeChange(null);
+      setError(extractErrorMessage(err));
+    }
+  }
+
+  // Compose the confirm-modal message at call time per spec § 5.3 (the
+  // shared ConfirmModal takes a plain string, not rich JSX).
+  function _typeChangeMessage(p: NonNullable<typeof pendingTypeChange>): string {
+    const parts: string[] = [
+      `You are changing ${p.accountName} from ${p.oldTypeLabel} to ${p.newTypeLabel}.`,
+    ];
+    if (p.leavingCC) {
+      parts.push("This will clear the closing day on this account.");
+    }
+    if (p.enteringCC) {
+      parts.push(
+        "You will need to set a closing day. New transactions on this account will default to Pending until they settle.",
+      );
+    }
+    parts.push("Existing transactions on this account will not change.");
+    return parts.join(" ");
   }
 
   async function handleToggleActive(account: Account) {
@@ -353,7 +444,11 @@ export default function AccountsPage() {
                   {selectedType?.slug === "credit_card" && (
                     <div>
                       <label htmlFor="acct-close" className={label}>Bill close day (1-28)</label>
-                      <input id="acct-close" type="number" min={1} max={28} value={acctCloseDay} onChange={(e) => setAcctCloseDay(e.target.value)} className={`w-24 ${input}`} placeholder="15" />
+                      {/* Spec § 5.6 — required when the selected type
+                          is credit_card. Server-side validation per
+                          § 3.1.1 remains the source of truth; this is
+                          a UX hint, not a security boundary. */}
+                      <input id="acct-close" type="number" required min={1} max={28} value={acctCloseDay} onChange={(e) => setAcctCloseDay(e.target.value)} className={`w-24 ${input}`} placeholder="15" />
                     </div>
                   )}
                   {/* L3.2 Wave 2A — opening balance + date. Optional;
@@ -411,8 +506,34 @@ export default function AccountsPage() {
                   <div key={a.id} className="flex flex-col gap-3 rounded-md bg-surface-raised px-3 py-3">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                       <input aria-label="Account name" type="text" value={editAcctName} onChange={(e) => setEditAcctName(e.target.value)} className={`w-full text-sm sm:flex-1 ${input}`}
-                        onKeyDown={(e) => { if (e.key === "Enter") handleSaveAcct(); if (e.key === "Escape") setEditAcctId(null); }} autoFocus />
-                      {a.account_type_slug === "credit_card" && (
+                        onKeyDown={(e) => { if (e.key === "Enter") handleSaveAcct(); if (e.key === "Escape") { setEditAcctId(null); setEditAcctTypeId(""); } }} autoFocus />
+                      {/* Edit Account Type spec § 5.1 — type select.
+                          Drives close-day input visibility below via
+                          editingTypeSlug. */}
+                      <select
+                        aria-label="Account type"
+                        value={editAcctTypeId}
+                        onChange={(e) => {
+                          const next = e.target.value === "" ? "" : Number(e.target.value);
+                          setEditAcctTypeId(next);
+                          // Spec § 5.2 — clear close-day local state
+                          // when leaving CC, so a stale value can't be
+                          // sent.
+                          const nextSlug = accountTypes.find((t) => t.id === next)?.slug ?? null;
+                          if (nextSlug !== "credit_card") setEditAcctCloseDay("");
+                        }}
+                        className={`w-full text-sm sm:w-44 ${input}`}
+                      >
+                        {accountTypes.map((at) => (
+                          <option key={at.id} value={at.id}>{at.name}</option>
+                        ))}
+                      </select>
+                      {/* Spec § 5.2 — close-day input visibility is
+                          driven by the SELECTED type, not the row's
+                          current type. The moment the user picks Credit
+                          Card the input appears; the moment they pick
+                          anything else it disappears. */}
+                      {editingTypeSlug === "credit_card" && (
                         <input aria-label="Close day" type="number" min={1} max={28} value={editAcctCloseDay} onChange={(e) => setEditAcctCloseDay(e.target.value)} placeholder="Close day" className={`w-full text-sm sm:w-24 ${input}`} />
                       )}
                     </div>
@@ -443,7 +564,7 @@ export default function AccountsPage() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <button onClick={handleSaveAcct} className="min-h-[44px] text-xs text-accent hover:text-accent-hover sm:min-h-0">Save</button>
-                      <button onClick={() => setEditAcctId(null)} className="min-h-[44px] text-xs text-text-muted sm:min-h-0">Cancel</button>
+                      <button onClick={() => { setEditAcctId(null); setEditAcctTypeId(""); }} className="min-h-[44px] text-xs text-text-muted sm:min-h-0">Cancel</button>
                     </div>
                   </div>
                 ) : (
@@ -572,6 +693,17 @@ export default function AccountsPage() {
         variant="danger"
         onConfirm={() => { if (confirmDeleteAcctId !== null) handleDeleteAccount(confirmDeleteAcctId); }}
         onCancel={() => setConfirmDeleteAcctId(null)}
+      />
+      {/* Edit Account Type spec § 5.3 — confirm dialog for type
+          change. Plain-string message composed at call time. */}
+      <ConfirmModal
+        open={pendingTypeChange !== null}
+        title="Change account type?"
+        message={pendingTypeChange ? _typeChangeMessage(pendingTypeChange) : ""}
+        confirmLabel="Change type"
+        variant="warning"
+        onConfirm={confirmTypeChange}
+        onCancel={() => setPendingTypeChange(null)}
       />
       {adjustingAccount && (
         <AdjustBalanceModal
