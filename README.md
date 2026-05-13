@@ -98,6 +98,10 @@ Swagger UI is available at http://localhost/api/docs when running locally.
 | Plans / Subscriptions | `/api/v1/plans`, `/api/v1/subscriptions` | Plan catalog and trial / subscription state |
 | Admin | `/api/v1/admin/*` | Superadmin: orgs, audit log, roles |
 
+## Configuration and environment variables
+
+Every environment variable consumed by the app (backend, frontend, migrate job, CLI) is documented in [ENVIRONMENT.md](ENVIRONMENT.md). That file is the source of truth for required vs optional vars, scopes (build vs run), sensitivity, deployment paths (local / CI / production), and common failure modes. Start there before editing `.env`, `.do/app.yaml`, or GitHub Actions secrets.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, architecture details, environment variables, branching workflow, and deployment guide.

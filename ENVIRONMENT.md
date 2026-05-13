@@ -1,0 +1,397 @@
+# Environment Variables
+
+Source of truth for every environment variable that The Better Decision (pfv)
+reads. If a variable is not listed here, it is not officially supported and may
+be removed or renamed without notice.
+
+## Audience
+
+Anyone deploying, operating, or running pfv locally:
+
+- Local developers (`docker compose` + `./pfv`)
+- CI maintainers (GitHub Actions secrets, smoke tests)
+- Production operators (DigitalOcean App Platform, `doctl apps update`)
+
+## Table of contents
+
+1. [Quick start](#quick-start)
+2. [Variable reference (by component)](#variable-reference-by-component)
+3. [Feature flags and runtime modes](#feature-flags-and-runtime-modes)
+4. [Secrets vs non-secrets](#secrets-vs-non-secrets)
+5. [Deployment paths](#deployment-paths)
+6. [Common failure modes](#common-failure-modes)
+7. [Spec-sync hazards (DigitalOcean App Platform)](#spec-sync-hazards-digitalocean-app-platform)
+8. [Related files](#related-files)
+
+---
+
+## Quick start
+
+### Local development
+
+Minimum to bring up the stack with `docker compose up`:
+
+```bash
+cp .env.example .env
+# Open .env and set JWT_SECRET_KEY to a real 32+ char secret:
+#   python -c "import secrets; print(secrets.token_urlsafe(64))"
+./pfv start
+```
+
+The rest of `.env.example` is pre-populated with safe local-dev defaults.
+
+### Production (DigitalOcean App Platform)
+
+Production env vars live in `.do/app.yaml` and are pushed with:
+
+```bash
+doctl apps update <APP_ID> --spec .do/app.yaml
+```
+
+The current production app ID is `3bcf70e8-2bae-4918-8297-ce430c79735e`.
+
+`SECRET`-scoped values are encrypted as `EV[...]` blobs and safe to commit.
+See [Spec-sync hazards](#spec-sync-hazards-digitalocean-app-platform) below.
+
+---
+
+## Variable reference (by component)
+
+Columns: name, required, default, where to set (Local / CI / Prod),
+sensitive, purpose, failure mode if missing.
+
+### Backend (FastAPI)
+
+Loaded by `backend/app/config.py` via pydantic-settings (`.env` file +
+process env). Every value has an env override; the name in the table is
+the env-var name (uppercased).
+
+| Variable | Required | Default | Local | CI | Prod | Sensitive | Purpose | Failure mode if missing |
+|---|---|---|---|---|---|---|---|---|
+| `APP_NAME` | no | `"The Better Decision"` | `.env` | conftest | `.do/app.yaml` | no | Display name in emails and Swagger title. | Default used. |
+| `APP_ENV` | yes | `development` | `.env` | conftest | `.do/app.yaml` (`production`) | no | Selects dev vs prod code paths (CORS, cookies, MFA fallback, lifespan migrations). | Defaults to `development`. Prod-only code paths are skipped. |
+| `LOG_LEVEL` | no | `INFO` | `.env` | conftest | `.do/app.yaml` | no | structlog level filter. | Defaults to `INFO`. |
+| `DATABASE_URL` | yes | `mysql+aiomysql://pfv2:pfv2_secret@mysql:3306/pfv2` | `.env` | conftest sets a placeholder | `.do/app.yaml` (SECRET, also bound to migrate job) | yes (prod) | Async SQLAlchemy DSN. Alembic and the app share it. | Backend cannot reach MySQL; lifespan and Alembic fail. |
+| `DB_POOL_SIZE` | no | `5` | `.env` | unset | `.do/app.yaml` (optional override) | no | SQLAlchemy pool size per replica. See K8S-3 (PR #251). | Default 5 used. |
+| `DB_MAX_OVERFLOW` | no | `10` | `.env` | unset | `.do/app.yaml` (optional override) | no | SQLAlchemy max overflow per replica. See K8S-3 (PR #251). | Default 10 used. |
+| `JWT_SECRET_KEY` | yes | none (placeholder rejected) | `.env` | conftest sets a long fixture value | `.do/app.yaml` SECRET, also bound to migrate job | yes | HS256 key for access / refresh / reset / step-up / invite / verify-email tokens. Also keyed by recovery-code HMAC and MFA Fernet derivation. | Backend refuses to boot (`field_validator` rejects placeholder; min length 32). |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | no | `15` | `.env` | unset | inherit default | no | Access-token lifetime. | Default 15. |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | no | `7` | `.env` | unset | inherit default | no | Refresh-token lifetime. | Default 7. |
+| `SESSION_LIFETIME_DAYS` | no | `30` | `.env` | unset | inherit default | no | Absolute session ceiling. | Default 30. |
+| `COOKIE_SECURE` | yes for prod | `true` | `.env` set to `false` for HTTP | `false` via conftest | `.do/app.yaml` (`true`) | no | Marks refresh / step-up / sso-state cookies `Secure`. | If `true` on HTTP, browsers drop the cookie and login loops. |
+| `REDIS_URL` | yes for prod | `""` | `.env` (`redis://redis:6379/0`) | unset (in-memory fallback) | `.do/app.yaml` SECRET | yes (prod) | Backing store for slowapi rate limiting (cross-replica) and MFA email-fallback codes. | Rate limiter falls back to per-replica in-memory; MFA email-fallback returns 503 in production. |
+| `MAILGUN_API_KEY` | no | `""` | `.env` (empty for console logging) | unset | `.do/app.yaml` SECRET | yes | Mailgun API key. When empty, `send_email` logs subject/recipient only. | Email sends are silently skipped (dev-mode logger). |
+| `MAILGUN_DOMAIN` | with `MAILGUN_API_KEY` | `""` | `.env` | unset | `.do/app.yaml` (`m.thebetterdecision.com`) | no | Mailgun sending domain. | Mailgun call URL is malformed; send fails. |
+| `MAILGUN_REGION` | no | `""` | `.env` (empty for US) | unset | `.do/app.yaml` (`eu`) | no | `eu` selects `api.eu.mailgun.net`. Empty selects the US endpoint. | Wrong region returns Mailgun 401 / 404. |
+| `EMAIL_FROM` | no | `"The Better Decision <noreply@thebetterdecision.com>"` | `.env` | unset | `.do/app.yaml` | no | RFC-5322 `From:` header for outbound mail. | Default sender used. |
+| `APP_URL` | yes | `http://localhost` | `.env` | unset | `.do/app.yaml` (`https://app.thebetterdecision.com`) | no | Base URL embedded in password-reset, email-verify, MFA, invite, and Google SSO callback links. | Email links point at localhost. |
+| `MFA_ENCRYPTION_KEY` | yes if MFA used | `""` | `.env` (Fernet key) | unset | `.do/app.yaml` SECRET | yes | Fernet key for `users.mfa_secret_encrypted` at rest. | TOTP enroll / verify returns 500. |
+| `GOOGLE_CLIENT_ID` | yes for SSO | `""` | `.env` (OAuth client id) | unset | `.do/app.yaml` SECRET | yes | Google OAuth2 client id. | SSO endpoints 503; button (if forcibly shown) crashes the redirect. |
+| `GOOGLE_CLIENT_SECRET` | yes for SSO | `""` | `.env` | unset | `.do/app.yaml` SECRET | yes | Google OAuth2 client secret. | SSO token exchange fails with `invalid_client`. |
+| `BACKEND_CORS_ORIGINS` | yes | `http://localhost:3000` | `.env` (`http://localhost`) | unset | `.do/app.yaml` (`https://app.thebetterdecision.com`) | no | Comma-separated allowlist for `Access-Control-Allow-Origin`. | Browser blocks frontend XHR with CORS error. |
+| `DEFAULT_PLAN_SLUG` | no | `pro` | `.env` (optional) | unset | inherit default | no | Default subscription plan slug at first-user creation. | Default `pro` used (beta posture). |
+| `TRIAL_DURATION_DAYS` | no | `14` | `.env` (optional) | unset | inherit default | no | Trial duration assigned at first-user creation. | Default 14 used. |
+| `PFV_RUNTIME` | yes for prod | unset | unset | unset | `.do/app.yaml` (`app_platform`) | no | Tells `rate_limit.get_client_ip` to read `do-connecting-ip` unconditionally. | `audit_events.ip_address` records the DO ingress IP, not the user's IP. |
+| `PFV_MIGRATE_OK_OFF_MAIN` | no | unset | shell / `.env` only when needed | unset | unset | no | Escape hatch for the lifespan + `./pfv migrate` branch guard. Allows migrations from a non-`main` checkout. | Without it, lifespan and `./pfv migrate` refuse to run on a feature branch. |
+
+#### Backend MySQL container (local dev only)
+
+These are consumed by the `mysql` service in `docker-compose.yml`, not by
+the Python backend. They must match the credentials embedded in
+`DATABASE_URL`.
+
+| Variable | Required | Default | Local | Sensitive | Purpose |
+|---|---|---|---|---|---|
+| `MYSQL_ROOT_PASSWORD` | yes | `root_secret` | `.env` | yes (locally trivial) | MySQL root password (init only). |
+| `MYSQL_DATABASE` | yes | `pfv2` | `.env` | no | Schema created at init. |
+| `MYSQL_USER` | yes | `pfv2` | `.env` | no | App-level MySQL user created at init. Must match `DATABASE_URL`. |
+| `MYSQL_PASSWORD` | yes | `pfv2_secret` | `.env` | yes (locally trivial) | `MYSQL_USER`'s password. Must match `DATABASE_URL`. |
+
+Production MySQL runs on the `pfv-data-01` droplet; credentials live in
+`DATABASE_URL` (SECRET) and not in any per-mysql-container env. See
+`infra/MIGRATION.md`.
+
+#### Backend seed helpers (`./pfv seed`)
+
+Only consumed by `backend/seed.py`. Optional; defaults give the `demo /
+demo1234` user documented in CONTRIBUTING.md.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SEED_USERNAME` | `demo` | Username of the seeded user. |
+| `SEED_EMAIL` | `demo@example.com` | Email of the seeded user. |
+| `SEED_PASSWORD` | `demo1234` | Password of the seeded user. |
+| `SEED_FIRST_NAME` | `Demo` | First name of the seeded user. |
+| `SEED_LAST_NAME` | `User` | Last name of the seeded user. |
+| `SEED_ORG` | `Demo Household` | Org name created for the seeded user. |
+
+### Frontend (Next.js)
+
+Loaded at build time (`NEXT_PUBLIC_*`) or at server runtime (everything
+else). `NEXT_PUBLIC_*` values are baked into the static JS bundle, so they
+MUST be set at BUILD time in App Platform.
+
+| Variable | Required | Default | Local | CI | Prod | Sensitive | Purpose | Failure mode if missing |
+|---|---|---|---|---|---|---|---|---|
+| `NEXT_PUBLIC_API_URL` | no | `""` | `.env` (empty for same-origin via nginx) | unset | `.do/app.yaml` (empty for same-origin via ingress) | no | Prefix prepended to fetch URLs in `lib/api.ts`. Empty means same-origin. | Cross-origin deployments lose API access if missing and not same-origin. |
+| `NEXT_PUBLIC_SITE_URL` | no | empty (no canonical headers emitted) | `.env` (`https://app.thebetterdecision.com`) | unset | inherit `.env.example` or set explicitly | no | Canonical URL used in SEO metadata (sitemap, robots, OG image URLs). | Canonical tags and OG URLs are omitted. |
+| `NEXT_PUBLIC_GOOGLE_SSO_ENABLED` | yes when SSO is wired | `false` | `.env` (`true` to show the button) | unset | `.do/app.yaml` (`true`) | no | `GoogleSSOButton`, `LoginPageBody`, and `RegisterPageBody` render the "Sign in with Google" button only when this is exactly the string `"true"`. | Button is hidden; users have no SSO entry point. |
+| `NEXT_PUBLIC_APP_VERSION` | no | `dev` | unset | unset | unset (consider setting at build) | no | Stamped into feedback widget payloads as `app_version`. | Falls back to `dev`. |
+| `BACKEND_INTERNAL_URL` | yes for RSC | unset | `docker-compose.yml` (`http://backend:8000`) | unset | `.do/app.yaml` RUN_TIME (`${backend.PRIVATE_URL}`) | no | Server-side fetch base URL for React Server Components (`forecast-plans`, `import/reconcile`, `lib/auth-server.ts`). | RSC pages cannot reach the backend; pages 500. |
+| `HOSTNAME` | yes (DO) | unset | unset | unset | `.do/app.yaml` (`0.0.0.0`) | no | Forces Next standalone server to bind on all interfaces inside the container. | App Platform health check times out. |
+| `NODE_ENV` | implicit | `production` in built image, `development` under `next dev` | container default | container default | container default | no | Switches CSP `unsafe-eval`, dev-only error logging, hot reload. | Production behavior assumed when unset (Next default). |
+
+### Migrate job (DO PRE_DEPLOY)
+
+A separate App Platform job that runs `python /app/scripts/migrate.py`
+before any backend replica starts. Its env is independent from the
+backend service.
+
+| Variable | Required | Where | Purpose |
+|---|---|---|---|
+| `APP_ENV` | yes | `.do/app.yaml` (`production`) | Selects prod code paths. |
+| `DATABASE_URL` | yes | `.do/app.yaml` SECRET | Migration target. Same encrypted `EV[...]` blob as the backend service. |
+| `JWT_SECRET_KEY` | yes | `.do/app.yaml` SECRET | Required because `backend/app/config.py` instantiates `Settings()` at import; the JWT validator refuses the placeholder. Without this the migrate job crashes before alembic runs. See PR #202. |
+
+---
+
+## Feature flags and runtime modes
+
+Most env vars above are config. The variables below are flags / switches
+that change application behavior at runtime. Treat them as part of the
+deploy contract.
+
+| Variable | Component | What it does | Reference |
+|---|---|---|---|
+| `PFV_RUNTIME=app_platform` | backend | `get_client_ip` uses `do-connecting-ip` unconditionally so `audit_events.ip_address` records the real user IP, not the DO ingress peer. | PR #233, `project_audit_log_client_ip_bug.md` |
+| `PFV_MIGRATE_OK_OFF_MAIN=1` | backend (lifespan + `./pfv migrate`) | Escape hatch for the branch guard that refuses to run migrations from a non-`main` checkout. Off-by-default. | `pfv` CLI, `backend/app/main.py` |
+| `PFV_DEPDRIFT_SKIP=1` | `./pfv` CLI | Skips the host-vs-container `package-lock.json` SHA check on `./pfv start`. | `pfv` CLI line 48, PR #249 |
+| `PFV_DEPDRIFT_HOST_HASH`, `PFV_DEPDRIFT_CONTAINER_HASH` | `./pfv` CLI (tests only) | Test seam for the drift guard. Not for human use. | `pfv` CLI |
+| `NEXT_PUBLIC_GOOGLE_SSO_ENABLED=true` | frontend (build time) | Shows the "Sign in with Google" button on `/login`, `/register`, and step-up flows. Hidden otherwise. | PR #229 |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | backend | SQLAlchemy engine pool sizing. Defaults safe for single-replica; override when scaling HPA so `replicas * (pool_size + max_overflow)` stays under the managed-DB connection cap. | PR #251 (K8S-3) |
+| `COOKIE_SECURE` | backend | When `true`, cookies are flagged `Secure` and browsers refuse to send them over HTTP. Must be `false` for local-dev HTTP and `true` for prod HTTPS. | `backend/app/config.py` |
+| `APP_ENV=production` | backend | Disables lifespan migrations (delegates to PRE_DEPLOY job), tightens MFA fallback (requires Redis), opens production-only auth paths. | `backend/app/main.py`, `backend/app/routers/auth.py` |
+| `MAILGUN_API_KEY=""` | backend | When empty, `send_email` logs the recipient and subject and returns without calling Mailgun. Use for local dev. | `backend/app/services/email_service.py` |
+
+---
+
+## Secrets vs non-secrets
+
+In DigitalOcean App Platform, the env-var entry's `type:` field controls
+encryption.
+
+### `type: SECRET` (encrypted at rest, surfaced as `EV[...]`)
+
+These MUST be `SECRET` scope in `.do/app.yaml`:
+
+- `DATABASE_URL`
+- `REDIS_URL`
+- `JWT_SECRET_KEY`
+- `MFA_ENCRYPTION_KEY`
+- `MAILGUN_API_KEY`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+
+The `EV[...]` blob in `.do/app.yaml` is encrypted with the app's per-app
+key and is safe to commit. App Platform never surfaces plaintext after
+the value is first set; even `doctl apps spec get` returns the encrypted
+form. See the comment block in `.do/app.yaml`.
+
+### Plain (`scope: RUN_AND_BUILD_TIME`, no `type:`)
+
+These are committed as plaintext in `.do/app.yaml`:
+
+- `APP_ENV`, `APP_NAME`, `LOG_LEVEL`
+- `APP_URL`, `BACKEND_CORS_ORIGINS`
+- `COOKIE_SECURE`
+- `MAILGUN_DOMAIN`, `MAILGUN_REGION`, `EMAIL_FROM`
+- `PFV_RUNTIME`
+- `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_GOOGLE_SSO_ENABLED`
+- `HOSTNAME`, `BACKEND_INTERNAL_URL`
+
+---
+
+## Deployment paths
+
+### Local development
+
+1. `cp .env.example .env`
+2. Edit `.env`:
+   - Set `JWT_SECRET_KEY` to a real 32+ char secret.
+   - Leave Mailgun blank for console-logged email.
+   - Leave Google blank unless you have real OAuth credentials.
+   - `NEXT_PUBLIC_GOOGLE_SSO_ENABLED=false` unless you do (otherwise the
+     button errors out on click).
+3. `./pfv start`
+4. `docker compose` reads `.env` via `env_file: .env` on the backend
+   service. The frontend service gets `BACKEND_INTERNAL_URL` and
+   `NEXT_PUBLIC_API_URL` inline from `docker-compose.yml`.
+
+### CI (GitHub Actions)
+
+Tests run inside `backend/tests/conftest.py`, which sets `DATABASE_URL`,
+`APP_ENV=development`, and a fixture `JWT_SECRET_KEY` directly. CI does
+NOT consume `.env`.
+
+The deploy and smoke-tests jobs in `.github/workflows/release.yml` read
+from GitHub Actions secrets:
+
+- `DIGITALOCEAN_ACCESS_TOKEN` — `doctl` token for `digitalocean/app_action/deploy@v2`.
+- `SMOKE_USERNAME`, `SMOKE_PASSWORD` — credentials for post-deploy smoke
+  tests against `https://app.thebetterdecision.com`.
+
+Add or rotate these in the repo's GitHub Settings → Secrets and variables
+→ Actions.
+
+### Production (DigitalOcean App Platform)
+
+`.do/app.yaml` is the authoritative spec. Push with:
+
+```bash
+doctl apps update 3bcf70e8-2bae-4918-8297-ce430c79735e --spec .do/app.yaml
+```
+
+Any env var NOT listed in `.do/app.yaml` will be REMOVED from the live
+app on the next push. This is the same failure mode that took down
+production on 2026-04-25 when `JWT_SECRET_KEY` dropped to the placeholder.
+
+The deploy workflow (`.github/workflows/release.yml`) uses
+`app_spec_location: .do/app.yaml` and does NOT set `app_name` (see
+[Spec-sync hazards](#spec-sync-hazards-digitalocean-app-platform)).
+
+For build-time `NEXT_PUBLIC_*` vars (the SSO flag is the load-bearing
+example), changing the spec triggers an App Platform rebuild because the
+JS bundle must be regenerated. Expect a 2 to 3 minute auth-flow downtime
+during the rebuild.
+
+---
+
+## Common failure modes
+
+### "Google SSO button doesn't appear in production"
+
+Symptom: `/login` and `/register` render without the "Sign in with
+Google" button. Cause: `NEXT_PUBLIC_GOOGLE_SSO_ENABLED` is not set
+(or not exactly the string `"true"`) at BUILD time. Fix: confirm the
+variable is present in `.do/app.yaml`'s `frontend` `envs` block with
+scope `RUN_AND_BUILD_TIME` and value `"true"`, then re-deploy
+(`doctl apps update ... --spec .do/app.yaml`). A fresh build is required;
+runtime-only changes do not bake into the JS bundle.
+
+### "Audit log shows ingress IP not user IP in production"
+
+Symptom: `audit_events.ip_address` records `10.x.x.x` or DO ingress IPs.
+Cause: `PFV_RUNTIME` is not set, so `get_client_ip` cannot trust
+`do-connecting-ip`. Fix: confirm `PFV_RUNTIME=app_platform` is present
+in `.do/app.yaml`'s `backend` `envs` block, then redeploy. Verify by
+hitting any audited endpoint and inspecting the newest `audit_events`
+row in prod MySQL.
+
+### "Rate limit returns 500 instead of allowing the request"
+
+Symptom: a hot endpoint (login, register, password reset) returns 500
+when Redis is unreachable. Cause: slowapi raises on storage failure and
+the current handler does not fail-open. Mitigation today: keep Redis
+healthy. A separate hotfix to make slowapi fail-open is pending
+coordinator decision. See PR #245 for context on the storage backend.
+
+### "Frontend can't reach the API in production"
+
+Symptom: every fetch returns 404 or hits the wrong host. Cause:
+`NEXT_PUBLIC_API_URL` is set to a value other than the empty string
+when the frontend is same-origin with the backend (the production
+default). Fix: leave `NEXT_PUBLIC_API_URL=""` in `.do/app.yaml` so
+fetch URLs become relative and route through the App Platform ingress
+back to the `backend` component.
+
+### "Server-side pages 500 with `ECONNREFUSED backend:8000`"
+
+Symptom: `/forecast-plans` or `/import/[id]/reconcile` 500 on the server
+side. Cause: `BACKEND_INTERNAL_URL` is missing or wrong. Fix: in dev,
+the value lives in `docker-compose.yml` (`http://backend:8000`); in
+prod, it MUST be `${backend.PRIVATE_URL}` with `scope: RUN_TIME` (App
+Platform substitutes the component's private URL at runtime).
+
+### "Email sending fails silently"
+
+Symptom: password reset / verify / invite emails never arrive. Cause:
+`MAILGUN_API_KEY` empty (dev-mode logger only), or
+`MAILGUN_DOMAIN` / `MAILGUN_REGION` mismatch. Fix in prod: confirm all
+three are populated in `.do/app.yaml` and that `MAILGUN_REGION=eu`
+matches the configured Mailgun account region. A US-region key paired
+with `MAILGUN_REGION=eu` returns Mailgun 401.
+
+### "Backend refuses to boot with `JWT_SECRET_KEY` error"
+
+Symptom: backend crashloops with `ValueError: JWT_SECRET_KEY must be set
+to a real secret`. Cause: the env var is missing, still equals the
+placeholder, or is shorter than 32 chars. Fix: regenerate
+(`python -c "import secrets; print(secrets.token_urlsafe(64))"`) and set
+in `.env` (local) or as a `SECRET` value in `.do/app.yaml` (prod). The
+migrate PRE_DEPLOY job also needs this variable bound (PR #202).
+
+### "Lifespan refuses to migrate on a feature branch"
+
+Symptom: `./pfv start` boots the backend, but lifespan logs
+`migrate.skipped reason=non_main_branch`. Cause: branch guard. Fix:
+switch to `main` for migrations, or set `PFV_MIGRATE_OK_OFF_MAIN=1` in
+`.env` if you genuinely need to run lifespan migrations from the branch.
+See CLAUDE.md.
+
+---
+
+## Spec-sync hazards (DigitalOcean App Platform)
+
+App Platform's live env is whatever `.do/app.yaml` last pushed. The push
+path is one of:
+
+1. `doctl apps update <APP_ID> --spec .do/app.yaml` (manual, owner-run).
+2. `digitalocean/app_action/deploy@v2` with `app_spec_location: .do/app.yaml`
+   (release workflow).
+
+The action silently prefers `app_name` over `app_spec_location` when both
+are set. `.github/workflows/deploy.yml` and `release.yml` intentionally
+set ONLY `app_spec_location` to avoid this trap. See
+`reference_do_spec_sync.md` in agent memory for the full incident log.
+
+After merging any change to `.do/app.yaml`, the owner runs:
+
+```bash
+doctl apps update 3bcf70e8-2bae-4918-8297-ce430c79735e --spec .do/app.yaml
+```
+
+Without that step, edits to `.do/app.yaml` do not take effect until the
+next release-classified merge (release.yml's deploy job runs only on
+commits that semantic-release labels as a release). `chore`, `docs`, and
+`refactor` commits do not auto-deploy.
+
+Any env var NOT present in `.do/app.yaml` is REMOVED from the live app
+on the next push. Treat the file as the complete env contract.
+
+---
+
+## Related files
+
+- `.env.example` — copy-paste template with placeholder values and inline
+  comments matching the Purpose column in this doc.
+- `.do/app.yaml` — DigitalOcean App Platform spec. Authoritative for
+  production env. Pushed via `doctl apps update`.
+- `docker-compose.yml` — local-dev stack. Frontend env is inline; backend
+  pulls from `.env` via `env_file`.
+- `docker-compose.prod.yml` — single-host production compose (alternate
+  to App Platform). Not used by the current production deploy.
+- `backend/app/config.py` — pydantic-settings `Settings` model. Source of
+  truth for backend env names, defaults, and validators.
+- `backend/app/rate_limit.py` — `PFV_RUNTIME` consumer.
+- `backend/app/security.py` — `JWT_SECRET_KEY` consumer.
+- `backend/app/services/email_service.py` — Mailgun env consumer.
+- `frontend/next.config.ts` — CSP build, `NEXT_PUBLIC_API_URL` origin
+  allowlist.
+- `frontend/components/auth/GoogleSSOButton.tsx` — gates on
+  `NEXT_PUBLIC_GOOGLE_SSO_ENABLED`.
+- `pfv` (CLI) — `PFV_DEPDRIFT_*` and `PFV_MIGRATE_OK_OFF_MAIN` consumers.
+- `.github/workflows/release.yml`, `.github/workflows/deploy.yml` — GH
+  Actions secrets and deploy invocation.
+- `CONTRIBUTING.md` — local-dev setup walkthrough.
+- `CLAUDE.md` — codebase-level conventions, including the lifespan
+  branch guard reasoning.

@@ -142,6 +142,14 @@ services:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: EV[1:0/mRRuaUvDyJhFpbWK3g+TsqoYrBID+l:sddkvCmWoQSm6qU7/b9Q3QCWTFFWJ5i2Oj9nSOv6tyVlM7CQe0jC22lgJxKPq+pgJUlI]
+      # PFV_RUNTIME=app_platform tells get_client_ip in backend/app/rate_limit.py
+      # to consult the `do-connecting-ip` header (DO ingress writes the real
+      # client IP there) instead of falling back to the DO ingress peer IP.
+      # Without this var, audit_events.ip_address records the DO ingress IP,
+      # not the user's IP. See PR #233 and project_audit_log_client_ip_bug.md.
+      - key: PFV_RUNTIME
+        scope: RUN_AND_BUILD_TIME
+        value: "app_platform"
 
   - name: frontend
     github:
@@ -169,6 +177,14 @@ services:
       - key: HOSTNAME
         scope: RUN_AND_BUILD_TIME
         value: "0.0.0.0"
+      # NEXT_PUBLIC_* env vars are baked into the static JS bundle at BUILD
+      # time, so the scope MUST include BUILD_TIME (RUN_TIME alone is a
+      # no-op for Next.js). When this is not exactly the string "true",
+      # GoogleSSOButton renders null and the "Sign in with Google" button
+      # disappears from /login and /register. See PR #229 (L5.9).
+      - key: NEXT_PUBLIC_GOOGLE_SSO_ENABLED
+        scope: RUN_AND_BUILD_TIME
+        value: "true"
       # Server-side (RSC) reach to the backend. Browser requests use the App
       # Platform ingress (relative URLs); server-side fetches must hit the
       # backend component via its private URL. RUN_TIME scope only — the
