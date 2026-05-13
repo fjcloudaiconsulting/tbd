@@ -219,7 +219,7 @@ export default function AccountsPage() {
 
   return (
     <AppShell>
-      <div className="mb-8 flex items-center gap-1">
+      <div className="mb-8 flex items-start gap-1">
         <h1 className={`${pageTitle} mb-0`}>Accounts</h1>
         <HelpAnchor section="accounts" label="Accounts" />
       </div>

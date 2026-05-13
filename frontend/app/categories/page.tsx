@@ -375,7 +375,7 @@ export default function CategoriesPage() {
   return (
     <AppShell>
       <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-1">
+        <div className="flex items-start gap-1">
           <h1 className={`${pageTitle} mb-0`}>Categories</h1>
           <HelpAnchor section="categories" label="Categories" />
         </div>

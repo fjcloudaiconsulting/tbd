@@ -206,7 +206,7 @@ export default function BudgetsPage() {
   return (
     <AppShell>
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-1">
+        <div className="flex items-start gap-1">
           <h1 className={`${pageTitle} mb-0`}>Budgets</h1>
           <HelpAnchor section="budgets" label="Budgets" />
         </div>

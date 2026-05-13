@@ -921,7 +921,7 @@ function TransactionsPageContent() {
         </div>
       )}
       <div className="mb-8 flex items-center justify-between">
-        <div className="flex items-center gap-1">
+        <div className="flex items-start gap-1">
           <h1 className={`${pageTitle} mb-0`}>Transactions</h1>
           <HelpAnchor section="transactions" label="Transactions" />
         </div>
