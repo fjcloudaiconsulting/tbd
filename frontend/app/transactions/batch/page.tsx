@@ -35,6 +35,7 @@ import {
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import CategorySelect from "@/components/ui/CategorySelect";
+import DescriptionAutocomplete from "@/components/transactions/DescriptionAutocomplete";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { todayISO } from "@/lib/format";
 import {
@@ -376,16 +377,27 @@ export default function BatchEntryPage() {
                         />
                       </td>
                       <td className="px-2 py-2">
-                        <input
-                          type="text"
-                          className={input}
+                        <DescriptionAutocomplete
+                          id={`row-${row.key}-description`}
+                          type={row.type}
                           value={row.description}
-                          placeholder="e.g. Coffee shop"
-                          onChange={(e) =>
-                            updateRow(idx, { description: e.target.value })
+                          onChange={(next) =>
+                            updateRow(idx, { description: next })
                           }
-                          aria-label={`Row ${idx + 1} description`}
-                          maxLength={255}
+                          onPick={(s) => {
+                            // Pre-fill the category only when the row's
+                            // category is still empty, mirroring the
+                            // single-transaction add form. We never
+                            // overwrite a user-chosen category.
+                            if (row.category_id === "") {
+                              updateRow(idx, {
+                                description: s.description,
+                                category_id: s.category_id,
+                              });
+                            }
+                          }}
+                          placeholder="e.g. Coffee shop"
+                          ariaLabel={`Row ${idx + 1} description`}
                         />
                       </td>
                       <td className="px-2 py-2">

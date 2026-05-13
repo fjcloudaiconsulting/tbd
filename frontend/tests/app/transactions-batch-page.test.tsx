@@ -53,6 +53,37 @@ vi.mock("@/components/ui/CategorySelect", () => ({
   ),
 }));
 
+// DescriptionAutocomplete pulls a debounced /suggestions fetch on every
+// keystroke. The grid-level tests below assert row composition,
+// keyboard nav, and submit wiring, so stub it to a plain <input> that
+// matches the prod component's external contract (value/onChange/
+// ariaLabel). End-to-end autocomplete + pick + category-prefill is
+// covered separately in `transactions-batch-page-autocomplete.test.tsx`.
+vi.mock("@/components/transactions/DescriptionAutocomplete", () => ({
+  default: ({
+    id,
+    value,
+    onChange,
+    ariaLabel,
+    placeholder,
+  }: {
+    id: string;
+    value: string;
+    onChange: (next: string) => void;
+    ariaLabel?: string;
+    placeholder?: string;
+  }) => (
+    <input
+      id={id}
+      type="text"
+      aria-label={ariaLabel}
+      placeholder={placeholder}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
+}));
+
 const stableRouter = { push: vi.fn(), replace: vi.fn() };
 vi.mock("next/navigation", () => ({
   useRouter: () => stableRouter,
