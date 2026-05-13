@@ -21,7 +21,7 @@ from app.schemas.account import (
 )
 from app.services import audit_service
 from app.services.account_type_change_service import (
-    change_account_type,
+    apply_type_change_in_session,
     validate_create_close_day,
 )
 from app.services.exceptions import ConflictError, ValidationError
@@ -153,148 +153,74 @@ async def update_account(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    # Spec § 4.3: writes that touch ``account_type_id`` or ``close_day``
-    # run through the service-owned transaction so a SELECT ... FOR UPDATE
-    # row lock acquires on a fresh session, not on the auth-autobegun
-    # request session. Pure name / is_active / is_default / opening_balance
-    # edits stay on the request session.
-    touches_type_or_close_day = (
-        body.account_type_id is not None or "close_day" in body.model_fields_set
-    )
+    """Update an account.
 
+    PR #246 review feedback (P1 atomicity bug): when the request touches
+    ``account_type_id`` or ``close_day`` the WHOLE handler runs inside a
+    single service-owned transaction so a 4xx from a later guard
+    (e.g. the nonzero-balance deactivation guard at status 409) rolls
+    back the type change too. Audit events fire only AFTER the outer
+    commit succeeds, so a half-applied state never produces an
+    ``account.type_changed`` row.
+
+    Pattern (b) from spec § 4.3 still holds for the locking goal — the
+    ``SELECT ... FOR UPDATE`` row lock acquires on a fresh session,
+    independent of the auth-autobegun request session — but the
+    transaction boundary widens to wrap every other field mutation.
+    The spec's explicit guidance is that the transaction boundary is
+    the implementer's call ("The transaction boundary in which it
+    runs, however, is left to the implementer"). Widening it here
+    satisfies that guidance and closes the partial-commit hole.
+    Documented as a deviation in the PR body.
+
+    Plain edits that do not touch ``account_type_id`` or ``close_day``
+    keep using the request session (no row lock needed; the existing
+    optimistic-concurrency behavior is fine and matches how
+    ``is_default`` already behaves).
+    """
     actor_user_id = current_user.id
     actor_email = current_user.email
     actor_org_id = current_user.org_id
     req_id = _request_id()
     ip = get_client_ip(request)
 
-    type_change_result = None
-    if touches_type_or_close_day:
-        # Target type may be omitted (close-day-only edit). When omitted,
-        # the service still locks the row, validates the cascade against
-        # the row's current type, and persists the close_day update.
-        target_type_id = body.account_type_id
-        if target_type_id is None:
-            # Fetch current type id on the request session so the service
-            # gets a concrete int. The service's locked re-read is the
-            # source of truth; this is just to pass the argument through.
-            current_type_id = await db.scalar(
-                select(Account.account_type_id).where(
-                    Account.id == account_id,
-                    Account.org_id == actor_org_id,
-                )
-            )
-            if current_type_id is None:
-                raise HTTPException(status_code=404, detail="Account not found")
-            target_type_id = current_type_id
+    touches_type_or_close_day = (
+        body.account_type_id is not None or "close_day" in body.model_fields_set
+    )
 
-        type_change_result = await change_account_type(
-            session_factory=session_factory,
+    if touches_type_or_close_day:
+        return await _update_account_atomic(
             account_id=account_id,
-            org_id=actor_org_id,
-            target_type_id=target_type_id,
-            close_day_in_payload="close_day" in body.model_fields_set,
-            close_day_value=body.close_day,
+            body=body,
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            actor_org_id=actor_org_id,
+            req_id=req_id,
+            ip=ip,
+            session_factory=session_factory,
         )
 
-        if type_change_result.type_changed:
-            # Spec § 6 — emit audit only when type actually changed.
-            await audit_service.record_audit_event(
-                session_factory,
-                event_type="account.type_changed",
-                actor_user_id=actor_user_id,
-                actor_email=actor_email,
-                target_org_id=actor_org_id,
-                target_org_name=None,
-                request_id=req_id,
-                ip_address=ip,
-                outcome="success",
-                detail={
-                    "account_id": account_id,
-                    "old_type_id": type_change_result.old_type_id,
-                    "new_type_id": type_change_result.new_type_id,
-                    "old_type_slug": type_change_result.old_type_slug,
-                    "new_type_slug": type_change_result.new_type_slug,
-                    "closes_day_set": type_change_result.new_close_day
-                    if type_change_result.new_type_slug == "credit_card"
-                    and type_change_result.old_type_slug != "credit_card"
-                    else None,
-                    "closes_day_cleared": type_change_result.old_close_day
-                    if type_change_result.old_type_slug == "credit_card"
-                    and type_change_result.new_type_slug != "credit_card"
-                    else None,
-                },
-            )
-            await logger.ainfo(
-                "account.type_changed",
-                actor_user_id=actor_user_id,
-                actor_email=actor_email,
-                target_org_id=actor_org_id,
-                account_id=account_id,
-                old_type_slug=type_change_result.old_type_slug,
-                new_type_slug=type_change_result.new_type_slug,
-            )
-
-        # Refresh the request session's snapshot so subsequent reads
-        # (and the rest of this handler) see the committed state.
-        await db.commit()
-
+    # ── Fast path: no type/close_day touch, stay on the request session.
     result = await db.execute(
         select(Account)
         .options(selectinload(Account.account_type))
-        .where(Account.id == account_id, Account.org_id == current_user.org_id)
+        .where(Account.id == account_id, Account.org_id == actor_org_id)
     )
     account = result.scalar_one_or_none()
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    # Snapshot opening fields BEFORE mutation so the audit detail can
-    # compare old vs new even after commit-time refresh / expire.
     old_opening_balance = account.opening_balance
     old_opening_balance_date = account.opening_balance_date
-    opening_changed = False
-
-    if body.name is not None:
-        account.name = body.name
-    if body.is_active is not None:
-        if body.is_active is False and account.balance != 0:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot deactivate account with balance {account.balance}. Transfer the balance first.",
-            )
-        account.is_active = body.is_active
-    if body.is_default is True:
-        async with db.begin_nested():
-            await db.execute(
-                update(Account)
-                .where(Account.org_id == current_user.org_id, Account.id != account.id)
-                .values(is_default=False)
-            )
-            account.is_default = True
-    elif body.is_default is False:
-        account.is_default = False
-
-    # Opening balance fields. Both fields are optional in the body; we
-    # only mutate when explicitly supplied. The audit-event is emitted
-    # iff at least one of the two fields actually changed.
-    if body.opening_balance is not None and body.opening_balance != account.opening_balance:
-        account.opening_balance = body.opening_balance
-        opening_changed = True
-    if (
-        body.opening_balance_date is not None
-        and body.opening_balance_date != account.opening_balance_date
-    ):
-        account.opening_balance_date = body.opening_balance_date
-        opening_changed = True
-
+    opening_changed = await _apply_non_type_fields(
+        db, account, body, actor_org_id, nested_default=True
+    )
     new_opening_balance = account.opening_balance
     new_opening_balance_date = account.opening_balance_date
 
     await db.commit()
 
     if opening_changed:
-        # Fire-and-forget audit row in its own session. Matches the
-        # convention in tags / admin_users / auth.
         await audit_service.record_audit_event(
             session_factory,
             event_type="account.opening_balance.update",
@@ -324,6 +250,220 @@ async def update_account(
         .where(Account.id == account.id)
     )
     return _to_response(result.scalar_one())
+
+
+async def _apply_non_type_fields(
+    db: AsyncSession,
+    account: Account,
+    body: AccountUpdate,
+    org_id: int,
+    *,
+    nested_default: bool,
+) -> bool:
+    """Apply name / is_active / is_default / opening_* mutations.
+
+    Returns ``True`` iff at least one opening_balance field actually
+    changed (caller uses this to gate the audit event).
+
+    Raises ``HTTPException`` for the existing guards (409 on nonzero
+    deactivate). When invoked inside an outer
+    ``async with svc_db.begin()`` block the exception aborts the txn
+    and every staged write disappears with it — that is the whole
+    point of the atomic refactor (PR #246 review P1).
+
+    ``nested_default`` selects how the "set this row as default and
+    clear every sibling" two-write step is wrapped. Inside the request
+    session the existing nested-savepoint behavior is preserved
+    (request-session autobegin needs the savepoint). Inside the
+    service-owned outer txn a plain ``execute`` is sufficient since
+    the outer begin already covers it.
+    """
+    opening_changed = False
+
+    if body.name is not None:
+        account.name = body.name
+
+    if body.is_active is not None:
+        if body.is_active is False and account.balance != 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot deactivate account with balance {account.balance}. Transfer the balance first.",
+            )
+        account.is_active = body.is_active
+
+    if body.is_default is True:
+        if nested_default:
+            async with db.begin_nested():
+                await db.execute(
+                    update(Account)
+                    .where(Account.org_id == org_id, Account.id != account.id)
+                    .values(is_default=False)
+                )
+                account.is_default = True
+        else:
+            await db.execute(
+                update(Account)
+                .where(Account.org_id == org_id, Account.id != account.id)
+                .values(is_default=False)
+            )
+            account.is_default = True
+    elif body.is_default is False:
+        account.is_default = False
+
+    if body.opening_balance is not None and body.opening_balance != account.opening_balance:
+        account.opening_balance = body.opening_balance
+        opening_changed = True
+    if (
+        body.opening_balance_date is not None
+        and body.opening_balance_date != account.opening_balance_date
+    ):
+        account.opening_balance_date = body.opening_balance_date
+        opening_changed = True
+
+    return opening_changed
+
+
+async def _update_account_atomic(
+    *,
+    account_id: int,
+    body: AccountUpdate,
+    actor_user_id: int,
+    actor_email: str,
+    actor_org_id: int,
+    req_id: str | None,
+    ip: str,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AccountResponse:
+    """Single-transaction PUT path (PR #246 review P1 fix).
+
+    Wraps the locked type-change AND every other field mutation in ONE
+    service-owned transaction. A 4xx raised by any guard inside the
+    block aborts the outer ``begin()`` context manager and rolls back
+    every staged write atomically. Audit events fire only after the
+    outer commit succeeds.
+    """
+    type_result = None
+    opening_changed = False
+    old_opening_balance = None
+    old_opening_balance_date = None
+    new_opening_balance = None
+    new_opening_balance_date = None
+    response_payload: AccountResponse | None = None
+
+    async with session_factory() as svc_db:
+        async with svc_db.begin():
+            target_type_id = body.account_type_id
+            if target_type_id is None:
+                current_type_id = await svc_db.scalar(
+                    select(Account.account_type_id).where(
+                        Account.id == account_id,
+                        Account.org_id == actor_org_id,
+                    )
+                )
+                if current_type_id is None:
+                    raise HTTPException(
+                        status_code=404, detail="Account not found"
+                    )
+                target_type_id = current_type_id
+
+            account, type_result = await apply_type_change_in_session(
+                svc_db,
+                account_id=account_id,
+                org_id=actor_org_id,
+                target_type_id=target_type_id,
+                close_day_in_payload="close_day" in body.model_fields_set,
+                close_day_value=body.close_day,
+            )
+
+            old_opening_balance = account.opening_balance
+            old_opening_balance_date = account.opening_balance_date
+            opening_changed = await _apply_non_type_fields(
+                svc_db, account, body, actor_org_id, nested_default=False
+            )
+            new_opening_balance = account.opening_balance
+            new_opening_balance_date = account.opening_balance_date
+            # ``async with svc_db.begin()`` commits on clean exit.
+
+    # Outer txn committed cleanly. The cached ``account.account_type``
+    # relationship inside the service session points at the OLD
+    # AccountType (selectinload was eager-loaded before the mutation,
+    # and SA's identity map keeps the stale object). Re-read on a
+    # fresh session so ``_to_response`` projects the new slug + name.
+    async with session_factory() as fresh_db:
+        refreshed = (
+            await fresh_db.execute(
+                select(Account)
+                .options(selectinload(Account.account_type))
+                .where(Account.id == account_id)
+            )
+        ).scalar_one()
+        response_payload = _to_response(refreshed)
+
+    # Post-commit audits. Outside the session ``async with`` because
+    # audit_service.record_audit_event opens its own session.
+    if type_result is not None and type_result.type_changed:
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="account.type_changed",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=actor_org_id,
+            target_org_name=None,
+            request_id=req_id,
+            ip_address=ip,
+            outcome="success",
+            detail={
+                "account_id": account_id,
+                "old_type_id": type_result.old_type_id,
+                "new_type_id": type_result.new_type_id,
+                "old_type_slug": type_result.old_type_slug,
+                "new_type_slug": type_result.new_type_slug,
+                "closes_day_set": type_result.new_close_day
+                if type_result.new_type_slug == "credit_card"
+                and type_result.old_type_slug != "credit_card"
+                else None,
+                "closes_day_cleared": type_result.old_close_day
+                if type_result.old_type_slug == "credit_card"
+                and type_result.new_type_slug != "credit_card"
+                else None,
+            },
+        )
+        await logger.ainfo(
+            "account.type_changed",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=actor_org_id,
+            account_id=account_id,
+            old_type_slug=type_result.old_type_slug,
+            new_type_slug=type_result.new_type_slug,
+        )
+
+    if opening_changed:
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="account.opening_balance.update",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            target_org_id=actor_org_id,
+            target_org_name=None,
+            request_id=req_id,
+            ip_address=ip,
+            outcome="success",
+            detail={
+                "account_id": account_id,
+                "old_opening_balance": str(old_opening_balance),
+                "new_opening_balance": str(new_opening_balance),
+                "old_opening_balance_date": old_opening_balance_date.isoformat()
+                if old_opening_balance_date is not None
+                else None,
+                "new_opening_balance_date": new_opening_balance_date.isoformat()
+                if new_opening_balance_date is not None
+                else None,
+            },
+        )
+
+    assert response_payload is not None
+    return response_payload
 
 
 @router.get("/{account_id}/reconcile", response_model=ReconcileResponse)

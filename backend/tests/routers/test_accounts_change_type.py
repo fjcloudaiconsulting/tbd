@@ -540,6 +540,63 @@ def test_close_day_only_edit_on_non_cc_account_rejected(session_factory, seeded)
     assert "close_day is only allowed on credit_card accounts" in res.json()["detail"]
 
 
+# ── PR #246 review: P1 atomicity regression ─────────────────────────────
+
+
+def test_mixed_type_change_plus_deactivate_with_balance_rolls_back_atomically(
+    session_factory, seeded
+):
+    """Regression for PR #246 review P1: a single PUT that flips the
+    account type AND tries to deactivate an account with nonzero balance
+    must roll back the type change atomically and emit no
+    ``account.type_changed`` audit row.
+
+    Before the fix the service-owned ``change_account_type()`` committed
+    its transaction before the route reached the 409 nonzero-balance
+    guard, leaving the row half-changed and producing a stray audit
+    row.
+
+    The seeded Checking account has balance=100.00, so ``is_active=False``
+    must 409. Assert: (a) response is 409, (b) type stays Checking, (c)
+    no audit row.
+    """
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['checking_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "close_day": 15,
+                "is_active": False,
+            },
+        )
+    assert res.status_code == 409, res.text
+    assert "Cannot deactivate" in res.json()["detail"]
+
+    # (b) account row was NOT mutated. The atomic refactor in the
+    # router rolls back the locked type-change write when the
+    # is_active guard raises.
+    async def _refetch():
+        async with session_factory() as db:
+            return (
+                await db.execute(
+                    select(Account).where(Account.id == seeded["checking_acct_id"])
+                )
+            ).scalar_one()
+
+    acct = _run(_refetch())
+    assert acct.account_type_id == seeded["checking_type_id"]
+    assert acct.close_day is None
+    assert acct.is_active is True
+
+    # (c) no audit row for the aborted type change.
+    rows = _run(_audit_rows_for_type_changed(session_factory, seeded["checking_acct_id"]))
+    assert rows == [], (
+        "atomic rollback must suppress the account.type_changed audit row; "
+        f"found {len(rows)} row(s) instead"
+    )
+
+
 # ── POST create-path validation (§ 3.1.1, tests 14..18) ──────────────────
 
 
