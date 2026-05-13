@@ -3,7 +3,3 @@
   ansible.builtin.service:
     name: fail2ban
     state: restarted
-
-- name: Reload ufw
-  community.general.ufw:
-    state: reloaded
