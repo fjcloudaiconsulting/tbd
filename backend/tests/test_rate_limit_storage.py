@@ -31,6 +31,11 @@ def test_limiter_uses_redis_storage_when_redis_url_set(monkeypatch):
     """K8S-1: with ``settings.redis_url`` set, the Limiter is built
     against the Redis storage backend so counters are shared across
     replicas.
+
+    The Redis storage is wrapped by ``FailOpenRedisStorage`` (prod
+    hotfix 2026-05-13) so transient Redis blips do not surface as
+    HTTP 500. Assert on both the wrapper presence AND the wrapped
+    inner type so both layers stay pinned.
     """
     monkeypatch.setattr(settings, "redis_url", "redis://example:6379/0")
 
@@ -39,9 +44,15 @@ def test_limiter_uses_redis_storage_when_redis_url_set(monkeypatch):
     # slowapi defers storage creation until first access via the
     # ``_storage`` property. Touching it forces the limits library to
     # resolve the URI; we then assert it picked the Redis backend.
+    from app.rate_limit_failopen import FailOpenRedisStorage
+
     storage = limiter._storage
-    assert type(storage).__name__ == "RedisStorage", (
-        f"expected Redis-backed storage, got {type(storage).__name__}"
+    assert isinstance(storage, FailOpenRedisStorage), (
+        f"expected fail-open wrapper, got {type(storage).__name__}"
+    )
+    inner = storage._inner
+    assert type(inner).__name__ == "RedisStorage", (
+        f"expected Redis-backed inner storage, got {type(inner).__name__}"
     )
 
 

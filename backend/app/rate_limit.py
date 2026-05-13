@@ -53,6 +53,7 @@ from slowapi import Limiter
 from starlette.requests import Request
 
 from app.config import settings
+from app.rate_limit_failopen import wrap_limiter_failopen
 
 logger = structlog.stdlib.get_logger()
 
@@ -190,7 +191,13 @@ def _build_limiter() -> Limiter:
             backend="redis",
             multi_replica_safe=True,
         )
-        return Limiter(key_func=get_client_ip, storage_uri=redis_url)
+        limiter = Limiter(key_func=get_client_ip, storage_uri=redis_url)
+        # Fail-open on Redis storage errors (prod hotfix 2026-05-13). The
+        # wrapper sits below slowapi so transient Redis blips no longer
+        # surface as HTTP 500 from rate-limited auth endpoints. See
+        # app/rate_limit_failopen.py for the design + trade-off note.
+        wrap_limiter_failopen(limiter)
+        return limiter
 
     logger.warning(
         "rate_limit.storage",
@@ -198,6 +205,10 @@ def _build_limiter() -> Limiter:
         multi_replica_safe=False,
         reason="settings.redis_url empty; per-replica counters only",
     )
+    # No fail-open wrap for the in-memory backend: MemoryStorage cannot
+    # raise the storage errors the wrapper guards against, and leaving
+    # it unwrapped keeps construction-time tests (which assert the
+    # storage type) unchanged.
     return Limiter(key_func=get_client_ip)
 
 
