@@ -86,6 +86,20 @@ async def _seed_user(factory) -> dict:
             role=Role.OWNER, is_active=True, email_verified=True,
         )
         db.add(user)
+        admin = User(
+            org_id=org.id, username="admin",
+            email="admin@example.com",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.ADMIN, is_active=True, email_verified=True,
+        )
+        db.add(admin)
+        member = User(
+            org_id=org.id, username="member",
+            email="member@example.com",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.MEMBER, is_active=True, email_verified=True,
+        )
+        db.add(member)
         await db.flush()
         at = AccountType(
             org_id=org.id, name="Checking", slug="checking", is_system=True
@@ -104,7 +118,13 @@ async def _seed_user(factory) -> dict:
                 )
             )
         await db.commit()
-        return {"user_id": user.id, "org_id": org.id, "at_id": at.id}
+        return {
+            "user_id": user.id,
+            "admin_id": admin.id,
+            "member_id": member.id,
+            "org_id": org.id,
+            "at_id": at.id,
+        }
 
 
 def make_app(factory, user_id: int) -> FastAPI:
@@ -259,3 +279,28 @@ async def test_seed_demo_records_empty_org_only_intent_in_audit(session_factory)
         assert rows[0].detail is not None
         # Param flips into the audit detail verbatim.
         assert rows[0].detail.get("empty_org_only") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_key", ["admin_id", "member_id"])
+async def test_seed_demo_rejects_non_owner(session_factory, role_key):
+    """Frontend hides DemoDataCard for non-owners but a curl with a
+    valid admin/member bearer would otherwise reach the handler. The
+    backend guard must refuse with 403 and not seed anything."""
+    seeds = await _seed_user(session_factory)
+    app = make_app(session_factory, seeds[role_key])
+    with TestClient(app) as client:
+        res = client.post("/api/v1/users/me/onboarding/seed-demo")
+    assert res.status_code == 403
+    # No demo data should have been written for the org.
+    async with session_factory() as db:
+        tx_count = len(
+            (
+                await db.execute(
+                    select(Transaction).where(
+                        Transaction.org_id == seeds["org_id"]
+                    )
+                )
+            ).scalars().all()
+        )
+        assert tx_count == 0

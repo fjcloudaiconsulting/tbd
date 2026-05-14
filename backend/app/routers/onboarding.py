@@ -40,6 +40,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.auth.org_permissions import require_org_owner
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import User
@@ -101,7 +102,7 @@ async def complete_onboarding(
 async def seed_demo(
     request: Request,
     empty_org_only: bool = True,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_org_owner),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
