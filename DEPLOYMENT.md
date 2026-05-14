@@ -642,7 +642,7 @@ Triage shortcuts:
 | Merge to `main` happened, prod didn't update | `release.yml` -> did `release` job set `new_release_published=true`? Conventional commit type may be `chore` |
 | Deploy went green, app still broken | Smoke-test job output, then DO Runtime Logs on the failing component |
 | Migrate job hung or failed | DO Activity -> latest deploy -> migrate job. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
-| Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl https://thebetterdecision.com/_meta.json` (must be no-cache) |
+| Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl /_meta.json` (must be no-cache). Pre-PR-D, hit the CloudFront-assigned hostname from TFC output `cloudfront_distribution_domain`; post-PR-D, hit `https://thebetterdecision.com/_meta.json` |
 | Apex 404 on a known route | The CloudFront Function rewrites `/path/` -> `/path/index.html`. Check the function's invocation logs in CloudFront Functions console |
 | Apex deploy failed at OIDC step | Trust policy on `github-actions-apex-deploy` pinned to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context, forks, non-main branches are rejected by design |
 | App can't reach MySQL or Redis | Confirm `.do/app.yaml`'s top-level `vpc.id` matches the TFC output, and `DATABASE_URL` / `REDIS_URL` point at the droplet's `10.42.x.x` private IP |
