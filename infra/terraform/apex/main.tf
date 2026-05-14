@@ -187,6 +187,70 @@ resource "aws_acm_certificate_validation" "apex" {
   validation_record_fqdns = [for r in aws_route53_record.apex_acm_validation : r.fqdn]
 }
 
+# Apex cutover (L5.2a PR-D). A and AAAA ALIAS records pointing the apex
+# and www hostnames at the CloudFront distribution. Both record types
+# are needed because the distribution has is_ipv6_enabled = true; an
+# IPv6-only client otherwise cannot resolve the apex.
+#
+# The www records point at the SAME distribution (not at the apex name)
+# because CloudFront has both hostnames in its `aliases` list and the
+# viewer-request function performs the www -> apex 301 redirect at the
+# edge after the TLS handshake. Sending www to CloudFront first lets the
+# redirect happen with HTTPS already established; sending www somewhere
+# else (e.g. CNAME to apex) would force a second DNS lookup and an
+# extra TLS handshake for every www visitor.
+#
+# evaluate_target_health = false is required for CloudFront aliases;
+# CloudFront does its own health checking internally.
+
+resource "aws_route53_record" "apex_a" {
+  zone_id = data.aws_route53_zone.apex.zone_id
+  name    = var.domain
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.apex.domain_name
+    zone_id                = aws_cloudfront_distribution.apex.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "apex_aaaa" {
+  zone_id = data.aws_route53_zone.apex.zone_id
+  name    = var.domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.apex.domain_name
+    zone_id                = aws_cloudfront_distribution.apex.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "www_a" {
+  zone_id = data.aws_route53_zone.apex.zone_id
+  name    = "www.${var.domain}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.apex.domain_name
+    zone_id                = aws_cloudfront_distribution.apex.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "www_aaaa" {
+  zone_id = data.aws_route53_zone.apex.zone_id
+  name    = "www.${var.domain}"
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.apex.domain_name
+    zone_id                = aws_cloudfront_distribution.apex.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
 ###############################################################################
 # CLOUDFRONT. Origin Access Control (OAC, NOT legacy OAI), response-headers
 # policy with HSTS et al., CloudFront Function for www -> apex 301 redirect.
@@ -639,16 +703,17 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
     resources = ["*"]
   }
 
-  # ACM validation creates _<token>.<domain> CNAMEs in the zone. Without
-  # write access to the zone, PR-A's apply cannot complete. The
-  # ForAllValues:StringEquals condition on route53:ChangeResourceRecordSetsRecordTypes
-  # restricts the role to CNAME writes ONLY. The apex A record (and any
-  # other record type) is unreachable through this role. PR-D will widen
-  # the condition to add "A" when it ships the apex ALIAS swap. This
-  # makes "no A records in PR-A" an IAM-enforced invariant, not just a
-  # Terraform code-discipline one.
+  # ACM validation creates _<token>.<domain> CNAMEs in the zone. The apex
+  # cutover (this PR, L5.2a PR-D) adds A and AAAA ALIAS records for the
+  # apex and www hostnames pointing at the CloudFront distribution. The
+  # ForAllValues:StringEquals condition on
+  # route53:ChangeResourceRecordSetsRecordTypes restricts the role to
+  # CNAME, A, and AAAA writes ONLY. Any other record type (MX, TXT, NS,
+  # SOA, SRV) is unreachable through this role, so the worst a leaked
+  # OIDC token can do is overwrite an existing apex / www / validation
+  # record, not pivot to email or zone delegation.
   statement {
-    sid    = "WriteAcmValidationRecordsCnameOnly"
+    sid    = "WriteApexAndValidationRecords"
     effect = "Allow"
     actions = [
       "route53:ChangeResourceRecordSets",
@@ -658,7 +723,7 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
     condition {
       test     = "ForAllValues:StringEquals"
       variable = "route53:ChangeResourceRecordSetsRecordTypes"
-      values   = ["CNAME"]
+      values   = ["CNAME", "A", "AAAA"]
     }
   }
 
