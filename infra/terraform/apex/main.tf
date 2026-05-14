@@ -628,6 +628,13 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
       "route53:ListHostedZonesByName",
       "route53:GetChange",
       "route53:ListResourceRecordSets",
+      # data.aws_route53_zone calls ListTagsForResource as part of its
+      # read since AWS provider v5.x. Without these, refresh fails with
+      # 403 on every plan/apply that touches the data source. Both
+      # singular and plural variants are distinct IAM permissions; grant
+      # both so future provider changes that switch APIs do not regress.
+      "route53:ListTagsForResource",
+      "route53:ListTagsForResources",
     ]
     resources = ["*"]
   }
