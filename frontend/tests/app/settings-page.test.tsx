@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import SettingsProfilePage from "@/app/settings/page";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import * as nextNavigation from "next/navigation";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -23,6 +24,9 @@ vi.mock("@/components/auth/AuthProvider", async () => {
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => "/settings",
+  // Default: no `?sso_stepup_error=` in the URL. Tests that exercise
+  // the banner can override this per-render via vi.mocked().
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 function makeUser(passwordSet: boolean) {
@@ -102,6 +106,45 @@ describe("Settings page — email change step-up token state hygiene", () => {
     expect(
       screen.getByRole("button", { name: /Verify with Google/i }),
     ).toBeInTheDocument();
+  });
+
+  it("renders the SSO step-up error banner when ?sso_stepup_error=state is on the URL", () => {
+    mockUser(false);
+    vi.spyOn(nextNavigation, "useSearchParams").mockReturnValue(
+      new URLSearchParams("sso_stepup_error=state") as never,
+    );
+    render(<SettingsProfilePage />);
+    const banner = screen.getByTestId("sso-stepup-error-banner");
+    // Copy specific to the email-change-confirmation context.
+    expect(banner.textContent).toMatch(/expired\. Try again to change your email/i);
+    // And the retry CTA is wired to the existing Verify-with-Google flow.
+    expect(
+      screen.getByRole("button", { name: /Try again with Google/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders cancelled copy when ?sso_stepup_error=cancelled", () => {
+    mockUser(false);
+    vi.spyOn(nextNavigation, "useSearchParams").mockReturnValue(
+      new URLSearchParams("sso_stepup_error=cancelled") as never,
+    );
+    render(<SettingsProfilePage />);
+    const banner = screen.getByTestId("sso-stepup-error-banner");
+    expect(banner.textContent).toMatch(
+      /You cancelled the Google verification/i,
+    );
+  });
+
+  it("renders provider_error copy when ?sso_stepup_error=provider_error", () => {
+    mockUser(false);
+    vi.spyOn(nextNavigation, "useSearchParams").mockReturnValue(
+      new URLSearchParams("sso_stepup_error=provider_error") as never,
+    );
+    render(<SettingsProfilePage />);
+    const banner = screen.getByTestId("sso-stepup-error-banner");
+    expect(banner.textContent).toMatch(
+      /Google returned an error during verification/i,
+    );
   });
 
   it("preserves stepupToken when the error is unrelated to step-up (e.g., email taken)", async () => {

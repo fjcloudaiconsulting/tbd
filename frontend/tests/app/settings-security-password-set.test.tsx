@@ -23,6 +23,7 @@ vi.mock("@/components/auth/AuthProvider", async () => {
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => "/settings/security",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 function makeUser(passwordSet: boolean) {

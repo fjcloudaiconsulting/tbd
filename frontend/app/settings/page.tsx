@@ -1,16 +1,57 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import SettingsLayout from "@/components/SettingsLayout";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { useAuth } from "@/components/auth/AuthProvider";
+import SsoStepupErrorBanner from "@/components/auth/SsoStepupErrorBanner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { input, label, btnPrimary, btnSecondary, card, cardTitle, error as errorCls, success as successCls } from "@/lib/styles";
 import type { User } from "@/lib/types";
 
+/**
+ * Friendly copy keyed by the `?sso_stepup_error=<code>` value that
+ * /api/v1/auth/sso-stepup/callback redirects back with on failure.
+ * Mirrors the LoginPageBody mapping but adjusted for the
+ * email-change-confirmation context (the user is already signed in).
+ */
+const SSO_STEPUP_ERROR_COPY: Record<string, string> = {
+  state: "Your Google verification attempt expired. Try again to change your email.",
+  token: "Google verification didn't complete. Try again.",
+  userinfo: "Google verification didn't complete. Try again.",
+  unverified:
+    "Your Google account isn't verified, so we can't use it to confirm this change.",
+  email_mismatch:
+    "The Google account you signed in with doesn't match this profile. Use the same Google account.",
+  cancelled:
+    "You cancelled the Google verification. Try again whenever you're ready.",
+  provider_error:
+    "Google returned an error during verification. Try again.",
+};
+const SSO_STEPUP_ERROR_FALLBACK = "Google verification didn't complete. Try again.";
+
 export default function SettingsProfilePage() {
   const { user, refreshMe } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // `?sso_stepup_error=<code>` arrives via the 307 from
+  // /api/v1/auth/sso-stepup/callback when the Google round-trip
+  // fails. Surface a friendly banner per code and clear the query
+  // string after dismiss/retry so a page refresh doesn't reshow it.
+  const stepupErrorCode = searchParams?.get("sso_stepup_error");
+  const [stepupErrorVisible, setStepupErrorVisible] = useState<boolean>(false);
+  useEffect(() => {
+    setStepupErrorVisible(Boolean(stepupErrorCode));
+  }, [stepupErrorCode]);
+  function clearStepupErrorFromUrl() {
+    setStepupErrorVisible(false);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("sso_stepup_error");
+    router.replace(url.pathname + (url.search || "") + url.hash);
+  }
 
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -155,6 +196,19 @@ export default function SettingsProfilePage() {
   return (
     <SettingsLayout activeTab="/settings">
       <div className="max-w-lg space-y-6">
+        {stepupErrorVisible && stepupErrorCode && (
+          <SsoStepupErrorBanner
+            errorCode={stepupErrorCode}
+            copyByCode={SSO_STEPUP_ERROR_COPY}
+            fallbackCopy={SSO_STEPUP_ERROR_FALLBACK}
+            busy={stepupBusy}
+            onRetry={() => {
+              clearStepupErrorFromUrl();
+              handleVerifyWithGoogle();
+            }}
+            onDismiss={clearStepupErrorFromUrl}
+          />
+        )}
         <div className={`${card} p-6`}>
           <div className="flex items-center gap-4">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-dim font-display text-lg text-accent">

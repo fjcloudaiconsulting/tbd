@@ -2,9 +2,11 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
 import SettingsLayout from "@/components/SettingsLayout";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
+import SsoStepupErrorBanner from "@/components/auth/SsoStepupErrorBanner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import {
@@ -30,10 +32,38 @@ import type { MfaSetupResponse, MfaEnableResponse } from "@/lib/types";
 // /settings/security (here) instead of the email-change page.
 const STEPUP_RETURN_TO = "security";
 
+/**
+ * Friendly copy keyed by the `?sso_stepup_error=<code>` value that
+ * /api/v1/auth/sso-stepup/callback redirects back with on failure.
+ * The security page is reached via `return_to: "security"`, so any
+ * step-up flow started here (first-time password set) lands back here
+ * on failure. Without this banner the user sees no feedback at all.
+ *
+ * Wording adjusted from the email-change variant on /settings to
+ * reflect that step-up from this page is about verifying for a
+ * password-set / change, not an email change.
+ */
+const SSO_STEPUP_ERROR_COPY: Record<string, string> = {
+  state: "Your Google verification attempt expired. Try again to update your password.",
+  token: "Google verification didn't complete. Try again.",
+  userinfo: "Google verification didn't complete. Try again.",
+  unverified:
+    "Your Google account isn't verified, so we can't use it to confirm this change.",
+  email_mismatch:
+    "The Google account you signed in with doesn't match this profile. Use the same Google account.",
+  cancelled:
+    "You cancelled the Google verification. Try again whenever you're ready.",
+  provider_error:
+    "Google returned an error during verification. Try again.",
+};
+const SSO_STEPUP_ERROR_FALLBACK = "Google verification didn't complete. Try again.";
+
 type MfaStep = "idle" | "qr" | "verify" | "codes";
 
 export default function SecurityPage() {
   const { user, login, refreshMe } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
   // ── Change Password ──────────────────────────────────────────────────────
   const [currentPassword, setCurrentPassword] = useState("");
@@ -52,6 +82,24 @@ export default function SecurityPage() {
   const passwordSet = user?.password_set ?? true;
   const [stepupToken, setStepupToken] = useState("");
   const [stepupBusy, setStepupBusy] = useState(false);
+
+  // `?sso_stepup_error=<code>` arrives via the 307 from
+  // /api/v1/auth/sso-stepup/callback when the Google round-trip
+  // fails AND the state slot encoded `return_to: "security"` (any
+  // step-up initiated from this page). Without this banner the
+  // user lands here with no visible feedback.
+  const stepupErrorCode = searchParams?.get("sso_stepup_error");
+  const [stepupErrorVisible, setStepupErrorVisible] = useState<boolean>(false);
+  useEffect(() => {
+    setStepupErrorVisible(Boolean(stepupErrorCode));
+  }, [stepupErrorCode]);
+  function clearStepupErrorFromUrl() {
+    setStepupErrorVisible(false);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("sso_stepup_error");
+    router.replace(url.pathname + (url.search || "") + url.hash);
+  }
 
   // Pull `#stepup_token=…` off the URL on mount and immediately strip
   // it from history. Fragments are never sent to the server, so this
@@ -322,6 +370,19 @@ export default function SecurityPage() {
     <SettingsLayout activeTab="/settings/security">
 
       <div className="max-w-lg space-y-6">
+        {stepupErrorVisible && stepupErrorCode && (
+          <SsoStepupErrorBanner
+            errorCode={stepupErrorCode}
+            copyByCode={SSO_STEPUP_ERROR_COPY}
+            fallbackCopy={SSO_STEPUP_ERROR_FALLBACK}
+            busy={stepupBusy}
+            onRetry={() => {
+              clearStepupErrorFromUrl();
+              handleVerifyWithGoogle();
+            }}
+            onDismiss={clearStepupErrorFromUrl}
+          />
+        )}
         {/* ── Change Password ──────────────────────────────────────────── */}
         <div className={`${card} p-6`}>
           <h2 className={`mb-5 ${cardTitle}`}>{passwordSet ? "Change Password" : "Set a Password"}</h2>
