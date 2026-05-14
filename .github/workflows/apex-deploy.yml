@@ -64,7 +64,11 @@ on:
       - "frontend/lib/styles.ts"
       - "frontend/components/brand/**"
       - "frontend/components/ThemeProvider.tsx"
-      - "frontend/components/tour/TourProvider.tsx"
+      # tour/** rather than just TourProvider.tsx because TourProvider
+      # imports useTour and any future split helper files; useTour code
+      # is bundled into the apex output (verified by grepping the built
+      # _next/static chunks for the `tbd-pending-dashboard-tour` marker).
+      - "frontend/components/tour/**"
       - "frontend/components/ui/BackLink.tsx"
       - "frontend/components/ui/CurrentYear.tsx"
       - "frontend/components/ui/ThemeToggle.tsx"
