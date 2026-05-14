@@ -1,6 +1,7 @@
 # Default AWS provider: hosts the S3 bucket, IAM, and Route 53 lookups.
-# Region is configurable via var.aws_region; default eu-west-1 matches the
-# rest of the EU-centric pfv stack.
+# Region is configurable via var.aws_region; default eu-central-1 (Frankfurt)
+# to keep apex resources in an STS-enabled EU region with low latency for
+# EU users.
 provider "aws" {
   region = var.aws_region
 
