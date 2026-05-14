@@ -1,0 +1,177 @@
+# Apex landing deploy.
+#
+# Builds the apex static export (`npm run build:apex`) and pushes it to
+# the S3 bucket fronted by CloudFront at https://thebetterdecision.com.
+# Auth is via GitHub OIDC -> AWS IAM role (no long-lived AWS keys).
+#
+# The IAM role's trust policy (provisioned by PR #240) only accepts
+# tokens whose `sub` claim matches `repo:flamarion/pfv:ref:refs/heads/main`.
+# That is the load-bearing security boundary; this workflow's
+# `branches: [main]` trigger is belt-and-suspenders.
+#
+# The path filter mirrors the negation list in release.yml so that
+# landing-only commits deploy to AWS only and do NOT trigger the DO
+# release workflow. Shared paths (globals.css, lib/brand.ts,
+# public/fonts/**) intentionally trigger both: a brand or token change
+# legitimately affects both surfaces.
+#
+# Required GitHub repository variables (Settings -> Secrets and variables
+# -> Actions -> Variables tab):
+#   AWS_APEX_DEPLOY_ROLE_ARN  ARN of github-actions-apex-deploy role
+#                             (Terraform output: github_actions_role_arn)
+#   AWS_APEX_BUCKET           S3 bucket name
+#                             (Terraform output: s3_bucket_name)
+#   AWS_APEX_DISTRIBUTION_ID  CloudFront distribution ID
+#                             (Terraform output: cloudfront_distribution_id)
+#
+# No secrets are needed. The role ARN, bucket name, and distribution ID
+# are public-shaped identifiers.
+
+name: Deploy Apex Landing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Landing surface in app/
+      - "frontend/app/page.tsx"
+      - "frontend/app/privacy/**"
+      - "frontend/app/terms/**"
+      - "frontend/app/docs/**"
+      # Landing components and apex-build helpers
+      - "frontend/components/landing/**"
+      - "frontend/components/auth/AuthProviderApex.tsx"
+      - "frontend/scripts/build-apex.sh"
+      - "frontend/next.config.apex.ts"
+      - "frontend/lib/links.ts"
+      # Shared paths that legitimately affect the apex render
+      - "frontend/lib/brand.ts"
+      - "frontend/app/globals.css"
+      - "frontend/public/**"
+      # Dependencies the apex build resolves
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      # The workflow itself
+      - ".github/workflows/apex-deploy.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+# Serialize deploys; never cancel an in-flight S3 sync.
+concurrency:
+  group: apex-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy apex
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # Region is a repo variable so a future TFC `aws_region` change does
+      # not require touching this workflow. Fallback keeps the workflow
+      # functional if the variable was forgotten during setup.
+      AWS_REGION: ${{ vars.AWS_APEX_REGION || 'eu-central-1' }}
+      S3_BUCKET: ${{ vars.AWS_APEX_BUCKET }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.AWS_APEX_DISTRIBUTION_ID }}
+      DEPLOY_ROLE_ARN: ${{ vars.AWS_APEX_DEPLOY_ROLE_ARN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build apex static export
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_BUILD_TARGET: apex
+          NEXT_PUBLIC_SITE_URL: https://thebetterdecision.com
+          NEXT_PUBLIC_APP_URL: https://app.thebetterdecision.com
+        run: npm run build:apex
+
+      - name: Verify build output
+        working-directory: frontend
+        run: |
+          test -f out-apex/index.html || { echo "out-apex/index.html missing"; exit 1; }
+          test -f out-apex/_meta.json || { echo "out-apex/_meta.json missing"; exit 1; }
+          echo "Build output OK:"
+          ls -la out-apex/ | head -20
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-actions-apex-deploy-${{ github.run_id }}
+
+      # Cache strategy: only content-hashed assets under _next/static/**
+      # may carry an immutable 1-year cache, because Next.js mangles their
+      # filenames on every change. Everything else (HTML pages, icons,
+      # OG/apple images, fonts in public/, JSON, txt, xml) is mutable
+      # under a stable URL: those need a short cache so a future change
+      # is visible to clients that already cached the old object,
+      # regardless of CloudFront invalidation.
+      #
+      # Two syncs with mutually exclusive prefixes; each owns its own
+      # --delete window so removed files at either layer get pruned from
+      # the bucket (previous design only --delete'd the immutable set,
+      # which left deleted HTML pages serving until the next CF expiry).
+
+      - name: Sync mutable assets (short cache, --delete)
+        working-directory: frontend
+        run: |
+          aws s3 sync out-apex/ "s3://${S3_BUCKET}/" \
+            --delete \
+            --no-progress \
+            --exclude "_next/static/*" \
+            --cache-control "public, max-age=300, s-maxage=3600"
+
+      - name: Sync immutable hashed assets (long cache, --delete)
+        working-directory: frontend
+        run: |
+          aws s3 sync out-apex/_next/static/ "s3://${S3_BUCKET}/_next/static/" \
+            --delete \
+            --no-progress \
+            --cache-control "public, max-age=31536000, immutable"
+
+      - name: Override _meta.json with no-cache
+        working-directory: frontend
+        run: |
+          # _meta.json is the deploy-verification probe. It must never be
+          # cached so a curl against the apex returns the freshest SHA.
+          # aws s3 sync auto-detected content-type as application/json on
+          # the previous step; here we re-upload with the strict
+          # cache-control + explicit content-type to be unambiguous.
+          if [ -f out-apex/_meta.json ]; then
+            aws s3 cp out-apex/_meta.json "s3://${S3_BUCKET}/_meta.json" \
+              --no-progress \
+              --content-type "application/json" \
+              --cache-control "no-cache, no-store, must-revalidate"
+          fi
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" \
+            --paths "/*" \
+            >/dev/null
+
+      - name: Print deploy summary
+        run: |
+          echo "Deployed apex landing"
+          echo "  Commit:        ${GITHUB_SHA}"
+          echo "  Bucket:        ${S3_BUCKET}"
+          echo "  Distribution:  ${CLOUDFRONT_DISTRIBUTION_ID}"
+          echo "  Verify via:    https://thebetterdecision.com/_meta.json"

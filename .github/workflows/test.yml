@@ -79,3 +79,17 @@ jobs:
       - name: Run frontend production build
         working-directory: frontend
         run: npm run build
+
+      - name: Run apex static export build
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_BUILD_TARGET: apex
+          NEXT_PUBLIC_SITE_URL: https://thebetterdecision.com
+          NEXT_PUBLIC_APP_URL: https://app.thebetterdecision.com
+        run: |
+          npm run build:apex
+          # Belt-and-suspenders sanity: the build script's own trap should
+          # have already cleared out-apex/ failures, but verify the
+          # entry points landed before signaling green to the PR.
+          test -f out-apex/index.html
+          test -f out-apex/_meta.json
