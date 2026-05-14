@@ -33,7 +33,7 @@ Set in TFC (`FlamaCorp/pfv-apex` -> Variables); never committed.
 
 | Name | Kind | Sensitive | Description |
 |---|---|---|---|
-| `aws_account_id` | Terraform | no | 12-digit AWS account ID owning the apex resources |
+| `aws_account_id` | Terraform | optional | 12-digit AWS account ID owning the apex resources. Strictly not a secret, but commonly marked Sensitive in TFC so it does not appear in plan/apply output. |
 | `AWS_ACCESS_KEY_ID` | Env | yes | **Bootstrap only**. Delete after first apply (see Bootstrap). |
 | `AWS_SECRET_ACCESS_KEY` | Env | yes | **Bootstrap only**. Delete after first apply (see Bootstrap). |
 | `TFC_AWS_PROVIDER_AUTH` | Env | no | Set to `true` after bootstrap to switch TFC to OIDC. |
