@@ -19,6 +19,22 @@ breaks contextvar propagation and forces an extra response copy. Pure
 ASGI lets us mutate the outbound ``http.response.start`` headers list
 in-place with no extra overhead.
 
+**Coverage of unhandled 500 responses.** Starlette's
+``ServerErrorMiddleware`` is the framework's outermost wrapper and
+catches any exception that no ``@app.exception_handler`` handled,
+generating a 500 response on its own. User middleware registered via
+``app.add_middleware`` sits INSIDE ``ServerErrorMiddleware``, which
+means a framework-generated 500 short-circuits before reaching the
+user middleware and would NOT get our headers stamped. To cover that
+case ``backend/app/main.py`` wraps the result of
+``app.build_middleware_stack`` so ``SecurityHeadersMiddleware`` becomes
+the truly outermost ASGI wrapper — outside ``ServerErrorMiddleware`` —
+and stamps every outbound ``http.response.start``, including the 500
+that the framework generates.
+``backend/tests/test_security_headers.py::test_security_headers_on_unhandled_500``
+pins this invariant; do not regress placement without a replacement
+guarantee.
+
 **Scope.** Only HTTP responses get headers stamped. Lifespan and
 websocket scopes pass through untouched.
 
@@ -28,13 +44,31 @@ subdomains, preload-eligible. The pair is intentional: a divergence
 between the apex/app frontend and the API would defeat the preload
 check.
 
+**Header set parity with frontend.** The full set stamped here mirrors
+``frontend/next.config.ts`` line-for-line (HSTS, X-Frame-Options,
+X-Content-Type-Options, Referrer-Policy, Permissions-Policy,
+Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy) with ONE
+intentional value drift documented below.
+
+**Cross-Origin-Resource-Policy = same-site, not same-origin.** The
+frontend stamps ``same-origin`` because it serves HTML for top-level
+documents at ``thebetterdecision.com`` and ``app.thebetterdecision.com``,
+and there is no legitimate cross-site embed of those documents. The
+backend, by contrast, serves JSON at ``app.thebetterdecision.com/api/*``
+and is fetched from the frontend on ``thebetterdecision.com`` — a
+DIFFERENT subdomain, i.e. cross-origin. ``CORP: same-origin`` would
+block that fetch in a CORP-aware browser. ``CORP: same-site`` retains
+the protection against cross-SITE (cross-registrable-domain) embeds
+while permitting the same-site apex<->app subdomain fetch the app
+relies on. CORS still gates the actual response delivery.
+
 **Conservative on the backend.** CSP is deliberately NOT stamped here.
 JSON API responses don't render scripts/styles, so CSP on them is
 moot, and an inconsistent CSP between API and HTML responses would
 require coordinated maintenance for no defense gain. The frontend
 owns CSP for the rendered surface; this middleware owns the headers
 that apply universally to any HTTP response (HSTS, content-type
-sniffing, framing, referrer policy).
+sniffing, framing, referrer policy, isolation policies).
 """
 from __future__ import annotations
 
@@ -55,6 +89,23 @@ _SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"x-content-type-options", b"nosniff"),
     (b"x-frame-options", b"DENY"),
     (b"referrer-policy", b"strict-origin-when-cross-origin"),
+    # Mirrors frontend/next.config.ts. Disables four high-risk feature
+    # capabilities by default; handlers can still opt back in per-response
+    # if they ever need to.
+    (
+        b"permissions-policy",
+        b"camera=(), microphone=(), geolocation=(), interest-cohort=()",
+    ),
+    # Cross-origin process isolation for top-level navigations. JSON
+    # responses are rarely top-level documents, but stamping the header
+    # is cheap and keeps any future HTML response (error pages, future
+    # admin UI) hardened by default.
+    (b"cross-origin-opener-policy", b"same-origin"),
+    # See module docstring: same-site (NOT same-origin) is the right
+    # backend value because the frontend on thebetterdecision.com
+    # fetches this API at app.thebetterdecision.com — same site, but
+    # different origin. same-origin would block the app's own fetches.
+    (b"cross-origin-resource-policy", b"same-site"),
 )
 
 # Set of header names we own; lookup is O(1) for the "already present"
