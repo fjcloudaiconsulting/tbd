@@ -38,15 +38,36 @@ on:
       - "frontend/app/privacy/**"
       - "frontend/app/terms/**"
       - "frontend/app/docs/**"
+      # Structural app-level files retained by build-apex.sh
+      # (frontend/scripts/build-apex.sh's ALLOWED_APP_FILES allowlist).
+      # Changing any of these can change what the apex bundle ships.
+      - "frontend/app/layout.tsx"
+      - "frontend/app/not-found.tsx"
+      - "frontend/app/error.tsx"
+      - "frontend/app/loading.tsx"
+      - "frontend/app/global-error.tsx"
+      - "frontend/app/icon.svg"
+      - "frontend/app/globals.css"
       # Landing components and apex-build helpers
       - "frontend/components/landing/**"
       - "frontend/components/auth/AuthProviderApex.tsx"
       - "frontend/scripts/build-apex.sh"
       - "frontend/next.config.apex.ts"
       - "frontend/lib/links.ts"
-      # Shared paths that legitimately affect the apex render
+      # Shared dependencies imported by the retained app/layout.tsx,
+      # page.tsx, and landing components (transitive grep of
+      # `from "@/..."` across the apex-retained surface).
+      # These are SHARED with the DO app build, so they intentionally
+      # remain positive matches in release.yml as well.
       - "frontend/lib/brand.ts"
-      - "frontend/app/globals.css"
+      - "frontend/lib/site.ts"
+      - "frontend/lib/styles.ts"
+      - "frontend/components/brand/**"
+      - "frontend/components/ThemeProvider.tsx"
+      - "frontend/components/tour/TourProvider.tsx"
+      - "frontend/components/ui/BackLink.tsx"
+      - "frontend/components/ui/CurrentYear.tsx"
+      - "frontend/components/ui/ThemeToggle.tsx"
       - "frontend/public/**"
       # Dependencies the apex build resolves
       - "frontend/package.json"
@@ -85,7 +106,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -116,18 +137,38 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: github-actions-apex-deploy-${{ github.run_id }}
 
-      # Cache strategy: only content-hashed assets under _next/static/**
-      # may carry an immutable 1-year cache, because Next.js mangles their
-      # filenames on every change. Everything else (HTML pages, icons,
-      # OG/apple images, fonts in public/, JSON, txt, xml) is mutable
-      # under a stable URL: those need a short cache so a future change
-      # is visible to clients that already cached the old object,
-      # regardless of CloudFront invalidation.
+      # Cache strategy + deploy order.
       #
-      # Two syncs with mutually exclusive prefixes; each owns its own
-      # --delete window so removed files at either layer get pruned from
-      # the bucket (previous design only --delete'd the immutable set,
-      # which left deleted HTML pages serving until the next CF expiry).
+      # Cache:
+      #   - Hashed assets under _next/static/** are content-addressed by
+      #     Next.js, safe to lock at max-age=31536000, immutable.
+      #   - Everything else lives under stable URLs (HTML, icons,
+      #     OG/apple images, fonts, JSON, txt, xml). Short cache so a
+      #     future change is visible to clients that already cached the
+      #     old object, regardless of CloudFront invalidation.
+      #
+      # Order: hashed chunks FIRST without --delete, then mutable assets
+      # with --delete. Two reasons:
+      #   1. The newly-published HTML references new hashed-asset URLs,
+      #      so those chunks must exist in S3 before the HTML is visible.
+      #   2. Browser-cached old HTML (5-min TTL) still references old
+      #      hashed-asset URLs; deleting those mid-flight produces 404s
+      #      for users who have not yet refetched the HTML.
+      #
+      # Trade-off: orphaned hashed chunks accumulate in the bucket. They
+      # are pennies of storage and the S3 lifecycle policy provisioned by
+      # PR #240 prunes noncurrent VERSIONS after 90 days, but NOT
+      # orphaned-by-rename objects. Periodic cleanup of stale objects
+      # under _next/static/** (older than N days, not referenced by any
+      # current HTML) is a follow-up via an S3 lifecycle rule or a
+      # scheduled GH Actions workflow. Tracked separately.
+
+      - name: Sync immutable hashed assets (long cache, NO --delete)
+        working-directory: frontend
+        run: |
+          aws s3 sync out-apex/_next/static/ "s3://${S3_BUCKET}/_next/static/" \
+            --no-progress \
+            --cache-control "public, max-age=31536000, immutable"
 
       - name: Sync mutable assets (short cache, --delete)
         working-directory: frontend
@@ -137,14 +178,6 @@ jobs:
             --no-progress \
             --exclude "_next/static/*" \
             --cache-control "public, max-age=300, s-maxage=3600"
-
-      - name: Sync immutable hashed assets (long cache, --delete)
-        working-directory: frontend
-        run: |
-          aws s3 sync out-apex/_next/static/ "s3://${S3_BUCKET}/_next/static/" \
-            --delete \
-            --no-progress \
-            --cache-control "public, max-age=31536000, immutable"
 
       - name: Override _meta.json with no-cache
         working-directory: frontend
