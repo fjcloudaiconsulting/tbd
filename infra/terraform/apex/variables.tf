@@ -11,7 +11,7 @@ variable "aws_account_id" {
 variable "aws_region" {
   description = "AWS region for the S3 bucket and the home of the default provider. CloudFront is global; ACM for CloudFront is pinned to us-east-1 in providers.tf regardless of this value."
   type        = string
-  default     = "eu-west-1"
+  default     = "eu-central-1"
 }
 
 variable "domain" {

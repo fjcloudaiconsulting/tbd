@@ -7,7 +7,7 @@
 # aws_account_id = "123456789012"
 #
 # Optional overrides (defaults live in variables.tf):
-# aws_region                         = "eu-west-1"
+# aws_region                         = "eu-central-1"
 # domain                             = "thebetterdecision.com"
 # github_repo                        = "flamarion/pfv"
 # github_main_branch                 = "main"
