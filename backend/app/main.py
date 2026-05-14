@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.middleware.request_context import RequestContextMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
@@ -240,6 +241,17 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Request-Id"],
     expose_headers=["X-Request-Id"],
 )
+
+# L1.5: stamp baseline security headers (HSTS, X-Content-Type-Options,
+# X-Frame-Options, Referrer-Policy) on every HTTP response from the
+# backend. The DO App Platform ingress routes /api/*, /health, and
+# /ready directly to the backend component, bypassing the frontend's
+# Next.js header config — without this middleware those endpoints
+# return headerless responses and the host fails HSTS preload checks.
+# Added BEFORE RequestContextMiddleware so RequestContext stays
+# outermost (it must run first to bind contextvars before any handler
+# logs).
+app.add_middleware(SecurityHeadersMiddleware)
 
 # L4.9: bind a per-request correlation id (and clear any leftover
 # structlog contextvars from a previous request) at the very edge of
