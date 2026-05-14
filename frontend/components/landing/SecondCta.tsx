@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { signupHref } from "@/lib/links";
 import { btnPrimary } from "@/lib/styles";
 
 // Spec §3.4 — centered block, single primary CTA. The heading is the
@@ -15,7 +16,7 @@ export default function SecondCta() {
         into calm.
       </p>
       <Link
-        href="/register"
+        href={signupHref()}
         className={`${btnPrimary} mt-8 inline-block px-6 py-3 text-base`}
       >
         Get started free

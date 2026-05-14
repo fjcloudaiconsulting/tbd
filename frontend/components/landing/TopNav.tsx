@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Logo, Mark } from "@/components/brand/Logo";
 import ThemeToggle from "@/components/ui/ThemeToggle";
+import { signinHref, signupHref } from "@/lib/links";
 import { btnPrimary } from "@/lib/styles";
 
 // Public landing nav per spec §3.1: brand lockup on the left, Sign in
@@ -28,13 +29,13 @@ export default function TopNav() {
       </Link>
       <div className="flex items-center gap-2 sm:gap-4">
         <Link
-          href="/login"
+          href={signinHref()}
           className="whitespace-nowrap px-2 text-sm text-text-muted transition-colors hover:text-text-primary"
         >
           Sign in
         </Link>
         <Link
-          href="/register"
+          href={signupHref()}
           className={`${btnPrimary} whitespace-nowrap`}
         >
           Get started
