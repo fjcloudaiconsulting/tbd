@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:apex": "bash scripts/build-apex.sh",
     "start": "next start",
+    "start:apex-preview": "cd out-apex && python3 -m http.server 4321",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest"
