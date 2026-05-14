@@ -174,7 +174,7 @@ export default function MembersSection({
                   className="flex items-center justify-between py-2 text-sm"
                 >
                   <span className="text-text-secondary">
-                    {inv.email} <span className="text-text-muted">— {inv.role}</span>
+                    {inv.email} <span className="text-text-muted">&middot; {inv.role}</span>
                   </span>
                   <button
                     type="button"

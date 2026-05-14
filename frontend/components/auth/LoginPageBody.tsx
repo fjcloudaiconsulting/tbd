@@ -186,7 +186,7 @@ export default function LoginPageBody() {
                       {resendState === "sending"
                         ? "Sending..."
                         : resendState === "failed"
-                          ? "Send failed — try again"
+                          ? "Send failed. Try again"
                           : "Resend verification email"}
                     </button>
                   )}

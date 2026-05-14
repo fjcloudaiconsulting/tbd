@@ -1229,7 +1229,7 @@ function TransactionsPageContent() {
               <option value="">All periods</option>
               {closedPeriods.map((p) => (
                 <option key={p.id} value={String(p.id)}>
-                  {p.start_date} — {p.end_date}
+                  {p.start_date} – {p.end_date}
                 </option>
               ))}
             </select>

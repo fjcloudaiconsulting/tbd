@@ -833,7 +833,7 @@ function ImportPageContent() {
                                             })
                                           }
                                         />
-                                        <span className="text-text-secondary">Skip — don't pair</span>
+                                        <span className="text-text-secondary">Skip, don&apos;t pair</span>
                                       </label>
                                     </li>
                                   </ul>

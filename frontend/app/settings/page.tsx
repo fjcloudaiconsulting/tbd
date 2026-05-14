@@ -170,7 +170,7 @@ export default function SettingsProfilePage() {
       // the new verification link.
       setProfileMsg(
         "email" in payload
-          ? "Profile updated. Check your new inbox for a verification link — you'll need to sign in again."
+          ? "Profile updated. Check your new inbox for a verification link. You'll need to sign in again."
           : "Profile updated",
       );
     } catch (err) {

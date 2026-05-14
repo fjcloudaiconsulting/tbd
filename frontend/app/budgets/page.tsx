@@ -234,7 +234,7 @@ export default function BudgetsPage() {
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
           </button>
           <span className="text-sm text-text-secondary">
-            {selectedPeriod?.start_date}{selectedPeriod?.end_date ? ` — ${selectedPeriod.end_date}` : ""}
+            {selectedPeriod?.start_date}{selectedPeriod?.end_date ? ` – ${selectedPeriod.end_date}` : ""}
             {isCurrentPeriod && <span className="ml-2 text-xs text-success font-medium">current</span>}
           </span>
           <button onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))} disabled={periodIdx <= 0} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30 md:min-h-0 md:min-w-0" aria-label="Next period">
@@ -248,7 +248,7 @@ export default function BudgetsPage() {
 
       {!isCurrentPeriod && periods.length > 0 && (
         <div className="mb-5 rounded-md border border-border-subtle bg-surface-raised px-4 py-3 text-sm text-text-secondary">
-          This period is closed — read-only.
+          This period is closed (read-only).
         </div>
       )}
 
@@ -340,7 +340,7 @@ export default function BudgetsPage() {
               <div className="flex items-center justify-between mb-4">
                 <h2 className={cardTitle}>Budget Overview</h2>
                 <span className="text-xs text-text-muted">
-                  {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` — ${selectedPeriod.end_date}` : " (open)"}</>}
+                  {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` – ${selectedPeriod.end_date}` : " (open)"}</>}
                 </span>
               </div>
               <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
