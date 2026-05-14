@@ -107,8 +107,8 @@ App Platform's ingress. Mixed-zone setup is intentional, not transitional.
 
 | Hostname | Authoritative DNS | Behind | Notes |
 |---|---|---|---|
-| `thebetterdecision.com` (apex) | Route 53 | CloudFront -> S3 | A and AAAA ALIAS records to CloudFront land in PR-D. Until then, apex is parked. |
-| `www.thebetterdecision.com` | Route 53 | CloudFront -> S3 | A and AAAA ALIAS records to the same CloudFront distribution land in PR-D. Until then, `www` is parked too. CloudFront Function 301-redirects www traffic to apex after the TLS handshake. |
+| `thebetterdecision.com` (apex) | Route 53 | CloudFront -> S3 | A + AAAA ALIAS records to CloudFront, provisioned by `infra/terraform/apex/main.tf`. |
+| `www.thebetterdecision.com` | Route 53 | CloudFront -> S3 | A + AAAA ALIAS records to the same CloudFront distribution. CloudFront viewer-request function 301-redirects www traffic to apex after the TLS handshake. |
 | `app.thebetterdecision.com` | Cloudflare | DO App Platform ingress | PRIMARY domain declared in `.do/app.yaml`. Cloudflare origin TLS handshake assumes this stays declared on the App Platform side; do not strip it from the spec. |
 | `m.thebetterdecision.com` | Cloudflare | Mailgun EU | Outbound email only. |
 

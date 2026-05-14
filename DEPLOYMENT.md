@@ -2,7 +2,7 @@
 
 Audience: a contributor who just cloned the repo and wants to understand what happens between `git push` and a live change at `app.thebetterdecision.com` or `thebetterdecision.com`. Also a triage reference for CI/CD failures.
 
-All four pipelines described here are live on `main` today (`test.yml`, `release.yml`, `deploy.yml`, `apex-deploy.yml`). The apex pipeline ships content to S3 + CloudFront, but the apex DNS swap (PR-D, see Section 5) is still pending; until it lands, the apex landing is reachable only via the CloudFront-assigned hostname, not via `https://thebetterdecision.com`.
+All four pipelines described here are live on `main` today (`test.yml`, `release.yml`, `deploy.yml`, `apex-deploy.yml`). The apex landing is public at `https://thebetterdecision.com` (and `https://www.thebetterdecision.com`, which 301-redirects to the apex).
 
 For "how do I get my code ready to push", read [`CONTRIBUTING.md`](./CONTRIBUTING.md). For the env var matrix, read [`ENVIRONMENT.md`](./ENVIRONMENT.md). For the managed-to-droplet data move, read [`infra/MIGRATION.md`](./infra/MIGRATION.md). This file does not duplicate any of them.
 
@@ -13,7 +13,7 @@ Four production surfaces. Each has its own pipeline. Some changes fan out across
 | Surface | URL | Hosted by | Updated by |
 |---|---|---|---|
 | App (FastAPI + Next.js dashboard) | `https://app.thebetterdecision.com` | DigitalOcean App Platform (`pfv` app) | `release.yml` (auto) or `deploy.yml` (manual) |
-| Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` (DNS pending PR-D) | AWS S3 + CloudFront | `apex-deploy.yml` (auto) |
+| Apex landing (marketing, privacy, terms, docs) | `https://thebetterdecision.com` | AWS S3 + CloudFront | `apex-deploy.yml` (auto) |
 | Data plane (MySQL 8 + Redis) | private VPC IP `10.42.x.x:3306 / :6379` | Self-hosted DO droplet `pfv-data-01` | TFC workspace `FlamaCorp/pfv` (manual confirm) |
 | Apex CDN + cert + IAM | n/a (control plane) | AWS (S3, CloudFront, ACM, IAM, Route 53) | TFC workspace `FlamaCorp/pfv-apex` (manual confirm) |
 
@@ -222,7 +222,7 @@ For rollback to a prior `main` SHA, see Section 10.
 
 ## 5. Apex landing deploy (`apex-deploy.yml`)
 
-> Workflow is live on `main` (shipped in PR #267). It deploys to S3 + CloudFront on every push to `main` whose paths match the filter below. The apex hostname `https://thebetterdecision.com` is not wired to DNS yet (that lands with PR-D); until then, verify deploys against the CloudFront-assigned hostname from the TFC output `cloudfront_distribution_domain`.
+> Workflow is live on `main` (shipped in PR #267). It deploys to S3 + CloudFront on every push to `main` whose paths match the filter below. Public traffic reaches the distribution via the apex / www ALIAS records provisioned by PR #270.
 
 The apex landing (`thebetterdecision.com`) is a Next.js static export. `frontend/scripts/build-apex.sh` produces `frontend/out-apex/`. The workflow uploads that directory to an S3 bucket fronted by CloudFront in AWS, using **GitHub OIDC** to assume an IAM role (no long-lived AWS keys committed anywhere). The bucket, distribution, ACM cert, and IAM roles are provisioned by the `FlamaCorp/pfv-apex` TFC workspace (Section 7).
 
@@ -338,15 +338,14 @@ The OIDC trust policy on `github-actions-apex-deploy` (provisioned by PR #240) u
 ### How to verify an apex deploy
 
 1. Watch the workflow run: `https://github.com/flamarion/pfv/actions/workflows/apex-deploy.yml`
-2. Curl `/_meta.json` to confirm the deployed commit SHA. The object is set to `no-cache` so this is always fresh.
-   - **Pre-PR-D (today):** apex DNS is not wired yet. Use the CloudFront-assigned hostname from the TFC output `cloudfront_distribution_domain`:
-     ```bash
-     curl -fsS https://<distribution>.cloudfront.net/_meta.json
-     ```
-   - **Post-PR-D:** apex DNS resolves to CloudFront. The canonical command:
-     ```bash
-     curl -fsS https://thebetterdecision.com/_meta.json
-     ```
+2. Confirm the deployed commit SHA via `/_meta.json` (object is `no-cache`, so the response is always fresh):
+   ```bash
+   curl -fsS https://thebetterdecision.com/_meta.json
+   ```
+   If the apex hostname is unreachable for any reason (incident, DNS misconfiguration), the same probe works against the CloudFront-assigned hostname from the TFC output `cloudfront_distribution_domain`:
+   ```bash
+   curl -fsS https://<distribution>.cloudfront.net/_meta.json
+   ```
 3. CloudFront invalidation status: AWS console -> CloudFront -> Distributions -> select -> Invalidations tab.
 
 ## 6. Terraform: `FlamaCorp/pfv` (DO data droplet)
@@ -405,7 +404,7 @@ Separate TFC workspace because the auth path is different (AWS OIDC rather than 
 | `aws_cloudfront_function` | Viewer-request: www -> apex 301 redirect, then S3 directory-index rewrite (`/privacy/` -> `/privacy/index.html`) |
 | `aws_cloudfront_response_headers_policy` | HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy |
 | `aws_acm_certificate` + `_validation` | DNS-validated cert in `us-east-1` for apex + www (CloudFront requirement) |
-| `aws_route53_record.apex_acm_validation` | ACM `_<token>` CNAME records in the existing zone (does **not** touch the apex A record until PR-D of the L5.2a sequence) |
+| `aws_route53_record.apex_acm_validation` | ACM `_<token>` CNAME records in the existing zone (separate from the apex / www A + AAAA ALIAS records, which are also managed by this module). |
 | `aws_iam_openid_connect_provider.github` | Trust for GitHub Actions OIDC tokens |
 | `aws_iam_openid_connect_provider.tfc` | Trust for Terraform Cloud workload-identity tokens |
 | `aws_iam_role.github_actions_apex_deploy` | Deploy role: `s3:PutObject`/`s3:DeleteObject`/`s3:ListBucket` scoped to the apex bucket; `cloudfront:CreateInvalidation` scoped to the apex distribution |
@@ -445,9 +444,8 @@ After bootstrap, TFC runs use workload identity. Long-lived AWS keys exist nowhe
 
 ### What this workspace does **not** do
 
-- It does **not** swap the apex `A` ALIAS to CloudFront. That is PR-D of the L5.2a sequence; until then the apex stays parked.
 - It does **not** manage the dashboard surface (`app.thebetterdecision.com`). That DNS lives on Cloudflare and points at App Platform.
-- It is read-only on Route 53, except for ACM validation **CNAME** writes scoped by IAM condition. Apex `A` record writes are IAM-blocked, not just code-discipline blocked.
+- Route 53 writes are split into two narrowly-scoped IAM statements: `A` and `AAAA` on exactly the apex and www FQDNs, and `CNAME` on the exact ACM validation names exposed by `aws_acm_certificate.apex.domain_validation_options`. Every other record type and every other name in the zone is IAM-blocked.
 
 ## 8. Database migrations
 
@@ -642,7 +640,7 @@ Triage shortcuts:
 | Merge to `main` happened, prod didn't update | `release.yml` -> did `release` job set `new_release_published=true`? Conventional commit type may be `chore` |
 | Deploy went green, app still broken | Smoke-test job output, then DO Runtime Logs on the failing component |
 | Migrate job hung or failed | DO Activity -> latest deploy -> migrate job. Grep for `migrate.start`, `migrate.failed`, `migrate.step.start`. Multi-head? Driver error? |
-| Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl /_meta.json` (must be no-cache). Pre-PR-D, hit the CloudFront-assigned hostname from TFC output `cloudfront_distribution_domain`; post-PR-D, hit `https://thebetterdecision.com/_meta.json` |
+| Apex site shows stale content | Confirm `apex-deploy.yml` ran for the SHA; check CloudFront invalidation completed; `curl https://thebetterdecision.com/_meta.json` (object is no-cache). If the apex hostname is itself unreachable, fall back to the TFC output `cloudfront_distribution_domain` to probe the distribution directly. |
 | Apex 404 on a known route | The CloudFront Function rewrites `/path/` -> `/path/index.html`. Check the function's invocation logs in CloudFront Functions console |
 | Apex deploy failed at OIDC step | Trust policy on `github-actions-apex-deploy` pinned to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context, forks, non-main branches are rejected by design |
 | App can't reach MySQL or Redis | Confirm `.do/app.yaml`'s top-level `vpc.id` matches the TFC output, and `DATABASE_URL` / `REDIS_URL` point at the droplet's `10.42.x.x` private IP |
