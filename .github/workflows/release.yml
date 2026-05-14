@@ -31,9 +31,25 @@ on:
     # refactor commits inside the allowlist still run release.yml, and
     # the gated `deploy` job below decides whether to ship based on
     # semantic-release's `new_release_published` output.
+    #
+    # Landing-only paths are negated below. Those are owned by the apex
+    # S3 + CloudFront pipeline (.github/workflows/apex-deploy.yml) and a
+    # landing-only commit must not trigger a DO redeploy. Shared paths
+    # (frontend/lib/brand.ts, frontend/app/globals.css, frontend/public/**)
+    # are intentionally NOT negated so a brand / token / font change still
+    # rebuilds both surfaces.
     paths:
       - "backend/**"
       - "frontend/**"
+      - "!frontend/app/page.tsx"
+      - "!frontend/app/privacy/**"
+      - "!frontend/app/terms/**"
+      - "!frontend/app/docs/**"
+      - "!frontend/components/landing/**"
+      - "!frontend/components/auth/AuthProviderApex.tsx"
+      - "!frontend/scripts/build-apex.sh"
+      - "!frontend/next.config.apex.ts"
+      - "!frontend/lib/links.ts"
       - "nginx/**"
       - ".do/**"
       - "Dockerfile*"
