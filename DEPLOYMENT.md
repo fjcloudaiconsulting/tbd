@@ -454,11 +454,11 @@ sequenceDiagram
   participant Alembic as alembic upgrade <rev>
   participant DB as MySQL 8
 
-  Dev->>Dev: read /app/.git/HEAD; refuse off-main unless PFV_MIGRATE_OK_OFF_MAIN=1
+  Dev->>Dev: read /app/.git/HEAD, refuse off-main unless PFV_MIGRATE_OK_OFF_MAIN=1
   Dev->>Wrap: _run_migrations() (in-process import)
   CLI->>CLI: same branch guard
   CLI->>Wrap: python backend/scripts/migrate.py
-  DO->>Wrap: python /app/scripts/migrate.py (no branch guard; always head)
+  DO->>Wrap: python /app/scripts/migrate.py (no branch guard, always head)
   Wrap->>Alembic: ScriptDirectory.get_heads()
   alt multi-head
     Wrap-->>Wrap: log migrate.failed reason=multiple_heads, exit 1
