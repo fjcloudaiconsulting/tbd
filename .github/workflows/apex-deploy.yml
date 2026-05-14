@@ -1,0 +1,214 @@
+# Apex landing deploy.
+#
+# Builds the apex static export (`npm run build:apex`) and pushes it to
+# the S3 bucket fronted by CloudFront at https://thebetterdecision.com.
+# Auth is via GitHub OIDC -> AWS IAM role (no long-lived AWS keys).
+#
+# The IAM role's trust policy (provisioned by PR #240) only accepts
+# tokens whose `sub` claim matches `repo:flamarion/pfv:ref:refs/heads/main`.
+# That is the load-bearing security boundary; this workflow's
+# `branches: [main]` trigger is belt-and-suspenders.
+#
+# The path filter mirrors the negation list in release.yml so that
+# landing-only commits deploy to AWS only and do NOT trigger the DO
+# release workflow. Shared paths (globals.css, lib/brand.ts,
+# public/fonts/**) intentionally trigger both: a brand or token change
+# legitimately affects both surfaces.
+#
+# Required GitHub repository variables (Settings -> Secrets and variables
+# -> Actions -> Variables tab):
+#   AWS_APEX_DEPLOY_ROLE_ARN  ARN of github-actions-apex-deploy role
+#                             (Terraform output: github_actions_role_arn)
+#   AWS_APEX_BUCKET           S3 bucket name
+#                             (Terraform output: s3_bucket_name)
+#   AWS_APEX_DISTRIBUTION_ID  CloudFront distribution ID
+#                             (Terraform output: cloudfront_distribution_id)
+#
+# No secrets are needed. The role ARN, bucket name, and distribution ID
+# are public-shaped identifiers.
+
+name: Deploy Apex Landing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Landing surface in app/
+      - "frontend/app/page.tsx"
+      - "frontend/app/privacy/**"
+      - "frontend/app/terms/**"
+      - "frontend/app/docs/**"
+      # Structural app-level files retained by build-apex.sh
+      # (frontend/scripts/build-apex.sh's ALLOWED_APP_FILES allowlist).
+      # Changing any of these can change what the apex bundle ships.
+      - "frontend/app/layout.tsx"
+      - "frontend/app/not-found.tsx"
+      - "frontend/app/error.tsx"
+      - "frontend/app/loading.tsx"
+      - "frontend/app/global-error.tsx"
+      - "frontend/app/icon.svg"
+      - "frontend/app/globals.css"
+      # Landing components and apex-build helpers
+      - "frontend/components/landing/**"
+      - "frontend/components/auth/AuthProviderApex.tsx"
+      - "frontend/scripts/build-apex.sh"
+      - "frontend/next.config.apex.ts"
+      - "frontend/lib/links.ts"
+      # Shared dependencies imported by the retained app/layout.tsx,
+      # page.tsx, and landing components (transitive grep of
+      # `from "@/..."` across the apex-retained surface).
+      # These are SHARED with the DO app build, so they intentionally
+      # remain positive matches in release.yml as well.
+      - "frontend/lib/brand.ts"
+      - "frontend/lib/site.ts"
+      - "frontend/lib/styles.ts"
+      - "frontend/components/brand/**"
+      - "frontend/components/ThemeProvider.tsx"
+      # tour/** rather than just TourProvider.tsx because TourProvider
+      # imports useTour and any future split helper files; useTour code
+      # is bundled into the apex output (verified by grepping the built
+      # _next/static chunks for the `tbd-pending-dashboard-tour` marker).
+      - "frontend/components/tour/**"
+      - "frontend/components/ui/BackLink.tsx"
+      - "frontend/components/ui/CurrentYear.tsx"
+      - "frontend/components/ui/ThemeToggle.tsx"
+      - "frontend/public/**"
+      # Dependencies the apex build resolves
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
+      # The workflow itself
+      - ".github/workflows/apex-deploy.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+# Serialize deploys; never cancel an in-flight S3 sync.
+concurrency:
+  group: apex-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build and deploy apex
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # Region is a repo variable so a future TFC `aws_region` change does
+      # not require touching this workflow. Fallback keeps the workflow
+      # functional if the variable was forgotten during setup.
+      AWS_REGION: ${{ vars.AWS_APEX_REGION || 'eu-central-1' }}
+      S3_BUCKET: ${{ vars.AWS_APEX_BUCKET }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.AWS_APEX_DISTRIBUTION_ID }}
+      DEPLOY_ROLE_ARN: ${{ vars.AWS_APEX_DEPLOY_ROLE_ARN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build apex static export
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_BUILD_TARGET: apex
+          NEXT_PUBLIC_SITE_URL: https://thebetterdecision.com
+          NEXT_PUBLIC_APP_URL: https://app.thebetterdecision.com
+        run: npm run build:apex
+
+      - name: Verify build output
+        working-directory: frontend
+        run: |
+          test -f out-apex/index.html || { echo "out-apex/index.html missing"; exit 1; }
+          test -f out-apex/_meta.json || { echo "out-apex/_meta.json missing"; exit 1; }
+          echo "Build output OK:"
+          ls -la out-apex/ | head -20
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-actions-apex-deploy-${{ github.run_id }}
+
+      # Cache strategy + deploy order.
+      #
+      # Cache:
+      #   - Hashed assets under _next/static/** are content-addressed by
+      #     Next.js, safe to lock at max-age=31536000, immutable.
+      #   - Everything else lives under stable URLs (HTML, icons,
+      #     OG/apple images, fonts, JSON, txt, xml). Short cache so a
+      #     future change is visible to clients that already cached the
+      #     old object, regardless of CloudFront invalidation.
+      #
+      # Order: hashed chunks FIRST without --delete, then mutable assets
+      # with --delete. Two reasons:
+      #   1. The newly-published HTML references new hashed-asset URLs,
+      #      so those chunks must exist in S3 before the HTML is visible.
+      #   2. Browser-cached old HTML (5-min TTL) still references old
+      #      hashed-asset URLs; deleting those mid-flight produces 404s
+      #      for users who have not yet refetched the HTML.
+      #
+      # Trade-off: orphaned hashed chunks accumulate in the bucket. They
+      # are pennies of storage and the S3 lifecycle policy provisioned by
+      # PR #240 prunes noncurrent VERSIONS after 90 days, but NOT
+      # orphaned-by-rename objects. Periodic cleanup of stale objects
+      # under _next/static/** (older than N days, not referenced by any
+      # current HTML) is a follow-up via an S3 lifecycle rule or a
+      # scheduled GH Actions workflow. Tracked separately.
+
+      - name: Sync immutable hashed assets (long cache, NO --delete)
+        working-directory: frontend
+        run: |
+          aws s3 sync out-apex/_next/static/ "s3://${S3_BUCKET}/_next/static/" \
+            --no-progress \
+            --cache-control "public, max-age=31536000, immutable"
+
+      - name: Sync mutable assets (short cache, --delete)
+        working-directory: frontend
+        run: |
+          aws s3 sync out-apex/ "s3://${S3_BUCKET}/" \
+            --delete \
+            --no-progress \
+            --exclude "_next/static/*" \
+            --cache-control "public, max-age=300, s-maxage=3600"
+
+      - name: Override _meta.json with no-cache
+        working-directory: frontend
+        run: |
+          # _meta.json is the deploy-verification probe. It must never be
+          # cached so a curl against the apex returns the freshest SHA.
+          # aws s3 sync auto-detected content-type as application/json on
+          # the previous step; here we re-upload with the strict
+          # cache-control + explicit content-type to be unambiguous.
+          if [ -f out-apex/_meta.json ]; then
+            aws s3 cp out-apex/_meta.json "s3://${S3_BUCKET}/_meta.json" \
+              --no-progress \
+              --content-type "application/json" \
+              --cache-control "no-cache, no-store, must-revalidate"
+          fi
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" \
+            --paths "/*" \
+            >/dev/null
+
+      - name: Print deploy summary
+        run: |
+          echo "Deployed apex landing"
+          echo "  Commit:        ${GITHUB_SHA}"
+          echo "  Bucket:        ${S3_BUCKET}"
+          echo "  Distribution:  ${CLOUDFRONT_DISTRIBUTION_ID}"
+          echo "  Verify via:    https://thebetterdecision.com/_meta.json"
