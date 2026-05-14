@@ -715,6 +715,60 @@ def _issue_tokens(user: User, response: Response) -> TokenResponse:
     return TokenResponse(access_token=access_token)
 
 
+async def _record_google_callback_failure(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    request: Request,
+    reason: str,
+    actor_email: str | None = None,
+    event_type: str = "auth.google.callback.failed",
+) -> None:
+    """Persist a Google SSO callback failure as an audit row.
+
+    Distinct from ``_record_login_success`` because we have no
+    authenticated ``User`` yet — at this stage of the flow the actor
+    user id is unknown, and the email is only known after the
+    userinfo call lands. ``audit_events.actor_email`` is non-nullable
+    so we fall back to an empty string when Google hasn't returned
+    one yet.
+    """
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type=event_type,
+        actor_user_id=None,
+        actor_email=actor_email or "",
+        target_org_id=None,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=get_client_ip(request),
+        outcome="failure",
+        detail={"reason": reason},
+    )
+
+
+def _google_error_redirect(
+    reason: str,
+    *,
+    base_path: str = "/login",
+    query_key: str = "sso_error",
+    cookie_path: str = "/api/v1/auth/google",
+) -> RedirectResponse:
+    """Build a 307 redirect to the frontend with the failure reason.
+
+    307 (instead of 302) because the user-agent arrived here via a
+    top-level GET navigation from Google; 307 preserves the method
+    and avoids any chance of a tooling-induced re-POST. The
+    ``oauth_state`` cookie is cleared so a retry starts clean.
+    """
+    resp = RedirectResponse(
+        url=f"{app_settings.app_url}{base_path}?{query_key}={reason}",
+        status_code=307,
+    )
+    resp.delete_cookie("oauth_state", path=cookie_path)
+    return resp
+
+
 async def _record_login_success(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -1023,7 +1077,11 @@ async def google_login(response: Response):
     """Redirect to Google OAuth consent screen."""
     _validate_google_config()
 
-    # Generate CSRF state token and store in a signed cookie
+    # Generate CSRF state token and store in a signed cookie. The TTL
+    # (30 min) covers the user dwelling on Google's "Choose an account"
+    # dialog. The previous 10-min budget produced a hard 400 at the
+    # callback when users hesitated for ~11 min, which DO App Platform
+    # then wrapped in its generic "Error / check logs" page.
     state = secrets.token_urlsafe(32)
     response.set_cookie(
         key="oauth_state",
@@ -1031,7 +1089,7 @@ async def google_login(response: Response):
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=600,  # 10 minutes
+        max_age=1800,  # 30 minutes
         path="/api/v1/auth/google",
     )
 
@@ -1064,11 +1122,22 @@ async def google_callback(
     into a directly-returned Response — they would be silently dropped, which
     is what previously broke the refresh-cookie round-trip for SSO logins.
     """
+    # _validate_google_config stays a 501 raise rather than a redirect:
+    # missing client_id/client_secret is operator misconfiguration, not
+    # a user-recoverable retry. Surfacing it as the real status preserves
+    # the alert-worthy signal in DO logs / dashboards.
     _validate_google_config()
 
-    # Validate CSRF state
+    # Validate CSRF state. The cookie miss case is the common one in
+    # production — DO App Platform was wrapping the 400 in its generic
+    # "Error / check logs" splash, so users saw a broken-app screen
+    # instead of "your sign-in expired, try again". Redirect to /login
+    # with ?sso_error=state so the frontend can render the right copy.
     if not oauth_state or oauth_state != state:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF")
+        await _record_google_callback_failure(
+            session_factory, request=request, reason="state"
+        )
+        return _google_error_redirect("state")
 
     # Exchange authorization code for tokens
     try:
@@ -1084,7 +1153,10 @@ async def google_callback(
                 },
             )
             if token_resp.status_code != 200:
-                raise HTTPException(status_code=400, detail="Failed to exchange Google auth code")
+                await _record_google_callback_failure(
+                    session_factory, request=request, reason="token"
+                )
+                return _google_error_redirect("token")
             tokens = token_resp.json()
 
             # Get user info from Google
@@ -1093,14 +1165,23 @@ async def google_callback(
                 headers={"Authorization": f"Bearer {tokens['access_token']}"},
             )
             if userinfo_resp.status_code != 200:
-                raise HTTPException(status_code=400, detail="Failed to get Google user info")
+                await _record_google_callback_failure(
+                    session_factory, request=request, reason="userinfo"
+                )
+                return _google_error_redirect("userinfo")
             google_user = userinfo_resp.json()
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Failed to communicate with Google")
+        await _record_google_callback_failure(
+            session_factory, request=request, reason="token"
+        )
+        return _google_error_redirect("token")
 
     email = normalize_email(google_user.get("email", ""))
     if not email:
-        raise HTTPException(status_code=400, detail="Google account has no email")
+        await _record_google_callback_failure(
+            session_factory, request=request, reason="no_email"
+        )
+        return _google_error_redirect("no_email")
 
     # Only trust Google's verification flag if it's explicitly present.
     # The userinfo payload may expose this as either `verified_email`
@@ -1115,13 +1196,13 @@ async def google_callback(
         # who created an unverified Google account at the victim's email
         # from silently merging with an existing password-based user, and
         # prevents new registrations under unverified addresses.
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Google has not verified this email. Verify it with Google "
-                "or sign in with a password."
-            ),
+        await _record_google_callback_failure(
+            session_factory,
+            request=request,
+            reason="unverified",
+            actor_email=email,
         )
+        return _google_error_redirect("unverified")
     first_name = google_user.get("given_name", "")
     last_name = google_user.get("family_name", "")
 
@@ -1132,7 +1213,13 @@ async def google_callback(
     if user:
         # Existing user — login
         if not user.is_active:
-            raise HTTPException(status_code=403, detail="Account is deactivated")
+            await _record_google_callback_failure(
+                session_factory,
+                request=request,
+                reason="deactivated",
+                actor_email=email,
+            )
+            return _google_error_redirect("deactivated")
         # google_verified is guaranteed True by the guard above.
         mutated = False
         if not user.email_verified:
@@ -1292,7 +1379,8 @@ async def sso_stepup_initiate(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=600,  # 10 minutes
+        max_age=1800,  # 30 minutes — matches /google login TTL so a slow
+                      # consent screen never trips the CSRF cookie miss.
         path="/api/v1/auth/sso-stepup",
     )
 
@@ -1310,9 +1398,11 @@ async def sso_stepup_initiate(
 
 @router.get("/sso-stepup/callback")
 async def sso_stepup_callback(
+    request: Request,
     code: str,
     state: str,
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
     oauth_state: str | None = Cookie(default=None),
 ):
     """Finalize a Google step-up. Issues a 5-minute single-use token.
@@ -1334,10 +1424,38 @@ async def sso_stepup_callback(
     URL fragment. Like the SSO login flow, fragments stay client-side
     (not sent to servers, not in access logs).
     """
+    # Same rationale as in google_callback: a missing client_id/secret
+    # is operator misconfiguration, not user-recoverable. Keep as a 501.
     _validate_google_config()
 
+    # Pre-parse the return target so we can redirect to the right page
+    # even when state itself is broken. Falls back to the default
+    # /settings landing when the shape doesn't parse.
+    def _resolve_return_path(raw_state: str) -> str:
+        parts = (raw_state or "").split(":")
+        if len(parts) == 4 and parts[3] in _STEPUP_RETURN_TARGETS:
+            return _STEPUP_RETURN_TARGETS[parts[3]]
+        return _STEPUP_RETURN_TARGETS[_STEPUP_DEFAULT_TARGET]
+
+    async def _stepup_failure(reason: str, *, actor_email: str | None = None) -> RedirectResponse:
+        """Record the audit row and build the friendly redirect."""
+        return_path = _resolve_return_path(state)
+        await _record_google_callback_failure(
+            session_factory,
+            request=request,
+            reason=reason,
+            actor_email=actor_email,
+            event_type="auth.google.sso_stepup.callback.failed",
+        )
+        resp = RedirectResponse(
+            url=f"{app_settings.app_url}{return_path}?sso_stepup_error={reason}",
+            status_code=307,
+        )
+        resp.delete_cookie("oauth_state", path="/api/v1/auth/sso-stepup")
+        return resp
+
     if not oauth_state or oauth_state != state:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF")
+        return await _stepup_failure("state")
 
     # State binds the redemption to a specific user_id chosen at
     # initiate time. Without an Authorization header here, the state
@@ -1347,20 +1465,20 @@ async def sso_stepup_callback(
     # against `_STEPUP_RETURN_TARGETS` to prevent open redirect).
     parts = state.split(":")
     if len(parts) != 4 or parts[0] != "stepup":
-        raise HTTPException(status_code=400, detail="Malformed step-up state")
+        return await _stepup_failure("state")
     try:
         state_user_id = int(parts[1])
     except ValueError:
-        raise HTTPException(status_code=400, detail="Malformed step-up state")
+        return await _stepup_failure("state")
     return_key = parts[3]
     if return_key not in _STEPUP_RETURN_TARGETS:
-        raise HTTPException(status_code=400, detail="Malformed step-up state")
+        return await _stepup_failure("state")
 
     user = await db.get(User, state_user_id)
     if user is None:
         # Treat a missing user as a bad state rather than 404, so we
         # don't leak which user_ids exist.
-        raise HTTPException(status_code=400, detail="Invalid state")
+        return await _stepup_failure("state")
 
     # Exchange code → tokens → userinfo, identical shape to /google/callback
     try:
@@ -1376,7 +1494,7 @@ async def sso_stepup_callback(
                 },
             )
             if token_resp.status_code != 200:
-                raise HTTPException(status_code=400, detail="Failed to exchange Google auth code")
+                return await _stepup_failure("token", actor_email=user.email)
             tokens = token_resp.json()
 
             userinfo_resp = await client.get(
@@ -1384,23 +1502,23 @@ async def sso_stepup_callback(
                 headers={"Authorization": f"Bearer {tokens['access_token']}"},
             )
             if userinfo_resp.status_code != 200:
-                raise HTTPException(status_code=400, detail="Failed to get Google user info")
+                return await _stepup_failure("userinfo", actor_email=user.email)
             google_user = userinfo_resp.json()
     except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Failed to communicate with Google")
+        return await _stepup_failure("token", actor_email=user.email)
 
     google_email = (google_user.get("email") or "").strip().lower()
     raw = google_user.get("verified_email")
     if raw is None:
         raw = google_user.get("email_verified", False)
     if not bool(raw):
-        raise HTTPException(status_code=400, detail="Google has not verified this email")
+        return await _stepup_failure("unverified", actor_email=google_email or user.email)
     if not google_email or google_email != user.email.strip().lower():
         # The user must complete the step-up with the same Google
         # identity attached to this account. Otherwise this would let
         # an attacker who initiated step-up for someone else's user_id
         # swap the email by consenting on their own Google account.
-        raise HTTPException(status_code=400, detail="Google account does not match the signed-in user")
+        return await _stepup_failure("email_mismatch", actor_email=google_email or user.email)
 
     token = secrets.token_urlsafe(32)
     user.stepup_token = token

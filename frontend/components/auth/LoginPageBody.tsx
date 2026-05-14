@@ -1,20 +1,40 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useAuth, MfaRequiredError } from "@/components/auth/AuthProvider";
 import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { ApiResponseError, apiFetch } from "@/lib/api";
-import { input, label, btnPrimary, error as errorCls } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
 
 type ResendState = "idle" | "sending" | "sent" | "failed";
+
+/**
+ * Friendly copy keyed by the `?sso_error=<code>` value the backend
+ * redirects with on a /google/callback failure. Keep entries in sync
+ * with `backend/app/routers/auth.py:google_callback` — every code the
+ * backend emits must have a copy entry here, with a default fallback
+ * for any future code that ships before the frontend catches up.
+ */
+const SSO_ERROR_COPY: Record<string, string> = {
+  state: "Your Google sign-in attempt expired. Try again.",
+  token: "Google sign-in failed. Try again, or sign in with a password.",
+  userinfo: "Google sign-in failed. Try again, or sign in with a password.",
+  unverified:
+    "Your Google account isn't verified. Verify it with Google or sign in with a password.",
+  deactivated:
+    "This account is deactivated. Contact support if this is unexpected.",
+  no_email: "Google didn't return an email for this account.",
+};
+const SSO_ERROR_FALLBACK = "Google sign-in didn't complete. Try again.";
 
 export default function LoginPageBody() {
   const { user, login, loading, needsSetup } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -25,6 +45,24 @@ export default function LoginPageBody() {
   const [unverifiedLogin, setUnverifiedLogin] = useState<string | null>(null);
   const [resendState, setResendState] = useState<ResendState>("idle");
   const [googleLoading, setGoogleLoading] = useState(false);
+  // `?sso_error=<code>` arrives via the 307 from /api/v1/auth/google/callback
+  // when the Google round-trip fails (expired state cookie, token-exchange
+  // error, etc.). We surface it as a dismissable banner and clear the
+  // query string after the user dismisses or retries so a refresh
+  // doesn't reshow it.
+  const ssoErrorCode = searchParams?.get("sso_error");
+  const [ssoErrorVisible, setSsoErrorVisible] = useState<boolean>(false);
+  useEffect(() => {
+    setSsoErrorVisible(Boolean(ssoErrorCode));
+  }, [ssoErrorCode]);
+
+  function clearSsoErrorFromUrl() {
+    setSsoErrorVisible(false);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("sso_error");
+    router.replace(url.pathname + (url.search || "") + url.hash);
+  }
 
   useEffect(() => {
     if (!loading && needsSetup) router.replace("/setup");
@@ -89,6 +127,35 @@ export default function LoginPageBody() {
           <h1 className="font-display text-3xl font-semibold text-text-primary">The Better Decision</h1>
           <p className="mt-1.5 text-sm text-text-muted">Sign in</p>
         </div>
+        {ssoErrorVisible && ssoErrorCode && (
+          <div
+            className={`${errorCls} mb-5`}
+            role="alert"
+            data-testid="sso-error-banner"
+          >
+            <p>{SSO_ERROR_COPY[ssoErrorCode] ?? SSO_ERROR_FALLBACK}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  clearSsoErrorFromUrl();
+                  handleGoogleLogin();
+                }}
+                disabled={googleLoading}
+                className={`${btnPrimary} text-xs`}
+              >
+                {googleLoading ? "Redirecting..." : "Try again with Google"}
+              </button>
+              <button
+                type="button"
+                onClick={clearSsoErrorFromUrl}
+                className={`${btnSecondary} text-xs`}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && (
             <div className={errorCls} role="alert">

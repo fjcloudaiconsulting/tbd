@@ -394,9 +394,15 @@ async def test_callback_with_attacker_target_redirects_to_default(
 async def test_callback_rejects_malformed_state(
     session_factory, google_config, bad_state
 ):
-    """All variants must short-circuit with 400 "Malformed step-up
-    state" (or "Invalid OAuth state ..." when the cookie does not
-    match), and must never write a step-up token onto any user row."""
+    """All variants must short-circuit with a friendly 307 redirect to
+    /settings?sso_stepup_error=state (the front-line user error code
+    here is "your sign-in attempt expired or didn't round-trip
+    cleanly"), and must never write a step-up token onto any user row.
+
+    Previously the handler raised 400. DO App Platform wraps that on a
+    top-level GET navigation with a generic "Error / check logs" page,
+    so we redirect instead and let the settings page render the right
+    copy."""
     user_id = await _seed_user(session_factory)
     app = _make_app(session_factory, user_id)
 
@@ -408,10 +414,12 @@ async def test_callback_rejects_malformed_state(
             follow_redirects=False,
         )
 
-    assert res.status_code == 400, res.text
-    assert res.headers.get("location") is None
-    detail = res.json().get("detail", "")
-    assert "Malformed step-up state" in detail or "Invalid state" in detail
+    assert res.status_code == 307, res.text
+    location = res.headers.get("location", "")
+    # All malformed-state variants resolve to the default /settings
+    # landing — the unknown-return-key variant is the canary that the
+    # fallback works even when state slot 4 is junk.
+    assert location.endswith("/settings?sso_stepup_error=state"), location
 
     async with session_factory() as db:
         user = await db.get(User, user_id)
@@ -421,12 +429,14 @@ async def test_callback_rejects_malformed_state(
 
 
 @pytest.mark.asyncio
-async def test_callback_with_empty_state_returns_400(session_factory, google_config):
+async def test_callback_with_empty_state_returns_friendly_redirect(
+    session_factory, google_config
+):
     """Empty state must not even reach the parser. The CSRF guard
     (`oauth_state` cookie matches the URL `state`) catches it first
-    when the cookie is missing, and the 4-part shape check catches it
-    if a stray cookie sneaks through. Either way: 400, no redirect,
-    no token issued."""
+    when the cookie is missing. Returns a friendly 307 redirect to
+    /settings?sso_stepup_error=state rather than a 400, and never
+    issues a step-up token."""
     user_id = await _seed_user(session_factory)
     app = _make_app(session_factory, user_id)
 
@@ -437,8 +447,9 @@ async def test_callback_with_empty_state_returns_400(session_factory, google_con
             follow_redirects=False,
         )
 
-    assert res.status_code == 400, res.text
-    assert res.headers.get("location") is None
+    assert res.status_code == 307, res.text
+    location = res.headers.get("location", "")
+    assert location.endswith("/settings?sso_stepup_error=state"), location
 
     async with session_factory() as db:
         user = await db.get(User, user_id)
