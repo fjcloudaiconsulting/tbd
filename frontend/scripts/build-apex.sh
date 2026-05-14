@@ -3,8 +3,12 @@
 # suitable for upload to S3 + CloudFront on the apex host.
 #
 # Strategy:
-#   1. Move every non-allowlisted route directory out of `app/` into a
-#      sibling staging dir so `next build` sees only the landing surface.
+#   1. Walk every entry under `app/` and decide via a positive allowlist
+#      whether it ships to the apex build. Anything not on the allowlist
+#      is moved to a sibling staging dir so `next build` doesn't see it.
+#      This defaults to deny: any route added in the future (e.g.
+#      /onboarding, PR #238) is automatically staged out unless someone
+#      explicitly adds it to the allowlist here.
 #   2. Swap next.config.ts <-> next.config.apex.ts for the duration of
 #      the build. Next.js 16 does not expose a --config flag, so the
 #      config file at the project root is the only knob. The apex config
@@ -16,6 +20,15 @@
 #   5. Move `out/` -> `out-apex/`, sanity-prune any non-allowlisted paths
 #      that snuck through, and emit `_meta.json` with the build commit
 #      SHA + timestamp for invalidation tracking.
+#   6. Run post-build guards that hard-fail the build if the output
+#      contains an unexpected top-level entry or any `/api/v1` reference
+#      (would mean auth/backend code leaked into the apex bundle).
+#
+# Compatibility: this script MUST run on macOS /bin/bash (3.2.57). That
+# means NO `declare -A`, NO `mapfile`/`readarray`, NO `${var^^}`-style
+# case-conversion expansions, NO `&>>`. Use plain indexed arrays, case
+# statements, and `while IFS= read -r line; do ...; done < <(cmd)` for
+# line iteration.
 #
 # Output: frontend/out-apex/
 # Consumed by: PR-B's GitHub Actions workflow (aws s3 sync).
@@ -28,56 +41,40 @@ FRONTEND_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${FRONTEND_DIR}"
 
-# Route directories under `app/` that must NOT ship to the apex build.
-# Anything not on this list is either an allowlisted route (privacy,
-# terms, docs) or a structural file (layout.tsx, page.tsx, globals.css,
-# robots.ts, sitemap.ts, icons, error/loading/not-found, opengraph-image).
-EXCLUDED_ROUTE_DIRS=(
-  "accept-invite"
-  "accounts"
-  "admin"
-  "auth"
-  "budgets"
-  "categories"
-  "dashboard"
-  "forecast-plans"
-  "forgot-password"
-  "health"
-  "import"
-  "login"
-  "mfa-verify"
-  "profile"
-  "recurring"
-  "register"
-  "reset-password"
-  "settings"
-  "setup"
-  "system"
-  "transactions"
-  "verify-email"
+# Positive allowlist: route directories under `app/` that DO ship to the
+# apex build. Everything else under `app/` (auth, dashboard, admin, the
+# whole authed surface) is staged out for the duration of the build.
+ALLOWED_ROUTE_DIRS=(
+  "privacy"
+  "terms"
+  "docs"
 )
 
-# Top-level files under `app/` that use dynamic rendering (e.g.
-# ImageResponse) and would force `output: 'export'` to fail with
-# "force-static not configured" unless we add force-static at the
-# source. We stage them out for the apex build to keep the standard
-# app build untouched. PR-B / a follow-up may swap in a static PNG OG
-# fallback for the apex domain.
-EXCLUDED_ROUTE_FILES=(
-  "opengraph-image.tsx"
-  "apple-icon.tsx"
-  # sitemap.ts + robots.ts are MetadataRoute handlers that Next treats as
-  # dynamic under `output: 'export'`. We stage them out and write static
-  # replacements directly into out-apex/ at the end of the build.
-  "sitemap.ts"
-  "robots.ts"
+# Positive allowlist: app-level files (siblings of route directories)
+# that DO ship to the apex build. These are the framework structural
+# files plus the landing page itself. Files NOT on this list (such as
+# opengraph-image.tsx, apple-icon.tsx, sitemap.ts, robots.ts, manifest.ts)
+# are dynamic and would force a server runtime, so we stage them out and
+# write static replacements directly into out-apex/ at the end of the
+# build.
+ALLOWED_APP_FILES=(
+  "layout.tsx"
+  "page.tsx"
+  "globals.css"
+  "error.tsx"
+  "not-found.tsx"
+  "loading.tsx"
+  "global-error.tsx"
+  "icon.svg"
 )
 
-# Top-level paths inside out-apex/ that are allowed to remain after build.
-# (Each is a directory created by an allowlisted route, or a static asset.)
-ALLOWED_OUTPUT_PATHS=(
+# Top-level paths inside out-apex/ that are allowed after the build.
+# Glob-style matching via `case` (so `__next.*.txt` works for RSC
+# prefetch payloads). Used by the post-build guard.
+ALLOWED_OUTPUT_GLOBS=(
   "index.html"
   "index.txt"
+  "404"
   "404.html"
   "_not-found"
   "privacy"
@@ -88,17 +85,8 @@ ALLOWED_OUTPUT_PATHS=(
   "robots.txt"
   "sitemap.xml"
   "icon.svg"
-  "apple-icon.png"
-  "opengraph-image.png"
   "favicon.ico"
-  # Next 16 emits "__next.*.txt" RSC prefetch payloads alongside the HTML
-  # routes. Keeping them silences harmless console 404s from <Link>
-  # prefetch on hover.
-  "__next.__PAGE__.txt"
-  "__next._full.txt"
-  "__next._head.txt"
-  "__next._index.txt"
-  "__next._tree.txt"
+  "__next.*.txt"
 )
 
 STAGING_DIR="${FRONTEND_DIR}/.apex-staged-routes"
@@ -106,12 +94,41 @@ CONFIG_FILE="${FRONTEND_DIR}/next.config.ts"
 APEX_CONFIG_FILE="${FRONTEND_DIR}/next.config.apex.ts"
 CONFIG_BACKUP="${FRONTEND_DIR}/.next.config.ts.bak"
 
+# Bash 3.2 has no associative arrays. Use a helper that does an O(n) scan
+# of an indexed array. Callers pass the needle then the array elements
+# expanded at the call site (Bash 3.2 has no namerefs either).
+contains() {
+  # Usage: contains "needle" "${array[@]}"
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    if [[ "${item}" = "${needle}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Returns 0 if `name` matches any of the ALLOWED_OUTPUT_GLOBS (with
+# shell-style wildcard matching via `case`). Bash 3.2 safe.
+output_allowed() {
+  local name="$1"
+  local pattern
+  for pattern in "${ALLOWED_OUTPUT_GLOBS[@]}"; do
+    case "${name}" in
+      ${pattern}) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 restore_routes() {
   # Idempotent. Move anything we staged back into app/.
+  local d name
   if [[ -d "${STAGING_DIR}" ]]; then
     for d in "${STAGING_DIR}"/*; do
       [[ -e "${d}" ]] || continue
-      local name
       name="$(basename "${d}")"
       if [[ -e "${FRONTEND_DIR}/app/${name}" ]]; then
         echo "build-apex: WARN restore target already exists for ${name}; leaving staged copy at ${d}" >&2
@@ -130,20 +147,32 @@ restore_routes() {
 # Trap covers normal exit, errors, and interrupts. Always restores.
 trap restore_routes EXIT INT TERM
 
-echo "build-apex: staging non-allowlisted routes out of app/"
+echo "build-apex: staging non-allowlisted entries out of app/ (default-deny allowlist)"
 mkdir -p "${STAGING_DIR}"
-for dir in "${EXCLUDED_ROUTE_DIRS[@]}"; do
-  src="${FRONTEND_DIR}/app/${dir}"
-  if [[ -d "${src}" ]]; then
-    mv "${src}" "${STAGING_DIR}/${dir}"
+
+# Walk every entry under app/ and stage out anything not on the
+# positive allowlist. Default-deny means new routes (e.g. PR #238's
+# /onboarding) are staged out automatically until someone explicitly
+# adds them to ALLOWED_ROUTE_DIRS / ALLOWED_APP_FILES.
+shopt -s nullglob
+for entry in "${FRONTEND_DIR}/app"/*; do
+  name="$(basename "${entry}")"
+  if [[ -d "${entry}" ]]; then
+    if contains "${name}" "${ALLOWED_ROUTE_DIRS[@]}"; then
+      continue
+    fi
+  elif [[ -f "${entry}" ]]; then
+    if contains "${name}" "${ALLOWED_APP_FILES[@]}"; then
+      continue
+    fi
+  else
+    # Symlink, socket, etc. Leave alone.
+    continue
   fi
+  echo "build-apex:   staging out app/${name}"
+  mv "${entry}" "${STAGING_DIR}/${name}"
 done
-for file in "${EXCLUDED_ROUTE_FILES[@]}"; do
-  src="${FRONTEND_DIR}/app/${file}"
-  if [[ -f "${src}" ]]; then
-    mv "${src}" "${STAGING_DIR}/${file}"
-  fi
-done
+shopt -u nullglob
 
 echo "build-apex: swapping next.config.ts -> next.config.apex.ts"
 if [[ ! -f "${APEX_CONFIG_FILE}" ]]; then
@@ -200,34 +229,10 @@ if [[ ! -f "${FRONTEND_DIR}/out-apex/index.html" ]]; then
   exit 1
 fi
 
-echo "build-apex: pruning any non-allowlisted output paths"
-shopt -s nullglob
-declare -A ALLOWED
-for entry in "${ALLOWED_OUTPUT_PATHS[@]}"; do
-  ALLOWED["${entry}"]=1
-done
-for entry in "${FRONTEND_DIR}/out-apex"/*; do
-  name="$(basename "${entry}")"
-  if [[ -z "${ALLOWED[${name}]:-}" ]]; then
-    echo "build-apex:   pruning unexpected output: ${name}"
-    rm -rf "${entry}"
-  fi
-done
-shopt -u nullglob
-
 COMMIT_SHA="$(git -C "${FRONTEND_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 APEX_URL="${NEXT_PUBLIC_APEX_URL:-https://thebetterdecision.com}"
 APP_URL="${NEXT_PUBLIC_APP_URL:-https://app.thebetterdecision.com}"
-
-cat > "${FRONTEND_DIR}/out-apex/_meta.json" <<EOF
-{
-  "commit": "${COMMIT_SHA}",
-  "built_at": "${BUILD_TIME}",
-  "target": "apex",
-  "host": "thebetterdecision.com"
-}
-EOF
 
 # Static SEO replacements for the routes staged out of the build.
 # robots.txt — allow indexing of the apex landing surface, point at the
@@ -249,6 +254,46 @@ cat > "${FRONTEND_DIR}/out-apex/sitemap.xml" <<EOF
   <url><loc>${APEX_URL}/terms/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/docs/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
 </urlset>
+EOF
+
+# Post-build guards (belt-and-suspenders behind the input allowlist).
+# Run BEFORE writing _meta.json so a poisoned bundle never gets a
+# "successful build" marker.
+echo "build-apex: post-build guard — verifying out-apex/ top-level entries"
+shopt -s nullglob
+guard_failures=0
+for entry in "${FRONTEND_DIR}/out-apex"/*; do
+  name="$(basename "${entry}")"
+  if ! output_allowed "${name}"; then
+    echo "build-apex: GUARD FAIL unexpected top-level entry: ${name}" >&2
+    guard_failures=$((guard_failures + 1))
+  fi
+done
+shopt -u nullglob
+if [[ "${guard_failures}" -gt 0 ]]; then
+  echo "build-apex: ERROR ${guard_failures} unexpected entries in out-apex/. Aborting." >&2
+  exit 1
+fi
+
+echo "build-apex: post-build guard — grepping for /api/v1 references in built output"
+# grep -r returns 0 if matches found, 1 if no matches, 2 on error. We
+# want to act on the result, so capture it explicitly (set -e would kill
+# us on the "1 = no match" return otherwise).
+api_hits="$(grep -rl "/api/v1" "${FRONTEND_DIR}/out-apex" 2>/dev/null || true)"
+if [[ -n "${api_hits}" ]]; then
+  echo "build-apex: GUARD FAIL /api/v1 reference leaked into apex bundle:" >&2
+  echo "${api_hits}" >&2
+  echo "build-apex: ERROR auth/backend code leaked into apex bundle. Aborting." >&2
+  exit 1
+fi
+
+cat > "${FRONTEND_DIR}/out-apex/_meta.json" <<EOF
+{
+  "commit": "${COMMIT_SHA}",
+  "built_at": "${BUILD_TIME}",
+  "target": "apex",
+  "host": "thebetterdecision.com"
+}
 EOF
 
 echo "build-apex: done"

@@ -51,41 +51,64 @@ describe("apex build target — scripts/build-apex.sh", () => {
     expect(script).toMatch(/git[^\n]+rev-parse HEAD/);
   });
 
-  it("excludes every authed / app route directory from the apex build", () => {
-    // Sample of the routes that must NOT ship to apex. Each must appear
-    // in the EXCLUDED_ROUTE_DIRS array of the build script.
-    const mustExclude = [
-      "dashboard",
-      "transactions",
-      "accounts",
-      "admin",
-      "login",
-      "register",
-      "settings",
-      "setup",
-      "profile",
-      "verify-email",
-      "forgot-password",
-      "reset-password",
-      "mfa-verify",
-      "accept-invite",
-      "budgets",
-      "categories",
-      "forecast-plans",
-      "recurring",
-      "import",
-      "system",
-      "auth",
-      "health",
-    ];
-    for (const dir of mustExclude) {
-      expect(script, `expected excluded route: ${dir}`).toContain(`"${dir}"`);
+  it("uses a positive allowlist of route directories (default-deny)", () => {
+    // The apex build must invert the historical blocklist to an allowlist
+    // so newly added authed routes (e.g. PR #238's /onboarding) are
+    // staged out automatically. The script defines an ALLOWED_ROUTE_DIRS
+    // array and walks app/ entries, staging anything not on it.
+    expect(script).toMatch(/ALLOWED_ROUTE_DIRS=\(/);
+    // Only the public marketing routes belong on the apex.
+    for (const allowed of ["privacy", "terms", "docs"]) {
+      expect(script, `expected allowed route: ${allowed}`).toContain(
+        `"${allowed}"`,
+      );
+    }
+    // The blocklist contract is gone — these names must NOT appear as
+    // first-class array entries any more (they're staged-out via the
+    // default-deny walk).
+    expect(script).not.toMatch(/EXCLUDED_ROUTE_DIRS=/);
+  });
+
+  it("uses a positive allowlist of app-level files", () => {
+    expect(script).toMatch(/ALLOWED_APP_FILES=\(/);
+    // Structural / static files we keep.
+    for (const allowed of [
+      "layout.tsx",
+      "page.tsx",
+      "globals.css",
+      "error.tsx",
+      "not-found.tsx",
+      "loading.tsx",
+      "global-error.tsx",
+      "icon.svg",
+    ]) {
+      expect(script, `expected allowed app file: ${allowed}`).toContain(
+        `"${allowed}"`,
+      );
+    }
+    // Dynamic Metadata handlers + dynamic image responses are NOT on the
+    // allowlist (staged out so output:'export' doesn't choke).
+    for (const denied of [
+      "opengraph-image.tsx",
+      "apple-icon.tsx",
+      "sitemap.ts",
+      "robots.ts",
+    ]) {
+      // These names may still appear in comments, but not as quoted
+      // allowlist entries. The allowlist itself must not contain them.
+      const allowlistBlock = script.match(
+        /ALLOWED_APP_FILES=\(([\s\S]*?)\)/,
+      );
+      expect(allowlistBlock, "ALLOWED_APP_FILES block exists").not.toBeNull();
+      expect(
+        allowlistBlock?.[1] ?? "",
+        `${denied} must NOT be in ALLOWED_APP_FILES`,
+      ).not.toContain(`"${denied}"`);
     }
   });
 
-  it("allowlists the apex-exported routes only", () => {
-    // Output sanity-prune must permit privacy, terms, docs + the
-    // structural assets, and nothing else.
+  it("allowlists the apex-exported output paths", () => {
+    // The post-build guard's allowlist of out-apex/ top-level entries.
     for (const allowed of [
       "index.html",
       "privacy",
@@ -96,6 +119,38 @@ describe("apex build target — scripts/build-apex.sh", () => {
     ]) {
       expect(script).toContain(`"${allowed}"`);
     }
+  });
+
+  it("post-build guard fails on unexpected top-level entries", () => {
+    // The guard exists, references the allowlist, and exits non-zero on
+    // mismatch. This is belt-and-suspenders behind the input allowlist.
+    expect(script).toMatch(/post-build guard/);
+    expect(script).toMatch(/ALLOWED_OUTPUT_GLOBS=\(/);
+    expect(script).toMatch(/output_allowed/);
+  });
+
+  it("post-build guard fails on any /api/v1 reference in built output", () => {
+    // If auth/backend code (or a hashed _next/static chunk) leaks an
+    // /api/v1 reference, the script must abort. This catches transitive
+    // imports the input allowlist alone cannot.
+    expect(script).toMatch(/grep -rl "\/api\/v1"/);
+    expect(script).toMatch(/GUARD FAIL .*api\/v1/i);
+  });
+
+  it("avoids Bash 4+ features so macOS /bin/bash (3.2) can run it", () => {
+    // The project is operated from macOS where /bin/bash is Bash 3.2.57.
+    // None of these idioms exist in 3.2 and must not appear in code
+    // (mentions inside comments are filtered out below).
+    const codeOnly = script
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    expect(codeOnly).not.toMatch(/\bdeclare\s+-A\b/);
+    expect(codeOnly).not.toMatch(/\bmapfile\b/);
+    expect(codeOnly).not.toMatch(/\breadarray\b/);
+    expect(codeOnly).not.toMatch(/\$\{[A-Za-z_][A-Za-z0-9_]*\^\^?\}/);
+    expect(codeOnly).not.toMatch(/\$\{[A-Za-z_][A-Za-z0-9_]*,,?\}/);
+    expect(codeOnly).not.toMatch(/&>>/);
   });
 });
 
