@@ -117,23 +117,29 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
     });
   });
 
-  it("renders the member section with role select and Remove buttons for editable rows", async () => {
+  it("renders the member section with role select and Deactivate buttons for editable rows", async () => {
     installMocks();
     render(<AdminOrgDetailPage />);
 
     await screen.findByRole("heading", { name: "Acme" });
     await screen.findByLabelText(/Role for alice/i);
 
-    // Editable rows get a role-combobox + Remove button.
+    // Editable active rows get a role-combobox + Deactivate button.
     expect(screen.getByLabelText(/Role for owner/i)).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Remove alice from org/i }),
+      screen.getByRole("button", { name: /Deactivate alice/i }),
     ).toBeInTheDocument();
+
+    // The misleading "Remove" affordance is gone — only Deactivate /
+    // Reactivate remain for active / inactive rows.
+    expect(
+      screen.queryByRole("button", { name: /Remove alice from org/i }),
+    ).toBeNull();
 
     // Platform superadmin shows the locked-reason copy, not actions.
     expect(screen.getByText(/Platform superadmin/i)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Remove platformsa from org/i }),
+      screen.queryByRole("button", { name: /Deactivate platformsa/i }),
     ).toBeNull();
   });
 
@@ -171,12 +177,26 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
     });
   });
 
-  it("PATCHes is_active=false when Deactivate is clicked", async () => {
+  it("Deactivate opens the confirm modal and PATCHes is_active=false on confirm", async () => {
     const apiFetchMock = installMocks();
     render(<AdminOrgDetailPage />);
 
     await screen.findByText("alice");
     fireEvent.click(screen.getByRole("button", { name: /Deactivate alice/i }));
+
+    // Confirm modal opens with the explicit copy locked by the
+    // remove-vs-deactivate fix.
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(/Deactivate member/i),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        /lose access immediately but their data and audit history remain/i,
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Deactivate$/i }));
 
     await waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith(
@@ -187,6 +207,28 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
         }),
       );
     });
+  });
+
+  it("Cancel on the deactivate modal closes without calling PATCH", async () => {
+    const apiFetchMock = installMocks();
+    render(<AdminOrgDetailPage />);
+
+    await screen.findByText("alice");
+    fireEvent.click(screen.getByRole("button", { name: /Deactivate alice/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    const patchCalls = apiFetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        url === "/api/v1/admin/orgs/42/members/10" &&
+        (opts as RequestInit | undefined)?.method === "PATCH",
+    );
+    expect(patchCalls).toHaveLength(0);
   });
 
   it("Reactivate appears on inactive rows and PATCHes is_active=true", async () => {
@@ -207,51 +249,40 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
     });
   });
 
-  it("Remove opens the confirm modal and DELETEs on confirm", async () => {
+  it("never issues a DELETE on the member endpoint (Remove affordance retired)", async () => {
     const apiFetchMock = installMocks();
     render(<AdminOrgDetailPage />);
 
     await screen.findByText("alice");
-    fireEvent.click(
-      screen.getByRole("button", { name: /Remove alice from org/i }),
-    );
-
-    // Confirm modal opens.
+    // The Remove button is gone; deactivating alice should not result
+    // in a DELETE on the legacy /members/{id} endpoint.
+    fireEvent.click(screen.getByRole("button", { name: /Deactivate alice/i }));
     const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).getByText(/Remove member from organization/i),
-    ).toBeInTheDocument();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: /^Remove$/i }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Deactivate$/i }));
 
     await waitFor(() => {
-      expect(apiFetchMock).toHaveBeenCalledWith(
-        "/api/v1/admin/orgs/42/members/10",
-        expect.objectContaining({ method: "DELETE" }),
+      const deleteCalls = apiFetchMock.mock.calls.filter(
+        ([url, opts]) =>
+          url === "/api/v1/admin/orgs/42/members/10" &&
+          (opts as RequestInit | undefined)?.method === "DELETE",
       );
+      expect(deleteCalls).toHaveLength(0);
     });
   });
 
-  it("Cancel on the remove modal closes without calling DELETE", async () => {
-    const apiFetchMock = installMocks();
+  it("inactive rows do not surface a Deactivate button", async () => {
+    installMocks();
     render(<AdminOrgDetailPage />);
 
-    await screen.findByText("alice");
-    fireEvent.click(
-      screen.getByRole("button", { name: /Remove alice from org/i }),
-    );
-
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: /Cancel/i }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).toBeNull();
-    });
-
-    const deleteCalls = apiFetchMock.mock.calls.filter(
-      ([, opts]) => (opts as RequestInit | undefined)?.method === "DELETE",
-    );
-    expect(deleteCalls).toHaveLength(0);
+    await screen.findByText("ghost");
+    // ghost is is_active=false, so the only mutation button on the
+    // row is Reactivate.
+    expect(
+      screen.getByRole("button", { name: /Reactivate ghost/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Deactivate ghost/i }),
+    ).toBeNull();
   });
 
   it("surfaces a 409 last-owner error from the backend in the member-error banner", async () => {
@@ -290,7 +321,7 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
     await screen.findByText(/last active owner/i);
   });
 
-  it("does not render role select or Remove for the actor's own row", async () => {
+  it("does not render role select or Deactivate for the actor's own row", async () => {
     // Inject the actor into the member list so the locked-reason
     // path renders.
     const membersWithSelf = [
@@ -310,7 +341,7 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
       screen.queryByLabelText(/Role for root/i),
     ).toBeNull();
     expect(
-      screen.queryByRole("button", { name: /Remove root from org/i }),
+      screen.queryByRole("button", { name: /Deactivate root/i }),
     ).toBeNull();
   });
 });

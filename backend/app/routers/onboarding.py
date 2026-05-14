@@ -1,6 +1,6 @@
 """Onboarding endpoints (L3.3 first-run wizard).
 
-Two endpoints, both auth-required, both scoped to the calling user
+Endpoints, all auth-required, all scoped to the calling user
 and their org:
 
 - ``POST /api/v1/users/me/onboarding/complete``
@@ -25,6 +25,19 @@ and their org:
   Either way ``seed_org`` enforces emptiness server-side; the param
   is informational and ends up in the audit ``detail`` so we can see
   which flow the user came through.
+
+- ``POST /api/v1/users/me/onboarding/restart-tour``
+  Records that the user requested to replay the dashboard tour
+  overlay. Server-side this is an audit-only, rate-limited action:
+  ``users.onboarded_at`` is intentionally **not** touched, because
+  AppShell guards on a NULL ``onboarded_at`` to bounce first-run
+  users to ``/onboarding`` — clearing it here would trap the user in
+  a redirect loop. The frontend triggers the dashboard tour overlay
+  via a sessionStorage flag and a ``/dashboard`` push; this endpoint
+  is the recorded, rate-limited server side of that action. A full
+  wizard restart is a separate explicit action handled outside this
+  endpoint. Idempotent. Per-user. Audit event
+  ``onboarding.tour.restarted`` on every call.
 
 Org isolation: the service receives ``current_user.org_id`` directly;
 no path or body parameter can override which org gets seeded.
@@ -65,6 +78,10 @@ class SeedDemoResponse(BaseModel):
     accounts_created: int
     transactions_created: int
     categories_created: int
+
+
+class RestartTourResponse(BaseModel):
+    onboarded_at: Optional[str]
 
 
 def _request_id() -> Optional[str]:
@@ -174,4 +191,57 @@ async def seed_demo(
         accounts_created=result.accounts_created,
         transactions_created=result.transactions_created,
         categories_created=result.categories_created,
+    )
+
+
+@router.post("/restart-tour", response_model=RestartTourResponse)
+@limiter.limit("10/hour")
+async def restart_tour(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Record a dashboard-tour replay request without mutating state.
+
+    Replaying the dashboard tour is a client-side overlay that the
+    frontend triggers via sessionStorage; the server's role is to
+    audit and rate-limit the user action. ``users.onboarded_at`` is
+    deliberately left unchanged — AppShell redirects authenticated
+    users with ``onboarded_at IS NULL`` to ``/onboarding``, so
+    clearing it here would trap the user in a redirect loop instead
+    of letting them see the dashboard tour overlay.
+
+    Idempotent: calling twice leaves ``onboarded_at`` untouched (be
+    that NULL or a prior timestamp) and audits both calls. Per-user.
+    """
+    # Pre-snapshot the audit fields so a lazy reload after commit
+    # cannot crash with MissingGreenlet. Same pattern as seed_demo.
+    actor_user_id = current_user.id
+    actor_email = current_user.email
+    org_id = current_user.org_id
+
+    # Re-fetch through the request-scoped session so we read the
+    # canonical value the rest of the request will see, even when
+    # `current_user` was hydrated from a different session in tests.
+    user = (
+        await db.execute(select(User).where(User.id == current_user.id))
+    ).scalar_one()
+    onboarded_at = user.onboarded_at
+
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="onboarding.tour.restarted",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=org_id,
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=None,
+    )
+
+    return RestartTourResponse(
+        onboarded_at=onboarded_at.isoformat() if onboarded_at else None,
     )

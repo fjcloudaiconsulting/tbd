@@ -42,6 +42,16 @@ export default function Hero() {
               Sign in
             </Link>
           </div>
+          {/* Trust line under the CTAs. Three honest, verifiable claims;
+              the dot separators match the footer convention. No fake
+              urgency, no "limited time" framing (BRAND.md voice rules). */}
+          <p className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
+            <span>No card required</span>
+            <span aria-hidden className="text-text-muted/60">&middot;</span>
+            <span>EU-hosted</span>
+            <span aria-hidden className="text-text-muted/60">&middot;</span>
+            <span>Cancel anytime</span>
+          </p>
         </div>
         <div className="lg:pl-8">
           <HeroDashboard />

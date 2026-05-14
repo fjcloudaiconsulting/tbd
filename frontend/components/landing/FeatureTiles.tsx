@@ -26,6 +26,7 @@ export default function FeatureTiles() {
       aria-label="What you can do with The Better Decision"
       className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-24"
     >
+      <h2 className="sr-only">What The Better Decision does</h2>
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 lg:gap-8">
         {tiles.map((tile, i) => (
           <div

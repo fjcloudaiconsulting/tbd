@@ -713,7 +713,7 @@ export default function ForecastPlansClient({
               : "Set up your financial plan for this billing period."}
         {isDraft && hasItems && (
           <span className="ml-1">
-            This plan is a <strong>draft</strong> — finalize it when you&apos;re done editing.
+            This plan is a <strong>draft</strong>. Finalize it when you&apos;re done editing.
           </span>
         )}
         {isActive && (
@@ -751,7 +751,7 @@ export default function ForecastPlansClient({
           <span className="text-sm text-text-secondary">
             {selectedPeriod?.start_date}
             {selectedPeriod?.end_date
-              ? ` — ${selectedPeriod.end_date}`
+              ? ` – ${selectedPeriod.end_date}`
               : ""}
             {isCurrentPeriod && (
               <span className="ml-2 text-xs font-medium text-success">

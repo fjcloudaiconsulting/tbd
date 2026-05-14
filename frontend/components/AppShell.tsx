@@ -236,7 +236,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex items-center justify-between px-5 pt-5 pb-6">
           <Link
             href="/dashboard"
-            aria-label="The Better Decision — Dashboard"
+            aria-label="The Better Decision, Dashboard"
             className="inline-flex items-center text-sidebar-text-bright"
           >
             {/* Sidebar ground is dark; the muted Logo tone keeps the

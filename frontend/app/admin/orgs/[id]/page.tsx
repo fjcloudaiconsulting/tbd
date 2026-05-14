@@ -93,9 +93,16 @@ export default function AdminOrgDetailPage() {
   const [deleting, setDeleting] = useState(false);
 
   // Member management state (L4.4 slice).
+  //
+  // The "Remove" affordance was retired on 2026-05-14: the underlying
+  // DELETE endpoint shared its effect with PATCH ``is_active=False``
+  // (soft-deactivate) but emitted a misleading
+  // ``admin.org.member.removed`` audit event. Both flows now route
+  // through PATCH and surface the same confirm dialog so the audit
+  // log and the UI agree on what just happened.
   const [memberBusyId, setMemberBusyId] = useState<number | null>(null);
   const [memberError, setMemberError] = useState("");
-  const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
+  const [deactivateTarget, setDeactivateTarget] = useState<Member | null>(null);
 
   useEffect(() => {
     if (loading) return;
@@ -185,20 +192,23 @@ export default function AdminOrgDetailPage() {
     }
   }
 
-  async function confirmRemoveMember() {
-    if (!removeTarget) return;
-    const member = removeTarget;
+  async function confirmDeactivateMember() {
+    if (!deactivateTarget) return;
+    const member = deactivateTarget;
     setMemberError("");
     setMemberBusyId(member.id);
     try {
       await apiFetch(
         `/api/v1/admin/orgs/${orgId}/members/${member.id}`,
-        { method: "DELETE" },
+        {
+          method: "PATCH",
+          body: JSON.stringify({ is_active: false }),
+        },
       );
-      setRemoveTarget(null);
+      setDeactivateTarget(null);
       await refresh();
     } catch (err) {
-      setMemberError(extractErrorMessage(err, "Remove failed"));
+      setMemberError(extractErrorMessage(err, "Deactivate failed"));
     } finally {
       setMemberBusyId(null);
     }
@@ -431,30 +441,31 @@ export default function AdminOrgDetailPage() {
                         </span>
                       ) : (
                         <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() =>
-                              patchMember(m, { is_active: !m.is_active })
-                            }
-                            className={`${btnSecondary} min-h-[44px]`}
-                            aria-label={
-                              m.is_active
-                                ? `Deactivate ${m.username}`
-                                : `Reactivate ${m.username}`
-                            }
-                          >
-                            {m.is_active ? "Deactivate" : "Reactivate"}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={busy || !m.is_active}
-                            onClick={() => setRemoveTarget(m)}
-                            className={`${btnDangerSolid} min-h-[44px]`}
-                            aria-label={`Remove ${m.username} from org`}
-                          >
-                            Remove
-                          </button>
+                          {m.is_active ? (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => setDeactivateTarget(m)}
+                              className={`${btnDangerSolid} min-h-[44px]`}
+                              aria-label={`Deactivate ${m.username}`}
+                              title="Revoke access immediately. Data and audit history are preserved; the member can be reactivated later."
+                            >
+                              Deactivate
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() =>
+                                patchMember(m, { is_active: true })
+                              }
+                              className={`${btnSecondary} min-h-[44px]`}
+                              aria-label={`Reactivate ${m.username}`}
+                              title="Restore the member's access. They will be required to sign in again."
+                            >
+                              Reactivate
+                            </button>
+                          )}
                         </div>
                       )}
                     </td>
@@ -467,18 +478,18 @@ export default function AdminOrgDetailPage() {
       </section>
 
       <ConfirmModal
-        open={removeTarget !== null}
-        title="Remove member from organization"
+        open={deactivateTarget !== null}
+        title="Deactivate member"
         message={
-          removeTarget
-            ? `Remove ${removeTarget.username} (${removeTarget.email}) from ${detail.name}? They will lose access immediately. This action is recorded in the audit log.`
+          deactivateTarget
+            ? `Deactivate ${deactivateTarget.email}? They will lose access immediately but their data and audit history remain. You can reactivate them later from this page.`
             : ""
         }
-        confirmLabel="Remove"
+        confirmLabel="Deactivate"
         cancelLabel="Cancel"
         variant="danger"
-        onConfirm={confirmRemoveMember}
-        onCancel={() => setRemoveTarget(null)}
+        onConfirm={confirmDeactivateMember}
+        onCancel={() => setDeactivateTarget(null)}
       />
 
       {/* Counts card */}
