@@ -107,8 +107,8 @@ App Platform's ingress. Mixed-zone setup is intentional, not transitional.
 
 | Hostname | Authoritative DNS | Behind | Notes |
 |---|---|---|---|
-| `thebetterdecision.com` (apex) | Route 53 | CloudFront -> S3 | A and AAAA ALIAS records to CloudFront land in PR-D. Until then, apex is parked. |
-| `www.thebetterdecision.com` | Route 53 | CloudFront -> S3 | A and AAAA ALIAS records to the same CloudFront distribution land in PR-D. Until then, `www` is parked too. CloudFront Function 301-redirects www traffic to apex after the TLS handshake. |
+| `thebetterdecision.com` (apex) | Route 53 | CloudFront -> S3 | A + AAAA ALIAS records to CloudFront, provisioned by `infra/terraform/apex/main.tf`. |
+| `www.thebetterdecision.com` | Route 53 | CloudFront -> S3 | A + AAAA ALIAS records to the same CloudFront distribution. CloudFront viewer-request function 301-redirects www traffic to apex after the TLS handshake. |
 | `app.thebetterdecision.com` | Cloudflare | DO App Platform ingress | PRIMARY domain declared in `.do/app.yaml`. Cloudflare origin TLS handshake assumes this stays declared on the App Platform side; do not strip it from the spec. |
 | `m.thebetterdecision.com` | Cloudflare | Mailgun EU | Outbound email only. |
 
@@ -163,7 +163,7 @@ flowchart LR
 | `aws_iam_openid_connect_provider.github` | GitHub Actions OIDC trust. SHA-1 thumbprint computed at plan time via `tls_certificate` data source (AWS does not auto-rotate OIDC thumbprints). |
 | `aws_iam_openid_connect_provider.tfc` | Terraform Cloud workload identity trust. Same thumbprint pattern. |
 | `aws_iam_role.github_actions_apex_deploy` | Trust pinned via `StringEquals` to `repo:flamarion/pfv:ref:refs/heads/main`. PR-context tokens have a different `sub` and are rejected at the trust level (workflow `if:` guards alone are insufficient because PR authors can edit the workflow). Permissions scoped to this bucket + this distribution only. |
-| `aws_iam_role.tfc_apex_provisioner` | Trust pinned to `FlamaCorp` org + `pfv-apex*` workspace pattern. Manages apex bucket + distribution + ACM cert + IAM role chain. Route 53 is read-only except for CNAME writes (IAM-enforced via `route53:ChangeResourceRecordSetsRecordTypes` condition); apex A record writes widen in PR-D. |
+| `aws_iam_role.tfc_apex_provisioner` | Trust pinned to `FlamaCorp` org + `pfv-apex*` workspace pattern. Manages apex bucket + distribution + ACM cert + IAM role chain + Route 53 records. Route 53 writes are split into two narrow IAM statements (each pairs `route53:ChangeResourceRecordSetsRecordTypes` with `route53:ChangeResourceRecordSetsNormalizedRecordNames`): `A`/`AAAA` on exactly apex + www, and `CNAME` on the exact ACM validation names from `domain_validation_options`. Any other record type or name in the zone is IAM-blocked. |
 
 ### Why `us-east-1` for ACM
 
@@ -431,10 +431,11 @@ console OIDC setup).
 
 ### Apex landing
 
-- **Verify**: browse the CloudFront-assigned `dXXX.cloudfront.net`
-  hostname (output `cloudfront_distribution_domain`). Until PR-D
-  flips the apex A record, this is the only way to see the live
-  distribution.
+- **Verify**: browse `https://thebetterdecision.com/` (or its
+  `_meta.json` probe for a no-cache deploy-SHA echo). The
+  CloudFront-assigned `dXXX.cloudfront.net` hostname from output
+  `cloudfront_distribution_domain` remains available as a diagnostic
+  / fallback path when the apex hostname is itself unreachable.
 - **Invalidate cache**: GitHub Actions workflow invalidates on every
   deploy. Manual: `aws cloudfront create-invalidation
   --distribution-id <id> --paths '/*'`.
@@ -468,12 +469,14 @@ console OIDC setup).
 
 ### Apex (`FlamaCorp/pfv-apex`)
 
-Every resource in the apex module is `terraform destroy`-able. Removing
-the module leaves no Route 53 apex-A change behind (PR-A never wrote one
-in the first place; the apex A swap lives in PR-D). ACM validation
-CNAMEs are deleted with the cert. Path: open a PR removing the
-resources, merge, Confirm & Apply in TFC. Or queue a Destroy plan from
-the TFC workspace UI.
+Every resource in the apex module is `terraform destroy`-able. A full
+teardown removes the apex / www `A` + `AAAA` ALIAS records, the ACM
+validation CNAMEs, the bucket and distribution, the IAM roles, and the
+OIDC providers. The apex hosted zone is data-sourced, not managed, so
+it survives untouched. After teardown DNS for apex and www returns to
+"no answer", and a fresh apply recreates everything end to end. Path:
+open a PR removing the resources, merge, Confirm & Apply in TFC. Or
+queue a Destroy plan from the TFC workspace UI.
 
 ### Data droplet (`FlamaCorp/pfv`)
 

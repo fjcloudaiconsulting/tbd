@@ -1,15 +1,22 @@
 ###############################################################################
 # pfv apex landing: S3 (private) + CloudFront (OAC) + ACM (us-east-1) +
-# IAM OIDC roles (GitHub Actions deploy, TFC apex provisioner).
+# IAM OIDC roles (GitHub Actions deploy, TFC apex provisioner) +
+# Route 53 ALIAS records for the apex and www hostnames.
 #
-# PR-A of the L5.2a apex split. NO Route 53 A-record changes here. The apex
-# stays parked through this PR. ACM DNS-validation records ARE written into
-# the existing Route 53 zone (they don't touch the apex itself, only the
-# _acme-challenge style validation CNAMEs ACM emits).
-#
-# Cutover (apex A ALIAS swap, TTL drop) is PR-D. PR-B consumes
-# github_actions_role_arn from outputs.tf; PR-C produces the static export
-# that gets s3-synced into the bucket.
+# Shipped across L5.2a's four-PR sequence:
+#   PR-A (#240): S3 bucket, CloudFront distribution, ACM cert, IAM OIDC
+#                trust + roles, ACM DNS-validation CNAMEs. No apex A
+#                record yet; the IAM-enforced invariant was CNAME-only.
+#   PR-B (#267): GitHub Actions deploy workflow that builds and pushes
+#                the static export into the bucket, with CloudFront
+#                invalidation. Mutually exclusive path-filters in
+#                release.yml so landing-only commits skip the DO redeploy.
+#   PR-C (#241): Next.js apex build target (npm run build:apex) producing
+#                out-apex/ from an allowlisted slice of frontend/app/.
+#   PR-D (#270): Apex cutover. Adds A + AAAA ALIAS records for apex and
+#                www pointing at the CloudFront distribution. Widens the
+#                TFC role's Route 53 write scope to include A/AAAA on the
+#                apex/www names and CNAME on the ACM validation pattern.
 ###############################################################################
 
 locals {
@@ -178,6 +185,14 @@ resource "aws_route53_record" "apex_acm_validation" {
   ttl             = 60
   type            = each.value.type
   zone_id         = data.aws_route53_zone.apex.zone_id
+
+  # The WriteAcmValidationCnames IAM statement (further down in this
+  # file) pins the allowed CNAME names to exactly what ACM exposes via
+  # aws_acm_certificate.apex.domain_validation_options. If the cert
+  # rotates (new SAN, recreate) the policy values change. Make this
+  # record depend on the policy resource so on the same-run apply that
+  # widens the policy, the write attempt happens AFTER the policy lands.
+  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
 }
 
 resource "aws_acm_certificate_validation" "apex" {
@@ -185,6 +200,87 @@ resource "aws_acm_certificate_validation" "apex" {
 
   certificate_arn         = aws_acm_certificate.apex.arn
   validation_record_fqdns = [for r in aws_route53_record.apex_acm_validation : r.fqdn]
+}
+
+# Apex cutover (L5.2a PR-D). A and AAAA ALIAS records pointing the apex
+# and www hostnames at the CloudFront distribution. Both record types
+# are needed because the distribution has is_ipv6_enabled = true; an
+# IPv6-only client otherwise cannot resolve the apex.
+#
+# The www records point at the SAME distribution (not at the apex name)
+# because CloudFront has both hostnames in its `aliases` list and the
+# viewer-request function performs the www -> apex 301 redirect at the
+# edge after the TLS handshake. Sending www to CloudFront first lets the
+# redirect happen with HTTPS already established; sending www somewhere
+# else (e.g. CNAME to apex) would force a second DNS lookup and an
+# extra TLS handshake for every www visitor.
+#
+# evaluate_target_health = false is required for CloudFront aliases;
+# CloudFront does its own health checking internally.
+#
+# depends_on on aws_iam_role_policy.tfc_apex_provisioner is required for
+# the first apply only: this apply widens the inline policy AND creates
+# these records in the same run. Without the explicit dependency,
+# Terraform parallelizes and can try to write the records before the
+# updated policy lands. IAM is eventually consistent (seconds), so if
+# the first apply still 403s due to propagation, re-running the apply
+# succeeds idempotently. On subsequent applies the dependency is a
+# no-op.
+
+resource "aws_route53_record" "apex_a" {
+  zone_id = data.aws_route53_zone.apex.zone_id
+  name    = var.domain
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.apex.domain_name
+    zone_id                = aws_cloudfront_distribution.apex.hosted_zone_id
+    evaluate_target_health = false
+  }
+
+  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
+}
+
+resource "aws_route53_record" "apex_aaaa" {
+  zone_id = data.aws_route53_zone.apex.zone_id
+  name    = var.domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.apex.domain_name
+    zone_id                = aws_cloudfront_distribution.apex.hosted_zone_id
+    evaluate_target_health = false
+  }
+
+  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
+}
+
+resource "aws_route53_record" "www_a" {
+  zone_id = data.aws_route53_zone.apex.zone_id
+  name    = "www.${var.domain}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.apex.domain_name
+    zone_id                = aws_cloudfront_distribution.apex.hosted_zone_id
+    evaluate_target_health = false
+  }
+
+  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
+}
+
+resource "aws_route53_record" "www_aaaa" {
+  zone_id = data.aws_route53_zone.apex.zone_id
+  name    = "www.${var.domain}"
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.apex.domain_name
+    zone_id                = aws_cloudfront_distribution.apex.hosted_zone_id
+    evaluate_target_health = false
+  }
+
+  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
 }
 
 ###############################################################################
@@ -530,9 +626,11 @@ resource "aws_iam_role_policy" "github_actions_apex_deploy" {
 # Assumable from TFC workload identity tokens originating in the pfv-apex
 # workspace (or any workspace matching var.tfc_workspace_pattern). Has full
 # management of THIS module's resources: S3 bucket, CloudFront distribution,
-# ACM cert, IAM role chain. Route 53 access is READ-ONLY (Get* on the apex
-# zone) so PR-A cannot accidentally write A records; PR-D adds the write
-# permissions when the cutover Terraform lands.
+# ACM cert, IAM role chain, and the Route 53 records this module manages.
+# Route 53 writes are narrowly scoped via two IAM condition pairs (see the
+# WriteApexAndWwwAliasRecords and WriteAcmValidationCnames statements below)
+# so the role can ONLY write A/AAAA on the apex+www names and CNAME on the
+# ACM validation pattern, never anything else in the zone.
 ###############################################################################
 
 data "aws_iam_policy_document" "tfc_trust" {
@@ -616,9 +714,9 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
     resources = ["arn:aws:acm:us-east-1:${var.aws_account_id}:certificate/*"]
   }
 
-  # Route 53 READ-ONLY on the apex zone. ACM validation CNAMEs and the
-  # data lookup need Get/List; PR-A intentionally CANNOT write A records.
-  # PR-D will widen this to ChangeResourceRecordSets when cutover lands.
+  # Route 53 read access on the apex zone. The two ChangeResourceRecordSets
+  # writes below (apex/www ALIAS + ACM validation CNAME) are narrowly scoped
+  # by record name AND type via separate statements.
   statement {
     sid    = "ReadApexZone"
     effect = "Allow"
@@ -639,16 +737,60 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
     resources = ["*"]
   }
 
-  # ACM validation creates _<token>.<domain> CNAMEs in the zone. Without
-  # write access to the zone, PR-A's apply cannot complete. The
-  # ForAllValues:StringEquals condition on route53:ChangeResourceRecordSetsRecordTypes
-  # restricts the role to CNAME writes ONLY. The apex A record (and any
-  # other record type) is unreachable through this role. PR-D will widen
-  # the condition to add "A" when it ships the apex ALIAS swap. This
-  # makes "no A records in PR-A" an IAM-enforced invariant, not just a
-  # Terraform code-discipline one.
+  # Route 53 write scope is split into two narrow statements. Each restricts
+  # both record type AND record name, so the role cannot pivot to other
+  # records in the zone even if an attacker reaches the OIDC role.
+  #
+  # AWS condition keys used here:
+  #   route53:ChangeResourceRecordSetsRecordTypes  -> record type allowlist
+  #   route53:ChangeResourceRecordSetsNormalizedRecordNames -> record name allowlist
+  #   route53:ChangeResourceRecordSetsActions      -> CREATE/UPSERT/DELETE
+  # The "Normalized" name comparison is case-insensitive and trims any trailing
+  # dot, so values are written here as the bare FQDNs.
+
+  # Statement 1: apex + www ALIAS records, A and AAAA only. The two ALIAS
+  # records pointing at the apex CloudFront distribution are the cutover.
   statement {
-    sid    = "WriteAcmValidationRecordsCnameOnly"
+    sid    = "WriteApexAndWwwAliasRecords"
+    effect = "Allow"
+    actions = [
+      "route53:ChangeResourceRecordSets",
+    ]
+    resources = ["arn:aws:route53:::hostedzone/${data.aws_route53_zone.apex.zone_id}"]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "route53:ChangeResourceRecordSetsRecordTypes"
+      values   = ["A", "AAAA"]
+    }
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "route53:ChangeResourceRecordSetsNormalizedRecordNames"
+      values = [
+        var.domain,
+        "www.${var.domain}",
+      ]
+    }
+  }
+
+  # Statement 2: ACM DNS-validation CNAMEs. ACM emits CNAMEs at exact
+  # names exposed in aws_acm_certificate.apex.domain_validation_options.
+  # AWS reuses these names across cert renewals, so they are stable for
+  # the life of the cert (and re-derive automatically on plan if a SAN
+  # is added or the cert is recreated).
+  #
+  # Earlier revision used StringLike on "_*.<domain>", but IAM string
+  # wildcards are NOT DNS-label-bounded: "_*.thebetterdecision.com"
+  # would also match "_acme-challenge.foo.thebetterdecision.com" and
+  # any other underscore-prefixed name elsewhere in the zone. Pinning
+  # to the exact names ACM is currently asking for removes that gap.
+  #
+  # NormalizedRecordNames comparison is case-insensitive; AWS lowercases
+  # and trims any trailing dot before evaluating. We pre-normalize here
+  # so the rendered policy matches what AWS will compare against.
+  statement {
+    sid    = "WriteAcmValidationCnames"
     effect = "Allow"
     actions = [
       "route53:ChangeResourceRecordSets",
@@ -659,6 +801,15 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
       test     = "ForAllValues:StringEquals"
       variable = "route53:ChangeResourceRecordSetsRecordTypes"
       values   = ["CNAME"]
+    }
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "route53:ChangeResourceRecordSetsNormalizedRecordNames"
+      values = [
+        for dvo in aws_acm_certificate.apex.domain_validation_options :
+        trimsuffix(lower(dvo.resource_record_name), ".")
+      ]
     }
   }
 

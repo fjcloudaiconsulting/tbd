@@ -5,11 +5,12 @@ infrastructure for the `thebetterdecision.com` apex marketing site.
 `app.thebetterdecision.com` stays on DigitalOcean App Platform. State and
 runs live in TFC; this directory holds the configuration.
 
-This is PR-A of the L5.2a apex split. **No Route 53 A-record changes are
-made here.** PR-D performs the apex `A` ALIAS swap to CloudFront after
-PR-B (GitHub Actions deploy workflow) and PR-C (Next.js static export)
-have landed and been validated against the CloudFront-assigned
-`dXXX.cloudfront.net` hostname.
+This module is the AWS side of the L5.2a apex split. It manages the S3
+bucket, CloudFront distribution, ACM cert in `us-east-1`, the two IAM
+OIDC providers (GitHub Actions + TFC), the apex-deploy and provisioner
+IAM roles, and the Route 53 records that point the apex hostnames at
+the distribution (`A` and `AAAA` ALIAS records for the apex and `www`,
+plus the ACM-emitted validation CNAMEs).
 
 ## Resources managed
 
@@ -47,19 +48,27 @@ Defaults for `aws_region`, `domain`, `github_repo`, `tfc_organization`,
 
 Read from TFC -> Workspace -> Outputs after apply.
 
-- `github_actions_role_arn` -> **PR-B** sets this as `role-to-assume` in
-  the `aws-actions/configure-aws-credentials` step of the deploy workflow.
-- `s3_bucket_name` -> **PR-B** uses for `aws s3 sync .out s3://<bucket>`.
-- `cloudfront_distribution_id` -> **PR-B** uses for
-  `aws cloudfront create-invalidation`. **PR-D** uses for the apex A
-  ALIAS target.
-- `cloudfront_distribution_domain` -> Pre-cutover verification URL.
-  Browse this `dXXX.cloudfront.net` hostname end-to-end before PR-D fires.
-- `cloudfront_distribution_hosted_zone_id` -> **PR-D** uses when
-  constructing the `aws_route53_record` apex A ALIAS.
-- `route53_zone_id` -> **PR-D** uses to target the apex zone.
-- `tfc_role_arn` -> Set as `TFC_AWS_RUN_ROLE_ARN` env variable in this
-  workspace after the bootstrap apply. Lets TFC drop static keys.
+- `github_actions_role_arn` -> the `apex-deploy.yml` workflow consumes
+  this as `role-to-assume` in `aws-actions/configure-aws-credentials`.
+  Surfaced to GitHub as the repo variable `AWS_APEX_DEPLOY_ROLE_ARN`.
+- `s3_bucket_name` -> consumed by the deploy workflow for
+  `aws s3 sync out-apex/ s3://<bucket>/`. GitHub variable
+  `AWS_APEX_BUCKET`.
+- `cloudfront_distribution_id` -> consumed by the deploy workflow for
+  `aws cloudfront create-invalidation`. GitHub variable
+  `AWS_APEX_DISTRIBUTION_ID`. Also the alias target referenced by the
+  apex/www ALIAS records.
+- `cloudfront_distribution_domain` -> the `dXXX.cloudfront.net`
+  hostname. Useful for diagnostics (pinging the distribution directly,
+  bypassing DNS) and as a fallback verification path during incidents.
+- `cloudfront_distribution_hosted_zone_id` -> referenced internally by
+  the apex/www ALIAS records (`alias.zone_id`). Stable AWS constant
+  (`Z2FDTNDATAQYW2`), exposed as an output for visibility.
+- `route53_zone_id` -> the apex hosted zone ID. Used by the validation
+  CNAMEs and the apex/www ALIAS records in this module.
+- `tfc_role_arn` -> set as `TFC_AWS_RUN_ROLE_ARN` env variable in the
+  `pfv-apex` workspace after the bootstrap apply. Lets TFC drop static
+  keys.
 
 ## Workflow
 
@@ -163,12 +172,21 @@ targets; apex has no such reuse story.
     scope for PR-A.
 - The **TFC apex provisioner role** can manage the apex bucket and
   distribution, ACM certs in `us-east-1`, the two IAM OIDC providers,
-  and its own + the GH Actions role. Route 53 is **read-only** with the
-  single exception of ACM validation **CNAME** writes, which are scoped
-  to the apex hosted zone AND restricted by an IAM condition on
-  `route53:ChangeResourceRecordSetsRecordTypes` to the `CNAME` type only.
-  Apex `A` record writes are **IAM-blocked**, not just code-discipline
-  blocked. PR-D widens the IAM condition to add `A` at cutover.
+  and its own + the GH Actions role. Route 53 writes are split into two
+  narrowly-scoped IAM statements, each pairing
+  `route53:ChangeResourceRecordSetsRecordTypes` with
+  `route53:ChangeResourceRecordSetsNormalizedRecordNames`:
+    - `A` and `AAAA` ALIAS writes are allowed ONLY on
+      `thebetterdecision.com` and `www.thebetterdecision.com` (the
+      apex / www CloudFront ALIASes).
+    - `CNAME` writes are allowed ONLY on the exact ACM validation
+      names derived from `aws_acm_certificate.apex.domain_validation_options`,
+      normalized to lowercase and no trailing dot. AWS reuses these
+      names across cert renewals, so the policy stays stable; on a SAN
+      change or cert recreate the policy re-derives automatically.
+  Any other record type or any other name in the zone is **IAM-blocked**,
+  so a leaked role token cannot rewrite MX records, NS delegations,
+  arbitrary subdomain A records, or any other zone content.
 - The **S3 bucket** has all four public-access-block flags ON. Read
   access is granted exclusively to the apex CloudFront distribution
   service-principal, scoped by `SourceArn` condition.
@@ -233,13 +251,19 @@ follow-up to the response-headers policy.
 
 ## Rollback
 
-Every resource in this module is `terraform destroy`-able. Removing the
-module leaves no Route 53 record changes behind (the apex A record is
-untouched). The ACM validation CNAMEs are deleted with the cert. If
-emergency teardown is needed during the bootstrap window, the owner can
-also destroy from CLI against the `pfv-apex` workspace (state lives in
-TFC, so `terraform login && terraform -chdir=infra/terraform/apex
-destroy` is sufficient).
+Every resource in this module is `terraform destroy`-able. A full
+teardown removes the apex / www ALIAS records, the ACM validation
+CNAMEs, the bucket and distribution, the IAM roles and OIDC providers.
+The apex hosted zone itself is data-sourced, not managed, so it
+survives untouched. After teardown DNS for the apex and www returns
+to "no answer", and rerunning a fresh apply recreates everything end
+to end.
+
+For a partial rollback that only undoes the DNS cutover (keeping the
+bucket / distribution / cert / roles intact so the apex-deploy
+pipeline keeps working against `cloudfront_distribution_domain`),
+revert PR-D via `git revert` and let TFC apply the inverse. The
+break-glass CLI path is documented in PR-D's PR body.
 
 ## Cost
 
