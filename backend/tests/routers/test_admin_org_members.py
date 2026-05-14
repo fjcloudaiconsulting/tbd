@@ -6,9 +6,12 @@ Pins:
   `is_superadmin`).
 - PATCH guards: last-owner (deactivate / demote), self-target,
   superadmin target, no-op body.
-- DELETE guards: last-owner, self-target, superadmin target.
-- Audit events: one row per real change, no row for no-op PATCH or
-  already-inactive DELETE.
+- DELETE on `/members/{user_id}` is gone (2026-05-14): the underlying
+  semantics were always "soft-deactivate", which the PATCH path
+  already covers. The relabel-fix preserves the deactivate behavior
+  via PATCH with ``is_active=False`` and removes the misleading
+  "Remove" affordance from the UI and API.
+- Audit events: one row per real change, no row for no-op PATCH.
 """
 from __future__ import annotations
 
@@ -228,14 +231,22 @@ async def test_patch_member_403_for_non_superadmin(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_delete_member_403_for_non_superadmin(session_factory):
+async def test_delete_member_endpoint_is_removed(session_factory):
+    """The misleading DELETE `/members/{user_id}` was retired on
+    2026-05-14 in favor of PATCH ``is_active=False``. Confirm the
+    method is no longer routed (405) so client code can't accidentally
+    call the old shape.
+    """
     seed = await _seed(session_factory)
-    app = _make_app(session_factory, _plain_user_resolver())
+    app = _make_app(session_factory, _superadmin_resolver())
     with TestClient(app) as client:
         res = client.delete(
             f"/api/v1/admin/orgs/{seed['target_id']}/members/{seed['member_id']}"
         )
-    assert res.status_code == 403
+    # FastAPI returns 405 Method Not Allowed when the path matches a
+    # router prefix but the verb isn't bound. Either 404 or 405 is
+    # acceptable; both prove the verb is gone.
+    assert res.status_code in (404, 405)
 
 
 # ── list ───────────────────────────────────────────────────────────────────
@@ -468,85 +479,10 @@ async def test_patch_member_in_wrong_org_404(session_factory):
     assert res.status_code == 404
 
 
-# ── DELETE success + safety ───────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_delete_member_204_writes_audit(session_factory):
-    seed = await _seed(session_factory)
-    app = _make_app(session_factory, _superadmin_resolver())
-    with TestClient(app) as client:
-        res = client.delete(
-            f"/api/v1/admin/orgs/{seed['target_id']}/members/{seed['member_id']}"
-        )
-    assert res.status_code == 204
-    rows = await _audit_events(session_factory, "admin.org.member.removed")
-    assert len(rows) == 1
-    assert rows[0].detail["snapshot"]["user_id"] == seed["member_id"]
-    assert rows[0].detail["snapshot"]["was_active"] is True
-
-    # is_active flipped to False in the DB.
-    async with session_factory() as db:
-        u = await db.scalar(select(User).where(User.id == seed["member_id"]))
-        assert u.is_active is False
-        assert u.sessions_invalidated_at is not None
-
-
-@pytest.mark.asyncio
-async def test_delete_already_inactive_member_is_idempotent_no_audit(session_factory):
-    seed = await _seed(session_factory)
-    app = _make_app(session_factory, _superadmin_resolver())
-    with TestClient(app) as client:
-        res = client.delete(
-            f"/api/v1/admin/orgs/{seed['target_id']}/members/{seed['ghost_id']}"
-        )
-    assert res.status_code == 204
-    # No audit row for the no-op delete.
-    rows = await _audit_events(session_factory, "admin.org.member.removed")
-    assert rows == []
-
-
-@pytest.mark.asyncio
-async def test_delete_cannot_target_self(session_factory):
-    seed = await _seed(session_factory)
-    app = _make_app(session_factory, _superadmin_resolver())
-    with TestClient(app) as client:
-        res = client.delete(
-            f"/api/v1/admin/orgs/{seed['admin_org_id']}/members/{seed['admin_user_id']}"
-        )
-    assert res.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_delete_cannot_remove_last_owner(session_factory):
-    seed = await _seed(session_factory)
-    app = _make_app(session_factory, _superadmin_resolver())
-    with TestClient(app) as client:
-        res = client.delete(
-            f"/api/v1/admin/orgs/{seed['target_id']}/members/{seed['owner_id']}"
-        )
-    assert res.status_code == 409
-    assert "last active owner" in res.json()["detail"].lower()
-
-
-@pytest.mark.asyncio
-async def test_delete_cannot_target_superadmin(session_factory):
-    seed = await _seed(session_factory)
-    app = _make_app(session_factory, _superadmin_resolver())
-    with TestClient(app) as client:
-        res = client.delete(
-            f"/api/v1/admin/orgs/{seed['target_id']}/members/{seed['embedded_sa_id']}"
-        )
-    assert res.status_code == 403
-    assert "superadmin" in res.json()["detail"].lower()
-
-
-@pytest.mark.asyncio
-async def test_delete_member_404_for_missing_user(session_factory):
-    seed = await _seed(session_factory)
-    app = _make_app(session_factory, _superadmin_resolver())
-    with TestClient(app) as client:
-        res = client.delete(
-            f"/api/v1/admin/orgs/{seed['target_id']}/members/99999"
-        )
-    assert res.status_code == 404
+# ── DELETE retired ─────────────────────────────────────────────────────────
+# The DELETE method on `/members/{user_id}` was removed on 2026-05-14
+# because it shared semantics with PATCH `is_active=False` while
+# emitting a misleading `admin.org.member.removed` audit event. All
+# deactivate flows now route through the PATCH path tested above; the
+# router-removal smoke check lives at
+# ``test_delete_member_endpoint_is_removed`` near the auth gates.
