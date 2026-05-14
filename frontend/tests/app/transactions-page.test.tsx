@@ -142,6 +142,14 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     await screen.findAllByText("In");
     await screen.findAllByText("Different amount");
 
+    // Wait for the per-row checkboxes to render (they may appear in a
+    // subsequent commit after the row text shows up).
+    await waitFor(() => {
+      expect(screen.queryAllByLabelText("Select transaction 1").length).toBeGreaterThan(0);
+      expect(screen.queryAllByLabelText("Select transaction 2").length).toBeGreaterThan(0);
+      expect(screen.queryAllByLabelText("Select transaction 3").length).toBeGreaterThan(0);
+    });
+
     // Select expense (id=1) and income (id=2). The selection toolbar should
     // render and the Link button should be enabled. Both desktop+mobile
     // checkboxes share the aria-label, so click the first.
@@ -149,7 +157,9 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     fireEvent.click(screen.getAllByLabelText("Select transaction 2")[0]);
 
     const linkBtn = await screen.findByRole("button", { name: /link as transfer/i });
-    expect(linkBtn).toBeEnabled();
+    await waitFor(() => {
+      expect(linkBtn).toBeEnabled();
+    });
 
     // Switch the selection: deselect id=2 (matching income) and select id=3
     // (mismatched amount). Button should now be visible+disabled with a tooltip
@@ -183,14 +193,13 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     // visible; the partner (id 11) is hidden because 11 > 10.
     await screen.findAllByText("Transfer out");
 
-    // Wait for the loading spinner to be gone (the page loads transactions
-    // twice because the loadTransactions effect depends on `periods`).
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+    // Wait for the Edit button to render. The page loads transactions twice
+    // because the loadTransactions effect depends on `periods`, so the action
+    // column can lag the row text by one commit.
+    const editButtons = await screen.findAllByRole("button", { name: /^Edit:/ });
+    expect(editButtons.length).toBeGreaterThan(0);
 
     // Click Edit on the visible linked row (desktop + mobile each render one).
-    const editButtons = screen.getAllByRole("button", { name: /^Edit:/ });
     fireEvent.click(editButtons[0]);
 
     // Mirror-amount notice should now render (one for desktop, one for mobile).
@@ -198,10 +207,14 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     expect(notices.length).toBeGreaterThan(0);
 
     // Type field is read-only (rendered as a span with title hint, not a select).
-    const typeNodes = screen.getAllByLabelText("Type");
-    // None should be a SELECT element while editing a linked leg.
-    expect(typeNodes.some((el) => el.tagName === "SELECT")).toBe(false);
-    expect(typeNodes[0].getAttribute("title")).toMatch(/transfer leg/i);
+    // The edit form may finish wiring up after the notice appears.
+    await waitFor(() => {
+      const typeNodes = screen.getAllByLabelText("Type");
+      expect(typeNodes.length).toBeGreaterThan(0);
+      // None should be a SELECT element while editing a linked leg.
+      expect(typeNodes.some((el) => el.tagName === "SELECT")).toBe(false);
+      expect(typeNodes[0].getAttribute("title")).toMatch(/transfer leg/i);
+    });
   });
 
   it("Saving an edit on a linked row omits 'type' from the PUT body", async () => {
@@ -220,19 +233,26 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     render(<TransactionsPage />);
 
     await screen.findAllByText("Linked out");
-    await waitFor(() => {
-      expect(screen.queryAllByRole("button", { name: /^Edit:/ }).length).toBeGreaterThan(0);
-    });
+
+    // Wait for the Edit button to render before clicking it.
+    const editButtons = await screen.findAllByRole("button", { name: /^Edit:/ });
+    expect(editButtons.length).toBeGreaterThan(0);
 
     // Open edit on the visible (lower-id) linked row.
-    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+    fireEvent.click(editButtons[0]);
+
+    // Wait for the edit form to render its Description input.
+    const descInputs = await screen.findAllByLabelText("Description");
+    expect(descInputs.length).toBeGreaterThan(0);
 
     // Change description to something different.
-    const descInputs = screen.getAllByLabelText("Description");
     fireEvent.change(descInputs[0], { target: { value: "Linked out edited" } });
 
+    // Wait for the Save button (re-rendered as the form mounts).
+    const saveBtns = await screen.findAllByRole("button", { name: /^Save$/i });
+    expect(saveBtns.length).toBeGreaterThan(0);
+
     // Click Save.
-    const saveBtns = screen.getAllByRole("button", { name: /^Save$/i });
     fireEvent.click(saveBtns[0]);
 
     // Find the PUT call to /api/v1/transactions/30.
@@ -272,23 +292,23 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     await screen.findAllByText("Solo tx");
 
     // All three expected actions must be reachable by aria-label. (Mobile and
-    // desktop layouts each render one button, hence findAll.)
+    // desktop layouts each render one button, hence findAll.) Use findAll so
+    // we wait through the row's full render before asserting.
+    const editButtons = await screen.findAllByRole("button", { name: /^Edit: Solo tx$/i });
+    expect(editButtons.length).toBeGreaterThan(0);
+
     await waitFor(() => {
       expect(
-        screen.queryAllByRole("button", { name: /^Edit: Solo tx$/i }).length,
+        screen.queryAllByRole("button", { name: /Mark as transfer: Solo tx/i }).length,
       ).toBeGreaterThan(0);
+      expect(
+        screen.queryAllByRole("button", { name: /Delete: Solo tx/i }).length,
+      ).toBeGreaterThan(0);
+      // Linked-row "Unlink" must NOT appear on an un-linked row.
+      expect(
+        screen.queryByRole("button", { name: /Unlink transfer: Solo tx/i }),
+      ).toBeNull();
     });
-    expect(
-      screen.getAllByRole("button", { name: /Mark as transfer: Solo tx/i }).length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.getAllByRole("button", { name: /Delete: Solo tx/i }).length,
-    ).toBeGreaterThan(0);
-
-    // Linked-row "Unlink" must NOT appear on an un-linked row.
-    expect(
-      screen.queryByRole("button", { name: /Unlink transfer: Solo tx/i }),
-    ).toBeNull();
   });
 
   it("Per-row Mark as transfer button shown on un-linked rows only", async () => {
@@ -314,22 +334,25 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     await screen.findAllByText("Linked tx");
     await screen.findAllByText("Unlinked tx");
 
-    // Wait for the action buttons to be present (rows have to fully render).
-    await waitFor(() => {
-      expect(
-        screen.queryAllByRole("button", { name: /Mark as transfer: Unlinked tx/i }).length,
-      ).toBeGreaterThan(0);
-    });
-
-    // Mark-as-transfer button must exist for the unlinked row...
-    const markBtns = screen.getAllByRole("button", { name: /Mark as transfer: Unlinked tx/i });
+    // Wait for the Mark-as-transfer button to render on the unlinked row.
+    const markBtns = await screen.findAllByRole(
+      "button",
+      { name: /Mark as transfer: Unlinked tx/i },
+    );
     expect(markBtns.length).toBeGreaterThan(0);
 
-    // ...and must NOT exist for the linked row.
-    expect(screen.queryByRole("button", { name: /Mark as transfer: Linked tx/i })).toBeNull();
-
-    // The linked row exposes an Unlink button instead.
-    const unlinkBtns = screen.getAllByRole("button", { name: /Unlink transfer: Linked tx/i });
-    expect(unlinkBtns.length).toBeGreaterThan(0);
+    // Wait until the linked-row Unlink button is rendered and the linked-row
+    // Mark-as-transfer button is NOT present. waitFor lets both conditions
+    // settle in the same commit.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /Mark as transfer: Linked tx/i }),
+      ).toBeNull();
+      const unlinkBtns = screen.getAllByRole(
+        "button",
+        { name: /Unlink transfer: Linked tx/i },
+      );
+      expect(unlinkBtns.length).toBeGreaterThan(0);
+    });
   });
 });
