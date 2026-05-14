@@ -62,7 +62,7 @@ describe("RestartTourCard", () => {
   it("renders the replay tour button", () => {
     render(<RestartTourCard />);
     expect(screen.getByTestId("settings-restart-tour")).toHaveTextContent(
-      /replay onboarding tour/i,
+      /replay the dashboard tour/i,
     );
   });
 
@@ -94,5 +94,31 @@ describe("RestartTourCard", () => {
       expect(screen.getByRole("alert")).toHaveTextContent(/boom|could not/i);
     });
     expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  // The backend no longer clears ``users.onboarded_at`` on restart-tour
+  // (that caused an AppShell /onboarding redirect loop). Simulate the
+  // refreshMe call returning a user whose ``onboarded_at`` is still set,
+  // proving the value-preserved contract. AppShell guards on this exact
+  // field, so a non-null value is the proxy for "no redirect loop".
+  it("preserves onboarded_at on the cached /me so AppShell does not loop", async () => {
+    const ONBOARDED_AT = "2026-05-14T10:00:00Z";
+    vi.mocked(apiFetch).mockResolvedValue({ onboarded_at: ONBOARDED_AT });
+    let observedUser: { onboarded_at: string | null } | null = null;
+    refreshMeMock.mockImplementation(async () => {
+      // After the backend returns the unchanged timestamp, the cached
+      // /me payload still has a non-null value. AppShell's guard
+      // (user.onboarded_at !== null) would short-circuit.
+      observedUser = { onboarded_at: ONBOARDED_AT };
+    });
+
+    render(<RestartTourCard />);
+    fireEvent.click(screen.getByTestId("settings-restart-tour"));
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith("/dashboard");
+    });
+    expect(observedUser).not.toBeNull();
+    expect(observedUser!.onboarded_at).not.toBeNull();
   });
 });

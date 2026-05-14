@@ -15,9 +15,16 @@ and their org:
   Audit-logged on success and on refusal.
 
 - ``POST /api/v1/users/me/onboarding/restart-tour``
-  Clears ``users.onboarded_at`` so the user can re-run the first-run
-  wizard / tour. Idempotent (NULL stays NULL on re-call). Per-user, so
-  no other org members are affected. Audit event
+  Records that the user requested to replay the dashboard tour
+  overlay. Server-side this is an audit-only, rate-limited action:
+  ``users.onboarded_at`` is intentionally **not** touched, because
+  AppShell guards on a NULL ``onboarded_at`` to bounce first-run
+  users to ``/onboarding`` — clearing it here would trap the user in
+  a redirect loop. The frontend triggers the dashboard tour overlay
+  via a sessionStorage flag and a ``/dashboard`` push; this endpoint
+  is the recorded, rate-limited server side of that action. A full
+  wizard restart is a separate explicit action handled outside this
+  endpoint. Idempotent. Per-user. Audit event
   ``onboarding.tour.restarted`` on every call.
 
 Org isolation: the service receives ``current_user.org_id`` directly;
@@ -174,11 +181,18 @@ async def restart_tour(
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    """Clear ``users.onboarded_at`` so the caller can re-run the tour.
+    """Record a dashboard-tour replay request without mutating state.
 
-    Idempotent: calling twice leaves the column NULL both times and
-    audits both calls. Per-user — only the caller's row is touched,
-    other members of the same org are unaffected.
+    Replaying the dashboard tour is a client-side overlay that the
+    frontend triggers via sessionStorage; the server's role is to
+    audit and rate-limit the user action. ``users.onboarded_at`` is
+    deliberately left unchanged — AppShell redirects authenticated
+    users with ``onboarded_at IS NULL`` to ``/onboarding``, so
+    clearing it here would trap the user in a redirect loop instead
+    of letting them see the dashboard tour overlay.
+
+    Idempotent: calling twice leaves ``onboarded_at`` untouched (be
+    that NULL or a prior timestamp) and audits both calls. Per-user.
     """
     # Pre-snapshot the audit fields so a lazy reload after commit
     # cannot crash with MissingGreenlet. Same pattern as seed_demo.
@@ -186,11 +200,13 @@ async def restart_tour(
     actor_email = current_user.email
     org_id = current_user.org_id
 
+    # Re-fetch through the request-scoped session so we read the
+    # canonical value the rest of the request will see, even when
+    # `current_user` was hydrated from a different session in tests.
     user = (
         await db.execute(select(User).where(User.id == current_user.id))
     ).scalar_one()
-    user.onboarded_at = None
-    await db.commit()
+    onboarded_at = user.onboarded_at
 
     await audit_service.record_audit_event(
         session_factory,
@@ -205,4 +221,6 @@ async def restart_tour(
         detail=None,
     )
 
-    return RestartTourResponse(onboarded_at=None)
+    return RestartTourResponse(
+        onboarded_at=onboarded_at.isoformat() if onboarded_at else None,
+    )
