@@ -69,6 +69,24 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async redirects() {
+    // App host root → /login. frontend/app/page.tsx is shared between
+    // the DO runtime (app.thebetterdecision.com) and the apex static
+    // export (thebetterdecision.com, built via next.config.apex.ts +
+    // scripts/build-apex.sh). Apex serves landing; the DO runtime must
+    // not. Host-scope the rule via `has` so it only fires on the app
+    // host even if some other build ever points at this config.
+    return [
+      {
+        source: "/",
+        has: [
+          { type: "host", value: "app.thebetterdecision.com" },
+        ],
+        destination: "/login",
+        permanent: false, // 307; keep flexible during early launch
+      },
+    ];
+  },
 };
 
 export default nextConfig;
