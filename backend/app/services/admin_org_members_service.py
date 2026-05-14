@@ -183,52 +183,15 @@ async def update_member(
     return target, before, after, changes
 
 
-async def remove_member(
-    db: AsyncSession,
-    *,
-    org_id: int,
-    user_id: int,
-    actor: User,
-) -> tuple[User, dict]:
-    """Soft-delete a member from ``org_id`` (mirrors the org-side
-    ``invitation_service.remove_member`` semantics — sets
-    ``is_active=False`` and bumps ``sessions_invalidated_at``).
-
-    Returns ``(target, snapshot)`` where ``snapshot`` is the
-    pre-removal identifying fields for the audit detail. Caller
-    commits.
-    """
-    if user_id == actor.id:
-        raise ValidationError("You cannot remove yourself")
-
-    target = await _load_target_member(db, org_id=org_id, user_id=user_id)
-
-    if target.is_superadmin:
-        raise ConflictError(
-            "Cannot remove a platform superadmin via org-member admin"
-        )
-
-    snapshot = {
-        "user_id": target.id,
-        "username": target.username,
-        "email": target.email,
-        "role": target.role.value,
-        "was_active": target.is_active,
-    }
-
-    if not target.is_active:
-        # Already removed — idempotent. Returning the snapshot lets
-        # the router emit a no-op audit event if it wants.
-        return target, snapshot
-
-    if target.role == Role.OWNER:
-        active_owners = await _active_owner_count(db, org_id=org_id)
-        if active_owners <= 1:
-            raise ConflictError(
-                "Cannot remove the last active owner of the organization"
-            )
-
-    target.is_active = False
-    target.sessions_invalidated_at = utcnow_naive()
-    await db.flush()
-    return target, snapshot
+# Note: a separate `remove_member` helper used to live here and was
+# wired to ``DELETE /api/v1/admin/orgs/{org_id}/members/{user_id}``.
+# The semantics it implemented were identical to a PATCH with
+# ``is_active=False`` (it set ``is_active=False`` and bumped
+# ``sessions_invalidated_at``), so exposing both a "Remove" and a
+# "Deactivate" affordance was misleading: callers naturally read
+# "Remove" as detaching the membership and discovered after the fact
+# that the user row was merely deactivated. The UI relabel + endpoint
+# consolidation (2026-05-14) collapses both paths onto the
+# ``update_member`` PATCH with ``is_active=False``. If a true
+# detach-membership semantic is ever required, it should be a new,
+# distinct service call with its own audit event type.

@@ -856,71 +856,12 @@ async def update_org_member(
     return member_payload
 
 
-@router.delete(
-    "/{org_id}/members/{user_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-async def remove_org_member(
-    org_id: int,
-    user_id: int,
-    request: Request,
-    current_user: User = Depends(require_permission("orgs.manage")),
-    db: AsyncSession = Depends(get_db),
-    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
-):
-    org = await _ensure_target_org(db, org_id)
-    target_org_name = org.name
-
-    try:
-        target, snapshot = await admin_org_members_service.remove_member(
-            db,
-            org_id=org_id,
-            user_id=user_id,
-            actor=current_user,
-        )
-    except NotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Member not found",
-        )
-    except ValidationError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except ConflictError as e:
-        msg = str(e)
-        if "superadmin" in msg.lower():
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=msg
-            )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=msg
-        )
-
-    await db.commit()
-
-    # Idempotent on already-inactive targets — no audit row to avoid
-    # phantom "removed" events for a member who was already removed
-    # previously. The structlog signal is enough for the trace.
-    if snapshot["was_active"]:
-        await logger.ainfo(
-            "admin.org.member.removed",
-            actor_user_id=current_user.id,
-            actor_email=current_user.email,
-            target_org_id=org_id,
-            target_org_name=target_org_name,
-            target_user_id=target.id,
-            snapshot=snapshot,
-        )
-        await audit_service.record_audit_event(
-            session_factory,
-            event_type="admin.org.member.removed",
-            actor_user_id=current_user.id,
-            actor_email=current_user.email,
-            target_org_id=org_id,
-            target_org_name=target_org_name,
-            request_id=_request_id(),
-            ip_address=get_client_ip(request),
-            outcome="success",
-            detail={"snapshot": snapshot},
-        )
-
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+# Note: the prior ``DELETE /api/v1/admin/orgs/{org_id}/members/{user_id}``
+# endpoint emitted ``admin.org.member.removed`` audit rows but the
+# underlying service merely soft-deactivated the user. To stop
+# the UI from advertising a "Remove" affordance whose effect is a
+# deactivate, both the endpoint and the service helper were removed
+# on 2026-05-14. Callers wanting the same effect should PATCH
+# ``is_active=False`` against the existing member endpoint, which
+# already emits ``admin.org.member.deactivated`` and goes through
+# the same last-owner / self-target / superadmin guards.
