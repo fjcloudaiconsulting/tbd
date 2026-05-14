@@ -189,10 +189,12 @@ resource "aws_route53_record" "apex_acm_validation" {
   # The WriteAcmValidationCnames IAM statement (further down in this
   # file) pins the allowed CNAME names to exactly what ACM exposes via
   # aws_acm_certificate.apex.domain_validation_options. If the cert
-  # rotates (new SAN, recreate) the policy values change. Make this
-  # record depend on the policy resource so on the same-run apply that
-  # widens the policy, the write attempt happens AFTER the policy lands.
-  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
+  # rotates (new SAN, recreate) the policy values change. The
+  # time_sleep.iam_policy_propagation gate (defined alongside the IAM
+  # resource) sequences this record after both the policy modification
+  # AND the IAM eventual-consistency window, so a same-run apply does
+  # not 403 against a cached pre-update policy.
+  depends_on = [time_sleep.iam_policy_propagation]
 }
 
 resource "aws_acm_certificate_validation" "apex" {
@@ -218,14 +220,16 @@ resource "aws_acm_certificate_validation" "apex" {
 # evaluate_target_health = false is required for CloudFront aliases;
 # CloudFront does its own health checking internally.
 #
-# depends_on on aws_iam_role_policy.tfc_apex_provisioner is required for
-# the first apply only: this apply widens the inline policy AND creates
-# these records in the same run. Without the explicit dependency,
-# Terraform parallelizes and can try to write the records before the
-# updated policy lands. IAM is eventually consistent (seconds), so if
-# the first apply still 403s due to propagation, re-running the apply
-# succeeds idempotently. On subsequent applies the dependency is a
-# no-op.
+# depends_on on time_sleep.iam_policy_propagation (defined alongside
+# the IAM resource further down) is required for any same-run apply
+# that widens the policy AND creates these records. Without it,
+# Terraform parallelizes and writes the records before the updated
+# policy has propagated through IAM, producing 403 "no identity-based
+# policy allows" denials even though the put-role-policy call itself
+# returned success. The time_sleep gate inserts a 30s grace window
+# between the IAM mutation and any record write. On subsequent applies
+# where the policy is unchanged, the gate is a no-op (sleep does not
+# re-fire because its trigger hash is stable).
 
 resource "aws_route53_record" "apex_a" {
   zone_id = data.aws_route53_zone.apex.zone_id
@@ -238,7 +242,7 @@ resource "aws_route53_record" "apex_a" {
     evaluate_target_health = false
   }
 
-  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
+  depends_on = [time_sleep.iam_policy_propagation]
 }
 
 resource "aws_route53_record" "apex_aaaa" {
@@ -252,7 +256,7 @@ resource "aws_route53_record" "apex_aaaa" {
     evaluate_target_health = false
   }
 
-  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
+  depends_on = [time_sleep.iam_policy_propagation]
 }
 
 resource "aws_route53_record" "www_a" {
@@ -266,7 +270,7 @@ resource "aws_route53_record" "www_a" {
     evaluate_target_health = false
   }
 
-  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
+  depends_on = [time_sleep.iam_policy_propagation]
 }
 
 resource "aws_route53_record" "www_aaaa" {
@@ -280,7 +284,7 @@ resource "aws_route53_record" "www_aaaa" {
     evaluate_target_health = false
   }
 
-  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
+  depends_on = [time_sleep.iam_policy_propagation]
 }
 
 ###############################################################################
@@ -848,4 +852,29 @@ resource "aws_iam_role_policy" "tfc_apex_provisioner" {
   name   = "tfc-apex-provisioner-inline"
   role   = aws_iam_role.tfc_apex_provisioner.id
   policy = data.aws_iam_policy_document.tfc_apex_provisioner.json
+}
+
+# Same-run grace window between an IAM policy update and any Route 53
+# write made by the assumed role. AWS IAM is eventually consistent: the
+# put-role-policy call returns success within milliseconds, but the
+# assumed-role session evaluating subsequent requests can still see the
+# OLD policy for several seconds afterward. Without this grace, a
+# same-run apply that widens the policy AND creates a record can fail
+# the record creation with "no identity-based policy allows", because
+# the role session is still using the pre-update policy.
+#
+# This was the failure mode on the first PR #270 apply (run
+# Fd4y4Y5JyFkKQoLL, 2026-05-14): the IAM update completed at 13:46:20.45
+# and the 4 Route 53 creates all 403'd between 13:46:20.64 and 13:46:20.95.
+#
+# Triggers on a hash of the rendered policy JSON so the sleep only
+# re-fires when the policy actually changes; steady-state applies are
+# no-ops here. Duration is the AWS-recommended starting point for IAM
+# propagation in same-account / same-region patterns.
+resource "time_sleep" "iam_policy_propagation" {
+  triggers = {
+    policy_hash = sha256(aws_iam_role_policy.tfc_apex_provisioner.policy)
+  }
+
+  create_duration = "30s"
 }
