@@ -185,6 +185,14 @@ resource "aws_route53_record" "apex_acm_validation" {
   ttl             = 60
   type            = each.value.type
   zone_id         = data.aws_route53_zone.apex.zone_id
+
+  # The WriteAcmValidationCnames IAM statement (further down in this
+  # file) pins the allowed CNAME names to exactly what ACM exposes via
+  # aws_acm_certificate.apex.domain_validation_options. If the cert
+  # rotates (new SAN, recreate) the policy values change. Make this
+  # record depend on the policy resource so on the same-run apply that
+  # widens the policy, the write attempt happens AFTER the policy lands.
+  depends_on = [aws_iam_role_policy.tfc_apex_provisioner]
 }
 
 resource "aws_acm_certificate_validation" "apex" {
@@ -766,10 +774,21 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
     }
   }
 
-  # Statement 2: ACM DNS-validation CNAMEs. ACM emits CNAMEs at
-  # _<token>.<domain> and _<token>.www.<domain>. The token portion is
-  # rotation-dependent (ACM regenerates on cert renewal), so the name
-  # condition uses StringLike with a leading-underscore wildcard.
+  # Statement 2: ACM DNS-validation CNAMEs. ACM emits CNAMEs at exact
+  # names exposed in aws_acm_certificate.apex.domain_validation_options.
+  # AWS reuses these names across cert renewals, so they are stable for
+  # the life of the cert (and re-derive automatically on plan if a SAN
+  # is added or the cert is recreated).
+  #
+  # Earlier revision used StringLike on "_*.<domain>", but IAM string
+  # wildcards are NOT DNS-label-bounded: "_*.thebetterdecision.com"
+  # would also match "_acme-challenge.foo.thebetterdecision.com" and
+  # any other underscore-prefixed name elsewhere in the zone. Pinning
+  # to the exact names ACM is currently asking for removes that gap.
+  #
+  # NormalizedRecordNames comparison is case-insensitive; AWS lowercases
+  # and trims any trailing dot before evaluating. We pre-normalize here
+  # so the rendered policy matches what AWS will compare against.
   statement {
     sid    = "WriteAcmValidationCnames"
     effect = "Allow"
@@ -785,11 +804,11 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
     }
 
     condition {
-      test     = "ForAllValues:StringLike"
+      test     = "ForAllValues:StringEquals"
       variable = "route53:ChangeResourceRecordSetsNormalizedRecordNames"
       values = [
-        "_*.${var.domain}",
-        "_*.www.${var.domain}",
+        for dvo in aws_acm_certificate.apex.domain_validation_options :
+        trimsuffix(lower(dvo.resource_record_name), ".")
       ]
     }
   }
