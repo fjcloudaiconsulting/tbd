@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import FeatureTiles from "@/components/landing/FeatureTiles";
 import Hero from "@/components/landing/Hero";
+import HowItWorks from "@/components/landing/HowItWorks";
 import LandingAuthRedirect from "@/components/landing/LandingAuthRedirect";
 import LandingFooter from "@/components/landing/LandingFooter";
 import SecondCta from "@/components/landing/SecondCta";
@@ -64,6 +65,7 @@ export default function LandingPage() {
         <main>
           <Hero />
           <FeatureTiles />
+          <HowItWorks />
           <SecondCta />
         </main>
         <LandingFooter />
