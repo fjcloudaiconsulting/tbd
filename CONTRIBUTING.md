@@ -1,86 +1,169 @@
 # Contributing to The Better Decision
 
-This guide covers everything you need to develop, test, and deploy The Better Decision. Start with Quick Start if you're setting up for the first time, then refer to the architecture and API sections as needed.
+This guide gets a new contributor productive in under 30 minutes: local stack up, tests passing, first PR ready to push. For deep references, follow the cross-links instead of reading this file end-to-end.
+
+Sibling docs you will end up at:
+
+- `README.md` for product overview and stack.
+- `ENVIRONMENT.md` for every env var, with scopes, defaults, and failure modes.
+- `DEPLOYMENT.md` for the full CI/CD pipeline (what fires when, how production deploys, smoke tests, apex domain).
+- `infra/README.md` and `infra/MIGRATION.md` for the production data plane and Terraform workflow.
+- `BRAND.md` and `DESIGN.md` for product copy and UI conventions.
 
 ## Prerequisites
 
-- Docker & Docker Compose
-- Git
-- Node.js 18+ (only for local TypeScript checking — the app runs in containers)
+- Docker and Docker Compose.
+- Git.
+- Node.js 22+ on the host (only needed if you want `tsc` outside the container). The app itself runs entirely in containers.
 
-## Quick Start
+## Quickstart (under 30 minutes)
 
 ```bash
 # 1. Clone and configure
-git clone <repo-url> && cd pfv
+git clone https://github.com/flamarion/pfv.git && cd pfv
 cp .env.example .env
 
-# 2. Start the dev stack (MySQL + Redis + Backend + Frontend + Nginx)
+# 2. Generate a real JWT secret. The backend refuses to boot on the placeholder.
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+# Paste that value into JWT_SECRET_KEY in .env
+
+# 3. Start the dev stack (MySQL + Redis + backend + frontend + nginx)
 ./pfv start
 
-# 3. Open the app
+# 4. Open the app
 open http://localhost
 ```
 
-The first user to register becomes the org owner and superadmin.
+The first user to register becomes the org owner and superadmin. No seed data required.
 
-## Seeding Mock Data
-
-The seed script creates a realistic dataset: 5 accounts, 100+ transactions across 3 months, recurring templates, billing periods, and budgets.
-
-**Default seed (creates a "demo" user):**
+Want a realistic dataset (5 accounts, 100+ transactions, recurring templates, budgets)?
 
 ```bash
-./pfv seed
-# Login: demo / demo1234
+./pfv seed                 # creates demo / demo1234
 ```
 
-**Custom seed (your own user):**
+For a custom user, set `SEED_*` env vars before the command. See [Seeding mock data](#seeding-mock-data) below.
+
+Full env var reference, including production-only and feature-flag variables, lives in `ENVIRONMENT.md`. Do not duplicate values here.
+
+## Your first PR
+
+```mermaid
+flowchart TD
+    A[Made a change] --> B{What did you touch?}
+    B -->|backend/**| C[docker compose exec backend pytest]
+    B -->|frontend/**| D[docker compose exec frontend npm test<br/>docker compose exec frontend npx tsc --noEmit]
+    B -->|backend/alembic/versions/**| E[Restart backend so lifespan applies the migration<br/>./pfv restart]
+    B -->|nginx/** or .do/**| F[./pfv prod for a local prod-shaped run<br/>Smoke endpoints by hand]
+    B -->|docs only| G[No tests required.<br/>Use chore: or docs: prefix so semantic-release skips deploy.]
+    C --> H[Commit with Conventional Commits prefix]
+    D --> H
+    E --> H
+    F --> H
+    G --> H
+    H --> I[Push branch, open PR<br/>test.yml runs on PR]
+    I --> J[Merge to main]
+    J --> K{Commit prefix release-eligible?}
+    K -->|feat, fix, perf, revert| L[release.yml ships to production]
+    K -->|chore, docs, refactor, test, style| M[No deploy. Use gh workflow run deploy.yml<br/>if you need to force a redeploy.]
+```
+
+If you touched migrations, run `docker compose exec backend alembic current` and `docker compose exec backend alembic upgrade head` inside the container to confirm. See [Database migrations](#database-migrations).
+
+## Conventional Commits and the deploy gate
+
+This repo is auto-deployed by `semantic-release` on push to `main`. The commit prefix is the deploy decision, not a stylistic detail.
+
+| Prefix | Release? | What ships |
+|--------|----------|------------|
+| `feat:` | Yes (minor bump) | App Platform redeploy + smoke tests |
+| `fix:` | Yes (patch bump) | App Platform redeploy + smoke tests |
+| `perf:` | Yes (patch bump) | App Platform redeploy + smoke tests |
+| `revert:` | Yes (patch bump) | App Platform redeploy + smoke tests |
+| `feat!:`, `BREAKING CHANGE:` footer | Yes (major bump) | App Platform redeploy + smoke tests |
+| `chore:`, `docs:`, `refactor:`, `test:`, `style:`, `ci:`, `build:` | No | Nothing. CI runs `test.yml` only. |
+
+Scope is freeform (`feat(admin):`, `fix(frontend):`, `chore(.do):`). Scope does not change release behavior.
+
+Rules in practice:
+
+- If your change should reach production on merge, use `feat:`, `fix:`, or `perf:`.
+- If your change is internal only (refactor, test fix, doc edit, CI tweak, dependency bump), use `chore:` / `docs:` / `refactor:` / `test:`. The merge will not redeploy. This is the right answer most of the time for non-product changes.
+- Infra-only changes (`chore(.do)`, `chore(infra)`, `chore(nginx)`) sometimes need to ship without a version bump. Use the manual escape hatch: `gh workflow run deploy.yml --ref main`. See `DEPLOYMENT.md` for when this is appropriate.
+
+Full pipeline detail (path filters, gating logic, smoke tests, apex deploy) lives in `DEPLOYMENT.md`. The short version is in [CI on your PR vs CI after merge](#ci-on-your-pr-vs-ci-after-merge) below.
+
+## CI on your PR vs CI after merge
+
+PR push (any branch):
+
+- `.github/workflows/test.yml` runs on changes under `backend/**`, `frontend/**`, or `.github/workflows/test.yml`. Backend: `pytest` + compileall syntax smoke. Frontend: lint, design-token check, `vitest`/`jest`, production build.
+- Nothing deploys. Nothing reaches production.
+
+Merge to `main`:
+
+- `.github/workflows/release.yml` runs on changes under `backend/**`, `frontend/**`, `nginx/**`, `.do/**`, or `Dockerfile*`. It runs `semantic-release`. If (and only if) `semantic-release` decides a new release is warranted, the gated `deploy` job pushes `.do/app.yaml` to DO App Platform, then `scripts/smoke-test.sh` asserts the live app serves traffic.
+- `chore:` / `docs:` / `refactor:` commits inside the allowlist still trigger `release.yml`, but `semantic-release` no-ops and the deploy job is skipped.
+- A future `apex-deploy.yml` (PR #267) will deploy the apex landing site on merges that touch the apex paths.
+
+If you need to force a redeploy of the current production spec without merging a code change, use the manual workflow:
 
 ```bash
-SEED_USERNAME=flamarion \
-SEED_PASSWORD=abcd1234 \
-SEED_EMAIL=flamarion@example.com \
-SEED_FIRST_NAME=Flamarion \
-SEED_LAST_NAME=Jorge \
-SEED_ORG="FJ Consulting" \
-./pfv seed
+gh workflow run deploy.yml --ref main
 ```
 
-**Important:** The seed script will register the user if it doesn't exist, then log in and create data. If the user already exists, it logs in with the provided credentials and adds data to their org.
+`DEPLOYMENT.md` is the authoritative reference.
 
-### Seed Environment Variables
+## Working in parallel agent sessions
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SEED_USERNAME` | `demo` | Username for the seeded user |
-| `SEED_PASSWORD` | `demo1234` | Password |
-| `SEED_EMAIL` | `demo@example.com` | Email address |
-| `SEED_FIRST_NAME` | `Demo` | First name |
-| `SEED_LAST_NAME` | `User` | Last name |
-| `SEED_ORG` | `Demo Household` | Organization name |
+If you dispatch Claude Code agents (or any parallel-process helpers) against this repo, never let them run backend tests or migrations against the default `pfv` Docker Compose project. They will write to your local MySQL volume. Use an isolated compose project name on every command:
 
-## CLI Reference
+```bash
+docker compose -p team-<unique-name> up -d backend mysql redis
+docker compose -p team-<unique-name> exec backend pytest tests/...
+```
+
+A single command that omits `-p team-<name>` falls back to the default `pfv` project and contaminates the user's stack. `./pfv migrate` has no `-p` flag and always targets the default project, so agents must not invoke it either. See `CLAUDE.md` for the full rule and the 2026-05-09 incident this guard prevents.
+
+## Seeding mock data
+
+```bash
+./pfv seed                                       # default demo user
+SEED_USERNAME=alice SEED_PASSWORD=alice1234 \
+SEED_EMAIL=alice@example.com SEED_ORG="Alice LLC" \
+./pfv seed                                       # custom user
+```
+
+The seed script registers the user if it does not exist, logs in, and creates data. If the user already exists, it adds data to their org.
+
+`SEED_*` env var reference:
+
+| Variable | Default |
+|----------|---------|
+| `SEED_USERNAME` | `demo` |
+| `SEED_PASSWORD` | `demo1234` |
+| `SEED_EMAIL` | `demo@example.com` |
+| `SEED_FIRST_NAME` | `Demo` |
+| `SEED_LAST_NAME` | `User` |
+| `SEED_ORG` | `Demo Household` |
+
+## CLI reference
 
 | Command | Description |
 |---------|-------------|
-| `./pfv start` | Build and start all services (development) |
+| `./pfv start` | Build and start all dev services |
 | `./pfv stop` | Stop all services |
 | `./pfv restart` | Restart without rebuild |
 | `./pfv rebuild` | Force rebuild (no cache) and start |
 | `./pfv reset` | Destroy all data, rotate JWT secret, start fresh |
-| `./pfv prod` | Build and start in production mode |
-| `./pfv migrate` | Run pending database migrations |
-| `./pfv logs [svc]` | View logs (backend, frontend, nginx, mysql, redis) |
-| `./pfv status` | Show container status |
-| `./pfv shell [svc]` | Open a shell in a service (default: backend) |
+| `./pfv prod` | Build and start a local prod-shaped stack |
+| `./pfv migrate` | Run pending DB migrations (local only) |
+| `./pfv logs [svc]` | Tail logs (`backend`, `frontend`, `nginx`, `mysql`, `redis`) |
+| `./pfv status` | Container status |
+| `./pfv shell [svc]` | Shell into a service (default: `backend`) |
 | `./pfv seed` | Populate with mock data |
 
----
-
 ## Architecture
-
-### System Diagram
 
 ```
 Browser --> nginx (:80) --> /api/*  --> backend (FastAPI :8000) --> MySQL (:3306)
@@ -88,191 +171,84 @@ Browser --> nginx (:80) --> /api/*  --> backend (FastAPI :8000) --> MySQL (:3306
                                         backend --> Redis (:6379)
 ```
 
-In production (DigitalOcean App Platform), nginx is replaced by DO's built-in ingress routing.
+In production (DigitalOcean App Platform), nginx is replaced by DO's built-in ingress. MySQL and Redis are self-hosted on a single droplet (`pfv-data-01`) in a private VPC. Background and runbook: `infra/README.md`, `infra/MIGRATION.md`.
 
-### Backend (Python / FastAPI)
+### Backend layout
 
 ```
 backend/app/
-├── main.py                  # App factory, lifespan, CORS, router registration, 422 sanitizer
-├── config.py                # pydantic-settings — all config from env vars
-├── database.py              # Async SQLAlchemy engine + session factory
-├── security.py              # JWT creation/decode, bcrypt, MFA token helpers
-├── deps.py                  # FastAPI dependencies: get_db, get_current_user
-├── logging.py               # structlog JSON logging + health check filter
-├── rate_limit.py            # slowapi rate limiter (shared instance)
-├── redis_client.py          # Async Redis singleton (MFA nonce, step-up state)
-├── middleware/              # Pure ASGI middleware (request id / context)
-├── models/                  # SQLAlchemy ORM models
-│   ├── user.py              #   User, Organization, Role enum, password_set flag
-│   ├── account.py           #   Account, AccountType
-│   ├── category.py          #   Category (hierarchical), CategoryType
-│   ├── category_rule.py     #   Per-org auto-categorization rules
-│   ├── merchant_dictionary.py # Shared merchant -> category dictionary
-│   ├── transaction.py       #   Transaction (income/expense/transfer, settled_date)
-│   ├── recurring.py         #   RecurringTransaction templates
-│   ├── billing.py           #   BillingPeriod (org-scoped)
-│   ├── budget.py            #   Budget (per category per period)
-│   ├── forecast_plan.py     #   ForecastPlan + ForecastPlanItem (with ItemSource)
-│   ├── audit_event.py       #   Durable audit log (admin + sensitive ops)
-│   ├── role.py              #   Custom roles + role_permissions
-│   ├── invitation.py        #   Org invitation tokens
-│   ├── subscription.py      #   Org subscription / trial state
-│   ├── feature_override.py  #   Per-org plan-feature overrides
-│   ├── org_data_reset_lock.py # Guard against concurrent org-data wipes
-│   └── settings.py          #   OrgSetting (key-value per org)
-├── schemas/                 # Pydantic request/response models (mirrors models/)
-├── routers/                 # API route handlers
-│   ├── auth.py              #   Login, register, MFA, Google SSO + step-up, password reset
-│   ├── users.py             #   Profile update, password change
-│   ├── accounts.py          #   CRUD accounts
-│   ├── account_types.py     #   CRUD account types
-│   ├── categories.py        #   CRUD categories (hierarchical, type-locked once used)
-│   ├── transactions.py      #   CRUD transactions + transfers (settled_date period bucket)
-│   ├── recurring.py         #   CRUD recurring templates + generation
-│   ├── budgets.py           #   CRUD budgets + transfers between budgets
-│   ├── forecast.py          #   Read-only computed forecast
-│   ├── forecast_plans.py    #   CRUD editable forecast plans (MANUAL on public writes)
-│   ├── import_router.py     #   CSV import: preview + confirm
-│   ├── settings.py          #   Org settings, billing periods, billing cycle
-│   ├── orgs.py              #   Org rename (owner-only, case-insensitive uniqueness)
-│   ├── org_members.py       #   Org membership + invitations
-│   ├── org_data.py          #   Org-data wipe / reset (audited + locked)
-│   ├── plans.py             #   Plan catalog (read)
-│   ├── subscriptions.py     #   Org subscription / trial state
-│   ├── admin.py             #   Superadmin dashboard
-│   ├── admin_orgs.py        #   Superadmin org management + override sweep
-│   ├── admin_audit.py       #   Audit log query API
-│   └── admin_roles.py       #   Custom role + permission editing
-└── services/                # Business logic (called by routers)
-    ├── billing_service.py       # Period management, resolve_period()
-    ├── budget_service.py        # Budget queries with spending calculations
-    ├── transaction_service.py   # Shared validation helpers, category-type guard
-    ├── transaction_filters.py   # effective_period_date_expr() — COALESCE(settled_date, date)
-    ├── recurring_service.py     # Generate transactions from templates
-    ├── forecast_service.py      # Compute forecast from transactions + recurring
-    ├── forecast_plan_service.py # Forecast plan CRUD with actual tracking
-    ├── category_service.py      # Category CRUD with type compatibility checks
-    ├── category_rules_service.py # Per-org auto-categorization rules
-    ├── import_parser.py         # CSV parsing (delimiter, date, amount detection)
-    ├── import_service.py        # Import preview + commit logic
-    ├── email_service.py         # Mailgun (prod) / structlog (dev) email sender
-    ├── mfa_service.py           # TOTP, QR codes, recovery codes, encryption
-    ├── audit_service.py         # Persist audit_event rows (durable admin trail)
-    ├── role_service.py          # Custom role + permission resolution
-    ├── plan_service.py          # Plan catalog
-    ├── subscription_service.py  # Trial creation, plan transitions
-    ├── feature_service.py       # Plan + per-org feature override resolution
-    ├── org_service.py           # Org rename + uniqueness checks
-    ├── org_bootstrap_service.py # First-user-becomes-superadmin bootstrap
-    ├── org_data_service.py      # Org-data wipe with snapshot + audit
-    ├── org_reset_lock_service.py # Concurrency guard for wipes
-    ├── invitation_service.py    # Org-member invitations
-    ├── admin_dashboard_service.py # Superadmin dashboard aggregates
-    ├── admin_orgs_service.py    # Superadmin org list / detail / override sweep
-    ├── exceptions.py            # Domain exception types -> HTTP mappers in main.py
-    └── date_utils.py            # Shared advance_date() for billing calculations
+├── main.py          # FastAPI app, lifespan, CORS, router registration
+├── config.py        # pydantic-settings, all config from env vars
+├── database.py      # async SQLAlchemy engine + session factory
+├── security.py      # JWT encode/decode, bcrypt hash/verify
+├── deps.py          # FastAPI dependencies: get_db, get_current_user
+├── logging.py       # structlog JSON setup
+├── models/          # SQLAlchemy ORM models
+├── schemas/         # Pydantic request/response models
+├── routers/         # API route handlers (one file per resource)
+└── services/        # Business logic called by routers
 ```
 
-### Frontend (Next.js / TypeScript)
+### Frontend layout
 
 ```
 frontend/
-├── app/                     # Next.js App Router pages
-│   ├── dashboard/           #   Main dashboard with charts + summary
-│   ├── transactions/        #   Transaction list (period bucketed by settled_date)
-│   ├── accounts/            #   Account management
-│   ├── recurring/           #   Recurring transaction templates
-│   ├── budgets/             #   Budget management + transfers
-│   ├── forecast-plans/      #   Editable forecast plans
-│   ├── categories/          #   Category hierarchy management (type lock once in use)
-│   ├── import/              #   CSV import wizard
-│   ├── profile/             #   User profile editing
-│   ├── settings/            #   /settings/security, /settings/billing, /settings/organization
-│   ├── admin/               #   /admin (dashboard), /admin/orgs, /admin/audit, /admin/roles, /admin/settings
-│   ├── login/               #   Login page
-│   ├── register/            #   Registration page
-│   ├── setup/               #   First-user / first-org setup
-│   ├── accept-invite/       #   Org invitation acceptance
-│   ├── mfa-verify/          #   MFA challenge during login
-│   ├── forgot-password/     #   Request password reset
-│   ├── reset-password/      #   Complete password reset
-│   ├── verify-email/        #   Email verification
-│   ├── auth/google/         #   Google SSO callback (login + step-up return)
-│   ├── system/              #   Public system / status surface
-│   ├── health/              #   Frontend health probe
-│   ├── privacy/             #   Privacy Policy (public, GDPR-compliant)
-│   └── terms/               #   Terms of Service (public)
-├── components/
-│   ├── AppShell.tsx         #   Sidebar + header + footer layout
-│   ├── SettingsLayout.tsx   #   Sub-nav layout for /settings/*
-│   ├── ThemeProvider.tsx    #   Dark / light theme provider
-│   ├── auth/AuthProvider.tsx #  Auth context, login/logout/silent refresh
-│   ├── admin/               #   Admin-only widgets (orgs table, audit table, roles)
-│   ├── settings/            #   Settings sub-pages (security, billing, organization)
-│   ├── transactions/        #   List + edit row + recurring promotion
-│   ├── dashboard/           #   Dashboard tiles, charts, on-track verdict
-│   ├── landing/             #   Public marketing surface
-│   ├── system/              #   System status widgets
-│   └── ui/                  #   Shared UI primitives
+├── app/             # Next.js App Router pages (one folder per route)
+├── components/      # React components, grouped by feature
 └── lib/
-    ├── api.ts               #   Typed fetch wrapper with silent token refresh
-    ├── types.ts             #   Shared TypeScript interfaces
-    ├── styles.ts            #   Tailwind class constants (btnPrimary, card, input, etc.)
-    ├── auth.ts              #   isAdmin() / role helpers
-    ├── feature-catalog.ts   #   Plan-feature catalog mirror (kept in sync with backend)
-    ├── format.ts            #   Currency / date formatters
-    ├── logger.ts            #   Client+server structured JSON logger
-    ├── pagination.ts        #   Shared list pagination helpers
-    ├── site.ts              #   Public site URL helpers (canonical, OG)
-    └── validation.ts        #   Shared client-side validation (mirrors backend/app/schemas)
+    ├── api.ts       # Typed fetch wrapper with Bearer token + silent refresh
+    ├── types.ts     # Shared TypeScript interfaces
+    ├── styles.ts    # Tailwind class constants (btnPrimary, card, input, ...)
+    ├── auth.ts      # isAdmin() / role helpers
+    └── validation.ts # Client-side validation mirroring backend schemas
 ```
 
-### Key Design Decisions
+For the full router-by-router and service-by-service map, see the live file tree under `backend/app/` and `frontend/app/`. We intentionally do not duplicate the directory listing in this doc because it ages out within weeks.
 
-- **All config via env vars** — pydantic-settings in backend, `NEXT_PUBLIC_` prefix in frontend
-- **Stateless backend** — no in-memory state. JWT for auth, ready for horizontal scaling.
-- **Migrations auto-run on startup** in dev. In production, they run as a `PRE_DEPLOY` job (App Platform) or initContainer (k8s) before the app starts.
-- **First user is superadmin** — no seed data needed for bootstrapping.
-- **Org-scoped data** — every query filters by `org_id`. Users only see their org's data.
-- **Hierarchical categories** — master categories for budgets, subcategories as transaction tags. A category's `type` (income / expense / both) is enforced server-side on writes; once a category has been used the UI locks the type to keep historical aggregates honest.
-- **Transfer category invariant** — transfer legs require a `CategoryType.BOTH` category. The system seeds a `Transfer` master category for this; arbitrary income / expense categories on transfer legs are rejected.
-- **Billing periods** — org-level month close date. `settled_date` (or `COALESCE(settled_date, date)` for hand-keyed pending rows) determines which period a transaction counts against. The transactions list and aggregates both bucket on this effective period date.
-- **Audit trail** — sensitive admin and org actions (org rename, org-data wipe, override sweep, role edits, etc.) write a row to `audit_events` and surface in `/admin/audit`. structlog still emits the same events to stdout, but the durable trail is the table.
-- **Forecast plan source** — public writes always set `ItemSource.MANUAL`. Auto-population marks items as `RECURRING` or `HISTORY`; subsequent edits flip them to `MANUAL`. The HISTORY label surfaces as "Auto" in the UI.
+### Key design decisions
 
----
+- **All config via env vars.** `pydantic-settings` in backend, `NEXT_PUBLIC_` prefix in frontend. See `ENVIRONMENT.md`.
+- **Stateless backend.** No in-memory state. JWT for auth. Ready for horizontal scaling.
+- **Migrations auto-run on startup in dev.** In production they run as a `PRE_DEPLOY` job (App Platform) or initContainer (k8s) before the app starts. See [Database migrations](#database-migrations).
+- **First user is superadmin.** No bootstrap seed needed.
+- **Org-scoped data.** Every query filters by `org_id`.
+- **API versioned at `/api/v1/`.** Breaking changes ship as `/api/v2/` while v1 stays live.
+- **Auth on every endpoint.** Use `get_current_user`. Public endpoints are listed in `backend/app/deps.py`.
+- **Hierarchical categories.** Master categories for budgets, subcategories as transaction tags. Type (income / expense / both) is enforced server-side; once a category is used the UI locks the type.
+- **Transfer category invariant.** Transfer legs require a `CategoryType.BOTH` category (seeded as `Transfer`).
+- **Billing periods.** Org-level month close date. `COALESCE(settled_date, date)` determines which period a transaction counts against.
+- **Audit trail.** Sensitive admin and org actions (rename, wipe, override sweep, role edits) write to `audit_events` and surface at `/admin/audit`.
 
-## Authentication & Security
+## Authentication and security
 
-### Auth Flow
+### Auth flow
 
-1. **Login** — `POST /api/v1/auth/login` with username/email + password, or Google SSO via `/api/v1/auth/google`
-2. **MFA challenge** (if enabled) — returns `mfa_token`, user completes TOTP / recovery / email verification
-3. **Tokens issued** — access token (15 min, in response body) + refresh token (7 day, httpOnly cookie)
-4. **Silent refresh** — frontend auto-refreshes via `POST /api/v1/auth/refresh` on 401
-5. **Absolute session lifetime** — sessions expire after a configurable max duration (default 30 days)
+1. **Login.** `POST /api/v1/auth/login` with username/email + password, or Google SSO via `/api/v1/auth/google`.
+2. **MFA challenge** (if enabled). Returns `mfa_token`, user completes TOTP, recovery code, or email verification.
+3. **Tokens issued.** Access token (15 min, response body) + refresh token (7 day, httpOnly cookie).
+4. **Silent refresh.** Frontend auto-refreshes via `POST /api/v1/auth/refresh` on 401.
+5. **Absolute session lifetime.** Sessions expire after `SESSION_LIFETIME_DAYS` (default 30) regardless of refresh activity.
 
 ### SSO password security
 
-Google-SSO users have `password_set=False` until they explicitly set a password. To prevent an unprompted password from being attached to a hijacked SSO session:
+Google-SSO users have `password_set=False` until they explicitly set a password. To prevent a hijacked SSO session from silently attaching a password:
 
 - **First password set** requires a Google **step-up** verification. The user re-authenticates with the same Google account, the backend issues a 5-minute single-use step-up token, and only then accepts the password write.
-- **Reset password via email token** (the standard `/forgot-password` -> `/reset-password` flow) flips `password_set=True` on success, so future logins can use either Google SSO or the new password.
-- **Step-up callbacks** redirect back through a server-side allowlist of `return_to` keys. Arbitrary URLs are rejected with `400 Malformed step-up state`.
-- **Email change** also takes the step-up path and flips `password_set` back to `False` if the new email belongs to a different identity, forcing a re-set.
+- **Reset password via email token** (the standard `/forgot-password` then `/reset-password` flow) flips `password_set=True` on success.
+- **Step-up callbacks** redirect through a server-side allowlist of `return_to` keys. Arbitrary URLs are rejected with `400 Malformed step-up state`.
+- **Email change** also takes the step-up path and flips `password_set` back to `False` if the new email belongs to a different identity.
 
-### MFA (Two-Factor Authentication)
+### MFA
 
-- TOTP via authenticator app (Google Authenticator, Authy, 1Password, etc.)
-- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable)
-- Email fallback with 6-digit code (10-minute expiry)
-- TOTP secrets encrypted at rest via Fernet (`MFA_ENCRYPTION_KEY` env var)
-- Setup/disable via `/settings/security` page
+- TOTP via authenticator app (Google Authenticator, Authy, 1Password).
+- 8 single-use recovery codes (HMAC-SHA256 hashed, downloadable).
+- Email fallback with 6-digit code (10-minute expiry).
+- TOTP secrets encrypted at rest via Fernet (`MFA_ENCRYPTION_KEY`).
+- Setup and disable via `/settings/security`.
 
-### Rate Limiting
+### Rate limiting
 
-All limits are per client IP via slowapi's `get_remote_address`. In-memory storage is fine while the backend runs single-replica on DO App Platform; a Redis-backed store is deferred to the K8s migration.
+All limits are per client IP via slowapi. In-memory storage is fine on single-replica App Platform; a Redis-backed store is deferred to the K8s migration.
 
 | Endpoint | Limit |
 |----------|-------|
@@ -287,52 +263,22 @@ All limits are per client IP via slowapi's `get_remote_address`. In-memory stora
 | `POST /api/v1/auth/mfa/email-code` | 3/minute |
 | `POST /api/v1/auth/mfa/email-verify` | 10/minute |
 
-### Public Endpoints (no auth required)
+### Public endpoints (no auth required)
 
-`/health`, `/ready`, `/api/v1/auth/status`, `/api/v1/auth/login`, `/api/v1/auth/register`, `/api/v1/auth/refresh`, `/api/v1/auth/forgot-password`, `/api/v1/auth/reset-password`, `/api/v1/auth/verify-email`, `/api/v1/auth/google`, `/api/v1/auth/google/callback`, `/api/v1/auth/mfa/verify`, `/api/v1/auth/mfa/recovery`, `/api/v1/auth/mfa/email-code`, `/api/v1/auth/mfa/email-verify`
+`/health`, `/ready`, `/api/v1/auth/status`, `/api/v1/auth/login`, `/api/v1/auth/register`, `/api/v1/auth/refresh`, `/api/v1/auth/forgot-password`, `/api/v1/auth/reset-password`, `/api/v1/auth/verify-email`, `/api/v1/auth/google`, `/api/v1/auth/google/callback`, plus the `/api/v1/auth/mfa/*` challenge endpoints.
 
-All other endpoints require a Bearer access token via `get_current_user` dependency.
+All other endpoints require a Bearer access token via the `get_current_user` dependency.
 
----
+## Environment variables
 
-## Environment Variables
+See `ENVIRONMENT.md`. It is the authoritative reference for every backend, frontend, migrate, and CLI variable, with scopes, defaults, deployment paths, and failure modes.
 
-### Required (Backend)
+The minimum to boot locally is:
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `DATABASE_URL` | MySQL connection string | `mysql+aiomysql://user:pass@host:3306/db` |
-| `JWT_SECRET_KEY` | HS256 signing key | `openssl rand -hex 32` |
+- `DATABASE_URL` (preconfigured in `.env.example`).
+- `JWT_SECRET_KEY` (32+ chars). The backend refuses to boot on the placeholder.
 
-### Optional (Backend)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `APP_ENV` | `development` | `development` or `production` |
-| `APP_NAME` | `The Better Decision` | App name (used in TOTP issuer, emails) |
-| `LOG_LEVEL` | `INFO` | Python log level |
-| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | Access token lifetime |
-| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | Refresh token (idle timeout) |
-| `SESSION_LIFETIME_DAYS` | `30` | Absolute max session duration |
-| `COOKIE_SECURE` | `true` | Set `false` for local dev (HTTP) |
-| `REDIS_URL` | _(empty)_ | Redis connection (`redis://...`) — used for MFA nonces and SSO step-up state |
-| `MFA_ENCRYPTION_KEY` | _(empty)_ | Fernet key for TOTP secret encryption |
-| `MAILGUN_API_KEY` | _(empty)_ | Mailgun API key (emails logged if empty) |
-| `MAILGUN_DOMAIN` | _(empty)_ | Mailgun sending domain |
-| `EMAIL_FROM` | `The Better Decision <noreply@thebetterdecision.com>` | From address for emails |
-| `APP_URL` | `http://localhost` | Public URL (used in email links) |
-| `GOOGLE_CLIENT_ID` | _(empty)_ | Google OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | _(empty)_ | Google OAuth client secret |
-| `BACKEND_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
-
-### Frontend
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NEXT_PUBLIC_API_URL` | _(empty)_ | API base URL (empty = same-origin via nginx) |
-| `HOSTNAME` | `0.0.0.0` | Next.js bind address |
-
-### Generating Keys
+To generate keys:
 
 ```bash
 # JWT secret
@@ -342,159 +288,34 @@ openssl rand -hex 32
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
----
+## Database migrations
 
-## Database Migrations
+Three execution paths, picked by environment:
 
-Migrations run in one of three ways depending on environment:
+- **Local dev (`./pfv start`):** the backend lifespan calls `_run_migrations()` on startup against the local MySQL volume. A branch guard refuses to migrate when the host checkout is off `main` (set `PFV_MIGRATE_OK_OFF_MAIN=1` to override). See `CLAUDE.md`.
+- **Local prod simulation (`./pfv prod`):** a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` (no lifespan migration).
+- **Production (DO App Platform):** a dedicated `PRE_DEPLOY` job runs the wrapper before any backend replica starts. Secrets (especially `DATABASE_URL`) must be configured against the `migrate` job in the DO console; App Platform does not auto-inherit secrets across components.
 
-- **Development** (`./pfv start`): the backend lifespan calls `_run_migrations()` on startup. Convenient for a single-container local stack.
-- **Local prod simulation** (`./pfv prod`): a one-shot `migrate` service defined in `docker-compose.prod.yml` runs the migrate wrapper at `/app/scripts/migrate.py` and exits; the backend then starts with `APP_ENV=production` which skips the startup migration.
-- **Production (DO App Platform)**: a dedicated `PRE_DEPLOY` job defined in `.do/app.yaml` runs the migrate wrapper at `/app/scripts/migrate.py` before any backend replica starts. The backend skips the startup migration because `APP_ENV=production`. **Operator note:** secrets (especially `DATABASE_URL`) must be configured against the `migrate` job component in the DO console — App Platform does not auto-inherit secrets across components.
-
-The migrate wrapper (`backend/scripts/migrate.py`) does not replace alembic, it wraps it. Internally it drives `alembic upgrade <revision>` one revision at a time and streams alembic's own stdout and stderr through unchanged, while emitting structured JSON events around each step so a deploy log is triageable on its own. Grep for the event names: `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`. The wrapper's exit code matches alembic's, so the PRE_DEPLOY gate still blocks deploy on a failed migration.
+The wrapper at `backend/scripts/migrate.py` does not replace alembic, it drives it. It runs `alembic upgrade <revision>` one revision at a time and emits structured JSON events around each step (grep `migrate.start`, `migrate.step.start`, `migrate.step.end`, `migrate.complete`, `migrate.no_op`, `migrate.failed`). Exit code matches alembic's, so a `PRE_DEPLOY` failure blocks the deploy.
 
 ```bash
 # Create a new migration
 docker compose exec backend alembic revision -m "description"
 
-# Run pending migrations manually (dev)
+# Apply pending migrations (local dev only)
 ./pfv migrate
 
-# Check current migration state
+# Check the current revision
 docker compose exec backend alembic current
 ```
 
-Migration files are in `backend/alembic/versions/` and follow sequential numbering (001, 002, ...).
-
----
-
-## Development vs Production
-
-| Aspect | Dev (`./pfv start`) | Prod (`./pfv prod`) |
-|--------|-------|------|
-| Frontend | Next.js dev server (hot reload) | Standalone build (`node server.js`) |
-| Backend | uvicorn with `--reload` | uvicorn with 2 workers |
-| Migrations | Auto-run on backend startup | Separate init service (runs first) |
-| Volumes | Source code mounted | Immutable containers |
-| Emails | Logged to console (structlog) | Sent via Mailgun |
-| Entry point | nginx on port 80 | DO App Platform ingress |
-
----
-
-## Branching & Pull Requests
-
-- **Never push directly to `main`** — always branch + PR
-- Feature branches: `feat/<name>`
-- Fix branches: `fix/<name>`
-- Merge to `main` triggers production deployment via GitHub Actions only when the commit is release-eligible (`feat`, `fix`, `perf`, `revert`). `chore`, `docs`, `refactor`, `test`, and similar commits are not auto-deployed; see the Deployment section for the manual escape hatch.
-
----
-
-## Deployment
-
-### DigitalOcean App Platform
-
-The app is deployed on DO App Platform (Amsterdam region). MySQL 8 and Redis are **self-hosted** on a single dedicated DO droplet (`pfv-data-01`) in a private VPC; the App Platform components reach them over the VPC's private IPv4. Background and runbook live in `infra/README.md` and `infra/MIGRATION.md`.
-
-**GitHub Actions workflows (`.github/workflows/`):**
-
-| Workflow | Trigger | What it does |
-|----------|---------|--------------|
-| `release.yml` | Push to `main` (release-eligible commits only) | Runs semantic-release. If a new release is published, deploys `.do/app.yaml` to DO App Platform via `digitalocean/app_action/deploy@v2`, then runs `scripts/smoke-test.sh` against production. |
-| `deploy.yml` | Manual (`workflow_dispatch`) | Emergency redeploy escape hatch. Same DO action and smoke-test job, but not auto-triggered. Use when an infra-only change (`chore(.do)`, `chore(infra)`, `chore(nginx)`) needs to ship without a version bump. |
-
-The orchestration is intentional: semantic-release is the single arbiter of "should we ship". A path filter cannot tell a `chore(frontend)` apart from a real shipping change, which previously caused chore commits to redeploy production. Gating `deploy` on `new_release_published == 'true'` (a job output of the semantic-release step) ensures only release-eligible commits reach App Platform automatically. The naive `on: release: { types: [published] }` shortcut does not work because GitHub does not cascade workflow runs from `GITHUB_TOKEN`-created releases.
-
-**Required GitHub repository secret:**
-
-| Secret | Description |
-|--------|-------------|
-| `DIGITALOCEAN_ACCESS_TOKEN` | DO API token with read/write access to App Platform |
-
-**App spec:** `.do/app.yaml` is the source of truth. Secrets are committed as App Platform's encrypted `EV[...]` blobs (only readable by DO) so they survive every deploy; any secret missing from the file is removed from the live app on push. The `vpc.id` block at the top wires the app to the data-droplet's VPC and must stay populated.
-
-### Manual Deployment
-
-The primary manual path is the `deploy.yml` workflow, which runs the same DO action and smoke-test job as the auto-deploy path:
-
-```bash
-# Trigger the manual workflow on main (preferred for chore(infra), chore(.do), etc.)
-gh workflow run deploy.yml --ref main
-```
-
-If GitHub Actions is unavailable or you need to bypass it entirely (using `doctl` directly):
-
-```bash
-# Install doctl
-brew install doctl
-doctl auth init
-
-# Push the spec (covers vpc, components, env, and secrets)
-doctl apps update <app-id> --spec .do/app.yaml
-
-# Or trigger a redeploy of the current spec
-doctl apps create-deployment <app-id>
-```
-
-### Infrastructure as code
-
-Production infra is split between App Platform (the application) and the data droplet (MySQL + Redis):
-
-- **App Platform** is described by `.do/app.yaml` and pushed via the GH Actions workflow above.
-- **Droplet, VPC, firewall, project attachment** are managed by Terraform under `infra/terraform/`. State and runs live in **HCP Terraform / Terraform Cloud** (workspace `FlamaCorp/pfv`). Workflow is VCS-driven: PRs touching `infra/terraform/**` get a speculative plan; merges to `main` create runs that require **manual Confirm & Apply** in the TFC UI. CLI `terraform plan` / `apply` is debug-only — never the routine path.
-- **Droplet bootstrap** (Ubuntu hardening, MySQL, Redis, nightly mysqldump) is managed by Ansible under `infra/ansible/`.
-
-### Infrastructure components
-
-| Component | Service | Details |
-|-----------|---------|---------|
-| Backend | DO App Service | FastAPI, `basic-xxs`, port 8000 |
-| Frontend | DO App Service | Next.js standalone, `basic-xxs`, port 3000 |
-| Database | Self-hosted MySQL 8 on `pfv-data-01` | `s-1vcpu-2gb` droplet, ams3, private VPC |
-| Cache | Self-hosted Redis on `pfv-data-01` | Same droplet, bound to private IP, `requirepass` set |
-| Backups | Nightly `mysqldump` cron on the droplet (`/var/backups/mysql/`, 7-day retention) | DO droplet snapshots are **off** at the IaC level |
-
----
-
-## API Documentation
-
-- **Swagger UI:** http://localhost/api/docs (development)
-- **OpenAPI spec:** http://localhost/api/openapi.json
-
-All API routes are prefixed with `/api/v1/`. The API is organized by resource:
-
-| Resource | Prefix | Description |
-|----------|--------|-------------|
-| Auth | `/api/v1/auth` | Login, register, MFA, Google SSO + step-up, password reset |
-| Users | `/api/v1/users` | Profile, password change |
-| Accounts | `/api/v1/accounts` | Bank accounts and balances |
-| Account Types | `/api/v1/account-types` | Checking, savings, credit card, etc. |
-| Categories | `/api/v1/categories` | Hierarchical income/expense categories |
-| Transactions | `/api/v1/transactions` | Income, expenses, transfers (period bucketed by `settled_date`) |
-| Recurring | `/api/v1/recurring` | Recurring transaction templates |
-| Budgets | `/api/v1/budgets` | Per-category per-period budgets |
-| Forecast | `/api/v1/forecast` | Computed forecast (read-only) |
-| Forecast Plans | `/api/v1/forecast-plans` | Editable forecast plans |
-| Import | `/api/v1/import` | CSV file import (preview + confirm) |
-| Settings | `/api/v1/settings` | Org settings, billing periods, billing cycle |
-| Orgs | `/api/v1/orgs` | Org rename (owner-only) and per-org actions |
-| Org members | `/api/v1/orgs/members`, `/api/v1/orgs/invitations` | Membership and invitations |
-| Org data | `/api/v1/orgs/data` | Org-data wipe / reset (audited, lock-guarded) |
-| Plans | `/api/v1/plans` | Plan catalog |
-| Subscriptions | `/api/v1/subscriptions` | Trial / subscription state |
-| Admin | `/api/v1/admin` | Superadmin dashboard |
-| Admin orgs | `/api/v1/admin/orgs` | Superadmin org management + override sweep |
-| Admin audit | `/api/v1/admin/audit` | Audit log (durable trail) |
-| Admin roles | `/api/v1/admin/roles` | Custom role + permission editing |
-
----
+Migration files live at `backend/alembic/versions/` and follow sequential numbering (`001_`, `002_`, ...).
 
 ## Testing
 
 ### Backend (pytest)
 
-The backend runs in the `backend` container; tests live in `backend/tests/` and run inside it:
+Run inside the `backend` container. The dev image installs `requirements-dev.txt` because `INSTALL_DEV=true` is set in `docker-compose.yml`. Production and CI builds keep `INSTALL_DEV=false`.
 
 ```bash
 # Full suite
@@ -505,15 +326,14 @@ docker compose exec backend pytest tests/routers/test_auth.py
 docker compose exec backend pytest tests/routers/test_auth.py::test_login_happy_path
 ```
 
-`requirements-dev.txt` is installed in the dev image (`INSTALL_DEV=true` build arg, set in `docker-compose.yml`). Production / CI builds keep `INSTALL_DEV=false`.
+Do not run `pytest` on the host. Dependencies live in the container.
+
+If you are working through a parallel agent session, use `-p team-<name>` on every compose call. See [Working in parallel agent sessions](#working-in-parallel-agent-sessions).
 
 ### Frontend (vitest / jest)
 
 ```bash
-# Full suite
 docker compose exec frontend npm test
-
-# A single test file
 docker compose exec frontend npm test -- tests/lib/api.test.ts
 ```
 
@@ -521,56 +341,69 @@ docker compose exec frontend npm test -- tests/lib/api.test.ts
 
 ```bash
 docker compose exec frontend npx tsc --noEmit
-# or, if you have node locally:
+# or, on the host
 cd frontend && npx tsc --noEmit
 ```
 
 ### Manual smoke testing
 
-The Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint by hand. Browser testing covers UI flows; `curl` or httpie cover scripted checks.
+Swagger UI at http://localhost/api/docs is the fastest way to poke a single endpoint. The browser covers UI flows; `curl` or `httpie` cover scripted checks. Production smoke tests live in `scripts/smoke-test.sh` and run automatically after `release.yml` deploys (see `DEPLOYMENT.md`).
 
----
+## Branching and pull requests
+
+- **Never push directly to `main`.** Always branch and open a PR.
+- Branch naming convention: `feat/<name>`, `fix/<name>`, `chore/<name>`.
+- Match the PR title to the commit prefix (`feat:`, `fix:`, ...). The PR title is what semantic-release reads if you squash-merge.
+- Keep PR descriptions concise. No test plan section required.
+
+## Deployment
+
+The full deployment pipeline (release gating, App Platform spec, smoke tests, manual escape hatches, apex pipeline) is in `DEPLOYMENT.md`. The short version contributors need to know:
+
+- Merges to `main` trigger `release.yml`. Whether App Platform redeploys depends on the commit prefix (see [Conventional Commits and the deploy gate](#conventional-commits-and-the-deploy-gate)).
+- `.do/app.yaml` is the source of truth for App Platform config. Secrets are encrypted `EV[...]` blobs committed in-file; any secret missing from this file is removed from the live app on push.
+- Terraform (`infra/terraform/`) is VCS-driven via HCP Terraform Cloud (workspace `FlamaCorp/pfv`). PRs get speculative plans; merges create runs that require manual Confirm and Apply. CLI `terraform plan` / `apply` is debug-only.
+- Droplet bootstrap (`infra/ansible/`) handles MySQL, Redis, hardening, and nightly mysqldump.
+
+## API documentation
+
+- **Swagger UI:** http://localhost/api/docs (development).
+- **OpenAPI spec:** http://localhost/api/openapi.json.
+
+All API routes are prefixed with `/api/v1/`. Each resource has its own router under `backend/app/routers/`; see the live file tree for the current resource list.
 
 ## Troubleshooting
 
-### Backend won't start
+### Backend will not start
 
 ```bash
-# Check logs
 ./pfv logs backend
-
-# Common issues:
-# - MySQL not ready: wait for health check, try ./pfv restart
-# - Missing env var: check .env against .env.example
-# - Migration error: ./pfv migrate
 ```
+
+Common causes:
+
+- MySQL not ready. Wait for the healthcheck, then `./pfv restart`.
+- Missing env var. Diff `.env` against `.env.example`.
+- `JWT_SECRET_KEY` still at the placeholder or shorter than 32 chars. The config validator refuses to boot.
+- Migration error. Run `./pfv migrate`. If the error mentions branch guard, set `PFV_MIGRATE_OK_OFF_MAIN=1` for this session or move to `main`.
 
 ### Frontend build fails
 
 ```bash
-# Check for TypeScript errors
-cd frontend && npx tsc --noEmit
-
-# Rebuild from scratch
-./pfv rebuild
+cd frontend && npx tsc --noEmit       # surface TS errors
+./pfv rebuild                          # rebuild from scratch
 ```
 
 ### Database issues (local dev)
 
 ```bash
-# Connect to MySQL (uses values from .env)
 docker compose exec mysql mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"
-
-# Reset everything (destroys all data, rotates JWT secret)
-./pfv reset
+./pfv reset                            # destroys all data, rotates JWT secret
 ```
 
 ### MFA locked out (local dev)
 
-If you lose access to your authenticator and recovery codes:
-
 ```bash
-# Disable MFA directly in the local database
 docker compose exec mysql mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE" \
   -e "UPDATE users SET mfa_enabled=0, totp_secret=NULL, recovery_codes=NULL WHERE username='youruser';"
 ```
