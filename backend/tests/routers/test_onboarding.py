@@ -6,6 +6,11 @@ Covers:
 - ``POST /onboarding/seed-demo`` seeds and returns counts.
 - ``/seed-demo`` returns 409 when the org already has data.
 - ``/seed-demo`` writes audit rows on success and refusal.
+- ``POST /onboarding/restart-tour`` records a replay request without
+  mutating ``users.onboarded_at`` (preventing the AppShell redirect
+  loop), and writes an ``onboarding.tour.restarted`` audit row.
+- ``/restart-tour`` is idempotent for both NULL and non-NULL start
+  states, leaving the column untouched and auditing every call.
 """
 from __future__ import annotations
 
@@ -231,3 +236,131 @@ async def test_seed_demo_409_on_second_call(session_factory):
     assert first.status_code == 200
     assert second.status_code == 409
     assert second.json()["detail"] == "org_has_data"
+
+
+@pytest.mark.asyncio
+async def test_restart_tour_records_replay_request_leaves_state_intact(
+    session_factory,
+):
+    """Replay-tour must NOT touch onboarded_at.
+
+    AppShell redirects users with ``onboarded_at IS NULL`` to
+    ``/onboarding``, so clearing the column on restart would trap the
+    user in a wizard redirect loop instead of letting them see the
+    dashboard tour overlay. The endpoint stays as a recorded,
+    rate-limited audit action that preserves the prior timestamp.
+    """
+    seeds = await _seed_user(session_factory)
+    # First complete onboarding so onboarded_at is non-null.
+    prior = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    async with session_factory() as db:
+        u = (
+            await db.execute(select(User).where(User.id == seeds["user_id"]))
+        ).scalar_one()
+        u.onboarded_at = prior
+        await db.commit()
+
+    app = make_app(session_factory, seeds["user_id"])
+    with TestClient(app) as client:
+        res = client.post("/api/v1/users/me/onboarding/restart-tour")
+    assert res.status_code == 200, res.text
+    # Response echoes the existing timestamp, NOT null.
+    assert res.json()["onboarded_at"] is not None
+
+    async with session_factory() as db:
+        u = (
+            await db.execute(select(User).where(User.id == seeds["user_id"]))
+        ).scalar_one()
+    # State invariant: onboarded_at is unchanged from before the call.
+    # This is the data-level proxy for "AppShell will not redirect to
+    # /onboarding after the user clicks Replay tour".
+    assert u.onboarded_at == prior
+
+    async with session_factory() as db:
+        rows = (await db.execute(select(AuditEvent))).scalars().all()
+        types = [r.event_type for r in rows]
+        assert "onboarding.tour.restarted" in types
+
+
+@pytest.mark.asyncio
+async def test_restart_tour_is_idempotent(session_factory):
+    """Restart-tour leaves state untouched whether onboarded_at was
+    NULL or already a timestamp, and audits each call.
+    """
+    seeds = await _seed_user(session_factory)
+
+    # Case 1: starting from NULL (user has not finished the wizard).
+    app = make_app(session_factory, seeds["user_id"])
+    with TestClient(app) as client:
+        first = client.post("/api/v1/users/me/onboarding/restart-tour")
+        second = client.post("/api/v1/users/me/onboarding/restart-tour")
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["onboarded_at"] is None
+    assert second.json()["onboarded_at"] is None
+
+    async with session_factory() as db:
+        u = (
+            await db.execute(select(User).where(User.id == seeds["user_id"]))
+        ).scalar_one()
+    assert u.onboarded_at is None
+
+    # Case 2: starting from a non-NULL timestamp. Both calls preserve it.
+    prior = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    async with session_factory() as db:
+        u = (
+            await db.execute(select(User).where(User.id == seeds["user_id"]))
+        ).scalar_one()
+        u.onboarded_at = prior
+        await db.commit()
+
+    with TestClient(app) as client:
+        third = client.post("/api/v1/users/me/onboarding/restart-tour")
+        fourth = client.post("/api/v1/users/me/onboarding/restart-tour")
+    assert third.status_code == 200
+    assert fourth.status_code == 200
+    assert third.json()["onboarded_at"] is not None
+    assert fourth.json()["onboarded_at"] is not None
+
+    async with session_factory() as db:
+        u = (
+            await db.execute(select(User).where(User.id == seeds["user_id"]))
+        ).scalar_one()
+    assert u.onboarded_at == prior
+
+    async with session_factory() as db:
+        rows = (await db.execute(select(AuditEvent))).scalars().all()
+        restarted = [r for r in rows if r.event_type == "onboarding.tour.restarted"]
+    # All four calls produce an audit row.
+    assert len(restarted) == 4
+
+
+@pytest.mark.asyncio
+async def test_restart_tour_preserves_value_so_appshell_does_not_loop(
+    session_factory,
+):
+    """Direct invariant: post-restart, current_user.onboarded_at is
+    unchanged from the pre-call value. AppShell guards on
+    ``onboarded_at === null`` for its /onboarding redirect, so
+    preserving a non-NULL value is what prevents the loop.
+    """
+    seeds = await _seed_user(session_factory)
+    prior = datetime.datetime(2026, 5, 1, 9, 30, 0)
+    async with session_factory() as db:
+        u = (
+            await db.execute(select(User).where(User.id == seeds["user_id"]))
+        ).scalar_one()
+        u.onboarded_at = prior
+        await db.commit()
+
+    app = make_app(session_factory, seeds["user_id"])
+    with TestClient(app) as client:
+        res = client.post("/api/v1/users/me/onboarding/restart-tour")
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        u_after = (
+            await db.execute(select(User).where(User.id == seeds["user_id"]))
+        ).scalar_one()
+    assert u_after.onboarded_at == prior
+    assert u_after.onboarded_at is not None

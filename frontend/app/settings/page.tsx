@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import SettingsLayout from "@/components/SettingsLayout";
 import PasswordInput from "@/components/ui/PasswordInput";
+import RestartTourCard from "@/components/settings/RestartTourCard";
 import { useAuth } from "@/components/auth/AuthProvider";
 import SsoStepupErrorBanner from "@/components/auth/SsoStepupErrorBanner";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -309,6 +310,8 @@ export default function SettingsProfilePage() {
             </button>
           </form>
         </div>
+
+        <RestartTourCard />
       </div>
     </SettingsLayout>
   );
