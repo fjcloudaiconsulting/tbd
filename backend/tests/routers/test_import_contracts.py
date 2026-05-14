@@ -693,3 +693,277 @@ async def test_confirm_rejects_bad_source_format(session_factory):
     with TestClient(app) as client:
         resp = client.post("/api/v1/import/confirm", json=payload)
     assert resp.status_code == 422
+
+
+# ── Org-scoping regression (L3.2 spec §7 Contract Boundary) ─────────────────
+
+
+async def _seed_two_orgs(factory) -> tuple[dict, dict]:
+    """Seed two independent orgs each with a user + account.
+
+    Returns ``(org_a, org_b)`` where each dict carries ``org_id``,
+    ``user_id`` and ``account_id``. Used to verify cross-org isolation
+    on every Wave 2 endpoint — the regression gate for spec §5.4
+    (Description Suggestions) and §1.1 (OFX preview).
+    """
+    from app.models.account import Account, AccountType
+    from decimal import Decimal
+
+    seeds: list[dict] = []
+    for suffix in ("a", "b"):
+        async with factory() as db:
+            org = Organization(name=f"OrgScope{suffix.upper()}", billing_cycle_day=1)
+            db.add(org)
+            await db.flush()
+            user = User(
+                org_id=org.id,
+                username=f"scopeuser{suffix}",
+                email=f"scope-{suffix}@test.example",
+                password_hash=hash_password("pw-scope-test-12345"),
+                role=Role.OWNER,
+                is_superadmin=False,
+                is_active=True,
+                email_verified=True,
+            )
+            atype = AccountType(
+                org_id=org.id, name="Checking", slug="checking", is_system=True
+            )
+            db.add_all([user, atype])
+            await db.flush()
+            acct = Account(
+                org_id=org.id,
+                account_type_id=atype.id,
+                name=f"Acct{suffix.upper()}",
+                balance=Decimal("0"),
+                currency="EUR",
+            )
+            db.add(acct)
+            await db.commit()
+            seeds.append(
+                {
+                    "org_id": org.id,
+                    "user_id": user.id,
+                    "account_id": acct.id,
+                }
+            )
+    return seeds[0], seeds[1]
+
+
+def _make_app_as_user(session_factory, user_id: int) -> FastAPI:
+    """Build the app authenticating as a specific user id.
+
+    Lets us drive a request "as org A" while another org B exists in
+    the same DB so cross-org leakage would surface as a returned
+    suggestion or a 200 on a foreign account.
+    """
+    app = FastAPI()
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    async def override_current_user() -> User:
+        async with session_factory() as db:
+            return (
+                await db.execute(select(User).where(User.id == user_id))
+            ).scalar_one()
+
+    app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+
+    @app.exception_handler(NotFoundError)
+    async def _nfe(request, exc):
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(ValidationError)
+    async def _vle(request, exc):
+        return JSONResponse(status_code=400, content={"detail": exc.detail})
+
+    @app.exception_handler(ConflictError)
+    async def _cfe(request, exc):
+        return JSONResponse(status_code=409, content={"detail": exc.detail})
+
+    app.include_router(import_router)
+    app.include_router(transactions_router)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_ofx_preview_rejects_foreign_org_account_id(session_factory):
+    """Cross-org POST is refused by the account org-scope resolver, NOT by OFX parse.
+
+    Regression gate for spec §1.1: every OFX preview request is
+    org-scoped via the resolver that looks up the account. A user
+    in org A submitting a request with org B's account_id MUST NOT
+    receive a 200 with a preview of org A's matched rows -- the
+    resolver at ``backend/app/services/import_service.py`` lines
+    ~64-69 should refuse the foreign id by calling
+    ``transaction_service.validate_account``, which raises
+    ``ValidationError("Invalid account")`` (HTTP 400, detail
+    ``"Invalid account"``).
+
+    The body MUST be a syntactically valid OFX 2.x payload so that
+    ``parse_ofx`` succeeds and execution actually reaches that
+    org-scope branch. A malformed body would 400 at the parse step
+    with the ParseError text in ``detail`` -- the org-scope branch
+    would never run, and the test would still pass even if that
+    branch were deleted, defeating the regression gate. The
+    assertion below pins on the org-scope branch's distinctive
+    ``"Invalid account"`` detail to keep the two 400 surfaces
+    distinguishable.
+    """
+    valid_ofx_2x = b"""<?xml version="1.0" encoding="UTF-8"?>
+<?OFX OFXHEADER="200" VERSION="200" SECURITY="NONE" OLDFILEUID="NONE" NEWFILEUID="NONE"?>
+<OFX>
+  <SIGNONMSGSRSV1>
+    <SONRS>
+      <STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>
+      <DTSERVER>20260501120000</DTSERVER>
+      <LANGUAGE>ENG</LANGUAGE>
+    </SONRS>
+  </SIGNONMSGSRSV1>
+  <BANKMSGSRSV1>
+    <STMTTRNRS>
+      <TRNUID>1</TRNUID>
+      <STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>
+      <STMTRS>
+        <CURDEF>EUR</CURDEF>
+        <BANKACCTFROM>
+          <BANKID>INGBNL2A</BANKID>
+          <ACCTID>NL01TEST0000000001</ACCTID>
+          <ACCTTYPE>CHECKING</ACCTTYPE>
+        </BANKACCTFROM>
+        <BANKTRANLIST>
+          <DTSTART>20260501</DTSTART>
+          <DTEND>20260501</DTEND>
+          <STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20260501</DTPOSTED><TRNAMT>-12.34</TRNAMT><FITID>SCOPE0001</FITID><NAME>Test Merchant</NAME></STMTTRN>
+        </BANKTRANLIST>
+        <LEDGERBAL>
+          <BALAMT>-12.34</BALAMT>
+          <DTASOF>20260501</DTASOF>
+        </LEDGERBAL>
+      </STMTRS>
+    </STMTTRNRS>
+  </BANKMSGSRSV1>
+</OFX>
+"""
+    org_a, org_b = await _seed_two_orgs(session_factory)
+    app = _make_app_as_user(session_factory, user_id=org_a["user_id"])
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/import/ofx/preview",
+            files={"file": ("test.ofx", io.BytesIO(valid_ofx_2x), "application/x-ofx")},
+            data={"account_id": str(org_b["account_id"])},
+        )
+    # parse_ofx succeeds on this body (verified by the
+    # ``import.ofx.parsed`` log line in the captured stdout), so the
+    # 400 here MUST come from the org/account validator, not from
+    # parse. The detail string ``"Invalid account"`` is the org-scope
+    # branch's signature; a parse failure would carry ParseError text
+    # instead. A 200 would mean cross-org leakage.
+    assert resp.status_code == 400, (
+        f"Expected 400 (foreign account refused by org scope), got "
+        f"{resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert body.get("detail") == "Invalid account", (
+        f"Expected 400 'Invalid account' from org-scope branch, got "
+        f"detail={body.get('detail')!r}. A different 400 detail "
+        f"suggests the parse step failed before the org-scope check, "
+        f"which would defeat this regression gate."
+    )
+    # Belt-and-suspenders: response body must not carry preview row data.
+    assert "rows" not in body, (
+        f"400 response unexpectedly carries preview rows: {body}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_suggestions_isolates_per_org(session_factory):
+    """Description suggestions never leak across org_id boundaries.
+
+    Regression gate for spec §5.4 (privacy rules). Seeds a transaction
+    in org B with a distinctive description, then asks org A's user
+    for that description -- the response must NOT include the foreign
+    org's data even though both rows share the underlying DB.
+    """
+    from app.models.account import Account
+    from app.models.category import Category, CategoryType
+    from app.models.transaction import Transaction, TransactionType
+    from decimal import Decimal
+    from datetime import date
+
+    org_a, org_b = await _seed_two_orgs(session_factory)
+    # Seed a distinctively-described transaction in org B that org A
+    # must never see.
+    async with session_factory() as db:
+        cat_b = Category(
+            org_id=org_b["org_id"],
+            name="Groceries",
+            slug="groceries",
+            type=CategoryType.EXPENSE,
+        )
+        db.add(cat_b)
+        await db.flush()
+        tx_b = Transaction(
+            org_id=org_b["org_id"],
+            account_id=org_b["account_id"],
+            category_id=cat_b.id,
+            description="OrgBSecretMerchant",
+            amount=Decimal("12.50"),
+            type=TransactionType.EXPENSE,
+            date=date(2026, 5, 1),
+        )
+        db.add(tx_b)
+        await db.commit()
+
+    app = _make_app_as_user(session_factory, user_id=org_a["user_id"])
+    with TestClient(app) as client:
+        resp = client.get(
+            "/api/v1/transactions/suggestions/descriptions",
+            params={"type": "expense", "q": "Org"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    descriptions = [s["description"] for s in body["suggestions"]]
+    assert "OrgBSecretMerchant" not in descriptions, (
+        f"Cross-org leakage: org A saw org B's description. Got: {descriptions}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_isolates_per_org_account_id(session_factory):
+    """Batch endpoint refuses a foreign-org account_id with a per-row error.
+
+    Regression gate for spec §0.2 + §7: the batch endpoint rejects
+    cross-org account references at the per-row layer. A row pointing
+    at a different org's account_id must NOT result in a row written
+    under org A pointing at org B's account; the per-row error path
+    catches the foreign reference and the row count stays at 0
+    imported / 1 errored.
+    """
+    org_a, org_b = await _seed_two_orgs(session_factory)
+    app = _make_app_as_user(session_factory, user_id=org_a["user_id"])
+    payload = {
+        "rows": [
+            {
+                "row_number": 1,
+                "transaction": {
+                    "account_id": org_b["account_id"],  # foreign!
+                    "category_id": 1,
+                    "description": "Should not import",
+                    "amount": "12.50",
+                    "type": "expense",
+                    "date": "2026-05-10",
+                },
+            }
+        ],
+    }
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/transactions/batch", json=payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["imported_count"] == 0
+    assert body["error_count"] == 1
+    assert body["errors"][0]["row_number"] == 1
