@@ -20,10 +20,12 @@ import type { User } from "./types";
 // single render only pay the network cost once.
 //
 // All transport (rejected fetch / non-OK / invalid JSON / sanitized logging)
-// goes through `serverFetch`. A non-OK from /auth/verify is part of normal
-// auth flow (no refresh cookie → 401), so we pass `silentNonOk: true` to
-// avoid noisy warns. Transient fetch failures still log a sanitized
-// `server_fetch_failed` event from inside the helper.
+// goes through `serverFetch`. A 401 from /auth/verify is part of normal
+// auth flow (no refresh cookie → 401), so we pass `silentStatuses: [401]`
+// to avoid noisy warns for that one expected case. Real backend outages
+// (500/503) still emit `server_fetch_non_ok` so on-call can see them.
+// Transient fetch failures still log a sanitized `server_fetch_failed`
+// event from inside the helper.
 
 const REFRESH_COOKIE_NAME = "refresh_token";
 
@@ -46,8 +48,9 @@ export const getServerSession = cache(
       method: "POST",
       cookie: `${refresh.name}=${refresh.value}`,
       // 401 here means "no session", not an outage. Suppress warn-level
-      // logging in that case; rejected-fetch / invalid-JSON still log.
-      silentNonOk: true,
+      // logging for that exact status; rejected-fetch, invalid-JSON, and
+      // other non-OK statuses (e.g. 500/503) still log.
+      silentStatuses: [401],
     });
 
     if (!payload || !payload.access_token || !payload.user) return null;

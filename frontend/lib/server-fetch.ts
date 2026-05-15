@@ -28,15 +28,30 @@ const SERVER_API_URL =
   process.env.NEXT_PUBLIC_API_URL ||
   "http://localhost:8000";
 
+// Wrap the URL parse so a malformed SERVER_API_URL (env typo, missing
+// scheme, etc.) cannot make the failure-logging path itself throw. If the
+// catch block threw while building its log payload, we'd re-open the exact
+// "server render hits error boundary" class this helper was meant to
+// prevent. Exported for direct unit-testing.
+export function safeBackendHost(): string {
+  try {
+    return new URL(SERVER_API_URL).host;
+  } catch {
+    return "invalid-backend-url";
+  }
+}
+
 export type ServerFetchOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: BodyInit;
   accessToken?: string;
   cookie?: string;
-  // Allow callers to opt out of warn-level logging on non-OK responses
-  // when a non-OK status is part of normal flow (e.g. 401 from /auth/verify
-  // simply means "no session", not an outage).
-  silentNonOk?: boolean;
+  // Allow callers to opt out of warn-level logging for specific non-OK
+  // statuses that are part of normal flow (e.g. 401 from /auth/verify
+  // simply means "no session", not an outage). Statuses NOT in this list
+  // still emit `server_fetch_non_ok` so backend outages (500/503) are
+  // never accidentally silenced.
+  silentStatuses?: number[];
 };
 
 // Returns parsed JSON on success, `null` on any failure (rejected fetch,
@@ -76,11 +91,11 @@ export async function serverFetch<T>(
     });
 
     if (!res.ok) {
-      if (!options.silentNonOk) {
+      if (!options.silentStatuses?.includes(res.status)) {
         logger.warn("server_fetch_non_ok", {
-          backend_host: new URL(SERVER_API_URL).host,
+          backend_host: safeBackendHost(),
           method: options.method ?? "GET",
-          path,
+          path: path.split("?")[0],
           status: res.status,
         });
       }
@@ -90,9 +105,9 @@ export async function serverFetch<T>(
     return (await res.json()) as T;
   } catch (err) {
     logger.warn("server_fetch_failed", {
-      backend_host: new URL(SERVER_API_URL).host,
+      backend_host: safeBackendHost(),
       method: options.method ?? "GET",
-      path,
+      path: path.split("?")[0],
       error_name: err instanceof Error ? err.name : "Unknown",
       error_message: err instanceof Error ? err.message : String(err),
     });

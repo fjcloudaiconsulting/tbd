@@ -101,8 +101,9 @@ describe("getServerSession", () => {
     const { getServerSession, logger } = await loadModule();
     const session = await getServerSession();
     expect(session).toBeNull();
-    // silentNonOk=true is passed by getServerSession for /auth/verify, so
-    // the helper suppresses the warn even though status is non-OK.
+    // silentStatuses=[401] is passed by getServerSession for /auth/verify,
+    // so the helper suppresses the warn for the 401 normal-flow case.
+    // 500/503 would still emit `server_fetch_non_ok`.
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
