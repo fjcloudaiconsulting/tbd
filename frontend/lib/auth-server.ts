@@ -2,6 +2,7 @@ import "server-only";
 
 import { cookies } from "next/headers";
 import { cache } from "react";
+import { logger } from "./logger";
 import type { User } from "./types";
 
 // Foundation for Server Component migrations. The client-side `apiFetch` in
@@ -44,27 +45,47 @@ export const getServerSession = cache(
     const refresh = cookieStore.get(REFRESH_COOKIE_NAME);
     if (!refresh) return null;
 
-    const res = await fetch(`${SERVER_API_URL}/api/v1/auth/verify`, {
-      method: "POST",
-      headers: {
-        Cookie: `${refresh.name}=${refresh.value}`,
-      },
-      // No credentials: 'include' on server-side fetch — we forward the
-      // cookie explicitly via the Cookie header above. The endpoint does not
-      // issue a Set-Cookie response, so there's nothing to propagate back.
-      cache: "no-store",
-    });
+    try {
+      const res = await fetch(`${SERVER_API_URL}/api/v1/auth/verify`, {
+        method: "POST",
+        headers: {
+          Cookie: `${refresh.name}=${refresh.value}`,
+        },
+        // No credentials: 'include' on server-side fetch — we forward the
+        // cookie explicitly via the Cookie header above. The endpoint does
+        // not issue a Set-Cookie response, so there's nothing to propagate
+        // back.
+        cache: "no-store",
+      });
 
-    if (!res.ok) return null;
+      if (!res.ok) return null;
 
-    const payload = (await res.json()) as {
-      user: User;
-      access_token: string;
-      token_type: string;
-    };
-    if (!payload.access_token || !payload.user) return null;
+      const payload = (await res.json()) as {
+        user: User;
+        access_token: string;
+        token_type: string;
+      };
+      if (!payload.access_token || !payload.user) return null;
 
-    return { user: payload.user, accessToken: payload.access_token };
+      return { user: payload.user, accessToken: payload.access_token };
+    } catch (err) {
+      // Transient fetch/JSON failure during RSC render. Examples: DNS race
+      // during deploy, connection reset, TLS error, malformed response body.
+      // Callers (forecast-plans/page.tsx, reconcile/page.tsx) treat null as
+      // "redirect to /login", where AuthProvider's client-side refresh
+      // recovers a still-valid session into /dashboard. Without this catch,
+      // transient blips surface as the Next.js error boundary with a digest.
+      //
+      // Sanitization is non-negotiable: log ONLY backend_host, error_name,
+      // error_message. Never the refresh cookie value, never any header
+      // value, never any token, never any response body.
+      logger.warn("server_session_verify_failed", {
+        backend_host: new URL(SERVER_API_URL).host,
+        error_name: err instanceof Error ? err.name : "Unknown",
+        error_message: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   },
 );
 
