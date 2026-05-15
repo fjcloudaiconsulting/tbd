@@ -13,7 +13,11 @@ vi.mock("server-only", () => ({}));
 async function loadModule() {
   const mod = await import("@/lib/server-fetch");
   const loggerMod = await import("@/lib/logger");
-  return { serverFetch: mod.serverFetch, logger: loggerMod.logger };
+  return {
+    serverFetch: mod.serverFetch,
+    serverFetchResult: mod.serverFetchResult,
+    logger: loggerMod.logger,
+  };
 }
 
 beforeEach(() => {
@@ -219,6 +223,216 @@ describe("safeBackendHost", () => {
     const mod = await import("@/lib/server-fetch");
     expect(mod.safeBackendHost()).toBe("backend:8000");
     vi.unstubAllEnvs();
+  });
+});
+
+describe("serverFetch timeout (PR #288)", () => {
+  it("aborts a never-resolving fetch within the configured timeoutMs and returns null", async () => {
+    // The fetch promise never resolves. Without an AbortController the
+    // helper would hang forever; with PR #288's timeout it must abort
+    // and return null. We use a tight 50ms budget so the test stays
+    // fast.
+    vi.spyOn(global, "fetch").mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal;
+          if (signal) {
+            const onAbort = () => {
+              const err = new Error("Aborted");
+              err.name = "AbortError";
+              reject(err);
+            };
+            if (signal.aborted) onAbort();
+            else signal.addEventListener("abort", onAbort, { once: true });
+          }
+          // No resolve path — fetch hangs unless aborted.
+        }),
+    );
+    const { serverFetch, logger } = await loadModule();
+    const t0 = Date.now();
+    const result = await serverFetch<{ ok: boolean }>("/api/v1/slow", {
+      timeoutMs: 50,
+    });
+    const elapsed = Date.now() - t0;
+    expect(result).toBeNull();
+    // We can't be super tight on the upper bound in CI, but a 5000ms
+    // hang would dwarf this — assert the helper aborted well before
+    // the next test's default budget.
+    expect(elapsed).toBeLessThan(2_000);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "server_fetch_failed",
+      expect.objectContaining({
+        reason: "timeout",
+        timeout_ms: 50,
+        path: "/api/v1/slow",
+      }),
+    );
+  });
+
+  it("serverFetchResult returns kind=timeout on abort and does not leak query string or token", async () => {
+    vi.spyOn(global, "fetch").mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal;
+          if (signal) {
+            const onAbort = () => {
+              const err = new Error("Aborted");
+              err.name = "AbortError";
+              reject(err);
+            };
+            if (signal.aborted) onAbort();
+            else signal.addEventListener("abort", onAbort, { once: true });
+          }
+        }),
+    );
+    const { serverFetchResult, logger } = await loadModule();
+    const result = await serverFetchResult<{ ok: boolean }>(
+      "/api/v1/slow?leak_token=SECRET-QUERY-VALUE",
+      {
+        timeoutMs: 30,
+        accessToken: "SECRET-BEARER-VALUE",
+        cookie: "refresh_token=SECRET-COOKIE-VALUE",
+      },
+    );
+    expect(result).toEqual({ kind: "timeout" });
+    const payload = (logger.warn as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0][1];
+    expect(payload.reason).toBe("timeout");
+    expect(payload.path).toBe("/api/v1/slow");
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain("SECRET-QUERY-VALUE");
+    expect(serialized).not.toContain("SECRET-BEARER-VALUE");
+    expect(serialized).not.toContain("SECRET-COOKIE-VALUE");
+    expect(serialized).not.toContain("Bearer ");
+  });
+
+  it("timeoutMs override actually changes the budget (50ms aborts a 200ms-delayed promise)", async () => {
+    vi.spyOn(global, "fetch").mockImplementation(
+      (_input, init) =>
+        new Promise<Response>((resolve, reject) => {
+          const signal = (init as RequestInit | undefined)?.signal;
+          const t = setTimeout(() => {
+            resolve({
+              ok: true,
+              json: async () => ({ ok: true }),
+            } as unknown as Response);
+          }, 200);
+          if (signal) {
+            const onAbort = () => {
+              clearTimeout(t);
+              const err = new Error("Aborted");
+              err.name = "AbortError";
+              reject(err);
+            };
+            if (signal.aborted) onAbort();
+            else signal.addEventListener("abort", onAbort, { once: true });
+          }
+        }),
+    );
+    const { serverFetch } = await loadModule();
+    const t0 = Date.now();
+    const result = await serverFetch<{ ok: boolean }>("/api/v1/slow", {
+      timeoutMs: 50,
+    });
+    const elapsed = Date.now() - t0;
+    expect(result).toBeNull();
+    // Aborted before the 200ms delay would have resolved.
+    expect(elapsed).toBeLessThan(180);
+  });
+
+  it("default timeout is 5000ms when no override is supplied", async () => {
+    // Spy on setTimeout to confirm the helper schedules the abort at the
+    // documented default. This avoids actually waiting 5s in the test.
+    const setTimeoutSpy = vi
+      .spyOn(global, "setTimeout")
+      .mockImplementation(
+        // Return a fake handle; the test doesn't await the resolution,
+        // it just inspects how the helper armed the timer.
+        ((..._args: unknown[]) => 0) as unknown as typeof global.setTimeout,
+      );
+    // fetch resolves immediately so the helper unwinds cleanly through
+    // the finally{ clearTimeout } branch.
+    vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    } as unknown as Response);
+    const { serverFetch } = await loadModule();
+    await serverFetch<{ ok: boolean }>("/api/v1/probe", {});
+    // The first setTimeout call inside serverFetchResult schedules the
+    // abort with the default budget.
+    const firstCall = setTimeoutSpy.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    expect(firstCall[1]).toBe(5000);
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("clearTimeout is invoked on the success path so the abort never fires after the response lands", async () => {
+    const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
+    vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ value: 1 }),
+    } as unknown as Response);
+    const { serverFetch } = await loadModule();
+    const result = await serverFetch<{ value: number }>("/api/v1/probe", {});
+    expect(result).toEqual({ value: 1 });
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+    clearTimeoutSpy.mockRestore();
+  });
+});
+
+describe("serverFetchResult discriminated kinds (PR #288)", () => {
+  it("returns kind=ok with parsed JSON on 200", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({ value: 42 }),
+    } as unknown as Response);
+    const { serverFetchResult } = await loadModule();
+    const result = await serverFetchResult<{ value: number }>("/api/v1/probe");
+    expect(result).toEqual({ kind: "ok", data: { value: 42 } });
+  });
+
+  it("returns kind=http_error with status on 401", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ detail: "Unauthorized" }),
+    } as unknown as Response);
+    const { serverFetchResult } = await loadModule();
+    const result = await serverFetchResult<{ ok: boolean }>(
+      "/api/v1/auth/verify",
+      { silentStatuses: [401] },
+    );
+    expect(result).toEqual({ kind: "http_error", status: 401 });
+  });
+
+  it("returns kind=http_error with status on 503", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ detail: "Unavailable" }),
+    } as unknown as Response);
+    const { serverFetchResult } = await loadModule();
+    const result = await serverFetchResult<{ ok: boolean }>("/api/v1/probe");
+    expect(result).toEqual({ kind: "http_error", status: 503 });
+  });
+
+  it("returns kind=network_error on a TypeError from fetch", async () => {
+    vi.spyOn(global, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+    const { serverFetchResult } = await loadModule();
+    const result = await serverFetchResult<{ ok: boolean }>("/api/v1/probe");
+    expect(result).toEqual({ kind: "network_error" });
+  });
+
+  it("returns kind=invalid_json when res.json() throws on 200", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError("Unexpected token <");
+      },
+    } as unknown as Response);
+    const { serverFetchResult } = await loadModule();
+    const result = await serverFetchResult<{ ok: boolean }>("/api/v1/probe");
+    expect(result).toEqual({ kind: "invalid_json" });
   });
 });
 
