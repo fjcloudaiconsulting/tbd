@@ -275,6 +275,35 @@ export default function ForecastPlansClient({
     })();
   }, []);
 
+  // Client-side categories recovery (PR #288). Categories are seeded
+  // from `initialCategories` only — there is no SWR for the categories
+  // list, because they're treated as stable per session. If the RSC
+  // shell rendered with an empty categories array (transient /auth/verify
+  // or transient /api/v1/categories), the user would see an empty
+  // category picker and be unable to add plan items. Fire a one-shot
+  // recovery fetch on mount when categories are empty so the page
+  // self-heals after a transient server-side fetch failure. Single
+  // attempt, no retry loop — `apiFetch` has its own bounded timeout
+  // (#286) and the user can always reload.
+  const categoriesRecoveryAttempted = useRef(false);
+  useEffect(() => {
+    if (categoriesRecoveryAttempted.current) return;
+    if (categories.length > 0) return;
+    categoriesRecoveryAttempted.current = true;
+    (async () => {
+      try {
+        const fresh = await apiFetch<Category[]>("/api/v1/categories");
+        if (Array.isArray(fresh) && fresh.length > 0) {
+          setCategories(fresh);
+        }
+      } catch {
+        // Quiet on failure — the user can reload, and the picker still
+        // exposes the inline "create new category" path that calls
+        // /api/v1/categories on demand.
+      }
+    })();
+  }, [categories.length]);
+
   // After a write from the AppShell-level "+ New Transaction" CTA the
   // forecast page must reload the plan so per-category actuals and
   // variance reflect the new transaction. We don't reload refs here:
