@@ -23,6 +23,12 @@ import type {
 
 type Step = "upload" | "preview" | "results";
 
+// L3.2 OFX parser has a 10s server-side budget. Frontend default 10s
+// races the server and can abort just before a valid response. Give
+// the import flow a 15s margin so a parse near the cap doesn't show
+// the user an ApiTimeoutError when the server actually succeeded.
+const IMPORT_REQUEST_TIMEOUT_MS = 15_000;
+
 // Transfer-pill UI state (parallel map keyed by row_number — UI only,
 // independent of the confirm-payload row state).
 type TransferUiState = {
@@ -197,6 +203,7 @@ function ImportPageContent() {
       const data = await apiFetch<ImportPreviewResponse>("/api/v1/import/preview", {
         method: "POST",
         body: formData,
+        timeoutMs: IMPORT_REQUEST_TIMEOUT_MS,
       });
       setPreview(data);
 
@@ -277,6 +284,7 @@ function ImportPageContent() {
           file_name: preview.file_name,
           source_format: preview.source_format ?? "csv",
         }),
+        timeoutMs: IMPORT_REQUEST_TIMEOUT_MS,
       });
       setResults(data);
       setStep("results");

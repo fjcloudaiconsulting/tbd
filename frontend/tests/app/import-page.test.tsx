@@ -849,4 +849,53 @@ describe("ImportPage transfer pill column", () => {
     expect(pill).toHaveTextContent(/Will create transfer from Savings/i);
     expect(pill).not.toHaveTextContent(/Will create transfer to Savings/i);
   });
+
+  it("import preview is called with IMPORT_REQUEST_TIMEOUT_MS (15s)", async () => {
+    const preview = basePreview([baseRow({ row_number: 1 })]);
+
+    await renderAndPreview(preview);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/import/preview"),
+      expect.objectContaining({ timeoutMs: 15_000 }),
+    );
+  });
+
+  it("import confirm is called with IMPORT_REQUEST_TIMEOUT_MS (15s)", async () => {
+    const preview = basePreview([baseRow({ row_number: 1 })]);
+
+    await renderAndPreview(preview);
+
+    // Provide a default category so confirm is enabled.
+    const selects = document.querySelectorAll("select");
+    const defaultCatSelect = selects[selects.length - 1] as HTMLSelectElement;
+    fireEvent.change(defaultCatSelect, { target: { value: "5" } });
+
+    // Stub the confirm response so the click resolves cleanly.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockResolvedValueOnce({
+      imported_count: 1,
+      paired_count: 0,
+      dropped_duplicate_count: 0,
+      skipped_count: 0,
+      error_count: 0,
+      errors: [],
+    } as never);
+
+    const confirmBtn = screen.getByRole("button", { name: /import 1 transaction/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      const confirmCall = apiFetchMock.mock.calls.find(
+        ([url]) => url === "/api/v1/import/confirm",
+      );
+      expect(confirmCall).toBeDefined();
+    });
+
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/import/confirm"),
+      expect.objectContaining({ timeoutMs: 15_000 }),
+    );
+  });
 });
