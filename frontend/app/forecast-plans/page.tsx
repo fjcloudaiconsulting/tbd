@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getServerSession } from "@/lib/auth-server";
+import { serverFetch } from "@/lib/server-fetch";
 import ForecastPlansClient from "./ForecastPlansClient";
 import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 
@@ -10,41 +11,16 @@ import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 // has to deal with an unauthenticated state.
 //
 // We then issue the three initial reads in parallel (categories, billing
-// periods, and the plan for the visible period) with the access token, and
-// hand the results down as initial props. The client uses them as SWR
-// `fallbackData` for the plan so the page paints immediately and only
-// re-fetches when the user navigates periods or mutates the plan.
+// periods, and the plan for the visible period) via the sanctioned
+// `serverFetch` helper, and hand the results down as initial props. The
+// client uses them as SWR `fallbackData` for the plan so the page paints
+// immediately and only re-fetches when the user navigates periods or
+// mutates the plan.
 //
 // The `ensure-future` POST (a side-effect write that pre-creates forward
 // billing-period stubs) intentionally stays in the client. RSC fetches
 // should be idempotent reads, and the existing client already runs
 // ensure-future once-per-session before loading periods.
-//
-// URL resolution mirrors `lib/auth-server.ts` so this module works in
-// docker-compose (BACKEND_INTERNAL_URL=http://backend:8000), in DO App
-// Platform (BACKEND_INTERNAL_URL=${backend.PRIVATE_URL}), and from a
-// developer's host shell against a locally-running backend.
-
-const SERVER_API_URL =
-  process.env.BACKEND_INTERNAL_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  "http://localhost:8000";
-
-async function fetchJSON<T>(
-  path: string,
-  accessToken: string,
-): Promise<T | null> {
-  try {
-    const res = await fetch(`${SERVER_API_URL}${path}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 // The existing client picks the "current" period (the open one with
 // end_date === null) and falls back to index 0 when there isn't one. We
@@ -61,11 +37,12 @@ export default async function ForecastPlansPage() {
   if (!session) redirect("/login");
 
   const [categories, periods] = await Promise.all([
-    fetchJSON<Category[]>("/api/v1/categories", session.accessToken),
-    fetchJSON<BillingPeriod[]>(
-      "/api/v1/settings/billing-periods",
-      session.accessToken,
-    ),
+    serverFetch<Category[]>("/api/v1/categories", {
+      accessToken: session.accessToken,
+    }),
+    serverFetch<BillingPeriod[]>("/api/v1/settings/billing-periods", {
+      accessToken: session.accessToken,
+    }),
   ]);
 
   const periodList = periods ?? [];
@@ -75,9 +52,9 @@ export default async function ForecastPlansPage() {
   // yet have a plan auto-creates a draft. That matches the pre-RSC
   // client's first-load behavior; preserving UX is the goal of this PR.
   const initialPlan = initialPeriod
-    ? await fetchJSON<ForecastPlan>(
+    ? await serverFetch<ForecastPlan>(
         `/api/v1/forecast-plans?period_start=${initialPeriod.start_date}`,
-        session.accessToken,
+        { accessToken: session.accessToken },
       )
     : null;
 

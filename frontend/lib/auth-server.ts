@@ -2,7 +2,7 @@ import "server-only";
 
 import { cookies } from "next/headers";
 import { cache } from "react";
-import { logger } from "./logger";
+import { serverFetch } from "./server-fetch";
 import type { User } from "./types";
 
 // Foundation for Server Component migrations. The client-side `apiFetch` in
@@ -19,18 +19,13 @@ import type { User } from "./types";
 // Results are cached per request via React's `cache` so multiple RSCs in a
 // single render only pay the network cost once.
 //
-// URL resolution. The browser uses relative URLs and nginx routes them. The
-// server (this module) needs an absolute URL to reach the backend. In
-// docker-compose dev and prod, BACKEND_INTERNAL_URL points at the backend
-// service (`http://backend:8000`). On DO App Platform it resolves to the
-// inter-service private URL. Fallback chain ends at `http://localhost:8000`
-// so a developer running the backend directly outside docker can still
-// import this module and have it work.
-
-const SERVER_API_URL =
-  process.env.BACKEND_INTERNAL_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  "http://localhost:8000";
+// All transport (rejected fetch / non-OK / invalid JSON / sanitized logging)
+// goes through `serverFetch`. A 401 from /auth/verify is part of normal
+// auth flow (no refresh cookie → 401), so we pass `silentStatuses: [401]`
+// to avoid noisy warns for that one expected case. Real backend outages
+// (500/503) still emit `server_fetch_non_ok` so on-call can see them.
+// Transient fetch failures still log a sanitized `server_fetch_failed`
+// event from inside the helper.
 
 const REFRESH_COOKIE_NAME = "refresh_token";
 
@@ -45,47 +40,22 @@ export const getServerSession = cache(
     const refresh = cookieStore.get(REFRESH_COOKIE_NAME);
     if (!refresh) return null;
 
-    try {
-      const res = await fetch(`${SERVER_API_URL}/api/v1/auth/verify`, {
-        method: "POST",
-        headers: {
-          Cookie: `${refresh.name}=${refresh.value}`,
-        },
-        // No credentials: 'include' on server-side fetch — we forward the
-        // cookie explicitly via the Cookie header above. The endpoint does
-        // not issue a Set-Cookie response, so there's nothing to propagate
-        // back.
-        cache: "no-store",
-      });
+    const payload = await serverFetch<{
+      user: User;
+      access_token: string;
+      token_type: string;
+    }>("/api/v1/auth/verify", {
+      method: "POST",
+      cookie: `${refresh.name}=${refresh.value}`,
+      // 401 here means "no session", not an outage. Suppress warn-level
+      // logging for that exact status; rejected-fetch, invalid-JSON, and
+      // other non-OK statuses (e.g. 500/503) still log.
+      silentStatuses: [401],
+    });
 
-      if (!res.ok) return null;
+    if (!payload || !payload.access_token || !payload.user) return null;
 
-      const payload = (await res.json()) as {
-        user: User;
-        access_token: string;
-        token_type: string;
-      };
-      if (!payload.access_token || !payload.user) return null;
-
-      return { user: payload.user, accessToken: payload.access_token };
-    } catch (err) {
-      // Transient fetch/JSON failure during RSC render. Examples: DNS race
-      // during deploy, connection reset, TLS error, malformed response body.
-      // Callers (forecast-plans/page.tsx, reconcile/page.tsx) treat null as
-      // "redirect to /login", where AuthProvider's client-side refresh
-      // recovers a still-valid session into /dashboard. Without this catch,
-      // transient blips surface as the Next.js error boundary with a digest.
-      //
-      // Sanitization is non-negotiable: log ONLY backend_host, error_name,
-      // error_message. Never the refresh cookie value, never any header
-      // value, never any token, never any response body.
-      logger.warn("server_session_verify_failed", {
-        backend_host: new URL(SERVER_API_URL).host,
-        error_name: err instanceof Error ? err.name : "Unknown",
-        error_message: err instanceof Error ? err.message : String(err),
-      });
-      return null;
-    }
+    return { user: payload.user, accessToken: payload.access_token };
   },
 );
 

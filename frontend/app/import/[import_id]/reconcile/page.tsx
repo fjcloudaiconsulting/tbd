@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getServerSession } from "@/lib/auth-server";
+import { serverFetch } from "@/lib/server-fetch";
 import ReconcileClient from "./ReconcileClient";
 import type { ImportBatchDetail } from "@/lib/types";
 
@@ -8,34 +9,10 @@ import type { ImportBatchDetail } from "@/lib/types";
 // The route lives at /import/[import_id]/reconcile and is authed-only;
 // the RSC shell rejects unauthenticated requests at the server boundary
 // (no flash of a protected screen). We fetch the batch detail once on
-// the server with the access token and hand it to the client island as
-// SWR fallbackData; the client re-fetches on action so the UI stays in
-// sync with the server-side state machine after every transition.
-//
-// URL resolution mirrors the existing forecast-plans page so this
-// module works in docker-compose, in DO App Platform, and from a
-// developer's host shell against a locally-running backend.
-
-const SERVER_API_URL =
-  process.env.BACKEND_INTERNAL_URL ||
-  process.env.NEXT_PUBLIC_API_URL ||
-  "http://localhost:8000";
-
-async function fetchJSON<T>(
-  path: string,
-  accessToken: string,
-): Promise<T | null> {
-  try {
-    const res = await fetch(`${SERVER_API_URL}${path}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
-}
+// the server via the sanctioned `serverFetch` helper and hand it to the
+// client island as SWR fallbackData; the client re-fetches on action so
+// the UI stays in sync with the server-side state machine after every
+// transition.
 
 export default async function ReconcilePage({
   params,
@@ -51,9 +28,9 @@ export default async function ReconcilePage({
     redirect("/import");
   }
 
-  const initialBatch = await fetchJSON<ImportBatchDetail>(
+  const initialBatch = await serverFetch<ImportBatchDetail>(
     `/api/v1/import/${batchId}`,
-    session.accessToken,
+    { accessToken: session.accessToken },
   );
 
   return (
