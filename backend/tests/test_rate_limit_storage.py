@@ -55,6 +55,33 @@ def test_limiter_uses_redis_storage_when_redis_url_set(monkeypatch):
         f"expected Redis-backed inner storage, got {type(inner).__name__}"
     )
 
+    # Production hotfix 2026-05-15. Without these socket-level options the
+    # limits-library Redis client defaults to socket_timeout=None — an
+    # infinite blocking read on the sync slowapi storage path. Since
+    # slowapi evaluates limits synchronously inside async request handlers,
+    # one flaky Redis socket parks the entire uvicorn event loop and every
+    # route (including /health) stops responding. Pin connection_kwargs
+    # here so future refactors cannot silently regress the cap. See
+    # ``app/rate_limit.py:_build_limiter`` for the full rationale.
+    redis_client = inner.storage
+    kwargs = redis_client.connection_pool.connection_kwargs
+    assert kwargs["socket_timeout"] == 1, (
+        f"socket_timeout must be 1s to prevent event-loop block, "
+        f"got {kwargs.get('socket_timeout')!r}"
+    )
+    assert kwargs["socket_connect_timeout"] == 1, (
+        f"socket_connect_timeout must be 1s to prevent event-loop block, "
+        f"got {kwargs.get('socket_connect_timeout')!r}"
+    )
+    assert kwargs["socket_keepalive"] is True, (
+        f"socket_keepalive must be True for connection hygiene, "
+        f"got {kwargs.get('socket_keepalive')!r}"
+    )
+    assert kwargs["health_check_interval"] == 30, (
+        f"health_check_interval must be 30s, "
+        f"got {kwargs.get('health_check_interval')!r}"
+    )
+
 
 def test_limiter_falls_back_to_memory_when_redis_url_empty(monkeypatch, capsys):
     """When ``settings.redis_url`` is empty (e.g. local dev without

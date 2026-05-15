@@ -191,7 +191,36 @@ def _build_limiter() -> Limiter:
             backend="redis",
             multi_replica_safe=True,
         )
-        limiter = Limiter(key_func=get_client_ip, storage_uri=redis_url)
+        # Production hotfix 2026-05-15. slowapi's Limiter passes storage_options
+        # through to limits-library's redis.from_url(). Without these, the
+        # library defaults to socket_timeout=None — infinite blocking read on
+        # the sync Redis storage path. Since slowapi evaluates limits
+        # synchronously inside async request handlers, a single flaky socket
+        # parks the entire uvicorn event loop. /health and every other route
+        # stop responding until the container is restarted.
+        #
+        # Rate limiting fails open via FailOpenRedisStorage (see
+        # rate_limit_failopen.py), so blocking the event loop here buys
+        # nothing — we want the shortest practical socket cap. 1 second is the
+        # ceiling; redis-py raises TimeoutError, the wrapper catches it,
+        # emits rate_limit.degraded, and the request proceeds via fail-open.
+        #
+        # No retry kwarg here: retry on the sync path multiplies event-loop
+        # blocking time. (The singleton async client at app/redis_client.py
+        # does have retry because async retries don't block the loop.)
+        #
+        # Async storage (async+redis://) is the longer-term fix — separate PR;
+        # requires coredis dependency review + async fail-open wrapper rewrite.
+        limiter = Limiter(
+            key_func=get_client_ip,
+            storage_uri=redis_url,
+            storage_options={
+                "socket_connect_timeout": 1,
+                "socket_timeout": 1,
+                "socket_keepalive": True,
+                "health_check_interval": 30,
+            },
+        )
         # Fail-open on Redis storage errors (prod hotfix 2026-05-13). The
         # wrapper sits below slowapi so transient Redis blips no longer
         # surface as HTTP 500 from rate-limited auth endpoints. See
