@@ -204,4 +204,84 @@ describe("OnboardingPageBody", () => {
       expect(replaceMock).toHaveBeenCalledWith("/dashboard");
     });
   });
+
+  it("hides the demo data step for non-owner users (admin)", async () => {
+    setupAuth(makeUser({ role: "admin" }));
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/account-types") {
+        return Promise.resolve([{ id: 10, name: "Checking", slug: "checking" }]);
+      }
+      return Promise.resolve({});
+    }) as never);
+
+    render(<OnboardingPageBody />);
+    // Welcome step shows 3 of 3 (not 4 of 4) because the demo step is
+    // not part of this user's wizard.
+    expect(screen.getByText(/Step 1 of 3/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    // Skip the account step.
+    await waitFor(() =>
+      expect(screen.getByTestId("onboarding-skip")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Step 2 of 3/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("onboarding-skip"));
+
+    // We should land directly on the tour offer, skipping demo entirely.
+    await waitFor(() =>
+      expect(screen.getByTestId("onboarding-accept-tour")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Step 3 of 3/)).toBeInTheDocument();
+    expect(screen.queryByTestId("onboarding-accept-seed")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("onboarding-decline-seed")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Yes, add sample data/i)).not.toBeInTheDocument();
+  });
+
+  it("hides the demo data step for non-owner users (member)", async () => {
+    setupAuth(makeUser({ role: "member" }));
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/account-types") {
+        return Promise.resolve([{ id: 10, name: "Checking", slug: "checking" }]);
+      }
+      return Promise.resolve({});
+    }) as never);
+
+    render(<OnboardingPageBody />);
+    expect(screen.getByText(/Step 1 of 3/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    await waitFor(() =>
+      expect(screen.getByTestId("onboarding-skip")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("onboarding-skip"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("onboarding-accept-tour")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("onboarding-accept-seed")).not.toBeInTheDocument();
+  });
+
+  it("shows the demo data step for owners (sanity-check the role gate)", async () => {
+    setupAuth(makeUser({ role: "owner" }));
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/account-types") {
+        return Promise.resolve([{ id: 10, name: "Checking", slug: "checking" }]);
+      }
+      return Promise.resolve({});
+    }) as never);
+
+    render(<OnboardingPageBody />);
+    expect(screen.getByText(/Step 1 of 4/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    await waitFor(() =>
+      expect(screen.getByTestId("onboarding-skip")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("onboarding-skip"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("onboarding-accept-seed")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/Step 3 of 4/)).toBeInTheDocument();
+  });
 });

@@ -16,6 +16,7 @@ import {
 } from "@/lib/formErrors";
 import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
+import DemoDataCard from "@/components/settings/DemoDataCard";
 import MembersSection from "@/components/settings/MembersSection";
 import SmartRulesSection from "@/components/settings/SmartRulesSection";
 import {
@@ -685,6 +686,12 @@ export default function OrganizationSettingsPage() {
             currentRole={user.role as "owner" | "admin" | "member"}
           />
           <SmartRulesSection />
+        </div>
+      )}
+
+      {isOrgOwner && user && (
+        <div className="mt-6">
+          <DemoDataCard user={user} />
         </div>
       )}
 

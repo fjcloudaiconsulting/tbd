@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * OnboardingPageBody — the four-step first-run wizard (L3.3).
+ * OnboardingPageBody — the first-run wizard (L3.3).
  *
- * Steps:
+ * Steps (full sequence for org owners):
  *   1. Welcome      — brand-aligned intro, one CTA.
  *   2. First account — minimal form (name + type), submitted to
  *                       POST /api/v1/accounts. Skippable.
@@ -12,6 +12,12 @@
  *                       On 409 we surface a soft warning (never 500).
  *   4. Tour offer    — yes/no for the dashboard tour, which starts
  *                       on the dashboard after the wizard finishes.
+ *
+ * Role-aware step list: the demo-seed step is owner-only because the
+ * underlying endpoint is guarded by `require_org_owner` (added in
+ * 78d6409). Invited admin / member users skip straight from the
+ * account step to the tour offer, so they never see an affordance
+ * they cannot use.
  *
  * Each step has a Skip button that advances without firing the
  * step's side effect. The final step (or the user clicking Skip on
@@ -45,12 +51,22 @@ const TOUR_FLAG_KEY = "tbd-pending-dashboard-tour";
 
 type Step = "welcome" | "account" | "demo" | "tour";
 
-const STEP_ORDER: Step[] = ["welcome", "account", "demo", "tour"];
+const FULL_STEP_ORDER: Step[] = ["welcome", "account", "demo", "tour"];
+const NON_OWNER_STEP_ORDER: Step[] = ["welcome", "account", "tour"];
 
 export default function OnboardingPageBody() {
   const { user, loading, refreshMe } = useAuth();
   const router = useRouter();
   const tour = useTour();
+
+  // Owners get the full four-step wizard; admins / members skip the
+  // demo-seed step because the seed endpoint is owner-only (78d6409).
+  // Falling back to NON_OWNER_STEP_ORDER while the user is still
+  // loading is safe — the loading branch below returns the spinner
+  // before any step renders, so this value is only consumed once
+  // `user` is populated.
+  const STEP_ORDER =
+    user?.role === "owner" ? FULL_STEP_ORDER : NON_OWNER_STEP_ORDER;
 
   const [step, setStep] = useState<Step>("welcome");
   const [accountName, setAccountName] = useState("Main Checking");
