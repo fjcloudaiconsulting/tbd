@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from pathlib import Path
@@ -15,3 +16,11 @@ os.environ.setdefault(
     "test-jwt-secret-that-is-long-enough-for-pytest-1234567890",
 )
 os.environ.setdefault("APP_ENV", "development")
+
+# Match the production logging.py suppression: ofxtools emits per-row INFO
+# during OFX parses ("Converting <STMTTRN>"). For tests that parse the
+# 10k-row fixture this distorts wall-clock timing AND floods captured
+# log output. Apply the same WARNING floor at conftest import so it
+# takes effect before any test session-level fixture imports parser
+# modules.
+logging.getLogger("ofxtools").setLevel(logging.WARNING)

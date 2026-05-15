@@ -209,6 +209,14 @@ async def parse_ofx(
     )
     bank_id = str(bank_id_value).strip() if bank_id_value else None
     account_type_ofx = _coerce_account_type(accttype_value)
+    # Credit-card statements use <CCACCTFROM> which carries neither
+    # <BANKID> nor <ACCTTYPE>; the implied type is CREDITLINE per the
+    # OFX 2.x spec (§11.4.4 credit card aggregate). Infer it from the
+    # ofxtools aggregate class name so row metadata still tells the
+    # frontend "this row came from a credit card."
+    if account_type_ofx is None and account is not None:
+        if type(account).__name__ == "CCACCTFROM":
+            account_type_ofx = "CREDITLINE"
 
     # ── (6) Normalize each transaction → ParsedRow ──
     parsed: list[ParsedRow] = []

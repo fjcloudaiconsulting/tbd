@@ -92,6 +92,12 @@ def setup_logging() -> None:
 
     # Quiet down noisy loggers
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    # ofxtools emits per-row INFO ("Converting <STMTTRN>") during OFX
+    # parse — fine in unit-fixture tests, but on a real 10 000-row import
+    # this floods structlog. Drop to WARNING so structural failures still
+    # surface but per-row noise stays out of production logs and test
+    # wall-clock measurements.
+    logging.getLogger("ofxtools").setLevel(logging.WARNING)
 
     # Force uvicorn loggers to use our JSON handler
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
