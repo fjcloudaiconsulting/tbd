@@ -2,7 +2,14 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 const API_FETCH_TIMEOUT_MS = 10_000;
 
 let accessToken: string | null = null;
-let refreshPromise: Promise<string | null> | null = null;
+// Discriminated result so callers can distinguish terminal auth death
+// from transient refresh failure. Architect-locked 2026-05-15.
+type RefreshResult =
+  | { ok: true; accessToken: string }
+  | { ok: false; kind: "terminal"; status: number }
+  | { ok: false; kind: "transient"; error: Error; status?: number };
+
+let refreshPromise: Promise<RefreshResult> | null = null;
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
@@ -70,19 +77,57 @@ async function fetchWithTimeout(
   }
 }
 
-async function refreshAccessToken(): Promise<string | null> {
+async function refreshAccessToken(): Promise<RefreshResult> {
+  let res: Response;
   try {
-    const res = await fetchWithTimeout(`${API_URL}/api/v1/auth/refresh`, {
+    res = await fetchWithTimeout(`${API_URL}/api/v1/auth/refresh`, {
       method: "POST",
       credentials: "include",
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    accessToken = data.access_token;
-    return accessToken;
-  } catch {
-    return null;
+  } catch (err) {
+    // ApiTimeoutError, TypeError (network), AbortError -- all transient.
+    return {
+      ok: false,
+      kind: "transient",
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
   }
+
+  if (res.status === 401 || res.status === 403) {
+    return { ok: false, kind: "terminal", status: res.status };
+  }
+
+  if (!res.ok) {
+    return {
+      ok: false,
+      kind: "transient",
+      error: new Error(`refresh returned ${res.status}`),
+      status: res.status,
+    };
+  }
+
+  let data: { access_token?: string };
+  try {
+    data = await res.json();
+  } catch (err) {
+    return {
+      ok: false,
+      kind: "transient",
+      error: err instanceof Error ? err : new Error("invalid JSON"),
+    };
+  }
+
+  if (!data.access_token) {
+    // 200 OK but no access_token: protocol failure, not auth death.
+    return {
+      ok: false,
+      kind: "transient",
+      error: new Error("refresh succeeded without access_token"),
+    };
+  }
+
+  accessToken = data.access_token;
+  return { ok: true, accessToken: data.access_token };
 }
 
 export async function apiFetch<T>(
@@ -118,7 +163,7 @@ export async function apiFetch<T>(
     effectiveTimeout,
   );
 
-  // On 401, attempt one silent refresh (even without a current token —
+  // On 401, attempt one silent refresh (even without a current token --
   // the refresh cookie may still be valid)
   if (res.status === 401) {
     if (!refreshPromise) {
@@ -126,10 +171,10 @@ export async function apiFetch<T>(
         refreshPromise = null;
       });
     }
-    const newToken = await refreshPromise;
+    const refreshResult = await refreshPromise;
 
-    if (newToken) {
-      headers.set("Authorization", `Bearer ${newToken}`);
+    if (refreshResult.ok) {
+      headers.set("Authorization", `Bearer ${refreshResult.accessToken}`);
       res = await fetchWithTimeout(
         `${API_URL}${path}`,
         {
@@ -139,13 +184,12 @@ export async function apiFetch<T>(
         },
         effectiveTimeout,
       );
-    }
-
-    // If still 401 after refresh attempt, the session is dead. Clear the
-    // in-memory token and notify AuthProvider so AppShell can redirect to
-    // /login. Skip for credential-check endpoints where 401 means bad input,
-    // not an expired session.
-    if (res.status === 401) {
+      // Retry attempted; fall through to normal !res.ok handling below.
+    } else if (refreshResult.kind === "terminal") {
+      // True auth death: refresh cookie invalid/expired. Clear in-memory
+      // token and notify AuthProvider so AppShell can redirect to /login.
+      // Skip for credential-check endpoints where 401 means bad input,
+      // not an expired session.
       const isCredCheck =
         path.startsWith("/api/v1/auth/login") ||
         path.startsWith("/api/v1/auth/mfa/verify");
@@ -155,6 +199,17 @@ export async function apiFetch<T>(
           window.dispatchEvent(new Event("auth:unauthenticated"));
         }
       }
+      // Fall through: caller sees the original 401 ApiResponseError.
+    } else {
+      // refreshResult.kind === "transient": refresh cookie may still be
+      // valid; do NOT clear auth state. Throw a recoverable error so SWR
+      // / the caller can show a retry path. User stays in-app.
+      throw new ApiResponseError(
+        503,
+        "Session refresh temporarily unavailable. Please try again.",
+        "refresh_transient",
+        refreshResult.error.message,
+      );
     }
   }
 
