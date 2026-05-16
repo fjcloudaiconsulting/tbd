@@ -67,13 +67,16 @@ function consoleMethodFor(level: LogLevel): "error" | "warn" | "log" {
 interface NodeWriteStream {
   write(chunk: string): boolean;
 }
+// String-typed const keys (inferred as the literal types ``"stdout"``
+// and ``"stderr"``). Using ``const`` rather than ``as`` literal type
+// assertions satisfies ``@typescript-eslint/prefer-as-const`` while
+// preserving the dynamic-property-access pattern that hides these
+// member references from Turbopack's Edge-runtime analyzer.
+const STDOUT_KEY = "stdout";
+const STDERR_KEY = "stderr";
 const _globalProcess = (globalThis as { process?: NodeJS.Process }).process;
-const _nodeStdout: NodeWriteStream | undefined = _globalProcess?.[
-  "stdout" as "stdout"
-];
-const _nodeStderr: NodeWriteStream | undefined = _globalProcess?.[
-  "stderr" as "stderr"
-];
+const _nodeStdout: NodeWriteStream | undefined = _globalProcess?.[STDOUT_KEY];
+const _nodeStderr: NodeWriteStream | undefined = _globalProcess?.[STDERR_KEY];
 
 function log(level: LogLevel, event: string, data?: Record<string, unknown>) {
   const entry = formatEntry(level, event, data);
