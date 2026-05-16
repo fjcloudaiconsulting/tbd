@@ -1,11 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { securityHeadersTuples } from "./lib/security-headers";
+
 /**
  * Next.js middleware — logs every request in structured JSON format
- * matching the backend/nginx log style for unified observability.
+ * matching the backend/nginx log style for unified observability, and
+ * stamps the security header pack onto every response.
  *
  * Sensitive query parameters (tokens, codes) are stripped from logs.
+ *
+ * Why headers stamping lives here in addition to ``next.config.ts``
+ * ``headers()``: Next.js's routing pipeline emits redirect responses
+ * (e.g. the app-host ``/ → /login`` 307) BEFORE ``headers()`` applies,
+ * so those redirects ship without HSTS / nosniff / Referrer-Policy.
+ * ZAP scan 2026-05-16 confirmed the gap. Stamping here covers the
+ * redirect path; ``headers()`` covers the rest, and double-stamping
+ * the same values on non-redirect responses is idempotent.
  */
+
+export const APP_HOST = "app.thebetterdecision.com";
+
+function applySecurityHeaders(response: NextResponse): NextResponse {
+  for (const [name, value] of securityHeadersTuples) {
+    response.headers.set(name, value);
+  }
+  return response;
+}
 
 const SENSITIVE_PARAMS = new Set([
   "token", "code", "access_token", "refresh_token", "mfa_token", "key", "secret", "password",
@@ -47,6 +67,26 @@ export function proxy(request: NextRequest) {
   const inbound = request.headers.get("x-request-id");
   const requestId = coerceRequestId(inbound);
 
+  // App-host root → /login. Moved here from ``next.config.ts``
+  // ``redirects()`` because that config-level redirect short-circuits
+  // before ``headers()`` applies (ZAP scan 2026-05-16). Stamping the
+  // security pack on the 307 closes the cold-cache TLS-downgrade
+  // window for first-time visitors. ``app/page.tsx`` is shared with
+  // the apex static export (built via ``next.config.apex.ts``); host-
+  // scoping ensures we don't accidentally redirect on the apex
+  // landing page.
+  if (
+    request.nextUrl.pathname === "/" &&
+    request.headers.get("host") === APP_HOST
+  ) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    const redirect = NextResponse.redirect(url, 307);
+    redirect.headers.set("x-request-id", requestId);
+    applySecurityHeaders(redirect);
+    return redirect;
+  }
+
   // Forward the id to the backend (or onward to whoever the request
   // is being proxied to). The backend's RequestContextMiddleware
   // uses an inbound X-Request-Id verbatim when reasonable, so this
@@ -55,6 +95,7 @@ export function proxy(request: NextRequest) {
   requestHeaders.set("x-request-id", requestId);
   const response = NextResponse.next({ request: { headers: requestHeaders } });
   response.headers.set("x-request-id", requestId);
+  applySecurityHeaders(response);
 
   const entry = {
     timestamp: new Date().toISOString(),

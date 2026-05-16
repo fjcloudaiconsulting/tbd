@@ -1,57 +1,15 @@
 import type { NextConfig } from "next";
 
-const isDev = process.env.NODE_ENV !== "production";
+import { securityHeaders } from "./lib/security-headers";
 
-// If the frontend is deployed with a cross-origin API URL (e.g., separate
-// DO App Platform components), allow that origin in connect-src so
-// api.ts fetch() calls aren't blocked. Empty string → same-origin via
-// nginx, nothing extra to allow.
-function apiOrigin(): string {
-  const raw = process.env.NEXT_PUBLIC_API_URL;
-  if (!raw) return "";
-  try {
-    return new URL(raw).origin;
-  } catch {
-    return "";
-  }
-}
-const extraConnectSrc = apiOrigin();
-
-// CSP. Tailwind + styled-jsx + Next's hydration inline scripts force
-// 'unsafe-inline' on both script-src and style-src; dev also needs
-// 'unsafe-eval' and WebSocket connections for Fast Refresh. Google Fonts
-// (Fraunces + Outfit, loaded from app/layout.tsx) need their two origins
-// allowlisted on style-src and font-src.
-const cspDirectives = [
-  "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data: https://fonts.gstatic.com",
-  `connect-src 'self'${extraConnectSrc ? " " + extraConnectSrc : ""}${isDev ? " ws: wss:" : ""}`,
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "object-src 'none'",
-  "upgrade-insecure-requests",
-].join("; ");
-
-const securityHeaders = [
-  { key: "Content-Security-Policy", value: cspDirectives },
-  { key: "X-Frame-Options", value: "DENY" },
-  { key: "X-Content-Type-Options", value: "nosniff" },
-  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  {
-    key: "Permissions-Policy",
-    value: "camera=(), microphone=(), geolocation=(), interest-cohort=()",
-  },
-  {
-    key: "Strict-Transport-Security",
-    value: "max-age=63072000; includeSubDomains; preload",
-  },
-  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
-  { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
-];
+// The app-host root → /login redirect previously lived here in
+// ``redirects()``. ZAP scan 2026-05-16 surfaced that Next.js's
+// ``redirects()`` short-circuits before ``headers()`` applies, so the
+// 307 response was emitted without the security pack (no HSTS, no
+// nosniff, no Referrer-Policy, etc.). The redirect was moved into
+// ``frontend/proxy.ts`` where it stamps the headers on the response
+// directly. See PR #292 + the May 16 entry in
+// memory/audit_zap_2026_05_14.md.
 
 const nextConfig: NextConfig = {
   output: "standalone",
@@ -66,24 +24,6 @@ const nextConfig: NextConfig = {
       {
         source: "/:path*",
         headers: securityHeaders,
-      },
-    ];
-  },
-  async redirects() {
-    // App host root → /login. frontend/app/page.tsx is shared between
-    // the DO runtime (app.thebetterdecision.com) and the apex static
-    // export (thebetterdecision.com, built via next.config.apex.ts +
-    // scripts/build-apex.sh). Apex serves landing; the DO runtime must
-    // not. Host-scope the rule via `has` so it only fires on the app
-    // host even if some other build ever points at this config.
-    return [
-      {
-        source: "/",
-        has: [
-          { type: "host", value: "app.thebetterdecision.com" },
-        ],
-        destination: "/login",
-        permanent: false, // 307; keep flexible during early launch
       },
     ];
   },
