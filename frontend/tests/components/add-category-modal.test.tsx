@@ -444,4 +444,75 @@ describe("AddCategoryModal", () => {
       ).toBeInTheDocument();
     });
   });
+
+  // Regression: clicking the modal's "Add category" submit emits a
+  // React synthetic submit event. AddCategoryModal renders via
+  // ``createPortal`` to ``document.body``, BUT React synthetic events
+  // bubble through the React component tree, not the DOM tree. So
+  // when this modal lives inside a parent ``<form>`` (e.g. the
+  // floating Add Transaction form), the inner submit bubbles up to
+  // the parent form's onSubmit and fires a stale/empty POST.
+  //
+  // Live reproduction (2026-05-16): typing a name in the Category
+  // field of the Add Transaction modal, hitting "+ Add category",
+  // saving the new subcategory → parent form fires POST
+  // /api/v1/transactions with empty body → 422 with
+  //   "category_id: Input should be a valid integer ..."
+  //   "description: Value error, Description is required"
+  //   "amount: Input should be a valid decimal"
+  //
+  // The fix is ``e.stopPropagation()`` in the modal's onSubmit. This
+  // test wraps the modal inside a parent ``<form>`` whose onSubmit
+  // is a spy and asserts that spy never fires when the modal saves.
+  describe("nested form propagation", () => {
+    it("does NOT bubble its submit event into a parent form", async () => {
+      const newCategory: Category = {
+        id: 99,
+        name: "Happy Hour",
+        type: "expense",
+        parent_id: null,
+        parent_name: null,
+        description: "Late afternoon decompression spend",
+        slug: "happy-hour",
+        is_system: false,
+        transaction_count: 0,
+      };
+      apiFetchMock.mockResolvedValueOnce(newCategory);
+
+      const parentSubmit = vi.fn((e: React.FormEvent<HTMLFormElement>) => {
+        // Mirror the real Add Transaction form's onSubmit: prevent
+        // default so jsdom doesn't try to navigate during the test.
+        e.preventDefault();
+      });
+      const onCreated = vi.fn();
+
+      render(
+        <form onSubmit={parentSubmit} data-testid="parent-form">
+          {/* Real form field present so the parent has valid shape;
+              irrelevant to the submit-propagation invariant. */}
+          <input name="ignored" defaultValue="x" />
+          <AddCategoryModal
+            initialName="Happy Hour"
+            initialType="expense"
+            masterCategories={masterCategories}
+            onCreated={onCreated}
+            onCancel={vi.fn()}
+          />
+        </form>,
+      );
+
+      // Modal renders via createPortal to document.body, but the
+      // React tree still has it as a child of the parent <form>.
+      fireEvent.click(
+        await screen.findByRole("button", { name: /Add category/i }),
+      );
+
+      await waitFor(() => {
+        expect(onCreated).toHaveBeenCalledWith(newCategory);
+      });
+
+      // Load-bearing assertion. Before the fix this is 1.
+      expect(parentSubmit).not.toHaveBeenCalled();
+    });
+  });
 });

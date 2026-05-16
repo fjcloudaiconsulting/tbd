@@ -167,6 +167,15 @@ export default function AddCategoryModal({
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            // React synthetic events bubble through the React tree,
+            // not the DOM tree, so ``createPortal`` does NOT isolate
+            // this submit from a parent <form> in the React tree
+            // (e.g. the floating Add Transaction form). Without
+            // ``stopPropagation`` the parent form's onSubmit fires
+            // with stale/empty state and returns 422 from the
+            // backend. See add-category-modal.test.tsx → "does NOT
+            // bubble its submit event into a parent form".
+            e.stopPropagation();
             handleSubmit();
           }}
           className="space-y-4"
