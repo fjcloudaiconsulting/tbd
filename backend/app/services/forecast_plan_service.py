@@ -739,13 +739,23 @@ async def copy_from_period(
         key = (src_item.category_id, src_item.type.value)
         if key in existing_keys:
             continue
+        # L3.11 residual cleanup (PR #294, 2026-05-16): copied items
+        # are always MANUAL on the target plan, regardless of the
+        # source-period item's ``source``. ``copy_from_period`` is a
+        # user-initiated action — the user is explicitly choosing to
+        # carry these forecasts forward and will edit them — so the
+        # invariant "MANUAL = user-curated" demands MANUAL here.
+        # Without this pin, copies of items left over from
+        # ``populate_from_sources`` would land as RECURRING/HISTORY
+        # and silently vanish on the next ``refresh_from_sources``
+        # on the target period.
         new_item = ForecastPlanItem(
             plan_id=target_plan.id,
             org_id=org_id,
             category_id=src_item.category_id,
             type=src_item.type,
             planned_amount=src_item.planned_amount,
-            source=src_item.source,
+            source=ItemSource.MANUAL,
         )
         db.add(new_item)
 
