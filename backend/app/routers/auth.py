@@ -295,6 +295,7 @@ async def login(
         max_age=7 * 24 * 60 * 60,
         path="/",
     )
+    _clear_legacy_refresh_cookie(response)
 
     await _record_login_success(
         session_factory, user=user, request=request, method="password"
@@ -305,24 +306,72 @@ async def login(
 
 SESSION_EXPIRED_DETAIL = "Session expired — please sign in again"
 
+# Legacy refresh-cookie path used before PR #211 (commit 70ddd26,
+# 2026-05-11) widened the cookie path to ``/``. Cookies set at this
+# narrower path cannot be cleared by ``delete_cookie(path="/")`` because
+# cookie removal requires an exact path match. Users carrying a pre-PR
+# cookie therefore retain it alongside any post-PR ``Path=/`` cookie,
+# and the browser sends BOTH on every request to ``/api/v1/auth/refresh``
+# (the legacy path is more specific, so RFC 6265 orders it first).
+# Whichever value Starlette's cookie parser picks may not be the one
+# the user expects, producing spurious 401s. Every response that issues
+# or clears the canonical ``Path=/`` cookie also emits a
+# ``Path=/api/v1/auth/refresh`` delete so the legacy cookie is actively
+# retired. Remove this cleanup after 2026-05-25 (PR #211 shipped
+# 2026-05-11; cookie max_age is 7 days, so all legacy cookies expire
+# naturally by then assuming no further drift).
+LEGACY_REFRESH_COOKIE_PATH = "/api/v1/auth/refresh"
 
-async def _validate_refresh_cookie(
-    refresh_token: str | None,
+
+def _clear_legacy_refresh_cookie(response: Response) -> None:
+    """Emit a Set-Cookie that retires any pre-PR #211 ``refresh_token``
+    cookie at the old ``Path=/api/v1/auth/refresh``. Safe to call
+    alongside ``set_cookie(..., path="/")``: the two operate on
+    distinct path-scoped cookie jars in the browser.
+    """
+    response.delete_cookie("refresh_token", path=LEGACY_REFRESH_COOKIE_PATH)
+
+
+def _extract_refresh_cookies(request: Request) -> list[str]:
+    """Return ALL ``refresh_token`` cookie values from the request's
+    Cookie header, in arrival order.
+
+    Starlette's cookie parser collapses duplicate names to a single value
+    (last one wins per dict semantics). After the PR #211 cookie-path
+    migration a single browser may carry both a legacy
+    ``Path=/api/v1/auth/refresh`` cookie and a current ``Path=/`` cookie,
+    sent together as two ``refresh_token=`` entries in the Cookie header.
+    Walking the raw header lets ``_validate_refresh_cookie`` try every
+    value and accept the first that validates, rather than gambling on
+    whichever single value the parser picks.
+    """
+    cookie_header = request.headers.get("cookie") or ""
+    values: list[str] = []
+    if not cookie_header:
+        return values
+    # Cookie names cannot contain ``=`` per RFC 6265; ``partition`` is
+    # therefore unambiguous. Cookie values may contain ``=`` (JWT base64
+    # padding) — that is why we partition rather than split.
+    for part in cookie_header.split(";"):
+        name, sep, value = part.strip().partition("=")
+        if sep and name == "refresh_token":
+            values.append(value)
+    return values
+
+
+async def _validate_single_refresh_token(
+    refresh_token: str,
     db: AsyncSession,
 ) -> tuple[User, dict, datetime | None]:
-    """Validate a refresh-token cookie. Returns (user, payload, session_start)
-    or raises ``HTTPException(401)`` on any failure.
+    """Validate ONE refresh-token JWT value. Returns
+    ``(user, payload, session_start)`` or raises ``HTTPException(401)``.
 
-    Shared between ``/auth/refresh`` (rotating) and ``/auth/verify`` (non-
-    rotating). Performs identical checks for both endpoints so the contract
-    cannot drift:
-
-      1. cookie presence
-      2. JWT decode + ``type == "refresh"``
-      3. user exists + ``is_active``
-      4. ``iat < token_cutoff(user)`` rejects tokens issued before the
+    The validation chain:
+      1. JWT decode + ``type == "refresh"``
+      2. user exists + ``is_active``
+      3. ``iat < token_cutoff(user)`` rejects tokens issued before the
          user's last logout / password change / password reset
-      5. absolute session lifetime (per-org ``session_lifetime_days``
+      4. absolute session lifetime (per-org ``session_lifetime_days``
          setting or system default) — raises with detail
          ``SESSION_EXPIRED_DETAIL`` so callers can recognize and act
          (e.g. ``/refresh`` clears the cookie; ``/verify`` does not)
@@ -331,12 +380,6 @@ async def _validate_refresh_cookie(
     caller's responsibility so the no-Set-Cookie invariant on ``/verify``
     is absolute.
     """
-    if refresh_token is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No refresh token",
-        )
-
     payload = decode_token(refresh_token)
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(
@@ -392,10 +435,43 @@ async def _validate_refresh_cookie(
     return user, payload, session_start
 
 
+async def _validate_refresh_cookie(
+    refresh_tokens: list[str],
+    db: AsyncSession,
+) -> tuple[User, dict, datetime | None]:
+    """Validate ANY of the provided refresh-token cookie values.
+
+    Returns the first cookie that passes the full validation chain. If
+    every cookie fails, raises the last failure so error semantics match
+    the single-token case when the caller really did only have one
+    cookie.
+
+    Shared between ``/auth/refresh`` (rotating) and ``/auth/verify``
+    (non-rotating). Walking every ``refresh_token`` value found in the
+    Cookie header ensures a legacy ``Path=/api/v1/auth/refresh`` cookie
+    shadowing the current ``Path=/`` cookie (PR #211 migration) does
+    not produce a false 401.
+    """
+    if not refresh_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No refresh token",
+        )
+
+    last_exc: HTTPException | None = None
+    for token in refresh_tokens:
+        try:
+            return await _validate_single_refresh_token(token, db)
+        except HTTPException as exc:
+            last_exc = exc
+    assert last_exc is not None  # loop ran at least once
+    raise last_exc
+
+
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
+    request: Request,
     response: Response,
-    refresh_token: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     """Rotate the refresh cookie + issue a fresh access token.
@@ -412,9 +488,10 @@ async def refresh(
     path we therefore return a JSONResponse directly so the
     delete-cookie header actually reaches the browser.
     """
+    refresh_tokens = _extract_refresh_cookies(request)
     try:
         user, _payload, session_start = await _validate_refresh_cookie(
-            refresh_token, db
+            refresh_tokens, db
         )
     except HTTPException as exc:
         # Clear the stale cookie on absolute session-lifetime expiry so the
@@ -429,6 +506,7 @@ async def refresh(
                 content={"detail": exc.detail},
             )
             expired_response.delete_cookie("refresh_token", path="/")
+            _clear_legacy_refresh_cookie(expired_response)
             return expired_response
         raise
 
@@ -445,6 +523,7 @@ async def refresh(
         max_age=7 * 24 * 60 * 60,
         path="/",
     )
+    _clear_legacy_refresh_cookie(response)
 
     return TokenResponse(access_token=access_token)
 
@@ -453,7 +532,6 @@ async def refresh(
 @limiter.limit("120/minute")
 async def verify(
     request: Request,
-    refresh_token: str | None = Cookie(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     """Server-side session verification for RSC consumers.
@@ -468,10 +546,12 @@ async def verify(
 
     Shares the full validation chain with ``/auth/refresh`` via
     ``_validate_refresh_cookie`` so the security contract cannot drift
-    between the two endpoints.
+    between the two endpoints. Walks every ``refresh_token`` value in the
+    Cookie header (PR #211 cookie-shadow guard).
     """
+    refresh_tokens = _extract_refresh_cookies(request)
     user, _payload, _session_start = await _validate_refresh_cookie(
-        refresh_token, db
+        refresh_tokens, db
     )
 
     await db.refresh(user, ["organization"])
@@ -528,6 +608,7 @@ async def logout(
             # Missing/expired/malformed token: still clear the cookie below.
             pass
     response.delete_cookie("refresh_token", path="/")
+    _clear_legacy_refresh_cookie(response)
     return {"detail": "Logged out"}
 
 
@@ -713,6 +794,7 @@ def _issue_tokens(user: User, response: Response) -> TokenResponse:
         max_age=7 * 24 * 60 * 60,
         path="/",
     )
+    _clear_legacy_refresh_cookie(response)
     return TokenResponse(access_token=access_token)
 
 
@@ -1362,6 +1444,7 @@ async def google_callback(
         max_age=7 * 24 * 60 * 60,
         path="/",
     )
+    _clear_legacy_refresh_cookie(resp)
     await _record_login_success(
         session_factory, user=user, request=request, method="google_sso"
     )
