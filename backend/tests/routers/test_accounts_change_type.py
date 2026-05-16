@@ -690,7 +690,6 @@ def test_create_account_credit_card_missing_close_day(session_factory, seeded):
             json={
                 "name": "New CC",
                 "account_type_id": seeded["cc_type_id"],
-                "balance": "0.00",
                 "currency": "EUR",
             },
         )
@@ -720,7 +719,6 @@ def test_create_account_credit_card_close_day_null(session_factory, seeded):
             json={
                 "name": "New CC Null",
                 "account_type_id": seeded["cc_type_id"],
-                "balance": "0.00",
                 "currency": "EUR",
                 "close_day": None,
             },
@@ -738,7 +736,6 @@ def test_create_account_non_credit_card_with_close_day(session_factory, seeded):
             json={
                 "name": "Bad Checking",
                 "account_type_id": seeded["checking_type_id"],
-                "balance": "0.00",
                 "currency": "EUR",
                 "close_day": 15,
             },
@@ -756,7 +753,6 @@ def test_create_account_credit_card_with_close_day_succeeds(session_factory, see
             json={
                 "name": "New CC OK",
                 "account_type_id": seeded["cc_type_id"],
-                "balance": "0.00",
                 "currency": "EUR",
                 "close_day": 15,
             },
@@ -778,7 +774,6 @@ def test_create_account_non_credit_card_without_close_day_succeeds(
             json={
                 "name": "New Checking",
                 "account_type_id": seeded["checking_type_id"],
-                "balance": "0.00",
                 "currency": "EUR",
             },
         )

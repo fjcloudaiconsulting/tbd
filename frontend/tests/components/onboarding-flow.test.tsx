@@ -284,4 +284,57 @@ describe("OnboardingPageBody", () => {
     );
     expect(screen.getByText(/Step 3 of 4/)).toBeInTheDocument();
   });
+
+  // L1.1 L4 contract: ``POST /api/v1/accounts`` no longer accepts the
+  // free-form ``balance`` field. The audited ``opening_balance`` field
+  // is the sole entry point for a starting balance. Pin the onboarding
+  // create-account payload to the consolidated shape so the flow
+  // does not regress the moment ``AccountCreate`` flips to
+  // ``extra="forbid"``.
+  it("account-create step posts opening_balance, not balance", async () => {
+    setupAuth(makeUser());
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/account-types") {
+        return Promise.resolve([{ id: 10, name: "Checking", slug: "checking" }]);
+      }
+      return Promise.resolve({});
+    }) as never);
+
+    render(<OnboardingPageBody />);
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("onboarding-create-account"),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId("onboarding-create-account"));
+
+    await waitFor(() => {
+      expect(vi.mocked(apiFetch)).toHaveBeenCalledWith(
+        "/api/v1/accounts",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    const createCall = vi
+      .mocked(apiFetch)
+      .mock.calls.find(([url]) => url === "/api/v1/accounts");
+    expect(createCall).toBeDefined();
+    const body = JSON.parse(
+      (createCall![1] as { body: string }).body,
+    ) as Record<string, unknown>;
+
+    // The whole point: NO ``balance`` key, and the explicit
+    // ``opening_balance: "0.00"`` is preserved so the audited path is
+    // exercised even on the zero-amount onboarding default.
+    expect(body).not.toHaveProperty("balance");
+    expect(body).toEqual(
+      expect.objectContaining({
+        name: expect.any(String),
+        account_type_id: 10,
+        currency: "EUR",
+        opening_balance: "0.00",
+      }),
+    );
+  });
 });

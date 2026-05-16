@@ -32,13 +32,14 @@ class AccountTypeResponse(BaseModel):
 class AccountCreate(BaseModel):
     name: str
     account_type_id: int
-    balance: Decimal = Decimal("0.00")
     currency: str = "EUR"
     close_day: Optional[int] = Field(default=None, ge=1, le=28)
-    # Opening balance (L3.2 Wave 2A). User-stated starting amount.
-    # Defaults to 0 when the caller omits it, matching the migration's
-    # backfill. ``opening_balance_date`` defaults to today on the DB
-    # side; the API surface accepts a caller-provided override.
+    # Opening balance (L3.2 Wave 2A). User-stated starting amount and
+    # the sole entry point for a non-zero starting balance: the live
+    # ``Account.balance`` field is initialised from this value server-
+    # side. L1.1 L4 pentest follow-up removed the previously accepted
+    # free-form ``balance`` create input, which seeded ``Account.balance``
+    # with no transaction backing and no audit row.
     opening_balance: Decimal = Field(
         default=Decimal("0.00"),
         ge=_OPENING_BALANCE_CAP_LO,
