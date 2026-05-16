@@ -56,7 +56,6 @@ export default function AccountsPage() {
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [acctName, setAcctName] = useState("");
   const [acctTypeId, setAcctTypeId] = useState<number | "">("");
-  const [acctBalance, setAcctBalance] = useState("0.00");
   const [acctCurrency, setAcctCurrency] = useState("EUR");
   const [acctCloseDay, setAcctCloseDay] = useState("");
   // L3.2 Wave 2A — opening balance + date on the create form. The date
@@ -166,14 +165,14 @@ export default function AccountsPage() {
       await apiFetch("/api/v1/accounts", {
         method: "POST",
         body: JSON.stringify({
-          name: acctName, account_type_id: acctTypeId, balance: acctBalance,
+          name: acctName, account_type_id: acctTypeId,
           currency: acctCurrency,
           close_day: selectedType?.slug === "credit_card" && acctCloseDay ? Number(acctCloseDay) : null,
           opening_balance: acctOpeningBalance || "0.00",
           opening_balance_date: acctOpeningBalanceDate || null,
         }),
       });
-      setAcctName(""); setAcctTypeId(""); setAcctBalance("0.00"); setAcctCloseDay("");
+      setAcctName(""); setAcctTypeId(""); setAcctCloseDay("");
       setAcctOpeningBalance("0.00"); setAcctOpeningBalanceDate(todayIso);
       setShowAccountForm(false);
       await reload();
@@ -439,16 +438,6 @@ export default function AccountsPage() {
                       {accountTypes.map((at) => <option key={at.id} value={at.id}>{at.name}</option>)}
                     </select>
                   </div>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-                    <div className="w-full sm:flex-1">
-                      <label htmlFor="acct-balance" className={label}>Initial balance</label>
-                      <input id="acct-balance" type="number" step="0.01" value={acctBalance} onChange={(e) => setAcctBalance(e.target.value)} className={input} />
-                    </div>
-                    <div className="w-full sm:w-20">
-                      <label htmlFor="acct-currency" className={label}>Currency</label>
-                      <input id="acct-currency" type="text" maxLength={3} value={acctCurrency} onChange={(e) => setAcctCurrency(e.target.value.toUpperCase())} className={`sm:text-center ${input}`} />
-                    </div>
-                  </div>
                   {selectedType?.slug === "credit_card" && (
                     <div>
                       <label htmlFor="acct-close" className={label}>Bill close day (1-28)</label>
@@ -475,6 +464,10 @@ export default function AccountsPage() {
                         onChange={(e) => setAcctOpeningBalance(e.target.value)}
                         className={input}
                       />
+                    </div>
+                    <div className="w-full sm:w-20">
+                      <label htmlFor="acct-currency" className={label}>Currency</label>
+                      <input id="acct-currency" type="text" maxLength={3} value={acctCurrency} onChange={(e) => setAcctCurrency(e.target.value.toUpperCase())} className={`sm:text-center ${input}`} />
                     </div>
                     <div className="w-full sm:w-44">
                       <label htmlFor="acct-opening-balance-date" className={label}>Starting from</label>

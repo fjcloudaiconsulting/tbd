@@ -156,8 +156,8 @@ export default function OnboardingPageBody() {
         body: JSON.stringify({
           name: accountName.trim() || "Main Checking",
           account_type_id: selectedTypeId,
-          balance: "0.00",
           currency: "EUR",
+          opening_balance: "0.00",
         }),
       });
       goNext();

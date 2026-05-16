@@ -146,7 +146,6 @@ def test_create_account_defaults_opening_balance_to_zero(session_factory, seeded
             json={
                 "name": "Secondary",
                 "account_type_id": seeded["account_type_id"],
-                "balance": "0.00",
                 "currency": "EUR",
             },
         )
@@ -167,7 +166,6 @@ def test_create_account_with_explicit_opening_balance(session_factory, seeded):
             json={
                 "name": "Savings",
                 "account_type_id": seeded["account_type_id"],
-                "balance": "0.00",
                 "currency": "EUR",
                 "opening_balance": "1500.00",
                 "opening_balance_date": "2025-12-31",
@@ -188,7 +186,6 @@ def test_create_account_rejects_oversized_opening_balance(session_factory, seede
             json={
                 "name": "Big",
                 "account_type_id": seeded["account_type_id"],
-                "balance": "0.00",
                 "currency": "EUR",
                 "opening_balance": "99999999999999.99",
             },

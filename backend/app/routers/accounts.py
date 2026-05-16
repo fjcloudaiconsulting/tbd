@@ -103,11 +103,18 @@ async def create_account(
     # opening_balance_date: caller may omit (and ride the DB default of
     # CURRENT_DATE) or supply an explicit date. We pass it through only
     # when supplied so the column-level server_default applies on omission.
+    #
+    # L1.1 L4: the live ``balance`` field is seeded from the user-stated
+    # ``opening_balance`` rather than from a free-form ``balance`` input
+    # (which would have bypassed the audit trail). Any subsequent change
+    # to ``balance`` flows through transaction_service or the audited
+    # /adjust-balance endpoint, so no path mutates ``Account.balance``
+    # without a corresponding ledger row.
     kwargs = dict(
         org_id=current_user.org_id,
         account_type_id=body.account_type_id,
         name=body.name,
-        balance=body.balance,
+        balance=body.opening_balance,
         currency=body.currency,
         close_day=body.close_day,
         opening_balance=body.opening_balance,
