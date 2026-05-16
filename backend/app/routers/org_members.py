@@ -16,6 +16,7 @@ from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
+from app.routers.auth import _clear_legacy_refresh_cookie
 from app.schemas.auth import TokenResponse
 from app.schemas.invitation import (
     InvitationAcceptRequest,
@@ -192,6 +193,11 @@ async def accept_invitation(
         # google_callback).
         path="/",
     )
+    # Active retirement of any pre-PR #211 ``refresh_token`` cookie at
+    # the legacy ``Path=/api/v1/auth/refresh``. See
+    # ``app/routers/auth.py:_clear_legacy_refresh_cookie`` for the full
+    # rationale and the 2026-05-25 removal target.
+    _clear_legacy_refresh_cookie(response)
     return TokenResponse(access_token=access)
 
 
