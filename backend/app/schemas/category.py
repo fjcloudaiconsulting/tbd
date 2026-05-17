@@ -67,3 +67,14 @@ class CategoryDeleteResult(BaseModel):
     migrated_recurring_count: int = 0
     migrated_forecast_item_count: int = 0
     deleted_rule_count: int = 0
+
+
+class RestoreRecommendedResult(BaseModel):
+    """Result of POST /api/v1/categories/restore-recommended.
+
+    ``created_count`` is the number of brand-new system-category rows
+    inserted; existing slugs were left untouched (idempotent).
+    Category Fallback design Layer C (post-L3.10).
+    """
+
+    created_count: int

@@ -97,7 +97,15 @@ async def _seed(session_factory) -> dict:
             org_id=org.id, name="Groceries", slug="groceries",
             is_system=True, type=CategoryType.EXPENSE,
         )
-        db.add_all([user, atype, groceries])
+        # Layer B preflight (Category Fallback design, post-L3.10) needs
+        # an income-compatible category because the rabobank/ING fixtures
+        # contain salary rows. Without it, the preview returns a
+        # structured 400 before the OFX-specific assertions run.
+        income = Category(
+            org_id=org.id, name="Salary", slug="salary",
+            is_system=True, type=CategoryType.INCOME,
+        )
+        db.add_all([user, atype, groceries, income])
         await db.flush()
         acct = Account(
             org_id=org.id, account_type_id=atype.id, name="Checking",

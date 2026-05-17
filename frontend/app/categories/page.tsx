@@ -99,6 +99,14 @@ export default function CategoriesPage() {
   const [showAddMasterModal, setShowAddMasterModal] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
+  // Restore recommended categories (Layer C of the post-L3.10 fallback
+  // design). Owner-only; backend enforces with require_org_owner.
+  // ``restoreSuccess`` carries the count for the success banner.
+  const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreSuccess, setRestoreSuccess] = useState<number | null>(null);
+  const isOrgOwner = user?.role === "owner";
+
   // Refresh banner state for the AppShell-level "transaction added" event.
   // Adding a transaction can change `transaction_count` on any category, so
   // the categories list must reload when the global event fires. Mirrors
@@ -275,6 +283,25 @@ export default function CategoriesPage() {
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
+  async function handleRestoreRecommended() {
+    setShowRestoreConfirm(false);
+    setRestoring(true);
+    setError("");
+    setRestoreSuccess(null);
+    try {
+      const result = await apiFetch<{ created_count: number }>(
+        "/api/v1/categories/restore-recommended",
+        { method: "POST" },
+      );
+      setRestoreSuccess(result?.created_count ?? 0);
+      await reload();
+    } catch (err) {
+      setError(extractErrorMessage(err, "Failed to restore recommended categories"));
+    } finally {
+      setRestoring(false);
+    }
+  }
+
   // -- C2b drag handlers ----------------------------------------------------
   const handleDragStart = useCallback((event: DragStartEvent) => {
     const data = event.active.data.current as
@@ -399,6 +426,17 @@ export default function CategoriesPage() {
               />
             )}
           </span>
+          {isOrgOwner && (
+            <button
+              type="button"
+              onClick={() => setShowRestoreConfirm(true)}
+              disabled={restoring}
+              className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
+              data-testid="restore-recommended-categories"
+            >
+              {restoring ? "Restoring..." : "Restore recommended"}
+            </button>
+          )}
           <span className="inline-flex items-center gap-1">
             <button
               onClick={() => setShowAddMasterModal(true)}
@@ -416,6 +454,27 @@ export default function CategoriesPage() {
       </div>
 
       {error && <div className={`mb-6 ${errorCls}`}>{error}</div>}
+
+      {restoreSuccess !== null && (
+        <div
+          className="mb-6 rounded-md border border-success/30 bg-success/10 p-4 text-sm text-success"
+          role="status"
+          data-testid="restore-recommended-success"
+        >
+          {restoreSuccess === 0
+            ? "All recommended categories were already in place. Nothing added."
+            : `Restored ${restoreSuccess} recommended categor${restoreSuccess === 1 ? "y" : "ies"}.`}
+        </div>
+      )}
+
+      <ConfirmModal
+        open={showRestoreConfirm}
+        title="Restore recommended categories?"
+        message="This adds the starter set of recommended categories for this organization. Existing categories are not modified or removed."
+        confirmLabel="Restore"
+        onConfirm={() => { void handleRestoreRecommended(); }}
+        onCancel={() => setShowRestoreConfirm(false)}
+      />
 
       {refreshError && (
         <div

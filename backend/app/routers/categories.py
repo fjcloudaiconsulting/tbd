@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.auth.org_permissions import require_org_owner
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.category import Category, CategoryType
@@ -21,8 +22,9 @@ from app.schemas.category import (
     CategoryMoveResult,
     CategoryResponse,
     CategoryUpdate,
+    RestoreRecommendedResult,
 )
-from app.services import audit_service, category_service
+from app.services import audit_service, category_service, org_bootstrap_service
 from app.services.category_service import (
     batch_move_subcategories,
     delete_category_with_migration,
@@ -197,6 +199,49 @@ async def list_categories(
         _to_response(cat, parent_name, count)
         for cat, parent_name, count in result.all()
     ]
+
+
+@router.post(
+    "/restore-recommended",
+    response_model=RestoreRecommendedResult,
+)
+async def restore_recommended_categories_endpoint(
+    request: Request,
+    current_user: User = Depends(require_org_owner),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-run the system-categories seed for the current org. Idempotent.
+
+    Owner-only (consistent with other tenant setup actions). Skips slugs
+    that already exist with ``is_system=True``. Existing categories
+    (system or user-created) are never modified or removed. Returns the
+    count of newly inserted categories. Audited as
+    ``org.categories.restored`` with the count in ``detail``.
+    Category Fallback design Layer C (post-L3.10).
+    """
+    org_name = await _actor_org_name(db, current_user.org_id)
+    created_count = await org_bootstrap_service.restore_recommended_categories(
+        db, org_id=current_user.org_id,
+    )
+    audit_service.add_audit_event_to_session(
+        db,
+        event_type="org.categories.restored",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=org_name,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"created_count": created_count},
+    )
+    await logger.ainfo(
+        "org.categories.restored",
+        org_id=current_user.org_id,
+        created_count=created_count,
+    )
+    await db.commit()
+    return RestoreRecommendedResult(created_count=created_count)
 
 
 @router.post("", response_model=CategoryResponse, status_code=201)
