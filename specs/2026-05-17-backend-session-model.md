@@ -283,10 +283,14 @@ Section 5.1.
 
 ### 4.2 Operation patterns
 
-All multi-key mutations use `MULTI/EXEC` (architect feedback P1.3 —
-the original three-step rotation was not safe; if `DEL` of the old
-primary failed after the new key was written, the old refresh token
-remained primary-valid for the full idle TTL, not just 30 seconds).
+All multi-key mutations use **atomic Redis primitives** — Lua for
+the rotation path (Section 4.2 step 5; conditional logic with three
+guards), `MULTI/EXEC` for login and logout (unconditional batches).
+The original sequential three-step rotation was not safe — architect
+feedback P1.3 — and was replaced first by `MULTI/EXEC` and then by
+Lua once the third-pass review showed that even an atomic
+five-write block cannot prevent two concurrent `/refresh` callers
+from both passing `SISMEMBER` and both rotating.
 
 - **Login:** mint fresh `sid` (UUID4). In one `MULTI/EXEC`: `SET auth:session:{new_jti}` (with `{user_id, sid}` JSON value), `SADD auth:session:by_sid:{sid} {new_jti}`, `EXPIRE auth:session:by_sid:{sid} {idle_ttl}`. All atomic; on EXEC failure the client receives 503 and retries (Section 7.1).
 
@@ -410,26 +414,13 @@ The grace-path defence-in-depth check (Section 5.1 step 4,
 catches the same race for the grace acceptance branch where no
 rotation happens and therefore the Lua script is not run.
 
-Reference Lua sketch (kept for context; production script is in 4.2):
-
-```lua
--- KEYS[1]=auth:session:{old_jti}
--- KEYS[2]=auth:session:grace:{old_jti}
--- KEYS[3]=auth:session:{new_jti}
--- KEYS[4]=auth:session:by_sid:{sid}
-if redis.call("SISMEMBER", KEYS[4], ARGV[5]) == 0 then return {err="session_revoked"} end
-redis.call("SET", KEYS[2], ARGV[3], "EX", ARGV[1])
-redis.call("SET", KEYS[3], ARGV[4], "EX", ARGV[2])
-redis.call("SADD", KEYS[4], string.match(KEYS[3], "auth:session:(.*)"))
-redis.call("EXPIRE", KEYS[4], ARGV[2])
-redis.call("DEL", KEYS[1])
-return "ok"
-```
-
-This sketch is illustrative; the production version in Section 4.2
-step 5 carries the new `jti` as an explicit ARGV instead of parsing
-it out of the KEYS string, which avoids `string.match` overhead and
-gives Team I one fewer Lua idiom to review.
+The full production Lua script — with all three guards (family
+revoked, already rotated, jti collision) and the `SET ... NX`
+primary write — lives in Section 4.2 step 5. Team I should treat
+that block as the only authoritative copy in this spec. Earlier
+drafts of this section carried an illustrative sketch missing the
+new guards; it was removed during the PR #301 third-pass review
+to avoid copy-paste mistakes.
 
 ## 5. Endpoint behaviour
 
@@ -793,7 +784,8 @@ This is the canonical race the family-set + Lua-guard design closes. Without the
 ### `sid` rotation invariant
 
 - GIVEN a session with `sid_0` is rotated 5 times in succession (each rotate within the idle TTL but outside the 30s grace of the previous step)
-- THEN every refresh JWT issued during those 5 rotations decodes to the same `sid_0` value; only `jti` changes. The family set `auth:session:by_sid:{sid_0}` accumulates and then aliases out members as each grace TTL expires.
+- THEN every refresh JWT issued during those 5 rotations decodes to the same `sid_0` value; only `jti` changes.
+- AND the family set `auth:session:by_sid:{sid_0}` accumulates every `jti` ever issued under that session and **retains them all** until logout or until the family set's idle-TTL expiry sweeps it. Grace keys (`auth:session:grace:{jti}`) and primary keys (`auth:session:{jti}`) each expire on their own clocks (30s and `refresh_idle_ttl_days * 86400` respectively), but those expirations do NOT remove the `jti` from the family set — only logout or the family set's own TTL does. This is intentional: it keeps `SISMEMBER` cheap and guarantees the family set is the single source of truth for "is this `jti` still owned by an unrevoked session".
 
 ### Settings validation
 
