@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Fragment, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { apiFetch, ApiResponseError, extractErrorMessage } from "@/lib/api";
 import AppShell from "@/components/AppShell";
 import CategorySelect from "@/components/ui/CategorySelect";
 import Spinner from "@/components/ui/Spinner";
@@ -157,6 +157,11 @@ function ImportPageContent() {
   // ── Step state ───────────────────────────────────────────────────────────
   const [step, setStep] = useState<Step>("upload");
   const [errorMsg, setErrorMsg] = useState("");
+  // Layer B preflight: when the upload returns
+  // ``detail.code === "missing_category_type"`` we render a targeted
+  // empty-state with a deep link to /categories instead of a plain banner.
+  // Cleared on every new upload attempt and when the user navigates back.
+  const [missingTypes, setMissingTypes] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Upload step
@@ -193,6 +198,7 @@ function ImportPageContent() {
   const handleUpload = useCallback(async () => {
     if (!file || accountId === "") return;
     setErrorMsg("");
+    setMissingTypes(null);
     setLoading(true);
 
     const formData = new FormData();
@@ -240,7 +246,24 @@ function ImportPageContent() {
 
       setStep("preview");
     } catch (err) {
-      setErrorMsg(extractErrorMessage(err, "Failed to parse file"));
+      // Layer B: structured 400 with code=missing_category_type. The
+      // backend's payload lists exactly which types are missing
+      // (expense, income, or both) so the UI can render a deep link
+      // to /categories without string-matching the message.
+      if (
+        err instanceof ApiResponseError &&
+        err.code === "missing_category_type" &&
+        err.detail &&
+        typeof err.detail === "object" &&
+        Array.isArray((err.detail as { missing_types?: unknown }).missing_types)
+      ) {
+        const types = (err.detail as { missing_types: unknown[] }).missing_types
+          .filter((t): t is string => typeof t === "string");
+        setMissingTypes(types);
+        setErrorMsg("");
+      } else {
+        setErrorMsg(extractErrorMessage(err, "Failed to parse file"));
+      }
     } finally {
       setLoading(false);
     }
@@ -333,6 +356,33 @@ function ImportPageContent() {
       </div>
 
       {errorMsg && <div className={errorCls}>{errorMsg}</div>}
+
+      {missingTypes && missingTypes.length > 0 && (
+        <div
+          className={`${card} p-6`}
+          role="alert"
+          data-testid="missing-category-type-error"
+        >
+          <p className="font-medium text-text-primary">
+            {missingTypes.length === 2
+              ? "Add an income and an expense category to continue."
+              : missingTypes[0] === "expense"
+                ? "This import has expense rows but you have no expense category."
+                : "This import has income rows but you have no income category."}
+          </p>
+          <p className="mt-2 text-sm text-text-secondary">
+            Categories are required so each imported row can land somewhere
+            meaningful. You can restore the starter set from the Categories
+            page, or add your own.
+          </p>
+          <Link
+            href="/categories"
+            className={btnPrimary + " mt-4 inline-flex items-center sm:min-h-0"}
+          >
+            Go to Categories
+          </Link>
+        </div>
+      )}
 
       {categories === undefined && (
         <div className={card}>

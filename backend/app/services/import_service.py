@@ -11,6 +11,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
+from app.models.category import Category, CategoryType
 from app.models.settings import OrgSetting
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.import_schemas import (
@@ -26,7 +27,12 @@ from app.schemas.transaction import (
     TransferCandidate,
 )
 from app.services import transaction_service
-from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.exceptions import (
+    ConflictError,
+    MissingCategoryTypeError,
+    NotFoundError,
+    ValidationError,
+)
 from app.services.transaction_service import (
     _create_transaction_no_commit,
     _link_pair,
@@ -45,6 +51,74 @@ from app.services.category_rules_service import (
 from app.services.import_parser import ParsedRow
 
 logger = structlog.get_logger()
+
+
+async def _assert_categories_cover_row_types(
+    db: AsyncSession,
+    org_id: int,
+    parsed_rows: list[ParsedRow],
+) -> None:
+    """Raise ``MissingCategoryTypeError`` if the parsed rows include a type
+    the org has no compatible category for.
+
+    For each ``type`` value present in ``parsed_rows`` (``"expense"`` or
+    ``"income"``), the org must have at least one category whose ``type``
+    is either that exact value or ``CategoryType.BOTH``. Mirrors the
+    frontend's category dropdown filter on the import preview page so the
+    user never lands on a preview with no selectable default category.
+
+    Architect-refined Category Fallback Layer B (post-L3.10): scope the
+    requirement to what's actually in the file, not a blanket
+    "income + expense" floor. Empty ``parsed_rows`` is treated as a no-op
+    here; the upstream parser handles the "no rows" case separately.
+    """
+    present_types = {r.type for r in parsed_rows if r.type in ("expense", "income")}
+    if not present_types:
+        return
+
+    # Single SELECT, group by category type. Keeps it to one round-trip
+    # even when both types are present. ``BOTH`` covers either side.
+    type_rows = (await db.execute(
+        select(Category.type).where(Category.org_id == org_id)
+    )).all()
+    org_types = {row[0] for row in type_rows}
+
+    def has_compatible(row_type: str) -> bool:
+        if row_type == "expense":
+            return CategoryType.EXPENSE in org_types or CategoryType.BOTH in org_types
+        if row_type == "income":
+            return CategoryType.INCOME in org_types or CategoryType.BOTH in org_types
+        return True
+
+    missing = sorted(t for t in present_types if not has_compatible(t))
+    if not missing:
+        return
+
+    # Human-readable copy the frontend can surface as a fallback when it
+    # doesn't recognize ``code``. No em-dashes (user-facing copy rule).
+    if missing == ["expense"]:
+        message = (
+            "This import has expense rows but you have no expense category. "
+            "Add one to continue."
+        )
+    elif missing == ["income"]:
+        message = (
+            "This import has income rows but you have no income category. "
+            "Add one to continue."
+        )
+    else:
+        message = (
+            "This import needs income and expense categories, but your "
+            "organization is missing one of each. Add them to continue."
+        )
+
+    await logger.ainfo(
+        "import.preview.missing_category_type",
+        org_id=org_id,
+        missing_types=missing,
+    )
+
+    raise MissingCategoryTypeError(missing_types=missing, message=message)
 
 
 async def build_preview(
@@ -67,6 +141,14 @@ async def build_preview(
     if destination_account is None:
         # Match validate_account semantics: surface the same error shape.
         await transaction_service.validate_account(db, account_id, org_id)
+
+    # ── Layer B preflight: require a compatible category per row type ──
+    # Architect-refined Category Fallback design (post-L3.10): only require
+    # what the parsed rows actually need. Expense-only CSV doesn't require
+    # an income category; vice versa for income-only. Raises
+    # ``MissingCategoryTypeError`` before any duplicate / detector work so
+    # the user gets a fast, targeted 400 on the upload step.
+    await _assert_categories_cover_row_types(db, org_id, parsed_rows)
 
     # ── Batch duplicate check: single query for the CSV date range ──
     min_date = min(r.date for r in parsed_rows)

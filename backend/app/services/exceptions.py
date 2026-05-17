@@ -21,3 +21,18 @@ class ConflictError(Exception):
     def __init__(self, detail: str):
         self.detail = detail
         super().__init__(detail)
+
+
+class MissingCategoryTypeError(Exception):
+    """Raised by import preflight when the org has no category of a type
+    that the parsed rows require.
+
+    Carries the sorted list of missing types ("income", "expense") so the
+    router can render a structured 400 the frontend can read mechanically.
+    Category Fallback design Layer B (post-L3.10).
+    """
+
+    def __init__(self, missing_types: list[str], message: str):
+        self.missing_types = missing_types
+        self.message = message
+        super().__init__(message)

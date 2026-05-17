@@ -7,7 +7,7 @@ spec at ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-
 """
 
 import structlog
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps import get_current_user, get_db
@@ -24,7 +24,7 @@ from app.schemas.import_schemas import (
     ImportPreviewResponse,
 )
 from app.services import import_service, reconciliation_service
-from app.services.exceptions import ValidationError
+from app.services.exceptions import MissingCategoryTypeError, ValidationError
 from app.services.import_ofx_service import parse_ofx
 from app.services.import_parser import ParseError, parse_csv
 
@@ -33,6 +33,23 @@ logger = structlog.get_logger()
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 
 router = APIRouter(prefix="/api/v1/import", tags=["import"])
+
+
+def _missing_category_type_response(exc: MissingCategoryTypeError) -> HTTPException:
+    """Translate a Layer B preflight failure into a structured 400.
+
+    Frontend reads ``detail.code`` to render a targeted message (e.g.
+    "you have no expense category"). ``message`` is the fallback copy
+    when the client doesn't recognize the code.
+    """
+    return HTTPException(
+        status_code=400,
+        detail={
+            "code": "missing_category_type",
+            "missing_types": exc.missing_types,
+            "message": exc.message,
+        },
+    )
 
 
 @router.post("/preview", response_model=ImportPreviewResponse)
@@ -59,14 +76,17 @@ async def preview_import(
             detail = f"Row {exc.row_number}: {detail}"
         raise ValidationError(detail)
 
-    return await import_service.build_preview(
-        db,
-        org_id=current_user.org_id,
-        account_id=account_id,
-        file_name=file.filename or "unknown.csv",
-        parsed_rows=parsed_rows,
-        source_format="csv",
-    )
+    try:
+        return await import_service.build_preview(
+            db,
+            org_id=current_user.org_id,
+            account_id=account_id,
+            file_name=file.filename or "unknown.csv",
+            parsed_rows=parsed_rows,
+            source_format="csv",
+        )
+    except MissingCategoryTypeError as exc:
+        raise _missing_category_type_response(exc) from exc
 
 
 @router.post("/confirm", response_model=ImportConfirmResponse)
@@ -116,14 +136,17 @@ async def preview_ofx_import(
         parsed_rows = await parse_ofx(raw)
     except ParseError as exc:
         raise ValidationError(str(exc))
-    return await import_service.build_preview(
-        db,
-        org_id=current_user.org_id,
-        account_id=account_id,
-        file_name=file.filename or "unknown.ofx",
-        parsed_rows=parsed_rows,
-        source_format="ofx",
-    )
+    try:
+        return await import_service.build_preview(
+            db,
+            org_id=current_user.org_id,
+            account_id=account_id,
+            file_name=file.filename or "unknown.ofx",
+            parsed_rows=parsed_rows,
+            source_format="ofx",
+        )
+    except MissingCategoryTypeError as exc:
+        raise _missing_category_type_response(exc) from exc
 
 
 @router.get(
