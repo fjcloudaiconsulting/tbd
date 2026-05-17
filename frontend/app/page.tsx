@@ -6,6 +6,7 @@ import LandingAuthRedirect from "@/components/landing/LandingAuthRedirect";
 import LandingFooter from "@/components/landing/LandingFooter";
 import SecondCta from "@/components/landing/SecondCta";
 import TopNav from "@/components/landing/TopNav";
+import { readNonce } from "@/lib/nonce";
 import {
   pageSocialMeta,
   siteDescription,
@@ -52,11 +53,20 @@ const jsonLd = {
 // crawlers and no-JS visitors receive it directly. LandingAuthRedirect
 // is a client island that redirects authenticated visitors to /dashboard
 // (or /setup) after hydration.
-export default function LandingPage() {
+export default async function LandingPage() {
+  // Read the per-request nonce so the JSON-LD inline script passes
+  // the strict prod CSP. ``script-src`` drops ``'unsafe-inline'`` in
+  // production; without an explicit nonce the browser refuses to
+  // parse this block. ``readNonce`` returns ``""`` on the apex static
+  // export (no request context), so we conditionally spread the prop
+  // — same pattern app/layout.tsx uses.
+  const nonce = await readNonce();
+  const nonceProp = nonce ? { nonce } : {};
   return (
     <>
       <script
         type="application/ld+json"
+        {...nonceProp}
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
       <LandingAuthRedirect />

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { securityHeadersTuplesWithNonce } from "./lib/security-headers";
+import { buildCspDirectives, securityHeadersTuplesWithNonce } from "./lib/security-headers";
 
 /**
  * Next.js middleware — logs every request in structured JSON format
@@ -122,15 +122,26 @@ export function proxy(request: NextRequest) {
     return redirect;
   }
 
-  // Forward the id and the per-request CSP nonce to the renderer.
-  // The backend's RequestContextMiddleware uses an inbound
-  // X-Request-Id verbatim when reasonable, so this gives us end-to-end
-  // correlation across frontend → nginx → backend. The nonce is read
-  // from ``headers()`` in ``app/layout.tsx`` and attached to inline
-  // ``<script>`` tags so they pass the strict CSP.
+  // Forward the id, the per-request CSP nonce, AND the full CSP header
+  // to the renderer. Three reasons the request-side CSP matters and
+  // is not redundant with the response-side header:
+  //
+  //   1. Next.js's framework runtime parses ``Content-Security-Policy``
+  //      off the incoming request to discover the nonce, and uses that
+  //      nonce on the framework-generated inline scripts it injects
+  //      around hydration. Without the request header, those framework
+  //      scripts ship without ``nonce=...`` and get blocked by the
+  //      strict prod CSP. See the Next.js nonce guide (App Router).
+  //   2. App code keeps reading the nonce from ``headers()`` via
+  //      ``readNonce()``; that returns the ``x-nonce`` header below.
+  //   3. The response-side header (set via ``applySecurityHeaders``)
+  //      is what the *browser* enforces. Both must carry the same
+  //      nonce, so we build the CSP string once and stamp it twice.
+  const csp = buildCspDirectives(nonce);
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-request-id", requestId);
   requestHeaders.set(NONCE_HEADER, nonce);
+  requestHeaders.set("Content-Security-Policy", csp);
   const response = NextResponse.next({ request: { headers: requestHeaders } });
   response.headers.set("x-request-id", requestId);
   applySecurityHeaders(response, nonce);

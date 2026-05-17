@@ -21,7 +21,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 import { proxy } from "@/proxy";
 
@@ -68,6 +68,37 @@ describe("proxy: CSP nonce", () => {
     expect(scriptMatch![1]).toBe(styleMatch![1]);
   });
 
+  it("forwards CSP on the request headers so the Next.js renderer can parse the nonce (architect feedback on PR #302)", () => {
+    // Architect P1.1: without the request-side ``Content-Security-Policy``
+    // header, Next.js framework-runtime scripts (the hydration / chunk
+    // loader scripts the framework injects around the route render)
+    // ship without a ``nonce`` attribute and get blocked by the strict
+    // prod CSP. Pin the contract by capturing the headers passed into
+    // ``NextResponse.next({ request: { headers } })``.
+    const captured: Headers[] = [];
+    const spy = vi
+      .spyOn(NextResponse, "next")
+      .mockImplementation((init?: { request?: { headers?: Headers } }) => {
+        if (init?.request?.headers) {
+          captured.push(init.request.headers);
+        }
+        return new NextResponse();
+      });
+    try {
+      proxy(makeRequest());
+      expect(captured).toHaveLength(1);
+      const reqHeaders = captured[0];
+      const reqCsp = reqHeaders.get("content-security-policy");
+      const reqNonce = reqHeaders.get("x-nonce");
+      expect(reqCsp).toBeTruthy();
+      expect(reqNonce).toBeTruthy();
+      // Same nonce on the request CSP and the x-nonce header.
+      expect(reqCsp).toContain(`'nonce-${reqNonce}'`);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("threads the same nonce on the x-nonce request header for layout consumption", () => {
     // The renderer reads ``x-nonce`` via ``headers()`` and attaches it
     // to inline ``<script>`` tags. Pinning that the response CSP and
@@ -110,13 +141,29 @@ describe("proxy: CSP nonce", () => {
       expect(scriptDirective).not.toContain("'unsafe-inline'");
       expect(scriptDirective).toContain("'nonce-PROD-NONCE-XYZ=='");
       expect(scriptDirective).toContain("'strict-dynamic'");
+      // ``style-src`` (NOT ``style-src-attr``) — the element-level
+      // directive must not carry ``'unsafe-inline'`` in prod and must
+      // bear the nonce so the framework's emitted <style> tags pass.
       const styleDirective = csp
         .split(";")
         .map((s: string) => s.trim())
-        .find((s: string) => s.startsWith("style-src"));
+        .find((s: string) => s.startsWith("style-src ") || s === "style-src");
       expect(styleDirective).toBeTruthy();
       expect(styleDirective).not.toContain("'unsafe-inline'");
       expect(styleDirective).toContain("'nonce-PROD-NONCE-XYZ=='");
+
+      // ``style-src-attr 'unsafe-inline'`` MUST be present in prod —
+      // architect feedback on PR #302: browsers do NOT fall back from
+      // style-src-attr to style-src, so inline ``style="..."`` props
+      // (dashboard charts, tour, modals, transient layout sizing) get
+      // blocked without this carve-out. Refactoring every inline
+      // style attribute is out of scope for this PR; the targeted
+      // ``style-src-attr`` carve-out is the pragmatic shape.
+      const styleAttrDirective = csp
+        .split(";")
+        .map((s: string) => s.trim())
+        .find((s: string) => s.startsWith("style-src-attr"));
+      expect(styleAttrDirective).toBe("style-src-attr 'unsafe-inline'");
     } finally {
       vi.unstubAllEnvs();
       vi.resetModules();

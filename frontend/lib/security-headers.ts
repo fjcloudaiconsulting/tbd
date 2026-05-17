@@ -66,6 +66,18 @@ export function buildCspDirectives(nonce: string): string {
   const scriptSrc = isDev
     ? `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-inline' 'unsafe-eval'`
     : `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`;
+  // ``style-src`` covers ``<style>`` elements (where Next.js attaches
+  // the nonce). ``style-src-attr`` is a SEPARATE directive that covers
+  // inline ``style="..."`` attributes; browsers do NOT fall back from
+  // ``style-src-attr`` to ``style-src`` for inline attribute values.
+  // React renders many inline ``style`` props across the app (dashboard
+  // charts, tour, modals, transient layout sizing); refactoring them
+  // all out of inline is a much larger change than this PR. The
+  // pragmatic CSP shape is: keep nonce-based ``style-src`` (so the
+  // Next.js framework styles continue to pass), and allow inline
+  // attributes via a dedicated ``style-src-attr 'unsafe-inline'``.
+  // This is materially safer than the pre-PR baseline that allowed
+  // arbitrary ``<style>`` elements via global ``'unsafe-inline'``.
   const styleSrc = isDev
     ? `style-src 'self' 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com`
     : `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`;
@@ -73,6 +85,7 @@ export function buildCspDirectives(nonce: string): string {
     "default-src 'self'",
     scriptSrc,
     styleSrc,
+    "style-src-attr 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data: https://fonts.gstatic.com",
     `connect-src 'self'${apiOrigin() ? " " + apiOrigin() : ""}${isDev ? " ws: wss:" : ""}`,
@@ -101,6 +114,7 @@ export const cspDirectives = [
   "default-src 'self'",
   `script-src 'self'${isDev ? " 'unsafe-inline' 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "style-src-attr 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data: https://fonts.gstatic.com",
   `connect-src 'self'${apiOrigin() ? " " + apiOrigin() : ""}${isDev ? " ws: wss:" : ""}`,
