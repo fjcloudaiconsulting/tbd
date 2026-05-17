@@ -42,7 +42,7 @@ def create_refresh_token(
     enforce an absolute session lifetime regardless of activity.
     """
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(days=settings.jwt_refresh_token_expire_days)
+    expire = now + timedelta(days=settings.refresh_idle_ttl_days)
     payload = {
         "sub": str(subject),
         "type": "refresh",

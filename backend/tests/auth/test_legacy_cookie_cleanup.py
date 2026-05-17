@@ -45,7 +45,7 @@ def _mint_refresh_at(user_id: int, iat: datetime) -> str:
     """Mint a refresh JWT with a controlled ``iat`` (and matching
     ``session_created_at``) so tests can place tokens above or below
     ``token_cutoff`` deterministically without real sleeps."""
-    expire = iat + timedelta(days=app_settings.jwt_refresh_token_expire_days)
+    expire = iat + timedelta(days=app_settings.refresh_idle_ttl_days)
     payload = {
         "sub": str(user_id),
         "type": "refresh",

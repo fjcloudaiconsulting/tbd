@@ -292,7 +292,7 @@ async def login(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=_refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -324,9 +324,10 @@ AMBIGUOUS_SESSION_DETAIL = "Ambiguous session — please sign in again"
 # the user expects, producing spurious 401s. Every response that issues
 # or clears the canonical ``Path=/`` cookie also emits a
 # ``Path=/api/v1/auth/refresh`` delete so the legacy cookie is actively
-# retired. Remove this cleanup after 2026-05-25 (PR #211 shipped
-# 2026-05-11; cookie max_age is 7 days, so all legacy cookies expire
-# naturally by then assuming no further drift).
+# retired. Remove this cleanup once all pre-PR #211 cookies have aged
+# out naturally — the legacy cookie's max_age was 7 days when it was
+# written, so any browser that has hit /auth/refresh since 2026-05-18
+# no longer carries one.
 LEGACY_REFRESH_COOKIE_PATH = "/api/v1/auth/refresh"
 
 
@@ -337,6 +338,20 @@ def _clear_legacy_refresh_cookie(response: Response) -> None:
     distinct path-scoped cookie jars in the browser.
     """
     response.delete_cookie("refresh_token", path=LEGACY_REFRESH_COOKIE_PATH)
+
+
+def _refresh_cookie_max_age() -> int:
+    """Cookie ``Max-Age`` for the refresh_token cookie, in seconds.
+
+    Single source of truth across every issue site (login password
+    branch, /refresh rotation, MFA branches via _issue_tokens, and the
+    Google OAuth callback). Derived from
+    ``app_settings.refresh_idle_ttl_days`` so the operator can tune
+    session idle TTL via one env var (REFRESH_IDLE_TTL_DAYS) and have
+    the change land in lockstep at every cookie write. See
+    ``specs/2026-05-17-backend-session-model.md`` §2.2 and §5.4.
+    """
+    return app_settings.refresh_idle_ttl_days * 86400
 
 
 def _extract_refresh_cookies(request: Request) -> list[str]:
@@ -559,7 +574,7 @@ async def refresh(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=_refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -830,7 +845,7 @@ def _issue_tokens(user: User, response: Response) -> TokenResponse:
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=_refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -1529,7 +1544,7 @@ async def google_callback(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=_refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(resp)
