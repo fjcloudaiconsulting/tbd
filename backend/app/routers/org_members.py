@@ -179,15 +179,21 @@ async def accept_invitation(
         raise _invitation_unavailable()
     except ConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
-    await db.commit()
 
     access = create_access_token(user.id, user.org_id, user.role.value)
     # PR 2 (specs/2026-05-17-backend-session-model.md §5.4): write the
     # Redis primary key + family-set entry BEFORE set_cookie. Fails
-    # closed (503) on unreachable Redis. This is the fifth issue site
-    # — the one PR #305 missed; the architect explicitly enumerated it
-    # in the PR 2 brief.
+    # closed (503) on unreachable Redis.
+    #
+    # Architect P1 finding on PR #306: the Redis write must also come
+    # BEFORE ``db.commit()``. ``invitation_service.accept_invitation``
+    # flushed (so ``user.id`` is set) but did NOT commit. If Redis is
+    # down here, the 503 raises before commit, the open transaction
+    # rolls back, and the invitation stays unconsumed — the user can
+    # retry. Previous order (commit-then-Redis) consumed the invitation
+    # on every Redis blip, permanently locking the invitee out.
     refresh, _jti, _sid = await _issue_refresh_session(user.id)
+    await db.commit()
     response.set_cookie(
         key="refresh_token",
         value=refresh,

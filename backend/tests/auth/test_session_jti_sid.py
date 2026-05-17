@@ -837,3 +837,243 @@ async def test_verify_rejects_token_with_missing_redis_row(
             cookies={"refresh_token": token},
         )
     assert res.status_code == 401, res.json()
+
+
+# ── Architect P1 (PR #306 re-review): Redis-failure must not leave durable
+#    one-time state committed without a session. ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_invitation_accept_503_leaves_invitation_unconsumed(
+    session_factory, monkeypatch
+) -> None:
+    """Architect P1.1 on PR #306: invitation accept used to commit the
+    invitation BEFORE calling ``_issue_refresh_session``. A Redis 503
+    therefore returned an error to the user while the invitation was
+    already marked accepted — permanent lockout, no retry possible.
+
+    After the fix: ``accept_invitation`` flushes (so ``user.id`` is
+    available for the JWT), the Redis write runs, and ONLY THEN
+    ``db.commit()`` fires. A 503 must leave the invitation row with
+    ``accepted_at IS NULL`` so the invitee can retry.
+    """
+    from app.models.invitation import Invitation
+    from app.services import invitation_service
+
+    async with session_factory() as db:
+        org = Organization(name="Inv Co", billing_cycle_day=1)
+        db.add(org)
+        await db.flush()
+        owner = User(
+            org_id=org.id, username="owner", email="owner@inv.io",
+            password_hash=hash_password(PASSWORD),
+            role=Role.OWNER, is_superadmin=False, is_active=True,
+            email_verified=True,
+        )
+        db.add(owner)
+        await db.commit()
+        org_id, owner_id = org.id, owner.id
+
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db, org_id=org_id, created_by=owner_id,
+            email="invitee@inv.io", role=Role.MEMBER,
+        )
+        await db.commit()
+        inv_id = inv.id
+        token = create_invitation_token(inv.id, inv.email)
+
+    monkeypatch.setattr(redis_client, "get_client", lambda: None)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/orgs/invitations/accept",
+            json={
+                "token": token,
+                "username": "invitee",
+                "password": "strong-pw-1234",
+            },
+        )
+    assert res.status_code == 503, res.text
+
+    # The invitation MUST still be unconsumed — invitee can retry.
+    async with session_factory() as db:
+        row = await db.get(Invitation, inv_id)
+        assert row is not None
+        assert row.accepted_at is None, (
+            "Architect P1 regression: invitation was marked accepted "
+            "despite the 503 — Redis failure must not consume one-time state"
+        )
+        # And no user row should have been created.
+        any_user = await db.scalar(
+            select(User).where(User.email == "invitee@inv.io")
+        )
+        assert any_user is None, (
+            "Architect P1 regression: user row was committed despite 503"
+        )
+
+
+@pytest.mark.asyncio
+async def test_google_callback_503_does_not_commit_new_user(
+    session_factory, monkeypatch, google_config
+) -> None:
+    """Architect P1.2 on PR #306: first-run Google SSO used to commit
+    the new user + trial BEFORE the Redis-backed session-issue. A 503
+    therefore created the user durably but returned an error; on retry
+    the user was treated as EXISTING (no ``created_user=true``), so
+    the first-run privacy disclosure (Team E) was silently skipped.
+
+    After the fix: user + trial are flushed but not committed; on a
+    503 the transaction rolls back, and the next Google SSO attempt
+    correctly re-enters the new-user branch.
+    """
+    await _seed_default_plan(session_factory)
+    monkeypatch.setattr(redis_client, "get_client", lambda: None)
+    _patch_httpx(monkeypatch, userinfo_email="brand-new-sso@example.com")
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        client.cookies.set("oauth_state", "matching-state")
+        res = client.get(
+            "/api/v1/auth/google/callback",
+            params={"code": "dummy", "state": "matching-state"},
+            follow_redirects=False,
+        )
+    # Google callback returns a RedirectResponse on success and an
+    # error redirect on failure. The 503 path here surfaces as the
+    # explicit error handler — but the critical invariant for this
+    # test is the DB state: no committed user / org.
+    async with session_factory() as db:
+        any_user = await db.scalar(
+            select(User).where(User.email == "brand-new-sso@example.com")
+        )
+        assert any_user is None, (
+            "Architect P1 regression: new SSO user was committed "
+            "despite the Redis 503 — next SSO attempt would skip the "
+            "first-run disclosure branch"
+        )
+
+
+@pytest.mark.asyncio
+async def test_mfa_recovery_503_preserves_recovery_code(
+    session_factory, monkeypatch
+) -> None:
+    """Architect P1.3 on PR #306: MFA recovery used to commit the
+    consumed code BEFORE issuing the Redis-backed session. A 503
+    burned one of the user's finite recovery codes without giving
+    them a session, forcing them to burn another on retry. After
+    the fix the commit happens after Redis confirms — on a 503 the
+    transaction rolls back and the code is still usable.
+    """
+    from app.security import create_mfa_challenge_token
+    from app.services.mfa_service import (
+        generate_recovery_codes,
+        hash_recovery_code,
+    )
+
+    codes = generate_recovery_codes(count=3)
+    code = codes[0]
+    seed = await _seed_user(
+        session_factory,
+        mfa_enabled=True,
+        recovery_codes_plaintext=codes,
+    )
+    mfa_token = create_mfa_challenge_token(seed["user_id"])
+
+    monkeypatch.setattr(redis_client, "get_client", lambda: None)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/mfa/recovery",
+            json={"mfa_token": mfa_token, "code": code},
+        )
+    assert res.status_code == 503, res.text
+
+    # The recovery code MUST still be usable.
+    async with session_factory() as db:
+        user = await db.scalar(select(User).where(User.id == seed["user_id"]))
+        assert user is not None
+        assert user.recovery_codes is not None
+        stored_hashes = user.recovery_codes.split(",")
+        # The hash of the would-be-consumed code is still present.
+        expected_hash = hash_recovery_code(code)
+        assert expected_hash in stored_hashes, (
+            "Architect P1 regression: recovery code was consumed "
+            "despite the 503 — must roll back the DB change too"
+        )
+        # Still have all three codes (none were burned).
+        assert len(stored_hashes) == 3, stored_hashes
+
+
+# ── Architect P2 (PR #306 re-review): Redis row must bind back to JWT
+#    claims, not just exist. ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_jti_with_mismatched_user_id_in_redis(
+    session_factory, fake_redis
+) -> None:
+    """Architect P2 on PR #306: existence of ``auth:session:{jti}`` is
+    not sufficient — the row stores ``{user_id, sid}`` precisely so
+    the resolver can verify the JWT still binds to it. Forge the row
+    to carry a different user_id; the refresh must reject as
+    invalidated/corrupt, NOT happily accept and rotate.
+    """
+    import json
+
+    await _seed_user(session_factory)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"login": "alice", "password": PASSWORD},
+        )
+        token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(login.headers))
+        jti, sid = decode_refresh_jti_sid(token)
+
+        # Forge the Redis row to point at a different user_id (simulates
+        # key corruption / overwrite / impossible jti collision).
+        fake_redis._kv[f"auth:session:{jti}"] = json.dumps(
+            {"user_id": 999999, "sid": sid}
+        )
+
+        res = client.post(
+            "/api/v1/auth/refresh",
+            cookies={"refresh_token": token},
+        )
+    assert res.status_code == 401, res.json()
+    assert "invalidated" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejects_jti_with_mismatched_sid_in_redis(
+    session_factory, fake_redis
+) -> None:
+    """Architect P2 on PR #306 — sister case to the user_id mismatch.
+    The JWT carries one ``sid``, the Redis row carries a different
+    ``sid``. Could arise from a leaked refresh cookie reused after the
+    session family was reissued under a fresh ``sid``, or from key-
+    level corruption. Resolver must reject.
+    """
+    import json
+
+    await _seed_user(session_factory)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"login": "alice", "password": PASSWORD},
+        )
+        token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(login.headers))
+        jti, sid = decode_refresh_jti_sid(token)
+
+        # Same user_id (good) but a different sid (bad).
+        row = json.loads(fake_redis._kv[f"auth:session:{jti}"])
+        fake_redis._kv[f"auth:session:{jti}"] = json.dumps(
+            {"user_id": row["user_id"], "sid": "deadbeef-not-the-real-sid"}
+        )
+
+        res = client.post(
+            "/api/v1/auth/refresh",
+            cookies={"refresh_token": token},
+        )
+    assert res.status_code == 401, res.json()

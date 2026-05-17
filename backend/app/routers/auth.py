@@ -521,6 +521,32 @@ async def _validate_single_refresh_token(
             detail="Session has been invalidated",
         )
 
+    # Architect P2 finding on PR #306: existence of the Redis row is a
+    # necessary but not sufficient success condition. The row stores
+    # ``{user_id, sid}`` precisely so the resolver can verify the JWT
+    # claims still bind to it; if any of the following diverge, the
+    # session must be rejected as corrupt:
+    #
+    #   * the JWT's ``sub`` (user_id) does not match the row's
+    #     ``user_id`` — could be: a forged JWT signed with a stolen
+    #     key, an admin merged two users, or (in theory) the
+    #     impossible-but-defended-against ``jti`` collision the PR 3
+    #     Lua ``NX`` guard exists to catch;
+    #   * the JWT's ``sid`` (session family) does not match the row's
+    #     ``sid`` — could be: a leaked refresh cookie reused after the
+    #     family was reissued under a different ``sid``, or key-level
+    #     corruption from a future migration / replica lag.
+    #
+    # In either case we want the same terminal 401 the missing-key
+    # path produces; the frontend's classifier needs no new code path.
+    row_user_id = session_row.get("user_id")
+    row_sid = session_row.get("sid")
+    if row_user_id != user.id or row_sid != sid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        )
+
     # Enforce absolute session lifetime (per-org setting or system default)
     session_created_at = payload.get("session_created_at")
     session_start: datetime | None = None
@@ -1220,12 +1246,18 @@ async def mfa_recovery(
     if idx is None:
         raise HTTPException(status_code=401, detail="Invalid recovery code")
 
-    # Remove the used code
+    # Remove the used code. Architect P1 finding on PR #306: hold the
+    # commit until AFTER the Redis-backed session-issue inside
+    # ``_issue_tokens`` succeeds. Otherwise a Redis 503 would consume
+    # the recovery code (durable side effect on a tiny finite pool)
+    # without giving the user a session, forcing them to burn another
+    # code on retry.
     hashed_codes.pop(idx)
     user.recovery_codes = ",".join(hashed_codes) if hashed_codes else None
-    await db.commit()
+    await db.flush()
 
     tokens = await _issue_tokens(user, response)
+    await db.commit()
     await _record_login_success(
         session_factory, user=user, request=request, method="mfa_recovery"
     )
@@ -1600,12 +1632,21 @@ async def google_callback(
             password_set=False,
         )
         db.add(user)
-        await db.commit()
+        # Architect P1 finding on PR #306: do NOT commit yet. The Redis
+        # session write below must succeed BEFORE we commit the new
+        # user + trial, otherwise a Redis 503 leaves the user durably
+        # created without a session — the next Google SSO retry would
+        # treat them as existing and skip the ``created_user=true``
+        # first-run disclosure branch entirely.
+        await db.flush()
         await db.refresh(user)
 
-        # Create trial subscription for the new org (same as register)
+        # Create trial subscription for the new org (same as register).
+        # Still no commit — single transaction across user, trial, and
+        # Redis session-issue. Flush only so ``Subscription.id`` is
+        # populated for the audit row that follows.
         await subscription_service.create_trial(db, org.id)
-        await db.commit()
+        await db.flush()
 
     # Issue tokens (or MFA challenge if enabled)
     await db.refresh(user, ["organization"])
@@ -1623,6 +1664,21 @@ async def google_callback(
     # PR 2: write the Redis primary key + family-set entry BEFORE
     # set_cookie. Fails closed (503) on unreachable Redis.
     refresh_token, _jti, _sid = await _issue_refresh_session(user.id)
+
+    # Architect P1 finding on PR #306: on the new-user branch above we
+    # switched ``db.commit()`` to ``db.flush()`` so the user + trial
+    # creation only land in the database AFTER Redis has accepted the
+    # session. A Redis 503 above would have raised before reaching
+    # here, rolling back the entire transaction; the next Google SSO
+    # retry would correctly see no existing user and re-enter the
+    # ``created_user=true`` first-run disclosure branch. Now that
+    # ``_issue_refresh_session`` has succeeded, commit the user +
+    # trial so they survive past this handler.
+    #
+    # The existing-user branch (lines ~1565-1571 above) already
+    # committed any mutated-profile changes earlier, so this second
+    # commit is a no-op for it.
+    await db.commit()
 
     # Redirect to frontend with the access token in the URL fragment. The
     # fragment stays client-side (not sent to servers, not logged), while
