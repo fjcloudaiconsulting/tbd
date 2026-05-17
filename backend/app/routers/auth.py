@@ -359,10 +359,29 @@ async def _rotate_refresh_session(
     sid: str,
     *,
     session_created_at: datetime | None = None,
-) -> tuple[str, str, str]:
-    """Mint a successor refresh JWT (same ``sid``, fresh ``jti``) AND
-    atomically write the new primary + family entry while deleting the
-    old primary. Returns ``(token, new_jti, sid)``.
+) -> tuple[str, str, str, str]:
+    """Mint a successor refresh JWT (same ``sid``, fresh ``jti``) and run
+    the atomic Lua rotation script (spec §4.2 step 5).
+
+    Returns ``(token, new_jti, sid, lua_result)`` where ``lua_result``
+    is one of ``"ok"``, ``"session_revoked"``, ``"already_rotated"``,
+    or ``"jti_collision"``. The router dispatches on the value per
+    §5.1 step 6:
+
+    * ``"ok"`` — issue cookie, emit ``auth.session.rotated`` audit.
+    * ``"session_revoked"`` — concurrent logout deleted the family
+      set; router returns 401, no audit (terminal — frontend redirects).
+    * ``"already_rotated"`` — concurrent ``/refresh`` won the race;
+      router falls into the grace branch, no Set-Cookie, emits
+      ``auth.session.grace_accept {via_already_rotated: true}``.
+    * ``"jti_collision"`` — 128-bit RNG collision (cosmic). The router
+      regenerates ``jti`` and retries once.
+
+    On the ``ok`` path the new primary key is in Redis and the old
+    primary has been replaced by a 30s grace key written inside the
+    Lua transaction. On any non-``ok`` return the JWT is still freshly
+    minted but no Redis writes happened — the router must NOT emit
+    its Set-Cookie because no session row exists for the new jti.
 
     Fails CLOSED on unreachable Redis by raising ``HTTPException(503)``.
     """
@@ -370,15 +389,19 @@ async def _rotate_refresh_session(
         user_id, session_created_at=session_created_at, sid=sid
     )
     try:
-        await redis_client.session_rotate(
-            old_jti, new_jti, session_id, user_id, refresh_cookie_max_age()
+        result = await redis_client.session_rotate_lua(
+            old_jti,
+            new_jti,
+            session_id,
+            user_id,
+            refresh_cookie_max_age(),
         )
     except (RedisRequired, RedisError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
         ) from exc
-    return token, new_jti, session_id
+    return token, new_jti, session_id, result
 
 # Emitted when the request carries refresh cookies for two or more
 # distinct user accounts (e.g. a legacy account-A cookie shadowing a
@@ -444,9 +467,18 @@ def _extract_refresh_cookies(request: Request) -> list[str]:
 async def _validate_single_refresh_token(
     refresh_token: str,
     db: AsyncSession,
-) -> tuple[User, dict, datetime | None]:
+) -> tuple[User, dict, datetime | None, str]:
     """Validate ONE refresh-token JWT value. Returns
-    ``(user, payload, session_start)`` or raises ``HTTPException(401)``.
+    ``(user, payload, session_start, redis_state)`` or raises
+    ``HTTPException(401)``.
+
+    ``redis_state`` is ``"primary"`` when the active session key
+    ``auth:session:{jti}`` is present, or ``"grace"`` when only the
+    rotation grace key ``auth:session:grace:{jti}`` is present AND the
+    session family ``auth:session:by_sid:{sid}`` still exists. PR 3
+    introduces this state so ``/refresh`` and ``/verify`` can absorb
+    cross-tab rotation races without forcing a logout — see
+    ``specs/2026-05-17-backend-session-model.md`` §5.1 step 4 / §5.2.
 
     The validation chain:
       1. JWT decode + ``type == "refresh"``
@@ -504,12 +536,26 @@ async def _validate_single_refresh_token(
             detail="Session has been invalidated",
         )
 
-    # Redis primary-key probe. Miss => 401 (the jti has been revoked or
-    # has expired before its JWT cousin). Redis-unreachable => 503; we
+    # Redis primary-key probe. Miss => fall back to grace key (spec §5.1
+    # step 4 + §5.2). If both miss => 401. Redis-unreachable => 503; we
     # never silently accept the JWT, because that would defeat the
-    # per-session story (PR 4). See spec §7.1.
+    # per-session story. See spec §7.1.
+    redis_state: str = "primary"
     try:
         session_row = await redis_client.session_validate(jti)
+        if session_row is None:
+            # PR 3: grace fallback. The primary key has been rotated out
+            # but the grace key (30s TTL) may still be alive — that's
+            # the cross-tab race the rotation grace window exists to
+            # absorb. The grace row carries the same ``user_id`` and
+            # ``sid`` so the resolver can still bind back to JWT claims.
+            # Defence-in-depth: ALSO verify the family set still exists
+            # (concurrent logout deletes it before the grace TTL).
+            grace_row = await redis_client.session_grace(jti)
+            if grace_row is not None:
+                if await redis_client.session_family_exists(sid):
+                    session_row = grace_row
+                    redis_state = "grace"
     except (RedisRequired, RedisError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -572,13 +618,13 @@ async def _validate_single_refresh_token(
                 detail=SESSION_EXPIRED_DETAIL,
             )
 
-    return user, payload, session_start
+    return user, payload, session_start, redis_state
 
 
 async def _validate_refresh_cookie(
     refresh_tokens: list[str],
     db: AsyncSession,
-) -> tuple[User, dict, datetime | None]:
+) -> tuple[User, dict, datetime | None, str]:
     """Validate the provided refresh-token cookie values and pick one.
 
     Rules:
@@ -611,7 +657,7 @@ async def _validate_refresh_cookie(
             detail="No refresh token",
         )
 
-    successes: list[tuple[User, dict, datetime | None]] = []
+    successes: list[tuple[User, dict, datetime | None, str]] = []
     last_exc: HTTPException | None = None
     for token in refresh_tokens:
         try:
@@ -623,7 +669,7 @@ async def _validate_refresh_cookie(
         assert last_exc is not None  # loop ran at least once
         raise last_exc
 
-    distinct_user_ids = {triple[0].id for triple in successes}
+    distinct_user_ids = {tup[0].id for tup in successes}
     if len(distinct_user_ids) > 1:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -633,7 +679,7 @@ async def _validate_refresh_cookie(
     # Single user, possibly multiple valid tokens. Prefer the newest by
     # ``iat`` so a stale legacy cookie never out-votes the current one
     # for the same user.
-    successes.sort(key=lambda triple: triple[1].get("iat", 0), reverse=True)
+    successes.sort(key=lambda tup: tup[1].get("iat", 0), reverse=True)
     return successes[0]
 
 
@@ -642,6 +688,7 @@ async def refresh(
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Rotate the refresh cookie + issue a fresh access token.
 
@@ -649,6 +696,18 @@ async def refresh(
     ``_validate_refresh_cookie``. On session-lifetime expiry this endpoint
     additionally clears the stale cookie before returning 401; ``/verify``
     deliberately does not (it must never emit Set-Cookie).
+
+    PR 3 dispatch (spec §5.1 step 6):
+
+    - If the validation chain says ``redis_state == "grace"`` we're on
+      the grace branch already (primary key gone, grace key alive,
+      family set alive). Issue an access token only; no Set-Cookie, no
+      rotation. Emit ``auth.session.grace_accept``.
+    - Otherwise run the Lua rotation script and dispatch on its return:
+      ``ok`` issues a new cookie; ``session_revoked`` returns 401;
+      ``already_rotated`` falls into the grace branch (re-probe + check
+      family set); ``jti_collision`` regenerates and retries once, with
+      a 503 on the second collision.
 
     NOTE: FastAPI does NOT merge cookies set on the injected ``response``
     parameter into the JSONResponse it builds from a raised HTTPException
@@ -659,7 +718,7 @@ async def refresh(
     """
     refresh_tokens = _extract_refresh_cookies(request)
     try:
-        user, payload, session_start = await _validate_refresh_cookie(
+        user, payload, session_start, redis_state = await _validate_refresh_cookie(
             refresh_tokens, db
         )
     except HTTPException as exc:
@@ -690,10 +749,89 @@ async def refresh(
     sid = payload["sid"]
 
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    new_refresh_token, _new_jti, _sid = await _rotate_refresh_session(
+
+    # ── Grace-path early return (spec §5.1 step 4) ──────────────────────
+    # The validator already confirmed the grace key + family set are both
+    # alive AND the JWT's sid matches the grace row's sid (the user_id /
+    # sid mismatch check on the row catches forged JWTs). No new refresh
+    # cookie, no rotation oracle.
+    if redis_state == "grace":
+        await _record_session_grace_accept(
+            session_factory,
+            user=user,
+            request=request,
+            old_jti=old_jti,
+            sid=sid,
+            via_already_rotated=False,
+        )
+        return TokenResponse(access_token=access_token)
+
+    # ── Normal rotation path: Lua script is the authority ───────────────
+    new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
         user.id, old_jti, sid, session_created_at=session_start
     )
 
+    if lua_result == redis_client.SESSION_ROTATE_JTI_COLLISION:
+        # 128-bit collision — regenerate jti once and retry. If the second
+        # attempt also collides, the RNG is broken: 503 + structlog flag.
+        new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
+            user.id, old_jti, sid, session_created_at=session_start
+        )
+        if lua_result == redis_client.SESSION_ROTATE_JTI_COLLISION:
+            await _record_session_rotated_failed(
+                session_factory,
+                user=user,
+                request=request,
+                old_jti=old_jti,
+                sid=sid,
+                reason="double_jti_collision",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+            )
+
+    if lua_result == redis_client.SESSION_ROTATE_REVOKED:
+        # Concurrent /logout deleted the family set. Terminal 401 — the
+        # frontend's classifier already handles this string.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        )
+
+    if lua_result == redis_client.SESSION_ROTATE_ALREADY_ROTATED:
+        # Concurrent /refresh won the race. The winner just wrote the
+        # grace key inside their Lua transaction — re-probe it AND
+        # confirm the family set still exists, then issue access-only.
+        try:
+            grace_row = await redis_client.session_grace(old_jti)
+            family_alive = await redis_client.session_family_exists(sid)
+        except (RedisRequired, RedisError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+            ) from exc
+        if (
+            grace_row is None
+            or not family_alive
+            or grace_row.get("sid") != sid
+            or grace_row.get("user_id") != user.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been invalidated",
+            )
+        await _record_session_grace_accept(
+            session_factory,
+            user=user,
+            request=request,
+            old_jti=old_jti,
+            sid=sid,
+            via_already_rotated=True,
+        )
+        return TokenResponse(access_token=access_token)
+
+    # lua_result == "ok"
     response.set_cookie(
         key="refresh_token",
         value=new_refresh_token,
@@ -704,6 +842,14 @@ async def refresh(
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
+    await _record_session_rotated(
+        session_factory,
+        user=user,
+        request=request,
+        old_jti=old_jti,
+        new_jti=new_jti,
+        sid=sid,
+    )
 
     return TokenResponse(access_token=access_token)
 
@@ -730,7 +876,7 @@ async def verify(
     Cookie header (PR #211 cookie-shadow guard).
     """
     refresh_tokens = _extract_refresh_cookies(request)
-    user, _payload, _session_start = await _validate_refresh_cookie(
+    user, _payload, _session_start, _redis_state = await _validate_refresh_cookie(
         refresh_tokens, db
     )
 
@@ -1105,6 +1251,115 @@ async def _record_login_success(
         ip_address=get_client_ip(request),
         outcome="success",
         detail={"method": method},
+    )
+
+
+# ── PR 3 session-rotation audit events (spec §5.1 step 8) ───────────────────
+
+
+async def _record_session_rotated(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user: User,
+    request: Request,
+    old_jti: str,
+    new_jti: str,
+    sid: str,
+) -> None:
+    """Persist an ``auth.session.rotated`` audit event on the happy-path
+    rotation (Lua returned ``"ok"``).
+
+    Detail carries the predecessor + successor ``jti`` plus the stable
+    ``sid`` so operators can reconstruct the rotation chain offline.
+    """
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.session.rotated",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=user.org_id,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"old_jti": old_jti, "new_jti": new_jti, "sid": sid},
+    )
+
+
+async def _record_session_grace_accept(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user: User,
+    request: Request,
+    old_jti: str,
+    sid: str,
+    via_already_rotated: bool,
+) -> None:
+    """Persist an ``auth.session.grace_accept`` audit event.
+
+    Emitted on the grace branch — either entered directly because the
+    app-side primary-key probe missed but the grace key was alive (the
+    typical cross-tab race) or because the Lua rotation script returned
+    ``already_rotated`` (the in-flight rotation race where two requests
+    pass the app-side GET HIT and only one wins). The
+    ``via_already_rotated`` flag lets ops disaggregate the two shapes.
+    """
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.session.grace_accept",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=user.org_id,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={
+            "old_jti": old_jti,
+            "sid": sid,
+            "via_already_rotated": via_already_rotated,
+        },
+    )
+
+
+async def _record_session_rotated_failed(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user: User,
+    request: Request,
+    old_jti: str,
+    sid: str,
+    reason: str,
+) -> None:
+    """Persist an ``auth.session.rotated.failed`` audit event.
+
+    Emitted on the double-``jti_collision`` 503 path only. Two 128-bit
+    collisions in a row signals an RNG problem worth alerting on. The
+    structlog event below mirrors the audit row so log-based alerts
+    can fire even if the DB write fails.
+    """
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    logger = structlog.stdlib.get_logger()
+    await logger.aerror(
+        "auth.session.rotated.failed",
+        user_id=user.id,
+        sid=sid,
+        old_jti=old_jti,
+        reason=reason,
+    )
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.session.rotated.failed",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=user.org_id,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=get_client_ip(request),
+        outcome="failure",
+        detail={"old_jti": old_jti, "sid": sid, "reason": reason},
     )
 
 

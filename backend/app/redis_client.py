@@ -1,7 +1,8 @@
 """Redis / Valkey client — singleton, lazy-initialized from settings.
 
 Scope today: MFA email-code single-use nonces + refresh-session primary
-key and family set (``auth:session:{jti}``, ``auth:session:by_sid:{sid}``).
+key, grace key, and family set (``auth:session:{jti}``,
+``auth:session:grace:{jti}``, ``auth:session:by_sid:{sid}``).
 More features (rate-limit storage, cache) land here when the app moves
 off single-replica on DO App Platform and needs shared state.
 
@@ -20,6 +21,7 @@ from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError as RedisResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.config import settings
@@ -93,15 +95,20 @@ def require_client() -> Redis:
 
 # ── Refresh-session keys (specs/2026-05-17-backend-session-model.md §4) ─────
 #
-# Two key shapes drive the per-session story:
+# Three key shapes drive the per-session story:
 #
-#   auth:session:{jti}        primary key for ONE refresh JWT (rotates each
-#                             /refresh; value = JSON {"user_id", "sid"};
-#                             TTL = refresh_idle_ttl_days * 86400)
-#   auth:session:by_sid:{sid} family set holding every jti ever issued for
-#                             this session FAMILY (sid is stable across the
-#                             entire rotation chain so per-session logout
-#                             in PR 4 can revoke every successor)
+#   auth:session:{jti}         primary key for ONE refresh JWT (rotates each
+#                              /refresh; value = JSON {"user_id", "sid"};
+#                              TTL = refresh_idle_ttl_days * 86400)
+#   auth:session:grace:{jti}   30s rotation grace key, written by the Lua
+#                              script BEFORE the old primary is deleted.
+#                              Value JSON {"user_id", "sid", "successor_jti"}.
+#                              Read by /refresh + /verify to absorb cross-tab
+#                              races without forcing a logout.
+#   auth:session:by_sid:{sid}  family set holding every jti ever issued for
+#                              this session FAMILY (sid is stable across the
+#                              entire rotation chain so per-session logout
+#                              in PR 4 can revoke every successor)
 #
 # Every issue path (login, /refresh rotation, MFA branches, Google
 # callback, invitation accept) MUST write both keys in a single
@@ -109,11 +116,21 @@ def require_client() -> Redis:
 # request returns 503 — never set a cookie that has no Redis row.
 
 SESSION_PRIMARY_KEY = "auth:session:{jti}"
+SESSION_GRACE_KEY = "auth:session:grace:{jti}"
 SESSION_FAMILY_KEY = "auth:session:by_sid:{sid}"
+
+# Rotation grace window — see spec §2.5. 30s comfortably above worst-case
+# cross-tab clock skew, well below access-token TTL so a stolen
+# pre-rotation cookie cannot silently extend a session.
+SESSION_GRACE_TTL_SECONDS = 30
 
 
 def _primary_key(jti: str) -> str:
     return f"auth:session:{jti}"
+
+
+def _grace_key(jti: str) -> str:
+    return f"auth:session:grace:{jti}"
 
 
 def _family_key(sid: str) -> str:
@@ -162,30 +179,162 @@ async def session_validate(jti: str) -> dict | None:
         return None
 
 
-async def session_rotate(
+async def session_grace(jti: str) -> dict | None:
+    """Return the JSON payload at ``auth:session:grace:{jti}`` or None on miss.
+
+    Called by ``/refresh`` (app-side step 4) and ``/verify`` (§5.2) when the
+    primary key has been rotated out. Caller must additionally verify that
+    the JWT's ``sid`` matches the grace row's ``sid`` AND that
+    ``auth:session:by_sid:{sid}`` still exists (logout hasn't deleted the
+    family).
+    """
+    client = require_client()
+    raw = await client.get(_grace_key(jti))
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        # Corrupt key; treat as miss. Belt-and-braces — the rotate Lua
+        # script is the only writer of this key and always writes valid
+        # JSON.
+        return None
+
+
+async def session_family_exists(sid: str) -> bool:
+    """Return True iff ``auth:session:by_sid:{sid}`` exists.
+
+    Defence-in-depth check for the grace-acceptance branch (§5.1 step 4
+    and §5.2): a concurrent logout deletes the family set first, so the
+    grace key can outlive the family by up to 30 seconds. The resolver
+    rejects in that window.
+    """
+    client = require_client()
+    return bool(await client.exists(_family_key(sid)))
+
+
+# Lua return tokens — spec §4.2 step 5. The router branch table in
+# §5.1 step 6 maps these to HTTP behaviour. The bare string ``"ok"``
+# is returned on the happy path; the three error tokens come back via
+# ``redis.exceptions.ResponseError`` because py-redis surfaces Lua
+# ``{err = "..."}`` returns as that exception with the err string as
+# the message.
+SESSION_ROTATE_OK = "ok"
+SESSION_ROTATE_REVOKED = "session_revoked"
+SESSION_ROTATE_ALREADY_ROTATED = "already_rotated"
+SESSION_ROTATE_JTI_COLLISION = "jti_collision"
+
+
+# Spec §4.2 step 5. Three guards in order — every guard returns early on
+# failure with NO writes. Lua executes atomically server-side so partial
+# application is not possible.
+ROTATE_SESSION_LUA = """
+-- KEYS[1] = auth:session:{old_jti}
+-- KEYS[2] = auth:session:grace:{old_jti}
+-- KEYS[3] = auth:session:{new_jti}
+-- KEYS[4] = auth:session:by_sid:{sid}
+-- ARGV[1] = grace TTL seconds (30)
+-- ARGV[2] = idle TTL seconds (refresh_idle_ttl_days * 86400)
+-- ARGV[3] = grace JSON value
+-- ARGV[4] = primary JSON value
+-- ARGV[5] = old_jti (string to check SISMEMBER + identify in family)
+-- ARGV[6] = new_jti (string to SADD into family)
+
+-- (1) Family revoked? Concurrent /logout deleted the family set.
+if redis.call("SISMEMBER", KEYS[4], ARGV[5]) == 0 then
+    return {err = "session_revoked"}
+end
+
+-- (2) Already rotated? Concurrent /refresh with the same old_jti won the race.
+--     The earlier app-side GET cannot prevent two requests reaching this
+--     point. This check INSIDE Lua is the authority.
+if redis.call("EXISTS", KEYS[1]) == 0 then
+    return {err = "already_rotated"}
+end
+
+-- (3) Defensive NX on new primary. 128-bit jti collisions are
+--     astronomically unlikely but overwriting a live session is the
+--     wrong failure mode. SET ... NX returns the bulk string "OK" on
+--     success and false (nil bulk) on NX-miss; both ``not result``
+--     and ``== false`` match nil in Lua but explicit ``not`` keeps
+--     the intent unambiguous.
+local set_ok = redis.call("SET", KEYS[3], ARGV[4], "EX", ARGV[2], "NX")
+if not set_ok then
+    return {err = "jti_collision"}
+end
+
+-- (4) Write grace, register the new jti in the family, delete the old primary.
+redis.call("SET", KEYS[2], ARGV[3], "EX", ARGV[1])
+redis.call("SADD", KEYS[4], ARGV[6])
+redis.call("EXPIRE", KEYS[4], ARGV[2])
+redis.call("DEL", KEYS[1])
+return "ok"
+"""
+
+
+async def session_rotate_lua(
     old_jti: str,
     new_jti: str,
     sid: str,
     user_id: int,
-    ttl_seconds: int,
-) -> None:
-    """Sequential rotation: SET new primary, SADD by_sid new_jti,
-    EXPIRE by_sid, DEL old primary — in one ``MULTI/EXEC`` block.
+    idle_ttl_seconds: int,
+    grace_ttl_seconds: int = SESSION_GRACE_TTL_SECONDS,
+) -> str:
+    """Run the atomic rotation Lua script (spec §4.2 step 5).
 
-    PR 2 scope: NO Lua, NO EXISTS guards, NO grace key. The architect-
-    acknowledged partial-failure window is tolerated for one PR cycle
-    because in PR 2 there is no concurrent-logout-vs-rotation surface
-    yet (the global-cutoff logout still wipes everything) and no grace
-    key for the race in §4.3 to subvert. PR 3 replaces this with the
-    full Lua script.
+    Returns the bare string ``"ok"`` on success, or one of the three
+    error tokens (``session_revoked``, ``already_rotated``,
+    ``jti_collision``) when the corresponding guard trips.
 
-    Fails CLOSED on unreachable Redis via :func:`require_client`.
+    Lua errors come back as :class:`redis.exceptions.ResponseError` in
+    py-redis; the message body carries the ``err`` field verbatim. We
+    map back to a string return so the router can dispatch on the four
+    tokens uniformly.
+
+    Fails CLOSED on unreachable Redis via :func:`require_client`. The
+    ``RedisError`` family (connection / timeout / EVAL transport
+    failures) bubbles up unchanged so the router can return 503.
     """
     client = require_client()
-    payload = json.dumps({"user_id": user_id, "sid": sid}, separators=(",", ":"))
-    pipe = client.pipeline(transaction=True)
-    pipe.set(_primary_key(new_jti), payload, ex=ttl_seconds)
-    pipe.sadd(_family_key(sid), new_jti)
-    pipe.expire(_family_key(sid), ttl_seconds)
-    pipe.delete(_primary_key(old_jti))
-    await pipe.execute()
+    primary_value = json.dumps(
+        {"user_id": user_id, "sid": sid}, separators=(",", ":")
+    )
+    grace_value = json.dumps(
+        {"user_id": user_id, "sid": sid, "successor_jti": new_jti},
+        separators=(",", ":"),
+    )
+    try:
+        result = await client.eval(
+            ROTATE_SESSION_LUA,
+            4,  # keycount
+            _primary_key(old_jti),
+            _grace_key(old_jti),
+            _primary_key(new_jti),
+            _family_key(sid),
+            grace_ttl_seconds,
+            idle_ttl_seconds,
+            grace_value,
+            primary_value,
+            old_jti,
+            new_jti,
+        )
+    except RedisResponseError as exc:
+        # py-redis surfaces Lua ``{err = "..."}`` returns as ResponseError.
+        msg = str(exc)
+        for token in (
+            SESSION_ROTATE_REVOKED,
+            SESSION_ROTATE_ALREADY_ROTATED,
+            SESSION_ROTATE_JTI_COLLISION,
+        ):
+            if token in msg:
+                return token
+        # Genuine Lua error (script bug, transport corruption). Let it
+        # propagate so the router can return 503.
+        raise
+    # Successful return is the literal string "ok" — bytes when
+    # decode_responses=False, str when True. The client is configured
+    # with decode_responses=True so we expect a str, but accept both
+    # for the test fake.
+    if isinstance(result, bytes):
+        result = result.decode("utf-8")
+    return result
