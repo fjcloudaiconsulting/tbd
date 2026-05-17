@@ -114,5 +114,25 @@ async def seed_org_defaults(db: AsyncSession, *, org_id: int) -> dict[str, int]:
         ))
         counts["categories"] += 1
 
+    # Credit Card Payment system category (CategoryType.BOTH; no
+    # children). Paying a credit card bill is a transfer between a
+    # payment account and a credit-card account, NOT an expense. This
+    # gives users a ready-made transfer-compatible category so they do
+    # not have to create one on first use. The existing expense-only
+    # "Debt Repayment / Credit Cards" subcategory under Debt Repayment
+    # is intentionally kept distinct — it tracks the cost of carrying
+    # debt (interest, fees), which is a real expense and not a
+    # transfer.
+    if "credit_card_payment" not in existing_cat_slugs:
+        db.add(Category(
+            org_id=org_id,
+            name="Credit Card Payment",
+            slug="credit_card_payment",
+            description="Payments toward a credit-card balance (transfer)",
+            type=CategoryType.BOTH,
+            is_system=True,
+        ))
+        counts["categories"] += 1
+
     await db.flush()
     return counts

@@ -3,6 +3,7 @@
 import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 
 import CategorySelect from "@/components/ui/CategorySelect";
+import HelpAnchor from "@/components/HelpAnchor";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { todayISO } from "@/lib/format";
 import {
@@ -266,19 +267,31 @@ export default function TransferForm({
       </div>
 
       <div>
-        <label htmlFor="fab-xfer-category" className={label}>
-          Category (optional)
-        </label>
+        <div className="flex items-center gap-1">
+          <label htmlFor="fab-xfer-category" className={label}>
+            Transfer category
+          </label>
+          <HelpAnchor
+            section="transfers"
+            label="Transfer category"
+            variant="inline-title"
+            className="mt-0"
+          />
+        </div>
         <CategorySelect
           id="fab-xfer-category"
           categories={categories}
           value={categoryId}
           onChange={setCategoryId}
+          typeFilter="BOTH"
           className={input}
           onCategoryCreated={(cat) => onCategoryCreated?.(cat)}
         />
         <p className="mt-1 text-[10px] text-text-muted">
-          Defaults to Transfer. Override to track in budgets.
+          Transfers use one category shared by both legs. Pick
+          Transfer, Credit Card Payment, or another
+          transfer-compatible category you create. Leave empty to
+          use the default Transfer category.
         </p>
       </div>
 
