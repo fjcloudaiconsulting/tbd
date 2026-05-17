@@ -25,7 +25,12 @@ from app.schemas.invitation import (
     InvitationResponse,
     MemberResponse,
 )
-from app.security import create_access_token, create_invitation_token, create_refresh_token
+from app.security import (
+    create_access_token,
+    create_invitation_token,
+    create_refresh_token,
+    refresh_cookie_max_age,
+)
 from app.services import invitation_service
 from app.services.email_service import send_invitation_email
 from app.services.exceptions import ConflictError, NotFoundError
@@ -185,7 +190,7 @@ async def accept_invitation(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=refresh_cookie_max_age(),
         # Path=/ so the browser sends the cookie on regular page requests
         # (not just /api/v1/auth/refresh). Required for Next.js RSC to read
         # the cookie via /auth/verify. Mirrors the convention applied in

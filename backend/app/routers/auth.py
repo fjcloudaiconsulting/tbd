@@ -59,6 +59,7 @@ from app.security import (
     create_refresh_token,
     decode_token,
     hash_password,
+    refresh_cookie_max_age,
     token_cutoff,
     verify_password,
 )
@@ -292,7 +293,7 @@ async def login(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -324,9 +325,10 @@ AMBIGUOUS_SESSION_DETAIL = "Ambiguous session — please sign in again"
 # the user expects, producing spurious 401s. Every response that issues
 # or clears the canonical ``Path=/`` cookie also emits a
 # ``Path=/api/v1/auth/refresh`` delete so the legacy cookie is actively
-# retired. Remove this cleanup after 2026-05-25 (PR #211 shipped
-# 2026-05-11; cookie max_age is 7 days, so all legacy cookies expire
-# naturally by then assuming no further drift).
+# retired. Remove this cleanup once all pre-PR #211 cookies have aged
+# out naturally — the legacy cookie's max_age was 7 days when it was
+# written, so any browser that has hit /auth/refresh since 2026-05-18
+# no longer carries one.
 LEGACY_REFRESH_COOKIE_PATH = "/api/v1/auth/refresh"
 
 
@@ -559,7 +561,7 @@ async def refresh(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -830,7 +832,7 @@ def _issue_tokens(user: User, response: Response) -> TokenResponse:
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -1529,7 +1531,7 @@ async def google_callback(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,
+        max_age=refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(resp)
