@@ -33,6 +33,7 @@ import ThemeToggle from "@/components/ui/ThemeToggle";
 import TrialBanner from "@/components/ui/TrialBanner";
 import { hasPlatformPermission } from "@/lib/auth";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
+import { startKeepWarm } from "@/lib/keep-warm";
 
 // Shared sizing/stroke for the sidebar nav icons. Matches the previous
 // Heroicons-outline visuals (1.5 stroke, 18×18) so the swap to Lucide is
@@ -151,6 +152,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
   }, [user, loading, router]);
+
+  // Cold-start mitigation: while the user is signed in AND AppShell is
+  // mounted, a 4-min heartbeat pings /health?keep-warm=1 to keep the
+  // DO App Platform Basic-XS container out of hibernation. The
+  // heartbeat auto-pauses on visibilitychange -> hidden and stops on
+  // auth:unauthenticated. Strictly gated on ``user`` so unauthenticated
+  // landing / login / SSO-callback flows never trigger it.
+  useEffect(() => {
+    if (!user) return;
+    return startKeepWarm();
+  }, [user]);
 
   // L3.3 first-run wizard. Bounce authenticated users whose backend
   // explicitly tells us they have not onboarded yet (`onboarded_at`
