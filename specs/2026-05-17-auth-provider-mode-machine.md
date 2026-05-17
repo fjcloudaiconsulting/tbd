@@ -324,7 +324,7 @@ A 1-PR split is rejected because it touches 35 files and is impossible to roll b
 
 ## 9. Risks
 
-1. **Terminal-event coupling.** The provider learns about session termination through a single window event dispatched from `api.ts` (PR #299) plus `logout()`. If a future refresh path is added that does NOT use `apiFetch`'s terminal branch, the provider will silently miss the termination and the user stays in `authenticated` against a dead session. Mitigation: the same `emitAuthEvent` helper PR #299 introduced, plus a convention test that greps for `dispatchEvent.*auth:` outside that helper.
+1. **Terminal-event coupling.** The provider learns about session termination through a single window event dispatched from `api.ts` (PR #299) plus `logout()`. If a future refresh path is added that does NOT use `apiFetch`'s terminal branch, the provider will silently miss the termination and the user stays in `authenticated` against a dead session. Mitigation: Team G's implementation PR introduces a small `emitAuthEvent` helper in `api.ts` (centralising the `dispatchEvent(new CustomEvent("auth:unauthenticated", ...))` calls already shipped by PR #299) and adds a convention test that greps for `dispatchEvent.*auth:` outside that helper.
 
 2. **SSR / hydration.** AuthProvider is a client component (`"use client"`), but `mode: "setup"` is the SSR-rendered value. Any page that uses `mode` server-side will see `setup` and render the spinner, which is the same behavior `loading=true` gives today. No regression, but worth a hydration-mismatch test on the landing route.
 
