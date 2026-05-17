@@ -103,11 +103,17 @@ async def _seed(factory) -> dict:
 
 def _expected_seed_row_count() -> int:
     """Number of rows the seed should add to an empty org: masters +
-    children + the Transfer system category."""
+    children + the standalone system categories (Transfer + Credit
+    Card Payment). Source for the standalone list is
+    ``STANDALONE_SYSTEM_CATEGORIES`` in ``org_bootstrap_service`` so
+    a future addition to that list cannot silently drift this test
+    away from the production seed."""
+    from app.services.org_bootstrap_service import STANDALONE_SYSTEM_CATEGORIES
+
     total = 0
     for m in SYSTEM_CATEGORIES:
         total += 1 + len(m.get("children", []))
-    return total + 1  # +1 for the Transfer category
+    return total + len(STANDALONE_SYSTEM_CATEGORIES)
 
 
 def _user_resolver(role: Role):
@@ -140,6 +146,42 @@ async def test_owner_seeds_full_set_on_empty_org(session_factory) -> None:
             )
         )
         assert count == expected
+
+
+@pytest.mark.asyncio
+async def test_owner_restore_includes_standalone_categories(session_factory) -> None:
+    """Architect feedback on PR #297: ``restore_recommended_categories``
+    must match ``seed_org_defaults`` exactly. After PR #296 added the
+    ``credit_card_payment`` standalone category to the seed, restore
+    must include it too — otherwise new/reset orgs and existing-org
+    Restore actions produce different recommended sets.
+
+    Pin both standalone slugs explicitly so a future drift (someone
+    adds a new standalone seed but forgets restore, or vice versa)
+    fails this test loudly."""
+    seed = await _seed(session_factory)
+    app = _make_app(session_factory, _user_resolver(Role.OWNER))
+
+    with TestClient(app) as client:
+        res = client.post("/api/v1/categories/restore-recommended")
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        restored_slugs = set(
+            (await db.scalars(
+                select(Category.slug).where(
+                    Category.org_id == seed["org_id"],
+                    Category.is_system.is_(True),
+                )
+            )).all()
+        )
+    assert "transfer" in restored_slugs, (
+        "restore must seed the Transfer system category"
+    )
+    assert "credit_card_payment" in restored_slugs, (
+        "restore must seed the Credit Card Payment system category "
+        "(parity with seed_org_defaults — PR #296 added this row)"
+    )
 
 
 @pytest.mark.asyncio

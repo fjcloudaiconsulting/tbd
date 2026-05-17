@@ -22,6 +22,39 @@ from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 
 
+# Standalone system categories (no children, `type=both`) seeded
+# alongside the SYSTEM_CATEGORIES master-and-child tree. Defined once
+# here so ``seed_org_defaults`` (registration / reset) and
+# ``restore_recommended_categories`` (Layer C of the Category Fallback
+# design — re-runs the seed against an existing org) cannot drift.
+# Architect feedback on PR #297: before this list existed, ``restore``
+# only seeded ``Transfer`` even though ``seed_org_defaults`` had
+# started seeding ``Credit Card Payment`` via PR #296, leaving two
+# different definitions of "recommended categories" on main.
+STANDALONE_SYSTEM_CATEGORIES: list[dict] = [
+    {
+        "slug": "transfer",
+        "name": "Transfer",
+        "description": "Internal transfers between accounts",
+        "type": CategoryType.BOTH,
+    },
+    {
+        # Paying a credit card bill is a transfer between a payment
+        # account and a credit-card account, NOT an expense. The
+        # expense-only "Debt Repayment / Credit Cards" subcategory
+        # (under Debt Repayment in SYSTEM_CATEGORIES) is intentionally
+        # kept distinct — it tracks the COST of carrying debt
+        # (interest, fees), which is a real expense, not a transfer.
+        # PR #296 added this seed for new/reset orgs; PR #297 brings
+        # the same row to existing orgs via the Restore action.
+        "slug": "credit_card_payment",
+        "name": "Credit Card Payment",
+        "description": "Payments toward a credit-card balance (transfer)",
+        "type": CategoryType.BOTH,
+    },
+]
+
+
 async def seed_org_defaults(db: AsyncSession, *, org_id: int) -> dict[str, int]:
     """Insert system account types and categories for ``org_id``.
 
@@ -102,37 +135,20 @@ async def seed_org_defaults(db: AsyncSession, *, org_id: int) -> dict[str, int]:
             ))
             counts["categories"] += 1
 
-    # Transfer system category (CategoryType.BOTH; no children).
-    if "transfer" not in existing_cat_slugs:
-        db.add(Category(
-            org_id=org_id,
-            name="Transfer",
-            slug="transfer",
-            description="Internal transfers between accounts",
-            type=CategoryType.BOTH,
-            is_system=True,
-        ))
-        counts["categories"] += 1
-
-    # Credit Card Payment system category (CategoryType.BOTH; no
-    # children). Paying a credit card bill is a transfer between a
-    # payment account and a credit-card account, NOT an expense. This
-    # gives users a ready-made transfer-compatible category so they do
-    # not have to create one on first use. The existing expense-only
-    # "Debt Repayment / Credit Cards" subcategory under Debt Repayment
-    # is intentionally kept distinct — it tracks the cost of carrying
-    # debt (interest, fees), which is a real expense and not a
-    # transfer.
-    if "credit_card_payment" not in existing_cat_slugs:
-        db.add(Category(
-            org_id=org_id,
-            name="Credit Card Payment",
-            slug="credit_card_payment",
-            description="Payments toward a credit-card balance (transfer)",
-            type=CategoryType.BOTH,
-            is_system=True,
-        ))
-        counts["categories"] += 1
+    # Standalone system categories (Transfer, Credit Card Payment).
+    # Defined once at module level so ``restore_recommended_categories``
+    # cannot drift from this seed.
+    for spec in STANDALONE_SYSTEM_CATEGORIES:
+        if spec["slug"] not in existing_cat_slugs:
+            db.add(Category(
+                org_id=org_id,
+                name=spec["name"],
+                slug=spec["slug"],
+                description=spec["description"],
+                type=spec["type"],
+                is_system=True,
+            ))
+            counts["categories"] += 1
 
     await db.flush()
     return counts
@@ -199,16 +215,24 @@ async def restore_recommended_categories(
             ))
             created += 1
 
-    if "transfer" not in existing_slugs:
-        db.add(Category(
-            org_id=org_id,
-            name="Transfer",
-            slug="transfer",
-            description="Internal transfers between accounts",
-            type=CategoryType.BOTH,
-            is_system=True,
-        ))
-        created += 1
+    # Standalone system categories (Transfer, Credit Card Payment).
+    # Source list is ``STANDALONE_SYSTEM_CATEGORIES`` at module level so
+    # this stays in lockstep with ``seed_org_defaults``. Architect
+    # feedback on PR #297: previous version restored only Transfer and
+    # missed Credit Card Payment (which #296 added to seed_org_defaults
+    # before this PR landed), creating two different definitions of
+    # "recommended categories".
+    for spec in STANDALONE_SYSTEM_CATEGORIES:
+        if spec["slug"] not in existing_slugs:
+            db.add(Category(
+                org_id=org_id,
+                name=spec["name"],
+                slug=spec["slug"],
+                description=spec["description"],
+                type=spec["type"],
+                is_system=True,
+            ))
+            created += 1
 
     await db.flush()
     return created
