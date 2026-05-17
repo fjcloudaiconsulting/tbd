@@ -28,13 +28,14 @@ const [needsSetup, setNeedsSetup] = useState(false);
 
 Semantic ambiguity these three booleans / scalars produce today:
 
-1. `loading=true, user=null, needsSetup=false` overloads three real situations:
+1. `loading=true, user=null, needsSetup=false` overloads two real situations:
    a. Provider just mounted, refresh has not been attempted yet (`setup`).
    b. Refresh is in flight (`restoring`).
-   c. Refresh failed transiently and we have not retried (impossible to express; the `finally` on line 76 flips `loading=false` and the state collapses to "unauthenticated" even though Team F's discriminated `RefreshResult` now distinguishes `terminal` from `transient`).
 2. `loading=false, user=null, needsSetup=false` overloads two real situations:
    a. Genuinely unauthenticated (`unauthenticated`, redirect to /login).
-   b. Transient refresh failure post-mount (e.g. network blip while AppShell is mounted). Today AppShell line 152 redirects to `/login` immediately, which is the bug class #287 set out to fix at the api.ts layer but only partially propagates to the provider.
+   b. Logged-out via explicit `logout()` vs. session-expired vs. never-authenticated — the `auth:unauthenticated` event handler (lines 84-91) collapses all three to the same imperative state. Consumers cannot tell "you were just logged out" from "your session expired".
+
+   (Note: the *transient refresh failure* path that #287 fixed is **not** in this overload set any more. Team F's PR #299 absorbs transient outcomes entirely inside `api.ts` — `refreshAccessTokenOnce`'s retry budget runs to completion before the provider sees anything, and `apiFetch` only dispatches `auth:unauthenticated` on a terminal outcome that has been re-verified against `/auth/me`. The provider therefore only ever observes "still authenticated" or "definitively unauthenticated"; the transient window is invisible to it. This spec used to model that window as a fourth mode; PR #299 made that unnecessary.)
 3. `needsSetup` is independent of `user`/`loading` in the type, but in practice only `needsSetup=true, user=null, loading=false` is meaningful; the other 7 combinations are unreachable yet not enforced.
 4. The `auth:unauthenticated` event handler (lines 84-91) collapses session state imperatively; there is no record of whether the collapse came from a terminal refresh failure (api.ts line 199) or from `logout()` (lines 131-139). Consumers cannot tell "you were just logged out" from "your session expired".
 
@@ -57,26 +58,36 @@ export type AuthMode =
   | { mode: "needs_setup" }
 
   // Logged in, access token in memory, user object loaded.
-  | { mode: "authenticated"; user: User; sessionId: string }
+  | { mode: "authenticated"; user: User }
 
   // Confirmed no session. The ONLY mode that triggers redirect to /login.
   // Reached via: terminal refresh failure, explicit logout, or initial
   // refresh attempt completed with a clean negative.
-  | { mode: "unauthenticated"; reason: "logout" | "expired" | "never_authenticated" }
-
-  // Refresh attempt returned RefreshResult { ok: false, kind: "transient" }.
-  // Session MAY still be alive (refresh cookie still valid). Render the
-  // last-known user shell if we had one (`lastUser`) and show a passive
-  // retry banner; do NOT redirect. A successful retry transitions to
-  // `authenticated`; a terminal failure transitions to `unauthenticated`.
-  | {
-      mode: "transient_error";
-      lastUser: User | null;
-      attempt: number;       // increments on each retry while in this mode
-      lastError: string;     // human-readable, sourced from ApiResponseError
-      since: number;         // Date.now() when we first entered transient_error
-    };
+  | { mode: "unauthenticated"; reason: "logout" | "expired" | "never_authenticated" };
 ```
+
+**5-mode machine, not 6.** Earlier drafts of this spec included a
+sixth `transient_error` mode that the provider would enter while
+`api.ts` was retrying a refresh. PR #299 (Team F) made that
+unnecessary: `api.ts` now contains the full transient-recovery
+state machine (`refreshAccessTokenOnce` + singleflight + 31s `/me`
+liveness re-check), and only dispatches `auth:unauthenticated` when
+the outcome is definitively terminal. The provider therefore never
+needs to model the in-recovery window. If we later decide we want
+non-blocking UI feedback during recovery (e.g. a passive "Reconnecting…"
+banner), that is a separate design — `auth:recovery-started` /
+`auth:recovery-ended` events with their own consumer set — and
+explicitly out of scope here.
+
+**`sessionId` removed from `authenticated`.** Earlier drafts carried
+`sessionId: string` alongside `user`. The frontend has no stable
+session id available: `/auth/me` does not return one today, and
+PR #301's backend `sid` claim lives inside the refresh cookie which
+is `HttpOnly` and never reaches JS. Adding the field forced the
+implementation to invent or expose something the user could not
+observe anyway. Removed; if a future feature genuinely needs a
+session id in the frontend, we re-introduce it once the backend
+exposes one in the `/me` payload.
 
 ### Optional sub-state: SSO first-run disclosure (Team E)
 
@@ -97,21 +108,19 @@ Legal transitions (`from -> trigger -> to`):
 | `restoring` | `/auth/status` returns `needs_setup=true` | `needs_setup` |
 | `restoring` | `/auth/refresh` returns `RefreshResult { ok: true }` + `/me` succeeds | `authenticated` |
 | `restoring` | `/auth/refresh` returns `RefreshResult { ok: false, kind: "terminal" }` | `unauthenticated { reason: "never_authenticated" }` |
-| `restoring` | `/auth/refresh` returns `RefreshResult { ok: false, kind: "transient" }` | `transient_error { lastUser: null, attempt: 1 }` |
 | `restoring` | `/me` succeeds after refresh | `authenticated` |
 | `restoring` | `/me` 401 + retry refresh terminal | `unauthenticated { reason: "expired" }` |
 | `needs_setup` | `register()` + `login()` succeed | `authenticated` |
 | `authenticated` | `apiFetch` 401 + refresh terminal (event `auth:unauthenticated`) | `unauthenticated { reason: "expired" }` |
-| `authenticated` | `apiFetch` 401 + refresh transient | `transient_error { lastUser: user }` |
 | `authenticated` | `logout()` resolves (or fails best-effort) | `unauthenticated { reason: "logout" }` |
 | `authenticated` | `refreshMe()` 401 + refresh terminal | `unauthenticated { reason: "expired" }` |
-| `authenticated` | `refreshMe()` 401 + refresh transient | `transient_error { lastUser: user }` |
-| `transient_error` | scheduled retry succeeds (`/me` returns user) | `authenticated` |
-| `transient_error` | scheduled retry returns terminal | `unauthenticated { reason: "expired" }` |
-| `transient_error` | manual retry button -> success | `authenticated` |
-| `transient_error` | manual retry button -> terminal | `unauthenticated { reason: "expired" }` |
 | `unauthenticated` | `login()` succeeds | `authenticated` |
 | `unauthenticated` | `register()` succeeds (followed by login) | `authenticated` |
+
+Transient refresh outcomes do NOT appear in this table: PR #299
+absorbs them inside `api.ts`, so the provider only sees the terminal
+verdict (or never sees a refresh event at all if recovery succeeds).
+See Section 4 for the `api.ts` contract.
 
 Illegal transitions (the reducer asserts and a structured warning is logged; do not throw, do not silently no-op):
 
@@ -120,16 +129,15 @@ Illegal transitions (the reducer asserts and a structured warning is logged; do 
 | `setup` | any token / user mutation | We have not attempted hydration; ignore. |
 | `needs_setup` | `auth:unauthenticated` event | Pre-bootstrap; nobody to log out. |
 | `unauthenticated` | `auth:unauthenticated` event | Already terminal. No-op, no log. |
-| `transient_error` | second `auth:unauthenticated` event mid-retry | Coalesce: retry pipeline owns the resolution. |
 | `authenticated` | `setMode("setup")` or `setMode("restoring")` | Only logout/refresh failure may demote; never silently restart. |
 
 ## 4. Integration contract with Team F's api.ts changes
 
-`frontend/lib/api.ts` already lands the discriminated `RefreshResult` (lines 7-10) plus the terminal/transient split in `apiFetch` (lines 188-213). The provider's job is to subscribe to those signals and produce the mode.
+`frontend/lib/api.ts` (as shipped in PR #299) owns the entire transient-recovery state machine: `refreshAccessTokenOnce` singleflight, retry budget, and the 31s `/auth/me` liveness re-check that distinguishes "actually terminal" from "looked terminal during a Redis blip". The provider's job is to subscribe ONLY to the terminal signal that `api.ts` is willing to emit.
 
-Three dispatch sites to wire:
+Two dispatch sites to wire:
 
-1. **Terminal refresh inside `apiFetch`** (lines 188-201):
+1. **Terminal refresh inside `apiFetch`** (PR #299's terminal branch — final outcome after `refreshAccessTokenOnce` AND `/me` liveness re-check both fail):
 
    ```ts
    } else if (refreshResult.kind === "terminal") {
@@ -137,35 +145,18 @@ Three dispatch sites to wire:
      if (!isCredCheck) {
        accessToken = null;
        if (typeof window !== "undefined") {
-         window.dispatchEvent(new Event("auth:unauthenticated"));
+         window.dispatchEvent(new CustomEvent("auth:unauthenticated", {
+           detail: { reason: "expired" }
+         }));
        }
      }
    ```
 
    Provider listener (today AuthProvider.tsx lines 84-91) maps this to `{ mode: "unauthenticated", reason: "expired" }`. We extend the event to carry a `CustomEvent<{ reason: "expired" }>` payload so the listener does not have to guess, and so `logout()` can dispatch the same event with `reason: "logout"` for a single code path.
 
-2. **Transient refresh inside `apiFetch`** (lines 203-213):
+2. **Logout** (AuthProvider.tsx lines 131-139): same `auth:unauthenticated` event with `reason: "logout"`. Today logout mutates state directly; we route it through the reducer for symmetry.
 
-   ```ts
-   throw new ApiResponseError(
-     503,
-     "Session refresh temporarily unavailable. Please try again.",
-     "refresh_transient",
-     refreshResult.error.message,
-   );
-   ```
-
-   Today this throws and the caller (SWR / a page) sees a 503. The provider does not learn about it. Add a parallel dispatch:
-
-   ```ts
-   window.dispatchEvent(new CustomEvent("auth:transient", {
-     detail: { error: refreshResult.error.message }
-   }));
-   ```
-
-   Provider listener maps to `{ mode: "transient_error", lastUser, attempt, ... }`. The `apiFetch` caller still gets the 503 throw for its own retry semantics; the dispatch is purely so the provider can render the banner.
-
-3. **Logout** (AuthProvider.tsx lines 131-139): same `auth:unauthenticated` event with `reason: "logout"`. Today logout mutates state directly; we route it through the reducer for symmetry.
+There is NO third dispatch site for transient outcomes. PR #299 deliberately keeps transient handling internal to `api.ts`: a transient `RefreshResult { ok: false, kind: "transient" }` causes `apiFetch` to throw `ApiResponseError(503, ...)` so the caller (SWR / page) can render its own retry UI, but no `auth:*` event is dispatched. The provider therefore never observes the transient state.
 
 Failure mode matrix:
 
@@ -174,8 +165,8 @@ Failure mode matrix:
 | Success (any 2xx) | none | unchanged |
 | 401 -> refresh ok -> retry ok | none | `authenticated` (unchanged) |
 | 401 -> refresh ok -> retry 4xx/5xx | none (caller handles) | `authenticated` (unchanged) |
-| 401 -> refresh terminal | `auth:unauthenticated { reason: "expired" }` | `unauthenticated` |
-| 401 -> refresh transient | `auth:transient { error }` | `transient_error` |
+| 401 -> refresh terminal (post `/me` liveness re-check) | `auth:unauthenticated { reason: "expired" }` | `unauthenticated` |
+| 401 -> refresh transient (still recovering) | none (503 thrown to caller; provider untouched) | unchanged |
 | Network error on primary request (no 401) | none | unchanged (caller's problem) |
 
 ## 5. Integration contract with Team E's first-run SSO disclosure
@@ -186,7 +177,7 @@ Per section 2 the recommended shape is a User-metadata flag, not a mode sub-stat
 2. The `User` type in `frontend/lib/types.ts` gains the boolean (optional, with the same forward-compat semantics as `permissions?` and `onboarded_at?`).
 3. AuthProvider does not look at this field. It stays in `authenticated`.
 4. A new island component (`SsoDisclosureGate`, Team E's deliverable) mounted near `AppShell`'s root reads `user.requires_sso_disclosure`, renders the modal when true, and on accept calls a new `POST /api/v1/auth/sso/disclosure/ack` followed by `refreshMe()` to clear the flag.
-5. The disclosure is non-blocking with respect to mode transitions; e.g. an `auth:transient` event during the disclosure still flips the provider into `transient_error`, the modal stays mounted, the user can still acknowledge once `authenticated` returns.
+5. The disclosure is non-blocking with respect to mode transitions; e.g. a terminal `auth:unauthenticated` event during the disclosure flips the provider into `unauthenticated`, the modal unmounts with AppShell, and the user lands on `/login`. (PR #299 absorbs transient outcomes internally, so the modal does not need to model a transient sub-state.)
 
 If Team E pushes back and wants the disclosure to be modal-blocking with respect to other auth events, we re-open this and move to **A (mode sub-state)**. We do not commit to either now beyond "the mode machine does not own it".
 
@@ -288,7 +279,7 @@ interface AuthContextValue {
 
 Derivation rules in the provider:
 
-- `user = mode.mode === "authenticated" ? mode.user : mode.mode === "transient_error" ? mode.lastUser : null`
+- `user = mode.mode === "authenticated" ? mode.user : null`
 - `loading = mode.mode === "setup" || mode.mode === "restoring"`
 - `needsSetup = mode.mode === "needs_setup"`
 
@@ -304,19 +295,16 @@ Pure-function reducer with table-driven cases:
 2. Each row in section 3's illegal-transitions table -> one test asserting `reducer(prev, action) === prev` and that `console.warn` (or `structlog`-flavoured logger if FE has one wired) is called once with a structured payload.
 3. Round-trip: starting in `setup`, fire the canonical happy-path sequence (`MOUNT`, `STATUS_OK_AUTHED`, `REFRESH_OK`, `ME_OK { user }`) and assert terminal mode is `authenticated`.
 4. Round-trip: starting in `setup`, fire the canonical needs-setup sequence (`MOUNT`, `STATUS_NEEDS_SETUP`) and assert terminal mode is `needs_setup`.
-5. Round-trip: starting in `authenticated`, fire `TRANSIENT_REFRESH` then `RETRY_OK { user }` and assert terminal mode is `authenticated` with original `user`.
-6. Round-trip: starting in `authenticated`, fire `TRANSIENT_REFRESH` then `RETRY_TERMINAL` and assert terminal mode is `unauthenticated { reason: "expired" }` with `lastUser` discarded.
 
 ### Integration tests at the consumer level
 
 Use `frontend/tests/components/landing/LandingAuthRedirect.test.tsx` as the template; add cases against the new mode field. New tests in `frontend/tests/components/auth/AuthProvider.test.tsx`:
 
-1. AppShell does NOT redirect when mode is `transient_error` (regression guard for the false-logout class #287 fixed at the api.ts layer).
-2. AppShell DOES redirect when mode is `unauthenticated`.
+1. AppShell does NOT redirect while `api.ts` is mid-recovery (`apiFetch` throws 503 with code `refresh_transient`, no `auth:*` event fires, provider stays in `authenticated`). Regression guard for the false-logout class #287 fixed at the api.ts layer — pin shape: render AppShell with provider in `authenticated`, mock `apiFetch` to throw a 503 with `code: "refresh_transient"`, assert no `router.push("/login")` call.
+2. AppShell DOES redirect when mode is `unauthenticated` (event `auth:unauthenticated { reason: "expired" }` dispatched after PR #299's terminal `/me` liveness re-check fails).
 3. LandingAuthRedirect routes to `/setup` when mode is `needs_setup`, to `/dashboard` when mode is `authenticated`, and stays on landing when mode is `restoring` or `setup` (no flash-of-redirect).
-4. `auth:transient` event flips mode to `transient_error` without clearing `lastUser`.
-5. `auth:unauthenticated { reason: "expired" }` event flips mode to `unauthenticated` and clears `lastUser`.
-6. `logout()` flips mode to `unauthenticated { reason: "logout" }`.
+4. `auth:unauthenticated { reason: "expired" }` event flips mode to `unauthenticated` and clears the cached user.
+5. `logout()` flips mode to `unauthenticated { reason: "logout" }`.
 
 ### Type-level tests
 
@@ -326,7 +314,7 @@ Add a `frontend/tests/types/auth-mode.test-d.ts` (or inline in the unit-test fil
 
 **Recommendation: 2 PRs, not 1 and not 3.**
 
-- **PR 1 (Team G implementation PR, after E + F merge):** introduce the reducer + `AuthMode` type, expose `mode` alongside the existing `user/loading/needsSetup` fields, wire the new `auth:transient` event, route logout through the reducer, mirror the new shape in `AuthProviderApex.tsx`. Migrate the four consumers whose bugs motivated this work: AppShell (transient_error must not redirect), LandingAuthRedirect (cleaner setup-vs-authenticated split), LoginPageBody, setup/page.tsx. Leave the other 31 consumers on the legacy fields.
+- **PR 1 (Team G implementation PR, after E + F merge):** introduce the reducer + `AuthMode` type, expose `mode` alongside the existing `user/loading/needsSetup` fields, extend the existing `auth:unauthenticated` listener to read the `CustomEvent` `reason` payload, route logout through the reducer, mirror the new shape in `AuthProviderApex.tsx`. Migrate the four consumers whose bugs motivated this work: AppShell (must not redirect on a 503 `refresh_transient` thrown by `apiFetch`), LandingAuthRedirect (cleaner setup-vs-authenticated split), LoginPageBody, setup/page.tsx. Leave the other 31 consumers on the legacy fields. NB: this PR does NOT add any new `auth:*` event — PR #299 already shipped the only one this design needs.
 
 - **PR 2 (a few days later, after PR 1 has run in production for one full deploy cycle):** migrate the remaining 31 consumers; remove `loading`, `needsSetup`, and the public `user` field on `AuthContextValue` (or keep `user` as a stable derived alias indefinitely; the savings from removing it are tiny and the churn is large). Codemod-style PR.
 
@@ -336,14 +324,12 @@ A 1-PR split is rejected because it touches 35 files and is impossible to roll b
 
 ## 9. Risks
 
-1. **Event-bus coupling.** The provider learns about transient failures through a window event dispatched from `api.ts`. If the dispatch site is missed (e.g. someone adds a new refresh path), the provider never enters `transient_error` and we regress to the pre-#287 false-logout class. Mitigation: a single helper in `api.ts` (`emitAuthEvent`) and a convention test that greps for `dispatchEvent.*auth:` outside that helper.
+1. **Terminal-event coupling.** The provider learns about session termination through a single window event dispatched from `api.ts` (PR #299) plus `logout()`. If a future refresh path is added that does NOT use `apiFetch`'s terminal branch, the provider will silently miss the termination and the user stays in `authenticated` against a dead session. Mitigation: the same `emitAuthEvent` helper PR #299 introduced, plus a convention test that greps for `dispatchEvent.*auth:` outside that helper.
 
-2. **Retry-budget ownership.** `transient_error` carries `attempt` and `since`, but the actual retry scheduler currently lives inside `apiFetch` (Team F's territory). If Team F's retry budget exhausts and emits a terminal event, the provider must coalesce the events in arrival order. The reducer's `transient_error -> unauthenticated` transition assumes the terminal event wins; if Team F's retry scheduler races a `refreshMe()` call from a consumer (e.g. RestartTourCard), the provider may see `authenticated` then `unauthenticated` then `authenticated` in quick succession. Mitigation: the reducer ignores stale `auth:transient` events whose `since` is older than the current mode's `since`.
+2. **SSR / hydration.** AuthProvider is a client component (`"use client"`), but `mode: "setup"` is the SSR-rendered value. Any page that uses `mode` server-side will see `setup` and render the spinner, which is the same behavior `loading=true` gives today. No regression, but worth a hydration-mismatch test on the landing route.
 
-3. **SSR / hydration.** AuthProvider is a client component (`"use client"`), but `mode: "setup"` is the SSR-rendered value. Any page that uses `mode` server-side will see `setup` and render the spinner, which is the same behavior `loading=true` gives today. No regression, but worth a hydration-mismatch test on the landing route.
+3. **Apex stub drift.** `AuthProviderApex.tsx` already drifts (its return shape includes `refresh` not `refreshMe`, see line 37). The mode-machine PR must update the stub to mirror the new shape exactly, and a CI check should `tsc --noEmit -p next.config.apex.ts` to catch future drift.
 
-4. **Apex stub drift.** `AuthProviderApex.tsx` already drifts (its return shape includes `refresh` not `refreshMe`, see line 37). The mode-machine PR must update the stub to mirror the new shape exactly, and a CI check should `tsc --noEmit -p next.config.apex.ts` to catch future drift.
+4. **Team E timing.** If Team E lands `requires_sso_disclosure` before Team G's implementation PR, Team G's PR pulls in the type. If after, Team E adds a one-line field to `User`. Either order works; the mode machine does not block on it.
 
-5. **Team E timing.** If Team E lands `requires_sso_disclosure` before Team G's implementation PR, Team G's PR pulls in the type. If after, Team E adds a one-line field to `User`. Either order works; the mode machine does not block on it.
-
-6. **Team F shape conflict.** If Team F's anticipated changes introduce more than two refresh outcomes (e.g. `kind: "transient" | "rate_limited" | "maintenance"`), the `transient_error` mode payload may need a `subkind` discriminator. Today's spec uses a single bucket because `api.ts` lines 88-127 only produce `terminal` and `transient`. We do not pre-design subkinds; we extend in PR 3 if and when Team F splits.
+5. **Future recovery UI.** If product later wants a passive "Reconnecting…" banner during the `api.ts` recovery window, this design does NOT support it as-is — the provider has no signal that recovery is in progress. The follow-up would add `auth:recovery-started` / `auth:recovery-ended` events from `api.ts` and a `isRecovering: boolean` derived value on the context; the mode union stays 5-wide. Not in scope here.
