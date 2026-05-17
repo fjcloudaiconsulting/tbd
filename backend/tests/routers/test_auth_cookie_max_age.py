@@ -421,6 +421,117 @@ async def test_all_four_sites_emit_same_max_age_when_setting_changes(
     assert _max_age_from_set_cookie(sso_raw) == expected, sso_raw
 
 
+# ── Invite accept site (architect feedback on PR #305) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_invite_accept_cookie_max_age_matches_settings(
+    session_factory, monkeypatch
+) -> None:
+    """Architect feedback on PR #305: the invitation-accept handler in
+    ``backend/app/routers/org_members.py`` is a fifth refresh-cookie
+    issue site that the original PR missed. After this fix it must
+    move in lockstep with ``REFRESH_IDLE_TTL_DAYS`` like the other
+    four sites in ``auth.py``. This test pins the contract by
+    monkey-patching the setting and exercising the real endpoint
+    end-to-end against the in-memory SQLite fixture.
+
+    Without this regression, a future refactor could silently
+    reintroduce a hardcoded ``max_age=7*24*60*60`` on the invite
+    accept path and tests would not notice.
+    """
+    from app.routers.org_members import router as org_members_router
+    from app.security import create_invitation_token
+    from app.services import invitation_service
+
+    monkeypatch.setattr(app_settings, "refresh_idle_ttl_days", 14)
+    expected = 14 * 86400
+
+    # Seed: org + owner so we can create an invitation off the owner.
+    async with session_factory() as db:
+        org = Organization(name="Inv Co", billing_cycle_day=1)
+        db.add(org)
+        await db.flush()
+        owner = User(
+            org_id=org.id,
+            username="owner",
+            email="owner@inv.io",
+            password_hash=hash_password(PASSWORD),
+            role=Role.OWNER,
+            is_superadmin=False,
+            is_active=True,
+            email_verified=True,
+        )
+        db.add(owner)
+        await db.commit()
+        org_id, owner_id = org.id, owner.id
+
+    async with session_factory() as db:
+        inv = await invitation_service.create_invitation(
+            db,
+            org_id=org_id,
+            created_by=owner_id,
+            email="invitee@inv.io",
+            role=Role.MEMBER,
+        )
+        await db.commit()
+        token = create_invitation_token(inv.id, inv.email)
+
+    # Build a minimal app that mounts the org_members router and shares
+    # the same SQLite session factory.
+    app = FastAPI()
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.include_router(org_members_router)
+
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/orgs/invitations/accept",
+            json={
+                "token": token,
+                "username": "invitee",
+                "password": "strong-pw-1234",
+            },
+        )
+    assert res.status_code == 200, res.text
+    raw = _canonical_refresh_cookie(res.headers)
+    assert _max_age_from_set_cookie(raw) == expected, raw
+
+
+def test_no_hardcoded_seven_day_refresh_cookie_literals_remain() -> None:
+    """Grep guard pinning that no ``max_age=7 * 24 * 60 * 60`` literal
+    remains anywhere in ``backend/app/`` after PR #305 + the architect's
+    org_members.py patch. If a future PR reintroduces the pattern (or
+    any other near-equivalent like ``604800`` written inline next to a
+    refresh-cookie ``set_cookie``), this test fails loudly.
+
+    Scope is the app source tree only; test fixtures may legitimately
+    carry literals as expected values.
+    """
+    from pathlib import Path
+
+    app_dir = Path(__file__).resolve().parents[2] / "app"
+    offenders: list[str] = []
+    # Two equivalent spellings of the old literal. The architect named
+    # the spaced form; the unspaced form is what an over-eager linter
+    # might rewrite it to.
+    needles = ("7 * 24 * 60 * 60", "7*24*60*60")
+    for py in app_dir.rglob("*.py"):
+        text = py.read_text(encoding="utf-8")
+        for needle in needles:
+            if needle in text:
+                offenders.append(f"{py.relative_to(app_dir.parent)}: contains {needle!r}")
+    assert offenders == [], (
+        "Hardcoded 7-day refresh-cookie literals must be replaced by "
+        "refresh_cookie_max_age() (see specs/2026-05-17-backend-session-model.md "
+        "§5.4). Offenders: " + "; ".join(offenders)
+    )
+
+
 # ── Settings validator ──────────────────────────────────────────────────────
 
 

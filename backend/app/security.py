@@ -31,6 +31,26 @@ def create_access_token(subject: int, org_id: int, role: str) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
+def refresh_cookie_max_age() -> int:
+    """Cookie ``Max-Age`` (seconds) for the ``refresh_token`` cookie.
+
+    Single source of truth across every issue site — login password
+    branch, ``/refresh`` rotation, MFA branches via ``_issue_tokens``,
+    the Google OAuth callback, AND invitation accept in
+    ``routers/org_members.py``. Derived from
+    ``settings.refresh_idle_ttl_days`` so the operator can tune session
+    idle TTL via one env var (``REFRESH_IDLE_TTL_DAYS``) and have the
+    change land in lockstep at every cookie write.
+
+    Lives here in ``security.py`` rather than ``routers/auth.py`` so
+    that ``routers/org_members.py`` (and any future router that issues
+    a refresh cookie) does not have to reach into auth.py's private
+    helpers. See ``specs/2026-05-17-backend-session-model.md`` §2.2
+    and §5.4.
+    """
+    return settings.refresh_idle_ttl_days * 86400
+
+
 def create_refresh_token(
     subject: int,
     session_created_at: datetime | None = None,

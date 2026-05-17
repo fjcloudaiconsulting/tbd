@@ -59,6 +59,7 @@ from app.security import (
     create_refresh_token,
     decode_token,
     hash_password,
+    refresh_cookie_max_age,
     token_cutoff,
     verify_password,
 )
@@ -292,7 +293,7 @@ async def login(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=_refresh_cookie_max_age(),
+        max_age=refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -338,20 +339,6 @@ def _clear_legacy_refresh_cookie(response: Response) -> None:
     distinct path-scoped cookie jars in the browser.
     """
     response.delete_cookie("refresh_token", path=LEGACY_REFRESH_COOKIE_PATH)
-
-
-def _refresh_cookie_max_age() -> int:
-    """Cookie ``Max-Age`` for the refresh_token cookie, in seconds.
-
-    Single source of truth across every issue site (login password
-    branch, /refresh rotation, MFA branches via _issue_tokens, and the
-    Google OAuth callback). Derived from
-    ``app_settings.refresh_idle_ttl_days`` so the operator can tune
-    session idle TTL via one env var (REFRESH_IDLE_TTL_DAYS) and have
-    the change land in lockstep at every cookie write. See
-    ``specs/2026-05-17-backend-session-model.md`` §2.2 and §5.4.
-    """
-    return app_settings.refresh_idle_ttl_days * 86400
 
 
 def _extract_refresh_cookies(request: Request) -> list[str]:
@@ -574,7 +561,7 @@ async def refresh(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=_refresh_cookie_max_age(),
+        max_age=refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -845,7 +832,7 @@ def _issue_tokens(user: User, response: Response) -> TokenResponse:
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=_refresh_cookie_max_age(),
+        max_age=refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -1544,7 +1531,7 @@ async def google_callback(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=_refresh_cookie_max_age(),
+        max_age=refresh_cookie_max_age(),
         path="/",
     )
     _clear_legacy_refresh_cookie(resp)
