@@ -4,12 +4,14 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import HelpAnchor from "@/components/HelpAnchor";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
 import {
+  btnDangerSolid,
   card,
   cardHeader,
   cardTitle,
@@ -17,13 +19,14 @@ import {
   pageTitle,
 } from "@/lib/styles";
 
-// Detail view for a single user. Three cards:
+// Detail view for a single user. Cards:
 // - Identity: id, email, username, name, flags.
 // - Org memberships: list with link to each /admin/orgs/[id].
 // - Recent audit events: last 10 events authored by this user.
-//
-// No mutating buttons. L4.4 slice is read-only discovery; the
-// admin-invite / password-reset / impersonate slices ship separately.
+// - Danger zone (users.delete only): hard-delete the User row when
+//   the target is deactivated, non-superadmin, and not the actor.
+//   The server still enforces every precondition; the disabled
+//   button + tooltip is UX only.
 
 type OrgRef = {
   org_id: number;
@@ -75,6 +78,44 @@ export default function AdminUserDetailPage() {
   const [detail, setDetail] = useState<UserDetail | null>(null);
   const [error, setError] = useState("");
   const [fetching, setFetching] = useState(true);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  const canDeleteUsers = hasPlatformPermission(user, "users.delete");
+  // Mirror the backend preconditions so the disabled tooltip
+  // explains WHY the action is unavailable. Server stays
+  // authoritative; this just stops the operator from clicking
+  // through a guaranteed 409.
+  const deleteBlockedReason = detail
+    ? detail.is_superadmin
+      ? "Platform superadmins cannot be deleted via this page."
+      : detail.id === user?.id
+      ? "You cannot delete your own user."
+      : detail.is_active
+      ? "Deactivate the user first via the org members page."
+      : null
+    : "Loading user…";
+
+  async function handleDelete() {
+    if (!detail) return;
+    setDeleteError("");
+    setDeleting(true);
+    try {
+      await apiFetch(`/api/v1/admin/users/${detail.id}`, { method: "DELETE" });
+      setShowDeleteConfirm(false);
+      router.replace("/admin/users");
+    } catch (err) {
+      // Architect feedback on PR #303: the error banner renders in the
+      // danger-zone section (page body). If the modal stays mounted on
+      // top of it, the operator may not see the failure. Close the
+      // modal so the banner is visible.
+      setShowDeleteConfirm(false);
+      setDeleteError(extractErrorMessage(err, "Delete failed"));
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   useEffect(() => {
     if (loading) return;
@@ -292,8 +333,70 @@ export default function AdminUserDetailPage() {
               </table>
             </div>
           </div>
+
+          {canDeleteUsers && (
+            <section
+              className={`${card} border-danger/40 lg:col-span-2`}
+              data-testid="user-danger-zone"
+            >
+              <div className={cardHeader}>
+                <h2 className={`${cardTitle} text-danger`}>Danger zone</h2>
+              </div>
+              <div className="space-y-3 px-6 py-5">
+                <p className="text-sm text-text-secondary">
+                  Permanently delete{" "}
+                  <strong className="text-text-primary">
+                    {detail.email}
+                  </strong>
+                  . Their User row is removed. Audit events authored by this
+                  user are preserved (the actor field becomes blank but the
+                  snapshot email stays). This action cannot be undone.
+                </p>
+                {deleteError && (
+                  <div className={errorCls} role="alert">
+                    {deleteError}
+                  </div>
+                )}
+                <div>
+                  <button
+                    type="button"
+                    disabled={deleteBlockedReason !== null || deleting}
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className={btnDangerSolid}
+                    title={
+                      deleteBlockedReason
+                        ?? "Permanently delete this user."
+                    }
+                    aria-label={`Delete user ${detail.email}`}
+                  >
+                    Delete user
+                  </button>
+                  {deleteBlockedReason && (
+                    <p className="mt-2 text-xs text-text-muted">
+                      {deleteBlockedReason}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
         </div>
       )}
+
+      <ConfirmModal
+        open={showDeleteConfirm}
+        title="Delete user"
+        message={
+          detail
+            ? `Permanently delete ${detail.email}? This removes the User row. The action cannot be undone.`
+            : ""
+        }
+        confirmLabel={deleting ? "Deleting…" : "Delete user"}
+        cancelLabel="Cancel"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </AppShell>
   );
 }
