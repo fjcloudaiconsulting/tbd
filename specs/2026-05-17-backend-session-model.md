@@ -327,7 +327,11 @@ from both passing `SISMEMBER` and both rotating.
        --     astronomically unlikely but overwriting a live session
        --     key is the wrong failure mode. On collision the router
        --     regenerates the jti and retries (at most once).
-       if redis.call("SET", KEYS[3], ARGV[4], "EX", ARGV[2], "NX") == false then
+       --     IMPORTANT: ``SET ... NX`` returns ``nil`` (NOT ``false``)
+       --     on a miss in Lua. Comparing against ``false`` makes the
+       --     guard a no-op. Use ``not set_ok`` instead.
+       local set_ok = redis.call("SET", KEYS[3], ARGV[4], "EX", ARGV[2], "NX")
+       if not set_ok then
            return {err = "jti_collision"}
        end
        -- (4) Write grace, register the new jti in the family, delete the old primary.

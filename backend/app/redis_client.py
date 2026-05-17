@@ -338,3 +338,50 @@ async def session_rotate_lua(
     if isinstance(result, bytes):
         result = result.decode("utf-8")
     return result
+
+
+async def session_revoke_family(sid: str) -> list[str]:
+    """Atomically revoke an entire session family (spec §5.3 / §4.2 logout).
+
+    Round A: in one ``MULTI/EXEC`` read every ``jti`` in
+    ``auth:session:by_sid:{sid}`` THEN delete the family set. The atomic
+    delete of the family set is what closes the architect's PR #301
+    follow-up race — any concurrent ``/refresh`` Lua rotation will see
+    ``SISMEMBER`` return 0 after this lands and refuse to write a
+    successor (Section 4.2 step 5 guard 1).
+
+    Round B: for every ``jti`` returned by Round A, delete the primary
+    key ``auth:session:{jti}`` AND the grace key
+    ``auth:session:grace:{jti}`` in one ``MULTI/EXEC``. Strictly cleanup
+    of orphan keys at this point — the family-set delete in Round A is
+    the load-bearing step.
+
+    Returns the list of ``jti`` values that were in the family (the
+    caller uses the length for the ``auth.session.terminated`` audit
+    detail ``jti_count``).
+
+    Fails CLOSED on unreachable Redis via :func:`require_client`.
+    """
+    client = require_client()
+    # Round A — read membership + delete the family set atomically.
+    pipe_a = client.pipeline(transaction=True)
+    pipe_a.smembers(_family_key(sid))
+    pipe_a.delete(_family_key(sid))
+    results_a = await pipe_a.execute()
+    members = results_a[0] if results_a else set()
+    # ``smembers`` may yield ``set`` or ``list`` depending on the client /
+    # fake — normalise to a sorted ``list[str]`` for stable iteration and
+    # audit-detail reproducibility in tests.
+    jtis: list[str] = sorted(str(j) for j in members)
+
+    if not jtis:
+        return []
+
+    # Round B — delete every primary + grace key for the revoked family.
+    # Strict cleanup; no conditional logic required.
+    pipe_b = client.pipeline(transaction=True)
+    for jti in jtis:
+        pipe_b.delete(_primary_key(jti))
+        pipe_b.delete(_grace_key(jti))
+    await pipe_b.execute()
+    return jtis
