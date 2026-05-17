@@ -285,6 +285,89 @@ describe("OnboardingPageBody", () => {
     expect(screen.getByText(/Step 3 of 4/)).toBeInTheDocument();
   });
 
+  describe("first-run SSO disclosure step", () => {
+    it("shows the disclosure step when the sso-disclosure-pending flag is set", () => {
+      setupAuth(makeUser());
+      window.sessionStorage.setItem("tbd-sso-disclosure-pending", "1");
+      render(<OnboardingPageBody />);
+      expect(
+        screen.getByTestId("onboarding-sso-disclosure"),
+      ).toBeInTheDocument();
+      // The header reads Step 1 of 5 for an owner (4 standard steps +
+      // the prepended disclosure step).
+      expect(screen.getByText(/Step 1 of 5/)).toBeInTheDocument();
+    });
+
+    it("the disclosure copy names each promise the spec requires", () => {
+      setupAuth(makeUser());
+      window.sessionStorage.setItem("tbd-sso-disclosure-pending", "1");
+      render(<OnboardingPageBody />);
+      // What Google shares
+      expect(screen.getByText(/Your name\./)).toBeInTheDocument();
+      expect(
+        screen.getByText(/email address and whether Google has verified it/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/profile photo, if you have one/i),
+      ).toBeInTheDocument();
+      // What we never see
+      expect(
+        screen.getByText(/We do not get your Google password\./i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/Gmail, Drive, Calendar, contacts/i),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/We do not connect to your bank/i),
+      ).toBeInTheDocument();
+      // What Google never sees
+      expect(
+        screen.getByText(/Google does not get access to the accounts, transactions/i),
+      ).toBeInTheDocument();
+      // Privacy + Terms links
+      const privacy = screen.getByRole("link", { name: /Privacy Policy/i });
+      expect(privacy).toHaveAttribute("href", "/privacy");
+      const terms = screen.getByRole("link", { name: /Terms of Service/i });
+      expect(terms).toHaveAttribute("href", "/terms");
+    });
+
+    it("Continue clears the flag and advances into the standard onboarding wizard", async () => {
+      setupAuth(makeUser());
+      window.sessionStorage.setItem("tbd-sso-disclosure-pending", "1");
+      render(<OnboardingPageBody />);
+
+      fireEvent.click(
+        screen.getByTestId("onboarding-sso-disclosure-continue"),
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Better decisions about money start here/i),
+        ).toBeInTheDocument();
+      });
+      // The flag is gone, so a remount would not re-show the disclosure.
+      expect(
+        window.sessionStorage.getItem("tbd-sso-disclosure-pending"),
+      ).toBeNull();
+      expect(
+        screen.queryByTestId("onboarding-sso-disclosure"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("returning SSO users (no flag) hit the existing welcome step with the existing Step 1 of 4 header", () => {
+      // No sessionStorage flag — this is the returning-user contract.
+      setupAuth(makeUser());
+      render(<OnboardingPageBody />);
+      expect(
+        screen.queryByTestId("onboarding-sso-disclosure"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/Better decisions about money start here/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Step 1 of 4/)).toBeInTheDocument();
+    });
+  });
+
   // L1.1 L4 contract: ``POST /api/v1/accounts`` no longer accepts the
   // free-form ``balance`` field. The audited ``opening_balance`` field
   // is the sole entry point for a starting balance. Pin the onboarding
