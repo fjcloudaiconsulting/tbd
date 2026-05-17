@@ -109,6 +109,16 @@ describe("proxy: security headers on redirect response", () => {
     expect(csp).toContain("default-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
   });
+
+  it("stamps a nonce-bearing script-src on the 307", () => {
+    // The redirect path must carry the same per-request CSP shape as
+    // any other response so a redirect-then-render flow stays
+    // consistent. Pin the nonce regex; production CSP must NOT carry
+    // ``'unsafe-inline'`` on script-src (ZAP Medium 2026-05-14).
+    const csp = stampedHeaders().get("content-security-policy") ?? "";
+    expect(csp).toMatch(/script-src[^;]*'nonce-[A-Za-z0-9+/=]+'/);
+    expect(csp).toMatch(/script-src[^;]*'strict-dynamic'/);
+  });
 });
 
 describe("proxy: security headers on regular responses", () => {

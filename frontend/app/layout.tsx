@@ -3,6 +3,7 @@ import { AuthProvider } from "@/components/auth/AuthProvider";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { TourProvider } from "@/components/tour/TourProvider";
 import { siteDescription, siteName, siteTagline, siteUrl } from "@/lib/site";
+import { readNonce } from "@/lib/nonce";
 import "./globals.css";
 
 // Structural social-graph defaults only. Each public page must declare its
@@ -30,11 +31,21 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // The proxy generates a fresh per-request nonce and threads it via
+  // the ``x-nonce`` request header (see ``frontend/proxy.ts``). Reading
+  // it here forces dynamic rendering for the App Platform build, which
+  // is required for nonce-based CSP per Next.js docs. The apex static
+  // export uses ``next.config.apex.ts`` + CloudFront for its CSP, so
+  // ``readNonce`` returns an empty string at apex build time and the
+  // inline theme bootstrap below ships without a nonce attribute
+  // (CloudFront's CSP doesn't require one).
+  const nonce = await readNonce();
+  const nonceProp = nonce ? { nonce } : {};
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
@@ -45,6 +56,7 @@ export default function RootLayout({
           rel="stylesheet"
         />
         <script
+          {...nonceProp}
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
