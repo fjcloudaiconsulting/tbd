@@ -71,6 +71,10 @@ class _FakeRedisPipeline:
         self._ops.append(("delete", keys, {}))
         return self
 
+    def smembers(self, key):
+        self._ops.append(("smembers", (key,), {}))
+        return self
+
     async def execute(self):
         if self._store.abort_pipeline:
             from redis.exceptions import RedisError
@@ -81,16 +85,27 @@ class _FakeRedisPipeline:
             if op == "set":
                 key, value = args
                 self._store._kv[key] = value
+                results.append(True)
             elif op == "sadd":
                 key, *members = args
                 self._store._sets[key].update(members)
+                results.append(len(members))
             elif op == "expire":
                 _ = args  # TTL not simulated; would require a clock fixture
+                results.append(True)
             elif op == "delete":
+                n = 0
                 for k in args:
-                    self._store._kv.pop(k, None)
-                    self._store._sets.pop(k, None)
-            results.append(True)
+                    if self._store._kv.pop(k, None) is not None:
+                        n += 1
+                    if self._store._sets.pop(k, None) is not None:
+                        n += 1
+                results.append(n)
+            elif op == "smembers":
+                (key,) = args
+                results.append(set(self._store._sets.get(key, set())))
+            else:
+                results.append(True)
         return results
 
 

@@ -59,6 +59,7 @@ from app.security import (
     create_mfa_email_token,
     create_password_reset_token,
     create_refresh_token,
+    decode_refresh_jti_sid,
     decode_token,
     hash_password,
     refresh_cookie_max_age,
@@ -593,6 +594,41 @@ async def _validate_single_refresh_token(
             detail="Session has been invalidated",
         )
 
+    # Architect P1 finding on PR #308: family-set membership is the
+    # authoritative revocation contract, not primary-key existence.
+    # The Lua rotation script enforces ``SISMEMBER by_sid {jti}`` on
+    # ``/refresh`` (spec §4.2 step 5 check 1), but ``/verify`` does
+    # NOT run the Lua, so without this check a verify call could
+    # accept a primary key whose family set has already been deleted
+    # by Round A of a concurrent logout.
+    #
+    # The window is small but real:
+    #   * Logout Round A deletes ``auth:session:by_sid:{sid}``.
+    #   * Logout Round B deletes the primary + grace keys for every
+    #     jti, but is a separate MULTI/EXEC; a Redis connection drop
+    #     between the two rounds leaves primary keys orphaned.
+    #   * Any ``/verify`` arriving in that window with the
+    #     pre-logout cookie used to silently succeed.
+    #
+    # Apply only on the primary path; the grace path (above) already
+    # gates on ``session_family_exists``. The membership check is
+    # stronger than family-exists because it also catches the
+    # impossible-but-NX-defended ``jti`` collision where two sessions
+    # share a ``sid`` but only one ``jti`` is in the family set.
+    if redis_state == "primary":
+        try:
+            in_family = await redis_client.session_family_member(sid, jti)
+        except (RedisRequired, RedisError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+            ) from exc
+        if not in_family:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been invalidated",
+            )
+
     # Enforce absolute session lifetime (per-org setting or system default)
     session_created_at = payload.get("session_created_at")
     session_start: datetime | None = None
@@ -913,29 +949,156 @@ async def logout(
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
-    # Best-effort server-side invalidation: if the caller still has a valid
-    # access token, mark their sessions invalidated so the refresh token and
-    # any sibling access tokens are killed. Regardless of auth state, always
-    # clear the refresh cookie so the browser stops sending it.
+    """Per-session logout — revoke by ``sid`` family (spec §5.3).
+
+    PR 4 of the backend-session-model series. Closes the 2026-05-16
+    false-logout incident class: today's handler writes
+    ``sessions_invalidated_at = now`` which is global (kills every
+    session for the user on every device). The new handler revokes
+    ONLY the session family identified by the refresh cookie's ``sid``,
+    leaving other devices / browser profiles authenticated.
+
+    Steps (mirror spec §5.3 verbatim):
+
+    1. Read every refresh cookie via ``_extract_refresh_cookies``.
+       Decode each value just enough to extract its ``sid`` (and ``jti``
+       for diagnostics) — no validation chain, this endpoint accepts
+       anonymous logout as a successful cookie clear.
+    2. Collect the distinct ``sid`` values (typical case: one).
+    3. For each ``sid`` run the atomic family-revoke from
+       :func:`redis_client.session_revoke_family`. Round A's
+       ``DEL auth:session:by_sid:{sid}`` is what closes the
+       architect's PR #301 follow-up race — a concurrent ``/refresh``
+       Lua script will see ``SISMEMBER`` return 0 and refuse to write
+       a successor.
+    4. Clear the refresh cookie at both ``Path=/`` and the legacy path.
+    5. Emit ``auth.session.terminated`` audit with detail
+       ``{sid_count, jti_count}``. Outcome=success even when 0 (an
+       anonymous logout is still a clean cookie clear).
+
+    Critically does NOT touch ``sessions_invalidated_at`` — that field
+    is the global-invalidation cutoff and stays reserved for the five
+    sites enumerated in spec §6 (password reset / change, email
+    change, invitation accept / role swap, admin deactivate). The
+    grep-style regression test in
+    ``tests/auth/test_sessions_invalidated_at_allowlist.py`` pins that
+    invariant.
+
+    Redis-unavailable behaviour (spec §7.1): if the family revoke
+    raises (``RedisRequired`` or ``RedisError``), still clear the
+    cookie and return 200 — the user-visible effect (cookie out of
+    the browser) is the goal, the orphan ``jti`` rows age out on
+    their own TTL. The audit detail flags ``redis_partial_revoke``
+    so ops can disambiguate the degraded path from the happy path.
+    """
+    # ── 1. Collect every refresh cookie + decode for sid/jti ────────────
+    # Walk the raw Cookie header so duplicate ``refresh_token`` entries
+    # (Path=/ + the legacy Path=/api/v1/auth/refresh after PR #211) are
+    # both inspected. Each value is decoded ONLY to read its claims; the
+    # full validation chain is skipped on logout — even an expired or
+    # post-cutoff token still identifies a session family that should be
+    # cleaned up.
+    refresh_tokens = _extract_refresh_cookies(request)
+    sids: list[str] = []
+    jtis_seen: list[str] = []
+    seen_sids: set[str] = set()
+    for raw in refresh_tokens:
+        try:
+            jti, sid = decode_refresh_jti_sid(raw)
+        except (ValueError, Exception):  # noqa: BLE001 — corrupt/missing JWT is fine
+            continue
+        jtis_seen.append(jti)
+        if sid not in seen_sids:
+            seen_sids.add(sid)
+            sids.append(sid)
+
+    # Best-effort identification of the calling user for the audit row.
+    # The Authorization header is the most reliable signal because the
+    # access token carries ``sub``; falling back to the refresh JWT's
+    # ``sub`` is acceptable when the bearer is missing (the user clicked
+    # log-out from a tab whose access token expired). Decoding errors
+    # are swallowed — anonymous logout is still a clean cookie clear.
+    actor_user_id: int | None = None
+    actor_email: str = ""
     authorization = request.headers.get("Authorization", "")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() == "bearer" and token:
         try:
             payload = decode_token(token)
-            user_id = payload.get("sub")
-            if user_id is not None:
-                result = await db.execute(select(User).where(User.id == int(user_id)))
-                user = result.scalar_one_or_none()
-                if user is not None:
-                    user.sessions_invalidated_at = datetime.now(timezone.utc)
-                    await db.commit()
+            sub = payload.get("sub") if payload else None
+            if sub is not None:
+                actor_user_id = int(sub)
         except Exception:
-            # Missing/expired/malformed token: still clear the cookie below.
-            pass
+            actor_user_id = None
+    if actor_user_id is None:
+        for raw in refresh_tokens:
+            try:
+                payload = decode_token(raw)
+            except Exception:
+                continue
+            if payload is None:
+                continue
+            sub = payload.get("sub")
+            if sub is not None:
+                try:
+                    actor_user_id = int(sub)
+                except (TypeError, ValueError):
+                    continue
+                break
+    if actor_user_id is not None:
+        try:
+            row = await db.execute(select(User).where(User.id == actor_user_id))
+            user = row.scalar_one_or_none()
+            if user is not None:
+                actor_email = user.email
+        except Exception:
+            actor_email = ""
+
+    # ── 2 + 3. Atomic family revoke per distinct sid ────────────────────
+    jti_count = 0
+    redis_partial_revoke = False
+    for sid in sids:
+        try:
+            revoked = await redis_client.session_revoke_family(sid)
+            jti_count += len(revoked)
+        except (RedisRequired, RedisError):
+            # Fail-open for logout per spec §7.1: clearing the cookie is
+            # the user-visible effect, orphan keys age out on their own
+            # TTL. Flag in the audit detail so ops can spot the
+            # degraded path.
+            redis_partial_revoke = True
+
+    # ── 4. Clear the cookie at Path=/ AND the legacy path ──────────────
     response.delete_cookie("refresh_token", path="/")
     _clear_legacy_refresh_cookie(response)
-    return {"detail": "Logged out"}
+
+    # ── 5. Audit. Always-success, even when sid_count = 0 ───────────────
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    detail: dict[str, Any] = {
+        "sid_count": len(sids),
+        "jti_count": jti_count,
+    }
+    if redis_partial_revoke:
+        detail["redis_partial_revoke"] = True
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.session.terminated",
+        actor_user_id=actor_user_id,
+        actor_email=actor_email,
+        target_org_id=None,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=detail,
+    )
+
+    body: dict[str, Any] = {"detail": "Logged out"}
+    if redis_partial_revoke:
+        body["redis_partial_revoke"] = True
+    return body
 
 
 # ── Password Reset ───────────────────────────────────────────────────────────
