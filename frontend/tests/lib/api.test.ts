@@ -212,11 +212,14 @@ describe("apiFetch", () => {
   // with code "refresh_transient" so callers / SWR can retry without the
   // user being kicked back to /login.
 
-  it("primary 401 + refresh 401 dispatches auth:unauthenticated and clears token (terminal)", async () => {
+  it("primary 401 + refresh 401 + /me 401 dispatches auth:unauthenticated and clears token (terminal)", async () => {
+    // Team F 2026-05-17: terminal /refresh now triggers a /me probe before
+    // dispatching auth:unauthenticated. Both must fail for true auth death.
     setAccessToken("stale-token");
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))   // primary
-      .mockResolvedValueOnce(jsonResponse({ detail: "invalid_refresh" }, { status: 401 })); // refresh
+      .mockResolvedValueOnce(jsonResponse({ detail: "invalid_refresh" }, { status: 401 })) // refresh terminal
+      .mockResolvedValueOnce(jsonResponse({ detail: "invalid_token" }, { status: 401 })); // /me confirms
 
     await expect(apiFetch("/api/v1/protected")).rejects.toMatchObject({
       name: "ApiResponseError",
@@ -229,13 +232,60 @@ describe("apiFetch", () => {
     );
   });
 
-  it("primary 401 + refresh timeout does NOT clear token, does NOT dispatch, throws recoverable", async () => {
+  it("primary 401 + refresh 401 + /me 200 does NOT dispatch and preserves token (ambiguous-401 defense)", async () => {
+    // Team F 2026-05-17: this closes the ambiguous-401 false-logout class.
+    // When /refresh terminally 401s but the access token is still valid
+    // (backend race / partial outage), /me confirms the session is alive
+    // and we leave the user signed in. The original 401 falls through so
+    // SWR can run its normal retry path.
+    setAccessToken("still-valid-token");
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))   // primary
+      .mockResolvedValueOnce(jsonResponse({ detail: "invalid_refresh" }, { status: 401 })) // refresh terminal
+      .mockResolvedValueOnce(jsonResponse({ id: 1, email: "x@y.z" })); // /me alive
+
+    await expect(apiFetch("/api/v1/protected")).rejects.toMatchObject({
+      name: "ApiResponseError",
+      status: 401,
+    });
+
+    expect(getAccessToken()).toBe("still-valid-token"); // PRESERVED
+    expect(dispatchEventSpy).not.toHaveBeenCalled();
+  });
+
+  it("refresh transient (TypeError, AbortError, then OK) retries within budget without logout", async () => {
+    // Team F 2026-05-17: retry budget on refresh -- 2 retries with 250ms
+    // exponential backoff -- absorbs a flaky network on idle return. With
+    // real timers so the backoff actually elapses; the fetch path itself
+    // resolves synchronously in this test.
+    setAccessToken("stale-token");
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 })) // primary
+      .mockRejectedValueOnce(new TypeError("fetch failed"))                          // refresh attempt 1 -- transient
+      .mockRejectedValueOnce(new DOMException("aborted", "AbortError"))             // refresh attempt 2 -- transient
+      .mockResolvedValueOnce(jsonResponse({ access_token: "fresh-token" }))         // refresh attempt 3 -- OK
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));                            // retry of primary
+
+    const data = await apiFetch<{ ok: boolean }>("/api/v1/protected");
+
+    expect(data).toEqual({ ok: true });
+    expect(getAccessToken()).toBe("fresh-token");
+    expect(dispatchEventSpy).not.toHaveBeenCalled();
+    // 1 primary + 3 refresh attempts + 1 retry = 5
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("primary 401 + refresh timeout (all retries) does NOT clear token, does NOT dispatch, throws recoverable", async () => {
     vi.useFakeTimers();
     try {
       setAccessToken("stale-token");
+      // All 3 refresh attempts hang and time out at 10s each, separated by
+      // 250ms then 500ms exponential backoffs.
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))
-        .mockImplementationOnce(neverResolvingFetch());  // refresh hangs
+        .mockImplementationOnce(neverResolvingFetch())   // refresh attempt 1
+        .mockImplementationOnce(neverResolvingFetch())   // refresh attempt 2
+        .mockImplementationOnce(neverResolvingFetch());  // refresh attempt 3
 
       const promise = apiFetch("/api/v1/protected");
       const assertion = expect(promise).rejects.toMatchObject({
@@ -244,6 +294,11 @@ describe("apiFetch", () => {
         code: "refresh_transient",
       });
 
+      // Advance through all three 10s timeouts + 250ms + 500ms backoffs.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(500);
       await vi.advanceTimersByTimeAsync(10_000);
       await assertion;
 
@@ -254,10 +309,12 @@ describe("apiFetch", () => {
     }
   });
 
-  it("primary 401 + refresh 500 does NOT clear token, does NOT dispatch, throws recoverable", async () => {
+  it("primary 401 + refresh 500 (all retries) does NOT clear token, does NOT dispatch, throws recoverable", async () => {
     setAccessToken("stale-token");
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }))
+      .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }))
       .mockResolvedValueOnce(jsonResponse({ detail: "server error" }, { status: 500 }));
 
     await expect(apiFetch("/api/v1/protected")).rejects.toMatchObject({
@@ -270,18 +327,20 @@ describe("apiFetch", () => {
     expect(dispatchEventSpy).not.toHaveBeenCalled();
   });
 
-  it("parallel 401 herd with transient refresh does not spam auth events or clear token", async () => {
+  it("parallel 401 herd with transient refresh fires exactly one /refresh (and its retries) across all callers", async () => {
     vi.useFakeTimers();
     try {
       setAccessToken("stale-token");
       // 4 parallel calls, all get 401, only one refresh attempt
-      // (single-flight), refresh hangs (transient).
+      // (single-flight), refresh hangs across all 3 retry attempts.
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 })) // primary 1
         .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 })) // primary 2
         .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 })) // primary 3
         .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 })) // primary 4
-        .mockImplementationOnce(neverResolvingFetch()); // refresh hangs
+        .mockImplementationOnce(neverResolvingFetch())  // refresh attempt 1
+        .mockImplementationOnce(neverResolvingFetch())  // refresh attempt 2
+        .mockImplementationOnce(neverResolvingFetch()); // refresh attempt 3
 
       const promises = [
         apiFetch("/api/v1/a"),
@@ -295,16 +354,71 @@ describe("apiFetch", () => {
       );
 
       await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(10_000);
       await Promise.all(assertions);
 
       expect(getAccessToken()).toBe("stale-token");
       expect(dispatchEventSpy).not.toHaveBeenCalled();
-      // Only one refresh attempt happened thanks to single-flight
-      // (4 primaries + 1 refresh = 5 fetch calls)
-      expect(fetchMock).toHaveBeenCalledTimes(5);
+      // 4 primaries + 3 refresh attempts (single-flight: shared across
+      // all 4 callers) = 7 fetch calls total. The 4 callers do NOT each
+      // fire their own /refresh.
+      expect(fetchMock).toHaveBeenCalledTimes(7);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("concurrent 401s share exactly one /refresh and one /me probe across all callers", async () => {
+    // Team F 2026-05-17: closes the singleflight microtask gap. Under the
+    // original .finally(() => null) clear, a queued awaiter could resume
+    // AFTER refreshPromise was cleared and fire a duplicate /refresh.
+    // We now hold refreshPromise alive until every awaiter has consumed
+    // it (refreshAwaiters counter returns to 0). The /me probe is also
+    // singleflighted, so 5 concurrent 401-driven callers see one /refresh
+    // and at most one /me.
+    setAccessToken("stale-token");
+    let refreshCount = 0;
+    let meCount = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        refreshCount++;
+        return jsonResponse({ detail: "invalid_refresh" }, { status: 401 });
+      }
+      if (url.endsWith("/api/v1/auth/me")) {
+        meCount++;
+        return jsonResponse({ detail: "invalid_token" }, { status: 401 });
+      }
+      return jsonResponse({ detail: "expired" }, { status: 401 });
+    });
+
+    const promises = [
+      apiFetch("/api/v1/a"),
+      apiFetch("/api/v1/b"),
+      apiFetch("/api/v1/c"),
+      apiFetch("/api/v1/d"),
+      apiFetch("/api/v1/e"),
+    ];
+
+    const settled = await Promise.allSettled(promises);
+    for (const r of settled) {
+      expect(r.status).toBe("rejected");
+      if (r.status === "rejected") {
+        expect(r.reason).toMatchObject({ status: 401 });
+      }
+    }
+
+    expect(refreshCount).toBe(1);  // exactly one /refresh across all 5
+    expect(meCount).toBeLessThanOrEqual(1); // at most one /me probe
+    expect(getAccessToken()).toBeNull();
+    // auth:unauthenticated fires once even though 5 callers hit terminal.
+    const authEvents = dispatchEventSpy.mock.calls.filter(
+      ([e]) => (e as Event).type === "auth:unauthenticated",
+    );
+    expect(authEvents).toHaveLength(1);
   });
 
   it("does not dispatch auth:unauthenticated for login credential failures", async () => {

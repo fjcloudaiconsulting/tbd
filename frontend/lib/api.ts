@@ -1,5 +1,10 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 const API_FETCH_TIMEOUT_MS = 10_000;
+// Retry budget for transient outcomes on POST /api/v1/auth/refresh. Two
+// retries with 250ms exponential backoff (250ms, 500ms). Terminal 401/403
+// is NOT retried -- those mean the refresh cookie is dead, not in transit.
+const REFRESH_TRANSIENT_RETRIES = 2;
+const REFRESH_BACKOFF_BASE_MS = 250;
 
 let accessToken: string | null = null;
 // Discriminated result so callers can distinguish terminal auth death
@@ -10,6 +15,18 @@ type RefreshResult =
   | { ok: false; kind: "transient"; error: Error; status?: number };
 
 let refreshPromise: Promise<RefreshResult> | null = null;
+// Count of awaiters currently holding the in-flight refreshPromise. Used
+// to close the singleflight microtask gap: the original code cleared
+// refreshPromise inside .finally(), which runs BEFORE awaiting callers
+// resume in the next microtask, so a second 401-driven apiFetch could
+// see null and fire a duplicate /refresh. We now keep refreshPromise
+// non-null until every awaiter has consumed it (count returns to 0).
+let refreshAwaiters = 0;
+// /me probe singleflight. After a terminal /refresh, we run one
+// confirmation probe against /api/v1/auth/me to defend against the
+// ambiguous-401 false-logout class. Multiple awaiters of the same
+// terminal refresh share the same probe.
+let mePromise: Promise<boolean> | null = null;
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
@@ -77,7 +94,7 @@ async function fetchWithTimeout(
   }
 }
 
-async function refreshAccessToken(): Promise<RefreshResult> {
+async function refreshAccessTokenOnce(): Promise<RefreshResult> {
   let res: Response;
   try {
     res = await fetchWithTimeout(`${API_URL}/api/v1/auth/refresh`, {
@@ -130,6 +147,43 @@ async function refreshAccessToken(): Promise<RefreshResult> {
   return { ok: true, accessToken: data.access_token };
 }
 
+// Retry budget wrapper. Re-runs refreshAccessTokenOnce up to
+// REFRESH_TRANSIENT_RETRIES times when the outcome is transient
+// (network/timeout/5xx/JSON parse/protocol). Terminal 401/403 short-
+// circuits immediately -- those mean the refresh cookie is dead.
+async function refreshAccessToken(): Promise<RefreshResult> {
+  let last: RefreshResult = await refreshAccessTokenOnce();
+  for (let attempt = 1; attempt <= REFRESH_TRANSIENT_RETRIES; attempt++) {
+    if (last.ok || last.kind === "terminal") return last;
+    // Exponential backoff: 250ms, 500ms.
+    const delay = REFRESH_BACKOFF_BASE_MS * 2 ** (attempt - 1);
+    await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    last = await refreshAccessTokenOnce();
+  }
+  return last;
+}
+
+// One-shot /api/v1/auth/me probe used to disambiguate a terminal /refresh
+// response. If the access token is still in memory and /me returns 200,
+// the session is alive (the /refresh 401 was a backend race / partial
+// outage), so we must NOT dispatch auth:unauthenticated. If /me also
+// fails terminally we proceed with logout. Anything else (network/timeout
+// /5xx) is treated as "cannot confirm" => preserve current behavior and
+// proceed with logout. This is safer than leaving the user wedged.
+async function probeAuthMeAlive(): Promise<boolean> {
+  if (!accessToken) return false;
+  try {
+    const res = await fetchWithTimeout(`${API_URL}/api/v1/auth/me`, {
+      method: "GET",
+      credentials: "include",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
   options: ApiFetchOptions = {}
@@ -164,14 +218,33 @@ export async function apiFetch<T>(
   );
 
   // On 401, attempt one silent refresh (even without a current token --
-  // the refresh cookie may still be valid)
-  if (res.status === 401) {
+  // the refresh cookie may still be valid). Credential-check endpoints
+  // skip the entire silent-refresh flow: a 401 on /login or /mfa/verify
+  // means bad input from the caller, not an expired session, so we just
+  // surface the 401 below without touching refresh/probe/event.
+  const isCredCheck =
+    path.startsWith("/api/v1/auth/login") ||
+    path.startsWith("/api/v1/auth/mfa/verify");
+  if (res.status === 401 && !isCredCheck) {
+    // Singleflight: every concurrent 401-driven caller shares one
+    // refreshPromise. We increment refreshAwaiters BEFORE awaiting and
+    // only clear refreshPromise once the last awaiter has consumed it.
+    // This closes the microtask gap where the old `.finally(null)` ran
+    // before queued awaiters resumed, leaking duplicate /refresh calls.
     if (!refreshPromise) {
-      refreshPromise = refreshAccessToken().finally(() => {
-        refreshPromise = null;
-      });
+      refreshPromise = refreshAccessToken();
     }
-    const refreshResult = await refreshPromise;
+    const sharedPromise = refreshPromise;
+    refreshAwaiters++;
+    let refreshResult: RefreshResult;
+    try {
+      refreshResult = await sharedPromise;
+    } finally {
+      refreshAwaiters--;
+      if (refreshAwaiters === 0 && refreshPromise === sharedPromise) {
+        refreshPromise = null;
+      }
+    }
 
     if (refreshResult.ok) {
       headers.set("Authorization", `Bearer ${refreshResult.accessToken}`);
@@ -186,20 +259,38 @@ export async function apiFetch<T>(
       );
       // Retry attempted; fall through to normal !res.ok handling below.
     } else if (refreshResult.kind === "terminal") {
-      // True auth death: refresh cookie invalid/expired. Clear in-memory
-      // token and notify AuthProvider so AppShell can redirect to /login.
-      // Skip for credential-check endpoints where 401 means bad input,
-      // not an expired session.
-      const isCredCheck =
-        path.startsWith("/api/v1/auth/login") ||
-        path.startsWith("/api/v1/auth/mfa/verify");
-      if (!isCredCheck) {
-        accessToken = null;
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new Event("auth:unauthenticated"));
+      // Ambiguous-401 defense: before dispatching auth:unauthenticated,
+      // probe /api/v1/auth/me once. If it returns 200 the access token
+      // is still valid and the /refresh 401 was a backend race or
+      // partial outage, NOT auth death. In that case we leave the
+      // session intact and let the caller see the original 401 so SWR
+      // can run its normal retry. All concurrent callers share one
+      // probe via mePromise singleflight.
+      if (!mePromise) {
+        mePromise = probeAuthMeAlive().finally(() => {
+          // /me probe completes once per terminal-refresh batch; clear
+          // immediately so the NEXT terminal /refresh re-probes fresh.
+          mePromise = null;
+        });
+      }
+      const sessionAlive = await mePromise;
+      if (!sessionAlive) {
+        // True auth death. Clear in-memory token and notify
+        // AuthProvider so AppShell can redirect the user to /login.
+        // Dispatch is gated on accessToken !== null so a herd of
+        // concurrent 401 callers only emits one event: whichever
+        // awaiter clears the token first wins; subsequent awaiters
+        // observe accessToken === null and skip the duplicate event.
+        if (accessToken !== null) {
+          accessToken = null;
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new Event("auth:unauthenticated"));
+          }
         }
       }
       // Fall through: caller sees the original 401 ApiResponseError.
+      // When sessionAlive is true, the session stays intact and SWR
+      // can retry through its normal path.
     } else {
       // refreshResult.kind === "transient": refresh cookie may still be
       // valid; do NOT clear auth state. Throw a recoverable error so SWR
