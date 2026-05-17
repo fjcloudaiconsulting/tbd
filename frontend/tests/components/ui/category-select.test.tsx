@@ -178,4 +178,75 @@ describe("CategorySelect — value resolution under filterType", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
     expect(screen.getByTestId("modal-locked-type")).toHaveTextContent("");
   });
+
+  it("typeFilter=BOTH narrows the dropdown to type=both categories only", () => {
+    // Transfer context: the only acceptable category type on the shared
+    // transfer leg is `both`. Income- and expense-only options must
+    // disappear, including their subcategories.
+    render(
+      <CategorySelect
+        id="t7"
+        categories={CATEGORIES}
+        value=""
+        onChange={vi.fn()}
+        typeFilter="BOTH"
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    const listbox = screen.getByRole("listbox");
+    expect(within(listbox).getByText("Transfer")).toBeInTheDocument();
+    expect(within(listbox).queryByText("Salary")).not.toBeInTheDocument();
+    expect(within(listbox).queryByText("Groceries")).not.toBeInTheDocument();
+    expect(within(listbox).queryByText("Supermarket")).not.toBeInTheDocument();
+  });
+
+  it("typeFilter=BOTH hides a stale value that points at an incompatible category", () => {
+    // The picker is now type=both only, but value still points at the
+    // expense master (id 20). The selected-chip must clear (input is
+    // empty), the same way `filterType` does for income/expense.
+    render(
+      <CategorySelect
+        id="t8"
+        categories={CATEGORIES}
+        value={20}
+        onChange={vi.fn()}
+        typeFilter="BOTH"
+      />,
+    );
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    expect(input.value).toBe("");
+  });
+
+  it("typeFilter=BOTH keeps a compatible (type=both) value visible as the selected chip", () => {
+    render(
+      <CategorySelect
+        id="t9"
+        categories={CATEGORIES}
+        value={30}
+        onChange={vi.fn()}
+        typeFilter="BOTH"
+      />,
+    );
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    expect(input.value).toBe("Transfer");
+  });
+
+  it("typeFilter=BOTH defaults the AddCategoryModal to initialType=both without locking it", () => {
+    // The user must be able to override the type from inside the modal
+    // if they realize the picker context was wrong; locking it would
+    // hide the radio group. Only income/expense lock today.
+    render(
+      <CategorySelect
+        id="t10"
+        categories={CATEGORIES}
+        value=""
+        onChange={vi.fn()}
+        typeFilter="BOTH"
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
+    expect(screen.getByTestId("modal-initial-type")).toHaveTextContent("both");
+    expect(screen.getByTestId("modal-locked-type")).toHaveTextContent("");
+  });
 });

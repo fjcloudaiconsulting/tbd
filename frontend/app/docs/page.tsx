@@ -29,6 +29,7 @@ const sections = [
   { id: "system-health", label: "System health" },
   { id: "dashboard", label: "Dashboard" },
   { id: "transactions", label: "Transactions" },
+  { id: "transfers", label: "Transfers and paying a credit card" },
   { id: "recurring", label: "Recurring transactions" },
   { id: "accounts", label: "Accounts" },
   { id: "categories", label: "Categories" },
@@ -429,6 +430,65 @@ export default function DocsPage() {
               filter by status, account, or category, and to sort the
               columns. Imports land here as a preview first, so nothing
               is committed until you confirm.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="transfers">Transfers and paying a credit card</h2>
+            <p>
+              A transfer is money moving between two of your own
+              accounts (checking to savings, checking to credit card,
+              and so on). Transfers are not income or expense: they do
+              not change your net position, so the app tracks them as a
+              paired movement and keeps them out of category-level
+              spending totals.
+            </p>
+
+            <h3>How transfers are categorized</h3>
+            <p>
+              Both legs of a transfer share one category. That category
+              has to be transfer-compatible (its type is "both"), so it
+              works on the outgoing leg as well as the incoming leg. The
+              transfer form filters the category picker to just these
+              transfer-compatible categories. If you leave the picker
+              empty, the app uses the built-in Transfer category, which
+              is enough for most setups.
+            </p>
+
+            <h3>Paying a credit card bill</h3>
+            <p>
+              A credit card payment is a transfer, not an expense. The
+              spending already happened when you swiped the card. Paying
+              the statement moves cash from your bank account to your
+              credit card account, which clears the card balance back
+              toward zero.
+            </p>
+            <ul>
+              <li>
+                Card purchases (groceries, gas, restaurants) stay as
+                regular expenses on the credit card account. Categorize
+                them the way you would any other purchase.
+              </li>
+              <li>
+                Paying the statement is a single transfer from your
+                bank account to the credit card account. Use Add
+                transfer (or Mark as transfer on an existing pair).
+              </li>
+              <li>
+                If you want to see card payments broken out separately
+                from generic transfers, create a transfer-compatible
+                category like Credit Card Payment or Debt Repayment
+                from the transfer form, then pick it on the transfer.
+                Both legs will use that category.
+              </li>
+            </ul>
+            <p>
+              Heads up: an expense-only category (for example "Debt
+              Repayment / Credit Cards") cannot be used on a transfer.
+              The picker hides those choices on the transfer form, and
+              the backend rejects them on the API, since an
+              expense-only category cannot apply to the incoming leg
+              that lands on the credit card account.
             </p>
           </section>
 
