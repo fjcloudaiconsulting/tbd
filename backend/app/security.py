@@ -1,5 +1,6 @@
 import hmac as _hmac
 import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -54,23 +55,65 @@ def refresh_cookie_max_age() -> int:
 def create_refresh_token(
     subject: int,
     session_created_at: datetime | None = None,
-) -> str:
+    sid: str | None = None,
+) -> tuple[str, str, str]:
     """Create a refresh token.
 
-    session_created_at tracks when the original login happened. It is set
+    Returns ``(token, jti, sid)``. The caller is responsible for writing
+    the corresponding Redis primary key (``auth:session:{jti}``) and
+    family-set entry (``auth:session:by_sid:{sid}``) before emitting the
+    ``Set-Cookie`` — see ``specs/2026-05-17-backend-session-model.md`` §5.4.
+
+    ``session_created_at`` tracks when the original login happened. It is set
     on first login and carried forward on every refresh so the backend can
     enforce an absolute session lifetime regardless of activity.
+
+    ``sid`` identifies the session FAMILY (the chain of refresh tokens
+    that descend from a single login). On first login the caller passes
+    ``None`` and a fresh UUID4 hex is minted. On ``/refresh`` rotation
+    the caller MUST pass the predecessor's ``sid`` so the family link
+    survives across the rotation chain — that is what makes per-session
+    logout (PR 4) revoke every successor.
+
+    ``jti`` is always freshly minted via ``secrets.token_urlsafe(16)``
+    (128 bits of entropy). It rotates on every issue and serves as the
+    Redis primary-key suffix.
     """
     now = datetime.now(timezone.utc)
     expire = now + timedelta(days=settings.refresh_idle_ttl_days)
+    jti = secrets.token_urlsafe(16)
+    session_id = sid if sid is not None else uuid.uuid4().hex
     payload = {
         "sub": str(subject),
         "type": "refresh",
         "session_created_at": (session_created_at or now).timestamp(),
         "iat": int(now.timestamp()),
         "exp": expire,
+        "jti": jti,
+        "sid": session_id,
     }
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return token, jti, session_id
+
+
+def decode_refresh_jti_sid(token: str) -> tuple[str, str]:
+    """Decode a refresh JWT and return ``(jti, sid)``.
+
+    Raises ``ValueError`` if the token cannot be decoded, is not of type
+    ``refresh``, or is missing either claim. Both claims are mandatory
+    after PR 2 ships — legacy refresh JWTs without ``jti``/``sid`` are
+    rejected by the validation chain in ``auth.py``.
+    """
+    payload = jwt.decode(
+        token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+    )
+    if payload.get("type") != "refresh":
+        raise ValueError("token is not a refresh token")
+    jti = payload.get("jti")
+    sid = payload.get("sid")
+    if not jti or not sid:
+        raise ValueError("refresh token missing jti or sid claim")
+    return jti, sid
 
 
 def create_password_reset_token(user_id: int) -> str:

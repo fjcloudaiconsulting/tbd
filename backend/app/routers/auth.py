@@ -49,6 +49,8 @@ from app.schemas.auth import (
 )
 from app.config import settings as app_settings
 from app import redis_client
+from app.redis_client import RedisRequired
+from redis.exceptions import RedisError
 from app.security import (
     MFA_EMAIL_TOKEN_TTL_SECONDS,
     create_access_token,
@@ -285,7 +287,10 @@ async def login(
         return MfaChallengeResponse(mfa_token=mfa_token)
 
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    refresh_token = create_refresh_token(user.id)
+    # PR 2: write the Redis primary key + family-set entry BEFORE
+    # set_cookie. Fails closed (503) on unreachable Redis so we never
+    # emit a cookie that has no corresponding session row.
+    refresh_token, _jti, _sid = await _issue_refresh_session(user.id)
 
     response.set_cookie(
         key="refresh_token",
@@ -306,6 +311,74 @@ async def login(
 
 
 SESSION_EXPIRED_DETAIL = "Session expired — please sign in again"
+
+# Standard 503 response detail returned from any issue / rotation site
+# when Redis is unreachable. The auth-session story fails CLOSED: we
+# refuse to issue a refresh JWT that has no corresponding Redis row,
+# because such a JWT would 401 forever on /refresh. See
+# specs/2026-05-17-backend-session-model.md §7.1.
+SESSION_REDIS_UNAVAILABLE_DETAIL = "Authentication temporarily unavailable"
+
+
+async def _issue_refresh_session(
+    user_id: int,
+    *,
+    session_created_at: datetime | None = None,
+    sid: str | None = None,
+) -> tuple[str, str, str]:
+    """Mint a refresh JWT AND atomically persist its Redis primary key +
+    family-set entry. Returns ``(token, jti, sid)``.
+
+    Fails CLOSED on unreachable / broken Redis by raising
+    ``HTTPException(503)`` — callers MUST let that propagate so no
+    ``Set-Cookie`` is emitted for a session that has no Redis row.
+
+    Used by every fresh-session issue path: login password branch,
+    ``_issue_tokens`` (MFA branches), Google callback, and
+    ``org_members.accept_invitation``. The ``/refresh`` rotation site
+    uses :func:`_rotate_refresh_session` instead.
+    """
+    token, jti, session_id = create_refresh_token(
+        user_id, session_created_at=session_created_at, sid=sid
+    )
+    try:
+        await redis_client.session_issue(
+            jti, session_id, user_id, refresh_cookie_max_age()
+        )
+    except (RedisRequired, RedisError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
+    return token, jti, session_id
+
+
+async def _rotate_refresh_session(
+    user_id: int,
+    old_jti: str,
+    sid: str,
+    *,
+    session_created_at: datetime | None = None,
+) -> tuple[str, str, str]:
+    """Mint a successor refresh JWT (same ``sid``, fresh ``jti``) AND
+    atomically write the new primary + family entry while deleting the
+    old primary. Returns ``(token, new_jti, sid)``.
+
+    Fails CLOSED on unreachable Redis by raising ``HTTPException(503)``.
+    """
+    token, new_jti, session_id = create_refresh_token(
+        user_id, session_created_at=session_created_at, sid=sid
+    )
+    try:
+        await redis_client.session_rotate(
+            old_jti, new_jti, session_id, user_id, refresh_cookie_max_age()
+        )
+    except (RedisRequired, RedisError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
+    return token, new_jti, session_id
 
 # Emitted when the request carries refresh cookies for two or more
 # distinct user accounts (e.g. a legacy account-A cookie shadowing a
@@ -415,6 +488,64 @@ async def _validate_single_refresh_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been invalidated",
             )
+
+    # PR 2 (specs/2026-05-17-backend-session-model.md §5.1 step 3 +
+    # step 4): both ``jti`` and ``sid`` are mandatory on every refresh
+    # JWT issued after PR 2 ships. Legacy tokens (no jti / no sid) are
+    # rejected with the same 401 string the cutoff check uses so the
+    # frontend's terminal-vs-transient classifier needs no change. The
+    # planned reauth break is operator-decision Q7 — see
+    # infra/PR2_REAUTH_BREAK.md.
+    jti = payload.get("jti")
+    sid = payload.get("sid")
+    if not jti or not sid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        )
+
+    # Redis primary-key probe. Miss => 401 (the jti has been revoked or
+    # has expired before its JWT cousin). Redis-unreachable => 503; we
+    # never silently accept the JWT, because that would defeat the
+    # per-session story (PR 4). See spec §7.1.
+    try:
+        session_row = await redis_client.session_validate(jti)
+    except (RedisRequired, RedisError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
+    if session_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        )
+
+    # Architect P2 finding on PR #306: existence of the Redis row is a
+    # necessary but not sufficient success condition. The row stores
+    # ``{user_id, sid}`` precisely so the resolver can verify the JWT
+    # claims still bind to it; if any of the following diverge, the
+    # session must be rejected as corrupt:
+    #
+    #   * the JWT's ``sub`` (user_id) does not match the row's
+    #     ``user_id`` — could be: a forged JWT signed with a stolen
+    #     key, an admin merged two users, or (in theory) the
+    #     impossible-but-defended-against ``jti`` collision the PR 3
+    #     Lua ``NX`` guard exists to catch;
+    #   * the JWT's ``sid`` (session family) does not match the row's
+    #     ``sid`` — could be: a leaked refresh cookie reused after the
+    #     family was reissued under a different ``sid``, or key-level
+    #     corruption from a future migration / replica lag.
+    #
+    # In either case we want the same terminal 401 the missing-key
+    # path produces; the frontend's classifier needs no new code path.
+    row_user_id = session_row.get("user_id")
+    row_sid = session_row.get("sid")
+    if row_user_id != user.id or row_sid != sid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        )
 
     # Enforce absolute session lifetime (per-org setting or system default)
     session_created_at = payload.get("session_created_at")
@@ -528,7 +659,7 @@ async def refresh(
     """
     refresh_tokens = _extract_refresh_cookies(request)
     try:
-        user, _payload, session_start = await _validate_refresh_cookie(
+        user, payload, session_start = await _validate_refresh_cookie(
             refresh_tokens, db
         )
     except HTTPException as exc:
@@ -551,9 +682,17 @@ async def refresh(
             return cleared
         raise
 
-    # Carry forward session_created_at from the original login
+    # PR 2 rotation: preserve the predecessor's ``sid`` so the family
+    # link survives across the rotation chain (per-session logout in
+    # PR 4 walks ``auth:session:by_sid:{sid}``). The validation chain
+    # has already verified that ``jti`` and ``sid`` are present.
+    old_jti = payload["jti"]
+    sid = payload["sid"]
+
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    new_refresh_token = create_refresh_token(user.id, session_created_at=session_start)
+    new_refresh_token, _new_jti, _sid = await _rotate_refresh_session(
+        user.id, old_jti, sid, session_created_at=session_start
+    )
 
     response.set_cookie(
         key="refresh_token",
@@ -822,10 +961,16 @@ async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> User:
     return user
 
 
-def _issue_tokens(user: User, response: Response) -> TokenResponse:
-    """Issue access + refresh tokens and set the refresh cookie."""
+async def _issue_tokens(user: User, response: Response) -> TokenResponse:
+    """Issue access + refresh tokens and set the refresh cookie.
+
+    Shared by every MFA-completion branch (``/mfa/verify``,
+    ``/mfa/recovery``, ``/mfa/email-verify``). Becomes async with PR 2
+    because the Redis primary-key + family-set write happens BEFORE
+    ``set_cookie`` — fail-closed semantics in spec §7.1.
+    """
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    refresh_token = create_refresh_token(user.id)
+    refresh_token, _jti, _sid = await _issue_refresh_session(user.id)
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
@@ -1074,7 +1219,7 @@ async def mfa_verify(
     if not verify_totp(secret, body.code):
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
-    tokens = _issue_tokens(user, response)
+    tokens = await _issue_tokens(user, response)
     await _record_login_success(
         session_factory, user=user, request=request, method="mfa_totp"
     )
@@ -1101,12 +1246,18 @@ async def mfa_recovery(
     if idx is None:
         raise HTTPException(status_code=401, detail="Invalid recovery code")
 
-    # Remove the used code
+    # Remove the used code. Architect P1 finding on PR #306: hold the
+    # commit until AFTER the Redis-backed session-issue inside
+    # ``_issue_tokens`` succeeds. Otherwise a Redis 503 would consume
+    # the recovery code (durable side effect on a tiny finite pool)
+    # without giving the user a session, forcing them to burn another
+    # code on retry.
     hashed_codes.pop(idx)
     user.recovery_codes = ",".join(hashed_codes) if hashed_codes else None
-    await db.commit()
+    await db.flush()
 
-    tokens = _issue_tokens(user, response)
+    tokens = await _issue_tokens(user, response)
+    await db.commit()
     await _record_login_success(
         session_factory, user=user, request=request, method="mfa_recovery"
     )
@@ -1200,7 +1351,7 @@ async def mfa_email_verify(
         if not consumed:
             raise HTTPException(status_code=401, detail="Invalid or expired email code")
 
-    tokens = _issue_tokens(user, response)
+    tokens = await _issue_tokens(user, response)
     await _record_login_success(
         session_factory, user=user, request=request, method="mfa_email"
     )
@@ -1481,12 +1632,21 @@ async def google_callback(
             password_set=False,
         )
         db.add(user)
-        await db.commit()
+        # Architect P1 finding on PR #306: do NOT commit yet. The Redis
+        # session write below must succeed BEFORE we commit the new
+        # user + trial, otherwise a Redis 503 leaves the user durably
+        # created without a session — the next Google SSO retry would
+        # treat them as existing and skip the ``created_user=true``
+        # first-run disclosure branch entirely.
+        await db.flush()
         await db.refresh(user)
 
-        # Create trial subscription for the new org (same as register)
+        # Create trial subscription for the new org (same as register).
+        # Still no commit — single transaction across user, trial, and
+        # Redis session-issue. Flush only so ``Subscription.id`` is
+        # populated for the audit row that follows.
         await subscription_service.create_trial(db, org.id)
-        await db.commit()
+        await db.flush()
 
     # Issue tokens (or MFA challenge if enabled)
     await db.refresh(user, ["organization"])
@@ -1501,7 +1661,24 @@ async def google_callback(
         return resp
 
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    refresh_token = create_refresh_token(user.id)
+    # PR 2: write the Redis primary key + family-set entry BEFORE
+    # set_cookie. Fails closed (503) on unreachable Redis.
+    refresh_token, _jti, _sid = await _issue_refresh_session(user.id)
+
+    # Architect P1 finding on PR #306: on the new-user branch above we
+    # switched ``db.commit()`` to ``db.flush()`` so the user + trial
+    # creation only land in the database AFTER Redis has accepted the
+    # session. A Redis 503 above would have raised before reaching
+    # here, rolling back the entire transaction; the next Google SSO
+    # retry would correctly see no existing user and re-enter the
+    # ``created_user=true`` first-run disclosure branch. Now that
+    # ``_issue_refresh_session`` has succeeded, commit the user +
+    # trial so they survive past this handler.
+    #
+    # The existing-user branch (lines ~1565-1571 above) already
+    # committed any mutated-profile changes earlier, so this second
+    # commit is a no-op for it.
+    await db.commit()
 
     # Redirect to frontend with the access token in the URL fragment. The
     # fragment stays client-side (not sent to servers, not logged), while
