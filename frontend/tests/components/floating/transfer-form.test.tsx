@@ -308,9 +308,20 @@ describe("TransferForm", () => {
     expect(
       screen.getByText(/Transfers use one category shared by both legs/i),
     ).toBeInTheDocument();
+    // Architect feedback on PR #296: helper copy must NOT suggest
+    // "Debt Repayment" because the seeded Debt Repayment category is
+    // type=expense (in SYSTEM_CATEGORIES) and would be rejected by
+    // the backend on a transfer. Replacement points at Transfer +
+    // Credit Card Payment + "another transfer-compatible category you
+    // create".
     expect(
-      screen.getByText(/Credit Card Payment, or Debt Repayment/i),
+      screen.getByText(
+        /Pick Transfer, Credit Card Payment, or another transfer-compatible category you create/i,
+      ),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Debt Repayment/i),
+    ).not.toBeInTheDocument();
   });
 
   it("hides income- and expense-only categories from the transfer category picker", () => {
