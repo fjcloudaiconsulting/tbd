@@ -465,6 +465,9 @@ async def test_successful_google_callback_still_redirects_to_frontend(
 
     assert res.status_code == 302, res.text
     location = res.headers.get("location", "")
+    # First-run signal is appended after the token in the fragment
+    # on the new-user branch (see test_auth_google_callback_first_run.py
+    # for the full pin). The token-in-fragment shape is unchanged.
     assert location.startswith("http://localhost/auth/google/callback#token="), location
 
     # And no failure audit row should have landed.

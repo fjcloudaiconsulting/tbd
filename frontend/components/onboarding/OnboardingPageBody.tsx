@@ -30,6 +30,7 @@
  * redirect to /dashboard on mount. This keeps the route safe to
  * bookmark and protects users who navigate back to /onboarding.
  */
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -49,7 +50,16 @@ const DASHBOARD_TOUR_STEPS = [
 
 const TOUR_FLAG_KEY = "tbd-pending-dashboard-tour";
 
-type Step = "welcome" | "account" | "demo" | "tour";
+// sessionStorage flag the Google SSO callback page sets when a new
+// local user has just been created. Reading it here inserts a
+// privacy disclosure step at the front of the wizard. Kept in sync
+// with `SSO_DISCLOSURE_PENDING_KEY` in
+// frontend/app/auth/google/callback/page.tsx — drift between the
+// writer + reader would silently disable the disclosure for every
+// new SSO user.
+const SSO_DISCLOSURE_PENDING_KEY = "tbd-sso-disclosure-pending";
+
+type Step = "sso-disclosure" | "welcome" | "account" | "demo" | "tour";
 
 const FULL_STEP_ORDER: Step[] = ["welcome", "account", "demo", "tour"];
 const NON_OWNER_STEP_ORDER: Step[] = ["welcome", "account", "tour"];
@@ -59,16 +69,35 @@ export default function OnboardingPageBody() {
   const router = useRouter();
   const tour = useTour();
 
+  // First-run SSO disclosure flag — set by the Google callback page
+  // when it just created a new local user. Read synchronously from
+  // sessionStorage on initial render so the wizard never paints a
+  // mismatched first step. Falls back to false in non-browser
+  // contexts (SSR, test envs without sessionStorage).
+  const [showSsoDisclosure, setShowSsoDisclosure] = useState<boolean>(() => {
+    try {
+      if (typeof window === "undefined") return false;
+      return window.sessionStorage.getItem(SSO_DISCLOSURE_PENDING_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
   // Owners get the full four-step wizard; admins / members skip the
   // demo-seed step because the seed endpoint is owner-only (78d6409).
   // Falling back to NON_OWNER_STEP_ORDER while the user is still
   // loading is safe — the loading branch below returns the spinner
   // before any step renders, so this value is only consumed once
   // `user` is populated.
-  const STEP_ORDER =
+  const BASE_STEP_ORDER: Step[] =
     user?.role === "owner" ? FULL_STEP_ORDER : NON_OWNER_STEP_ORDER;
+  const STEP_ORDER: Step[] = showSsoDisclosure
+    ? (["sso-disclosure", ...BASE_STEP_ORDER] as Step[])
+    : BASE_STEP_ORDER;
 
-  const [step, setStep] = useState<Step>("welcome");
+  const [step, setStep] = useState<Step>(
+    showSsoDisclosure ? "sso-disclosure" : "welcome",
+  );
   const [accountName, setAccountName] = useState("Main Checking");
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   const [selectedTypeId, setSelectedTypeId] = useState<number | null>(null);
@@ -109,6 +138,19 @@ export default function OnboardingPageBody() {
     const idx = STEP_ORDER.indexOf(step);
     if (idx < 0 || idx === STEP_ORDER.length - 1) return;
     setStep(STEP_ORDER[idx + 1]);
+    setError(null);
+  }
+
+  function acceptSsoDisclosure() {
+    // Clear the sessionStorage flag so the disclosure does not show
+    // again, then advance into the standard onboarding wizard.
+    try {
+      window.sessionStorage.removeItem(SSO_DISCLOSURE_PENDING_KEY);
+    } catch {
+      // sessionStorage unavailable — already past it, nothing to do.
+    }
+    setShowSsoDisclosure(false);
+    setStep("welcome");
     setError(null);
   }
 
@@ -224,12 +266,102 @@ export default function OnboardingPageBody() {
       >
         <div className="mb-6 flex items-center justify-between">
           <div className="text-xs uppercase tracking-[0.08em] text-text-muted">
-            Welcome
+            {step === "sso-disclosure" ? "Privacy" : "Welcome"}
           </div>
           <div className="text-xs text-text-muted">
             Step {stepIdx + 1} of {STEP_ORDER.length}
           </div>
         </div>
+
+        {step === "sso-disclosure" && (
+          <div data-testid="onboarding-sso-disclosure">
+            <h1 className="mb-3 text-2xl font-semibold text-text-primary">
+              About your Google sign-in
+            </h1>
+            <p className="mb-4 text-sm leading-relaxed text-text-secondary">
+              You signed in with Google. Before we set up your account,
+              here is exactly what that means.
+            </p>
+
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-[0.06em] text-text-primary">
+              What Google shares with us
+            </h2>
+            <p className="mb-2 text-sm leading-relaxed text-text-secondary">
+              We ask Google for three pieces of information, using the
+              standard scopes <span className="font-mono text-xs">openid</span>,
+              {" "}<span className="font-mono text-xs">email</span>, and
+              {" "}<span className="font-mono text-xs">profile</span>:
+            </p>
+            <ul className="mb-5 list-disc space-y-1 pl-5 text-sm leading-relaxed text-text-secondary">
+              <li>Your name.</li>
+              <li>
+                Your email address and whether Google has verified it.
+              </li>
+              <li>Your profile photo, if you have one.</li>
+            </ul>
+            <p className="mb-5 text-sm leading-relaxed text-text-secondary">
+              We use that information only to create your The Better
+              Decision account and sign you in.
+            </p>
+
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-[0.06em] text-text-primary">
+              What we never see
+            </h2>
+            <ul className="mb-5 list-disc space-y-1 pl-5 text-sm leading-relaxed text-text-secondary">
+              <li>We do not get your Google password.</li>
+              <li>
+                We do not access Gmail, Drive, Calendar, contacts, or
+                anything else in your Google account.
+              </li>
+              <li>
+                We do not connect to your bank, card, or any financial
+                account through Google.
+              </li>
+            </ul>
+
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-[0.06em] text-text-primary">
+              What Google never sees
+            </h2>
+            <p className="mb-5 text-sm leading-relaxed text-text-secondary">
+              Google does not get access to the accounts, transactions,
+              budgets, or any other financial information you keep
+              inside The Better Decision. Your data stays here.
+            </p>
+
+            <p className="mb-6 text-xs leading-relaxed text-text-muted">
+              Full details:{" "}
+              <Link
+                href="/privacy"
+                className="underline hover:text-text-primary"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Privacy Policy
+              </Link>
+              {" "}and{" "}
+              <Link
+                href="/terms"
+                className="underline hover:text-text-primary"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Terms of Service
+              </Link>
+              .
+            </p>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                className={btnPrimary}
+                onClick={acceptSsoDisclosure}
+                data-testid="onboarding-sso-disclosure-continue"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        )}
 
         {step === "welcome" && (
           <div>

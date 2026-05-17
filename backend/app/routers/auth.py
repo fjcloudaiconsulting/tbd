@@ -900,6 +900,35 @@ def _google_error_redirect(
     return resp
 
 
+async def _record_google_callback_created_user(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user: User,
+    request: Request,
+) -> None:
+    """Persist an ``auth.google.callback.created_user`` audit event.
+
+    Emitted on the new-user branch of ``/api/v1/auth/google/callback``
+    in addition to the existing ``user.login.success`` event, so ops
+    can disaggregate "Google identity created a fresh local user"
+    from "Google identity logged into an existing local user". No
+    token values are persisted, matching ``_record_login_success``.
+    """
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.google.callback.created_user",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=user.org_id,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"method": "google_sso"},
+    )
+
+
 async def _record_login_success(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -1380,6 +1409,13 @@ async def google_callback(
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
 
+    # Track whether this callback created a new local user. The flag
+    # drives two downstream effects: an audit row distinct from the
+    # login-success row, and a fragment-only signal to the frontend
+    # so it can show the first-run privacy disclosure surface before
+    # the standard onboarding wizard.
+    created_user = False
+
     if user:
         # Existing user — login
         if not user.is_active:
@@ -1412,6 +1448,7 @@ async def google_callback(
         if mutated:
             await db.commit()
     else:
+        created_user = True
         # New user — register with Google profile
         existing_superadmin = await db.scalar(
             select(func.count()).select_from(User).where(User.is_superadmin == True)
@@ -1469,8 +1506,20 @@ async def google_callback(
     # the refresh token is set as an HttpOnly cookie so apiFetch can use
     # it on /auth/refresh. Both cookies MUST be set on this returned
     # response — see the handler docstring for the FastAPI caveat.
+    #
+    # On the new-user branch we append `&created_user=true` AFTER the
+    # token in the fragment. The frontend callback page parses the
+    # fragment, hands the token to apiFetch, and uses the flag to
+    # stash a sessionStorage marker that triggers the first-run
+    # privacy disclosure step at the start of the onboarding wizard.
+    # The flag rides on the fragment (never the query string) so it
+    # is not surfaced in Referer headers or server access logs, on
+    # the same privacy posture as the token itself.
+    fragment = f"token={access_token}"
+    if created_user:
+        fragment = f"{fragment}&created_user=true"
     resp = RedirectResponse(
-        url=f"{app_settings.app_url}/auth/google/callback#token={access_token}",
+        url=f"{app_settings.app_url}/auth/google/callback#{fragment}",
         status_code=302,
     )
     resp.delete_cookie("oauth_state", path="/api/v1/auth/google")
@@ -1484,6 +1533,19 @@ async def google_callback(
         path="/",
     )
     _clear_legacy_refresh_cookie(resp)
+    if created_user:
+        # Distinct audit event for the "we just created a local user
+        # from a Google identity" branch. Sits alongside the
+        # `user.login.success` event (still emitted below) so existing
+        # login analytics keep working unchanged, while ops/admin can
+        # filter on `auth.google.callback.created_user` for the
+        # account-creation slice (first-run disclosure rollout, growth
+        # metrics, abuse triage). No token values are persisted —
+        # only the user id / email / request id, matching the
+        # _record_login_success privacy posture.
+        await _record_google_callback_created_user(
+            session_factory, user=user, request=request
+        )
     await _record_login_success(
         session_factory, user=user, request=request, method="google_sso"
     )
