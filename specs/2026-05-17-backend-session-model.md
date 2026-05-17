@@ -295,7 +295,7 @@ remained primary-valid for the full idle TTL, not just 30 seconds).
     2. `GET auth:session:{jti}` first. If hit, normal path: rotate (step 5).
     3. If miss, `GET auth:session:grace:{jti}`. If hit, grace path: step 4.
     4. **Grace-path defence-in-depth (architect feedback P1.1).** Before accepting the grace ticket, also `EXISTS auth:session:by_sid:{sid}`. If the family set is gone (logout ran since the rotation), reject with 401 even though the grace key itself has not yet expired. Otherwise: issue an access token only. Do NOT rotate (no new refresh cookie — no rotation oracle).
-    5. **Rotate (normal path), one atomic Lua script** (architect feedback PR #301 follow-up — see Section 4.3 for the race this closes):
+    5. **Rotate (normal path), one atomic Lua script** (architect feedback PR #301 third-pass — see Section 4.3 for the races this closes). The Lua script is the authority; the earlier app-side `GET` (step 2) is purely an optimisation hint to choose which branch to enter:
        ```lua
        -- KEYS[1] = auth:session:{old_jti}
        -- KEYS[2] = auth:session:grace:{old_jti}
@@ -305,21 +305,43 @@ remained primary-valid for the full idle TTL, not just 30 seconds).
        -- ARGV[2] = idle TTL seconds (refresh_idle_ttl_days * 86400)
        -- ARGV[3] = grace JSON value
        -- ARGV[4] = primary JSON value
-       -- ARGV[5] = old_jti (member to check & remove)
-       -- ARGV[6] = new_jti (member to add)
+       -- ARGV[5] = old_jti
+       -- ARGV[6] = new_jti
+
+       -- (1) Family revoked? Concurrent /logout ran.
        if redis.call("SISMEMBER", KEYS[4], ARGV[5]) == 0 then
            return {err = "session_revoked"}
        end
+       -- (2) Already rotated? Concurrent /refresh won the race.
+       --     The earlier app-side GET cannot prevent two requests
+       --     reaching this point with the same old_jti; this check
+       --     inside Lua is the authority.
+       if redis.call("EXISTS", KEYS[1]) == 0 then
+           return {err = "already_rotated"}
+       end
+       -- (3) Defensive NX on new primary. 128-bit jti collisions are
+       --     astronomically unlikely but overwriting a live session
+       --     key is the wrong failure mode. On collision the router
+       --     regenerates the jti and retries (at most once).
+       if redis.call("SET", KEYS[3], ARGV[4], "EX", ARGV[2], "NX") == false then
+           return {err = "jti_collision"}
+       end
+       -- (4) Write grace, register the new jti in the family, delete the old primary.
        redis.call("SET", KEYS[2], ARGV[3], "EX", ARGV[1])
-       redis.call("SET", KEYS[3], ARGV[4], "EX", ARGV[2])
        redis.call("SADD", KEYS[4], ARGV[6])
        redis.call("EXPIRE", KEYS[4], ARGV[2])
        redis.call("DEL", KEYS[1])
        return "ok"
        ```
-       The `SISMEMBER` guard is load-bearing: it makes the rotation **conditional on the session family still existing and still containing this `jti`**. If a concurrent `/logout` has just deleted the family set, `SISMEMBER` returns 0 and the script returns `session_revoked` without writing anything. The router then converts that to 401 (same string as cutoff: `"Session has been invalidated"`). Without this guard, an in-flight `/refresh` that had already passed step 2 (`GET auth:session:{old_jti}` hit) could re-create the family via `SADD` AFTER logout deleted it, resurrecting a logged-out session for the full idle TTL.
-       Lua executes atomically server-side; partial application is not possible. If the script errors (Redis disconnect mid-script — extremely rare), the pre-rotation state is fully preserved; client gets 503 and retries.
-    6. If primary AND grace both miss, 401.
+
+       Three guards inside the script, each load-bearing:
+
+       - **`SISMEMBER` (family revoked check).** A concurrent `/logout` has deleted the family set. Router returns 401 `"Session has been invalidated"` (same string as cutoff; the frontend's terminal-vs-transient classifier needs no change). This closes the logout-vs-rotation race documented in Section 4.3.
+       - **`EXISTS old primary` (already-rotated check).** Two concurrent `/refresh` requests with the same `old_jti` could both pass the earlier app-side `GET auth:session:{old_jti}` HIT and both enter this script. Without this check, both would pass `SISMEMBER` (the family still contains `old_jti` until the winner's `DEL`), and both would mint different successor tokens — the test at Section 9 "Concurrent rotation (no double-issue)" would fail. With the check, the loser sees the winner's `DEL old primary` and returns `already_rotated`. The router maps `already_rotated` to the **grace branch** (Section 5.1 step 4): look up `auth:session:grace:{old_jti}` — which the winner just wrote — verify the family set still exists, issue access-only, no Set-Cookie. The loser's user gets a fresh access token without disturbing the winner's new refresh cookie.
+       - **`SET ... NX` (jti collision guard).** 128 bits of urlsafe entropy makes collisions cosmically improbable but not impossible; overwriting a live session is the wrong failure mode. On collision the router regenerates `jti` once and re-runs the script. If it collides twice in a row, return 503 — the operator has bigger problems (RNG broken).
+
+       Lua executes atomically server-side; partial application is not possible. If the script errors before returning (Redis disconnect mid-script — extremely rare), the pre-rotation state is fully preserved; client gets 503 and retries.
+    6. If primary AND grace both miss, 401 `"Session has been invalidated"`.
 
 - **Logout (per-session, architect feedback P1.1 — atomic family revoke):**
     1. Read every refresh cookie value via `_extract_refresh_cookies`. Decode each, extract the `sid`. Typical case: one `sid` (single browser, single cookie).
@@ -421,9 +443,17 @@ gives Team I one fewer Lua idiom to review.
     - `GET auth:session:grace:{jti}` hit -> read the grace value and confirm its stored `sid` matches the JWT's `sid` (defence against an attacker minting a JWT with someone else's `jti` + their own `sid`). Then `EXISTS auth:session:by_sid:{sid}` — if the family set is gone, 401 (logout ran). Otherwise grace path: issue access token only, return without `Set-Cookie`. The frontend already accepts a bare access token from `/refresh`.
     - Both miss -> 401 `"Session has been invalidated"` (same string today's cutoff check uses, so the frontend's terminal-vs-transient classifier needs no change).
 5. Pick the winning token via existing `_validate_refresh_cookie` rules (same user, newest iat). Multi-user -> `AMBIGUOUS_SESSION_DETAIL`.
-6. On rotation: issue access + refresh tokens. The new refresh JWT carries: same `session_created_at`, **same `sid`**, new `jti`, new `iat`, new `exp`. Write `Set-Cookie: refresh_token=...; Path=/; Max-Age={refresh_idle_ttl_days * 86400}; Secure; HttpOnly; SameSite=Lax`. If the Lua rotate script returns `session_revoked` (concurrent logout), 401 with the same `"Session has been invalidated"` string — do NOT write a Set-Cookie.
-7. On grace path: issue access token only, no `Set-Cookie`. `sid` is NOT rotated either (no new refresh token is minted at all).
-8. Emit audit event `auth.session.rotated` (rotation path) or `auth.session.grace_accept` (grace path). Outcome=success. Detail carries `{old_jti, new_jti, sid, path}` (grace path has no new_jti).
+6. On rotation: run the Lua script (Section 4.2 step 5) and dispatch on its return value:
+    - **`"ok"`**: issue access + refresh tokens. The new refresh JWT carries: same `session_created_at`, **same `sid`**, new `jti`, new `iat`, new `exp`. Write `Set-Cookie: refresh_token=...; Path=/; Max-Age={refresh_idle_ttl_days * 86400}; Secure; HttpOnly; SameSite=Lax`.
+    - **`{err = "session_revoked"}`** (concurrent logout): 401 with the same `"Session has been invalidated"` string. Do NOT write a Set-Cookie.
+    - **`{err = "already_rotated"}`** (concurrent `/refresh` won the race): fall through to the grace branch. Re-probe `auth:session:grace:{old_jti}` (the winner just wrote it inside their Lua transaction) AND `EXISTS auth:session:by_sid:{sid}`. On both hits, issue access token only, no Set-Cookie — same shape as the original grace path. On either miss (grace already expired or family revoked since), 401.
+    - **`{err = "jti_collision"}`** (defensive NX guard hit a 128-bit collision): regenerate `jti` and re-run the Lua script once. If the second attempt also collides, return 503 — the operator's RNG is broken and we want a loud failure, not a silent overwrite.
+7. On grace path (entered directly from step 4 OR via `already_rotated` in step 6): issue access token only, no `Set-Cookie`. `sid` is NOT rotated either (no new refresh token is minted at all).
+8. Emit audit event:
+    - `auth.session.rotated` on Lua `"ok"`. Detail: `{old_jti, new_jti, sid}`.
+    - `auth.session.grace_accept` on grace path (direct OR via `already_rotated`). Detail: `{old_jti, sid, via_already_rotated: bool}` so operators can distinguish "tab race" from "in-flight rotation race".
+    - `auth.session.terminated` is logout-only — see Section 5.3.
+9. The rotation-loser's path (Lua returns `already_rotated`) is the single most subtle case for Team I to test. Section 9 "Concurrent rotation (no double-issue)" pins it explicitly: two concurrent `/refresh` with the same `old_jti` must produce exactly one rotation (one new Set-Cookie), one grace acceptance (the loser, access-only), and zero 401s.
 
 ### 5.2 `POST /api/v1/auth/verify`
 
@@ -530,9 +560,18 @@ The 30s grace window absorbs this and more.
 ### 7.4 `jti` reuse
 
 The `jti` is 16 bytes urlsafe = 128 bits of entropy = collision
-probability per (lifetime, scale) is negligible. We do not add a
-collision check on `SET`; the `NX` guard (Section 4.2) catches it
-defensively and the caller retries with a new `jti`.
+probability per (lifetime, scale) is cosmically negligible. The
+rotation Lua script (Section 4.2 step 5, check (3)) still uses
+`SET ... NX` defensively because overwriting a live session key is
+the wrong failure mode. On a collision the router regenerates `jti`
+and re-runs the script once; a second collision in a row trips a
+503 (loud failure, signals an RNG problem rather than data loss).
+
+Login + Google-callback paths use a separate `MULTI/EXEC` (no Lua,
+no `NX`) because there is no existing key to collide with — `jti`
+has just been generated and nothing else has had a chance to write
+the same key. If we ever observe a real-world collision at issue
+time, that itself is a signal worth alerting on.
 
 ### 7.5 Cross-tab refresh race
 
@@ -576,33 +615,42 @@ knob the operator has been asking for, and unblocks the rest of the
 sequence by removing the bare literal that would otherwise be a merge
 hazard for PR 2's `jti` plumbing.
 
-### PR 2: Refresh `jti` + Redis primary key
+### PR 2: Refresh `jti` + `sid` + primary key + family set
 
-Scope:
+Scope (architect-revised PR #301 third-pass — the original "primary key only, sid in PR 3" split is unsafe because PR 3 introduces the Lua rotation that depends on the family set existing for every session, and we must not have a tranche of sessions in production that pre-date the family set):
 
-- Add `jti` claim to refresh JWT (`security.py`).
-- Add Redis schema (Section 4) primary key only (no grace yet).
-- Update every issue site (login, refresh-rotation, Google callback, MFA branches) to generate `jti` and write the primary Redis key.
-- Update `_validate_single_refresh_token` to require `jti` and probe the primary Redis key. Miss -> 401 `"Session has been invalidated"`.
-- Tests: legacy (no-jti) token is rejected; new token validates iff the Redis key is present; manual Redis DEL produces 401.
+- Add `jti` claim AND `sid` claim to refresh JWT (`security.py`). Both mandatory.
+- Add Redis schema (Section 4.1) — `auth:session:{jti}` (primary) AND `auth:session:by_sid:{sid}` (family set). NO grace key in this PR.
+- Update every issue site (login, Google callback, MFA branches) to generate `jti`, generate `sid`, and write both keys in one `MULTI/EXEC`.
+- Update the `/refresh` rotation issue site to generate `jti` and **preserve `sid`** from the predecessor JWT.
+- Pre-launch: NO Lua yet. Rotation in PR 2 uses sequential `SET new primary / SADD by_sid / DEL old primary` — this is technically the unsafe shape from architect P1.3, but in PR 2 there is no grace key and no concurrent-logout-vs-rotation race surface, so the partial-failure window is narrow and tolerated for one PR cycle. PR 3 replaces it with Lua.
+- Update `_validate_single_refresh_token` to require `jti` AND `sid` and probe the primary Redis key. Miss -> 401 `"Session has been invalidated"`.
+- Tests: legacy (no-jti / no-sid) token is rejected; new token validates iff the Redis primary key is present; manual Redis `DEL` produces 401; `sid` is preserved across one rotation; family set membership matches the issued `jti` chain.
 
 Pre-launch policy means we do NOT keep the old non-jti path alive.
 
-### PR 3: Rotation grace window
+### PR 3: Rotation grace window + Lua rotation + verify fallback
 
 Scope:
 
 - Add `auth:session:grace:{jti}` key with 30s TTL on rotation.
-- Update `/refresh` and `/verify` to fall back to the grace key.
-- Tests: cross-tab race simulation (two concurrent refreshes with the same pre-rotation cookie) both succeed; replay 31s after rotation fails.
+- Replace the sequential rotation shape from PR 2 with the **production Lua script** (Section 4.2 step 5). Wire the three return values (`ok`, `session_revoked`, `already_rotated`, `jti_collision`) per Section 5.1 step 6.
+- Update `/refresh` to fall back to the grace key on app-side `GET old primary` miss (Section 5.1 step 4) AND to fall through to the grace branch when Lua returns `already_rotated`.
+- Update `/verify` per Section 5.2 (probe grace + EXISTS family).
+- Add the `auth.session.rotated` and `auth.session.grace_accept` audit event types.
+- Tests: cross-tab race simulation (two concurrent refreshes with the same pre-rotation cookie) produces exactly one rotation + one grace acceptance + zero 401s; replay 31s after rotation fails; concurrent rotation Lua-race pin (the canonical "no double-issue" test); `jti` collision path under a forced-collision RNG (script returns `jti_collision` once, router retries, second attempt succeeds).
 
-### PR 4: Per-session logout
+### PR 4: Per-session logout — family revoke
 
 Scope:
 
-- Change `/auth/logout` per Section 5.3.
+- Change `/auth/logout` per Section 5.3 — revoke by `sid` family, not by `jti`.
+- Add the `auth.session.terminated` audit event type.
 - Remove the `sessions_invalidated_at = now` write from the logout path only. All other sites in Section 6 keep theirs.
-- Add audit event types `auth.session.terminated`, `auth.session.rotated`, `auth.session.grace_accept`.
+- Add the grep-style regression test/allowlist pinning the Section 6 trigger set (operator decision Q6, Section 11).
+- Tests: logout-after-rotation revokes the entire family (Section 9 P1.1 pin); concurrent logout-vs-rotation race produces `session_revoked` from the Lua script and 401 from `/refresh`; `/verify` rejects grace ticket after logout.
+
+After PR 4, Team I posts a checkpoint summary and we open the dispatch for the follow-up `sessions_invalidated_at` allowlist + future `auth:recovery-*` events if product wants them.
 - Tests: logging out of Tab A leaves Tab B's session valid; password change still nukes both; admin deactivation still nukes all.
 
 ### Migration deltas
@@ -696,7 +744,20 @@ never an optional / try/except-around-None pattern.
 
 ### Concurrent rotation (no double-issue)
 
-- Two concurrent `/refresh` calls carrying the same `jti_A` should produce: (a) one rotation, (b) one grace acceptance, (c) zero 401s. Pin with `asyncio.gather`.
+Two concurrent `/refresh` calls carrying the same `jti_A` must produce exactly:
+
+- One winner with HTTP 200 + Set-Cookie carrying a new `jti_B` (Lua returned `"ok"`).
+- One loser with HTTP 200 + NO Set-Cookie, access token only (Lua returned `{err = "already_rotated"}` → router fell into grace branch → grace key for `jti_A` was found → access-only).
+- Zero 401s.
+
+Pin with `asyncio.gather` and assert the response shapes. Without the Lua `EXISTS old primary` guard (Section 4.2 check (2)), this test fails: both requests pass the earlier app-side `GET` and both `SISMEMBER` checks, both run the full rotation, and the user receives two different new refresh cookies, one of which immediately becomes orphan when the other lands in the browser cookie jar.
+
+### `jti` collision path (defensive NX guard)
+
+- GIVEN a forced-collision RNG that returns the SAME `jti` for two successive `secrets.token_urlsafe(16)` calls on the same process
+- WHEN `/refresh` runs the Lua rotation script
+- THEN the first attempt fails with `{err = "jti_collision"}` (the `SET ... NX` returned false), the router regenerates `jti`, and the second attempt succeeds. Audit event `auth.session.rotated` is emitted once.
+- AND if the RNG is monkey-patched to ALWAYS collide, the second attempt also fails and the router returns 503 with a structlog event flagging the RNG. (We do not want silent overwrite of a live session key; the architect's PR #301 P2 finding.)
 
 ### Logout-after-rotation revokes the entire family (architect P1.1)
 
