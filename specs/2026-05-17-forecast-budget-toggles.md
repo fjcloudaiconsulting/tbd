@@ -43,7 +43,8 @@ Two paths considered:
 | `PlanFeatures` default | `True` for both | Preserve current behavior on every existing org. |
 | Self-service endpoint | `PATCH /api/v1/settings/features` in `settings.py`, gated by `require_org_owner` | Owner-only is consistent with other settings mutations. |
 | Endpoint body | `{"forecast.enabled": bool, "budgets.enabled": bool}` (partial patch) | Each key is independent. |
-| Override write rule | `value == plan_default` → delete any override; `value != plan_default` → upsert override | Keeps the override table small and the resolver clean. |
+| Override write rule | See "Plan-entitlement guard" below. In short: owner can only WRITE a `False` override when the plan default is `True`, and can only DELETE that override (returning to plan default). Owner attempts to write `True` when the plan default is `False` are refused with 403 `feature_locked_by_plan`. | Preserves plan-as-entitlement model. Owners may NEVER bypass a plan-level deny by writing a `True` override. |
+| Plan-entitlement guard | A `True` org override that re-enables a feature the plan has set to `False` is structurally forbidden by the endpoint. Architect feedback on PR #295. | The L4.11 resolver order (`override → plan → default`) would otherwise let an owner unilaterally re-enable a feature the operator denied at the plan level. |
 | Audit event | `org.feature.set` with detail `{feature_key, old_value, new_value}` | Matches existing `org.config.*.set` and `admin.org.feature.set` conventions. |
 | UI surface | Two toggle switches in `/settings/organization` under a new "Features" card | Mirrors the existing `allow_manual_balance_adjustment` toggle already on the page. |
 | UI save mode | Immediate mutation (no Save button) with inline saving spinner | Matches the `allow_manual_balance_adjustment` pattern. Each toggle is independent. |
@@ -51,6 +52,61 @@ Two paths considered:
 | "Hide details" toggle fate | Unchanged | Orthogonal (per-user UI density vs. org-level feature existence). |
 | Backwards compat | Data preserved on disable, restored on re-enable | Disable hides feature surface only; no data deleted. |
 | Feature-flag delivery to frontend | Embed `features: {"forecast.enabled": bool, "budgets.enabled": bool}` on the shared `UserResponse` schema, so BOTH `GET /api/v1/auth/me` (client AuthProvider) AND `POST /api/v1/auth/verify` (RSC `getServerSessionResult`) return it | Two distinct endpoints carry the user object. The client-side AuthProvider gets the flags via `/me` on mount (no extra round-trip). RSC pages that call `getServerSessionResult()` (e.g. `/forecast-plans`) get the flags via `/verify`. Adding the field to the schema gives both for free; isolating to `/me` would leave RSC paths blind. |
+
+## Plan-entitlement guard on `PATCH /api/v1/settings/features`
+
+Architect feedback on PR #295: without an explicit guard the owner self-service endpoint can write an `OrgFeatureOverride(value=True)` row, which the L4.11 resolver (`override → plan → default`) accepts even when the plan default is `False`. That would let any org owner unilaterally re-enable a feature the operator deliberately turned off at the plan level — breaking the plan-as-entitlement model.
+
+The endpoint must enforce this guard server-side:
+
+```
+def patch_features(payload: FeaturesToggleRequest, current_user = Depends(require_org_owner)):
+    for key, requested_value in payload.items():
+        plan_default = _resolve_plan_default(db, current_user.org_id, key)
+        # ... see decision table below ...
+```
+
+### Decision table
+
+| Plan default | Requested value | Action | HTTP response |
+|---|---|---|---|
+| `True` | `True` | Delete any existing override row (no-op if absent). The effective value stays `True` from the plan default. | `200`, returns effective state. |
+| `True` | `False` | Upsert `OrgFeatureOverride(value=False)`. Owner is downgrading below plan default. | `200`, returns effective state. |
+| `False` | `False` | Delete any existing override row (no-op if absent). Effective value already `False` from the plan default. | `200`, returns effective state. |
+| `False` | `True` | **Refuse.** Owner is attempting to bypass plan-level denial. Do NOT write the override; do NOT return success. | `403`, body `{"detail": {"code": "feature_locked_by_plan", "feature_key": "...", "plan_default": false}}`. |
+
+### Why a structured 403 and not a silent 200 with effective `False`
+
+A silent no-op would let an owner UI "successfully" toggle a feature on while the resolver still returns `False`, leaving the user confused about why the feature is still hidden. The structured `feature_locked_by_plan` code lets PR 3's Settings UI render an explicit locked/unavailable state on the toggle ("Forecast is not available on your plan") rather than a misleading success state.
+
+### Self-service `GET /api/v1/settings/features` returns plan-context
+
+To support that locked-UI state, the read side returns more than just the effective bool:
+
+```jsonc
+{
+  "forecast.enabled": {
+    "effective": false,
+    "plan_default": false,
+    "override_active": false,
+    "locked_by_plan": true     // shorthand for plan_default == false
+  },
+  "budgets.enabled": {
+    "effective": true,
+    "plan_default": true,
+    "override_active": false,
+    "locked_by_plan": false
+  }
+}
+```
+
+PR 3's Settings UI renders the switches disabled with a "Not available on your plan" label when `locked_by_plan === true`.
+
+### Audit-event shape
+
+- Owner write that downgrades: `org.feature.set` with `detail={feature_key, old_value: <previous_effective>, new_value: false, source: "owner_self_service"}`.
+- Owner write that restores plan default by deleting an override: `org.feature.set` with `detail={feature_key, old_value: false, new_value: <plan_default>, source: "owner_self_service", action: "reset_to_plan"}`.
+- Owner attempt to bypass plan denial: `org.feature.set.refused` with `detail={feature_key, plan_default: false, requested: true, source: "owner_self_service"}`. Refusal is auditable; silent drop is not.
 
 ## Gate-site enumeration (11 touchpoints)
 
@@ -137,6 +193,22 @@ No migration. Existing orgs have no `OrgFeatureOverride` rows for these new keys
 **when** a user visits `/budgets`,
 **then** budgets are accessible but the "From Forecast" button is hidden, and `POST /api/v1/budgets/from-forecast` returns 403.
 
+**Given** the org's plan has `forecast.enabled = False` (operator deliberately denied the feature at the plan level),
+**when** the owner sends `PATCH /api/v1/settings/features {"forecast.enabled": true}`,
+**then** the endpoint returns **403** with `{"detail": {"code": "feature_locked_by_plan", "feature_key": "forecast.enabled", "plan_default": false}}`, **no `OrgFeatureOverride` row is created**, `has_feature(db, org_id, "forecast.enabled")` still returns `False`, and an `org.feature.set.refused` audit row is written.
+
+**Given** the org's plan has `forecast.enabled = False` and no existing override,
+**when** the owner sends `PATCH /api/v1/settings/features {"forecast.enabled": false}`,
+**then** the endpoint returns **200** with the effective state, no override row is created (it would be redundant), and `has_feature` still returns `False`.
+
+**Given** the org's plan has `forecast.enabled = True` and an existing `False` override (owner previously disabled),
+**when** the owner sends `PATCH /api/v1/settings/features {"forecast.enabled": true}`,
+**then** the endpoint returns **200**, the `False` override row is deleted, `has_feature` returns `True` from the plan default, and an `org.feature.set` audit row records `action: "reset_to_plan"`.
+
+**Given** the org's plan has `forecast.enabled = False`,
+**when** the owner visits `/settings/organization`,
+**then** the "Enable Forecast" toggle renders in a **locked/disabled** state with a "Not available on your plan" label, derived from `GET /api/v1/settings/features` returning `locked_by_plan: true` for the key.
+
 ## Build sequence
 
 ### PR 1 — Catalog keys + resolver default (~50 LOC, no behavior change)
@@ -155,10 +227,18 @@ No migration. Existing orgs have no `OrgFeatureOverride` rows for these new keys
 - Add `Depends(require_feature("forecast.enabled"))` to all handlers in `forecast.py` and `forecast_plans.py`.
 - Add `Depends(require_feature("budgets.enabled"))` to all handlers in `budgets.py`.
 - Add dual `forecast.enabled` check on `POST /budgets/from-forecast`.
-- Add `GET /api/v1/settings/features` endpoint returning effective values for `forecast.enabled`, `budgets.enabled`.
-- Add `PATCH /api/v1/settings/features` endpoint (owner-only, upsert/delete override, audit).
+- Add `GET /api/v1/settings/features` endpoint returning the per-key `{effective, plan_default, override_active, locked_by_plan}` shape (see Plan-entitlement guard section).
+- Add `PATCH /api/v1/settings/features` endpoint (owner-only, plan-entitlement guarded per the decision table above, audit on every branch including refusal).
 - Add `FeaturesToggleRequest` and `FeaturesStateResponse` schemas to `backend/app/schemas/settings.py`.
-- Backend tests: owner toggle persists; non-owner 403; GET returns current state; re-toggle removes override row; cross-feature `from-forecast` gate; toggles persisted via override row not plan row.
+- Backend tests:
+  - Owner downgrade (`plan_default=True` → write `False`) persists override; effective state goes `False`.
+  - Owner restore (`plan_default=True` + existing `False` override → write `True`) deletes override; effective state goes `True`.
+  - Owner attempt to bypass plan denial (`plan_default=False` → write `True`) returns 403 `feature_locked_by_plan`; **no override row is created**; `has_feature(db, org_id, key)` stays `False`.
+  - Owner reset against `plan_default=False` (`plan_default=False` → write `False`) is idempotent: no override row, no error, returns effective `False`.
+  - Non-owner → 403 on PATCH and 403 on GET (gate is `require_org_owner` on both).
+  - GET returns correct `locked_by_plan` flag in all 4 (plan x effective) permutations.
+  - Cross-feature `budgets.from-forecast` gate (already specified above).
+  - Audit: every PATCH branch emits an event (including `org.feature.set.refused` on the bypass attempt).
 
 ### PR 3 — Frontend gates + Settings UI (~200 LOC, depends on PR 1 + PR 2)
 
@@ -191,7 +271,7 @@ PR 1 by itself is **not** a usable disable mechanism. Earlier draft of this spec
    - Implementers must not assume both pages share the same gating shape.
 3. **Per-request feature cache, no Redis TTL.** Feature state cached only within a single HTTP request (`request.state`). No cross-request caching. If an owner disables a feature, the next request for any user in that org sees the new state immediately on next DB read. Correct and simple. No invalidation work needed.
 4. **Cross-feature endpoint `budgets.from-forecast`.** When forecast off but budgets on, must 403 with `forecast.enabled` as the gating reason. Frontend "From Forecast" button hidden (B4). Otherwise the endpoint would silently return an empty result.
-5. **Plan-level feature control.** An admin could set `forecast.enabled = false` on a plan via `/system/plans`. All orgs on that plan lose forecast access. This is correct (plans are a superset control), but operator-facing documentation should note it.
+5. **Plan-level feature control + entitlement guard.** An admin can set `forecast.enabled = false` on a plan via `/system/plans`. All orgs on that plan lose forecast access. The owner self-service endpoint is explicitly forbidden from writing a `True` override that would bypass the plan denial (see "Plan-entitlement guard" section). The endpoint refuses with 403 `feature_locked_by_plan` and audits the refusal. This preserves the plan-as-entitlement model and prevents an unintended escalation path where any org owner could re-enable a deliberately-denied feature.
 6. **`FeatureKey` union type in frontend.** Adding new keys to `FeatureKey` in `types.ts` and `FEATURE_LABELS` in `feature-catalog.ts` must happen in PR 1 or the frontend drift-guard test fails in PR 3.
 
 ## Substrate assessment
