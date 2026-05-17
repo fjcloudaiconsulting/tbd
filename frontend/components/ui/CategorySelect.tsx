@@ -27,7 +27,14 @@ interface Props {
   value: number | "";
   onChange: (id: number | "") => void;
   filterType?: "income" | "expense";
-  typeFilter?: "INCOME" | "EXPENSE";
+  /**
+   * Uppercase variant used by transfer-related callers
+   * (UnpairTransferModal for income/expense legs, TransferForm for the
+   * shared transfer leg). `"BOTH"` narrows the list to categories whose
+   * `type === "both"`, which is the only kind the backend accepts on a
+   * transfer's shared category slot.
+   */
+  typeFilter?: "INCOME" | "EXPENSE" | "BOTH";
   className?: string;
   "aria-label"?: string;
   onCategoryCreated?: (cat: Category) => void;
@@ -50,6 +57,14 @@ export default function CategorySelect({ id, categories, value, onChange, filter
   // Normalize uppercase `typeFilter` (transfers callers) to internal lowercase
   // so it joins the existing filterType machinery without divergent code paths.
   const effectiveFilterType = filterType ?? (typeFilter === "INCOME" ? "income" : typeFilter === "EXPENSE" ? "expense" : undefined);
+  // `bothOnly` is a separate mode (not a third filterType value) because
+  // the existing semantics for "income"/"expense" mean "show same-type
+  // categories AND the always-compatible `both` ones." Transfers need
+  // the opposite: show ONLY `both`, hiding income- and expense-only
+  // categories that the backend would reject on the shared transfer
+  // leg. The `+ Add category` modal launched from this mode defaults to
+  // `initialType="both"` without locking it.
+  const bothOnly = typeFilter === "BOTH";
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(-1);
@@ -70,9 +85,10 @@ export default function CategorySelect({ id, categories, value, onChange, filter
   const rawSelected = categories.find((c) => c.id === value);
   const selected =
     rawSelected &&
-    effectiveFilterType &&
-    rawSelected.type !== effectiveFilterType &&
-    rawSelected.type !== "both"
+    ((bothOnly && rawSelected.type !== "both") ||
+      (effectiveFilterType &&
+        rawSelected.type !== effectiveFilterType &&
+        rawSelected.type !== "both"))
       ? undefined
       : rawSelected;
 
@@ -83,11 +99,12 @@ export default function CategorySelect({ id, categories, value, onChange, filter
       if (c.parent_id !== null) pIds.add(c.parent_id);
     }
     const items = categories.filter((c) => {
+      if (bothOnly && c.type !== "both") return false;
       if (effectiveFilterType && c.type !== effectiveFilterType && c.type !== "both") return false;
       return c.parent_id !== null || !pIds.has(c.id);
     });
     return { selectable: items, parentIds: pIds };
-  }, [categories, effectiveFilterType]);
+  }, [categories, effectiveFilterType, bothOnly]);
 
   const q = query.toLowerCase();
   const filtered = useMemo(() =>
@@ -307,12 +324,27 @@ export default function CategorySelect({ id, categories, value, onChange, filter
       {showAddModal && (
         <AddCategoryModal
           initialName={query}
-          initialType={effectiveFilterType ?? "both"}
-          lockedType={effectiveFilterType}
+          // In `bothOnly` (transfer) mode we default the new category to
+          // "both" without locking the type, so the user can still pick
+          // a different type if they realized the picker context was
+          // wrong. For "income"/"expense" pickers the type stays locked.
+          initialType={bothOnly ? "both" : (effectiveFilterType ?? "both")}
+          lockedType={bothOnly ? undefined : effectiveFilterType}
           masterCategories={masters}
           onCreated={(cat) => {
             setShowAddModal(false);
+            // Always notify upward so other pickers can list the
+            // newly-created category. But in ``bothOnly`` (transfer)
+            // mode the modal's type radio is unlocked — if the user
+            // changed it to income or expense, the new category is
+            // incompatible with the transfer picker. Do NOT
+            // ``handleSelect`` in that case, otherwise the form would
+            // store an id the backend rejects at submit. Architect
+            // feedback on PR #296.
             onCategoryCreated?.(cat);
+            if (bothOnly && cat.type !== "both") {
+              return;
+            }
             handleSelect(cat);
           }}
           onCancel={() => {

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import TransferForm from "@/components/floating/TransferForm";
 import { apiFetch } from "@/lib/api";
@@ -273,6 +273,111 @@ describe("TransferForm", () => {
       ([url]) => url === "/api/v1/transactions/transfer",
     );
     expect(transferCalls).toHaveLength(1);
+  });
+
+  it("labels the category field as 'Transfer category' (not 'Category (optional)')", () => {
+    render(
+      <TransferForm
+        accounts={[CHECKING, SAVINGS]}
+        categories={[TRANSFER_CAT]}
+        onSaved={() => {}}
+      />,
+    );
+    // Architect-locked copy 2026-05-16: the transfer form's category
+    // field must read "Transfer category" so users understand it is
+    // not a generic income/expense category. The matcher is exact to
+    // catch accidental reverts to "Category (optional)".
+    expect(screen.getByText("Transfer category")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Category \(optional\)/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the transfer-compatible helper copy under the category field", () => {
+    render(
+      <TransferForm
+        accounts={[CHECKING, SAVINGS]}
+        categories={[TRANSFER_CAT]}
+        onSaved={() => {}}
+      />,
+    );
+    // Helper text must point users at transfer-compatible categories
+    // (type=both). The previous copy promised "Override to track in
+    // budgets", which gave no hint that arbitrary expense categories
+    // would be rejected by the backend.
+    expect(
+      screen.getByText(/Transfers use one category shared by both legs/i),
+    ).toBeInTheDocument();
+    // Architect feedback on PR #296: helper copy must NOT suggest
+    // "Debt Repayment" because the seeded Debt Repayment category is
+    // type=expense (in SYSTEM_CATEGORIES) and would be rejected by
+    // the backend on a transfer. Replacement points at Transfer +
+    // Credit Card Payment + "another transfer-compatible category you
+    // create".
+    expect(
+      screen.getByText(
+        /Pick Transfer, Credit Card Payment, or another transfer-compatible category you create/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Debt Repayment/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides income- and expense-only categories from the transfer category picker", () => {
+    // Mixed-type fixture: only the type=both row should be selectable
+    // in the transfer-form context. The picker uses typeFilter=BOTH,
+    // so income/expense masters and subs are hidden entirely.
+    const EXPENSE_CAT = {
+      id: 200,
+      name: "Groceries",
+      type: "expense" as const,
+      parent_id: null,
+      parent_name: null,
+      description: null,
+      slug: "groceries",
+      is_system: false,
+      transaction_count: 0,
+    };
+    const INCOME_CAT = {
+      id: 300,
+      name: "Salary",
+      type: "income" as const,
+      parent_id: null,
+      parent_name: null,
+      description: null,
+      slug: "salary",
+      is_system: false,
+      transaction_count: 0,
+    };
+    const TRANSFER_BOTH = {
+      ...TRANSFER_CAT,
+      type: "both" as const,
+    };
+
+    render(
+      <TransferForm
+        accounts={[CHECKING, SAVINGS]}
+        categories={[EXPENSE_CAT, INCOME_CAT, TRANSFER_BOTH]}
+        onSaved={() => {}}
+      />,
+    );
+    // Open the transfer category dropdown. The form has both a
+    // <label htmlFor="fab-xfer-category">Transfer category</label> and
+    // a HelpAnchor with aria-label "Help: Transfer category", so we
+    // target the combobox by its explicit name (`Transfer category`)
+    // via the `name` matcher rather than `getByLabelText` (which would
+    // match both the label and the help icon).
+    const combobox = screen.getByRole("combobox", {
+      name: "Transfer category",
+    });
+    fireEvent.focus(combobox);
+    const listbox = screen.getByRole("listbox");
+    // The type=both option is visible.
+    expect(within(listbox).getByText("Transfer")).toBeInTheDocument();
+    // Income-only and expense-only options are NOT visible.
+    expect(within(listbox).queryByText("Groceries")).not.toBeInTheDocument();
+    expect(within(listbox).queryByText("Salary")).not.toBeInTheDocument();
   });
 
   it("omits category_id from the request when no override is picked (server applies the Transfer default)", async () => {
