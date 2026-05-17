@@ -37,6 +37,7 @@ from app.rate_limit import get_client_ip
 from app.schemas.admin_users import UserMergeRequest, UserMergeResponse
 from app.services import (
     admin_users_search_service,
+    admin_users_service,
     audit_service,
     user_merge_service,
 )
@@ -358,3 +359,131 @@ async def get_user_detail(
         )
 
     return payload
+
+
+# ── System-level hard delete ────────────────────────────────────────
+#
+# Gated by ``users.delete`` (added 2026-05-17). The superadmin
+# short-circuit makes this superadmin-only today; the seeded
+# role_permissions row keeps the L4.8 role editor accurate.
+#
+# Precondition errors return 409 with a structured ``detail`` of
+# ``{"code": <stable string>, "message": <human-readable>}``. The
+# code values are exported from ``admin_users_service`` so the
+# frontend can branch without parsing English.
+
+
+@router.delete("/{user_id}", status_code=status.HTTP_200_OK)
+async def delete_user(
+    user_id: int,
+    request: Request,
+    actor: User = Depends(require_permission("users.delete")),
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    """Hard-delete a User row.
+
+    Preconditions enforced server-side:
+
+    - actor is not the same user as the target
+    - target is not a platform superadmin
+    - target.is_active is False
+
+    On a 409 precondition failure, the response body is
+    ``{"detail": {"code": ..., "message": ...}}``. On 404 the body
+    follows the standard FastAPI shape.
+    """
+    # Snapshot actor identity before any commit/rollback. Same
+    # MissingGreenlet hazard as in ``merge_users``.
+    actor_id = actor.id
+    actor_email = actor.email
+
+    try:
+        result = await admin_users_service.delete_user(
+            db,
+            target_user_id=user_id,
+            actor_user_id=actor_id,
+        )
+        await db.commit()
+    except NotFoundError as e:
+        await db.rollback()
+        # Idempotency: deleting a user that doesn't exist returns
+        # 404. Not an audit-worthy failure on its own (no actor
+        # intent to record beyond the request log).
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except ConflictError as e:
+        await db.rollback()
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="admin.user.delete.failed",
+            actor_user_id=actor_id,
+            actor_email=actor_email,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={
+                "target_user_id": user_id,
+                "code": e.code,
+                "reason": e.code or "conflict",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": e.code, "message": str(e)},
+        )
+    except Exception:
+        await db.rollback()
+        await logger.aexception(
+            "admin.user.delete.error",
+            target_user_id=user_id,
+            actor_user_id=actor_id,
+        )
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="admin.user.delete.failed",
+            actor_user_id=actor_id,
+            actor_email=actor_email,
+            target_org_id=None,
+            target_org_name=None,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={
+                "target_user_id": user_id,
+                "reason": "internal_error",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="delete failed",
+        )
+
+    snapshot = result["snapshot"]
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="admin.user.deleted",
+        actor_user_id=actor_id,
+        actor_email=actor_email,
+        # The deleted user's org_id is preserved as a snapshot so the
+        # audit row can still be cross-referenced from the org's
+        # audit timeline.
+        target_org_id=snapshot["org_id"],
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={
+            "target_user_id": snapshot["id"],
+            "target_email": snapshot["email"],
+            "target_username": snapshot["username"],
+            "target_org_id": snapshot["org_id"],
+            "fk_cleanup_counts": result["fk_cleanup_counts"],
+        },
+    )
+
+    return {
+        "deleted_user_id": snapshot["id"],
+        "fk_cleanup_counts": result["fk_cleanup_counts"],
+    }

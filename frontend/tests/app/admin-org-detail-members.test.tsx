@@ -285,6 +285,24 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
     ).toBeNull();
   });
 
+  it("inactive rows expose a Delete user link pointing to the user-detail page", async () => {
+    installMocks();
+    render(<AdminOrgDetailPage />);
+
+    await screen.findByText("ghost");
+    // ghost is is_active=false → the system-level delete navigation
+    // becomes available. The destructive delete itself lives on the
+    // user-detail page; the link is just navigation.
+    const link = screen.getByRole("link", {
+      name: /Open user detail for ghost/i,
+    });
+    expect(link).toHaveAttribute("href", "/admin/users/11");
+    // Active rows must NOT show the link.
+    expect(
+      screen.queryByRole("link", { name: /Open user detail for alice/i }),
+    ).toBeNull();
+  });
+
   it("surfaces a 409 last-owner error from the backend in the member-error banner", async () => {
     const apiFetchMock = vi.mocked(apiFetch);
     apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {

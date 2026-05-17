@@ -453,18 +453,39 @@ export default function AdminOrgDetailPage() {
                               Deactivate
                             </button>
                           ) : (
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() =>
-                                patchMember(m, { is_active: true })
-                              }
-                              className={`${btnSecondary} min-h-[44px]`}
-                              aria-label={`Reactivate ${m.username}`}
-                              title="Restore the member's access. They will be required to sign in again."
-                            >
-                              Reactivate
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() =>
+                                  patchMember(m, { is_active: true })
+                                }
+                                className={`${btnSecondary} min-h-[44px]`}
+                                aria-label={`Reactivate ${m.username}`}
+                                title="Restore the member's access. They will be required to sign in again."
+                              >
+                                Reactivate
+                              </button>
+                              {/*
+                                Once a member is deactivated, the system-
+                                level hard-delete becomes available. Lives
+                                on the dedicated user-detail page so the
+                                final "are you sure" + audit emission
+                                runs there. Schema reality: User.org_id
+                                is a single NOT NULL FK, so "detach from
+                                org" without deleting is not expressible
+                                today; deactivate + delete is the only
+                                terminal path.
+                              */}
+                              <Link
+                                href={`/admin/users/${m.id}`}
+                                className={`${btnSecondary} min-h-[44px]`}
+                                aria-label={`Open user detail for ${m.username}`}
+                                title="Open the user-detail page to permanently delete this user."
+                              >
+                                Delete user…
+                              </Link>
+                            </>
                           )}
                         </div>
                       )}

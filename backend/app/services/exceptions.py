@@ -18,8 +18,15 @@ class ValidationError(Exception):
 
 
 class ConflictError(Exception):
-    def __init__(self, detail: str):
+    def __init__(self, detail: str, *, code: str | None = None):
         self.detail = detail
+        # Optional machine-readable hint for routers that want to surface
+        # ``{"code": ..., "message": ...}`` to clients. Existing call sites
+        # that pass only a message continue to work; new precondition-style
+        # services (e.g. admin_users_service.delete_user) populate ``code``
+        # so the frontend can branch on the failure reason without parsing
+        # English.
+        self.code = code
         super().__init__(detail)
 
 

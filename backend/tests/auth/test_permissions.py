@@ -54,6 +54,7 @@ def test_all_permissions_contains_known_platform_permissions() -> None:
         "roles.manage",
         "analytics.view",
         "users.view",
+        "users.delete",
         "subscriptions.view",
     })
 

@@ -28,6 +28,7 @@ Permission = Literal[
     "roles.manage",
     "analytics.view",
     "users.view",
+    "users.delete",
     "subscriptions.view",
 ]
 
@@ -35,6 +36,12 @@ Permission = Literal[
 # Canonical set — useful when iterating or seeding the role admin
 # UI's permission editor (L4.8) and the migration that seeds the
 # superadmin role row.
+#
+# users.delete (added 2026-05-17) gates the system-level hard-delete
+# of a User row. Kept distinct from users.view because the read
+# (search/detail) surface is widely useful for support work while
+# the destructive surface should remain superadmin-only even if a
+# future support role inherits users.view via ROLE_PERMISSIONS.
 ALL_PERMISSIONS: frozenset[Permission] = frozenset({
     "admin.view",
     "plans.manage",
@@ -44,6 +51,7 @@ ALL_PERMISSIONS: frozenset[Permission] = frozenset({
     "roles.manage",
     "analytics.view",
     "users.view",
+    "users.delete",
     "subscriptions.view",
 })
 
