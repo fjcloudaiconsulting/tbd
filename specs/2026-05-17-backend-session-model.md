@@ -473,7 +473,9 @@ NEW shape (architect feedback on PR #301 — revoke by `sid` family, not by `jti
 7. DO NOT touch `sessions_invalidated_at`.
 8. Emit audit event `auth.session.terminated`. Detail carries `{sid_count, jti_count}` (number of distinct sessions revoked, total `jti` values deleted across all families). Outcome=success even when 0 (anonymous logout is still a clean cookie clear).
 
-### 5.4 `POST /api/v1/auth/login`, `/auth/google/callback`, `_issue_tokens`, `/auth/refresh` (issue side)
+### 5.4 `POST /api/v1/auth/login`, `/auth/google/callback`, `_issue_tokens`, `/auth/refresh` (issue side), `POST /api/v1/orgs/invitations/accept`
+
+All FIVE issue sites — login password, `/refresh` rotation, MFA branches via `_issue_tokens`, Google callback, AND `routers/org_members.py` invitation accept — call `create_refresh_token` and must populate Redis identically. PR #305's review found `org_members.py` had been missed in PR 1; the same trap is structurally easy to fall back into, so the grep-style guard test in §9 pins every `create_refresh_token` call site to a paired Redis write within the same source file.
 
 Every site that calls `create_refresh_token` is updated to:
 

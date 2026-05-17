@@ -29,6 +29,7 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import router as auth_router
 from app.security import create_refresh_token, hash_password
+from tests.conftest import issue_test_refresh_token
 
 
 PASSWORD = "S3cret-Pass!"
@@ -104,7 +105,7 @@ async def _seed_user(
 
 async def test_verify_returns_user_and_access_token(session_factory):
     user_id = await _seed_user(session_factory)
-    refresh = create_refresh_token(user_id)
+    refresh = issue_test_refresh_token(user_id)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -133,7 +134,7 @@ async def test_verify_returns_user_and_access_token(session_factory):
 async def test_verify_user_shape_matches_me(session_factory):
     """The user payload must be identical to /auth/me's UserResponse."""
     user_id = await _seed_user(session_factory)
-    refresh = create_refresh_token(user_id)
+    refresh = issue_test_refresh_token(user_id)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -203,7 +204,7 @@ async def test_verify_access_token_not_accepted_as_refresh(session_factory):
 
 async def test_verify_inactive_user_returns_401(session_factory):
     user_id = await _seed_user(session_factory, is_active=False)
-    refresh = create_refresh_token(user_id)
+    refresh = issue_test_refresh_token(user_id)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -224,7 +225,7 @@ async def test_verify_does_not_rotate_or_set_cookie(session_factory):
     """The whole point of /verify: it is a passive read. Asserting NO
     `Set-Cookie` on the response is the load-bearing test for this PR."""
     user_id = await _seed_user(session_factory)
-    refresh = create_refresh_token(user_id)
+    refresh = issue_test_refresh_token(user_id)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -281,7 +282,7 @@ async def test_cookie_path_is_root_on_login(session_factory):
 
 async def test_cookie_path_is_root_on_refresh_rotation(session_factory):
     user_id = await _seed_user(session_factory)
-    refresh = create_refresh_token(user_id)
+    refresh = issue_test_refresh_token(user_id)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -359,7 +360,7 @@ async def test_verify_rejects_invalidated_refresh_token(session_factory):
 
     # Mint the refresh token first, then bump the cutoff to "after" it.
     user_id = await _seed_user(session_factory)
-    refresh = create_refresh_token(user_id)
+    refresh = issue_test_refresh_token(user_id)
 
     # Bump sessions_invalidated_at to a future timestamp so any token
     # already in hand has iat < cutoff.
@@ -398,7 +399,6 @@ async def test_verify_rejects_expired_session_lifetime(session_factory):
     from datetime import datetime, timedelta, timezone
 
     from app.config import settings as app_settings
-    from app.security import create_refresh_token as _crt
 
     user_id = await _seed_user(session_factory)
 
@@ -407,7 +407,7 @@ async def test_verify_rejects_expired_session_lifetime(session_factory):
     long_ago = datetime.now(timezone.utc) - timedelta(
         days=app_settings.session_lifetime_days + 30
     )
-    refresh = _crt(user_id, session_created_at=long_ago)
+    refresh = issue_test_refresh_token(user_id, session_created_at=long_ago)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -435,14 +435,13 @@ async def test_refresh_clears_cookie_on_session_lifetime_expiry(session_factory)
     from datetime import datetime, timedelta, timezone
 
     from app.config import settings as app_settings
-    from app.security import create_refresh_token as _crt
 
     user_id = await _seed_user(session_factory)
 
     long_ago = datetime.now(timezone.utc) - timedelta(
         days=app_settings.session_lifetime_days + 30
     )
-    refresh = _crt(user_id, session_created_at=long_ago)
+    refresh = issue_test_refresh_token(user_id, session_created_at=long_ago)
 
     app = make_app(session_factory)
     with TestClient(app) as client:

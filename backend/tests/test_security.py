@@ -47,23 +47,75 @@ def test_create_access_token_roundtrip_decodes_expected_claims() -> None:
 def test_refresh_token_preserves_original_session_created_at() -> None:
     session_start = datetime.now(timezone.utc) - timedelta(days=2)
 
-    token = create_refresh_token(subject=5, session_created_at=session_start)
+    token, jti, sid = create_refresh_token(subject=5, session_created_at=session_start)
     payload = decode_token(token)
 
     assert payload is not None
     assert payload["type"] == "refresh"
     assert payload["sub"] == "5"
     assert payload["session_created_at"] == session_start.timestamp()
+    # PR 2: every refresh JWT carries jti + sid; both stamped on the
+    # token AND surfaced from the helper for the caller's Redis write.
+    assert payload["jti"] == jti
+    assert payload["sid"] == sid
 
 
 def test_refresh_token_defaults_session_created_at_to_now() -> None:
     before = datetime.now(timezone.utc).timestamp()
-    token = create_refresh_token(subject=9)
+    token, _jti, _sid = create_refresh_token(subject=9)
     after = datetime.now(timezone.utc).timestamp()
     payload = decode_token(token)
 
     assert payload is not None
     assert before <= payload["session_created_at"] <= after
+
+
+def test_refresh_token_sid_preserved_when_passed() -> None:
+    """``/refresh`` rotation passes the predecessor's ``sid`` through
+    ``create_refresh_token`` to preserve the family link across the
+    rotation chain."""
+    token, jti, sid = create_refresh_token(subject=5, sid="fixed-sid-abcdef")
+    assert sid == "fixed-sid-abcdef"
+    payload = decode_token(token)
+    assert payload is not None
+    assert payload["sid"] == "fixed-sid-abcdef"
+    assert payload["jti"] == jti
+
+
+def test_refresh_token_sid_minted_fresh_when_none() -> None:
+    """First-login sites pass ``sid=None`` and expect a fresh UUID4 hex."""
+    _, _, sid_a = create_refresh_token(subject=5)
+    _, _, sid_b = create_refresh_token(subject=5)
+    assert sid_a != sid_b, "fresh-session sid must rotate per call"
+    # UUID4 hex is 32 chars, all hex digits.
+    assert len(sid_a) == 32
+    int(sid_a, 16)  # raises if not hex
+
+
+def test_decode_refresh_jti_sid_extracts_both_claims() -> None:
+    from app.security import decode_refresh_jti_sid
+
+    token, expected_jti, expected_sid = create_refresh_token(subject=7)
+    jti, sid = decode_refresh_jti_sid(token)
+    assert jti == expected_jti
+    assert sid == expected_sid
+
+
+def test_decode_refresh_jti_sid_rejects_legacy_token() -> None:
+    """A token missing jti / sid (legacy pre-PR2 shape) must raise."""
+    import jwt as _pyjwt
+    from app.config import settings
+
+    legacy = _pyjwt.encode(
+        {"sub": "7", "type": "refresh"},
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+    from app.security import decode_refresh_jti_sid
+    import pytest
+
+    with pytest.raises(ValueError):
+        decode_refresh_jti_sid(legacy)
 
 
 def test_create_mfa_email_token_bakes_hmac_and_jti_into_token() -> None:

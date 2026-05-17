@@ -53,6 +53,7 @@ from app.security import (
     create_refresh_token,
     hash_password,
 )
+from tests.conftest import issue_test_refresh_token
 from app.services.mfa_service import (
     generate_recovery_codes,
     hash_recovery_code,
@@ -274,7 +275,7 @@ async def test_refresh_rotation_cookie_max_age_matches_settings(
     """``/auth/refresh`` rotation sets ``Max-Age`` equal to
     ``refresh_idle_ttl_days * 86400``."""
     seed = await _seed_user(session_factory)
-    refresh = create_refresh_token(seed["user_id"])
+    refresh = issue_test_refresh_token(seed["user_id"])
     app = _make_app(session_factory)
 
     with TestClient(app) as client:
@@ -378,7 +379,7 @@ async def test_all_four_sites_emit_same_max_age_when_setting_changes(
     assert _max_age_from_set_cookie(login_raw) == expected, login_raw
 
     # 2. Refresh rotation.
-    refresh = create_refresh_token(seed["user_id"])
+    refresh = issue_test_refresh_token(seed["user_id"])
     with TestClient(app) as client:
         refresh_res = client.post(
             "/api/v1/auth/refresh",

@@ -39,23 +39,48 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import LEGACY_REFRESH_COOKIE_PATH, router as auth_router
 from app.security import create_refresh_token, hash_password
+from tests.conftest import issue_test_refresh_token
 
 
 def _mint_refresh_at(user_id: int, iat: datetime) -> str:
     """Mint a refresh JWT with a controlled ``iat`` (and matching
     ``session_created_at``) so tests can place tokens above or below
-    ``token_cutoff`` deterministically without real sleeps."""
+    ``token_cutoff`` deterministically without real sleeps.
+
+    PR 2: stamp a fresh ``jti`` + ``sid`` AND seed the autouse fake
+    Redis so the validation chain's primary-key probe accepts the
+    token. Without the seed every legacy/current-cookie test in this
+    file would 401 on ``"Session has been invalidated"`` regardless of
+    the iat-vs-cutoff outcome.
+    """
+    import json
+    import secrets as _secrets
+    import uuid as _uuid
+
+    from app import redis_client as _rc
+
     expire = iat + timedelta(days=app_settings.refresh_idle_ttl_days)
+    jti = _secrets.token_urlsafe(16)
+    sid = _uuid.uuid4().hex
     payload = {
         "sub": str(user_id),
         "type": "refresh",
         "session_created_at": iat.timestamp(),
         "iat": int(iat.timestamp()),
         "exp": expire,
+        "jti": jti,
+        "sid": sid,
     }
-    return _pyjwt.encode(
+    token = _pyjwt.encode(
         payload, app_settings.jwt_secret_key, algorithm=app_settings.jwt_algorithm
     )
+    client = _rc.get_client()
+    if client is not None and hasattr(client, "_kv"):
+        client._kv[f"auth:session:{jti}"] = json.dumps(
+            {"user_id": user_id, "sid": sid}, separators=(",", ":")
+        )
+        client._sets[f"auth:session:by_sid:{sid}"].add(jti)
+    return token
 
 
 PASSWORD = "S3cret-Pass!"
@@ -304,7 +329,7 @@ async def test_login_emits_legacy_cleanup(session_factory):
 
 async def test_refresh_rotation_emits_legacy_cleanup(session_factory):
     user_id = await _seed_user(session_factory)
-    refresh = create_refresh_token(user_id)
+    refresh = issue_test_refresh_token(user_id)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -330,13 +355,12 @@ async def test_refresh_session_expired_emits_legacy_cleanup(session_factory):
     """Session-lifetime-expired path emits Set-Cookie to clear BOTH the
     canonical and the legacy cookie."""
     from app.config import settings as app_settings
-    from app.security import create_refresh_token as _crt
 
     user_id = await _seed_user(session_factory)
     long_ago = datetime.now(timezone.utc) - timedelta(
         days=app_settings.session_lifetime_days + 30
     )
-    refresh = _crt(user_id, session_created_at=long_ago)
+    refresh = issue_test_refresh_token(user_id, session_created_at=long_ago)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -364,8 +388,8 @@ async def test_refresh_rejects_when_two_valid_users_present(session_factory):
     user_a = await _seed_user(session_factory, username="alice")
     user_b = await _seed_user(session_factory, username="bob")
 
-    token_a = create_refresh_token(user_a)
-    token_b = create_refresh_token(user_b)
+    token_a = issue_test_refresh_token(user_a)
+    token_b = issue_test_refresh_token(user_b)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -407,8 +431,8 @@ async def test_verify_rejects_when_two_valid_users_present(session_factory):
     user_a = await _seed_user(session_factory, username="carol")
     user_b = await _seed_user(session_factory, username="dave")
 
-    token_a = create_refresh_token(user_a)
-    token_b = create_refresh_token(user_b)
+    token_a = issue_test_refresh_token(user_a)
+    token_b = issue_test_refresh_token(user_b)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -525,11 +549,18 @@ async def test_refresh_prefers_newest_iat_when_order_reversed(session_factory):
 # ── _issue_tokens cleanup (MFA verify, etc.) ───────────────────────────────
 
 
-def test_issue_tokens_helper_emits_legacy_cleanup():
+@pytest.mark.asyncio
+async def test_issue_tokens_helper_emits_legacy_cleanup():
     """``_issue_tokens`` is the shared exit point for several MFA login
     flows (``/mfa/verify``, ``/mfa/recovery``, and ``/mfa/email-verify``).
     Pinning the helper directly avoids the cost of a full MFA-setup
-    fixture while still proving the cleanup is wired."""
+    fixture while still proving the cleanup is wired.
+
+    PR 2 made ``_issue_tokens`` async because it now writes the Redis
+    primary key + family set before returning. The autouse fake-Redis
+    fixture in ``conftest.py`` keeps this test working without a real
+    Redis dependency.
+    """
     from fastapi import Response
     from app.routers.auth import _issue_tokens
 
@@ -540,7 +571,7 @@ def test_issue_tokens_helper_emits_legacy_cleanup():
             self.role = Role.OWNER
 
     response = Response()
-    _issue_tokens(_FakeUser(), response)
+    await _issue_tokens(_FakeUser(), response)
 
     # Response.raw_headers is the underlying list of (bytes, bytes)
     # tuples populated by set_cookie / delete_cookie.
