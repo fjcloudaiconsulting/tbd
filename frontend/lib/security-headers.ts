@@ -11,6 +11,18 @@
  * ``redirects()`` was NOT receiving the headers from ``headers()``.
  * Moving the redirect into ``proxy.ts`` and stamping the pack there
  * closes the cold-cache TLS-downgrade window for first-time visitors.
+ *
+ * CSP is split into two flavors:
+ *   * ``buildCspDirectives(nonce)`` produces the per-request CSP with
+ *     a nonce baked into script-src and style-src. Used by ``proxy.ts``
+ *     which generates a fresh nonce per request.
+ *   * ``cspDirectives`` is the no-nonce fallback used by
+ *     ``next.config.ts`` ``headers()`` for any code path that never
+ *     transits the proxy (none today, but a defensive default).
+ *     Production drops ``'unsafe-inline'`` from script-src entirely.
+ *     ZAP scan 2026-05-14 flagged both Mediums for ``'unsafe-inline'``;
+ *     ``proxy.ts`` overrides with the per-request CSP so the no-nonce
+ *     constant only fires if the proxy is bypassed somehow.
  */
 
 const isDev = process.env.NODE_ENV !== "production";
@@ -29,14 +41,65 @@ function apiOrigin(): string {
   }
 }
 
-// CSP. Tailwind + styled-jsx + Next's hydration inline scripts force
-// 'unsafe-inline' on both script-src and style-src; dev also needs
-// 'unsafe-eval' and WebSocket connections for Fast Refresh. Google
-// Fonts (Fraunces + Outfit, loaded from app/layout.tsx) need their
-// two origins allowlisted on style-src and font-src.
+/**
+ * Build the per-request CSP value.
+ *
+ * Production:
+ *   script-src 'self' 'nonce-<X>' 'strict-dynamic'
+ *   style-src  'self' 'nonce-<X>' https://fonts.googleapis.com
+ *
+ *   ``'strict-dynamic'`` lets the initial bundle (which carries the
+ *   nonce) load further scripts without each one needing its own
+ *   nonce. Combined with omitting ``'unsafe-inline'``, this closes
+ *   the two ZAP Mediums while keeping Next.js hydration working.
+ *
+ *   Style-src keeps the Google Fonts origin allowlisted and adds the
+ *   nonce so Next.js's runtime-emitted ``<style>`` tags execute.
+ *
+ * Development:
+ *   Keeps ``'unsafe-inline'`` (and adds ``'unsafe-eval'`` on script-src)
+ *   for HMR / Fast Refresh and React's eval-based dev error stacks.
+ *   The nonce is added too, so ``app/layout.tsx`` can attach it
+ *   unconditionally without forking dev vs prod render paths.
+ */
+export function buildCspDirectives(nonce: string): string {
+  const scriptSrc = isDev
+    ? `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-inline' 'unsafe-eval'`
+    : `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`;
+  const styleSrc = isDev
+    ? `style-src 'self' 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com`
+    : `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`;
+  return [
+    "default-src 'self'",
+    scriptSrc,
+    styleSrc,
+    "img-src 'self' data: blob:",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    `connect-src 'self'${apiOrigin() ? " " + apiOrigin() : ""}${isDev ? " ws: wss:" : ""}`,
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "upgrade-insecure-requests",
+  ].join("; ");
+}
+
+/**
+ * No-nonce fallback CSP used by ``next.config.ts`` ``headers()`` for
+ * routes that never transit ``proxy.ts``. Production drops
+ * ``'unsafe-inline'`` from script-src (closing the ZAP Medium); the
+ * proxy's per-request CSP overrides this on every request that
+ * actually reaches the app, so this constant exists only as a
+ * defense-in-depth default.
+ *
+ * Style-src keeps ``'unsafe-inline'`` here because without a nonce
+ * there's no way for Next.js's runtime style emissions to execute.
+ * The proxy's per-request CSP overrides this with a nonce-based
+ * style-src in normal operation.
+ */
 export const cspDirectives = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
+  `script-src 'self'${isDev ? " 'unsafe-inline' 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: blob:",
   "font-src 'self' data: https://fonts.gstatic.com",
@@ -70,9 +133,27 @@ export const securityHeaders: { key: string; value: string }[] = [
 ];
 
 /**
+ * Same pack as ``securityHeaders`` but with the per-request CSP
+ * (nonce-bearing) injected. ``proxy.ts`` calls this with a fresh
+ * nonce on every request and stamps the result on the response.
+ */
+export function securityHeadersTuplesWithNonce(
+  nonce: string,
+): [string, string][] {
+  return securityHeaders.map(({ key, value }) => {
+    if (key === "Content-Security-Policy") {
+      return [key, buildCspDirectives(nonce)];
+    }
+    return [key, value];
+  });
+}
+
+/**
  * Same pack as ``securityHeaders``, exposed as ``[name, value]``
  * tuples for ergonomic use against the Web Headers API (e.g., inside
- * ``proxy.ts`` for stamping onto a ``NextResponse``).
+ * ``proxy.ts`` for stamping onto a ``NextResponse``). No-nonce
+ * variant retained as a fallback; production callers should prefer
+ * ``securityHeadersTuplesWithNonce``.
  */
 export const securityHeadersTuples: [string, string][] = securityHeaders.map(
   ({ key, value }) => [key, value],
