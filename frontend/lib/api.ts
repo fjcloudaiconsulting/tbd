@@ -18,8 +18,20 @@ const REFRESH_BACKOFF_BASE_MS = 250;
 // Detect recovery paths by substring so a future ``/api/v2/auth/refresh``
 // or a relative ``/auth/me`` still picks up the longer budget. Robust
 // against the API_URL prefix and against future path renames.
+//
+// Architect P1 on PR #309: ``/auth/status`` is the FIRST endpoint
+// AuthProvider hits on mount (see components/auth/AuthProvider.tsx).
+// If that call times out at 10s on a cold container, the restore
+// flow never reaches ``/auth/refresh`` and the user gets surfaced a
+// generic 503 from the unauth path instead of the recovery one.
+// Treating ``/auth/status`` as a recovery path means the cold-start
+// chain (status → refresh → me) all runs on the 25s budget.
 function isRecoveryPath(path: string): boolean {
-  return path.includes("/auth/refresh") || path.includes("/auth/me");
+  return (
+    path.includes("/auth/refresh")
+    || path.includes("/auth/me")
+    || path.includes("/auth/status")
+  );
 }
 
 function timeoutForPath(path: string): number {

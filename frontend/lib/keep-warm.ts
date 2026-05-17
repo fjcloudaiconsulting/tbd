@@ -46,7 +46,21 @@ export function startKeepWarm(): () => void {
     fetch(KEEP_WARM_PATH, { method: "GET", credentials: "omit" }).catch(() => {});
   };
 
+  // Architect P2 on PR #309: ``stop()`` alone is not enough to honour
+  // the "stops permanently on auth:unauthenticated" contract. The
+  // ``visibilitychange`` listener stays attached after the unauth
+  // signal, so any subsequent hidden→visible transition would call
+  // ``start()`` and resume heartbeats against the logged-out user.
+  // The cleanup callback returned by ``startKeepWarm()`` is the only
+  // thing that fully tears down listeners — but React effects don't
+  // run the cleanup until the component remounts. The
+  // ``stoppedPermanently`` flag makes ``start()`` a no-op after a
+  // terminal signal so we don't ping in the window between
+  // ``auth:unauthenticated`` and the effect remount.
+  let stoppedPermanently = false;
+
   const start = () => {
+    if (stoppedPermanently) return;
     if (timer !== null) return;
     // Immediate ping on (re)start so a freshly visible tab warms the
     // container right away instead of waiting up to 4 minutes for the
@@ -69,8 +83,12 @@ export function startKeepWarm(): () => void {
   };
 
   const onUnauthenticated = () => {
-    // Once the user is signed out the heartbeat must stop entirely;
-    // the next sign-in will mount a fresh keep-warm.
+    // Once the user is signed out the heartbeat must stop entirely
+    // AND must not resume on a subsequent visibility change. The
+    // next sign-in mounts a fresh ``keep-warm`` via the AppShell
+    // effect cleanup + re-mount cycle, which gets a fresh
+    // ``stoppedPermanently=false`` closure.
+    stoppedPermanently = true;
     stop();
   };
 

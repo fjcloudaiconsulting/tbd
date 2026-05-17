@@ -128,7 +128,14 @@ describe("startKeepWarm", () => {
     }
   });
 
-  it("stops permanently on auth:unauthenticated", async () => {
+  it("stops permanently on auth:unauthenticated — no resume on later visibility change (architect P2 on PR #309)", async () => {
+    // The "stops permanently" contract is what the test name promised.
+    // Earlier the implementation only stopped the timer on unauth but
+    // left the visibilitychange listener attached, so a later
+    // hidden→visible transition would call start() and ping anyway.
+    // Architect P2 added a ``stoppedPermanently`` flag so start() is a
+    // no-op after the terminal signal; this test pins the corrected
+    // contract.
     const stop = startKeepWarm();
     try {
       expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -138,21 +145,16 @@ describe("startKeepWarm", () => {
       await vi.advanceTimersByTimeAsync(FOUR_MIN_MS * 3);
       expect(fetchMock).toHaveBeenCalledTimes(1); // never pinged again
 
-      // Even toggling visibility should not restart it: the contract is
-      // "stop permanently". The next sign-in mounts a fresh keep-warm.
-      // (We don't re-test that here because the wiring in AppShell is the
-      // thing that re-mounts -- this module just guarantees that once
-      // stopped via the unauth event, no further pings come out of this
-      // instance.)
+      // The architect P2 assertion: hidden → visible after unauth must
+      // NOT pump out a new ping. Before the fix, ``start()`` ran and
+      // a fetch fired. After the fix, ``stoppedPermanently`` short-
+      // circuits ``start()``. The next sign-in mounts a fresh
+      // keep-warm via AppShell's effect remount, which has its own
+      // ``stoppedPermanently=false`` closure.
       fireVisibilityChange("hidden");
       fireVisibilityChange("visible");
-      // visibilitychange back to visible would normally trigger a ping,
-      // but the keep-warm instance was stopped by the unauth event.
-      // However the visibilitychange handler is still attached and will
-      // call start(); start() will pump out a new ping. That's expected
-      // behavior -- the cleanup is left to the caller to invoke via the
-      // returned stop() fn (AppShell does this in its useEffect cleanup).
-      // So we assert the stop()-returned cleanup is the only true teardown.
+      await vi.advanceTimersByTimeAsync(FOUR_MIN_MS * 3);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       stop();
     }

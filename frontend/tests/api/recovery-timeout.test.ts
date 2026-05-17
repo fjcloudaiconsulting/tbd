@@ -143,6 +143,51 @@ describe("apiFetch recovery-path timeout", () => {
     }
   });
 
+  it("apiFetch on /api/v1/auth/status succeeds when upstream resolves at 24s (architect P1 on PR #309 — cold-start restore)", async () => {
+    // AuthProvider's first call on mount is /api/v1/auth/status. If
+    // that times out at 10s on a cold container, the restore chain
+    // (status → refresh → me) never reaches /refresh and the user
+    // sees a generic 503 from the unauthed path instead of the
+    // recovery path. /auth/status must share the 25s recovery
+    // budget with /refresh and /me.
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockImplementationOnce(
+        slowResponse(jsonResponse({ needs_setup: false }), 24_000),
+      );
+
+      const promise = apiFetch<{ needs_setup: boolean }>(
+        "/api/v1/auth/status",
+      );
+
+      await vi.advanceTimersByTimeAsync(24_000);
+
+      await expect(promise).resolves.toEqual({ needs_setup: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("apiFetch on /api/v1/auth/status aborts at 25s when upstream is still pending", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockImplementationOnce(
+        slowResponse(jsonResponse({ needs_setup: false }), 26_000),
+      );
+
+      const promise = apiFetch("/api/v1/auth/status");
+      const assertion = expect(promise).rejects.toMatchObject({
+        name: "ApiTimeoutError",
+      });
+
+      await vi.advanceTimersByTimeAsync(24_999);
+      await vi.advanceTimersByTimeAsync(1);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("non-recovery path /api/v1/transactions still aborts at 10s (longer budget is recovery-only)", async () => {
     vi.useFakeTimers();
     try {
