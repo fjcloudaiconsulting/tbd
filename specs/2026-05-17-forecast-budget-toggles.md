@@ -50,7 +50,7 @@ Two paths considered:
 | Backend enforcement | `require_feature("forecast.enabled")` / `require_feature("budgets.enabled")` as FastAPI deps on forecast/budget endpoints | Authoritative enforcement, returns 403 when off. |
 | "Hide details" toggle fate | Unchanged | Orthogonal (per-user UI density vs. org-level feature existence). |
 | Backwards compat | Data preserved on disable, restored on re-enable | Disable hides feature surface only; no data deleted. |
-| Feature-flag delivery to frontend | Embed in `GET /me` response (next to existing `allow_manual_balance_adjustment`) | AuthProvider already fetches `/me` on mount; no extra round-trip. |
+| Feature-flag delivery to frontend | Embed `features: {"forecast.enabled": bool, "budgets.enabled": bool}` on the shared `UserResponse` schema, so BOTH `GET /api/v1/auth/me` (client AuthProvider) AND `POST /api/v1/auth/verify` (RSC `getServerSessionResult`) return it | Two distinct endpoints carry the user object. The client-side AuthProvider gets the flags via `/me` on mount (no extra round-trip). RSC pages that call `getServerSessionResult()` (e.g. `/forecast-plans`) get the flags via `/verify`. Adding the field to the schema gives both for free; isolating to `/me` would leave RSC paths blind. |
 
 ## Gate-site enumeration (11 touchpoints)
 
@@ -162,24 +162,33 @@ No migration. Existing orgs have no `OrgFeatureOverride` rows for these new keys
 
 ### PR 3 — Frontend gates + Settings UI (~200 LOC, depends on PR 1 + PR 2)
 
-- Expose `features: {"forecast.enabled": bool, "budgets.enabled": bool}` on `GET /me` backend response.
+- Expose `features: {"forecast.enabled": bool, "budgets.enabled": bool}` on the shared `UserResponse` schema (so both `GET /api/v1/auth/me` and `POST /api/v1/auth/verify` return it — see "Feature-flag delivery to frontend" decision above).
 - Thread feature flags into `AppShell.tsx` via `useAuth()` and filter `navItems`.
-- Add feature check + redirect to `frontend/app/forecast-plans/page.tsx` RSC page.
-- Add feature check + redirect to `frontend/app/budgets/page.tsx`.
+- Add feature check + redirect to `frontend/app/forecast-plans/page.tsx` (RSC page — reads flags from `getServerSessionResult()`).
+- Add feature check + redirect to `frontend/app/budgets/page.tsx` (CLIENT page — reads flags from `useAuth()` and either renders the empty state or redirects via `router.replace`).
 - Conditionally skip forecast fetches and render in `frontend/app/dashboard/page.tsx`.
 - Conditionally skip budget fetches and hide Budget Progress section in dashboard.
 - Add "Features" card with two immediate-mutation toggle switches to `frontend/app/settings/organization/page.tsx` (owner-only).
 - Hide "From Forecast" button on `/budgets` when `forecast.enabled = false`.
 - Frontend tests: toggles fire correct PATCH; nav items absent when flag off; dashboard sections absent when flags off.
 
-### Useful side-effect of PR 1
+### Partial-deploy windows across the 3 PRs
 
-After PR 1 ships, the admin override surface at `/admin/orgs/[id]` works for these keys immediately. Operators can disable forecast/budgets for any org from the admin panel before the self-service UI (PR 3) lands. Useful partial-deploy window.
+| After | What works | What does NOT yet work |
+|---|---|---|
+| PR 1 | Catalog keys exist; `/admin/orgs/[id]` feature-overrides UI lists them so an operator can SET an override row | Setting an override has NO effect at runtime — no endpoint or page enforces the flag yet. Customer-facing UX unchanged. |
+| PR 2 | Backend endpoints actually 403 when the flag is off; self-service `PATCH /api/v1/settings/features` is live for owners | Frontend nav, page redirects, dashboard tile hiding still missing — owners can disable a feature but a user navigating to `/forecast-plans` gets a raw 403 from the API rather than a clean redirect. |
+| PR 3 | Full user-facing UX: nav hides, pages redirect, dashboard tiles skip fetches, Settings "Features" card surfaces the toggle | — |
+
+PR 1 by itself is **not** a usable disable mechanism. Earlier draft of this spec overstated this; corrected.
 
 ## Risks
 
 1. **Resolver default consistency.** `PlanFeatures` having mixed defaults (`True` for these two, `False` for `ai.*`) is intentional but unusual. Any future developer adding a new key must choose the correct default consciously. Document on the model.
-2. **RSC pre-rendering for `/forecast-plans` and `/budgets`.** Both are RSC-rendered via `getServerSessionResult()`. The feature check in the RSC page must distinguish "feature off for org" (deterministic, redirect) from "backend transient failure" (already handled by `serverFetch`'s discriminated result — render the client island, do not redirect). A 403 from the forecast/budget endpoint when the flag is off is deterministic; a 5xx or timeout is transient.
+2. **Mixed RSC vs client gating: `/forecast-plans` and `/budgets` need different patterns.**
+   - `/forecast-plans/page.tsx` is RSC-rendered via `getServerSessionResult()` (the only RSC page in the app as of the 2026-05-15 audit). Feature check happens server-side. The check must distinguish "feature off for org" (deterministic, `redirect("/dashboard")`) from "backend transient failure" (already handled by `serverFetch`'s discriminated result — render the client island, do not redirect). A 403 from the forecast endpoint when the flag is off is deterministic; a 5xx or timeout is transient.
+   - `/budgets/page.tsx` is a CLIENT component (`"use client"` at line 1). Feature check happens in `useEffect` against `useAuth().user.features`. If `budgets.enabled === false`, call `router.replace("/dashboard")` after the auth context resolves. No `getServerSessionResult` path here.
+   - Implementers must not assume both pages share the same gating shape.
 3. **Per-request feature cache, no Redis TTL.** Feature state cached only within a single HTTP request (`request.state`). No cross-request caching. If an owner disables a feature, the next request for any user in that org sees the new state immediately on next DB read. Correct and simple. No invalidation work needed.
 4. **Cross-feature endpoint `budgets.from-forecast`.** When forecast off but budgets on, must 403 with `forecast.enabled` as the gating reason. Frontend "From Forecast" button hidden (B4). Otherwise the endpoint would silently return an empty result.
 5. **Plan-level feature control.** An admin could set `forecast.enabled = false` on a plan via `/system/plans`. All orgs on that plan lose forecast access. This is correct (plans are a superset control), but operator-facing documentation should note it.
