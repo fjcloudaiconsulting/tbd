@@ -213,6 +213,34 @@ async def session_family_exists(sid: str) -> bool:
     return bool(await client.exists(_family_key(sid)))
 
 
+async def session_family_member(sid: str, jti: str) -> bool:
+    """Return True iff ``jti`` is still a member of ``auth:session:by_sid:{sid}``.
+
+    Architect P1 finding on PR #308: the per-session logout makes
+    ``DEL auth:session:by_sid:{sid}`` the load-bearing revocation
+    step (Round A of the logout family revoke). Primary keys are
+    cleaned up afterwards in Round B. Between Round A landing and
+    Round B finishing — or if Round B partially fails — a request
+    could find a still-alive ``auth:session:{jti}`` even though the
+    session is logically revoked.
+
+    The Lua rotation script catches this on ``/refresh`` via its own
+    ``SISMEMBER`` guard (spec §4.2 step 5 check 1). But ``/verify``
+    does NOT run the Lua, and the primary-key probe in
+    ``_validate_single_refresh_token`` historically only checked
+    existence + ``{user_id, sid}`` binding. Membership in the
+    family set is the actual authoritative check; this helper
+    mirrors the Lua contract for callers that do not run Lua.
+
+    Stronger than ``session_family_exists`` because it also catches
+    the impossible-but-NX-defended ``jti`` collision case where two
+    sessions happen to share a ``sid`` but only one's ``jti`` is in
+    the family set.
+    """
+    client = require_client()
+    return bool(await client.sismember(_family_key(sid), jti))
+
+
 # Lua return tokens — spec §4.2 step 5. The router branch table in
 # §5.1 step 6 maps these to HTTP behaviour. The bare string ``"ok"``
 # is returned on the happy path; the three error tokens come back via
@@ -338,3 +366,50 @@ async def session_rotate_lua(
     if isinstance(result, bytes):
         result = result.decode("utf-8")
     return result
+
+
+async def session_revoke_family(sid: str) -> list[str]:
+    """Atomically revoke an entire session family (spec §5.3 / §4.2 logout).
+
+    Round A: in one ``MULTI/EXEC`` read every ``jti`` in
+    ``auth:session:by_sid:{sid}`` THEN delete the family set. The atomic
+    delete of the family set is what closes the architect's PR #301
+    follow-up race — any concurrent ``/refresh`` Lua rotation will see
+    ``SISMEMBER`` return 0 after this lands and refuse to write a
+    successor (Section 4.2 step 5 guard 1).
+
+    Round B: for every ``jti`` returned by Round A, delete the primary
+    key ``auth:session:{jti}`` AND the grace key
+    ``auth:session:grace:{jti}`` in one ``MULTI/EXEC``. Strictly cleanup
+    of orphan keys at this point — the family-set delete in Round A is
+    the load-bearing step.
+
+    Returns the list of ``jti`` values that were in the family (the
+    caller uses the length for the ``auth.session.terminated`` audit
+    detail ``jti_count``).
+
+    Fails CLOSED on unreachable Redis via :func:`require_client`.
+    """
+    client = require_client()
+    # Round A — read membership + delete the family set atomically.
+    pipe_a = client.pipeline(transaction=True)
+    pipe_a.smembers(_family_key(sid))
+    pipe_a.delete(_family_key(sid))
+    results_a = await pipe_a.execute()
+    members = results_a[0] if results_a else set()
+    # ``smembers`` may yield ``set`` or ``list`` depending on the client /
+    # fake — normalise to a sorted ``list[str]`` for stable iteration and
+    # audit-detail reproducibility in tests.
+    jtis: list[str] = sorted(str(j) for j in members)
+
+    if not jtis:
+        return []
+
+    # Round B — delete every primary + grace key for the revoked family.
+    # Strict cleanup; no conditional logic required.
+    pipe_b = client.pipeline(transaction=True)
+    for jti in jtis:
+        pipe_b.delete(_primary_key(jti))
+        pipe_b.delete(_grace_key(jti))
+    await pipe_b.execute()
+    return jtis
