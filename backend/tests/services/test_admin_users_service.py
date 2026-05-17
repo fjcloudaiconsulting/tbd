@@ -23,9 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.models import Base
+from app.models.account import Account, AccountType
 from app.models.audit_event import AuditEvent, AuditOutcome
+from app.models.category import Category, CategoryType
+from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.invitation import Invitation
 from app.models.tag import Tag
+from app.models.transaction import Transaction, TransactionType
 from app.models.user import Organization, Role, User
 from app.security import hash_password
 from app.services import admin_users_service
@@ -108,10 +112,11 @@ async def test_delete_user_happy_path(session_factory):
     seed = await _seed(session_factory)
 
     # Plant FK references that should be cleaned up vs left alone.
-    # ImportBatch is exercised in the router test against MySQL where
-    # the Account scaffolding is already in place via the seed helpers;
-    # here we stick to FKs that don't require an Account row so the
-    # SQLite-in-memory fixture stays lean.
+    # ImportBatch is exercised by
+    # ``test_delete_user_cleans_import_batches_and_nulls_transactions``
+    # below, which plants the Account/Category scaffolding it needs.
+    # Here we stick to FKs that don't require that scaffolding so the
+    # happy-path fixture stays lean.
     async with session_factory() as db:
         import datetime as _dt
 
@@ -171,6 +176,102 @@ async def test_delete_user_happy_path(session_factory):
         tag_after = await db.get(Tag, tag_id)
         assert tag_after is not None
         assert tag_after.created_by_user_id is None
+
+
+@pytest.mark.asyncio
+async def test_delete_user_cleans_import_batches_and_nulls_transactions(
+    session_factory,
+):
+    """Architect feedback on PR #303: ImportBatch was the second of the
+    two FKs that ``delete_user`` cleans up by hand, but the original
+    happy-path test left a comment claiming it was "covered elsewhere"
+    when in fact it was not pinned by any test. Plant an ImportBatch
+    authored by the target user + a Transaction linked to that batch
+    via ``import_batch_id``, then assert:
+
+      1. ``fk_cleanup_counts["import_batches"] == 1`` is reported.
+      2. The ImportBatch row is gone after the delete.
+      3. The linked Transaction survives with ``import_batch_id = None``
+         (the FK is ``ON DELETE SET NULL``).
+    """
+    import datetime as _dt
+    from decimal import Decimal
+
+    seed = await _seed(session_factory)
+
+    async with session_factory() as db:
+        # Minimal Account/AccountType/Category scaffolding for the
+        # Transaction. The seed helper keeps these out of the
+        # service-test base fixture so SQLite-in-memory stays lean,
+        # so we plant them here just for this case.
+        atype = AccountType(
+            org_id=seed["org_id"], name="Checking", slug="checking", is_system=True
+        )
+        db.add(atype)
+        await db.flush()
+        account = Account(
+            org_id=seed["org_id"],
+            account_type_id=atype.id,
+            name="Test Account",
+        )
+        category = Category(
+            org_id=seed["org_id"],
+            name="Test Cat",
+            slug="test-cat",
+            type=CategoryType.EXPENSE,
+        )
+        db.add_all([account, category])
+        await db.flush()
+        batch = ImportBatch(
+            org_id=seed["org_id"],
+            account_id=account.id,
+            source_format=ImportSourceFormat.CSV,
+            file_name="test.csv",
+            created_by_user_id=seed["inactive_id"],
+            status=ImportBatchStatus.OPEN,
+            row_count=1,
+            accepted_count=1,
+            pending_count=0,
+        )
+        db.add(batch)
+        await db.flush()
+        txn = Transaction(
+            org_id=seed["org_id"],
+            account_id=account.id,
+            category_id=category.id,
+            description="Imported row",
+            amount=Decimal("12.34"),
+            type=TransactionType.EXPENSE,
+            date=_dt.date(2026, 5, 1),
+            is_imported=True,
+            import_batch_id=batch.id,
+        )
+        db.add(txn)
+        await db.commit()
+        batch_id = batch.id
+        txn_id = txn.id
+
+    async with session_factory() as db:
+        result = await admin_users_service.delete_user(
+            db,
+            target_user_id=seed["inactive_id"],
+            actor_user_id=seed["actor_id"],
+        )
+        await db.commit()
+
+    assert result["fk_cleanup_counts"]["import_batches"] == 1
+    assert result["fk_cleanup_counts"]["invitations"] == 0
+
+    async with session_factory() as db:
+        # Batch is gone.
+        assert await db.get(ImportBatch, batch_id) is None
+        # Transaction survives; the FK was nulled by ON DELETE SET NULL.
+        txn_after = await db.get(Transaction, txn_id)
+        assert txn_after is not None
+        assert txn_after.import_batch_id is None
+        # The other transaction columns are untouched.
+        assert txn_after.amount == Decimal("12.34")
+        assert txn_after.description == "Imported row"
 
 
 @pytest.mark.asyncio

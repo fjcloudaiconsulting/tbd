@@ -106,6 +106,11 @@ export default function AdminUserDetailPage() {
       setShowDeleteConfirm(false);
       router.replace("/admin/users");
     } catch (err) {
+      // Architect feedback on PR #303: the error banner renders in the
+      // danger-zone section (page body). If the modal stays mounted on
+      // top of it, the operator may not see the failure. Close the
+      // modal so the banner is visible.
+      setShowDeleteConfirm(false);
       setDeleteError(extractErrorMessage(err, "Delete failed"));
     } finally {
       setDeleting(false);

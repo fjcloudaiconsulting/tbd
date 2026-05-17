@@ -476,15 +476,27 @@ export default function AdminOrgDetailPage() {
                                 org" without deleting is not expressible
                                 today; deactivate + delete is the only
                                 terminal path.
+
+                                Gate on ``users.delete`` (not the page-
+                                level ``orgs.manage`` gate) — architect
+                                feedback on PR #303: the navigation link
+                                advertises a destructive system-level
+                                action, so it must only render for
+                                operators who can actually perform it.
+                                A future support role with ``users.view``
+                                or ``orgs.manage`` but NOT ``users.delete``
+                                should see this row without the link.
                               */}
-                              <Link
-                                href={`/admin/users/${m.id}`}
-                                className={`${btnSecondary} min-h-[44px]`}
-                                aria-label={`Open user detail for ${m.username}`}
-                                title="Open the user-detail page to permanently delete this user."
-                              >
-                                Delete user…
-                              </Link>
+                              {hasPlatformPermission(user, "users.delete") && (
+                                <Link
+                                  href={`/admin/users/${m.id}`}
+                                  className={`${btnSecondary} min-h-[44px]`}
+                                  aria-label={`Open user detail for ${m.username}`}
+                                  title="Open the user-detail page to permanently delete this user."
+                                >
+                                  Delete user…
+                                </Link>
+                              )}
                             </>
                           )}
                         </div>

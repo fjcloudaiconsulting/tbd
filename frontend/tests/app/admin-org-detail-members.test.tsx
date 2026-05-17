@@ -303,6 +303,33 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
     ).toBeNull();
   });
 
+  it("hides the Delete user link from operators without users.delete (architect feedback on PR #303)", async () => {
+    // The destructive system-level action is gated by ``users.delete``
+    // (D3). A non-superadmin support operator with ``orgs.manage`` but
+    // without ``users.delete`` must see the deactivated row WITHOUT
+    // the navigation link, since the user-detail page would also
+    // refuse them.
+    useAuthMock.mockReturnValue({
+      user: {
+        ...SUPERADMIN,
+        is_superadmin: false,
+        permissions: ["orgs.manage"],  // explicitly no users.delete
+      } as never,
+      loading: false, needsSetup: false,
+      login: vi.fn(), register: vi.fn(), logout: vi.fn(), refreshMe: vi.fn(),
+    });
+    installMocks();
+    render(<AdminOrgDetailPage />);
+
+    // ghost row still renders (orgs.manage gate passes for the page).
+    await screen.findByText("ghost");
+
+    // …but the destructive navigation link must NOT render.
+    expect(
+      screen.queryByRole("link", { name: /Open user detail for ghost/i }),
+    ).toBeNull();
+  });
+
   it("surfaces a 409 last-owner error from the backend in the member-error banner", async () => {
     const apiFetchMock = vi.mocked(apiFetch);
     apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {

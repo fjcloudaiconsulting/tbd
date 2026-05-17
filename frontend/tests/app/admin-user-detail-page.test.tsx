@@ -256,4 +256,49 @@ describe("AdminUserDetailPage", () => {
       expect(replaceMock).toHaveBeenCalledWith("/admin/users");
     });
   });
+
+  it("closes the modal and surfaces the error when DELETE fails (architect feedback on PR #303)", async () => {
+    // The error banner renders in the danger-zone section of the page
+    // body. If the confirm modal stays mounted on top of it after a
+    // failure, the operator may not see the message. Pin that on a
+    // 409 (e.g. someone reactivated the user between page load and
+    // confirm), the modal closes and the error banner is visible.
+    apiFetchMock
+      .mockResolvedValueOnce({
+        ...SAMPLE_DETAIL,
+        is_active: false,
+      } as never)
+      .mockRejectedValueOnce(
+        Object.assign(new Error("user_still_active"), {
+          status: 409,
+          payload: { code: "user_still_active", message: "Deactivate first." },
+        }) as never,
+      );
+
+    render(<AdminUserDetailPage />);
+
+    const deleteBtn = await screen.findByRole("button", {
+      name: /delete user ada@acme.io/i,
+    });
+    fireEvent.click(deleteBtn);
+
+    const dialog = await screen.findByRole("dialog");
+    const confirmBtn = within(dialog).getByRole("button", {
+      name: /^delete user$/i,
+    });
+    fireEvent.click(confirmBtn);
+
+    // Modal closes on failure (operator can now see the banner).
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    // Banner is rendered with the failure message.
+    expect(
+      await screen.findByRole("alert"),
+    ).toHaveTextContent(/deactivate first|delete failed|user_still_active/i);
+
+    // We did NOT navigate away on failure.
+    expect(replaceMock).not.toHaveBeenCalledWith("/admin/users");
+  });
 });
