@@ -1,10 +1,42 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
-const API_FETCH_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 10_000;
+// Auth recovery paths (/auth/refresh, /auth/me) get a longer budget so the
+// first request after a hibernated DO App Platform Basic-XS backend doesn't
+// false-positive the 10s default during TLS handshake + cold container
+// boot. Applied only to the recovery paths; all other endpoints keep the
+// 10s default. See PR fix(frontend) cold-start.
+const RECOVERY_TIMEOUT_MS = 25_000;
+// Back-compat alias retained for the rest of the module; existing callers
+// reference API_FETCH_TIMEOUT_MS in inline comments.
+const API_FETCH_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
 // Retry budget for transient outcomes on POST /api/v1/auth/refresh. Two
 // retries with 250ms exponential backoff (250ms, 500ms). Terminal 401/403
 // is NOT retried -- those mean the refresh cookie is dead, not in transit.
 const REFRESH_TRANSIENT_RETRIES = 2;
 const REFRESH_BACKOFF_BASE_MS = 250;
+
+// Detect recovery paths by substring so a future ``/api/v2/auth/refresh``
+// or a relative ``/auth/me`` still picks up the longer budget. Robust
+// against the API_URL prefix and against future path renames.
+//
+// Architect P1 on PR #309: ``/auth/status`` is the FIRST endpoint
+// AuthProvider hits on mount (see components/auth/AuthProvider.tsx).
+// If that call times out at 10s on a cold container, the restore
+// flow never reaches ``/auth/refresh`` and the user gets surfaced a
+// generic 503 from the unauth path instead of the recovery one.
+// Treating ``/auth/status`` as a recovery path means the cold-start
+// chain (status → refresh → me) all runs on the 25s budget.
+function isRecoveryPath(path: string): boolean {
+  return (
+    path.includes("/auth/refresh")
+    || path.includes("/auth/me")
+    || path.includes("/auth/status")
+  );
+}
+
+function timeoutForPath(path: string): number {
+  return isRecoveryPath(path) ? RECOVERY_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+}
 
 let accessToken: string | null = null;
 // Discriminated result so callers can distinguish terminal auth death
@@ -97,10 +129,16 @@ async function fetchWithTimeout(
 async function refreshAccessTokenOnce(): Promise<RefreshResult> {
   let res: Response;
   try {
-    res = await fetchWithTimeout(`${API_URL}/api/v1/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-    });
+    // 25s recovery budget (vs 10s default) so a hibernated backend cold
+    // start with TLS handshake + container boot doesn't false-positive.
+    res = await fetchWithTimeout(
+      `${API_URL}/api/v1/auth/refresh`,
+      {
+        method: "POST",
+        credentials: "include",
+      },
+      RECOVERY_TIMEOUT_MS,
+    );
   } catch (err) {
     // ApiTimeoutError, TypeError (network), AbortError -- all transient.
     return {
@@ -173,11 +211,18 @@ async function refreshAccessToken(): Promise<RefreshResult> {
 async function probeAuthMeAlive(): Promise<boolean> {
   if (!accessToken) return false;
   try {
-    const res = await fetchWithTimeout(`${API_URL}/api/v1/auth/me`, {
-      method: "GET",
-      credentials: "include",
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    // 25s recovery budget so a cold backend doesn't trip a false
+    // logout when /me confirms session liveness after a transient
+    // refresh failure.
+    const res = await fetchWithTimeout(
+      `${API_URL}/api/v1/auth/me`,
+      {
+        method: "GET",
+        credentials: "include",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+      RECOVERY_TIMEOUT_MS,
+    );
     return res.status === 200;
   } catch {
     return false;
@@ -192,7 +237,10 @@ export async function apiFetch<T>(
   // so it doesn't pollute the RequestInit. The same caller-provided value
   // applies to both the primary request and the retry-after-refresh.
   const { timeoutMs, ...fetchInit } = options;
-  const effectiveTimeout = timeoutMs ?? API_FETCH_TIMEOUT_MS;
+  // Path-specific default: recovery routes get 25s, everything else 10s.
+  // An explicit per-call timeoutMs override always wins. Same effective
+  // budget is reused for the retry-after-refresh below.
+  const effectiveTimeout = timeoutMs ?? timeoutForPath(path);
   const headers = new Headers(fetchInit.headers);
 
   if (accessToken) {

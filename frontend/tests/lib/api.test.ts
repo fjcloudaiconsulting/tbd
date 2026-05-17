@@ -279,8 +279,9 @@ describe("apiFetch", () => {
     vi.useFakeTimers();
     try {
       setAccessToken("stale-token");
-      // All 3 refresh attempts hang and time out at 10s each, separated by
-      // 250ms then 500ms exponential backoffs.
+      // All 3 refresh attempts hang and time out at 25s each (recovery
+      // budget for /auth/refresh), separated by 250ms then 500ms
+      // exponential backoffs.
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))
         .mockImplementationOnce(neverResolvingFetch())   // refresh attempt 1
@@ -294,12 +295,12 @@ describe("apiFetch", () => {
         code: "refresh_transient",
       });
 
-      // Advance through all three 10s timeouts + 250ms + 500ms backoffs.
-      await vi.advanceTimersByTimeAsync(10_000);
+      // Advance through all three 25s timeouts + 250ms + 500ms backoffs.
+      await vi.advanceTimersByTimeAsync(25_000);
       await vi.advanceTimersByTimeAsync(250);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(25_000);
       await vi.advanceTimersByTimeAsync(500);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(25_000);
       await assertion;
 
       expect(getAccessToken()).toBe("stale-token");  // PRESERVED
@@ -353,11 +354,12 @@ describe("apiFetch", () => {
         expect(p).rejects.toMatchObject({ status: 503, code: "refresh_transient" }),
       );
 
-      await vi.advanceTimersByTimeAsync(10_000);
+      // Refresh uses the 25s recovery budget across all 3 attempts.
+      await vi.advanceTimersByTimeAsync(25_000);
       await vi.advanceTimersByTimeAsync(250);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(25_000);
       await vi.advanceTimersByTimeAsync(500);
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(25_000);
       await Promise.all(assertions);
 
       expect(getAccessToken()).toBe("stale-token");
