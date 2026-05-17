@@ -333,7 +333,18 @@ export default function CategorySelect({ id, categories, value, onChange, filter
           masterCategories={masters}
           onCreated={(cat) => {
             setShowAddModal(false);
+            // Always notify upward so other pickers can list the
+            // newly-created category. But in ``bothOnly`` (transfer)
+            // mode the modal's type radio is unlocked — if the user
+            // changed it to income or expense, the new category is
+            // incompatible with the transfer picker. Do NOT
+            // ``handleSelect`` in that case, otherwise the form would
+            // store an id the backend rejects at submit. Architect
+            // feedback on PR #296.
             onCategoryCreated?.(cat);
+            if (bothOnly && cat.type !== "both") {
+              return;
+            }
             handleSelect(cat);
           }}
           onCancel={() => {

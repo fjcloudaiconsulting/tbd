@@ -476,10 +476,12 @@ export default function DocsPage() {
               </li>
               <li>
                 If you want to see card payments broken out separately
-                from generic transfers, create a transfer-compatible
-                category like Credit Card Payment or Debt Repayment
-                from the transfer form, then pick it on the transfer.
-                Both legs will use that category.
+                from generic transfers, pick Credit Card Payment (or
+                create another transfer-compatible category) from the
+                transfer form. Both legs will use that category. The
+                picker shows only categories that work on both legs,
+                so expense-only categories like Debt Repayment or
+                Credit Cards cannot be used on a transfer.
               </li>
             </ul>
             <p>

@@ -21,6 +21,45 @@ vi.mock("@/components/ui/AddCategoryModal", () => ({
       <button type="button" onClick={() => props.onCancel()}>
         stub-cancel
       </button>
+      {/* Emit category-created with a specific type so tests can
+          exercise both the compatible and the bothOnly-incompatible
+          code paths added in the PR #296 architect-feedback round. */}
+      <button
+        type="button"
+        onClick={() =>
+          props.onCreated({
+            id: 9999,
+            name: props.initialName || "Stub Expense",
+            type: "expense",
+            parent_id: null,
+            parent_name: null,
+            description: null,
+            slug: "stub-expense",
+            is_system: false,
+            transaction_count: 0,
+          })
+        }
+      >
+        stub-create-expense
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.onCreated({
+            id: 8888,
+            name: props.initialName || "Stub Transfer",
+            type: "both",
+            parent_id: null,
+            parent_name: null,
+            description: null,
+            slug: "stub-transfer",
+            is_system: false,
+            transaction_count: 0,
+          })
+        }
+      >
+        stub-create-both
+      </button>
     </div>
   ),
 }));
@@ -248,5 +287,65 @@ describe("CategorySelect — value resolution under filterType", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
     expect(screen.getByTestId("modal-initial-type")).toHaveTextContent("both");
     expect(screen.getByTestId("modal-locked-type")).toHaveTextContent("");
+  });
+
+  // Architect feedback on PR #296: in bothOnly mode the modal's type
+  // radio is unlocked, so a user can flip to income/expense. Today the
+  // resulting category lands as the selected value via handleSelect,
+  // even though the picker would later hide it. The form then submits
+  // an id the backend rejects. The fix is to gate handleSelect on
+  // compatibility — onCategoryCreated still fires (so other pickers
+  // can list the new category), but onChange must NOT fire when the
+  // returned category is incompatible with the active typeFilter.
+  it("typeFilter=BOTH: an incompatible (expense) created category is not selected", () => {
+    const onChange = vi.fn();
+    const onCategoryCreated = vi.fn();
+    render(
+      <CategorySelect
+        id="t11"
+        categories={CATEGORIES}
+        value=""
+        onChange={onChange}
+        onCategoryCreated={onCategoryCreated}
+        typeFilter="BOTH"
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
+    fireEvent.click(screen.getByText("stub-create-expense"));
+
+    // Upward notification fires regardless of compatibility, so other
+    // forms (e.g. /transactions in income/expense mode) can list it.
+    expect(onCategoryCreated).toHaveBeenCalledTimes(1);
+    expect(onCategoryCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "expense" }),
+    );
+
+    // Load-bearing assertion: the picker does NOT select the
+    // incompatible category. Before the fix this fired once with id 9999.
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("typeFilter=BOTH: a compatible (both) created category IS selected", () => {
+    const onChange = vi.fn();
+    const onCategoryCreated = vi.fn();
+    render(
+      <CategorySelect
+        id="t12"
+        categories={CATEGORIES}
+        value=""
+        onChange={onChange}
+        onCategoryCreated={onCategoryCreated}
+        typeFilter="BOTH"
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
+    fireEvent.click(screen.getByText("stub-create-both"));
+
+    expect(onCategoryCreated).toHaveBeenCalledTimes(1);
+    // Compatible: picker selects it as the new value.
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(8888);
   });
 });

@@ -288,10 +288,10 @@ export default function TransferForm({
           onCategoryCreated={(cat) => onCategoryCreated?.(cat)}
         />
         <p className="mt-1 text-[10px] text-text-muted">
-          Transfers use one category shared by both legs. Pick a
-          transfer-compatible category like Transfer, Credit Card
-          Payment, or Debt Repayment. Leave empty to use the default
-          Transfer category.
+          Transfers use one category shared by both legs. Pick
+          Transfer, Credit Card Payment, or another
+          transfer-compatible category you create. Leave empty to
+          use the default Transfer category.
         </p>
       </div>
 
