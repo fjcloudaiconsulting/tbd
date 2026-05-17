@@ -48,7 +48,8 @@ logging.getLogger("ofxtools").setLevel(logging.WARNING)
 
 class _FakeRedisPipeline:
     """In-memory pipeline mirroring the redis.asyncio.client.Pipeline ops
-    used by ``session_issue`` / ``session_rotate``."""
+    used by ``session_issue``. (PR 3 moved rotation to ``EVAL`` —
+    handled by :meth:`_SharedFakeRedis.eval`, not by pipelines.)"""
 
     def __init__(self, store: "_SharedFakeRedis"):
         self._store = store
@@ -95,20 +96,52 @@ class _FakeRedisPipeline:
 
 class _SharedFakeRedis:
     """Minimum-viable fake of ``redis.asyncio.Redis`` covering the
-    SET / GET / SADD / EXPIRE / DELETE / pipeline / setex /  ops used
-    across the app (auth-session keys + MFA email-jti nonces).
+    SET / GET / SADD / EXPIRE / DELETE / pipeline / setex / eval ops
+    used across the app (auth-session keys + MFA email-jti nonces).
+
+    PR 3 added ``eval`` so the rotation Lua script can be exercised
+    end-to-end without a real Redis. The implementation hand-rolls the
+    three guards + write block from the production script — kept
+    narrow on purpose so the fake stays the lowest-blast-radius
+    option per the architect's brief. If we ever need additional Lua
+    scripts in tests, swap to ``fakeredis`` instead of growing this.
+
+    Concurrency model: the production Lua script is atomic on the
+    server (one Lua call = one server-side block). To exercise the
+    race tests in PR 3 the fake serializes ``eval`` calls via an
+    ``asyncio.Lock`` AND provides an ``eval_gate`` (an
+    ``asyncio.Event``-based hook) tests can set to pause execution at
+    well-known points without ``asyncio.sleep``. The gate is a
+    dict[str, asyncio.Event] keyed by old_jti so a single test can
+    gate exactly one of two concurrent calls.
     """
 
     def __init__(self):
         self._kv: dict[str, Any] = {}
         self._sets: dict[str, set] = defaultdict(set)
         self.abort_pipeline = False
+        # PR 3 race-test plumbing. See class docstring.
+        import asyncio
+        self._eval_lock = asyncio.Lock()
+        # Set by tests: when not None, each ``eval`` call increments
+        # ``_eval_arrival_count`` BEFORE acquiring the eval lock, then
+        # waits on ``_eval_release`` (an asyncio.Event) before
+        # continuing. The test arms a barrier of N expected callers
+        # and ``await``s the barrier until the count matches, then
+        # sets the release event. This gives deterministic gating
+        # without ``asyncio.sleep``-based polling on either side.
+        self.eval_barrier_target: int | None = None
+        self._eval_arrival_count: int = 0
+        self._eval_arrival_event = asyncio.Event()
+        self._eval_release_event = asyncio.Event()
 
     # Plain KV
     async def get(self, key):
         return self._kv.get(key)
 
-    async def set(self, key, value, ex=None, **kwargs):
+    async def set(self, key, value, ex=None, nx=False, **kwargs):
+        if nx and key in self._kv:
+            return False
         self._kv[key] = value
         return True
 
@@ -125,7 +158,15 @@ class _SharedFakeRedis:
         return n
 
     async def exists(self, *keys):
-        return sum(1 for k in keys if k in self._kv)
+        # Sets and KV are stored in separate dicts; real Redis EXISTS
+        # is type-agnostic — match that here so callers like
+        # ``session_family_exists`` (which checks
+        # ``auth:session:by_sid:{sid}`` — a SET) behave correctly.
+        return sum(
+            1
+            for k in keys
+            if k in self._kv or self._sets.get(k)
+        )
 
     # Sets
     async def smembers(self, key):
@@ -137,6 +178,71 @@ class _SharedFakeRedis:
     # Pipelines
     def pipeline(self, transaction=True):
         return _FakeRedisPipeline(self)
+
+    # Lua — mimics the ROTATE_SESSION_LUA script in redis_client.py
+    async def eval(self, script: str, numkeys: int, *args):
+        """Execute the rotate-session Lua script.
+
+        Recognises the production script body by the presence of all
+        three guard markers. Any other script raises NotImplementedError
+        so a future caller cannot silently land on a no-op fake.
+
+        Args layout (matches the production call):
+          KEYS[1..4] = primary, grace, new_primary, family
+          ARGV[1..6] = grace_ttl, idle_ttl, grace_val, primary_val,
+                       old_jti, new_jti
+        """
+        # Sanity check: this fake only knows the rotate script.
+        markers = (
+            'SISMEMBER',
+            'EXISTS',
+            'jti_collision',
+            'session_revoked',
+            'already_rotated',
+        )
+        if not all(m in script for m in markers):
+            raise NotImplementedError(
+                "Fake Redis EVAL only supports ROTATE_SESSION_LUA"
+            )
+        keys = list(args[:numkeys])
+        argv = list(args[numkeys:])
+        primary_key, grace_key, new_primary_key, family_key = keys
+        grace_ttl, idle_ttl, grace_val, primary_val, old_jti, new_jti = argv
+
+        # Optional test barrier — when armed with a target N, count
+        # each arrival and block until the test releases. The barrier
+        # MUST be tripped BEFORE the lock is acquired so all N callers
+        # reach the gate concurrently; once released, the lock
+        # serializes the actual script body.
+        if self.eval_barrier_target is not None:
+            self._eval_arrival_count += 1
+            if self._eval_arrival_count >= self.eval_barrier_target:
+                self._eval_arrival_event.set()
+            await self._eval_release_event.wait()
+
+        async with self._eval_lock:
+            # (1) Family revoked?
+            if old_jti not in self._sets.get(family_key, set()):
+                from redis.exceptions import ResponseError as _RE
+
+                raise _RE("session_revoked")
+            # (2) Already rotated?
+            if primary_key not in self._kv:
+                from redis.exceptions import ResponseError as _RE
+
+                raise _RE("already_rotated")
+            # (3) NX on new primary
+            if new_primary_key in self._kv:
+                from redis.exceptions import ResponseError as _RE
+
+                raise _RE("jti_collision")
+            # (4) Writes
+            self._kv[new_primary_key] = primary_val
+            self._kv[grace_key] = grace_val
+            self._sets[family_key].add(new_jti)
+            self._kv.pop(primary_key, None)
+            _ = grace_ttl, idle_ttl  # TTL not simulated
+            return "ok"
 
     # Lifecycle
     async def aclose(self):
