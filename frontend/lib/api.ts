@@ -36,7 +36,7 @@ const REFRESH_BACKOFF_BASE_MS = 250;
 // flow never reaches ``/auth/refresh`` and the user gets surfaced a
 // generic 503 from the unauth path instead of the recovery one.
 // Treating ``/auth/status`` as a recovery path means the cold-start
-// chain (status → refresh → me) all runs on the 25s budget.
+// chain (status → refresh → me) all runs on the 45s budget.
 function isRecoveryPath(path: string): boolean {
   return (
     path.includes("/auth/refresh")
@@ -439,7 +439,7 @@ async function refreshAccessToken(): Promise<RefreshResult> {
 async function probeAuthMeAlive(): Promise<boolean> {
   if (!accessToken) return false;
   try {
-    // 25s recovery budget so a cold backend doesn't trip a false
+    // 45s recovery budget so a cold backend doesn't trip a false
     // logout when /me confirms session liveness after a transient
     // refresh failure.
     const res = await fetchWithTimeout(
@@ -465,7 +465,7 @@ export async function apiFetch<T>(
   // so it doesn't pollute the RequestInit. The same caller-provided value
   // applies to both the primary request and the retry-after-refresh.
   const { timeoutMs, ...fetchInit } = options;
-  // Path-specific default: recovery routes get 25s, everything else 10s.
+  // Path-specific default: recovery routes get 45s, everything else 10s.
   // An explicit per-call timeoutMs override always wins. Same effective
   // budget is reused for the retry-after-refresh below.
   const effectiveTimeout = timeoutMs ?? timeoutForPath(path);

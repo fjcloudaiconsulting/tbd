@@ -195,10 +195,20 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       // no /refresh until we actually need one.
       void ensureFreshAccessToken();
     };
-    document.addEventListener("visibilitychange", checkAndRefresh);
+    const onVisibilityChange = () => {
+      // visibilitychange fires on BOTH visible → hidden AND hidden →
+      // visible transitions. We only care about the latter — when
+      // the user returns to a backgrounded tab, the token may have
+      // ticked into its lead window while setTimeout was throttled,
+      // and a burst of mount fetchers is about to fire. Hidden
+      // transitions don't need a refresh.
+      if (document.visibilityState !== "visible") return;
+      checkAndRefresh();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", checkAndRefresh);
     return () => {
-      document.removeEventListener("visibilitychange", checkAndRefresh);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", checkAndRefresh);
     };
   }, [user]);
