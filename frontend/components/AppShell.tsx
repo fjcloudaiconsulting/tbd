@@ -35,6 +35,9 @@ import { hasPlatformPermission } from "@/lib/auth";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import { startKeepWarm } from "@/lib/keep-warm";
 import { logger } from "@/lib/logger";
+import {
+  ensureFreshAccessToken,
+} from "@/lib/api";
 import type {
   RefreshAttemptDetail,
   RetryAfterRefreshDetail,
@@ -167,6 +170,47 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return;
     return startKeepWarm();
+  }, [user]);
+
+  // 2026-05-18 proactive refresh — visibility / focus side. The
+  // module-level setTimeout in @/lib/api fires the timer-driven
+  // proactive refresh when the tab is active, but a tab that's been
+  // backgrounded for a while may have its setTimeout throttled by
+  // the browser, then the user returns and a burst of mount
+  // fetchers races the timer. Subscribing here means: as soon as
+  // the user looks at the tab again (visibilitychange→visible) or
+  // focuses the window, we ask apiFetch to ensure the token is
+  // fresh. Idempotent + singleflight in apiFetch — at most one
+  // /refresh fires across timer, this handler, and the apiFetch
+  // preflight on any concurrent fetcher.
+  //
+  // Gated on user so unauthenticated flows don't subscribe. The
+  // 401-driven reactive path remains the safety net.
+  useEffect(() => {
+    if (!user) return;
+    const checkAndRefresh = () => {
+      // ensureFreshAccessToken is a no-op when the token isn't near
+      // expiry, so the worst case on every focus/visibility tick is
+      // a function call + an isAccessTokenNearExpiry comparison —
+      // no /refresh until we actually need one.
+      void ensureFreshAccessToken();
+    };
+    const onVisibilityChange = () => {
+      // visibilitychange fires on BOTH visible → hidden AND hidden →
+      // visible transitions. We only care about the latter — when
+      // the user returns to a backgrounded tab, the token may have
+      // ticked into its lead window while setTimeout was throttled,
+      // and a burst of mount fetchers is about to fire. Hidden
+      // transitions don't need a refresh.
+      if (document.visibilityState !== "visible") return;
+      checkAndRefresh();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", checkAndRefresh);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", checkAndRefresh);
+    };
   }, [user]);
 
   // 2026-05-18 idle-recovery observability. apiFetch dispatches
