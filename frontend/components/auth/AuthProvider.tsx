@@ -7,7 +7,12 @@ import {
   useEffect,
   useState,
 } from "react";
-import { apiFetch, setAccessToken } from "@/lib/api";
+import {
+  ApiResponseError,
+  ApiTimeoutError,
+  apiFetch,
+  setAccessToken,
+} from "@/lib/api";
 import type { User, TokenResponse, MfaChallengeResponse } from "@/lib/types";
 
 export class MfaRequiredError extends Error {
@@ -45,18 +50,67 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const u = await apiFetch<User>("/api/v1/auth/me");
       setUser(u);
-    } catch {
-      setUser(null);
-      setAccessToken(null);
+    } catch (err) {
+      // Only treat a 401/403 from /auth/me as actual logout. A
+      // transient timeout, network error, or 5xx leaves accessToken
+      // alone so the next interaction can retry against the same
+      // valid session — clearing it would trigger a spurious silent
+      // refresh and (under family-revoke semantics) needlessly rotate
+      // a healthy cookie.
+      if (
+        err instanceof ApiResponseError
+        && (err.status === 401 || err.status === 403)
+      ) {
+        setUser(null);
+        setAccessToken(null);
+      } else {
+        setUser(null);
+      }
     }
   }, []);
 
   useEffect(() => {
+    // Cold-start transient errors during restore (status timed out,
+    // refresh hit a 5xx, /me network blip) used to drop the user
+    // straight to /login. Wrap the calls in a small retry budget
+    // matched to apiFetch's own transient classifier — terminal
+    // 401/403 from /auth/refresh still falls through immediately so
+    // a real logged-out user is not stuck waiting.
+    const isTransient = (err: unknown): boolean => {
+      if (err instanceof ApiTimeoutError) return true;
+      if (err instanceof ApiResponseError) {
+        // 401/403 = terminal (real session-dead signal). Everything
+        // else (5xx, 503 refresh_transient, 0 network) is worth a
+        // retry on cold start.
+        return err.status === 0 || err.status >= 500;
+      }
+      // TypeError on fetch (DNS, offline) lands here.
+      return true;
+    };
+
+    const withRetry = async <T,>(fn: () => Promise<T>): Promise<T> => {
+      // 3 attempts; backoff 250ms, 500ms. Matches apiFetch's
+      // REFRESH_TRANSIENT_RETRIES budget so the recovery story is
+      // consistent across the silent-refresh path and the mount path.
+      const delays = [0, 250, 500];
+      let lastErr: unknown;
+      for (const delay of delays) {
+        if (delay) await new Promise((r) => setTimeout(r, delay));
+        try {
+          return await fn();
+        } catch (err) {
+          lastErr = err;
+          if (!isTransient(err)) throw err;
+        }
+      }
+      throw lastErr;
+    };
+
     const restore = async () => {
       try {
         // Check if system needs initial setup
-        const status = await apiFetch<{ needs_setup: boolean }>(
-          "/api/v1/auth/status"
+        const status = await withRetry(() =>
+          apiFetch<{ needs_setup: boolean }>("/api/v1/auth/status"),
         );
         if (status.needs_setup) {
           setNeedsSetup(true);
@@ -65,13 +119,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Try silent refresh to restore session
-        const data = await apiFetch<TokenResponse>("/api/v1/auth/refresh", {
-          method: "POST",
-        });
+        const data = await withRetry(() =>
+          apiFetch<TokenResponse>("/api/v1/auth/refresh", {
+            method: "POST",
+          }),
+        );
         setAccessToken(data.access_token);
         await fetchMe();
       } catch {
-        // No valid session
+        // Either no valid session (terminal 401/403) or persistent
+        // transient (all retries exhausted). Either way render the
+        // signed-out tree — the user can reload to retry transient.
       } finally {
         setLoading(false);
       }

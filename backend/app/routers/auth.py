@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
-from app.models.settings import OrgSetting
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import AVATAR_URL_MAX_LENGTH, Organization, Role, User
 from app.models.subscription import Subscription, Plan
@@ -61,8 +60,9 @@ from app.security import (
     create_refresh_token,
     decode_refresh_jti_sid,
     decode_token,
+    default_session_ttl_seconds,
+    get_org_session_ttl_seconds,
     hash_password,
-    refresh_cookie_max_age,
     token_cutoff,
     verify_password,
 )
@@ -291,7 +291,15 @@ async def login(
     # PR 2: write the Redis primary key + family-set entry BEFORE
     # set_cookie. Fails closed (503) on unreachable Redis so we never
     # emit a cookie that has no corresponding session row.
-    refresh_token, _jti, _sid = await _issue_refresh_session(user.id)
+    #
+    # 2026-05-18 session-stability refactor: resolve the per-org TTL
+    # once and use it for the JWT exp, the cookie Max-Age, AND the
+    # Redis primary-key TTL so the org-level "Maximum session
+    # duration" setting actually controls the session.
+    ttl_seconds = await get_org_session_ttl_seconds(db, user.org_id)
+    refresh_token, _jti, _sid = await _issue_refresh_session(
+        user.id, ttl_seconds=ttl_seconds
+    )
 
     response.set_cookie(
         key="refresh_token",
@@ -299,7 +307,7 @@ async def login(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=refresh_cookie_max_age(),
+        max_age=ttl_seconds,
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -324,11 +332,19 @@ SESSION_REDIS_UNAVAILABLE_DETAIL = "Authentication temporarily unavailable"
 async def _issue_refresh_session(
     user_id: int,
     *,
+    ttl_seconds: int | None = None,
     session_created_at: datetime | None = None,
     sid: str | None = None,
 ) -> tuple[str, str, str]:
     """Mint a refresh JWT AND atomically persist its Redis primary key +
     family-set entry. Returns ``(token, jti, sid)``.
+
+    ``ttl_seconds`` controls the JWT ``exp``, the cookie ``Max-Age`` the
+    caller writes alongside, AND the Redis primary-key TTL — all three
+    in lockstep. Callers with org context should resolve it via
+    ``await get_org_session_ttl_seconds(db, user.org_id)`` so the
+    per-org "Maximum session duration" setting actually controls the
+    session. When ``None`` the system default applies.
 
     Fails CLOSED on unreachable / broken Redis by raising
     ``HTTPException(503)`` — callers MUST let that propagate so no
@@ -339,12 +355,17 @@ async def _issue_refresh_session(
     ``org_members.accept_invitation``. The ``/refresh`` rotation site
     uses :func:`_rotate_refresh_session` instead.
     """
+    if ttl_seconds is None:
+        ttl_seconds = default_session_ttl_seconds()
     token, jti, session_id = create_refresh_token(
-        user_id, session_created_at=session_created_at, sid=sid
+        user_id,
+        ttl_seconds=ttl_seconds,
+        session_created_at=session_created_at,
+        sid=sid,
     )
     try:
         await redis_client.session_issue(
-            jti, session_id, user_id, refresh_cookie_max_age()
+            jti, session_id, user_id, ttl_seconds
         )
     except (RedisRequired, RedisError) as exc:
         raise HTTPException(
@@ -359,6 +380,7 @@ async def _rotate_refresh_session(
     old_jti: str,
     sid: str,
     *,
+    ttl_seconds: int | None = None,
     session_created_at: datetime | None = None,
 ) -> tuple[str, str, str, str]:
     """Mint a successor refresh JWT (same ``sid``, fresh ``jti``) and run
@@ -385,9 +407,20 @@ async def _rotate_refresh_session(
     its Set-Cookie because no session row exists for the new jti.
 
     Fails CLOSED on unreachable Redis by raising ``HTTPException(503)``.
+
+    ``ttl_seconds`` aligns the new JWT ``exp``, the new cookie
+    ``Max-Age``, and the new Redis primary-key TTL. When ``None`` the
+    system default applies; callers that know the org should resolve
+    via ``get_org_session_ttl_seconds`` and pass it explicitly so the
+    per-org session-length setting takes effect at the rotation site.
     """
+    if ttl_seconds is None:
+        ttl_seconds = default_session_ttl_seconds()
     token, new_jti, session_id = create_refresh_token(
-        user_id, session_created_at=session_created_at, sid=sid
+        user_id,
+        ttl_seconds=ttl_seconds,
+        session_created_at=session_created_at,
+        sid=sid,
     )
     try:
         result = await redis_client.session_rotate_lua(
@@ -395,7 +428,7 @@ async def _rotate_refresh_session(
             new_jti,
             session_id,
             user_id,
-            refresh_cookie_max_age(),
+            ttl_seconds,
         )
     except (RedisRequired, RedisError) as exc:
         raise HTTPException(
@@ -468,10 +501,10 @@ def _extract_refresh_cookies(request: Request) -> list[str]:
 async def _validate_single_refresh_token(
     refresh_token: str,
     db: AsyncSession,
-) -> tuple[User, dict, datetime | None, str]:
+) -> tuple[User, dict, datetime | None, str, int]:
     """Validate ONE refresh-token JWT value. Returns
-    ``(user, payload, session_start, redis_state)`` or raises
-    ``HTTPException(401)``.
+    ``(user, payload, session_start, redis_state, ttl_seconds)`` or
+    raises ``HTTPException(401)``.
 
     ``redis_state`` is ``"primary"`` when the active session key
     ``auth:session:{jti}`` is present, or ``"grace"`` when only the
@@ -629,38 +662,31 @@ async def _validate_single_refresh_token(
                 detail="Session has been invalidated",
             )
 
-    # Enforce absolute session lifetime (per-org setting or system default)
+    # Resolve the per-org session TTL once — used BOTH for the absolute-
+    # lifetime check below AND propagated to the caller so /refresh
+    # rotation can write the new cookie / JWT / Redis TTL in lockstep.
+    # Single helper call avoids drift between the validation ceiling
+    # and the issue-site ceiling.
+    ttl_seconds = await get_org_session_ttl_seconds(db, user.org_id)
+
+    # Enforce absolute session lifetime against the resolved TTL.
     session_created_at = payload.get("session_created_at")
     session_start: datetime | None = None
     if session_created_at:
         session_start = datetime.fromtimestamp(session_created_at, tz=timezone.utc)
-
-        max_days = app_settings.session_lifetime_days
-        org_setting = await db.scalar(
-            select(OrgSetting.value).where(
-                OrgSetting.org_id == user.org_id,
-                OrgSetting.key == "session_lifetime_days",
-            )
-        )
-        if org_setting:
-            try:
-                max_days = int(org_setting)
-            except ValueError:
-                pass
-
-        if datetime.now(timezone.utc) - session_start > timedelta(days=max_days):
+        if datetime.now(timezone.utc) - session_start > timedelta(seconds=ttl_seconds):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=SESSION_EXPIRED_DETAIL,
             )
 
-    return user, payload, session_start, redis_state
+    return user, payload, session_start, redis_state, ttl_seconds
 
 
 async def _validate_refresh_cookie(
     refresh_tokens: list[str],
     db: AsyncSession,
-) -> tuple[User, dict, datetime | None, str]:
+) -> tuple[User, dict, datetime | None, str, int]:
     """Validate the provided refresh-token cookie values and pick one.
 
     Rules:
@@ -693,7 +719,7 @@ async def _validate_refresh_cookie(
             detail="No refresh token",
         )
 
-    successes: list[tuple[User, dict, datetime | None, str]] = []
+    successes: list[tuple[User, dict, datetime | None, str, int]] = []
     last_exc: HTTPException | None = None
     for token in refresh_tokens:
         try:
@@ -754,7 +780,7 @@ async def refresh(
     """
     refresh_tokens = _extract_refresh_cookies(request)
     try:
-        user, payload, session_start, redis_state = await _validate_refresh_cookie(
+        user, payload, session_start, redis_state, ttl_seconds = await _validate_refresh_cookie(
             refresh_tokens, db
         )
     except HTTPException as exc:
@@ -804,14 +830,22 @@ async def refresh(
 
     # ── Normal rotation path: Lua script is the authority ───────────────
     new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
-        user.id, old_jti, sid, session_created_at=session_start
+        user.id,
+        old_jti,
+        sid,
+        ttl_seconds=ttl_seconds,
+        session_created_at=session_start,
     )
 
     if lua_result == redis_client.SESSION_ROTATE_JTI_COLLISION:
         # 128-bit collision — regenerate jti once and retry. If the second
         # attempt also collides, the RNG is broken: 503 + structlog flag.
         new_refresh_token, new_jti, _sid, lua_result = await _rotate_refresh_session(
-            user.id, old_jti, sid, session_created_at=session_start
+            user.id,
+            old_jti,
+            sid,
+            ttl_seconds=ttl_seconds,
+            session_created_at=session_start,
         )
         if lua_result == redis_client.SESSION_ROTATE_JTI_COLLISION:
             await _record_session_rotated_failed(
@@ -874,7 +908,7 @@ async def refresh(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=refresh_cookie_max_age(),
+        max_age=ttl_seconds,
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -912,7 +946,7 @@ async def verify(
     Cookie header (PR #211 cookie-shadow guard).
     """
     refresh_tokens = _extract_refresh_cookies(request)
-    user, _payload, _session_start, _redis_state = await _validate_refresh_cookie(
+    user, _payload, _session_start, _redis_state, _ttl_seconds = await _validate_refresh_cookie(
         refresh_tokens, db
     )
 
@@ -1270,23 +1304,34 @@ async def _resolve_mfa_user(mfa_token: str, db: AsyncSession) -> User:
     return user
 
 
-async def _issue_tokens(user: User, response: Response) -> TokenResponse:
+async def _issue_tokens(
+    user: User,
+    response: Response,
+    db: AsyncSession,
+) -> TokenResponse:
     """Issue access + refresh tokens and set the refresh cookie.
 
     Shared by every MFA-completion branch (``/mfa/verify``,
     ``/mfa/recovery``, ``/mfa/email-verify``). Becomes async with PR 2
     because the Redis primary-key + family-set write happens BEFORE
     ``set_cookie`` — fail-closed semantics in spec §7.1.
+
+    Requires ``db`` so the per-org session TTL can be resolved once
+    and applied to the JWT exp, the cookie Max-Age, AND the Redis
+    primary-key TTL in lockstep (2026-05-18 session-stability fix).
     """
     access_token = create_access_token(user.id, user.org_id, user.role.value)
-    refresh_token, _jti, _sid = await _issue_refresh_session(user.id)
+    ttl_seconds = await get_org_session_ttl_seconds(db, user.org_id)
+    refresh_token, _jti, _sid = await _issue_refresh_session(
+        user.id, ttl_seconds=ttl_seconds
+    )
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=refresh_cookie_max_age(),
+        max_age=ttl_seconds,
         path="/",
     )
     _clear_legacy_refresh_cookie(response)
@@ -1637,7 +1682,7 @@ async def mfa_verify(
     if not verify_totp(secret, body.code):
         raise HTTPException(status_code=401, detail="Invalid TOTP code")
 
-    tokens = await _issue_tokens(user, response)
+    tokens = await _issue_tokens(user, response, db)
     await _record_login_success(
         session_factory, user=user, request=request, method="mfa_totp"
     )
@@ -1674,7 +1719,7 @@ async def mfa_recovery(
     user.recovery_codes = ",".join(hashed_codes) if hashed_codes else None
     await db.flush()
 
-    tokens = await _issue_tokens(user, response)
+    tokens = await _issue_tokens(user, response, db)
     await db.commit()
     await _record_login_success(
         session_factory, user=user, request=request, method="mfa_recovery"
@@ -1769,7 +1814,7 @@ async def mfa_email_verify(
         if not consumed:
             raise HTTPException(status_code=401, detail="Invalid or expired email code")
 
-    tokens = await _issue_tokens(user, response)
+    tokens = await _issue_tokens(user, response, db)
     await _record_login_success(
         session_factory, user=user, request=request, method="mfa_email"
     )
@@ -2081,7 +2126,14 @@ async def google_callback(
     access_token = create_access_token(user.id, user.org_id, user.role.value)
     # PR 2: write the Redis primary key + family-set entry BEFORE
     # set_cookie. Fails closed (503) on unreachable Redis.
-    refresh_token, _jti, _sid = await _issue_refresh_session(user.id)
+    #
+    # 2026-05-18 session-stability refactor: resolve the per-org TTL
+    # so the Google-SSO branch lands the same cookie / JWT / Redis
+    # TTL as the password-login branch.
+    ttl_seconds = await get_org_session_ttl_seconds(db, user.org_id)
+    refresh_token, _jti, _sid = await _issue_refresh_session(
+        user.id, ttl_seconds=ttl_seconds
+    )
 
     # Architect P1 finding on PR #306: on the new-user branch above we
     # switched ``db.commit()`` to ``db.flush()`` so the user + trial
@@ -2126,7 +2178,7 @@ async def google_callback(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=refresh_cookie_max_age(),
+        max_age=ttl_seconds,
         path="/",
     )
     _clear_legacy_refresh_cookie(resp)
