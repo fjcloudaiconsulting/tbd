@@ -99,7 +99,8 @@ def require_client() -> Redis:
 #
 #   auth:session:{jti}         primary key for ONE refresh JWT (rotates each
 #                              /refresh; value = JSON {"user_id", "sid"};
-#                              TTL = refresh_idle_ttl_days * 86400)
+#                              TTL = session_lifetime_days * 86400,
+#                              resolved per-org at issue/rotation time)
 #   auth:session:grace:{jti}   30s rotation grace key, written by the Lua
 #                              script BEFORE the old primary is deleted.
 #                              Value JSON {"user_id", "sid", "successor_jti"}.
@@ -262,7 +263,7 @@ ROTATE_SESSION_LUA = """
 -- KEYS[3] = auth:session:{new_jti}
 -- KEYS[4] = auth:session:by_sid:{sid}
 -- ARGV[1] = grace TTL seconds (30)
--- ARGV[2] = idle TTL seconds (refresh_idle_ttl_days * 86400)
+-- ARGV[2] = session TTL seconds (per-org session_lifetime_days * 86400)
 -- ARGV[3] = grace JSON value
 -- ARGV[4] = primary JSON value
 -- ARGV[5] = old_jti (string to check SISMEMBER + identify in family)

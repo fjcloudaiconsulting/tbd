@@ -6,6 +6,76 @@ PR sequence (see Section 8). No code changes in this PR.
 **Author:** Team H (design)
 **Implementer:** Team I (post-approval)
 
+---
+
+## AMENDMENT — 2026-05-18 (post-PR #310)
+
+This spec was implemented across PRs #305–#308 as written. After deploy
+the operator reported that the org-level "Maximum session duration"
+setting (`OrgSetting(key="session_lifetime_days")`, surfaced in the
+Security settings page, range 1–365) was effectively decorative for
+any value above the system idle TTL of 30 days: the cookie `max_age`,
+the refresh JWT `exp`, and the Redis primary-key TTL were all driven
+by `refresh_idle_ttl_days` (system-only), so a user who configured
+60 days still lost their session at 30 when the cookie expired.
+
+**PR #310 unifies the two TTLs.** The decision recorded in §11 question
+1 ("idle TTL and absolute lifetime stay distinct, punt per-org override
+of `refresh_idle_ttl_days`") is reversed for the launch posture:
+practical experience showed the distinction is invisible to operators
+and the punted per-org override is what they actually expected.
+
+After PR #310 the following holds:
+
+- The setting `refresh_idle_ttl_days` is **retired**. The env var
+  `REFRESH_IDLE_TTL_DAYS` is no longer read; remove it from any
+  deployment specs.
+- `session_lifetime_days` is now THE session TTL. Default 30 days,
+  bounds `1 <= v <= 365` enforced at boot via a new
+  `_validate_session_lifetime_days` validator on `Settings`.
+- A new helper `get_org_session_ttl_seconds(db, org_id)` resolves
+  the per-org `OrgSetting(key="session_lifetime_days")` row with
+  fallback to the system default. Out-of-bounds / non-numeric rows
+  fall back to the system default at read time as defence-in-depth.
+- `create_refresh_token(subject, ttl_seconds=…)` takes the resolved
+  TTL as a keyword argument and uses it for the JWT `exp`.
+- The four `set_cookie` sites (login password, `/refresh` rotation,
+  `_issue_tokens` MFA helper, Google callback) AND the invitation
+  accept site in `routers/org_members.py` ALL read the org TTL via
+  the helper and use the same value for `max_age`. The previously
+  hardcoded `7 * 24 * 60 * 60` literals are gone (§1.2 in this spec
+  is historical).
+- `_validate_single_refresh_token` reads the TTL via the same helper
+  and returns it on its result tuple (now 5-tuple) so the
+  `/refresh` rotation handler uses the same TTL for the new cookie /
+  new Redis primary key / new family-set EXPIRE as the absolute
+  lifetime check used to reject expired tokens. No drift between
+  validation ceiling and issue-site ceiling.
+- `PUT /api/v1/settings` validates `session_lifetime_days` writes at
+  the API boundary: integer, `1..365` inclusive, otherwise `400`.
+  The frontend UI bounds-check was UX-only and bypassable by direct
+  API; the backend bound now matches the validator.
+
+**Implications for §2–§5 below.** Everywhere this document refers to
+`refresh_idle_ttl_days`, the post-PR #310 reality is "`session_lifetime_days`
+(per-org or system default)". Everywhere it talks about idle vs absolute
+as two separate dials, post-PR #310 there is one dial and the absolute-
+lifetime check is defence-in-depth that fires only if `session_created_at`
+predates the current ceiling (the cookie / JWT / Redis TTLs already
+expire at the same time the absolute check would).
+
+Operator-facing summary:
+
+- Set `SESSION_LIFETIME_DAYS` (env) for system default. Default 30.
+- Override per-org via the Security settings page or
+  `PUT /api/v1/settings` with `{"key":"session_lifetime_days","value":"60"}`.
+- The setting controls EVERYTHING — cookie lifetime, JWT exp, Redis
+  TTL, and the absolute ceiling — in lockstep.
+
+Original spec follows unchanged for historical context.
+
+---
+
 ## 0. Why this spec exists
 
 Today the refresh-session story is split across three concepts that share

@@ -203,4 +203,92 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     expect(err.textContent).not.toMatch(/Invalid password/);
     expect((pwd as HTMLInputElement).value).toBe("wrongPassword");
   });
+
+  // ── 2026-05-18 P2 review fix: refreshMe() now rejects on /me failure ─────
+  //
+  // Pre-fix, MFA enable's Done button and MFA disable's submit both
+  // fire-and-forgot refreshMe(). After fetchMe() was changed to rethrow
+  // on transient / terminal /auth/me errors, those promises started
+  // unhandled-rejecting. Beyond the console noise, the saved-but-stale
+  // user object meant the page kept showing the pre-change MFA UI even
+  // though the setting flipped server-side. These tests pin the "saved,
+  // reload to refresh profile" hint the handlers now surface.
+
+  it("MFA enable Done button surfaces a reload hint when refreshMe rejects", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: makeUser(false) as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn().mockResolvedValue(undefined),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn().mockRejectedValue(new ApiResponseError(503, "refresh_transient")),
+    } as never);
+
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/auth/mfa/setup") {
+        return Promise.resolve({ qr_code: "Zm9v", secret: "SECRET" });
+      }
+      if (url === "/api/v1/auth/mfa/enable") {
+        return Promise.resolve({ recovery_codes: ["A1B2C3D4", "E5F6G7H8"] });
+      }
+      return Promise.resolve([]);
+    }) as never);
+
+    render(<SecurityPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Continue$/i }));
+    const codeInput = await screen.findByLabelText(/Verification Code/i);
+    fireEvent.change(codeInput, { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: /Verify and Enable/i }));
+
+    fireEvent.click(
+      await screen.findByLabelText(/I have saved these recovery codes/i),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Done$/i }));
+
+    // The reload hint replaces the bare success text when refreshMe
+    // rejects — the setting IS saved server-side, but the local user
+    // object is stale until the user reloads.
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Reload the page to refresh your profile state/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("MFA disable surfaces a reload hint when refreshMe rejects", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      user: makeUser(true) as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn().mockResolvedValue(undefined),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn().mockRejectedValue(new ApiResponseError(503, "refresh_transient")),
+    } as never);
+
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/auth/mfa/disable") {
+        return Promise.resolve({});
+      }
+      return Promise.resolve([]);
+    }) as never);
+
+    render(<SecurityPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Disable two-factor authentication/i }),
+    );
+    const pwd = await screen.findByLabelText(/^Password$/i);
+    fireEvent.change(pwd, { target: { value: "correctPassword" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Disable two-factor$/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Reload the page to refresh your profile state/i),
+      ).toBeInTheDocument();
+    });
+  });
 });

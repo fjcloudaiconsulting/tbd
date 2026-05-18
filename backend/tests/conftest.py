@@ -296,7 +296,7 @@ def issue_test_refresh_token(user_id: int, **kwargs) -> str:
     use this helper rather than ``create_refresh_token`` directly.
     """
     from app import redis_client as _rc
-    from app.security import create_refresh_token, refresh_cookie_max_age
+    from app.security import create_refresh_token
     import json
 
     token, jti, sid = create_refresh_token(user_id, **kwargs)
