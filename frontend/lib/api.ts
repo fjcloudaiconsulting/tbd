@@ -36,7 +36,7 @@ const REFRESH_BACKOFF_BASE_MS = 250;
 // flow never reaches ``/auth/refresh`` and the user gets surfaced a
 // generic 503 from the unauth path instead of the recovery one.
 // Treating ``/auth/status`` as a recovery path means the cold-start
-// chain (status → refresh → me) all runs on the 25s budget.
+// chain (status → refresh → me) all runs on the 45s budget.
 function isRecoveryPath(path: string): boolean {
   return (
     path.includes("/auth/refresh")
@@ -50,6 +50,26 @@ function timeoutForPath(path: string): number {
 }
 
 let accessToken: string | null = null;
+// 2026-05-18 proactive refresh: track the access-token exp claim
+// alongside the token so the preflight + timer + visibility/focus
+// handlers can decide whether to refresh BEFORE the bearer expires.
+// Stored as the raw exp value (unix seconds, as encoded in the JWT)
+// — no clock-skew adjustment here; the consumers apply their own.
+let accessTokenExp: number | null = null;
+// Module-level timer driven by setAccessToken. Cleared on every
+// token update so a fresh token's exp drives the next scheduled
+// refresh.
+let proactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+// "Near expiry" window: refresh when `exp - now <= 65s` (60s lead
+// + 5s clock-skew tolerance). The 60s lead is large enough to
+// absorb the silent-refresh path's 45s RECOVERY_TIMEOUT_MS + small
+// network jitter on basic-xxs cold start. The 5s skew tolerance
+// keeps the window honest under a few seconds of clock disagreement
+// between the user's browser, the App Platform pod, and the JWT
+// issuer (all should be NTP-synced but defence-in-depth).
+const PROACTIVE_REFRESH_LEAD_SECONDS = 60;
+const CLOCK_SKEW_TOLERANCE_SECONDS = 5;
+
 // Discriminated result so callers can distinguish terminal auth death
 // from transient refresh failure. Architect-locked 2026-05-15.
 type RefreshResult =
@@ -119,10 +139,145 @@ let mePromise: Promise<boolean> | null = null;
 
 export function setAccessToken(token: string | null) {
   accessToken = token;
+  accessTokenExp = token ? decodeJwtExp(token) : null;
+  scheduleProactiveRefresh();
 }
 
 export function getAccessToken(): string | null {
   return accessToken;
+}
+
+/**
+ * Decode the ``exp`` claim from a JWT WITHOUT verifying the
+ * signature (verification is the backend's job). Returns the exp
+ * as unix seconds, or ``null`` if the token isn't a parseable JWT
+ * or has no numeric ``exp`` claim. The "no exp" fallback is
+ * critical for the proactive-refresh design: a token whose exp is
+ * unknown drives the reactive 401 path as today, not a silent
+ * forever-stale session.
+ */
+function decodeJwtExp(token: string): number | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    // JWT payload is base64url-encoded. Normalize to standard base64
+    // then pad to a length divisible by 4 so ``atob`` accepts it.
+    let payloadB64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (payloadB64.length % 4 !== 0) payloadB64 += "=";
+    const payload = JSON.parse(atob(payloadB64)) as { exp?: unknown };
+    return typeof payload.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the current access token is within the lead window of
+ * its declared exp. ``false`` when there is no token OR the token
+ * has no/invalid exp — the latter is the deliberate fallback that
+ * keeps the reactive 401 path as the recovery for legacy / non-JWT
+ * tokens. Exported so AppShell's visibility/focus handler can
+ * gate the refresh trigger without calling apiFetch.
+ */
+export function isAccessTokenNearExpiry(): boolean {
+  if (accessTokenExp === null) return false;
+  const nowSec = Math.floor(Date.now() / 1000);
+  return (
+    accessTokenExp - nowSec
+    <= PROACTIVE_REFRESH_LEAD_SECONDS + CLOCK_SKEW_TOLERANCE_SECONDS
+  );
+}
+
+/**
+ * Auth endpoints MUST skip the proactive preflight to avoid loops:
+ *   - ``/auth/refresh`` IS the refresh — preflighting it would
+ *     recurse into itself.
+ *   - ``/auth/login``, ``/auth/register`` carry no bearer and
+ *     don't need it.
+ *   - ``/auth/me``, ``/auth/status``, ``/auth/logout`` are part
+ *     of the auth-lifecycle path; their own flow handles failures.
+ *   - MFA, SSO step-up, password-reset, email-verify, etc. follow
+ *     the same convention.
+ *
+ * Definition is conservative: any path under ``/api/v1/auth/`` is
+ * exempt. The non-API ``/auth/*`` pages don't go through apiFetch.
+ */
+function isAuthEndpoint(path: string): boolean {
+  return path.startsWith("/api/v1/auth/");
+}
+
+/**
+ * Schedule the next proactive refresh based on the current token's
+ * exp. No-op if there's no token, no decoded exp, or the lead
+ * window has already passed (preflight will handle that case).
+ * Idempotent: clears any pending timer first so a fresh token's
+ * exp always drives the schedule.
+ */
+function scheduleProactiveRefresh(): void {
+  if (proactiveRefreshTimer !== null) {
+    clearTimeout(proactiveRefreshTimer);
+    proactiveRefreshTimer = null;
+  }
+  if (typeof window === "undefined") return;
+  if (accessTokenExp === null) return;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const refreshAtSec = accessTokenExp - PROACTIVE_REFRESH_LEAD_SECONDS;
+  const delayMs = (refreshAtSec - nowSec) * 1000;
+  if (delayMs <= 0) {
+    // Already inside the lead window; let the apiFetch preflight or
+    // visibility/focus handler fire on the next user interaction.
+    // Avoid a tight setTimeout(0) loop here.
+    return;
+  }
+  proactiveRefreshTimer = setTimeout(() => {
+    proactiveRefreshTimer = null;
+    // Fire and forget. Failures are non-destructive (see
+    // ensureFreshAccessToken): transient leaves state intact;
+    // terminal lets the reactive 401 path handle logout via the
+    // already-established /me probe.
+    void ensureFreshAccessToken();
+  }, delayMs);
+}
+
+/**
+ * Single entry point for proactive refresh: timer, visibility/focus
+ * handler, AND apiFetch preflight all converge here. Idempotent
+ * (no-op when the token isn't near expiry) so callers don't need
+ * to gate themselves. Uses the SAME refreshPromise singleflight as
+ * the reactive 401 handler so a 401-driven refresh in flight and a
+ * proactive one never run in parallel.
+ *
+ * Failure semantics — DELIBERATELY non-destructive:
+ *   - ok: ``accessToken`` is updated by ``refreshAccessTokenOnce``,
+ *     ``setAccessToken`` re-schedules the next timer.
+ *   - terminal (401/403): silent return. The next normal apiFetch
+ *     will 401, drive the reactive path, and that path's /me
+ *     probe + auth:unauthenticated dispatch handles logout. No
+ *     destructive side effects from the proactive path.
+ *   - transient (timeout/5xx/network): silent return. State is
+ *     preserved; the reactive 401 path recovers on next failure.
+ *
+ * This way "should clear auth only through the already established
+ * terminal path" holds — proactive refresh is purely additive.
+ */
+export async function ensureFreshAccessToken(): Promise<void> {
+  if (!accessToken || !isAccessTokenNearExpiry()) return;
+  if (!refreshPromise) {
+    refreshPromise = refreshAccessToken();
+  }
+  const sharedPromise = refreshPromise;
+  refreshAwaiters++;
+  try {
+    await sharedPromise;
+    // We deliberately ignore the outcome: ok writes accessToken via
+    // refreshAccessTokenOnce (and the test pinning ensures it),
+    // terminal/transient fall through to the reactive path.
+  } finally {
+    refreshAwaiters--;
+    if (refreshAwaiters === 0 && refreshPromise === sharedPromise) {
+      refreshPromise = null;
+    }
+  }
 }
 
 export class ApiTimeoutError extends Error {
@@ -251,7 +406,10 @@ async function refreshAccessTokenOnce(attempt: number): Promise<RefreshResult> {
     });
   }
 
-  accessToken = data.access_token;
+  // Route through setAccessToken so the exp decode + next-refresh
+  // timer reschedule fire — without this the proactive timer would
+  // keep firing off the OLD token's exp after a successful refresh.
+  setAccessToken(data.access_token);
   return emit({ ok: true, accessToken: data.access_token });
 }
 
@@ -281,7 +439,7 @@ async function refreshAccessToken(): Promise<RefreshResult> {
 async function probeAuthMeAlive(): Promise<boolean> {
   if (!accessToken) return false;
   try {
-    // 25s recovery budget so a cold backend doesn't trip a false
+    // 45s recovery budget so a cold backend doesn't trip a false
     // logout when /me confirms session liveness after a transient
     // refresh failure.
     const res = await fetchWithTimeout(
@@ -307,10 +465,32 @@ export async function apiFetch<T>(
   // so it doesn't pollute the RequestInit. The same caller-provided value
   // applies to both the primary request and the retry-after-refresh.
   const { timeoutMs, ...fetchInit } = options;
-  // Path-specific default: recovery routes get 25s, everything else 10s.
+  // Path-specific default: recovery routes get 45s, everything else 10s.
   // An explicit per-call timeoutMs override always wins. Same effective
   // budget is reused for the retry-after-refresh below.
   const effectiveTimeout = timeoutMs ?? timeoutForPath(path);
+
+  // 2026-05-18 proactive refresh preflight. Before sending any
+  // non-auth request, if the access token is within the
+  // refresh-lead window of its exp, await the same singleflight
+  // refresh as the reactive 401 path. This closes the focus /
+  // visibility race where a backgrounded tab returns with an
+  // about-to-expire token, fires a burst of page-mount fetchers,
+  // and each one ships the expired bearer to the backend before
+  // the timer-driven refresh has completed.
+  //
+  // Skipped for /api/v1/auth/* to avoid loops (auth/refresh
+  // calling preflight calling auth/refresh) and because those
+  // endpoints' own flows handle their auth-lifecycle failures.
+  //
+  // Failure of the proactive refresh is silent (see
+  // ``ensureFreshAccessToken``): if it fails we still send the
+  // request, get a 401, and the existing reactive recovery +
+  // /me probe + terminal logout path handles it as today.
+  if (!isAuthEndpoint(path)) {
+    await ensureFreshAccessToken();
+  }
+
   const headers = new Headers(fetchInit.headers);
 
   if (accessToken) {
@@ -425,7 +605,9 @@ export async function apiFetch<T>(
         // awaiter clears the token first wins; subsequent awaiters
         // observe accessToken === null and skip the duplicate event.
         if (accessToken !== null) {
-          accessToken = null;
+          // setAccessToken(null) clears the proactive-refresh timer
+          // and resets accessTokenExp alongside the token itself.
+          setAccessToken(null);
           if (typeof window !== "undefined") {
             window.dispatchEvent(new Event("auth:unauthenticated"));
           }

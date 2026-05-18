@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { ensureFreshAccessToken } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
 vi.mock("@/lib/logger", () => ({
@@ -32,11 +33,18 @@ vi.mock("next/navigation", () => ({
 // AppShellAddTransactionCta loads accounts/categories on mount; stub the
 // fetch so these system-nav-focused tests don't trip the act() warning
 // when the CTA's loadRefs settles after assertions complete.
+//
+// Also stub ensureFreshAccessToken so the proactive-refresh focus /
+// visibility tests can spy on the call without exercising the real
+// JWT-decode + singleflight machinery (that path is covered by
+// tests/api/proactive-refresh.test.ts). The keep-real-types pattern
+// preserves the named-export shape so AppShell's import succeeds.
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
   return {
     ...actual,
     apiFetch: vi.fn(async () => [] as never),
+    ensureFreshAccessToken: vi.fn(async () => undefined),
   };
 });
 
@@ -337,5 +345,175 @@ describe("AppShell — auth refresh observability", () => {
       ok: false,
       duration_ms: 95,
     });
+  });
+});
+
+// ── 2026-05-18 proactive refresh: AppShell focus/visibility wiring ──────
+//
+// The api.ts proactive-refresh module exposes ensureFreshAccessToken;
+// AppShell subscribes to focus + visibilitychange so a backgrounded
+// tab returning to the foreground catches up if its setTimeout was
+// throttled. These tests pin the AppShell side of that contract:
+//
+//   - user-gated focus triggers ensureFreshAccessToken
+//   - user-gated visibilitychange → visible triggers it
+//   - visibilitychange → hidden does NOT trigger (matches the
+//     comment "visibilitychange→visible"; without this guard the
+//     handler would fire on every transition, doubling traffic
+//     and surprising future readers)
+//   - no user → no subscription (anonymous landing / login pages
+//     never fire proactive refresh)
+//   - unmount removes the listeners (no leak across navigations)
+describe("AppShell — proactive refresh focus/visibility", () => {
+  const useAuthMock = vi.mocked(useAuth);
+  const ensureFreshAccessTokenMock = vi.mocked(ensureFreshAccessToken);
+
+  beforeEach(() => {
+    useAuthMock.mockReset();
+    ensureFreshAccessTokenMock.mockReset();
+    ensureFreshAccessTokenMock.mockResolvedValue(undefined);
+  });
+
+  function mockSignedInUser() {
+    useAuthMock.mockReturnValue({
+      user: BASE_USER as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+  }
+
+  it("focus event fires ensureFreshAccessToken when user is signed in", async () => {
+    mockSignedInUser();
+    await renderShell();
+    ensureFreshAccessTokenMock.mockClear();
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    expect(ensureFreshAccessTokenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("visibilitychange → visible fires ensureFreshAccessToken", async () => {
+    mockSignedInUser();
+    await renderShell();
+    ensureFreshAccessTokenMock.mockClear();
+
+    // jsdom doesn't update document.visibilityState on its own;
+    // override the getter for this test so the AppShell guard
+    // (visibilityState === "visible") evaluates true.
+    const visibilityStateSpy = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("visible");
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(ensureFreshAccessTokenMock).toHaveBeenCalledTimes(1);
+    } finally {
+      visibilityStateSpy.mockRestore();
+    }
+  });
+
+  it("visibilitychange → hidden does NOT fire ensureFreshAccessToken", async () => {
+    mockSignedInUser();
+    await renderShell();
+    ensureFreshAccessTokenMock.mockClear();
+
+    const visibilityStateSpy = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      // Hidden transitions are no-ops — comment intent enforced.
+      expect(ensureFreshAccessTokenMock).not.toHaveBeenCalled();
+    } finally {
+      visibilityStateSpy.mockRestore();
+    }
+  });
+
+  it("no user: no subscription, focus is a no-op", async () => {
+    // user=null + loading=false would trip AppShell's redirect-to-
+    // /login useEffect, so set loading=true to keep AppShell
+    // rendering the spinner branch without redirect side effects.
+    // Either way the proactive-refresh useEffect is gated on `user`
+    // and must NOT subscribe when user is falsy.
+    useAuthMock.mockReturnValue({
+      user: null,
+      loading: true,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+    await renderShell();
+    ensureFreshAccessTokenMock.mockClear();
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    const visibilityStateSpy = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("visible");
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    } finally {
+      visibilityStateSpy.mockRestore();
+    }
+
+    expect(ensureFreshAccessTokenMock).not.toHaveBeenCalled();
+  });
+
+  it("unmount removes focus + visibilitychange listeners", async () => {
+    mockSignedInUser();
+    // Render via act() so we get back the unmount function returned
+    // by RTL's render. renderShell() doesn't expose it, so we
+    // inline the render here.
+    const { render, act: rtlAct } = await import("@testing-library/react");
+    let unmount: () => void = () => {};
+    await rtlAct(async () => {
+      const result = render(
+        <AppShell>
+          <p>page body</p>
+        </AppShell>,
+      );
+      unmount = result.unmount;
+    });
+
+    // Sanity: while mounted, focus fires the spy.
+    ensureFreshAccessTokenMock.mockClear();
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(ensureFreshAccessTokenMock).toHaveBeenCalledTimes(1);
+
+    // After unmount: events fire nothing.
+    ensureFreshAccessTokenMock.mockClear();
+    act(() => {
+      unmount();
+    });
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    const visibilityStateSpy = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("visible");
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    } finally {
+      visibilityStateSpy.mockRestore();
+    }
+    expect(ensureFreshAccessTokenMock).not.toHaveBeenCalled();
   });
 });
