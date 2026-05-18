@@ -464,4 +464,80 @@ describe("apiFetch recovery-path timeout", () => {
       vi.useRealTimers();
     }
   });
+
+  // ── 2026-05-18 idle-recovery P2 review fix: PII redaction ────────────────
+  //
+  // Authenticated paths may include user-entered values in the query
+  // string (e.g. /api/v1/transactions?q=<search term> carries the
+  // transactions filter the user typed; /api/v1/categories?name=<...>
+  // carries a category name; etc.). The retry-after-refresh event
+  // MUST strip the query string + fragment before dispatch so the
+  // detail never carries user input to telemetry consumers. The
+  // route signature (pathname) is enough for ops triage.
+
+  it("retry-after-refresh strips query string from path (PII redaction)", async () => {
+    vi.useFakeTimers();
+    const events: Array<{ path: string }> = [];
+    const recorder = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { path: string };
+      events.push({ path: detail.path });
+    };
+    window.addEventListener("auth:retry-after-refresh", recorder);
+
+    try {
+      setAccessToken("stale-token");
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))
+        .mockResolvedValueOnce(jsonResponse({ access_token: "fresh-token" }))
+        .mockResolvedValueOnce(jsonResponse({ items: [] }));
+
+      // Path carries a search term that should NEVER reach telemetry.
+      const promise = apiFetch(
+        "/api/v1/transactions?q=mortgage-payment&date_from=2026-01-01",
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(promise).resolves.toEqual({ items: [] });
+
+      expect(events).toHaveLength(1);
+      // Pathname only — no query string, no fragment.
+      expect(events[0].path).toBe("/api/v1/transactions");
+      expect(events[0].path).not.toContain("?");
+      expect(events[0].path).not.toContain("mortgage-payment");
+      expect(events[0].path).not.toContain("date_from");
+    } finally {
+      window.removeEventListener("auth:retry-after-refresh", recorder);
+      vi.useRealTimers();
+    }
+  });
+
+  it("retry-after-refresh strips URL fragment too", async () => {
+    // Fragments don't reach the server, but a caller could plausibly
+    // pass one (e.g. a deep-link route). Defence-in-depth: strip it.
+    vi.useFakeTimers();
+    const events: Array<{ path: string }> = [];
+    const recorder = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { path: string };
+      events.push({ path: detail.path });
+    };
+    window.addEventListener("auth:retry-after-refresh", recorder);
+
+    try {
+      setAccessToken("stale-token");
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, { status: 401 }))
+        .mockResolvedValueOnce(jsonResponse({ access_token: "fresh-token" }))
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+      const promise = apiFetch("/api/v1/categories#sensitive-anchor");
+      await vi.advanceTimersByTimeAsync(0);
+      await promise;
+
+      expect(events).toHaveLength(1);
+      expect(events[0].path).toBe("/api/v1/categories");
+      expect(events[0].path).not.toContain("#");
+    } finally {
+      window.removeEventListener("auth:retry-after-refresh", recorder);
+      vi.useRealTimers();
+    }
+  });
 });

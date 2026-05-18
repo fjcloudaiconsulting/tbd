@@ -174,10 +174,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // outcome ok/terminal/transient + durationMs) and
   // ``auth:retry-after-refresh`` after the original 401'd request is
   // retried with the new bearer (with the retry's path + status).
-  // AppShell pipes both into the structured JSON logger so production
-  // can confirm the silent-refresh chain is recovering AND so the
-  // 28s tail (or whatever the current tail is) is visible per-event
-  // without instrumenting every page's fetcher individually.
+  //
+  // Today this subscription pipes both into ``@/lib/logger``, which
+  // in the browser writes to ``console.*`` only — App Platform's log
+  // shipper captures backend stdout/stderr, NOT browser console, so
+  // these events DO NOT reach production logs yet. The subscription
+  // is kept as the hook point so a follow-up can wire a real
+  // client-telemetry sink (POST to a backend collector, batched +
+  // rate-limited) without touching apiFetch or every consumer. For
+  // local development the browser console emission already makes
+  // the chain visible in DevTools.
   useEffect(() => {
     const onRefreshAttempt = (e: Event) => {
       const detail = (e as CustomEvent<RefreshAttemptDetail>).detail;

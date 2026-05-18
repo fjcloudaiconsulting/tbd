@@ -57,12 +57,27 @@ type RefreshResult =
   | { ok: false; kind: "terminal"; status: number }
   | { ok: false; kind: "transient"; error: Error; status?: number };
 
-// 2026-05-18 idle-recovery observability: every refresh attempt AND
-// every retry-after-refresh fires a CustomEvent on window so prod
-// can wire up logging AND tests can assert no swallowed failures.
-// Lightweight — no React, no Suspense, no third-party metrics SDK.
-// Gated on ``typeof window !== "undefined"`` so SSR / vitest jsdom
-// without window doesn't NPE.
+// 2026-05-18 idle-recovery observability hooks. apiFetch fires
+// CustomEvents on window for every refresh attempt and every
+// retry-after-refresh. Lightweight — no React, no Suspense, no
+// third-party metrics SDK. Gated on ``typeof window !== "undefined"``
+// so SSR / vitest jsdom without window doesn't NPE.
+//
+// Subscribers today:
+//   - tests/api/recovery-timeout.test.ts (regression tests pin the
+//     end-to-end contract: 28s tail → /refresh ok → original replays)
+//   - tests/lib/api.test.ts (singleflight + retry budget pins)
+//   - components/AppShell.tsx pipes them into the structured JSON
+//     logger, which today emits to the BROWSER console only. App
+//     Platform's log shipper captures backend stdout/stderr, NOT
+//     browser console output, so these events do not yet reach
+//     production logs. A follow-up will wire a real client-telemetry
+//     sink (POST to a backend collector, batched, rate-limited,
+//     PII-redacted at source per the redaction notes below).
+//
+// PII contract: the ``path`` field on RetryAfterRefreshDetail is
+// stripped of query string + fragment BEFORE dispatch (see the
+// retry-after-refresh dispatch site for the rationale).
 export interface RefreshAttemptDetail {
   attempt: number;          // 1-indexed: 1 = initial, 2 = 1st retry, 3 = 2nd retry
   outcome: "ok" | "terminal" | "transient";
@@ -71,7 +86,13 @@ export interface RefreshAttemptDetail {
 }
 
 export interface RetryAfterRefreshDetail {
-  path: string;             // The original 401-ing path (relative to API_URL)
+  /**
+   * Pathname of the original 401-ing request. Query string and
+   * fragment are stripped at dispatch time so the event detail
+   * never carries user-entered values (e.g. transaction search
+   * terms). Subscribers receive the route signature only.
+   */
+  path: string;
   status: number;           // Final response status after the retry
   ok: boolean;              // Convenience: status in [200, 300)
   durationMs: number;       // Wall-clock elapsed for the retry fetch
@@ -355,15 +376,26 @@ export async function apiFetch<T>(
         },
         effectiveTimeout,
       );
-      // 2026-05-18 idle-recovery observability: every retry-after-
-      // refresh fires a CustomEvent so prod can confirm the
-      // singleflight handed the new bearer to the original 401'd
-      // request AND the retry actually completed. Without this, a
-      // page-level silent .catch(() => {}) on the original fetcher
-      // would mask retry failures entirely.
+      // 2026-05-18 idle-recovery observability hook. Subscribers
+      // (today: AppShell's browser-console logger; tomorrow: a real
+      // client-telemetry sink) can confirm the singleflight handed
+      // the new bearer to the original 401'd request AND the retry
+      // actually completed. Without this, a page-level silent
+      // ``.catch(() => {})`` on the original fetcher would mask
+      // retry failures entirely.
+      //
+      // PII redaction: ``path`` as passed in by callers can include
+      // user-entered values in the query string (e.g.
+      // ``/api/v1/transactions?q=mortgage`` carries a search term
+      // entered into the transactions filter). Strip the query
+      // string (and any fragment) BEFORE dispatching so the event
+      // detail never exposes user input to telemetry consumers.
+      // Pathname alone is the route signature — enough for ops
+      // triage, none of the PII surface.
+      const safePath = path.split("?")[0].split("#")[0];
       const retryDurationMs = (typeof performance !== "undefined" ? performance.now() : Date.now()) - retryStartedAt;
       dispatchAuthEvent<RetryAfterRefreshDetail>("auth:retry-after-refresh", {
-        path,
+        path: safePath,
         status: res.status,
         ok: res.ok,
         durationMs: retryDurationMs,
