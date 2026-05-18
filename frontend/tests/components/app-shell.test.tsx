@@ -205,10 +205,14 @@ describe("AppShell — system nav gating", () => {
 //
 // apiFetch dispatches ``auth:refresh-attempt`` and
 // ``auth:retry-after-refresh`` CustomEvents on every silent-refresh
-// outcome. AppShell subscribes and pipes them into the structured
-// JSON logger so production can confirm the recovery chain works
-// AND so the 28s cold-start tail is visible per-event without
-// instrumenting every page's fetcher individually.
+// outcome. AppShell subscribes and pipes them into ``@/lib/logger``,
+// which in the browser writes to ``console.*`` only — App Platform's
+// log shipper captures backend stdout/stderr, NOT browser console,
+// so these events DO NOT reach production logs yet. The subscription
+// is kept as the hook point for a follow-up client-telemetry sink.
+// These tests pin the subscription's contract (info on ok / 2xx,
+// warn on transient/terminal/non-2xx) so the wiring is ready when
+// the sink lands.
 
 describe("AppShell — auth refresh observability", () => {
   const useAuthMock = vi.mocked(useAuth);

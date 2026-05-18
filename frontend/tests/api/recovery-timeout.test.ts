@@ -429,8 +429,10 @@ describe("apiFetch recovery-path timeout", () => {
 
   it("retry-after-refresh event carries the original path AND the retry status", async () => {
     // Even when the retry comes back non-2xx (rare but possible —
-    // e.g. backend authz changed mid-refresh), the event should
-    // surface that so prod can spot it.
+    // e.g. backend authz changed mid-refresh), the event detail
+    // must surface that status so any subscriber can react. (Today:
+    // tests + the browser-console logger in AppShell; tomorrow: a
+    // real client-telemetry sink — see RetryAfterRefreshDetail.)
     vi.useFakeTimers();
     const events: Array<{ type: string; detail: unknown }> = [];
     const recorder = (e: Event) => {
