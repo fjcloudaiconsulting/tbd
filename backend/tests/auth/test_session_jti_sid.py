@@ -491,7 +491,7 @@ async def test_legacy_no_jti_no_sid_token_rejected(
         "type": "refresh",
         "session_created_at": now.timestamp(),
         "iat": int(now.timestamp()),
-        "exp": now + timedelta(days=app_settings.refresh_idle_ttl_days),
+        "exp": now + timedelta(days=app_settings.session_lifetime_days),
     }
     legacy_token = jwt.encode(
         legacy_payload,

@@ -63,6 +63,24 @@ async def upsert_setting(
 ):
     _require_admin(current_user)
 
+    # Per-key bounds validation. Other org settings have no bounds
+    # contract today; only the session-lifetime key actually drives
+    # the session TTL, so an out-of-bounds write here would log
+    # users out instantly or hand them a year-long session.
+    if body.key == "session_lifetime_days":
+        try:
+            days = int(body.value)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="session_lifetime_days must be an integer (days)",
+            )
+        if not (1 <= days <= 365):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="session_lifetime_days must be between 1 and 365",
+            )
+
     result = await db.execute(
         select(OrgSetting).where(
             OrgSetting.org_id == current_user.org_id,

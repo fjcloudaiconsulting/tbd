@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.user import User
@@ -32,28 +34,62 @@ def create_access_token(subject: int, org_id: int, role: str) -> str:
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
-def refresh_cookie_max_age() -> int:
-    """Cookie ``Max-Age`` (seconds) for the ``refresh_token`` cookie.
+def default_session_ttl_seconds() -> int:
+    """System-default session TTL (seconds).
 
-    Single source of truth across every issue site — login password
-    branch, ``/refresh`` rotation, MFA branches via ``_issue_tokens``,
-    the Google OAuth callback, AND invitation accept in
-    ``routers/org_members.py``. Derived from
-    ``settings.refresh_idle_ttl_days`` so the operator can tune session
-    idle TTL via one env var (``REFRESH_IDLE_TTL_DAYS``) and have the
-    change land in lockstep at every cookie write.
-
-    Lives here in ``security.py`` rather than ``routers/auth.py`` so
-    that ``routers/org_members.py`` (and any future router that issues
-    a refresh cookie) does not have to reach into auth.py's private
-    helpers. See ``specs/2026-05-17-backend-session-model.md`` §2.2
-    and §5.4.
+    Single source of truth for the fallback used when an org has no
+    ``OrgSetting(key="session_lifetime_days")`` row, or the row is
+    malformed / out of bounds. Drives the refresh cookie ``Max-Age``,
+    the refresh JWT ``exp``, the Redis primary-key TTL, AND the
+    absolute-lifetime check — unified by the 2026-05-18 session-
+    stability refactor so the UI-configurable "Maximum session
+    duration" setting actually controls the session length end-to-end.
     """
-    return settings.refresh_idle_ttl_days * 86400
+    return settings.session_lifetime_days * 86400
+
+
+async def get_org_session_ttl_seconds(
+    db: AsyncSession,
+    org_id: int,
+) -> int:
+    """Resolve the session TTL (seconds) for an org.
+
+    Reads ``OrgSetting(key="session_lifetime_days", org_id=…)``. Falls
+    back to :func:`default_session_ttl_seconds` when the row is absent,
+    non-numeric, or outside the supported range ``[1, 365]``. Out-of-
+    bounds rows fall back silently here AND are also rejected at the
+    settings-PUT site so they should never exist in practice; this is
+    defence-in-depth for future migrations or direct DB writes.
+
+    Returns seconds (days × 86400). This single value is what the
+    caller passes to :func:`create_refresh_token` (drives JWT ``exp``),
+    to the refresh cookie's ``Max-Age``, to the Redis primary-key TTL,
+    and to the absolute-lifetime check in ``_validate_single_refresh_token``.
+    """
+    # Lazy import so security.py stays importable from models bootstrapping
+    # paths that don't have OrgSetting on the metadata yet.
+    from app.models.settings import OrgSetting
+
+    raw = await db.scalar(
+        select(OrgSetting.value).where(
+            OrgSetting.org_id == org_id,
+            OrgSetting.key == "session_lifetime_days",
+        )
+    )
+    if raw is not None:
+        try:
+            days = int(raw)
+            if 1 <= days <= 365:
+                return days * 86400
+        except (TypeError, ValueError):
+            pass
+    return default_session_ttl_seconds()
 
 
 def create_refresh_token(
     subject: int,
+    *,
+    ttl_seconds: int | None = None,
     session_created_at: datetime | None = None,
     sid: str | None = None,
 ) -> tuple[str, str, str]:
@@ -78,9 +114,19 @@ def create_refresh_token(
     ``jti`` is always freshly minted via ``secrets.token_urlsafe(16)``
     (128 bits of entropy). It rotates on every issue and serves as the
     Redis primary-key suffix.
+
+    ``ttl_seconds`` is the session TTL in seconds — drives the JWT
+    ``exp`` claim AND must match the cookie ``Max-Age`` AND the Redis
+    primary-key TTL at the caller's set_cookie / session_issue sites.
+    Callers that know the org context should pass
+    ``await get_org_session_ttl_seconds(db, org_id)``. When ``None``
+    the system default applies — only useful for tests or contexts
+    where org_id is unavailable.
     """
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(days=settings.refresh_idle_ttl_days)
+    if ttl_seconds is None:
+        ttl_seconds = default_session_ttl_seconds()
+    expire = now + timedelta(seconds=ttl_seconds)
     jti = secrets.token_urlsafe(16)
     session_id = sid if sid is not None else uuid.uuid4().hex
     payload = {

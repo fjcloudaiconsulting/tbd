@@ -59,7 +59,7 @@ def _mint_refresh_at(user_id: int, iat: datetime) -> str:
 
     from app import redis_client as _rc
 
-    expire = iat + timedelta(days=app_settings.refresh_idle_ttl_days)
+    expire = iat + timedelta(days=app_settings.session_lifetime_days)
     jti = _secrets.token_urlsafe(16)
     sid = _uuid.uuid4().hex
     payload = {
@@ -570,8 +570,18 @@ async def test_issue_tokens_helper_emits_legacy_cleanup():
             self.org_id = 1
             self.role = Role.OWNER
 
+    class _FakeDb:
+        """Stand-in for ``AsyncSession`` — ``_issue_tokens`` calls
+        ``db.scalar(...)`` to resolve the per-org TTL, falling back to
+        the system default when ``None`` is returned. That's exactly
+        the behaviour we want here so the test stays focused on the
+        legacy-cookie cleanup signal."""
+
+        async def scalar(self, _query):
+            return None
+
     response = Response()
-    await _issue_tokens(_FakeUser(), response)
+    await _issue_tokens(_FakeUser(), response, _FakeDb())
 
     # Response.raw_headers is the underlying list of (bytes, bytes)
     # tuples populated by set_cookie / delete_cookie.

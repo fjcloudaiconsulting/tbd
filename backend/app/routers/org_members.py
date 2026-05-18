@@ -28,7 +28,7 @@ from app.schemas.invitation import (
 from app.security import (
     create_access_token,
     create_invitation_token,
-    refresh_cookie_max_age,
+    get_org_session_ttl_seconds,
 )
 from app.services import invitation_service
 from app.services.email_service import send_invitation_email
@@ -192,7 +192,14 @@ async def accept_invitation(
     # rolls back, and the invitation stays unconsumed — the user can
     # retry. Previous order (commit-then-Redis) consumed the invitation
     # on every Redis blip, permanently locking the invitee out.
-    refresh, _jti, _sid = await _issue_refresh_session(user.id)
+    # 2026-05-18 session-stability refactor: invitation accept now
+    # respects the inviter org's per-org session TTL setting on the
+    # very first cookie issued — same source of truth as login,
+    # /refresh, and the Google SSO callback.
+    ttl_seconds = await get_org_session_ttl_seconds(db, user.org_id)
+    refresh, _jti, _sid = await _issue_refresh_session(
+        user.id, ttl_seconds=ttl_seconds
+    )
     await db.commit()
     response.set_cookie(
         key="refresh_token",
@@ -200,7 +207,7 @@ async def accept_invitation(
         httponly=True,
         secure=app_settings.cookie_secure,
         samesite="lax",
-        max_age=refresh_cookie_max_age(),
+        max_age=ttl_seconds,
         # Path=/ so the browser sends the cookie on regular page requests
         # (not just /api/v1/auth/refresh). Required for Next.js RSC to read
         # the cookie via /auth/verify. Mirrors the convention applied in

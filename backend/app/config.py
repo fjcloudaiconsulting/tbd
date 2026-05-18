@@ -23,12 +23,16 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-generate-a-real-secret"
     jwt_access_token_expire_minutes: int = 15
     jwt_algorithm: str = "HS256"
-    # Idle TTL for the refresh-cookie session: single source of truth for
-    # the refresh JWT ``exp`` claim, the cookie ``Max-Age`` attribute, and
-    # (post PR 2) the Redis ``jti`` key TTL. See
-    # ``specs/2026-05-17-backend-session-model.md`` §2.2.
-    refresh_idle_ttl_days: int = 30
-    session_lifetime_days: int = 30  # absolute max session duration
+    # Session TTL (days) — drives the refresh cookie ``Max-Age``, the
+    # refresh JWT ``exp`` claim, the Redis primary-key TTL, AND the
+    # absolute-lifetime check. Single TTL since the 2026-05-18 session-
+    # stability refactor: the previous split between ``refresh_idle_ttl_days``
+    # and ``session_lifetime_days`` left the org-configurable setting
+    # decorative for any value above the idle TTL. Now a per-org override
+    # via ``OrgSetting(key="session_lifetime_days", value=…)`` extends or
+    # shortens the cookie, the JWT, and the absolute check in lockstep.
+    # System default applies when no org override exists.
+    session_lifetime_days: int = 30
 
     # Cookies — True in production (HTTPS), False in dev (HTTP)
     cookie_secure: bool = True
@@ -57,12 +61,12 @@ class Settings(BaseSettings):
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
     trial_duration_days: int = 14
 
-    @field_validator("refresh_idle_ttl_days")
+    @field_validator("session_lifetime_days")
     @classmethod
-    def _validate_refresh_idle_ttl_days(cls, v: int) -> int:
+    def _validate_session_lifetime_days(cls, v: int) -> int:
         if not (1 <= v <= 365):
             raise ValueError(
-                "REFRESH_IDLE_TTL_DAYS must be between 1 and 365 (inclusive)."
+                "SESSION_LIFETIME_DAYS must be between 1 and 365 (inclusive)."
             )
         return v
 

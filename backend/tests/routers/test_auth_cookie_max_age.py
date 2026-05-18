@@ -3,9 +3,9 @@
 After PR 1 of the backend-session-model rollout
 (``specs/2026-05-17-backend-session-model.md``) every site that issues
 the refresh cookie reads its ``Max-Age`` from a single helper
-(``_refresh_cookie_max_age``) backed by ``REFRESH_IDLE_TTL_DAYS``. The
+(``_default_session_ttl_seconds``) backed by ``SESSION_LIFETIME_DAYS``. The
 spec's AC1 ("Single cookie TTL source of truth") says: changing
-``REFRESH_IDLE_TTL_DAYS`` and restarting the backend must change the
+``SESSION_LIFETIME_DAYS`` and restarting the backend must change the
 ``Max-Age`` attribute at every entry point in lockstep.
 
 This file pins four entry points:
@@ -15,7 +15,7 @@ This file pins four entry points:
   - ``POST /api/v1/auth/mfa/recovery``  (MFA branch via ``_issue_tokens``)
   - ``GET  /api/v1/auth/google/callback``  (SSO redirect)
 
-For each, we assert ``Max-Age`` matches ``app_settings.refresh_idle_ttl_days
+For each, we assert ``Max-Age`` matches ``app_settings.session_lifetime_days
 * 86400``. The fourth test monkey-patches the setting to 14 days and
 re-asserts ALL four sites move to ``Max-Age=1209600`` together — the
 canonical "no drift" pin for AC1.
@@ -253,7 +253,7 @@ async def test_login_password_cookie_max_age_matches_settings(
     session_factory,
 ) -> None:
     """``/auth/login`` (password branch) sets ``Max-Age`` equal to
-    ``refresh_idle_ttl_days * 86400``."""
+    ``session_lifetime_days * 86400``."""
     await _seed_user(session_factory)
     app = _make_app(session_factory)
 
@@ -265,7 +265,7 @@ async def test_login_password_cookie_max_age_matches_settings(
 
     assert res.status_code == 200, res.json()
     raw = _canonical_refresh_cookie(res.headers)
-    assert _max_age_from_set_cookie(raw) == app_settings.refresh_idle_ttl_days * 86400
+    assert _max_age_from_set_cookie(raw) == app_settings.session_lifetime_days * 86400
 
 
 @pytest.mark.asyncio
@@ -273,7 +273,7 @@ async def test_refresh_rotation_cookie_max_age_matches_settings(
     session_factory,
 ) -> None:
     """``/auth/refresh`` rotation sets ``Max-Age`` equal to
-    ``refresh_idle_ttl_days * 86400``."""
+    ``session_lifetime_days * 86400``."""
     seed = await _seed_user(session_factory)
     refresh = issue_test_refresh_token(seed["user_id"])
     app = _make_app(session_factory)
@@ -286,7 +286,7 @@ async def test_refresh_rotation_cookie_max_age_matches_settings(
 
     assert res.status_code == 200, res.json()
     raw = _canonical_refresh_cookie(res.headers)
-    assert _max_age_from_set_cookie(raw) == app_settings.refresh_idle_ttl_days * 86400
+    assert _max_age_from_set_cookie(raw) == app_settings.session_lifetime_days * 86400
 
 
 @pytest.mark.asyncio
@@ -312,7 +312,7 @@ async def test_mfa_recovery_cookie_max_age_matches_settings(
 
     assert res.status_code == 200, res.json()
     raw = _canonical_refresh_cookie(res.headers)
-    assert _max_age_from_set_cookie(raw) == app_settings.refresh_idle_ttl_days * 86400
+    assert _max_age_from_set_cookie(raw) == app_settings.session_lifetime_days * 86400
 
 
 @pytest.mark.asyncio
@@ -335,7 +335,7 @@ async def test_google_callback_cookie_max_age_matches_settings(
 
     assert res.status_code == 302, res.text
     raw = _canonical_refresh_cookie(res.headers)
-    assert _max_age_from_set_cookie(raw) == app_settings.refresh_idle_ttl_days * 86400
+    assert _max_age_from_set_cookie(raw) == app_settings.session_lifetime_days * 86400
 
 
 # ── AC1: all four sites move in lockstep when the setting changes ───────────
@@ -346,16 +346,16 @@ async def test_all_four_sites_emit_same_max_age_when_setting_changes(
     session_factory, google_config, monkeypatch
 ) -> None:
     """The architect-locked acceptance for AC1 of the spec: changing
-    ``REFRESH_IDLE_TTL_DAYS`` must move every issue site's ``Max-Age``
+    ``SESSION_LIFETIME_DAYS`` must move every issue site's ``Max-Age``
     in lockstep. We monkey-patch the setting to 14 days and assert all
     four entry points emit ``Max-Age=1209600`` (14 * 86400).
 
     The point of this test is structural: it would fail loudly if a
     future refactor reintroduces a hardcoded literal at any cookie
     issue site, or forgets to route a new site through
-    ``_refresh_cookie_max_age``.
+    ``_default_session_ttl_seconds``.
     """
-    monkeypatch.setattr(app_settings, "refresh_idle_ttl_days", 14)
+    monkeypatch.setattr(app_settings, "session_lifetime_days", 14)
     expected = 14 * 86400  # 1_209_600
 
     codes = generate_recovery_codes(count=3)
@@ -432,7 +432,7 @@ async def test_invite_accept_cookie_max_age_matches_settings(
     """Architect feedback on PR #305: the invitation-accept handler in
     ``backend/app/routers/org_members.py`` is a fifth refresh-cookie
     issue site that the original PR missed. After this fix it must
-    move in lockstep with ``REFRESH_IDLE_TTL_DAYS`` like the other
+    move in lockstep with ``SESSION_LIFETIME_DAYS`` like the other
     four sites in ``auth.py``. This test pins the contract by
     monkey-patching the setting and exercising the real endpoint
     end-to-end against the in-memory SQLite fixture.
@@ -445,7 +445,7 @@ async def test_invite_accept_cookie_max_age_matches_settings(
     from app.security import create_invitation_token
     from app.services import invitation_service
 
-    monkeypatch.setattr(app_settings, "refresh_idle_ttl_days", 14)
+    monkeypatch.setattr(app_settings, "session_lifetime_days", 14)
     expected = 14 * 86400
 
     # Seed: org + owner so we can create an invitation off the owner.
@@ -528,7 +528,7 @@ def test_no_hardcoded_seven_day_refresh_cookie_literals_remain() -> None:
                 offenders.append(f"{py.relative_to(app_dir.parent)}: contains {needle!r}")
     assert offenders == [], (
         "Hardcoded 7-day refresh-cookie literals must be replaced by "
-        "refresh_cookie_max_age() (see specs/2026-05-17-backend-session-model.md "
+        "default_session_ttl_seconds() (see specs/2026-05-17-backend-session-model.md "
         "§5.4). Offenders: " + "; ".join(offenders)
     )
 
@@ -536,31 +536,31 @@ def test_no_hardcoded_seven_day_refresh_cookie_literals_remain() -> None:
 # ── Settings validator ──────────────────────────────────────────────────────
 
 
-def test_refresh_idle_ttl_days_validator_rejects_zero() -> None:
-    """``REFRESH_IDLE_TTL_DAYS=0`` must refuse to boot."""
+def test_session_lifetime_days_validator_rejects_zero() -> None:
+    """``SESSION_LIFETIME_DAYS=0`` must refuse to boot."""
     from app.config import Settings
 
     with pytest.raises(ValueError):
         Settings(
             jwt_secret_key="x" * 64,
-            refresh_idle_ttl_days=0,
+            session_lifetime_days=0,
         )
 
 
-def test_refresh_idle_ttl_days_validator_rejects_too_large() -> None:
-    """``REFRESH_IDLE_TTL_DAYS=366`` must refuse to boot."""
+def test_session_lifetime_days_validator_rejects_too_large() -> None:
+    """``SESSION_LIFETIME_DAYS=366`` must refuse to boot."""
     from app.config import Settings
 
     with pytest.raises(ValueError):
         Settings(
             jwt_secret_key="x" * 64,
-            refresh_idle_ttl_days=366,
+            session_lifetime_days=366,
         )
 
 
-def test_refresh_idle_ttl_days_validator_accepts_bounds() -> None:
+def test_session_lifetime_days_validator_accepts_bounds() -> None:
     """Boundary values (1 and 365) must validate cleanly."""
     from app.config import Settings
 
-    Settings(jwt_secret_key="x" * 64, refresh_idle_ttl_days=1)
-    Settings(jwt_secret_key="x" * 64, refresh_idle_ttl_days=365)
+    Settings(jwt_secret_key="x" * 64, session_lifetime_days=1)
+    Settings(jwt_secret_key="x" * 64, session_lifetime_days=365)

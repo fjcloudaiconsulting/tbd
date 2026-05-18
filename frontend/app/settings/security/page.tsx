@@ -296,7 +296,16 @@ export default function SecurityPage() {
     setMfaMsg(
       "Two-factor authentication is on. You will need your authenticator app the next time you sign in.",
     );
-    refreshMe();
+    // refreshMe() rejects on /auth/me failure (post-2026-05-18 P2 fix).
+    // The MFA-enable apiFetch already succeeded server-side, so the
+    // setting is saved; we just couldn't pull the fresh user payload.
+    // Surface a "saved, reload to refresh" hint instead of letting the
+    // unhandled rejection bubble up.
+    refreshMe().catch(() => {
+      setMfaMsg(
+        "Two-factor authentication is on. Reload the page to refresh your profile state.",
+      );
+    });
   }
 
   function downloadCodes(codes: string[]) {
@@ -332,7 +341,16 @@ export default function SecurityPage() {
       setMfaMsg(
         "Two-factor authentication is off. Your account is now protected by your password only.",
       );
-      refreshMe();
+      // refreshMe() rejects on /auth/me failure (post-2026-05-18 P2 fix).
+      // MFA was disabled server-side; if the profile refresh fails the
+      // local user object is stale (mfa_enabled still true) until the
+      // user reloads. Surface a clear hint instead of letting an
+      // unhandled rejection escape.
+      await refreshMe().catch(() => {
+        setMfaMsg(
+          "Two-factor authentication is off. Reload the page to refresh your profile state.",
+        );
+      });
     } catch (err) {
       // Keep the password field filled so the user can retry. Only the
       // server can decide whether the password was wrong.
