@@ -34,6 +34,11 @@ import TrialBanner from "@/components/ui/TrialBanner";
 import { hasPlatformPermission } from "@/lib/auth";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import { startKeepWarm } from "@/lib/keep-warm";
+import { logger } from "@/lib/logger";
+import type {
+  RefreshAttemptDetail,
+  RetryAfterRefreshDetail,
+} from "@/lib/api";
 
 // Shared sizing/stroke for the sidebar nav icons. Matches the previous
 // Heroicons-outline visuals (1.5 stroke, 18×18) so the swap to Lucide is
@@ -163,6 +168,54 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (!user) return;
     return startKeepWarm();
   }, [user]);
+
+  // 2026-05-18 idle-recovery observability. apiFetch dispatches
+  // ``auth:refresh-attempt`` per refresh attempt (with attempt index +
+  // outcome ok/terminal/transient + durationMs) and
+  // ``auth:retry-after-refresh`` after the original 401'd request is
+  // retried with the new bearer (with the retry's path + status).
+  //
+  // Today this subscription pipes both into ``@/lib/logger``, which
+  // in the browser writes to ``console.*`` only — App Platform's log
+  // shipper captures backend stdout/stderr, NOT browser console, so
+  // these events DO NOT reach production logs yet. The subscription
+  // is kept as the hook point so a follow-up can wire a real
+  // client-telemetry sink (POST to a backend collector, batched +
+  // rate-limited) without touching apiFetch or every consumer. For
+  // local development the browser console emission already makes
+  // the chain visible in DevTools.
+  useEffect(() => {
+    const onRefreshAttempt = (e: Event) => {
+      const detail = (e as CustomEvent<RefreshAttemptDetail>).detail;
+      const level =
+        detail.outcome === "ok"
+          ? "info"
+          : detail.outcome === "terminal"
+            ? "warn"
+            : "warn"; // transient counts as warn too — repeated transients deserve attention
+      logger[level]("auth.refresh-attempt", {
+        attempt: detail.attempt,
+        outcome: detail.outcome,
+        status: detail.status,
+        duration_ms: Math.round(detail.durationMs),
+      });
+    };
+    const onRetryAfterRefresh = (e: Event) => {
+      const detail = (e as CustomEvent<RetryAfterRefreshDetail>).detail;
+      logger[detail.ok ? "info" : "warn"]("auth.retry-after-refresh", {
+        path: detail.path,
+        status: detail.status,
+        ok: detail.ok,
+        duration_ms: Math.round(detail.durationMs),
+      });
+    };
+    window.addEventListener("auth:refresh-attempt", onRefreshAttempt);
+    window.addEventListener("auth:retry-after-refresh", onRetryAfterRefresh);
+    return () => {
+      window.removeEventListener("auth:refresh-attempt", onRefreshAttempt);
+      window.removeEventListener("auth:retry-after-refresh", onRetryAfterRefresh);
+    };
+  }, []);
 
   // L3.3 first-run wizard. Bounce authenticated users whose backend
   // explicitly tells us they have not onboarded yet (`onboarded_at`

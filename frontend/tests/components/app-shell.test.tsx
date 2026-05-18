@@ -2,6 +2,16 @@ import { act, render, screen } from "@testing-library/react";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { logger } from "@/lib/logger";
+
+vi.mock("@/lib/logger", () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
 vi.mock("@/components/auth/AuthProvider", async () => {
   const actual = await vi.importActual<typeof import("@/components/auth/AuthProvider")>(
@@ -188,5 +198,144 @@ describe("AppShell — system nav gating", () => {
     expect(screen.queryByText("Admin")).toBeNull();
     expect(screen.queryByText("Organizations")).toBeNull();
     expect(screen.queryByText("Audit log")).toBeNull();
+  });
+});
+
+// ── 2026-05-18 idle-recovery observability ──────────────────────────────
+//
+// apiFetch dispatches ``auth:refresh-attempt`` and
+// ``auth:retry-after-refresh`` CustomEvents on every silent-refresh
+// outcome. AppShell subscribes and pipes them into ``@/lib/logger``,
+// which in the browser writes to ``console.*`` only — App Platform's
+// log shipper captures backend stdout/stderr, NOT browser console,
+// so these events DO NOT reach production logs yet. The subscription
+// is kept as the hook point for a follow-up client-telemetry sink.
+// These tests pin the subscription's contract (info on ok / 2xx,
+// warn on transient/terminal/non-2xx) so the wiring is ready when
+// the sink lands.
+
+describe("AppShell — auth refresh observability", () => {
+  const useAuthMock = vi.mocked(useAuth);
+  const loggerInfo = vi.mocked(logger.info);
+  const loggerWarn = vi.mocked(logger.warn);
+
+  beforeEach(() => {
+    useAuthMock.mockReset();
+    loggerInfo.mockReset();
+    loggerWarn.mockReset();
+    useAuthMock.mockReturnValue({
+      user: BASE_USER as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+  });
+
+  it("logs auth:refresh-attempt with attempt + outcome + duration", async () => {
+    await renderShell();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("auth:refresh-attempt", {
+          detail: { attempt: 1, outcome: "ok", durationMs: 28_412 },
+        }),
+      );
+    });
+
+    expect(loggerInfo).toHaveBeenCalledWith("auth.refresh-attempt", {
+      attempt: 1,
+      outcome: "ok",
+      status: undefined,
+      duration_ms: 28_412,
+    });
+  });
+
+  it("logs auth:refresh-attempt as warn when outcome is transient", async () => {
+    await renderShell();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("auth:refresh-attempt", {
+          detail: { attempt: 1, outcome: "transient", durationMs: 45_001 },
+        }),
+      );
+    });
+
+    expect(loggerWarn).toHaveBeenCalledWith("auth.refresh-attempt", {
+      attempt: 1,
+      outcome: "transient",
+      status: undefined,
+      duration_ms: 45_001,
+    });
+  });
+
+  it("logs auth:refresh-attempt as warn when outcome is terminal (401/403)", async () => {
+    await renderShell();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("auth:refresh-attempt", {
+          detail: { attempt: 1, outcome: "terminal", status: 401, durationMs: 120 },
+        }),
+      );
+    });
+
+    expect(loggerWarn).toHaveBeenCalledWith("auth.refresh-attempt", {
+      attempt: 1,
+      outcome: "terminal",
+      status: 401,
+      duration_ms: 120,
+    });
+  });
+
+  it("logs auth:retry-after-refresh with path + status + ok", async () => {
+    await renderShell();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("auth:retry-after-refresh", {
+          detail: {
+            path: "/api/v1/accounts",
+            status: 200,
+            ok: true,
+            durationMs: 87,
+          },
+        }),
+      );
+    });
+
+    expect(loggerInfo).toHaveBeenCalledWith("auth.retry-after-refresh", {
+      path: "/api/v1/accounts",
+      status: 200,
+      ok: true,
+      duration_ms: 87,
+    });
+  });
+
+  it("logs auth:retry-after-refresh as warn when retry was non-2xx", async () => {
+    await renderShell();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("auth:retry-after-refresh", {
+          detail: {
+            path: "/api/v1/admin/orgs",
+            status: 403,
+            ok: false,
+            durationMs: 95,
+          },
+        }),
+      );
+    });
+
+    expect(loggerWarn).toHaveBeenCalledWith("auth.retry-after-refresh", {
+      path: "/api/v1/admin/orgs",
+      status: 403,
+      ok: false,
+      duration_ms: 95,
+    });
   });
 });

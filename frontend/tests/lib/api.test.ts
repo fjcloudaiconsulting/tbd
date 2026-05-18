@@ -16,6 +16,20 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 
+// 2026-05-18 idle-recovery: apiFetch now emits auth:refresh-attempt and
+// auth:retry-after-refresh events on the silent-refresh path as
+// observability hooks. The pre-existing assertions used
+// `dispatchEventSpy).not.toHaveBeenCalled()` to mean "no spurious
+// auth:unauthenticated escapes". Narrow accordingly so the new
+// observability dispatches don't false-positive the assertion.
+function noAuthUnauthenticatedDispatched(
+  spy: { mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> } },
+): boolean {
+  return !spy.mock.calls.some(
+    (call) => (call[0] as Event).type === "auth:unauthenticated",
+  );
+}
+
 describe("apiFetch", () => {
   const fetchMock = vi.fn<typeof fetch>();
   const dispatchEventSpy = vi.spyOn(window, "dispatchEvent");
@@ -121,7 +135,7 @@ describe("apiFetch", () => {
       // but the session is intact, so the user can simply retry the same
       // call without being kicked back to /login.
       expect(getAccessToken()).toBe("fresh-token");
-      expect(dispatchEventSpy).not.toHaveBeenCalled();
+      expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(3);  // primary + refresh + retry
     } finally {
       vi.useRealTimers();
@@ -200,7 +214,7 @@ describe("apiFetch", () => {
     });
 
     expect(getAccessToken()).toBe("fresh-token");
-    expect(dispatchEventSpy).not.toHaveBeenCalled();
+    expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
   });
 
   // Architect-locked 2026-05-15: refreshAccessToken() now returns a
@@ -250,7 +264,7 @@ describe("apiFetch", () => {
     });
 
     expect(getAccessToken()).toBe("still-valid-token"); // PRESERVED
-    expect(dispatchEventSpy).not.toHaveBeenCalled();
+    expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
   });
 
   it("refresh transient (TypeError, AbortError, then OK) retries within budget without logout", async () => {
@@ -270,7 +284,7 @@ describe("apiFetch", () => {
 
     expect(data).toEqual({ ok: true });
     expect(getAccessToken()).toBe("fresh-token");
-    expect(dispatchEventSpy).not.toHaveBeenCalled();
+    expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
     // 1 primary + 3 refresh attempts + 1 retry = 5
     expect(fetchMock).toHaveBeenCalledTimes(5);
   });
@@ -296,15 +310,15 @@ describe("apiFetch", () => {
       });
 
       // Advance through all three 25s timeouts + 250ms + 500ms backoffs.
-      await vi.advanceTimersByTimeAsync(25_000);
+      await vi.advanceTimersByTimeAsync(45_000);
       await vi.advanceTimersByTimeAsync(250);
-      await vi.advanceTimersByTimeAsync(25_000);
+      await vi.advanceTimersByTimeAsync(45_000);
       await vi.advanceTimersByTimeAsync(500);
-      await vi.advanceTimersByTimeAsync(25_000);
+      await vi.advanceTimersByTimeAsync(45_000);
       await assertion;
 
       expect(getAccessToken()).toBe("stale-token");  // PRESERVED
-      expect(dispatchEventSpy).not.toHaveBeenCalled();  // NO event
+      expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);  // NO event
     } finally {
       vi.useRealTimers();
     }
@@ -325,7 +339,7 @@ describe("apiFetch", () => {
     });
 
     expect(getAccessToken()).toBe("stale-token");
-    expect(dispatchEventSpy).not.toHaveBeenCalled();
+    expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
   });
 
   it("parallel 401 herd with transient refresh fires exactly one /refresh (and its retries) across all callers", async () => {
@@ -355,15 +369,15 @@ describe("apiFetch", () => {
       );
 
       // Refresh uses the 25s recovery budget across all 3 attempts.
-      await vi.advanceTimersByTimeAsync(25_000);
+      await vi.advanceTimersByTimeAsync(45_000);
       await vi.advanceTimersByTimeAsync(250);
-      await vi.advanceTimersByTimeAsync(25_000);
+      await vi.advanceTimersByTimeAsync(45_000);
       await vi.advanceTimersByTimeAsync(500);
-      await vi.advanceTimersByTimeAsync(25_000);
+      await vi.advanceTimersByTimeAsync(45_000);
       await Promise.all(assertions);
 
       expect(getAccessToken()).toBe("stale-token");
-      expect(dispatchEventSpy).not.toHaveBeenCalled();
+      expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
       // 4 primaries + 3 refresh attempts (single-flight: shared across
       // all 4 callers) = 7 fetch calls total. The 4 callers do NOT each
       // fire their own /refresh.
@@ -436,7 +450,7 @@ describe("apiFetch", () => {
       message: "bad creds",
     });
 
-    expect(dispatchEventSpy).not.toHaveBeenCalled();
+    expect(noAuthUnauthenticatedDispatched(dispatchEventSpy)).toBe(true);
   });
 
   it("flattens FastAPI 422 validation payloads into a readable message", async () => {
