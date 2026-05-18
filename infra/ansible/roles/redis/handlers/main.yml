@@ -23,6 +23,10 @@
       CONFIG SET maxmemory {{ redis_maxmemory }}
     redis-cli -a "{{ redis_password }}" --no-auth-warning \
       CONFIG SET maxmemory-policy {{ redis_maxmemory_policy }}
+    redis-cli -a "{{ redis_password }}" --no-auth-warning \
+      CONFIG SET appendonly {{ redis_appendonly }}
+    redis-cli -a "{{ redis_password }}" --no-auth-warning \
+      CONFIG SET appendfsync {{ redis_appendfsync }}
     redis-cli -a "{{ redis_password }}" --no-auth-warning CONFIG REWRITE
   args:
     executable: /bin/bash

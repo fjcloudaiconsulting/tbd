@@ -4,3 +4,10 @@
 {# connections, no spurious "Redis: DOWN" on the admin dashboard. #}
 maxmemory {{ redis_maxmemory }}
 maxmemory-policy {{ redis_maxmemory_policy }}
+
+{# Persistence — AOF is on because Redis is the auth-session store. #}
+{# A Redis restart without persistence drops every active session. #}
+{# appendfsync=everysec gives at most 1s of session-write loss on a #}
+{# hard crash; normal restart replays AOF and sessions survive. #}
+appendonly {{ redis_appendonly }}
+appendfsync {{ redis_appendfsync }}

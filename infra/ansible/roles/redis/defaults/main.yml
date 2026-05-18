@@ -4,7 +4,23 @@ redis_password: CHANGE_ME
 
 # 300MB cap on the s-1vcpu-2gb shared box (was 200MB on s-1vcpu-1gb).
 # 50% headroom for cache growth without crowding the InnoDB buffer pool.
-# Rate-limit + session-cache workloads still fit easily; allkeys-lru means
-# any overflow evicts cold keys cleanly.
+#
+# Eviction policy: noeviction (2026-05-18). Originally allkeys-lru on the
+# theory that Redis only held ephemeral data (rate limits, cache); since
+# PR #306 (2026-05-17) Redis is the primary auth-session store. Evicting
+# session keys under memory pressure produces phantom 401s
+# (``Session has been invalidated``) when the next /auth/refresh probes
+# Redis and finds the primary key missing. noeviction makes Redis return
+# OOM to writers on overflow instead, which the backend treats as a 503
+# (visible, recoverable) rather than a silent 401.
 redis_maxmemory: 300mb
-redis_maxmemory_policy: allkeys-lru
+redis_maxmemory_policy: noeviction
+
+# Persistence: AOF enabled (2026-05-18). Originally disabled on the same
+# "ephemeral data" assumption. With Redis as the auth-session store, a
+# restart without persistence drops every active session and logs out
+# every user instantly. AOF with appendfsync=everysec gives at most 1s
+# of session-write loss on a hard crash; Redis still reloads sessions on
+# normal restart.
+redis_appendonly: "yes"
+redis_appendfsync: everysec
