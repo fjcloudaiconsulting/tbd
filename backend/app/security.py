@@ -92,6 +92,7 @@ def create_refresh_token(
     ttl_seconds: int | None = None,
     session_created_at: datetime | None = None,
     sid: str | None = None,
+    jti: str | None = None,
 ) -> tuple[str, str, str]:
     """Create a refresh token.
 
@@ -111,9 +112,13 @@ def create_refresh_token(
     survives across the rotation chain — that is what makes per-session
     logout (PR 4) revoke every successor.
 
-    ``jti`` is always freshly minted via ``secrets.token_urlsafe(16)``
+    ``jti`` is normally freshly minted via ``secrets.token_urlsafe(16)``
     (128 bits of entropy). It rotates on every issue and serves as the
-    Redis primary-key suffix.
+    Redis primary-key suffix. Catch-up cookie issuance (the grace-path
+    fix) passes the EXISTING successor jti so the new cookie points at
+    a primary key that is already live in Redis; that path must NOT
+    write Redis again, because the row already exists from the winning
+    rotation. All other callers leave this ``None``.
 
     ``ttl_seconds`` is the session TTL in seconds — drives the JWT
     ``exp`` claim AND must match the cookie ``Max-Age`` AND the Redis
@@ -127,7 +132,7 @@ def create_refresh_token(
     if ttl_seconds is None:
         ttl_seconds = default_session_ttl_seconds()
     expire = now + timedelta(seconds=ttl_seconds)
-    jti = secrets.token_urlsafe(16)
+    jti = jti if jti is not None else secrets.token_urlsafe(16)
     session_id = sid if sid is not None else uuid.uuid4().hex
     payload = {
         "sub": str(subject),

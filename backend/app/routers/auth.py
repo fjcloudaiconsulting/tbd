@@ -518,6 +518,113 @@ def _clear_legacy_refresh_cookie(response: Response) -> None:
     response.delete_cookie("refresh_token", path=LEGACY_REFRESH_COOKIE_PATH)
 
 
+async def _issue_catchup_refresh_cookie(
+    response: Response,
+    *,
+    user: User,
+    successor_jti: str | None,
+    sid: str,
+    session_start: datetime | None,
+    ttl_seconds: int,
+) -> str:
+    """Emit a Set-Cookie pointing at an EXISTING successor primary key.
+
+    Used by the two ``/refresh`` grace branches that previously returned
+    an access token without touching the refresh cookie — leaving the
+    browser holding a jti that had been rotated past, and locking it
+    out 30s later when the grace key expired. See architect note on PR
+    #314 follow-up (2026-05-19).
+
+    Contract:
+      * ``successor_jti`` is read from ``grace_row["successor_jti"]``,
+        the new primary jti written by the rotation winner inside the
+        Lua transaction. Never derive it from a freshly-minted local
+        ``new_jti`` — that would be the loser's perspective, not the
+        winner's, and the Redis primary key for it does not exist.
+      * Verifies the successor primary key is alive in Redis AND binds
+        back to the same ``(user_id, sid)`` as the request. Mismatch
+        or miss fails closed: logs ``catchup_successor_unavailable``
+        and raises ``401`` — same terminal-401 shape the frontend
+        classifier already handles. We never emit a Set-Cookie for a
+        jti whose Redis row is gone, because that would just re-create
+        the bug class one rotation later.
+      * Mints a fresh JWT for the successor jti using
+        ``create_refresh_token(..., jti=successor_jti)``. No Redis
+        write — the row already exists from the winning rotation.
+      * Preserves the original ``sid`` and ``session_created_at`` so
+        the absolute-lifetime check still measures from the original
+        login, not from the catch-up moment.
+
+    Returns the encoded JWT string (for tests / future logging hooks).
+    """
+    if not successor_jti or not isinstance(successor_jti, str):
+        _log_refresh_rejected(
+            "catchup_successor_unavailable",
+            jti=None,
+            sid=sid,
+            extra={"sub": user.id, "reason_detail": "missing_or_invalid_successor"},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        )
+
+    try:
+        successor_row = await redis_client.session_validate(successor_jti)
+    except (RedisRequired, RedisError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
+
+    if (
+        successor_row is None
+        or successor_row.get("user_id") != user.id
+        or successor_row.get("sid") != sid
+    ):
+        _log_refresh_rejected(
+            "catchup_successor_unavailable",
+            jti=successor_jti,
+            sid=sid,
+            extra={
+                "sub": user.id,
+                "successor_row_missing": successor_row is None,
+                "successor_user_mismatch": (
+                    successor_row is not None
+                    and successor_row.get("user_id") != user.id
+                ),
+                "successor_sid_mismatch": (
+                    successor_row is not None
+                    and successor_row.get("sid") != sid
+                ),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        )
+
+    token, _jti, _sid = create_refresh_token(
+        user.id,
+        ttl_seconds=ttl_seconds,
+        session_created_at=session_start,
+        sid=sid,
+        jti=successor_jti,
+    )
+
+    response.set_cookie(
+        key="refresh_token",
+        value=token,
+        httponly=True,
+        secure=app_settings.cookie_secure,
+        samesite="lax",
+        max_age=ttl_seconds,
+        path="/",
+    )
+    _clear_legacy_refresh_cookie(response)
+    return token
+
+
 def _extract_refresh_cookies(request: Request) -> list[str]:
     """Return ALL ``refresh_token`` cookie values from the request's
     Cookie header, in arrival order.
@@ -548,10 +655,10 @@ def _extract_refresh_cookies(request: Request) -> list[str]:
 async def _validate_single_refresh_token(
     refresh_token: str,
     db: AsyncSession,
-) -> tuple[User, dict, datetime | None, str, int]:
+) -> tuple[User, dict, datetime | None, str, int, dict]:
     """Validate ONE refresh-token JWT value. Returns
-    ``(user, payload, session_start, redis_state, ttl_seconds)`` or
-    raises ``HTTPException(401)``.
+    ``(user, payload, session_start, redis_state, ttl_seconds, session_row)``
+    or raises ``HTTPException(401)``.
 
     ``redis_state`` is ``"primary"`` when the active session key
     ``auth:session:{jti}`` is present, or ``"grace"`` when only the
@@ -560,6 +667,13 @@ async def _validate_single_refresh_token(
     introduces this state so ``/refresh`` and ``/verify`` can absorb
     cross-tab rotation races without forcing a logout — see
     ``specs/2026-05-17-backend-session-model.md`` §5.1 step 4 / §5.2.
+
+    ``session_row`` is the resolved Redis payload — the primary row's
+    ``{user_id, sid}`` on the primary branch, OR the grace row's
+    ``{user_id, sid, successor_jti}`` on the grace branch. ``/refresh``
+    uses ``successor_jti`` to issue a catch-up Set-Cookie that points
+    the browser at the live successor primary key — the 2026-05-19
+    fix for the stale-cookie / locked-out-after-grace-expiry bug.
 
     The validation chain:
       1. JWT decode + ``type == "refresh"``
@@ -785,13 +899,13 @@ async def _validate_single_refresh_token(
                 detail=SESSION_EXPIRED_DETAIL,
             )
 
-    return user, payload, session_start, redis_state, ttl_seconds
+    return user, payload, session_start, redis_state, ttl_seconds, session_row
 
 
 async def _validate_refresh_cookie(
     refresh_tokens: list[str],
     db: AsyncSession,
-) -> tuple[User, dict, datetime | None, str, int]:
+) -> tuple[User, dict, datetime | None, str, int, dict]:
     """Validate the provided refresh-token cookie values and pick one.
 
     Rules:
@@ -830,7 +944,7 @@ async def _validate_refresh_cookie(
             detail="No refresh token",
         )
 
-    successes: list[tuple[User, dict, datetime | None, str, int]] = []
+    successes: list[tuple[User, dict, datetime | None, str, int, dict]] = []
     last_exc: HTTPException | None = None
     transient_exc: HTTPException | None = None
     for token in refresh_tokens:
@@ -911,7 +1025,7 @@ async def refresh(
     """
     refresh_tokens = _extract_refresh_cookies(request)
     try:
-        user, payload, session_start, redis_state, ttl_seconds = await _validate_refresh_cookie(
+        user, payload, session_start, redis_state, ttl_seconds, session_row = await _validate_refresh_cookie(
             refresh_tokens, db
         )
     except HTTPException as exc:
@@ -946,9 +1060,19 @@ async def refresh(
     # ── Grace-path early return (spec §5.1 step 4) ──────────────────────
     # The validator already confirmed the grace key + family set are both
     # alive AND the JWT's sid matches the grace row's sid (the user_id /
-    # sid mismatch check on the row catches forged JWTs). No new refresh
-    # cookie, no rotation oracle.
+    # sid mismatch check on the row catches forged JWTs). Issue a
+    # catch-up Set-Cookie pointing at the live successor primary so the
+    # browser stops sending the stale jti (the 2026-05-19 fix for
+    # post-grace lockout — see ``_issue_catchup_refresh_cookie``).
     if redis_state == "grace":
+        await _issue_catchup_refresh_cookie(
+            response,
+            user=user,
+            successor_jti=session_row.get("successor_jti"),
+            sid=sid,
+            session_start=session_start,
+            ttl_seconds=ttl_seconds,
+        )
         await _record_session_grace_accept(
             session_factory,
             user=user,
@@ -1051,6 +1175,19 @@ async def refresh(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been invalidated",
             )
+        # 2026-05-19 fix: emit a catch-up Set-Cookie pointing at the
+        # winner's successor primary so the browser stops sending the
+        # losing jti. ``grace_row["successor_jti"]`` is the new jti the
+        # winning Lua transaction wrote — NOT the loser's local
+        # ``new_jti`` (which has no Redis row).
+        await _issue_catchup_refresh_cookie(
+            response,
+            user=user,
+            successor_jti=grace_row.get("successor_jti"),
+            sid=sid,
+            session_start=session_start,
+            ttl_seconds=ttl_seconds,
+        )
         await _record_session_grace_accept(
             session_factory,
             user=user,
@@ -1106,7 +1243,12 @@ async def verify(
     Cookie header (PR #211 cookie-shadow guard).
     """
     refresh_tokens = _extract_refresh_cookies(request)
-    user, _payload, _session_start, _redis_state, _ttl_seconds = await _validate_refresh_cookie(
+    # /verify never emits Set-Cookie — even when ``redis_state == "grace"``.
+    # We deliberately discard ``session_row``: catching up the cookie here
+    # would violate the no-Set-Cookie invariant RSC callers rely on. The
+    # /refresh endpoint is the only place that advances the browser's
+    # cookie state. See the 2026-05-19 catch-up fix.
+    user, _payload, _session_start, _redis_state, _ttl_seconds, _session_row = await _validate_refresh_cookie(
         refresh_tokens, db
     )
 
