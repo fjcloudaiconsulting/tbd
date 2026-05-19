@@ -355,7 +355,16 @@ def _log_refresh_rejected(
     """One structlog event per terminal refresh-cookie rejection with a
     stable ``reason`` enum. Ops correlates by ``request_id`` (already
     bound by ``RequestContextMiddleware``) + ``jti_h``/``sid_h`` to
-    distinguish the user's seven distinct 401 paths."""
+    distinguish the eleven 401 paths.
+
+    Gated by ``settings.auth_debug_logging`` (env ``AUTH_DEBUG_LOGGING``,
+    default ``false``). Production stays quiet under normal operation;
+    operators flip the flag on during incident triage to capture the
+    reason field, flip it off again once diagnosis is in hand. The
+    underlying terminal 401 still fires either way — only the
+    diagnostic event is gated."""
+    if not app_settings.auth_debug_logging:
+        return
     detail = {
         "reason": reason,
         "jti_h": _hash_for_log(jti),

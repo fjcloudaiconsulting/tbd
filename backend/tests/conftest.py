@@ -281,6 +281,22 @@ def _autouse_fake_redis(monkeypatch):
     yield fake
 
 
+@pytest.fixture(autouse=True)
+def _autouse_enable_auth_debug_logging(monkeypatch):
+    """Enable the ``auth.refresh.rejected`` structured event in every
+    test by default.
+
+    Production ``settings.auth_debug_logging`` defaults to ``False`` so
+    INFO logs stay quiet under normal operation (operators flip it on
+    during incident triage). The test suite needs the events to fire
+    so it can assert on them; the few tests covering the OFF behaviour
+    explicitly override this fixture with their own ``monkeypatch``.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "auth_debug_logging", True)
+
+
 def issue_test_refresh_token(user_id: int, **kwargs) -> str:
     """Test helper: mint a refresh JWT AND seed its Redis row in the
     autouse fake. Replaces direct ``create_refresh_token(user_id)`` calls

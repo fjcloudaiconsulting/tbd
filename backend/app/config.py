@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     # Cookies — True in production (HTTPS), False in dev (HTTP)
     cookie_secure: bool = True
 
+    # Auth diagnostic logging. When True, ``/auth/refresh`` emits a
+    # structured ``auth.refresh.rejected`` event at every terminal-401
+    # raise site with a stable ``reason`` enum and 8-char hash prefixes
+    # of jti/sid (PII guard — raw values never leave the process).
+    # Default OFF in production to keep INFO-level logs quiet under
+    # normal operation; flip to True during incident triage and back
+    # off once the diagnosis is in hand. Does NOT gate the warn-level
+    # ``redis.client.retired`` event — that is a real ops signal worth
+    # keeping on regardless.
+    auth_debug_logging: bool = False
+
     # Redis (optional — used for sessions/cache in production)
     redis_url: str = ""
 

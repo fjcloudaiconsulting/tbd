@@ -659,12 +659,18 @@ Tab A wins `/refresh` first. Tab A's cookie is now the new `jti`. Tab
 B's in-flight `/refresh` still carries the old `jti`. Without the
 grace window, Tab B gets 401 and the user is logged out of Tab B.
 
-With the 30s grace window: Tab B's request hits the grace key, gets
-an access token only (no new cookie), and continues. The next time
-Tab B makes a `/refresh` it will use the new cookie that the browser
-synced from Tab A's response. Grace window has bought enough time for
-the browser cookie store to sync across tabs (typically sub-second
-in Chrome/Firefox).
+With the 30s grace window AND the 2026-05-19 catch-up Set-Cookie fix:
+Tab B's request hits the grace key, the router emits a catch-up
+`Set-Cookie` whose JWT `jti` claim is `grace_row["successor_jti"]`
+(the same successor Tab A's rotation wrote), and returns an access
+token. Tab B's next `/refresh` will use that catch-up cookie — which
+points at the live primary — so it hits the primary path normally
+instead of trying the grace path again. Without the catch-up cookie,
+Tab B would have walked away holding the OLD `jti`; if 30s passed
+before any other request synced the cookie from Tab A, Tab B would
+have been locked out with `redis_primary_and_grace_missing`. See the
+2026-05-19 update at the end of Section 4.1 for the production
+trace that drove this.
 
 ### 7.6 Replay of an already-rotated refresh token outside grace window
 
