@@ -196,6 +196,51 @@ async def _retire_poisoned_client(*, reason: str) -> None:
         pass
 
 
+# Per-operation Redis timeout budget. ``/auth/refresh`` makes up to 7
+# sequential Redis calls in the worst case (see math at bottom of
+# get_client); the frontend's reactive-recovery cap is 45 s. We need
+# the total Redis budget for a single /refresh to come in under that
+# so a transient VPC blip surfaces as a fail-fast 503 the frontend
+# retries, not a 45 s "(canceled)" (the 2026-05-19T15 production
+# trace).
+AUTH_REDIS_SOCKET_CONNECT_TIMEOUT_S = 1.0
+AUTH_REDIS_SOCKET_TIMEOUT_S = 1.0
+AUTH_REDIS_RETRY_BACKOFF_BASE_S = 0.05
+AUTH_REDIS_RETRY_BACKOFF_CAP_S = 0.2
+AUTH_REDIS_RETRY_COUNT = 1
+
+
+def _build_auth_redis_client(redis_url: str) -> Redis:
+    """Construct the auth Redis client from ``redis_url`` using the
+    fail-fast budget constants. Production entry point is
+    ``get_client()``; this helper exists so tests can exercise the
+    real builder without fighting the conftest autouse fixture that
+    replaces ``get_client`` with a fake-Redis lambda.
+
+    See ``get_client()`` for the budget rationale.
+    """
+    return Redis.from_url(
+        redis_url,
+        decode_responses=True,
+        socket_connect_timeout=AUTH_REDIS_SOCKET_CONNECT_TIMEOUT_S,
+        socket_timeout=AUTH_REDIS_SOCKET_TIMEOUT_S,
+        socket_keepalive=True,
+        health_check_interval=30,
+        retry_on_error=[
+            RedisConnectionError,
+            RedisTimeoutError,
+            OSError,
+        ],
+        retry=Retry(
+            ExponentialBackoff(
+                cap=AUTH_REDIS_RETRY_BACKOFF_CAP_S,
+                base=AUTH_REDIS_RETRY_BACKOFF_BASE_S,
+            ),
+            retries=AUTH_REDIS_RETRY_COUNT,
+        ),
+    )
+
+
 def get_client() -> Redis | None:
     """Return the Redis client if configured, else None.
 
@@ -223,23 +268,49 @@ def get_client() -> Redis | None:
       ``RuntimeError`` would also retry genuine programmer bugs. The
       transport-runtime case is handled instead by the
       ``_normalize_transport_errors`` wrapper at the helper layer.
+
+    **Fail-fast budget (2026-05-19 production trace).** Honest worst case
+    accounts for both connect and read on the retry attempt because
+    redis-py's ``retry_on_error`` contract drops the connection and
+    reconnects on the listed exception classes:
+
+        per_call_worst = socket_timeout
+                       + retries * (socket_connect_timeout
+                                    + socket_timeout
+                                    + backoff_cap)
+                       = 1.0 + 1 * (1.0 + 1.0 + 0.2)
+                       = 3.2 s
+
+    ``/auth/refresh`` makes up to 7 sequential Redis calls in the
+    already_rotated branch after PR #315:
+
+      1. ``session_validate(jti)``                            (validator)
+      2. ``session_family_member(sid, jti)``     (validator primary path)
+      3. ``session_rotate_lua(...)``                          (rotation)
+      4. ``session_grace(old_jti)``                           (re-probe)
+      5. ``session_family_exists(sid)``                       (re-probe)
+      6. ``session_validate(successor_jti)``        (catch-up helper)
+      7. ``session_family_member(sid, successor_jti)`` (catch-up helper)
+
+    Worst case for the already_rotated branch: ``7 * 3.2 = 22.4 s``.
+    Direct grace branch is 5 calls: ``5 * 3.2 = 16.0 s``. Normal "ok"
+    rotation is 3 calls: ``3 * 3.2 = 9.6 s``. All under the frontend's
+    45 s reactive-recovery timer, with at least 20 s margin even in
+    the pathological case.
+
+    Earlier values (socket_timeout=3, retries=2, cap=1.0) summed to
+    per_call ~= ``3 + 2 * (3 + 3 + 1)`` = ``17 s`` honest worst case,
+    7 calls = ~119 s — the requests reached the backend, sat
+    retrying past the 45 s frontend cancel, and surfaced as the hung
+    "(canceled)" entries in the 2026-05-19T15:25–15:42 trace.
+
+    Tests in ``test_auth_redis_failfast_budget.py`` pin the new
+    ceiling so any future change that re-inflates the budget is caught
+    in CI.
     """
     global _client
     if _client is None and settings.redis_url:
-        _client = Redis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
-            socket_keepalive=True,
-            health_check_interval=30,
-            retry_on_error=[
-                RedisConnectionError,
-                RedisTimeoutError,
-                OSError,
-            ],
-            retry=Retry(ExponentialBackoff(cap=1.0, base=0.1), retries=2),
-        )
+        _client = _build_auth_redis_client(settings.redis_url)
     return _client
 
 
