@@ -557,6 +557,69 @@ class TestMissingSuccessorFailsClosed:
         )
 
     @pytest.mark.asyncio
+    async def test_successor_not_in_family_set_logs_and_401s(
+        self, session_factory
+    ) -> None:
+        """P2 architect addition: PR #308 made family-set membership the
+        authoritative revocation contract. Successor primary row alive
+        + (user_id, sid) match but jti NOT in ``auth:session:by_sid:{sid}``
+        (corrupted/partial Redis state) must fail closed — otherwise we
+        emit a cookie the very next /refresh would 401 with
+        ``family_member_missing``."""
+        seed = await _seed_user(session_factory)
+        old_jti = "orphan-old"
+        successor_jti = "orphan-successor"
+        sid = "orphan-sid"
+        from app import redis_client as rc
+
+        client = rc.get_client()
+        # Grace row points at successor_jti.
+        client._kv[f"auth:session:grace:{old_jti}"] = json.dumps(
+            {
+                "user_id": seed["user_id"],
+                "sid": sid,
+                "successor_jti": successor_jti,
+            },
+            separators=(",", ":"),
+        )
+        # Successor primary alive and bound to (user_id, sid)…
+        client._kv[f"auth:session:{successor_jti}"] = json.dumps(
+            {"user_id": seed["user_id"], "sid": sid},
+            separators=(",", ":"),
+        )
+        # …BUT successor_jti is NOT in the family set. Family set
+        # contains only ``old_jti`` (simulating a revocation that
+        # dropped the successor while leaving the primary row alive,
+        # or a Redis replica desync).
+        client._sets[f"auth:session:by_sid:{sid}"].add(old_jti)
+        token = _mint_token_for(seed["user_id"], jti=old_jti, sid=sid)
+
+        app = _make_app(session_factory)
+        with structlog.testing.capture_logs() as captured:
+            with TestClient(app) as cli:
+                res = cli.post(
+                    "/api/v1/auth/refresh",
+                    cookies={"refresh_token": token},
+                )
+        assert res.status_code == 401
+        rejection_logs = [
+            ev for ev in captured
+            if ev.get("event") == "auth.refresh.rejected"
+            and ev.get("reason") == "catchup_successor_unavailable"
+            and ev.get("successor_family_member_missing") is True
+        ]
+        assert len(rejection_logs) == 1, (
+            f"Expected catchup_successor_unavailable with "
+            f"successor_family_member_missing=True; got: {captured}"
+        )
+        # No cookie emitted.
+        jwt_cookies = [
+            v for k, v in res.headers.items()
+            if k.lower() == "set-cookie" and "refresh_token=ey" in v
+        ]
+        assert jwt_cookies == []
+
+    @pytest.mark.asyncio
     async def test_successor_primary_missing_logs_and_401s(
         self, session_factory
     ) -> None:

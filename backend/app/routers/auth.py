@@ -442,7 +442,9 @@ async def _rotate_refresh_session(
     * ``"session_revoked"`` — concurrent logout deleted the family
       set; router returns 401, no audit (terminal — frontend redirects).
     * ``"already_rotated"`` — concurrent ``/refresh`` won the race;
-      router falls into the grace branch, no Set-Cookie, emits
+      router re-probes the grace key, emits a catch-up Set-Cookie for
+      the winner's successor jti via
+      ``_issue_catchup_refresh_cookie`` (2026-05-19 fix), and emits
       ``auth.session.grace_accept {via_already_rotated: true}``.
     * ``"jti_collision"`` — 128-bit RNG collision (cosmic). The router
       regenerates ``jti`` and retries once.
@@ -597,6 +599,38 @@ async def _issue_catchup_refresh_cookie(
                     successor_row is not None
                     and successor_row.get("sid") != sid
                 ),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        )
+
+    # PR #308 made the family set the authoritative revocation contract:
+    # a jti must be a member of ``auth:session:by_sid:{sid}`` to be
+    # treated as a live session. The primary row + binding match above
+    # are necessary but not sufficient — corrupted/partial Redis state
+    # could leave the row in place after the family was revoked, and
+    # the next primary-path /refresh would reject the catch-up cookie
+    # as ``family_member_missing``. Verify membership here so the
+    # browser never receives a cookie the very next request would 401.
+    try:
+        is_family_member = await redis_client.session_family_member(
+            sid, successor_jti
+        )
+    except (RedisRequired, RedisError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from exc
+    if not is_family_member:
+        _log_refresh_rejected(
+            "catchup_successor_unavailable",
+            jti=successor_jti,
+            sid=sid,
+            extra={
+                "sub": user.id,
+                "successor_family_member_missing": True,
             },
         )
         raise HTTPException(
@@ -1008,13 +1042,18 @@ async def refresh(
 
     - If the validation chain says ``redis_state == "grace"`` we're on
       the grace branch already (primary key gone, grace key alive,
-      family set alive). Issue an access token only; no Set-Cookie, no
-      rotation. Emit ``auth.session.grace_accept``.
+      family set alive). Issue an access token AND emit a catch-up
+      Set-Cookie pointing at ``grace_row["successor_jti"]`` (the
+      2026-05-19 fix) so the browser converges on the live primary
+      and isn't locked out 30s later when the grace key expires. No
+      Redis writes on this path — the winning rotation already wrote
+      the successor row. Emit ``auth.session.grace_accept``.
     - Otherwise run the Lua rotation script and dispatch on its return:
-      ``ok`` issues a new cookie; ``session_revoked`` returns 401;
-      ``already_rotated`` falls into the grace branch (re-probe + check
-      family set); ``jti_collision`` regenerates and retries once, with
-      a 503 on the second collision.
+      ``ok`` issues a new cookie via the normal rotation flow;
+      ``session_revoked`` returns 401; ``already_rotated`` re-probes
+      grace + family set then emits a catch-up Set-Cookie for the
+      winner's successor jti (same catch-up helper); ``jti_collision``
+      regenerates and retries once, with a 503 on the second collision.
 
     NOTE: FastAPI does NOT merge cookies set on the injected ``response``
     parameter into the JSONResponse it builds from a raised HTTPException
@@ -1132,8 +1171,12 @@ async def refresh(
 
     if lua_result == redis_client.SESSION_ROTATE_ALREADY_ROTATED:
         # Concurrent /refresh won the race. The winner just wrote the
-        # grace key inside their Lua transaction — re-probe it AND
-        # confirm the family set still exists, then issue access-only.
+        # grace key inside their Lua transaction — re-probe it, confirm
+        # the family set still exists, AND emit a catch-up Set-Cookie
+        # pointing at the winner's ``successor_jti`` so the browser
+        # converges on the live primary (2026-05-19 fix — without this,
+        # the loser walks away holding a jti whose Redis row has been
+        # rotated past, and locks out 30s later).
         try:
             grace_row = await redis_client.session_grace(old_jti)
             family_alive = await redis_client.session_family_exists(sid)
