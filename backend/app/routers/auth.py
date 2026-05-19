@@ -319,6 +319,53 @@ async def login(
     return TokenResponse(access_token=access_token)
 
 
+# 2026-05-19: structured logging for every terminal refresh rejection.
+# Ops needs to know WHICH of the seven 401 paths fired without seeing
+# raw tokens — the screenshot from 2026-05-19T07:10 produced 401s with
+# no distinguishing signal in the uvicorn access log.
+#
+# ``reason`` is a stable enum string; ``jti_h`` / ``sid_h`` are 8-char
+# SHA-256 prefixes (sufficient for correlation, useless for replay).
+# Never log raw jti/sid/cookie values — telemetry retention varies and
+# raw refresh-token claims are a session-takeover vector.
+_LOGGER = structlog.stdlib.get_logger()
+
+
+def _hash_for_log(value: str | None) -> str | None:
+    """8-char SHA-256 prefix of a refresh-token claim, safe to log.
+
+    Returns None for None input. 8 hex chars (32 bits) is enough for
+    ops to correlate the same jti across log lines on a single tab
+    over a few minutes; not enough to reverse to the original jti
+    even with the source code in hand.
+    """
+    if not value:
+        return None
+    import hashlib
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+
+def _log_refresh_rejected(
+    reason: str,
+    *,
+    jti: str | None = None,
+    sid: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    """One structlog event per terminal refresh-cookie rejection with a
+    stable ``reason`` enum. Ops correlates by ``request_id`` (already
+    bound by ``RequestContextMiddleware``) + ``jti_h``/``sid_h`` to
+    distinguish the user's seven distinct 401 paths."""
+    detail = {
+        "reason": reason,
+        "jti_h": _hash_for_log(jti),
+        "sid_h": _hash_for_log(sid),
+    }
+    if extra:
+        detail.update(extra)
+    _LOGGER.info("auth.refresh.rejected", **detail)
+
+
 SESSION_EXPIRED_DETAIL = "Session expired — please sign in again"
 
 # Standard 503 response detail returned from any issue / rotation site
@@ -530,15 +577,24 @@ async def _validate_single_refresh_token(
     """
     payload = decode_token(refresh_token)
     if payload is None or payload.get("type") != "refresh":
+        _log_refresh_rejected("invalid_token_decode")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
         )
 
     user_id = int(payload["sub"])
+    jti = payload.get("jti")
+    sid = payload.get("sid")
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None or not user.is_active:
+        _log_refresh_rejected(
+            "user_not_found_or_inactive",
+            jti=jti,
+            sid=sid,
+            extra={"sub": user_id},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
@@ -550,6 +606,16 @@ async def _validate_single_refresh_token(
     if iat is not None:
         token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
         if token_issued_at < token_cutoff(user):
+            _log_refresh_rejected(
+                "iat_before_cutoff",
+                jti=jti,
+                sid=sid,
+                extra={
+                    "sub": user_id,
+                    "iat": iat,
+                    "cutoff": int(token_cutoff(user).timestamp()),
+                },
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been invalidated",
@@ -562,9 +628,13 @@ async def _validate_single_refresh_token(
     # frontend's terminal-vs-transient classifier needs no change. The
     # planned reauth break is operator-decision Q7 — see
     # infra/PR2_REAUTH_BREAK.md.
-    jti = payload.get("jti")
-    sid = payload.get("sid")
     if not jti or not sid:
+        _log_refresh_rejected(
+            "missing_jti_or_sid",
+            jti=jti,
+            sid=sid,
+            extra={"sub": user_id},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has been invalidated",
@@ -596,6 +666,12 @@ async def _validate_single_refresh_token(
             detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
         ) from exc
     if session_row is None:
+        _log_refresh_rejected(
+            "redis_primary_and_grace_missing",
+            jti=jti,
+            sid=sid,
+            extra={"sub": user.id},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has been invalidated",
@@ -622,6 +698,17 @@ async def _validate_single_refresh_token(
     row_user_id = session_row.get("user_id")
     row_sid = session_row.get("sid")
     if row_user_id != user.id or row_sid != sid:
+        _log_refresh_rejected(
+            "row_binding_mismatch",
+            jti=jti,
+            sid=sid,
+            extra={
+                "sub": user.id,
+                "row_user_id": row_user_id,
+                "row_sid_h": _hash_for_log(row_sid) if isinstance(row_sid, str) else None,
+                "redis_state": redis_state,
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has been invalidated",
@@ -657,6 +744,12 @@ async def _validate_single_refresh_token(
                 detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
             ) from exc
         if not in_family:
+            _log_refresh_rejected(
+                "family_member_missing",
+                jti=jti,
+                sid=sid,
+                extra={"sub": user.id},
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been invalidated",
@@ -675,6 +768,18 @@ async def _validate_single_refresh_token(
     if session_created_at:
         session_start = datetime.fromtimestamp(session_created_at, tz=timezone.utc)
         if datetime.now(timezone.utc) - session_start > timedelta(seconds=ttl_seconds):
+            _log_refresh_rejected(
+                "absolute_lifetime_expired",
+                jti=jti,
+                sid=sid,
+                extra={
+                    "sub": user.id,
+                    "ttl_seconds": ttl_seconds,
+                    "age_seconds": int(
+                        (datetime.now(timezone.utc) - session_start).total_seconds()
+                    ),
+                },
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=SESSION_EXPIRED_DETAIL,
@@ -714,6 +819,12 @@ async def _validate_refresh_cookie(
     the parser surfaces.
     """
     if not refresh_tokens:
+        # 2026-05-19: log the no-cookie case explicitly. The overnight
+        # logout symptom (the 2026-05-19T07:10 incident) had the
+        # browser stop sending the refresh cookie at some point; this
+        # reason code is what lets ops distinguish "cookie missing"
+        # from "cookie present but invalid".
+        _log_refresh_rejected("no_refresh_token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="No refresh token",
@@ -721,18 +832,38 @@ async def _validate_refresh_cookie(
 
     successes: list[tuple[User, dict, datetime | None, str, int]] = []
     last_exc: HTTPException | None = None
+    transient_exc: HTTPException | None = None
     for token in refresh_tokens:
         try:
             successes.append(await _validate_single_refresh_token(token, db))
         except HTTPException as exc:
             last_exc = exc
+            # 2026-05-19: remember the FIRST 5xx (transport / Redis
+            # unavailable) we saw across the cookie list. When a
+            # legacy + current cookie pair is present, a Redis
+            # transport failure on the valid cookie followed by an
+            # invalid-token rejection on the stale one would otherwise
+            # let the 401 win as the final ``last_exc`` — terminal
+            # logout instead of recoverable retry. Prefer the 5xx.
+            if exc.status_code >= 500 and transient_exc is None:
+                transient_exc = exc
 
     if not successes:
-        assert last_exc is not None  # loop ran at least once
-        raise last_exc
+        # Prefer the 5xx (transient / Redis unavailable) over any 4xx
+        # (terminal-auth) seen across the cookie list. The frontend's
+        # classifier treats 5xx as transient and retries on a fresh
+        # connection; treating it as a 401 would force a real logout
+        # for what is actually a recoverable infra blip.
+        chosen = transient_exc or last_exc
+        assert chosen is not None  # loop ran at least once
+        raise chosen
 
     distinct_user_ids = {tup[0].id for tup in successes}
     if len(distinct_user_ids) > 1:
+        _log_refresh_rejected(
+            "ambiguous_session_multiple_users",
+            extra={"distinct_user_count": len(distinct_user_ids)},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=AMBIGUOUS_SESSION_DETAIL,
@@ -864,6 +995,12 @@ async def refresh(
     if lua_result == redis_client.SESSION_ROTATE_REVOKED:
         # Concurrent /logout deleted the family set. Terminal 401 — the
         # frontend's classifier already handles this string.
+        _log_refresh_rejected(
+            "lua_session_revoked",
+            jti=old_jti,
+            sid=sid,
+            extra={"sub": user.id},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has been invalidated",
@@ -887,6 +1024,29 @@ async def refresh(
             or grace_row.get("sid") != sid
             or grace_row.get("user_id") != user.id
         ):
+            # Lua said "already_rotated" so the winner SHOULD have left
+            # a grace key behind, but by the time we re-probe it's
+            # gone (TTL expired, concurrent logout, etc.). Log which
+            # part failed so ops can tell normal-grace-expiry apart
+            # from "family revoked between rotation and re-probe".
+            _log_refresh_rejected(
+                "already_rotated_grace_revalidation_failed",
+                jti=old_jti,
+                sid=sid,
+                extra={
+                    "sub": user.id,
+                    "grace_row_missing": grace_row is None,
+                    "family_alive": family_alive,
+                    "grace_sid_mismatch": (
+                        grace_row is not None
+                        and grace_row.get("sid") != sid
+                    ),
+                    "grace_user_mismatch": (
+                        grace_row is not None
+                        and grace_row.get("user_id") != user.id
+                    ),
+                },
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been invalidated",
@@ -1745,14 +1905,23 @@ async def mfa_email_code(
     # Redis so /mfa/email-verify can enforce single-use (pentest L1).
     email_token, jti = create_mfa_email_token(user.id, code)
 
-    redis = redis_client.get_client()
-    if redis is not None:
-        await redis.set(
-            f"mfa_email_jti:{jti}", str(user.id), ex=MFA_EMAIL_TOKEN_TTL_SECONDS
+    # 2026-05-19: route through the redis_client helper so the
+    # transport-normalizer wrapper covers this path. Without the
+    # wrapper, a closed-transport RuntimeError from uvloop here would
+    # produce a 500 instead of a recoverable 503. The helper returns
+    # False when REDIS_URL is unset (dev mode); production must fail
+    # closed.
+    try:
+        stored = await redis_client.mfa_email_nonce_set(
+            jti, user.id, MFA_EMAIL_TOKEN_TTL_SECONDS
         )
-    elif app_settings.app_env == "production":
-        # In prod we must have Redis; empty REDIS_URL means the single-use
-        # guarantee is disabled — refuse to issue a token.
+    except (RedisRequired, RedisError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="MFA email flow temporarily unavailable",
+        ) from exc
+    if not stored and app_settings.app_env == "production":
+        # Empty REDIS_URL in prod = single-use guarantee disabled. Refuse.
         raise HTTPException(
             status_code=503,
             detail="MFA email flow temporarily unavailable",
@@ -1788,13 +1957,13 @@ async def mfa_email_verify(
     # Legacy tokens (pre-jti) are rejected so users re-request under the
     # new single-use flow.
     jti = email_payload.get("jti")
-    redis = redis_client.get_client()
-    if redis is None and app_settings.app_env == "production":
+    redis_configured = redis_client.get_client() is not None
+    if not redis_configured and app_settings.app_env == "production":
         raise HTTPException(
             status_code=503,
             detail="MFA email flow temporarily unavailable",
         )
-    if redis is not None and jti is None:
+    if redis_configured and jti is None:
         raise HTTPException(status_code=401, detail="Invalid or expired email code")
 
     # Verify the code matches using HMAC (keyed hash, not brute-forceable).
@@ -1809,8 +1978,17 @@ async def mfa_email_verify(
     # Only consume the jti after the code is proven valid. Atomic DEL:
     # if it returns 0 the token was already used (replay attempt) → 401.
     # Rate limit (10/min) backs this up against concurrent racing.
-    if redis is not None:
-        consumed = await redis.delete(f"mfa_email_jti:{jti}")
+    #
+    # 2026-05-19: route through the redis_client helper so the
+    # transport-normalizer wrapper covers this path too.
+    if redis_configured:
+        try:
+            consumed = await redis_client.mfa_email_nonce_consume(jti)
+        except (RedisRequired, RedisError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="MFA email flow temporarily unavailable",
+            ) from exc
         if not consumed:
             raise HTTPException(status_code=401, detail="Invalid or expired email code")
 

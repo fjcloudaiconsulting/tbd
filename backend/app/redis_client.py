@@ -14,13 +14,16 @@ Behavior when `settings.redis_url` is empty:
   Redis and it's missing; see `require_client()` below.
 """
 
+import functools
 import json
 import logging
+from typing import Any, Awaitable, Callable, TypeVar
 
 from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import ExponentialBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError
 from redis.exceptions import ResponseError as RedisResponseError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
@@ -29,6 +32,168 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _client: Redis | None = None
+
+
+# 2026-05-19 transport-normalizer. Production hit a class of failures
+# where redis-py's ``health_check_interval`` ping fired against a
+# pool-idle connection whose underlying TCP socket had been silently
+# dropped by some network device (App Platform NAT, VPC router, droplet
+# firewall). uvloop raises ``RuntimeError("unable to perform operation
+# on <TCPTransport closed=True ...>; the handler is closed")`` in that
+# state. ``RuntimeError`` is NOT a ``RedisError`` subclass, so it
+# escaped every router-level ``except (RedisRequired, RedisError)``
+# handler and FastAPI returned a 500. See ``_normalize_transport_errors``
+# below for the narrow translation contract.
+_TRANSPORT_DEAD_MARKERS: tuple[str, ...] = (
+    # uvloop: "unable to perform operation on <TCPTransport closed=True
+    # reading=False ...>; the handler is closed"
+    "tcptransport closed",
+    "handler is closed",
+    # generic asyncio transport already in closed state
+    "transport closed",
+    "transport is closed",
+    "closed transport",
+    # socket-level errors that sometimes surface as RuntimeError on uvloop
+    # instead of bubbling up as OSError
+    "broken pipe",
+    "connection reset",
+    "connection closed",
+    "closed socket",
+)
+
+
+def _looks_like_dead_transport(exc: BaseException) -> bool:
+    """True iff the exception's message matches a known closed-transport
+    state we want to translate into a transient 503 instead of a 500.
+
+    DELIBERATELY narrow: substring match on a small fixed list. Bare
+    ``RuntimeError("programmer bug")`` and ``RedisRequired`` (also a
+    ``RuntimeError`` subclass) must still propagate — we want loud
+    failures on real code bugs and config gaps, not silent
+    re-classification as "Redis hiccup".
+    """
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _TRANSPORT_DEAD_MARKERS)
+
+
+_F = TypeVar("_F", bound=Callable[..., Awaitable[Any]])
+
+
+def _normalize_transport_errors(fn: _F) -> _F:
+    """Decorator. Wrap an async Redis helper so closed-transport /
+    broken-pipe errors raised from inside redis-py/uvloop surface as
+    :class:`redis.exceptions.ConnectionError` (a ``RedisError`` subclass).
+
+    Routers already catch ``(RedisRequired, RedisError)`` and return 503
+    on those, which the frontend treats as transient and retries on a
+    fresh connection. Without this wrapper, the bare ``RuntimeError`` from
+    uvloop bypasses the handler and FastAPI returns 500 — see the
+    production trace at ``2026-05-19T07:10:52`` for the canonical
+    instance this decorator exists to prevent.
+
+    EXPLICITLY preserved unchanged (no re-classification):
+      * ``RedisError`` and subclasses — including ``ResponseError`` from
+        Lua EVAL. ``session_rotate_lua`` parses ``ResponseError`` messages
+        for the Lua-return-token contract (``session_revoked`` /
+        ``already_rotated`` / ``jti_collision``); papering over those
+        with a generic ``ConnectionError`` would break rotation logic.
+      * ``RedisRequired`` — programmer / config signal that ``REDIS_URL``
+        is not set. Pass through so production fails loud until fixed.
+      * Bare ``RuntimeError`` whose message doesn't match the narrow
+        transport-marker list. Almost certainly a real bug; re-raise so
+        it surfaces as a 500 with a complete traceback in logs.
+
+    Translated:
+      * ``OSError`` subclasses (``ConnectionResetError``,
+        ``BrokenPipeError``, ``ConnectionAbortedError``, etc.) — socket
+        I/O failures during a Redis op.
+      * ``RuntimeError`` whose message matches a transport-death marker.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await fn(*args, **kwargs)
+        except RedisError:
+            # ResponseError, ConnectionError, TimeoutError, etc. — already
+            # a sensible Redis-domain exception. Pass through so the
+            # caller's ``except (RedisRequired, RedisError)`` runs AND so
+            # ``session_rotate_lua``'s Lua-return-token parser still sees
+            # the raw ResponseError it expects.
+            raise
+        except RedisRequired:
+            # Programmer / config signal. Not a transport problem; pass
+            # through so the caller's existing handler logic runs.
+            raise
+        except OSError as exc:
+            # Socket-level I/O. Translate to RedisConnectionError so the
+            # router's existing 503 fallback kicks in — AND retire the
+            # poisoned pool so the next call uses a fresh connection.
+            await _retire_poisoned_client(
+                reason=f"OSError: {exc.__class__.__name__}: {exc}",
+            )
+            raise RedisConnectionError(
+                f"Redis transport I/O failure: "
+                f"{exc.__class__.__name__}: {exc}"
+            ) from exc
+        except RuntimeError as exc:
+            if _looks_like_dead_transport(exc):
+                # Same as above: poisoned-pool retirement BEFORE the
+                # router's caller hits the next helper. Without this,
+                # the frontend's reactive retry would hit the same
+                # dead pool again. ``RuntimeError`` is deliberately
+                # NOT in ``retry_on_error`` (would also retry real
+                # bugs), so redis-py's own disconnect path doesn't
+                # run for this class — we must drop the singleton
+                # ourselves.
+                await _retire_poisoned_client(
+                    reason=f"closed transport: {exc}",
+                )
+                raise RedisConnectionError(
+                    f"Redis transport closed: {exc}"
+                ) from exc
+            # Unrelated RuntimeError — almost certainly a real bug.
+            # Let it escape so it surfaces as 500 with full traceback.
+            raise
+
+    return wrapper  # type: ignore[return-value]
+
+
+async def _retire_poisoned_client(*, reason: str) -> None:
+    """Drop the module-level Redis singleton so the next ``get_client()``
+    creates a fresh client (and fresh underlying connection pool).
+
+    Called by ``_normalize_transport_errors`` after it detects a known
+    dead-socket / closed-transport state and BEFORE it raises the
+    translated ``RedisConnectionError``. Without this, the frontend's
+    reactive 503 retry would loop back to the same poisoned pool and
+    the user would see another 503 instead of recovering.
+
+    ``RuntimeError`` is deliberately excluded from
+    ``retry_on_error`` (see ``get_client`` rationale), so redis-py's
+    own disconnect-on-retry path does NOT run for the uvloop closed-
+    transport class; the application has to drop the client itself.
+
+    Best-effort: any failure inside ``aclose()`` is swallowed so we
+    don't replace one ConnectionError with another. The next call to
+    ``get_client()`` will rebuild the singleton from
+    ``settings.redis_url`` regardless.
+    """
+    global _client
+    poisoned = _client
+    if poisoned is None:
+        return
+    _client = None
+    logger.warning(
+        "redis.client.retired",
+        extra={"reason": reason},
+    )
+    try:
+        await poisoned.aclose()
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        # We've already replaced the singleton; the OS will reclaim the
+        # underlying sockets even if aclose() can't tidy up its
+        # bookkeeping. Don't propagate.
+        pass
 
 
 def get_client() -> Redis | None:
@@ -49,7 +214,15 @@ def get_client() -> Redis | None:
       timeout errors. This makes the dashboard probe and the MFA nonce
       path tolerate a Valkey blip (e.g. an Ansible re-converge that
       bounces the service) instead of surfacing a hard failure on the
-      very first stale-pool socket.
+      very first stale-pool socket. ``OSError`` (covers
+      ``ConnectionResetError`` and ``BrokenPipeError``) is in the retry
+      list because production observed those classes on idle-dropped
+      sockets — the 2026-05-19T07:10 trace. We deliberately do NOT add
+      bare ``RuntimeError`` here because redis-py's retry contract is
+      "drop connection + reconnect on listed error"; widening to all
+      ``RuntimeError`` would also retry genuine programmer bugs. The
+      transport-runtime case is handled instead by the
+      ``_normalize_transport_errors`` wrapper at the helper layer.
     """
     global _client
     if _client is None and settings.redis_url:
@@ -60,7 +233,11 @@ def get_client() -> Redis | None:
             socket_timeout=3,
             socket_keepalive=True,
             health_check_interval=30,
-            retry_on_error=[RedisConnectionError, RedisTimeoutError],
+            retry_on_error=[
+                RedisConnectionError,
+                RedisTimeoutError,
+                OSError,
+            ],
             retry=Retry(ExponentialBackoff(cap=1.0, base=0.1), retries=2),
         )
     return _client
@@ -138,6 +315,7 @@ def _family_key(sid: str) -> str:
     return f"auth:session:by_sid:{sid}"
 
 
+@_normalize_transport_errors
 async def session_issue(jti: str, sid: str, user_id: int, ttl_seconds: int) -> None:
     """Write the refresh-session primary key + family-set entry atomically.
 
@@ -160,6 +338,7 @@ async def session_issue(jti: str, sid: str, user_id: int, ttl_seconds: int) -> N
     await pipe.execute()
 
 
+@_normalize_transport_errors
 async def session_validate(jti: str) -> dict | None:
     """Return the JSON payload at ``auth:session:{jti}`` or None on miss.
 
@@ -180,6 +359,7 @@ async def session_validate(jti: str) -> dict | None:
         return None
 
 
+@_normalize_transport_errors
 async def session_grace(jti: str) -> dict | None:
     """Return the JSON payload at ``auth:session:grace:{jti}`` or None on miss.
 
@@ -202,6 +382,7 @@ async def session_grace(jti: str) -> dict | None:
         return None
 
 
+@_normalize_transport_errors
 async def session_family_exists(sid: str) -> bool:
     """Return True iff ``auth:session:by_sid:{sid}`` exists.
 
@@ -214,6 +395,7 @@ async def session_family_exists(sid: str) -> bool:
     return bool(await client.exists(_family_key(sid)))
 
 
+@_normalize_transport_errors
 async def session_family_member(sid: str, jti: str) -> bool:
     """Return True iff ``jti`` is still a member of ``auth:session:by_sid:{sid}``.
 
@@ -301,6 +483,7 @@ return "ok"
 """
 
 
+@_normalize_transport_errors
 async def session_rotate_lua(
     old_jti: str,
     new_jti: str,
@@ -369,6 +552,7 @@ async def session_rotate_lua(
     return result
 
 
+@_normalize_transport_errors
 async def session_revoke_family(sid: str) -> list[str]:
     """Atomically revoke an entire session family (spec §5.3 / §4.2 logout).
 
@@ -414,3 +598,57 @@ async def session_revoke_family(sid: str) -> list[str]:
         pipe_b.delete(_grace_key(jti))
     await pipe_b.execute()
     return jtis
+
+
+# ── MFA single-use nonces ───────────────────────────────────────────────
+#
+# The /mfa/email-verify path proves an emailed 6-digit code was not
+# replayed. The jti embedded in the email JWT is recorded in Redis at
+# issue time AND deleted on first successful verify. 0 == not found ==
+# replay attempt → 401.
+#
+# These helpers exist (vs. inline ``get_client().set(...)`` in auth.py)
+# so the ``_normalize_transport_errors`` wrapper covers the MFA path
+# too — without this layer, a closed-transport RuntimeError during
+# /mfa/email-verify produces a 500 instead of a recoverable 503.
+#
+# Both helpers return ``None`` when Redis isn't configured (dev mode);
+# production callers MUST check for that and fail closed with 503.
+# 2026-05-19: added by the Redis transport-normalizer PR.
+
+
+_MFA_EMAIL_JTI_KEY = "mfa_email_jti:{jti}"
+
+
+@_normalize_transport_errors
+async def mfa_email_nonce_set(jti: str, user_id: int, ttl_seconds: int) -> bool:
+    """Store the MFA single-use nonce. Returns True if Redis is
+    configured and the write landed, False if Redis is not configured
+    (dev mode with empty ``REDIS_URL``). Production callers should
+    refuse to issue the email token when this returns False.
+    """
+    client = get_client()
+    if client is None:
+        return False
+    await client.set(
+        _MFA_EMAIL_JTI_KEY.format(jti=jti),
+        str(user_id),
+        ex=ttl_seconds,
+    )
+    return True
+
+
+@_normalize_transport_errors
+async def mfa_email_nonce_consume(jti: str) -> int | None:
+    """Atomically consume the MFA single-use nonce. Returns:
+      * ``None`` — Redis not configured (dev mode); caller is
+        responsible for failing closed if production.
+      * ``0`` — nonce was not in Redis (replay attempt or expired); the
+        caller should 401.
+      * ``1`` — nonce existed and was deleted in this call; verify
+        proceeds.
+    """
+    client = get_client()
+    if client is None:
+        return None
+    return await client.delete(_MFA_EMAIL_JTI_KEY.format(jti=jti))
