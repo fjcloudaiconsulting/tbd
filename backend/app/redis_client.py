@@ -126,13 +126,28 @@ def _normalize_transport_errors(fn: _F) -> _F:
             raise
         except OSError as exc:
             # Socket-level I/O. Translate to RedisConnectionError so the
-            # router's existing 503 fallback kicks in.
+            # router's existing 503 fallback kicks in — AND retire the
+            # poisoned pool so the next call uses a fresh connection.
+            await _retire_poisoned_client(
+                reason=f"OSError: {exc.__class__.__name__}: {exc}",
+            )
             raise RedisConnectionError(
                 f"Redis transport I/O failure: "
                 f"{exc.__class__.__name__}: {exc}"
             ) from exc
         except RuntimeError as exc:
             if _looks_like_dead_transport(exc):
+                # Same as above: poisoned-pool retirement BEFORE the
+                # router's caller hits the next helper. Without this,
+                # the frontend's reactive retry would hit the same
+                # dead pool again. ``RuntimeError`` is deliberately
+                # NOT in ``retry_on_error`` (would also retry real
+                # bugs), so redis-py's own disconnect path doesn't
+                # run for this class — we must drop the singleton
+                # ourselves.
+                await _retire_poisoned_client(
+                    reason=f"closed transport: {exc}",
+                )
                 raise RedisConnectionError(
                     f"Redis transport closed: {exc}"
                 ) from exc
@@ -141,6 +156,44 @@ def _normalize_transport_errors(fn: _F) -> _F:
             raise
 
     return wrapper  # type: ignore[return-value]
+
+
+async def _retire_poisoned_client(*, reason: str) -> None:
+    """Drop the module-level Redis singleton so the next ``get_client()``
+    creates a fresh client (and fresh underlying connection pool).
+
+    Called by ``_normalize_transport_errors`` after it detects a known
+    dead-socket / closed-transport state and BEFORE it raises the
+    translated ``RedisConnectionError``. Without this, the frontend's
+    reactive 503 retry would loop back to the same poisoned pool and
+    the user would see another 503 instead of recovering.
+
+    ``RuntimeError`` is deliberately excluded from
+    ``retry_on_error`` (see ``get_client`` rationale), so redis-py's
+    own disconnect-on-retry path does NOT run for the uvloop closed-
+    transport class; the application has to drop the client itself.
+
+    Best-effort: any failure inside ``aclose()`` is swallowed so we
+    don't replace one ConnectionError with another. The next call to
+    ``get_client()`` will rebuild the singleton from
+    ``settings.redis_url`` regardless.
+    """
+    global _client
+    poisoned = _client
+    if poisoned is None:
+        return
+    _client = None
+    logger.warning(
+        "redis.client.retired",
+        extra={"reason": reason},
+    )
+    try:
+        await poisoned.aclose()
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        # We've already replaced the singleton; the OS will reclaim the
+        # underlying sockets even if aclose() can't tidy up its
+        # bookkeeping. Don't propagate.
+        pass
 
 
 def get_client() -> Redis | None:

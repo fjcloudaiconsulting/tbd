@@ -411,3 +411,140 @@ class TestLuaResponseErrorParserStillWorks:
         # Original ResponseError preserved — NOT wrapped as
         # RedisConnectionError.
         assert "WRONGTYPE" in str(exc_info.value)
+
+
+# ── Poisoned-pool retirement ────────────────────────────────────────────
+
+
+class TestPoisonedClientRetirement:
+    """When the wrapper translates a closed-transport ``RuntimeError``
+    or socket-level ``OSError`` into ``RedisConnectionError``, it MUST
+    also drop the module-level Redis singleton so the next call to
+    ``get_client()`` rebuilds the underlying connection pool.
+
+    Without this, the frontend's reactive 503 retry would loop back to
+    the same poisoned pool (``RuntimeError`` is deliberately excluded
+    from ``retry_on_error``, so redis-py's own disconnect-on-retry
+    path doesn't run for the uvloop closed-transport class). The
+    operator-visible symptom would be: one closed-transport event
+    triggers a permanent burst of 503s until the worker restarts.
+    """
+
+    @pytest.mark.asyncio
+    async def test_closed_transport_retires_singleton(self) -> None:
+        import app.redis_client as rc
+
+        # Install a sentinel client so retirement has something to drop.
+        # AsyncMock-style aclose so the best-effort cleanup succeeds.
+        from unittest.mock import AsyncMock, MagicMock
+        sentinel_client = MagicMock()
+        sentinel_client.aclose = AsyncMock()
+        rc._client = sentinel_client
+
+        @_normalize_transport_errors
+        async def helper() -> None:
+            raise RuntimeError(
+                "unable to perform operation on <TCPTransport closed=True "
+                "reading=False 0x55a57d2583e0>; the handler is closed"
+            )
+
+        with pytest.raises(RedisConnectionError):
+            await helper()
+
+        # The singleton MUST have been dropped — that is the core
+        # contract of the fix. The next ``get_client()`` will rebuild.
+        assert rc._client is None
+        # Best-effort cleanup ran on the poisoned client.
+        sentinel_client.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_broken_pipe_retires_singleton(self) -> None:
+        """OSError branch must also retire — broken pipe / connection
+        reset class follows the same code path."""
+        import app.redis_client as rc
+        from unittest.mock import AsyncMock, MagicMock
+
+        sentinel_client = MagicMock()
+        sentinel_client.aclose = AsyncMock()
+        rc._client = sentinel_client
+
+        @_normalize_transport_errors
+        async def helper() -> None:
+            raise BrokenPipeError(32, "Broken pipe")
+
+        with pytest.raises(RedisConnectionError):
+            await helper()
+        assert rc._client is None
+
+    @pytest.mark.asyncio
+    async def test_unrelated_runtime_error_does_not_retire_singleton(
+        self,
+    ) -> None:
+        """Critical safety property: a real programmer bug must NOT
+        retire the pool. Dropping the singleton on every random
+        RuntimeError would mask bugs AND thrash the connection pool."""
+        import app.redis_client as rc
+        from unittest.mock import AsyncMock, MagicMock
+
+        sentinel_client = MagicMock()
+        sentinel_client.aclose = AsyncMock()
+        rc._client = sentinel_client
+
+        @_normalize_transport_errors
+        async def helper() -> None:
+            raise RuntimeError("programmer bug: list index out of range")
+
+        with pytest.raises(RuntimeError):
+            await helper()
+        # Singleton still in place — NOT retired.
+        assert rc._client is sentinel_client
+        sentinel_client.aclose.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_redis_response_error_does_not_retire_singleton(
+        self,
+    ) -> None:
+        """ResponseError carries Lua return tokens; the connection is
+        still healthy. Retiring on this class would force every
+        ``session_revoked`` rotation to rebuild the pool — pointless
+        churn."""
+        import app.redis_client as rc
+        from unittest.mock import AsyncMock, MagicMock
+
+        sentinel_client = MagicMock()
+        sentinel_client.aclose = AsyncMock()
+        rc._client = sentinel_client
+
+        @_normalize_transport_errors
+        async def helper() -> None:
+            raise RedisResponseError("session_revoked")
+
+        with pytest.raises(RedisResponseError):
+            await helper()
+        assert rc._client is sentinel_client
+        sentinel_client.aclose.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retirement_survives_aclose_failure(self) -> None:
+        """``aclose()`` is best-effort: if the underlying socket is
+        already dead, ``aclose`` itself may raise. The singleton must
+        still be dropped — we don't want to replace one
+        ConnectionError with another."""
+        import app.redis_client as rc
+        from unittest.mock import AsyncMock, MagicMock
+
+        sentinel_client = MagicMock()
+        sentinel_client.aclose = AsyncMock(
+            side_effect=RuntimeError("aclose can't reach dead socket")
+        )
+        rc._client = sentinel_client
+
+        @_normalize_transport_errors
+        async def helper() -> None:
+            raise RuntimeError("the handler is closed")
+
+        # The translated ConnectionError still surfaces — aclose's
+        # failure is swallowed.
+        with pytest.raises(RedisConnectionError):
+            await helper()
+        assert rc._client is None

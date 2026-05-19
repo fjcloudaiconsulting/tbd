@@ -353,3 +353,260 @@ class TestRefreshRejectedLogging:
         # Hash is 8 hex chars.
         assert len(rejection_logs[0]["jti_h"]) == 8
         assert len(rejection_logs[0]["sid_h"]) == 8
+
+    @pytest.mark.asyncio
+    async def test_no_refresh_token_logs_reason(
+        self, session_factory
+    ) -> None:
+        """Empty cookie header → ``no_refresh_token`` log event. This
+        is the diagnostic the 2026-05-19 overnight incident needs:
+        when the browser stops sending the refresh cookie, ops can
+        distinguish "cookie missing" from "cookie present but
+        invalid"."""
+        app = _make_app(session_factory)
+        with structlog.testing.capture_logs() as captured:
+            with TestClient(app) as client:
+                res = client.post("/api/v1/auth/refresh")
+        assert res.status_code == 401
+        rejection_logs = [
+            ev for ev in captured
+            if ev.get("event") == "auth.refresh.rejected"
+            and ev.get("reason") == "no_refresh_token"
+        ]
+        assert len(rejection_logs) == 1, (
+            f"Expected exactly one no_refresh_token event; got: {captured}"
+        )
+
+
+# ── 503 wins over a later 401 across the cookie list ────────────────────
+
+
+class TestRefreshPrefersTransientOverTerminal:
+    """When the browser sends BOTH a legacy and a current
+    ``refresh_token`` cookie, the validator walks them in arrival
+    order. If the FIRST one hits a Redis transport failure (503) and
+    the SECOND one is invalid (401), the response MUST be 503, not
+    401 — otherwise a transient infra blip on the live cookie would
+    force a real logout because the stale cookie's 401 overwrote the
+    503 as the final ``last_exc``.
+
+    This is the architect's P1 fix on PR #314: terminal-auth (401)
+    must never silently overwrite a transient (5xx) seen earlier
+    across the cookie list.
+    """
+
+    def _patch_client_get(self, side_effect):
+        """Same client-level patch trick as the parent file: patch
+        the inner Redis client's ``.get`` so the wrapper actually
+        runs. ``side_effect`` may be a callable for per-call values."""
+        import app.redis_client as rc
+
+        client = rc.get_client()
+        if client is None:
+            pytest.skip(
+                "Autouse fake-Redis fixture didn't install a client"
+            )
+        return patch.object(client, "get", side_effect=side_effect)
+
+    @pytest.mark.asyncio
+    async def test_first_cookie_503_beats_second_cookie_401(
+        self, session_factory
+    ) -> None:
+        """Two refresh_token cookies in the header. The first hits a
+        closed-transport RuntimeError → 503; the second is a
+        malformed JWT → 401 before it ever touches Redis. Final
+        status MUST be 503."""
+        seed = await _seed_user(session_factory)
+        good_token = issue_test_refresh_token(seed["user_id"])
+        app = _make_app(session_factory)
+
+        # Closed-transport RuntimeError only on the first .get call;
+        # the second cookie ("not.a.jwt") fails JWT decode before
+        # any Redis call, so .get is never called for it.
+        with self._patch_client_get(
+            side_effect=RuntimeError(
+                "unable to perform operation on <TCPTransport closed=True "
+                "reading=False 0x0>; the handler is closed"
+            ),
+        ):
+            with TestClient(app) as client:
+                res = client.post(
+                    "/api/v1/auth/refresh",
+                    headers={
+                        # Two cookies, same name, in arrival order: the
+                        # valid JWT first (will hit Redis → 503), the
+                        # malformed one second (would 401 on decode).
+                        "cookie": (
+                            f"refresh_token={good_token}; "
+                            f"refresh_token=not.a.jwt"
+                        ),
+                    },
+                )
+
+        # The contract: 503 wins. A 401 here would be the regression.
+        assert res.status_code == 503, (
+            f"Expected 503 (transient), got {res.status_code}: "
+            f"{res.json()}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_single_invalid_cookie_still_401(
+        self, session_factory
+    ) -> None:
+        """Sanity guard: the transient-preferral logic must NOT
+        upgrade a single-cookie 401 to a 503. When only one cookie is
+        present and it fails terminally, the response is still 401 —
+        no transient ever seen."""
+        app = _make_app(session_factory)
+        with TestClient(app) as client:
+            res = client.post(
+                "/api/v1/auth/refresh",
+                cookies={"refresh_token": "not.a.jwt"},
+            )
+        assert res.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_503_first_then_503_returns_503(
+        self, session_factory
+    ) -> None:
+        """Belt-and-braces: two cookies, both produce 503. Result is
+        still 503 (transient_exc captured from the first; last_exc
+        also 5xx)."""
+        seed = await _seed_user(session_factory)
+        a = issue_test_refresh_token(seed["user_id"])
+        b = issue_test_refresh_token(seed["user_id"])
+        app = _make_app(session_factory)
+        with self._patch_client_get(
+            side_effect=RuntimeError("the handler is closed"),
+        ):
+            with TestClient(app) as client:
+                res = client.post(
+                    "/api/v1/auth/refresh",
+                    headers={
+                        "cookie": f"refresh_token={a}; refresh_token={b}"
+                    },
+                )
+        assert res.status_code == 503
+
+
+# ── Lua rotation rejection paths emit reason logs ───────────────────────
+
+
+class TestRefreshLuaRotationLogging:
+    """The two rotation-layer terminal 401 paths must emit
+    ``auth.refresh.rejected`` events with a stable ``reason`` so ops
+    can distinguish them from the earlier validation-chain 401s.
+
+    Architect P2 on PR #314: 'all terminal 401 paths are logged' is the
+    contract these tests pin. Tests stub ``_rotate_refresh_session`` at
+    the auth-module level so the validation chain succeeds and we land
+    inside the rotation outcome branches without spinning up a real
+    Lua-capable Redis."""
+
+    @pytest.mark.asyncio
+    async def test_lua_session_revoked_logs_reason(
+        self, session_factory, monkeypatch
+    ) -> None:
+        """When the Lua script returns ``session_revoked`` (concurrent
+        /logout deleted the family set), the rotation handler emits
+        ``lua_session_revoked`` and raises 401."""
+        from app.routers import auth as auth_module
+        from app.redis_client import SESSION_ROTATE_REVOKED
+
+        seed = await _seed_user(session_factory)
+        token = issue_test_refresh_token(seed["user_id"])
+        app = _make_app(session_factory)
+
+        async def _stub_rotate(
+            user_id, old_jti, sid, *, ttl_seconds, session_created_at,
+        ):
+            # Return signature: (new_token, new_jti, sid, lua_result)
+            return ("unused", "new-jti", sid, SESSION_ROTATE_REVOKED)
+
+        monkeypatch.setattr(
+            auth_module, "_rotate_refresh_session", _stub_rotate
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            with TestClient(app) as client:
+                res = client.post(
+                    "/api/v1/auth/refresh",
+                    cookies={"refresh_token": token},
+                )
+        assert res.status_code == 401
+        assert "invalidated" in res.json()["detail"].lower()
+
+        rejection_logs = [
+            ev for ev in captured
+            if ev.get("event") == "auth.refresh.rejected"
+            and ev.get("reason") == "lua_session_revoked"
+        ]
+        assert len(rejection_logs) == 1, (
+            f"Expected exactly one lua_session_revoked event; got: "
+            f"{captured}"
+        )
+        # PII guard: only hash prefixes, no raw jti/sid.
+        assert rejection_logs[0]["sub"] == seed["user_id"]
+        assert len(rejection_logs[0]["jti_h"]) == 8
+        assert len(rejection_logs[0]["sid_h"]) == 8
+
+    @pytest.mark.asyncio
+    async def test_already_rotated_grace_revalidation_failed_logs_reason(
+        self, session_factory, monkeypatch
+    ) -> None:
+        """When the Lua script returns ``already_rotated`` but the
+        winner's grace key is gone by the time we re-probe (TTL expired
+        or concurrent logout), emit
+        ``already_rotated_grace_revalidation_failed`` and 401."""
+        from app.routers import auth as auth_module
+        from app.redis_client import SESSION_ROTATE_ALREADY_ROTATED
+
+        seed = await _seed_user(session_factory)
+        token = issue_test_refresh_token(seed["user_id"])
+        app = _make_app(session_factory)
+
+        async def _stub_rotate(
+            user_id, old_jti, sid, *, ttl_seconds, session_created_at,
+        ):
+            return ("unused", "new-jti", sid, SESSION_ROTATE_ALREADY_ROTATED)
+
+        async def _stub_grace_missing(jti):
+            return None  # Winner's grace key is gone.
+
+        async def _stub_family_alive(sid):
+            return True
+
+        monkeypatch.setattr(
+            auth_module, "_rotate_refresh_session", _stub_rotate
+        )
+        monkeypatch.setattr(
+            auth_module.redis_client, "session_grace", _stub_grace_missing
+        )
+        monkeypatch.setattr(
+            auth_module.redis_client,
+            "session_family_exists",
+            _stub_family_alive,
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            with TestClient(app) as client:
+                res = client.post(
+                    "/api/v1/auth/refresh",
+                    cookies={"refresh_token": token},
+                )
+        assert res.status_code == 401
+
+        rejection_logs = [
+            ev for ev in captured
+            if ev.get("event") == "auth.refresh.rejected"
+            and ev.get("reason") == "already_rotated_grace_revalidation_failed"
+        ]
+        assert len(rejection_logs) == 1, (
+            f"Expected exactly one already_rotated_grace_revalidation_failed "
+            f"event; got: {captured}"
+        )
+        # The diagnostic fields let ops triage which check failed.
+        ev = rejection_logs[0]
+        assert ev["grace_row_missing"] is True
+        assert ev["family_alive"] is True
+        assert ev["sub"] == seed["user_id"]

@@ -819,6 +819,12 @@ async def _validate_refresh_cookie(
     the parser surfaces.
     """
     if not refresh_tokens:
+        # 2026-05-19: log the no-cookie case explicitly. The overnight
+        # logout symptom (the 2026-05-19T07:10 incident) had the
+        # browser stop sending the refresh cookie at some point; this
+        # reason code is what lets ops distinguish "cookie missing"
+        # from "cookie present but invalid".
+        _log_refresh_rejected("no_refresh_token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="No refresh token",
@@ -826,15 +832,31 @@ async def _validate_refresh_cookie(
 
     successes: list[tuple[User, dict, datetime | None, str, int]] = []
     last_exc: HTTPException | None = None
+    transient_exc: HTTPException | None = None
     for token in refresh_tokens:
         try:
             successes.append(await _validate_single_refresh_token(token, db))
         except HTTPException as exc:
             last_exc = exc
+            # 2026-05-19: remember the FIRST 5xx (transport / Redis
+            # unavailable) we saw across the cookie list. When a
+            # legacy + current cookie pair is present, a Redis
+            # transport failure on the valid cookie followed by an
+            # invalid-token rejection on the stale one would otherwise
+            # let the 401 win as the final ``last_exc`` — terminal
+            # logout instead of recoverable retry. Prefer the 5xx.
+            if exc.status_code >= 500 and transient_exc is None:
+                transient_exc = exc
 
     if not successes:
-        assert last_exc is not None  # loop ran at least once
-        raise last_exc
+        # Prefer the 5xx (transient / Redis unavailable) over any 4xx
+        # (terminal-auth) seen across the cookie list. The frontend's
+        # classifier treats 5xx as transient and retries on a fresh
+        # connection; treating it as a 401 would force a real logout
+        # for what is actually a recoverable infra blip.
+        chosen = transient_exc or last_exc
+        assert chosen is not None  # loop ran at least once
+        raise chosen
 
     distinct_user_ids = {tup[0].id for tup in successes}
     if len(distinct_user_ids) > 1:
@@ -973,6 +995,12 @@ async def refresh(
     if lua_result == redis_client.SESSION_ROTATE_REVOKED:
         # Concurrent /logout deleted the family set. Terminal 401 — the
         # frontend's classifier already handles this string.
+        _log_refresh_rejected(
+            "lua_session_revoked",
+            jti=old_jti,
+            sid=sid,
+            extra={"sub": user.id},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has been invalidated",
@@ -996,6 +1024,29 @@ async def refresh(
             or grace_row.get("sid") != sid
             or grace_row.get("user_id") != user.id
         ):
+            # Lua said "already_rotated" so the winner SHOULD have left
+            # a grace key behind, but by the time we re-probe it's
+            # gone (TTL expired, concurrent logout, etc.). Log which
+            # part failed so ops can tell normal-grace-expiry apart
+            # from "family revoked between rotation and re-probe".
+            _log_refresh_rejected(
+                "already_rotated_grace_revalidation_failed",
+                jti=old_jti,
+                sid=sid,
+                extra={
+                    "sub": user.id,
+                    "grace_row_missing": grace_row is None,
+                    "family_alive": family_alive,
+                    "grace_sid_mismatch": (
+                        grace_row is not None
+                        and grace_row.get("sid") != sid
+                    ),
+                    "grace_user_mismatch": (
+                        grace_row is not None
+                        and grace_row.get("user_id") != user.id
+                    ),
+                },
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Session has been invalidated",
