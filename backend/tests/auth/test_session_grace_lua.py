@@ -234,20 +234,25 @@ async def test_replay_after_grace_window_returns_401(session_factory, fake_redis
 
 async def test_concurrent_refresh_one_winner_one_grace(session_factory, fake_redis):
     """Two concurrent ``/refresh`` calls with the same pre-rotation cookie
-    produce exactly: one winner (200 + Set-Cookie) and one loser (200,
-    no Set-Cookie). Zero 401s.
+    produce exactly: one Lua-rotation winner and one grace-path loser,
+    both 200, both emitting a Set-Cookie whose JWT decodes to the SAME
+    successor jti (2026-05-19 catch-up fix). Zero 401s. The loser's
+    Set-Cookie comes from ``_issue_catchup_refresh_cookie`` reading
+    ``grace_row["successor_jti"]`` — NOT from the loser's locally-minted
+    candidate jti, which has no Redis row.
 
     Implementation: gate BOTH coroutines at the Lua entry with an
     ``asyncio.Event``, release them simultaneously. The serialization
     lock inside the fake's ``eval`` makes the second call observe the
     winner's writes (primary gone, grace written, family extended)
-    and return ``already_rotated``. The router then falls into the
-    grace branch and issues an access token only.
+    and return ``already_rotated``. The router then enters the
+    already_rotated re-probe path and issues the catch-up cookie.
 
     Without the Lua ``EXISTS old_primary`` guard (spec §4.2 check 2),
     both calls would pass ``SISMEMBER`` and both rotate — the test
-    would observe two distinct successor jtis. This is the canonical
-    no-double-issue pin.
+    would observe two DISTINCT successor jtis instead of two identical
+    ones. This is the canonical no-double-issue pin AND the
+    catch-up-cookie-convergence pin in one test.
     """
     await _seed_user(session_factory)
     app = _make_app(session_factory)
