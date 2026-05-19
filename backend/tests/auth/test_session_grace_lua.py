@@ -287,15 +287,28 @@ async def test_concurrent_refresh_one_winner_one_grace(session_factory, fake_red
     cookies_a = _canonical_refresh_cookie(res_a.headers)
     cookies_b = _canonical_refresh_cookie(res_b.headers)
     set_cookies = [c for c in (cookies_a, cookies_b) if c is not None]
-    assert len(set_cookies) == 1, (
-        f"expected exactly one Set-Cookie (winner), got {len(set_cookies)}: "
-        f"A={cookies_a!r} B={cookies_b!r}"
+    # 2026-05-19 catch-up fix: both responses now emit Set-Cookie. The
+    # winner sets it from the normal rotation path; the loser sets it
+    # via ``_issue_catchup_refresh_cookie`` after the
+    # ``already_rotated`` re-probe. Both cookies MUST decode to the
+    # same successor jti so the browser converges on whichever
+    # response lands last.
+    assert len(set_cookies) == 2, (
+        f"expected exactly two Set-Cookies (winner + loser catch-up), "
+        f"got {len(set_cookies)}: A={cookies_a!r} B={cookies_b!r}"
     )
 
-    # Exactly one new jti minted; primary key is in Redis.
-    winner_token = _refresh_token_from_set_cookie(set_cookies[0])
-    winner_jti, winner_sid = decode_refresh_jti_sid(winner_token)
-    assert winner_sid == sid
+    decoded_jtis = []
+    for raw in set_cookies:
+        token = _refresh_token_from_set_cookie(raw)
+        jti, sid_decoded = decode_refresh_jti_sid(token)
+        assert sid_decoded == sid
+        decoded_jtis.append(jti)
+    assert len(set(decoded_jtis)) == 1, (
+        f"winner + loser Set-Cookies must decode to the SAME successor "
+        f"jti; got {decoded_jtis}. Browser convergence depends on this."
+    )
+    winner_jti = decoded_jtis[0]
     assert winner_jti != old_jti
     assert f"auth:session:{winner_jti}" in fake_redis._kv
     # Grace key for old_jti is alive.
@@ -552,15 +565,21 @@ async def test_jti_collision_double_failure_returns_503(
 # ── 10. Direct grace path (the typical cross-tab race after the fact) ───────
 
 
-async def test_refresh_direct_grace_path_no_setcookie_and_audit(
+async def test_refresh_direct_grace_path_emits_catchup_cookie_and_audit(
     session_factory, fake_redis
 ):
     """The "boring" cross-tab race: tab A rotates first, tab B's
     ``/refresh`` arrives later still carrying the old cookie. The
     primary is already gone, the grace key is alive, the family set
-    is alive — the validator hands us ``redis_state == "grace"`` and
-    the router returns access-only without entering Lua. Audit:
-    ``auth.session.grace_accept {via_already_rotated: false}``.
+    is alive — the validator hands us ``redis_state == "grace"``.
+
+    2026-05-19 catch-up fix: the router now emits a catch-up
+    Set-Cookie pointing at the successor jti written by tab A's
+    rotation, so tab B converges to the live primary instead of
+    holding a stale cookie that locks out 30s later. Audit:
+    ``auth.session.grace_accept {via_already_rotated: false}`` (the
+    audit shape is unchanged — the catch-up emits a cookie but is
+    still semantically a grace acceptance, not a rotation).
     """
     await _seed_user(session_factory)
     app = _make_app(session_factory)
@@ -570,6 +589,11 @@ async def test_refresh_direct_grace_path_no_setcookie_and_audit(
 
         r1 = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
         assert r1.status_code == 200
+        # Capture the winner's successor jti from r1's Set-Cookie.
+        winner_raw = _canonical_refresh_cookie(r1.headers)
+        assert winner_raw is not None
+        winner_token = _refresh_token_from_set_cookie(winner_raw)
+        winner_jti, _ = decode_refresh_jti_sid(winner_token)
 
         # At this point primary {old_jti} is gone, grace alive, family alive.
         # Tab B replays the old cookie.
@@ -578,8 +602,18 @@ async def test_refresh_direct_grace_path_no_setcookie_and_audit(
         )
 
     assert res.status_code == 200, res.text
-    assert _canonical_refresh_cookie(res.headers) is None, (
-        "grace branch must NOT emit Set-Cookie (no rotation oracle)"
+    catchup_raw = _canonical_refresh_cookie(res.headers)
+    assert catchup_raw is not None, (
+        "grace branch must now emit catch-up Set-Cookie (2026-05-19 fix)"
+    )
+    catchup_token = _refresh_token_from_set_cookie(catchup_raw)
+    catchup_jti, catchup_sid = decode_refresh_jti_sid(catchup_token)
+    assert catchup_sid == sid
+    # Critical: the catch-up cookie points at the WINNER's successor
+    # jti — the live primary in Redis — not a freshly-minted random.
+    assert catchup_jti == winner_jti, (
+        f"catch-up cookie must point at winner's successor; "
+        f"got {catchup_jti!r}, expected {winner_jti!r}"
     )
 
     grace = await _list_audit(session_factory, "auth.session.grace_accept")
