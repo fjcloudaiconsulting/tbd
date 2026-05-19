@@ -196,6 +196,20 @@ async def _retire_poisoned_client(*, reason: str) -> None:
         pass
 
 
+# Per-operation Redis timeout budget. ``/auth/refresh`` makes 3–4 Redis
+# calls in the worst case (session_validate + session_grace + session_
+# family_exists + session_rotate_lua), and the frontend's reactive
+# recovery cap is 45 s; we need the total Redis budget for a single
+# /refresh to come in well below that so a transient VPC blip surfaces
+# as a fail-fast 503 the frontend can retry, not a 45 s "(canceled)"
+# (the 2026-05-19T15 production trace). Math at the bottom of get_client.
+AUTH_REDIS_SOCKET_CONNECT_TIMEOUT_S = 1.0
+AUTH_REDIS_SOCKET_TIMEOUT_S = 1.0
+AUTH_REDIS_RETRY_BACKOFF_BASE_S = 0.05
+AUTH_REDIS_RETRY_BACKOFF_CAP_S = 0.2
+AUTH_REDIS_RETRY_COUNT = 1
+
+
 def get_client() -> Redis | None:
     """Return the Redis client if configured, else None.
 
@@ -223,14 +237,36 @@ def get_client() -> Redis | None:
       ``RuntimeError`` would also retry genuine programmer bugs. The
       transport-runtime case is handled instead by the
       ``_normalize_transport_errors`` wrapper at the helper layer.
+
+    Fail-fast budget (2026-05-19 production trace):
+
+    With the values defined above, the worst-case time a single Redis
+    call spends inside the retry machinery is::
+
+        socket_timeout + retries * (socket_timeout + backoff_cap)
+        = 1.0 + 1 * (1.0 + 0.2)
+        = 2.2 s
+
+    ``/auth/refresh`` does up to 4 sequential Redis calls in the grace
+    branch (validate + grace + family_exists + family_member from the
+    catch-up helper), so the absolute upper bound is ~8.8 s — well
+    under the frontend's 45 s reactive-recovery timer. A transient VPC
+    blip now surfaces as a fast 503 the frontend retries, not a
+    "(canceled)" that locks the user out for a full timeout window.
+
+    Earlier values (socket_timeout=3, retries=2, cap=1.0) summed to
+    ~11 s per call, ~44 s for /refresh — exactly the hang the
+    operator observed on 2026-05-19 at 15:25–15:42 UTC. Tests in
+    ``test_auth_redis_failfast_budget.py`` pin the new ceiling so any
+    future change that re-inflates the budget is caught in CI.
     """
     global _client
     if _client is None and settings.redis_url:
         _client = Redis.from_url(
             settings.redis_url,
             decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
+            socket_connect_timeout=AUTH_REDIS_SOCKET_CONNECT_TIMEOUT_S,
+            socket_timeout=AUTH_REDIS_SOCKET_TIMEOUT_S,
             socket_keepalive=True,
             health_check_interval=30,
             retry_on_error=[
@@ -238,7 +274,13 @@ def get_client() -> Redis | None:
                 RedisTimeoutError,
                 OSError,
             ],
-            retry=Retry(ExponentialBackoff(cap=1.0, base=0.1), retries=2),
+            retry=Retry(
+                ExponentialBackoff(
+                    cap=AUTH_REDIS_RETRY_BACKOFF_CAP_S,
+                    base=AUTH_REDIS_RETRY_BACKOFF_BASE_S,
+                ),
+                retries=AUTH_REDIS_RETRY_COUNT,
+            ),
         )
     return _client
 
