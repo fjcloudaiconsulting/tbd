@@ -28,22 +28,16 @@ class Settings(BaseSettings):
     # conservative ceiling well under the typical 300 s NAT timeout.
     db_pool_recycle: int = 280
 
-    # connect_timeout / read_timeout / write_timeout are passed
-    # through to ``aiomysql.connect()`` and apply at the socket
-    # layer. Without them the driver blocks until the kernel TCP
-    # RTO, which is the actual mechanism behind the 46 s "(canceled)"
-    # /refresh hang signature.
+    # connect_timeout is passed through to ``aiomysql.connect()`` and
+    # bounds initial handshake. Sized for cold-start under transient
+    # VPC blips — too tight breaks legitimate slow connects without
+    # buying back user-visible latency.
     #
-    # connect_timeout sized for first-connect under cold-start
-    # network conditions where a transient VPC blip can extend the
-    # handshake by a few seconds — too tight breaks legitimate
-    # slow connects without buying back any user-visible latency.
-    # read_timeout / write_timeout apply per-packet, not per-query,
-    # so a legitimately long-running query that streams data is not
-    # affected — only stalls on a dead socket are bounded.
+    # Per-operation read/write timeouts are NOT exposed here:
+    # aiomysql 0.2.0 (pinned in requirements.txt) doesn't accept
+    # them. Stale-socket bounds live at ``db_pool_recycle`` (rotate
+    # before NAT drop) and at the route-local handler timeout.
     db_connect_timeout: int = 10
-    db_read_timeout: int = 30
-    db_write_timeout: int = 30
 
     # Auth
     jwt_secret_key: str = "change-me-generate-a-real-secret"

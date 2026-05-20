@@ -10,6 +10,9 @@ handler never reached the response stage.
 
 from __future__ import annotations
 
+import inspect
+
+import aiomysql
 import pytest
 
 import app.database as database
@@ -28,26 +31,46 @@ def test_pool_recycle_is_under_typical_nat_idle() -> None:
     )
 
 
-def test_socket_timeouts_are_propagated_to_aiomysql() -> None:
-    """``connect_timeout`` / ``read_timeout`` / ``write_timeout`` are
-    aiomysql constructor args that bound socket I/O. Without them, a
-    stale pooled connection blocks until the kernel TCP RTO. The
-    builder must thread the configured values through verbatim — a
-    drop here would silently re-open the hang."""
+def test_connect_timeout_is_propagated_to_aiomysql() -> None:
+    """``connect_timeout`` is the only socket-level timeout aiomysql
+    0.2.0 accepts. The builder must thread the configured value
+    through verbatim — a drop here would re-introduce the unbounded
+    cold-start connect class. (``read_timeout`` / ``write_timeout``
+    are deliberately NOT passed because aiomysql 0.2.0 raises
+    ``TypeError`` on them; the stale-socket class is bounded at
+    ``pool_recycle`` + the route-local handler timeout instead.)"""
     args = database._build_connect_args()
     assert args.get("connect_timeout") == settings.db_connect_timeout
-    assert args.get("read_timeout") == settings.db_read_timeout
-    assert args.get("write_timeout") == settings.db_write_timeout
+    # Pin the negative contract too: a future bump to aiomysql 0.2.1+
+    # might add support for these, but until requirements.txt moves,
+    # passing them through here is a hard production failure.
+    assert "read_timeout" not in args
+    assert "write_timeout" not in args
 
 
-def test_socket_timeouts_have_sane_defaults() -> None:
-    """Defaults must be bounded (>0 and below the route-local handler
-    ceiling) so a single stuck operation cannot consume the whole
-    budget. read/write timeouts apply per-packet so the values can
-    safely be larger than the connect timeout — but never unbounded."""
+def test_connect_timeout_has_sane_default() -> None:
+    """Default must be bounded (>0 and below the route-local handler
+    ceiling) so a stuck initial connect cannot consume the whole
+    budget."""
     assert 0 < settings.db_connect_timeout < settings.refresh_handler_timeout_s
-    assert 0 < settings.db_read_timeout < 120
-    assert 0 < settings.db_write_timeout < 120
+
+
+def test_connect_args_only_uses_aiomysql_supported_kwargs() -> None:
+    """Every key in ``connect_args`` must be an accepted kwarg of the
+    installed ``aiomysql.connect()``. Without this guard, a typo or a
+    speculatively-added timeout kwarg passes CI (the dict construction
+    is tested in isolation) but blows up on first DB request in
+    production with ``TypeError: connect() got an unexpected keyword
+    argument '...'``. Introspecting the real signature catches the
+    mismatch at CI time."""
+    supported = set(inspect.signature(aiomysql.connect).parameters)
+    args = database._build_connect_args()
+    unsupported = set(args) - supported
+    assert unsupported == set(), (
+        f"connect_args contains kwargs not accepted by aiomysql.connect() "
+        f"in the pinned version: {unsupported}. Either drop them or bump "
+        f"aiomysql in requirements.txt."
+    )
 
 
 # NOTE: a fourth test originally asserted
