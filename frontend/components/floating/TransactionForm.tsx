@@ -2,6 +2,7 @@
 
 import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 
+import DescriptionAutocomplete from "@/components/transactions/DescriptionAutocomplete";
 import CategorySelect from "@/components/ui/CategorySelect";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { todayISO } from "@/lib/format";
@@ -100,7 +101,14 @@ export default function TransactionForm({
   const [settledDate, setSettledDate] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [errMsg, setErrMsg] = useState("");
-  const descRef = useRef<HTMLInputElement>(null);
+  // Focus target for the "Save and add new" refocus path. The
+  // DescriptionAutocomplete component renders its own <input
+  // id="fab-tx-desc"> so we look it up by id (the component owns the
+  // ref internally; we don't need to thread one through).
+  const focusDescription = () => {
+    const el = document.getElementById("fab-tx-desc");
+    if (el instanceof HTMLInputElement) el.focus();
+  };
   // Tracks whether the next submit should keep the panel open and clear
   // the form ("Save and add new") or close on success ("Save"). The
   // "Save and add new" button calls form.requestSubmit() so the browser
@@ -179,7 +187,7 @@ export default function TransactionForm({
       if (addAnother) {
         clearForm();
         // Refocus the description input so the user can keep typing.
-        window.setTimeout(() => descRef.current?.focus(), 0);
+        window.setTimeout(() => focusDescription(), 0);
       } else {
         onSaved();
       }
@@ -287,15 +295,24 @@ export default function TransactionForm({
         <label htmlFor="fab-tx-desc" className={label}>
           Description
         </label>
-        <input
+        <DescriptionAutocomplete
           id="fab-tx-desc"
-          ref={descRef}
-          type="text"
-          required
-          placeholder="What was it for?"
+          type={type}
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          className={input}
+          onChange={setDescription}
+          onPick={(s) => {
+            // Pre-fill category from the most-common pair for this
+            // description, but only if the user has not already
+            // chosen one. Matches the canonical /transactions add
+            // form (page.tsx) and the spec's "optional pre-populate"
+            // rule for the category hint.
+            if (categoryId === "") {
+              setCategoryId(s.category_id);
+            }
+          }}
+          placeholder="What was it for?"
+          required
+          ariaLabel="Description"
         />
       </div>
 
