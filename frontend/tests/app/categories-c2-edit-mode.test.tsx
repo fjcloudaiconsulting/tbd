@@ -611,23 +611,44 @@ describe("CategoriesPage -C2 batch delete", () => {
     });
   });
 
-  it("editing with empty description sends description: null", async () => {
+  it("editing with empty description sends description: null AND the cleared value renders post-save", async () => {
+    // The empty-desc -> null contract has two halves:
+    //   1. PUT body must carry `description: null` (so the backend's
+    //      Pydantic v2 `model_fields_set` clears the column).
+    //   2. After the post-save reload, the UI must reflect the cleared
+    //      value, not the pre-save stale string.
+    // Both halves matter — only asserting (1) lets the regression
+    // re-emerge if the reconciliation path ever drops the new row.
     const putCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
-    setupApi({
-      "/api/v1/categories/101": (init) => {
-        if (init?.method === "PUT") {
-          putCalls.push({
-            url: "/api/v1/categories/101",
-            body: JSON.parse((init.body as string) ?? "{}"),
-          });
-          return {};
+    let descriptionCleared = false;
+    const seededCategories = CATEGORIES.map((c) =>
+      c.id === 101 ? { ...c, description: "Eating out" } : c,
+    );
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/categories" && (!init || init.method === undefined)) {
+        if (descriptionCleared) {
+          return Promise.resolve(
+            seededCategories.map((c) =>
+              c.id === 101 ? { ...c, description: null } : c,
+            ),
+          );
         }
-        return {};
-      },
-    });
+        return Promise.resolve(seededCategories);
+      }
+      if (url === "/api/v1/categories/101" && init?.method === "PUT") {
+        const body = JSON.parse((init.body as string) ?? "{}");
+        putCalls.push({ url, body });
+        if (body.description === null) {
+          descriptionCleared = true;
+        }
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
+    }) as never);
 
     render(<CategoriesPage />);
-    await waitFor(() => expect(screen.getByText("Restaurants")).toBeInTheDocument());
+    // Pre-save: the stale description is visible on the row.
+    expect(await screen.findByText("Eating out")).toBeInTheDocument();
 
     const subActions = screen.getByTestId("sub-actions-101");
     const editBtn = Array.from(subActions.querySelectorAll("button")).find(
@@ -635,18 +656,31 @@ describe("CategoriesPage -C2 batch delete", () => {
     );
     fireEvent.click(editBtn!);
 
-    // Leave description blank.
+    // Description input opens pre-populated with the existing value, then
+    // gets cleared by the user.
     const descInput = await screen.findByPlaceholderText("Hint / description");
+    expect((descInput as HTMLInputElement).value).toBe("Eating out");
+    fireEvent.change(descInput, { target: { value: "" } });
+
     const editingContainer = descInput.parentElement!;
     const saveBtn = Array.from(editingContainer.querySelectorAll("button")).find(
       (b) => b.textContent === "Save",
     );
     fireEvent.click(saveBtn!);
 
+    // Half 1: PUT carried the explicit null.
     await waitFor(() => expect(putCalls.length).toBe(1));
     expect(putCalls[0].body).toEqual({
       name: "Restaurants",
       description: null,
     });
+
+    // Half 2: post-reload UI renders the cleared value — the stale string
+    // is gone from the DOM.
+    await waitFor(() => {
+      expect(screen.queryByText("Eating out")).not.toBeInTheDocument();
+    });
+    // The sub-category row itself is still present.
+    expect(screen.getByText("Restaurants")).toBeInTheDocument();
   });
 });
