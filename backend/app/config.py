@@ -19,6 +19,32 @@ class Settings(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 10
 
+    # Pool recycle MUST stay under the App Platform → droplet VPC's
+    # idle-connection drop interval. Once a pooled connection sits
+    # idle longer than that, the kernel TCP socket on the App-side is
+    # dead but the pool doesn't know — pre_ping fires, blocks reading
+    # from the dead socket until the kernel TCP RTO (tens of seconds),
+    # and every endpoint that touches the DB hangs. 280 s is a
+    # conservative ceiling well under the typical 300 s NAT timeout.
+    db_pool_recycle: int = 280
+
+    # connect_timeout / read_timeout / write_timeout are passed
+    # through to ``aiomysql.connect()`` and apply at the socket
+    # layer. Without them the driver blocks until the kernel TCP
+    # RTO, which is the actual mechanism behind the 46 s "(canceled)"
+    # /refresh hang signature.
+    #
+    # connect_timeout sized for first-connect under cold-start
+    # network conditions where a transient VPC blip can extend the
+    # handshake by a few seconds — too tight breaks legitimate
+    # slow connects without buying back any user-visible latency.
+    # read_timeout / write_timeout apply per-packet, not per-query,
+    # so a legitimately long-running query that streams data is not
+    # affected — only stalls on a dead socket are bounded.
+    db_connect_timeout: int = 10
+    db_read_timeout: int = 30
+    db_write_timeout: int = 30
+
     # Auth
     jwt_secret_key: str = "change-me-generate-a-real-secret"
     jwt_access_token_expire_minutes: int = 15
@@ -47,6 +73,16 @@ class Settings(BaseSettings):
     # ``redis.client.retired`` event — that is a real ops signal worth
     # keeping on regardless.
     auth_debug_logging: bool = False
+
+    # Absolute ceiling on the wall-clock time the ``/auth/refresh``
+    # handler may spend before the route returns 503. The honest
+    # worst-case Redis budget for the deepest /refresh branch is
+    # ~22 s (see ``redis_client._build_auth_redis_client`` docstring);
+    # this ceiling sits above that so normal slow paths still
+    # complete, and below the frontend's 45 s reactive-recovery
+    # abort so a wedged handler always surfaces as a clean 503 the
+    # browser can retry on instead of a silent hang with no log.
+    refresh_handler_timeout_s: float = 25.0
 
     # Redis (optional — used for sessions/cache in production)
     redis_url: str = ""

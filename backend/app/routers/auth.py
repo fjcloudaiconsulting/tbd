@@ -1,3 +1,4 @@
+import asyncio
 import re
 import secrets
 import hmac as _hmac
@@ -1070,7 +1071,44 @@ async def refresh(
     onto a directly-returned RedirectResponse). For the session-expiry
     path we therefore return a JSONResponse directly so the
     delete-cookie header actually reaches the browser.
+
+    A route-local ``asyncio.wait_for`` bounds the entire handler at
+    ``settings.refresh_handler_timeout_s`` (default 25 s). If anything
+    in the call chain (Redis pool acquire, MySQL pool checkout,
+    pre_ping on a stale socket, etc.) hangs longer than that, the
+    handler returns 503 with ``SESSION_REDIS_UNAVAILABLE_DETAIL`` and
+    emits ``auth.refresh.handler_timeout`` so operators can correlate.
+    Without this bound, a wedged dependency blocks the request
+    silently until the frontend's reactive-recovery abort fires at
+    45 s with no matching backend access log — the smoking-gun
+    signature operators previously had no observability into.
     """
+    try:
+        return await asyncio.wait_for(
+            _refresh_impl(request, response, db, session_factory),
+            timeout=app_settings.refresh_handler_timeout_s,
+        )
+    except asyncio.TimeoutError:
+        _LOGGER.warning(
+            "auth.refresh.handler_timeout",
+            extra={"timeout_s": app_settings.refresh_handler_timeout_s},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        )
+
+
+async def _refresh_impl(
+    request: Request,
+    response: Response,
+    db: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    """Body of ``/auth/refresh``, extracted so the route handler can
+    apply a route-local ``asyncio.wait_for(...)`` ceiling. The full
+    spec lives on the public ``refresh()`` handler above; do not
+    duplicate it here."""
     refresh_tokens = _extract_refresh_cookies(request)
     try:
         user, payload, session_start, redis_state, ttl_seconds, session_row = await _validate_refresh_cookie(

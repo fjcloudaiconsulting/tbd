@@ -17,8 +17,10 @@ Behavior when `settings.redis_url` is empty:
 import asyncio
 import functools
 import json
-import logging
+import time as _time
 from typing import Any, Awaitable, Callable, TypeVar
+
+import structlog
 
 from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
@@ -30,7 +32,12 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.config import settings
 
-logger = logging.getLogger(__name__)
+# Use structlog so kwargs (op, reason, duration_ms, ...) and
+# contextvars (request_id) BOTH appear in the rendered JSON. Plain
+# ``logging.getLogger`` + ``extra={...}`` would silently drop the
+# kwargs under ``ProcessorFormatter`` — verified end-to-end by
+# ``tests/test_log_field_propagation.py``.
+logger = structlog.stdlib.get_logger(__name__)
 
 _client: Redis | None = None
 
@@ -112,9 +119,18 @@ def _normalize_transport_errors(fn: _F) -> _F:
     """
     @functools.wraps(fn)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        op_name = fn.__name__
+        start = _time.perf_counter()
+        _emit_breadcrumb("redis.call.start", op=op_name)
         try:
-            return await fn(*args, **kwargs)
-        except RedisError:
+            result = await fn(*args, **kwargs)
+        except RedisError as exc:
+            _emit_breadcrumb(
+                "redis.call.error",
+                op=op_name,
+                duration_ms=_elapsed_ms(start),
+                error_class=exc.__class__.__name__,
+            )
             # ResponseError, ConnectionError, TimeoutError, etc. — already
             # a sensible Redis-domain exception. Pass through so the
             # caller's ``except (RedisRequired, RedisError)`` runs AND so
@@ -126,6 +142,12 @@ def _normalize_transport_errors(fn: _F) -> _F:
             # through so the caller's existing handler logic runs.
             raise
         except OSError as exc:
+            _emit_breadcrumb(
+                "redis.call.error",
+                op=op_name,
+                duration_ms=_elapsed_ms(start),
+                error_class=exc.__class__.__name__,
+            )
             # Socket-level I/O. Translate to RedisConnectionError so the
             # router's existing 503 fallback kicks in — AND retire the
             # poisoned pool so the next call uses a fresh connection.
@@ -138,6 +160,12 @@ def _normalize_transport_errors(fn: _F) -> _F:
             ) from exc
         except RuntimeError as exc:
             if _looks_like_dead_transport(exc):
+                _emit_breadcrumb(
+                    "redis.call.error",
+                    op=op_name,
+                    duration_ms=_elapsed_ms(start),
+                    error_class=exc.__class__.__name__,
+                )
                 # Same as above: poisoned-pool retirement BEFORE the
                 # router's caller hits the next helper. Without this,
                 # the frontend's reactive retry would hit the same
@@ -155,8 +183,30 @@ def _normalize_transport_errors(fn: _F) -> _F:
             # Unrelated RuntimeError — almost certainly a real bug.
             # Let it escape so it surfaces as 500 with full traceback.
             raise
+        _emit_breadcrumb(
+            "redis.call.ok",
+            op=op_name,
+            duration_ms=_elapsed_ms(start),
+        )
+        return result
 
     return wrapper  # type: ignore[return-value]
+
+
+def _elapsed_ms(start: float) -> float:
+    """Wall-clock elapsed since ``start`` (from ``time.perf_counter``)
+    rounded to 0.1 ms — the resolution operators correlate at."""
+    return round((_time.perf_counter() - start) * 1000, 1)
+
+
+def _emit_breadcrumb(event: str, **fields: Any) -> None:
+    """Emit a ``redis.call.*`` breadcrumb when ``auth_debug_logging`` is
+    on. Gated so production stays quiet by default; flipping the env
+    var on during incident triage surfaces per-op start / ok / error
+    events that pin which Redis call a hung handler was inside."""
+    if not settings.auth_debug_logging:
+        return
+    logger.info(event, **fields)
 
 
 async def _retire_poisoned_client(*, reason: str) -> None:
@@ -184,10 +234,7 @@ async def _retire_poisoned_client(*, reason: str) -> None:
     if poisoned is None:
         return
     _client = None
-    logger.warning(
-        "redis.client.retired",
-        extra={"reason": reason},
-    )
+    logger.warning("redis.client.retired", reason=reason)
     try:
         await asyncio.wait_for(
             poisoned.aclose(), timeout=AUTH_REDIS_ACLOSE_TIMEOUT_S
@@ -199,7 +246,7 @@ async def _retire_poisoned_client(*, reason: str) -> None:
         # one in production logs.
         logger.warning(
             "redis.client.retired.aclose_timeout",
-            extra={"timeout_s": AUTH_REDIS_ACLOSE_TIMEOUT_S},
+            timeout_s=AUTH_REDIS_ACLOSE_TIMEOUT_S,
         )
     except Exception:  # noqa: BLE001 — best-effort cleanup
         # We've already replaced the singleton; the OS will reclaim the

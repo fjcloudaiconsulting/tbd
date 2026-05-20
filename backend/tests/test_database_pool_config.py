@@ -81,7 +81,9 @@ def test_engine_is_constructed_with_settings_pool_values(monkeypatch):
         assert captured["kwargs"]["max_overflow"] == 13
         # Sanity: existing safety params still on the engine.
         assert captured["kwargs"]["pool_pre_ping"] is True
-        assert captured["kwargs"]["pool_recycle"] == 1800
+        # pool_recycle is now sourced from settings.db_pool_recycle —
+        # see test_db_engine_config.py for the NAT-idle-ceiling rationale.
+        assert captured["kwargs"]["pool_recycle"] == app_config.settings.db_pool_recycle
     finally:
         # Restore module state for any later tests in the run.
         importlib.reload(app_config)
