@@ -10,6 +10,9 @@ handler never reached the response stage.
 
 from __future__ import annotations
 
+import inspect
+
+import aiomysql
 import pytest
 
 import app.database as database
@@ -53,19 +56,13 @@ def test_connect_timeout_has_sane_default() -> None:
 
 
 def test_connect_args_only_uses_aiomysql_supported_kwargs() -> None:
-    """Hard guard against the 2026-05-20 14:22 UTC production incident:
-    PR #321's first commit added ``read_timeout`` and ``write_timeout``
-    to ``connect_args``, but aiomysql 0.2.0 (the version pinned in
-    requirements.txt) does NOT accept them — every DB-touching
-    request 500'd with ``TypeError: connect() got an unexpected
-    keyword argument 'read_timeout'``. CI tests passed because the
-    args dict construction was tested in isolation; aiomysql was
-    never asked to accept it. This test closes that gap by
-    introspecting aiomysql's real ``connect()`` signature and
-    asserting every key we pass is in it."""
-    import inspect
-    import aiomysql
-
+    """Every key in ``connect_args`` must be an accepted kwarg of the
+    installed ``aiomysql.connect()``. Without this guard, a typo or a
+    speculatively-added timeout kwarg passes CI (the dict construction
+    is tested in isolation) but blows up on first DB request in
+    production with ``TypeError: connect() got an unexpected keyword
+    argument '...'``. Introspecting the real signature catches the
+    mismatch at CI time."""
     supported = set(inspect.signature(aiomysql.connect).parameters)
     args = database._build_connect_args()
     unsupported = set(args) - supported
