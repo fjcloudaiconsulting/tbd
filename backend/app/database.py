@@ -17,18 +17,19 @@ def _build_connect_args() -> dict:
     contains a DO-style host (port 25060), enable SSL with server verification
     disabled (DO uses self-signed certs with their own CA).
 
-    The socket-layer timeouts (``connect_timeout`` / ``read_timeout`` /
-    ``write_timeout``) bound how long aiomysql will block on a dead
-    socket before raising. Without them, a stale pooled connection
-    whose peer-side has been silently dropped by the VPC NAT causes
-    ``pool_pre_ping``'s ping to wait for the kernel TCP RTO (tens of
-    seconds), which is the actual mechanism behind the silent 46 s
-    /refresh handler hang.
+    ``connect_timeout`` bounds how long aiomysql will block while
+    establishing a new connection — important for cold-start and
+    pool-grow paths where a network blip would otherwise hang the
+    handler. Per-operation read/write timeouts are NOT set here:
+    aiomysql 0.2.0 (the version pinned in requirements.txt) does
+    not accept ``read_timeout`` / ``write_timeout`` kwargs — those
+    were added in 0.2.1+. The stale-socket-hang class is therefore
+    bounded at two other layers: ``pool_recycle`` (rotates pooled
+    connections before the VPC NAT can drop them) and the
+    route-local ``asyncio.wait_for`` on ``/auth/refresh``.
     """
     args: dict = {
         "connect_timeout": settings.db_connect_timeout,
-        "read_timeout": settings.db_read_timeout,
-        "write_timeout": settings.db_write_timeout,
     }
     if ":25060" in settings.database_url:
         ctx = ssl.create_default_context()
