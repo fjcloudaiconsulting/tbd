@@ -524,4 +524,163 @@ describe("CategoriesPage -C2 batch delete", () => {
     expect(banner.textContent).toMatch(/reload failed/i);
     expect(screen.getByTestId("batch-delete-modal")).toBeInTheDocument();
   });
+
+  it("sub-category edit form exposes a description field and PUTs it", async () => {
+    const putCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    setupApi({
+      "/api/v1/categories/101": (init) => {
+        if (init?.method === "PUT") {
+          putCalls.push({
+            url: "/api/v1/categories/101",
+            body: JSON.parse((init.body as string) ?? "{}"),
+          });
+          return {};
+        }
+        return {};
+      },
+    });
+
+    render(<CategoriesPage />);
+    await waitFor(() => expect(screen.getByText("Restaurants")).toBeInTheDocument());
+
+    const subActions = screen.getByTestId("sub-actions-101");
+    const editBtn = Array.from(subActions.querySelectorAll("button")).find(
+      (b) => b.textContent === "Edit",
+    );
+    expect(editBtn).toBeTruthy();
+    fireEvent.click(editBtn!);
+
+    // Description input must appear alongside the name input.
+    const descInput = await screen.findByPlaceholderText("Hint / description");
+    expect(descInput).toBeInTheDocument();
+    fireEvent.change(descInput, { target: { value: "Eating out" } });
+
+    // Click Save (button next to the now-visible inputs).
+    const editingContainer = descInput.parentElement!;
+    const saveBtn = Array.from(editingContainer.querySelectorAll("button")).find(
+      (b) => b.textContent === "Save",
+    );
+    expect(saveBtn).toBeTruthy();
+    fireEvent.click(saveBtn!);
+
+    await waitFor(() => expect(putCalls.length).toBe(1));
+    expect(putCalls[0].body).toEqual({
+      name: "Restaurants",
+      description: "Eating out",
+    });
+  });
+
+  it("editing a top-level category PUTs description (parity with sub-category)", async () => {
+    const putCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    setupApi({
+      "/api/v1/categories/100": (init) => {
+        if (init?.method === "PUT") {
+          putCalls.push({
+            url: "/api/v1/categories/100",
+            body: JSON.parse((init.body as string) ?? "{}"),
+          });
+          return {};
+        }
+        return {};
+      },
+    });
+
+    render(<CategoriesPage />);
+    await waitFor(() => expect(screen.getByText("Food")).toBeInTheDocument());
+
+    const masterActions = screen.getByTestId("master-actions-100");
+    const editBtn = Array.from(masterActions.querySelectorAll("button")).find(
+      (b) => b.textContent === "Edit",
+    );
+    expect(editBtn).toBeTruthy();
+    fireEvent.click(editBtn!);
+
+    const descInput = await screen.findByPlaceholderText("Hint / description");
+    fireEvent.change(descInput, { target: { value: "All food spending" } });
+
+    const editingContainer = descInput.parentElement!;
+    const saveBtn = Array.from(editingContainer.querySelectorAll("button")).find(
+      (b) => b.textContent === "Save",
+    );
+    fireEvent.click(saveBtn!);
+
+    await waitFor(() => expect(putCalls.length).toBe(1));
+    expect(putCalls[0].body).toEqual({
+      name: "Food",
+      description: "All food spending",
+    });
+  });
+
+  it("editing with empty description sends description: null AND the cleared value renders post-save", async () => {
+    // The empty-desc -> null contract has two halves:
+    //   1. PUT body must carry `description: null` (so the backend's
+    //      Pydantic v2 `model_fields_set` clears the column).
+    //   2. After the post-save reload, the UI must reflect the cleared
+    //      value, not the pre-save stale string.
+    // Both halves matter — only asserting (1) lets the regression
+    // re-emerge if the reconciliation path ever drops the new row.
+    const putCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    let descriptionCleared = false;
+    const seededCategories = CATEGORIES.map((c) =>
+      c.id === 101 ? { ...c, description: "Eating out" } : c,
+    );
+    vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
+      if (url === "/api/v1/categories" && (!init || init.method === undefined)) {
+        if (descriptionCleared) {
+          return Promise.resolve(
+            seededCategories.map((c) =>
+              c.id === 101 ? { ...c, description: null } : c,
+            ),
+          );
+        }
+        return Promise.resolve(seededCategories);
+      }
+      if (url === "/api/v1/categories/101" && init?.method === "PUT") {
+        const body = JSON.parse((init.body as string) ?? "{}");
+        putCalls.push({ url, body });
+        if (body.description === null) {
+          descriptionCleared = true;
+        }
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
+    }) as never);
+
+    render(<CategoriesPage />);
+    // Pre-save: the stale description is visible on the row.
+    expect(await screen.findByText("Eating out")).toBeInTheDocument();
+
+    const subActions = screen.getByTestId("sub-actions-101");
+    const editBtn = Array.from(subActions.querySelectorAll("button")).find(
+      (b) => b.textContent === "Edit",
+    );
+    fireEvent.click(editBtn!);
+
+    // Description input opens pre-populated with the existing value, then
+    // gets cleared by the user.
+    const descInput = await screen.findByPlaceholderText("Hint / description");
+    expect((descInput as HTMLInputElement).value).toBe("Eating out");
+    fireEvent.change(descInput, { target: { value: "" } });
+
+    const editingContainer = descInput.parentElement!;
+    const saveBtn = Array.from(editingContainer.querySelectorAll("button")).find(
+      (b) => b.textContent === "Save",
+    );
+    fireEvent.click(saveBtn!);
+
+    // Half 1: PUT carried the explicit null.
+    await waitFor(() => expect(putCalls.length).toBe(1));
+    expect(putCalls[0].body).toEqual({
+      name: "Restaurants",
+      description: null,
+    });
+
+    // Half 2: post-reload UI renders the cleared value — the stale string
+    // is gone from the DOM.
+    await waitFor(() => {
+      expect(screen.queryByText("Eating out")).not.toBeInTheDocument();
+    });
+    // The sub-category row itself is still present.
+    expect(screen.getByText("Restaurants")).toBeInTheDocument();
+  });
 });
