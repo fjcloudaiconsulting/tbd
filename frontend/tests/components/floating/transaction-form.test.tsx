@@ -33,6 +33,21 @@ const CAT = {
   transaction_count: 0,
 };
 
+// Description autocomplete fires a GET to
+// /api/v1/transactions/suggestions/descriptions whenever the user types
+// >= 2 chars. The tests below mock apiFetch generically with {} which
+// the autocomplete safely falls back to (`data.suggestions ?? []`).
+// Helpers focus assertions on the POST /api/v1/transactions call so
+// debounced suggestion fetches don't affect call counts.
+type Call = Parameters<typeof apiFetch>;
+function postCalls(mock: ReturnType<typeof vi.mocked<typeof apiFetch>>): Call[] {
+  return mock.mock.calls.filter(
+    (call) =>
+      call[0] === "/api/v1/transactions" &&
+      (call[1] as { method?: string } | undefined)?.method === "POST",
+  ) as Call[];
+}
+
 describe("TransactionForm", () => {
   it("renders the empty state when there are no accounts or categories", () => {
     render(
@@ -78,8 +93,9 @@ describe("TransactionForm", () => {
       expect(onSaved).toHaveBeenCalledTimes(1);
     });
     expect(onTransactionAdded).toHaveBeenCalledTimes(1);
-    expect(apiFetchMock).toHaveBeenCalledTimes(1);
-    const [path, options] = apiFetchMock.mock.calls[0];
+    const posts = postCalls(apiFetchMock);
+    expect(posts).toHaveLength(1);
+    const [path, options] = posts[0];
     expect(path).toBe("/api/v1/transactions");
     expect(options?.method).toBe("POST");
     const body = JSON.parse(String(options?.body));
@@ -121,7 +137,7 @@ describe("TransactionForm", () => {
     });
 
     await waitFor(() => {
-      expect(apiFetchMock).toHaveBeenCalledTimes(1);
+      expect(postCalls(apiFetchMock)).toHaveLength(1);
     });
     // Panel must stay open: onSaved must NOT have fired.
     expect(onSaved).not.toHaveBeenCalled();
@@ -233,7 +249,7 @@ describe("TransactionForm", () => {
     });
 
     await waitFor(() => {
-      expect(apiFetchMock).toHaveBeenCalledTimes(1);
+      expect(postCalls(apiFetchMock)).toHaveLength(1);
     });
     expect(onTransactionAdded).toHaveBeenCalledTimes(1);
     // Panel stays open.
@@ -375,9 +391,9 @@ describe("TransactionForm", () => {
       });
 
       await waitFor(() => {
-        expect(apiFetchMock).toHaveBeenCalledTimes(1);
+        expect(postCalls(apiFetchMock)).toHaveLength(1);
       });
-      const [, options] = apiFetchMock.mock.calls[0];
+      const [, options] = postCalls(apiFetchMock)[0];
       const body = JSON.parse(String(options?.body));
       expect(body.status).toBe("pending");
       expect(body.settled_date).toBe("2026-05-15");
@@ -412,9 +428,9 @@ describe("TransactionForm", () => {
       });
 
       await waitFor(() => {
-        expect(apiFetchMock).toHaveBeenCalledTimes(1);
+        expect(postCalls(apiFetchMock)).toHaveLength(1);
       });
-      const [, options] = apiFetchMock.mock.calls[0];
+      const [, options] = postCalls(apiFetchMock)[0];
       const body = JSON.parse(String(options?.body));
       expect(body.status).toBe("settled");
       expect(body).not.toHaveProperty("settled_date");
@@ -450,9 +466,9 @@ describe("TransactionForm", () => {
       });
 
       await waitFor(() => {
-        expect(apiFetchMock).toHaveBeenCalledTimes(1);
+        expect(postCalls(apiFetchMock)).toHaveLength(1);
       });
-      const [, options] = apiFetchMock.mock.calls[0];
+      const [, options] = postCalls(apiFetchMock)[0];
       const body = JSON.parse(String(options?.body));
       expect(body.status).toBe("pending");
       expect(body).not.toHaveProperty("settled_date");
@@ -492,7 +508,7 @@ describe("TransactionForm", () => {
       });
 
       await waitFor(() => {
-        expect(apiFetchMock).toHaveBeenCalledTimes(1);
+        expect(postCalls(apiFetchMock)).toHaveLength(1);
       });
       // The settled-date control's render is gated on status==="pending".
       // clearForm() leaves status alone (it re-derives from the account
@@ -507,6 +523,112 @@ describe("TransactionForm", () => {
         /expected settlement date/i,
       ) as HTMLInputElement;
       expect(settledDateAfter.value).toBe("");
+    });
+  });
+
+  describe("description autocomplete wiring", () => {
+    // Regression: the AppShell quick-add panel rendered a plain <input>
+    // instead of DescriptionAutocomplete, so typing into Description
+    // never fetched suggestions. Operator hit this on the daily-driver
+    // path. These tests pin the wiring (combobox role + fetch fire +
+    // category auto-fill on pick) so it can't silently regress again.
+
+    it("renders the Description field as a combobox (autocomplete is wired)", () => {
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockResolvedValue({} as never);
+
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      const desc = screen.getByLabelText("Description");
+      expect(desc.getAttribute("role")).toBe("combobox");
+      expect(desc.getAttribute("aria-autocomplete")).toBe("list");
+    });
+
+    it("fetches description suggestions when the user types >= 2 chars", async () => {
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path.startsWith("/api/v1/transactions/suggestions/descriptions")) {
+          return Promise.resolve({ suggestions: [] }) as never;
+        }
+        return Promise.resolve({}) as never;
+      });
+
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "HBO" },
+      });
+
+      await waitFor(() => {
+        const suggestionCalls = apiFetchMock.mock.calls.filter((call) =>
+          String(call[0]).startsWith(
+            "/api/v1/transactions/suggestions/descriptions",
+          ),
+        );
+        expect(suggestionCalls.length).toBeGreaterThanOrEqual(1);
+        const url = new URL(String(suggestionCalls[0][0]), "http://localhost");
+        expect(url.searchParams.get("q")).toBe("HBO");
+        expect(url.searchParams.get("type")).toBe("expense");
+      });
+    });
+
+    it("auto-fills the category from the picked suggestion when category is empty", async () => {
+      const SUGGESTION = {
+        description: "HBO Max",
+        category_id: CAT.id,
+        category_name: CAT.name,
+        use_count: 4,
+        last_used: "2026-05-10",
+      };
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path.startsWith("/api/v1/transactions/suggestions/descriptions")) {
+          return Promise.resolve({ suggestions: [SUGGESTION] }) as never;
+        }
+        return Promise.resolve({}) as never;
+      });
+
+      // No defaultCategoryId so the user starts with an empty category.
+      render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT]}
+          onSaved={() => {}}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "HB" },
+      });
+
+      const option = await screen.findByRole("option", { name: /HBO Max/i });
+      fireEvent.mouseDown(option);
+
+      // Picking the suggestion fills the description AND, because the
+      // category was empty, pre-fills the category from the most-common
+      // pair. CategorySelect renders the chosen category's name once
+      // selected.
+      await waitFor(() => {
+        const desc = screen.getByLabelText("Description") as HTMLInputElement;
+        expect(desc.value).toBe("HBO Max");
+      });
     });
   });
 });
