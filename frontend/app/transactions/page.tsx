@@ -407,39 +407,59 @@ function TransactionsPageContent() {
           }),
         });
       } else {
-        const created = await apiFetch<Transaction>("/api/v1/transactions", {
-          method: "POST",
-          body: JSON.stringify({
-            account_id: formAccountId,
-            category_id: formCategoryId,
-            description: formDescription,
-            amount: formAmount,
-            type: formType,
-            status: formStatus,
-            date: formDate,
-            // settled_date only travels on pending creates; SETTLED rows
-            // get their settled_date stamped server-side from `date`.
-            ...(formStatus === "pending" && formSettledDate
-              ? { settled_date: formSettledDate }
-              : {}),
-          }),
-        });
-        // PR-Tags-A: attach the chip-managed tag set as a separate PUT.
-        // Backend auto-creates any tags the org has not used before and
-        // enforces MAX_TAGS_PER_TRANSACTION; the chip input also caps
-        // client-side.
-        if (formTags.length > 0 && created?.id) {
-          await apiFetch(`/api/v1/transactions/${created.id}/tags`, {
-            method: "PUT",
-            body: JSON.stringify({ tag_names: formTags }),
+        // Step 1: POST the base transaction. Hard-failures here keep
+        // the form open with the user's input intact for retry.
+        let created: Transaction | undefined;
+        try {
+          created = await apiFetch<Transaction>("/api/v1/transactions", {
+            method: "POST",
+            body: JSON.stringify({
+              account_id: formAccountId,
+              category_id: formCategoryId,
+              description: formDescription,
+              amount: formAmount,
+              type: formType,
+              status: formStatus,
+              date: formDate,
+              // settled_date only travels on pending creates; SETTLED rows
+              // get their settled_date stamped server-side from `date`.
+              ...(formStatus === "pending" && formSettledDate
+                ? { settled_date: formSettledDate }
+                : {}),
+            }),
           });
+        } catch (err) {
+          setError(extractErrorMessage(err));
+          return;
+        }
+        // Step 2: PUT /tags. The transaction was already saved, so a
+        // failure here is a PARTIAL SUCCESS — we must not leave the
+        // form in a state that re-POSTs the base transaction on the
+        // next click or we double-create. Surface a non-blocking
+        // warning via setError (same channel the promote-to-recurring
+        // partial-success uses), then fall through to the form-reset
+        // path so the user gets a clean slate.
+        let tagWarning: string | null = null;
+        if (formTags.length > 0 && created?.id) {
+          try {
+            await apiFetch(`/api/v1/transactions/${created.id}/tags`, {
+              method: "PUT",
+              body: JSON.stringify({ tag_names: formTags }),
+            });
+          } catch (err) {
+            tagWarning = `Transaction saved. Tags couldn't be applied: ${extractErrorMessage(
+              err,
+            )}. Edit the transaction to add them.`;
+          }
         }
         // Promote the new tx to recurring if repeat is enabled. Using
         // promote-to-recurring (vs a separate POST /recurring) sets
         // tx.recurring_id on the source transaction so a subsequent edit
         // shows the "Recurring" chip — preventing the duplicate-template
         // bug where re-toggling "Make recurring" on edit would create a
-        // second template because the source row stayed unlinked.
+        // second template because the source row stayed unlinked. A
+        // promote failure still bubbles to the outer catch (matches
+        // pre-PR behavior); this PR only changes the tag-attach arm.
         if (formRecurring && formMode === "transaction" && created?.id) {
           // next_due_date must be today-or-later (server-side guard).
           // The Date input is already constrained to today via min=,
@@ -458,6 +478,9 @@ function TransactionsPageContent() {
               }),
             },
           );
+        }
+        if (tagWarning) {
+          setError(tagWarning);
         }
       }
       setFormDescription("");

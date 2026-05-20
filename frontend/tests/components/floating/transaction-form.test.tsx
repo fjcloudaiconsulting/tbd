@@ -631,4 +631,75 @@ describe("TransactionForm", () => {
       });
     });
   });
+
+  it("treats PUT /tags failure as partial success: no duplicate POST on retry", async () => {
+    // Regression for PR #326 review: the two-step write (POST then
+    // PUT /tags) must not re-POST the base transaction when the tag
+    // attach fails. Previously a tag-PUT failure left the form open
+    // with all fields intact, and a second Save click double-created.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+
+    const onSaved = vi.fn();
+    const onTransactionAdded = vi.fn();
+    const onWarning = vi.fn();
+
+    // 201 for the base POST; 500 for PUT /tags.
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      if (url === "/api/v1/transactions/42/tags") {
+        throw new Error("tag attach failed");
+      }
+      return {} as never;
+    });
+
+    const { container } = render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={onSaved}
+        onTransactionAdded={onTransactionAdded}
+        onWarning={onWarning}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Groceries Aldi" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "12.34" },
+    });
+    // Add a tag chip so the PUT /tags arm fires.
+    const tagInput = container.querySelector(
+      "#fab-tx-tags",
+    ) as HTMLInputElement;
+    fireEvent.change(tagInput, { target: { value: "rent" } });
+    fireEvent.keyDown(tagInput, { key: "Enter" });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    // (1) Panel closed via onSaved, list refresh fired via
+    // onTransactionAdded, warning surfaced via onWarning.
+    await waitFor(() => {
+      expect(onSaved).toHaveBeenCalledTimes(1);
+    });
+    expect(onTransactionAdded).toHaveBeenCalledTimes(1);
+    expect(onWarning).toHaveBeenCalledTimes(1);
+    expect(onWarning.mock.calls[0][0]).toMatch(/Transaction saved/);
+    expect(onWarning.mock.calls[0][0]).toMatch(/tag attach failed/);
+
+    // (2) Exactly ONE base POST. The whole point of this fix is no
+    // duplicate base transaction on the tag-failure path.
+    const basePosts = apiFetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/v1/transactions" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(basePosts).toHaveLength(1);
+  });
 });

@@ -189,4 +189,85 @@ describe("TagChipInput", () => {
     // primary signal. Typing into a disabled input is a no-op.
     expect(input.disabled).toBe(true);
   });
+
+  it("keeps chip remove buttons reachable + functional at MAX_TAGS (a11y regression)", async () => {
+    // Regression for PR #326 review: at cap, the input is disabled
+    // AND the chip x buttons must remain in the natural tab order so
+    // a keyboard-only user can free a slot. tabIndex={-1} on the
+    // remove buttons would have created a WCAG keyboard trap (no way
+    // to remove a tag once the cap was hit). This test walks the
+    // full recovery path: focus a chip x, press Enter to remove,
+    // then add a new chip back to the cap.
+    const fetcher: Fetcher = vi.fn().mockResolvedValue([]);
+    const onChange = vi.fn();
+    const initial = Array.from(
+      { length: MAX_TAGS_PER_TRANSACTION },
+      (_, i) => `tag${i}`,
+    );
+
+    function ControlledHarness() {
+      const [tags, setTags] = useState<string[]>(initial);
+      return (
+        <TagChipInput
+          id="cap-test"
+          value={tags}
+          onChange={(next) => {
+            onChange(next);
+            setTags(next);
+          }}
+          fetcher={fetcher}
+          debounceMs={10}
+        />
+      );
+    }
+
+    render(<ControlledHarness />);
+
+    // (1) Input is disabled at the cap.
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    expect(input.disabled).toBe(true);
+
+    // (2) Every chip x must be tabbable. tabIndex < 0 on any of them
+    // would mean Tab cannot reach it — that is the bug this test
+    // guards against.
+    const removeButtons = screen.getAllByRole("button", {
+      name: /^Remove tag /,
+    });
+    expect(removeButtons).toHaveLength(MAX_TAGS_PER_TRANSACTION);
+    for (const btn of removeButtons) {
+      expect(btn.tabIndex).toBeGreaterThanOrEqual(0);
+      expect((btn as HTMLButtonElement).disabled).toBe(false);
+    }
+
+    // (3) Focus the first chip x as a keyboard user would (in a real
+    // browser, Shift+Tab from the disabled input lands here; jsdom
+    // does not run the Tab-walk algorithm so we focus directly).
+    const firstRemove = removeButtons[0];
+    await act(async () => {
+      firstRemove.focus();
+    });
+    expect(document.activeElement).toBe(firstRemove);
+
+    // (4) Press Enter on the focused x. The component must remove
+    // the chip and call onChange with the cap-1 list.
+    await act(async () => {
+      fireEvent.keyDown(firstRemove, { key: "Enter" });
+    });
+    expect(onChange).toHaveBeenCalled();
+    const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(lastCall).toHaveLength(MAX_TAGS_PER_TRANSACTION - 1);
+    expect(lastCall).not.toContain("tag0");
+
+    // (5) Recovery: the input is now re-enabled. Typing a new tag +
+    // Enter commits a chip back up to the cap.
+    const refreshedInput = screen.getByRole("combobox") as HTMLInputElement;
+    expect(refreshedInput.disabled).toBe(false);
+    await act(async () => {
+      fireEvent.change(refreshedInput, { target: { value: "freshtag" } });
+      fireEvent.keyDown(refreshedInput, { key: "Enter" });
+    });
+    const finalCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(finalCall).toContain("freshtag");
+    expect(finalCall).toHaveLength(MAX_TAGS_PER_TRANSACTION);
+  });
 });

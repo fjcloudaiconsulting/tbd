@@ -335,10 +335,28 @@ export default function TagChipInput({
                 e.stopPropagation();
                 removeChip(name);
               }}
+              onKeyDown={(e) => {
+                // Enter / Space remove the chip from keyboard. The
+                // implicit Enter behavior on <button> already does this
+                // via click, but Space inside a button only fires on
+                // keyup — making it explicit keeps the keyboard path
+                // identical for both keys.
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  removeChip(name);
+                }
+              }}
               disabled={disabled}
               aria-label={`Remove tag ${name}`}
-              className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-text-muted hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-              tabIndex={-1}
+              // Chip × buttons are part of the natural tab order so
+              // keyboard-only users can free a slot when the input is
+              // disabled at MAX_TAGS_PER_TRANSACTION. DOM order is
+              // chips-before-input, so forward Tab from the previous
+              // field walks chips → input → next field, and Shift+Tab
+              // from the input reaches the last chip's × in reverse —
+              // matching the Gmail / GitHub label-picker convention
+              // the operator called out.
+              className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-text-muted hover:text-danger focus:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
             >
               <span aria-hidden="true">&times;</span>
             </button>

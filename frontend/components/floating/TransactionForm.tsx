@@ -66,6 +66,14 @@ export interface TransactionFormProps {
    * Pages can use this to refresh transaction lists.
    */
   onTransactionAdded?: () => void;
+  /**
+   * Called when the transaction was saved but a follow-up sub-call
+   * (e.g. PUT /tags) failed. The base transaction IS committed; the
+   * caller should surface this as a non-blocking warning instead of
+   * a hard error so the user does not retry and double-create. See
+   * the partial-success handling in submit() below.
+   */
+  onWarning?: (msg: string) => void;
 }
 
 export default function TransactionForm({
@@ -76,6 +84,7 @@ export default function TransactionForm({
   onSaved,
   onCategoryCreated,
   onTransactionAdded,
+  onWarning,
 }: TransactionFormProps) {
   const activeAccounts = accounts.filter((a) => a.is_active);
   const fallbackAccount = activeAccounts.find((a) => a.is_default) ?? activeAccounts[0];
@@ -172,8 +181,11 @@ export default function TransactionForm({
     }
     setSubmitting(true);
     setErrMsg("");
+    // Step 1: POST the base transaction. Failures here keep the form
+    // open with the user's input intact so they can correct + retry.
+    let created: Transaction | undefined;
     try {
-      const created = await apiFetch<Transaction>("/api/v1/transactions", {
+      created = await apiFetch<Transaction>("/api/v1/transactions", {
         method: "POST",
         body: JSON.stringify({
           account_id: accountId,
@@ -191,29 +203,45 @@ export default function TransactionForm({
             : {}),
         }),
       });
-      // Attach tags as a separate PUT now that the transaction exists.
-      // Backend auto-creates any unknown tags and enforces the
-      // MAX_TAGS_PER_TRANSACTION cap (defense in depth — client also
-      // caps in TagChipInput).
-      if (tags.length > 0 && created?.id) {
+    } catch (err) {
+      setErrMsg(extractErrorMessage(err));
+      setSubmitting(false);
+      return;
+    }
+    // Step 2: PUT /tags. The transaction was already saved, so any
+    // failure here is a PARTIAL SUCCESS — we must NOT leave the form
+    // in a state that re-POSTs the base transaction on the next
+    // click, or we double-create. Close + reset the form and surface
+    // a non-blocking warning via onWarning so the parent can show a
+    // "Transaction saved, tags couldn't be applied" banner.
+    let tagWarning: string | null = null;
+    if (tags.length > 0 && created?.id) {
+      try {
         await apiFetch(`/api/v1/transactions/${created.id}/tags`, {
           method: "PUT",
           body: JSON.stringify({ tag_names: tags }),
         });
+      } catch (err) {
+        tagWarning = `Transaction saved. Tags couldn't be applied: ${extractErrorMessage(
+          err,
+        )}. Edit the transaction to add them.`;
       }
-      onTransactionAdded?.();
-      if (addAnother) {
-        clearForm();
-        // Refocus the description input so the user can keep typing.
-        window.setTimeout(() => focusDescription(), 0);
-      } else {
-        onSaved();
-      }
-    } catch (err) {
-      setErrMsg(extractErrorMessage(err));
-    } finally {
-      setSubmitting(false);
     }
+    onTransactionAdded?.();
+    if (tagWarning) {
+      onWarning?.(tagWarning);
+    }
+    if (addAnother) {
+      clearForm();
+      // Refocus the description input via the DescriptionAutocomplete
+      // component's exposed focus path (id-based lookup; the component
+      // owns its own input element). Preserves the post-PR-#325 focus
+      // contract instead of the pre-#325 descRef pattern.
+      window.setTimeout(() => focusDescription(), 0);
+    } else {
+      onSaved();
+    }
+    setSubmitting(false);
   }
 
   function onSubmit(e: FormEvent) {
