@@ -139,8 +139,16 @@ class Transaction(Base):
 
     account: Mapped["Account"] = relationship()
     category: Mapped["Category"] = relationship(back_populates="transactions")
+    # post_update=True breaks the topological-sort cycle when both halves of a
+    # transfer pair (A.linked_transaction_id -> B, B.linked_transaction_id -> A)
+    # are queued for delete in the same flush. SQLAlchemy emits an extra UPDATE
+    # to clear the FK before issuing the DELETEs, sidestepping
+    # CircularDependencyError. The DB-level ondelete="SET NULL" still applies
+    # for direct-SQL deletes that bypass the ORM unit of work.
     linked_transaction: Mapped[Optional["Transaction"]] = relationship(
-        foreign_keys=[linked_transaction_id], remote_side="Transaction.id"
+        foreign_keys=[linked_transaction_id],
+        remote_side="Transaction.id",
+        post_update=True,
     )
     # PR-Tags-A: many-to-many to Tag through transaction_tags. Service
     # callers eager-load via selectinload(Transaction.tags) on list /
