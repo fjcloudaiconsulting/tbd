@@ -85,6 +85,7 @@ export default function CategoriesPage() {
   // Edit
   const [editingCatId, setEditingCatId] = useState<number | null>(null);
   const [editCatName, setEditCatName] = useState("");
+  const [editCatDesc, setEditCatDesc] = useState("");
 
   // Add subcategory form
   const [addingToMaster, setAddingToMaster] = useState<number | null>(null);
@@ -267,7 +268,10 @@ export default function CategoriesPage() {
     try {
       await apiFetch(`/api/v1/categories/${id}`, {
         method: "PUT",
-        body: JSON.stringify({ name: editCatName }),
+        body: JSON.stringify({
+          name: editCatName,
+          description: editCatDesc.trim() ? editCatDesc.trim() : null,
+        }),
       });
       setEditingCatId(null);
       await reload();
@@ -553,8 +557,10 @@ export default function CategoriesPage() {
                   <div className="flex min-w-0 w-full items-center gap-2.5 sm:w-auto sm:flex-1">
                     <Icon className="h-4 w-4 flex-shrink-0 text-text-muted" />
                     {editingCatId === master.id ? (
-                      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                      <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                         <input type="text" value={editCatName} onChange={(e) => setEditCatName(e.target.value)} className={`min-w-0 flex-1 text-sm ${input}`} autoFocus
+                          onKeyDown={(e) => { if (e.key === "Enter") handleEditCat(master.id); if (e.key === "Escape") setEditingCatId(null); }} />
+                        <input type="text" placeholder="Hint / description" value={editCatDesc} onChange={(e) => setEditCatDesc(e.target.value)} className={`min-w-0 flex-1 text-sm ${input}`}
                           onKeyDown={(e) => { if (e.key === "Enter") handleEditCat(master.id); if (e.key === "Escape") setEditingCatId(null); }} />
                         <button onClick={() => handleEditCat(master.id)} className="inline-flex min-h-[44px] items-center px-1 text-xs text-accent md:min-h-0">Save</button>
                         <button onClick={() => setEditingCatId(null)} className="inline-flex min-h-[44px] items-center px-1 text-xs text-text-muted md:min-h-0">Cancel</button>
@@ -574,7 +580,7 @@ export default function CategoriesPage() {
                     >
                       {addingToMaster === master.id ? "Cancel" : "+ Add Sub"}
                     </button>
-                    <button onClick={() => { setEditingCatId(master.id); setEditCatName(master.name); }} className="inline-flex min-h-[44px] items-center px-2 text-xs text-text-muted hover:text-accent md:min-h-0 md:px-0">Edit</button>
+                    <button onClick={() => { setEditingCatId(master.id); setEditCatName(master.name); setEditCatDesc(master.description ?? ""); }} className="inline-flex min-h-[44px] items-center px-2 text-xs text-text-muted hover:text-accent md:min-h-0 md:px-0">Edit</button>
                     <button onClick={() => setConfirmDeleteId(master.id)} aria-label={`Delete ${master.name}`} className="inline-flex min-h-[44px] items-center px-2 text-xs text-text-muted hover:text-danger md:min-h-0 md:px-0">Delete</button>
                   </div>
                 </div>
@@ -621,8 +627,10 @@ export default function CategoriesPage() {
                             />
                           )}
                           {editingCatId === sub.id ? (
-                            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                            <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                               <input type="text" value={editCatName} onChange={(e) => setEditCatName(e.target.value)} className={`min-w-0 flex-1 text-sm ${input}`} autoFocus
+                                onKeyDown={(e) => { if (e.key === "Enter") handleEditCat(sub.id); if (e.key === "Escape") setEditingCatId(null); }} />
+                              <input type="text" placeholder="Hint / description" value={editCatDesc} onChange={(e) => setEditCatDesc(e.target.value)} className={`min-w-0 flex-1 text-sm ${input}`}
                                 onKeyDown={(e) => { if (e.key === "Enter") handleEditCat(sub.id); if (e.key === "Escape") setEditingCatId(null); }} />
                               <button onClick={() => handleEditCat(sub.id)} className="inline-flex min-h-[44px] items-center px-2 text-xs text-accent md:min-h-0 md:px-0">Save</button>
                               <button onClick={() => setEditingCatId(null)} className="inline-flex min-h-[44px] items-center px-2 text-xs text-text-muted md:min-h-0 md:px-0">Cancel</button>
@@ -635,7 +643,7 @@ export default function CategoriesPage() {
                                 <span className="ml-2 text-xs text-text-muted" title={`${sub.transaction_count} transaction(s)`}>{sub.transaction_count}</span>
                               </div>
                               <div data-testid={`sub-actions-${sub.id}`} className="flex flex-wrap gap-1 sm:gap-2">
-                                <button onClick={() => { setEditingCatId(sub.id); setEditCatName(sub.name); }} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center px-2 text-xs text-text-muted hover:text-accent md:min-h-0 md:min-w-0 md:px-0">Edit</button>
+                                <button onClick={() => { setEditingCatId(sub.id); setEditCatName(sub.name); setEditCatDesc(sub.description ?? ""); }} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center px-2 text-xs text-text-muted hover:text-accent md:min-h-0 md:min-w-0 md:px-0">Edit</button>
                                 <button onClick={() => setConfirmDeleteId(sub.id)} aria-label={`Delete ${sub.name}`} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center px-2 text-xs text-text-muted hover:text-danger md:min-h-0 md:min-w-0 md:px-0">Delete</button>
                               </div>
                             </>

@@ -524,4 +524,129 @@ describe("CategoriesPage -C2 batch delete", () => {
     expect(banner.textContent).toMatch(/reload failed/i);
     expect(screen.getByTestId("batch-delete-modal")).toBeInTheDocument();
   });
+
+  it("sub-category edit form exposes a description field and PUTs it", async () => {
+    const putCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    setupApi({
+      "/api/v1/categories/101": (init) => {
+        if (init?.method === "PUT") {
+          putCalls.push({
+            url: "/api/v1/categories/101",
+            body: JSON.parse((init.body as string) ?? "{}"),
+          });
+          return {};
+        }
+        return {};
+      },
+    });
+
+    render(<CategoriesPage />);
+    await waitFor(() => expect(screen.getByText("Restaurants")).toBeInTheDocument());
+
+    const subActions = screen.getByTestId("sub-actions-101");
+    const editBtn = Array.from(subActions.querySelectorAll("button")).find(
+      (b) => b.textContent === "Edit",
+    );
+    expect(editBtn).toBeTruthy();
+    fireEvent.click(editBtn!);
+
+    // Description input must appear alongside the name input.
+    const descInput = await screen.findByPlaceholderText("Hint / description");
+    expect(descInput).toBeInTheDocument();
+    fireEvent.change(descInput, { target: { value: "Eating out" } });
+
+    // Click Save (button next to the now-visible inputs).
+    const editingContainer = descInput.parentElement!;
+    const saveBtn = Array.from(editingContainer.querySelectorAll("button")).find(
+      (b) => b.textContent === "Save",
+    );
+    expect(saveBtn).toBeTruthy();
+    fireEvent.click(saveBtn!);
+
+    await waitFor(() => expect(putCalls.length).toBe(1));
+    expect(putCalls[0].body).toEqual({
+      name: "Restaurants",
+      description: "Eating out",
+    });
+  });
+
+  it("editing a top-level category PUTs description (parity with sub-category)", async () => {
+    const putCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    setupApi({
+      "/api/v1/categories/100": (init) => {
+        if (init?.method === "PUT") {
+          putCalls.push({
+            url: "/api/v1/categories/100",
+            body: JSON.parse((init.body as string) ?? "{}"),
+          });
+          return {};
+        }
+        return {};
+      },
+    });
+
+    render(<CategoriesPage />);
+    await waitFor(() => expect(screen.getByText("Food")).toBeInTheDocument());
+
+    const masterActions = screen.getByTestId("master-actions-100");
+    const editBtn = Array.from(masterActions.querySelectorAll("button")).find(
+      (b) => b.textContent === "Edit",
+    );
+    expect(editBtn).toBeTruthy();
+    fireEvent.click(editBtn!);
+
+    const descInput = await screen.findByPlaceholderText("Hint / description");
+    fireEvent.change(descInput, { target: { value: "All food spending" } });
+
+    const editingContainer = descInput.parentElement!;
+    const saveBtn = Array.from(editingContainer.querySelectorAll("button")).find(
+      (b) => b.textContent === "Save",
+    );
+    fireEvent.click(saveBtn!);
+
+    await waitFor(() => expect(putCalls.length).toBe(1));
+    expect(putCalls[0].body).toEqual({
+      name: "Food",
+      description: "All food spending",
+    });
+  });
+
+  it("editing with empty description sends description: null", async () => {
+    const putCalls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    setupApi({
+      "/api/v1/categories/101": (init) => {
+        if (init?.method === "PUT") {
+          putCalls.push({
+            url: "/api/v1/categories/101",
+            body: JSON.parse((init.body as string) ?? "{}"),
+          });
+          return {};
+        }
+        return {};
+      },
+    });
+
+    render(<CategoriesPage />);
+    await waitFor(() => expect(screen.getByText("Restaurants")).toBeInTheDocument());
+
+    const subActions = screen.getByTestId("sub-actions-101");
+    const editBtn = Array.from(subActions.querySelectorAll("button")).find(
+      (b) => b.textContent === "Edit",
+    );
+    fireEvent.click(editBtn!);
+
+    // Leave description blank.
+    const descInput = await screen.findByPlaceholderText("Hint / description");
+    const editingContainer = descInput.parentElement!;
+    const saveBtn = Array.from(editingContainer.querySelectorAll("button")).find(
+      (b) => b.textContent === "Save",
+    );
+    fireEvent.click(saveBtn!);
+
+    await waitFor(() => expect(putCalls.length).toBe(1));
+    expect(putCalls[0].body).toEqual({
+      name: "Restaurants",
+      description: null,
+    });
+  });
 });
