@@ -14,6 +14,7 @@ Behavior when `settings.redis_url` is empty:
   Redis and it's missing; see `require_client()` below.
 """
 
+import asyncio
 import functools
 import json
 import logging
@@ -188,7 +189,18 @@ async def _retire_poisoned_client(*, reason: str) -> None:
         extra={"reason": reason},
     )
     try:
-        await poisoned.aclose()
+        await asyncio.wait_for(
+            poisoned.aclose(), timeout=AUTH_REDIS_ACLOSE_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        # Cleanup wedged past the bound. Singleton is already dropped
+        # above; the OS will reclaim the FDs. Surface a distinct event
+        # so operators can tell a wedged retirement apart from a clean
+        # one in production logs.
+        logger.warning(
+            "redis.client.retired.aclose_timeout",
+            extra={"timeout_s": AUTH_REDIS_ACLOSE_TIMEOUT_S},
+        )
     except Exception:  # noqa: BLE001 — best-effort cleanup
         # We've already replaced the singleton; the OS will reclaim the
         # underlying sockets even if aclose() can't tidy up its
@@ -208,6 +220,12 @@ AUTH_REDIS_SOCKET_TIMEOUT_S = 1.0
 AUTH_REDIS_RETRY_BACKOFF_BASE_S = 0.05
 AUTH_REDIS_RETRY_BACKOFF_CAP_S = 0.2
 AUTH_REDIS_RETRY_COUNT = 1
+# Cap for ``_retire_poisoned_client``'s best-effort ``aclose()``.
+# Pool cleanup runs outside the per-command socket-timeout budget,
+# so a wedged close on a stale connection could hold the translated
+# 503 past the frontend's reactive-recovery cap. Bound it at the
+# application layer so retirement always completes promptly.
+AUTH_REDIS_ACLOSE_TIMEOUT_S = 2.0
 
 
 def _build_auth_redis_client(redis_url: str) -> Redis:
