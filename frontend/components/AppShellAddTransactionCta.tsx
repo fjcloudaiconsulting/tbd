@@ -67,6 +67,11 @@ export default function AppShellAddTransactionCta() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loaded, setLoaded] = useState(false);
+  // Non-blocking warning surfaced from the floating forms when a
+  // post-save sub-call (e.g. PUT /tags) failed. Rendered as an
+  // inline banner above the next panel; auto-dismisses when the
+  // user reopens the panel.
+  const [warning, setWarning] = useState<string>("");
 
   const menuId = useId();
   const chevronRef = useRef<HTMLButtonElement>(null);
@@ -139,12 +144,14 @@ export default function AppShellAddTransactionCta() {
   function openTransaction() {
     void loadRefs();
     setMenuOpen(false);
+    setWarning("");
     setOpenPanel("transaction");
   }
 
   function openTransfer() {
     void loadRefs();
     setMenuOpen(false);
+    setWarning("");
     setOpenPanel("transfer");
   }
 
@@ -186,6 +193,26 @@ export default function AppShellAddTransactionCta() {
 
   return (
     <div className="relative inline-flex">
+      {warning && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="add-transaction-warning"
+          className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-md bg-warning-dim px-4 py-3 text-sm text-warning shadow-lg"
+        >
+          <div className="flex items-start gap-3">
+            <span>{warning}</span>
+            <button
+              type="button"
+              onClick={() => setWarning("")}
+              aria-label="Dismiss warning"
+              className="text-warning hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+            >
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+        </div>
+      )}
       <div className="inline-flex rounded-md shadow-sm">
         <button
           type="button"
@@ -267,6 +294,7 @@ export default function AppShellAddTransactionCta() {
               setCategories((prev) => [...prev, cat])
             }
             onTransactionAdded={handleTransactionAdded}
+            onWarning={setWarning}
           />
         ) : (
           <div className="flex items-center justify-center py-12 text-sm text-text-muted">

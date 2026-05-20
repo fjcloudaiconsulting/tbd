@@ -606,7 +606,7 @@ describe("TransactionForm", () => {
       });
 
       // No defaultCategoryId so the user starts with an empty category.
-      render(
+      const { container } = render(
         <TransactionForm
           accounts={[ACCT]}
           categories={[CAT]}
@@ -621,14 +621,172 @@ describe("TransactionForm", () => {
       const option = await screen.findByRole("option", { name: /HBO Max/i });
       fireEvent.mouseDown(option);
 
-      // Picking the suggestion fills the description AND, because the
-      // category was empty, pre-fills the category from the most-common
-      // pair. CategorySelect renders the chosen category's name once
-      // selected.
+      // (a) Description fills (proxy assertion, preserved).
       await waitFor(() => {
         const desc = screen.getByLabelText("Description") as HTMLInputElement;
         expect(desc.value).toBe("HBO Max");
       });
+
+      // (b) Category state pins directly to the picked suggestion's
+      // category_id. CategorySelect renders the chosen category name
+      // in its visible <input id="fab-tx-category">, and exposes the
+      // numeric id via the adjacent hidden <input name="...-value">.
+      // Both must agree with SUGGESTION.category_id.
+      await waitFor(() => {
+        const categoryInput = container.querySelector(
+          "#fab-tx-category",
+        ) as HTMLInputElement;
+        expect(categoryInput.value).toBe(CAT.name);
+      });
+      const hiddenCategory = container.querySelector(
+        'input[name="fab-tx-category-value"]',
+      ) as HTMLInputElement;
+      expect(hiddenCategory.value).toBe(String(SUGGESTION.category_id));
     });
+
+    it("does NOT overwrite an already-chosen category when picking a description suggestion", async () => {
+      // Boundary case for the auto-fill contract in
+      // TransactionForm.tsx:349. When categoryId !== "" at the moment
+      // of pick, the suggestion's category_id MUST NOT clobber the
+      // user's choice. Mirrors the canonical /transactions form's
+      // "optional pre-populate" rule.
+      const OTHER_CAT = {
+        id: 77,
+        name: "Subscriptions",
+        type: "expense" as const,
+        parent_id: null,
+        parent_name: null,
+        description: null,
+        slug: "subscriptions",
+        is_system: false,
+        transaction_count: 0,
+      };
+      const SUGGESTION = {
+        description: "HBO Max",
+        category_id: OTHER_CAT.id, // Different from defaultCategoryId.
+        category_name: OTHER_CAT.name,
+        use_count: 4,
+        last_used: "2026-05-10",
+      };
+      const apiFetchMock = vi.mocked(apiFetch);
+      apiFetchMock.mockReset();
+      apiFetchMock.mockImplementation((path: string) => {
+        if (path.startsWith("/api/v1/transactions/suggestions/descriptions")) {
+          return Promise.resolve({ suggestions: [SUGGESTION] }) as never;
+        }
+        return Promise.resolve({}) as never;
+      });
+
+      // Pre-select CAT (id=10) via defaultCategoryId — categoryId is
+      // NOT empty at the time of pick.
+      const { container } = render(
+        <TransactionForm
+          accounts={[ACCT]}
+          categories={[CAT, OTHER_CAT]}
+          defaultCategoryId={CAT.id}
+          onSaved={() => {}}
+        />,
+      );
+
+      // Sanity: category starts at CAT (Groceries), not OTHER_CAT.
+      const hiddenBefore = container.querySelector(
+        'input[name="fab-tx-category-value"]',
+      ) as HTMLInputElement;
+      expect(hiddenBefore.value).toBe(String(CAT.id));
+
+      fireEvent.change(screen.getByLabelText("Description"), {
+        target: { value: "HB" },
+      });
+      const option = await screen.findByRole("option", { name: /HBO Max/i });
+      fireEvent.mouseDown(option);
+
+      // Description still fills (proves the pick fired).
+      await waitFor(() => {
+        const desc = screen.getByLabelText("Description") as HTMLInputElement;
+        expect(desc.value).toBe("HBO Max");
+      });
+
+      // Category MUST still be CAT — the suggestion's OTHER_CAT.id
+      // was rejected by the `categoryId === ""` guard.
+      const hiddenAfter = container.querySelector(
+        'input[name="fab-tx-category-value"]',
+      ) as HTMLInputElement;
+      expect(hiddenAfter.value).toBe(String(CAT.id));
+      const categoryInput = container.querySelector(
+        "#fab-tx-category",
+      ) as HTMLInputElement;
+      expect(categoryInput.value).toBe(CAT.name);
+    });
+  });
+
+  it("treats PUT /tags failure as partial success: no duplicate POST on retry", async () => {
+    // Regression for PR #326 review: the two-step write (POST then
+    // PUT /tags) must not re-POST the base transaction when the tag
+    // attach fails. Previously a tag-PUT failure left the form open
+    // with all fields intact, and a second Save click double-created.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+
+    const onSaved = vi.fn();
+    const onTransactionAdded = vi.fn();
+    const onWarning = vi.fn();
+
+    // 201 for the base POST; 500 for PUT /tags.
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      if (url === "/api/v1/transactions/42/tags") {
+        throw new Error("tag attach failed");
+      }
+      return {} as never;
+    });
+
+    const { container } = render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={onSaved}
+        onTransactionAdded={onTransactionAdded}
+        onWarning={onWarning}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Groceries Aldi" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "12.34" },
+    });
+    // Add a tag chip so the PUT /tags arm fires.
+    const tagInput = container.querySelector(
+      "#fab-tx-tags",
+    ) as HTMLInputElement;
+    fireEvent.change(tagInput, { target: { value: "rent" } });
+    fireEvent.keyDown(tagInput, { key: "Enter" });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    // (1) Panel closed via onSaved, list refresh fired via
+    // onTransactionAdded, warning surfaced via onWarning.
+    await waitFor(() => {
+      expect(onSaved).toHaveBeenCalledTimes(1);
+    });
+    expect(onTransactionAdded).toHaveBeenCalledTimes(1);
+    expect(onWarning).toHaveBeenCalledTimes(1);
+    expect(onWarning.mock.calls[0][0]).toMatch(/Transaction saved/);
+    expect(onWarning.mock.calls[0][0]).toMatch(/tag attach failed/);
+
+    // (2) Exactly ONE base POST. The whole point of this fix is no
+    // duplicate base transaction on the tag-failure path.
+    const basePosts = apiFetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/v1/transactions" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(basePosts).toHaveLength(1);
   });
 });
