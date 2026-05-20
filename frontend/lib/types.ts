@@ -125,6 +125,17 @@ export interface Transaction {
   // endpoint. Standard CRUD (edit/delete/promote-to-recurring) refuses
   // to mutate them; bulk delete skips them silently.
   is_manual_adjustment: boolean;
+  // PR-Tags-A: tags attached to this transaction. Always present on
+  // list/detail responses, empty array when none. The backend
+  // populates this via a selectinload in the transactions service
+  // so there is no N+1.
+  tags: TagSummary[];
+}
+
+/** Per-transaction tag embed on list/detail responses (PR-Tags-A). */
+export interface TagSummary {
+  id: number;
+  name: string;
 }
 
 export interface RecurringTransaction {

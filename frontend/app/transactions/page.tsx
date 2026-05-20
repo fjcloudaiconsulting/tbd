@@ -18,6 +18,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
 import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
 import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
+import TagChipInput from "@/components/transactions/TagChipInput";
 import DescriptionAutocomplete from "@/components/transactions/DescriptionAutocomplete";
 import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
 import {
@@ -99,6 +100,9 @@ function TransactionsPageContent() {
   const [editSettledDate, setEditSettledDate] = useState("");
   const [editAccountId, setEditAccountId] = useState<number | "">("");
   const [editCategoryId, setEditCategoryId] = useState<number | "">("");
+  // PR-Tags-A: chip-managed tag set for the edit form. Persisted via
+  // PUT /api/v1/transactions/{id}/tags after the PUT to /transactions/{id}.
+  const [editTags, setEditTags] = useState<string[]>([]);
   // Edit-time promote-to-recurring (L3.12). Hidden on rows that are already
   // recurring (a static chip is rendered instead). Default next_due_date is
   // "today + 30 days" so users get a reasonable starting point without a
@@ -199,6 +203,10 @@ function TransactionsPageContent() {
   // keeps credit-card-style settlement lag a deliberate choice instead of
   // silently inheriting the transaction date.
   const [formSettledDate, setFormSettledDate] = useState("");
+  // PR-Tags-A: chip-managed tag set for the create form. Attached via
+  // PUT /api/v1/transactions/{id}/tags after the POST resolves (see
+  // submitForm below). Tags do not apply to transfer mode.
+  const [formTags, setFormTags] = useState<string[]>([]);
   const [formRecurring, setFormRecurring] = useState(false);
   const [formFrequency, setFormFrequency] = useState("monthly");
   const [formAutoSettle, setFormAutoSettle] = useState(false);
@@ -399,29 +407,59 @@ function TransactionsPageContent() {
           }),
         });
       } else {
-        const created = await apiFetch<Transaction>("/api/v1/transactions", {
-          method: "POST",
-          body: JSON.stringify({
-            account_id: formAccountId,
-            category_id: formCategoryId,
-            description: formDescription,
-            amount: formAmount,
-            type: formType,
-            status: formStatus,
-            date: formDate,
-            // settled_date only travels on pending creates; SETTLED rows
-            // get their settled_date stamped server-side from `date`.
-            ...(formStatus === "pending" && formSettledDate
-              ? { settled_date: formSettledDate }
-              : {}),
-          }),
-        });
+        // Step 1: POST the base transaction. Hard-failures here keep
+        // the form open with the user's input intact for retry.
+        let created: Transaction | undefined;
+        try {
+          created = await apiFetch<Transaction>("/api/v1/transactions", {
+            method: "POST",
+            body: JSON.stringify({
+              account_id: formAccountId,
+              category_id: formCategoryId,
+              description: formDescription,
+              amount: formAmount,
+              type: formType,
+              status: formStatus,
+              date: formDate,
+              // settled_date only travels on pending creates; SETTLED rows
+              // get their settled_date stamped server-side from `date`.
+              ...(formStatus === "pending" && formSettledDate
+                ? { settled_date: formSettledDate }
+                : {}),
+            }),
+          });
+        } catch (err) {
+          setError(extractErrorMessage(err));
+          return;
+        }
+        // Step 2: PUT /tags. The transaction was already saved, so a
+        // failure here is a PARTIAL SUCCESS — we must not leave the
+        // form in a state that re-POSTs the base transaction on the
+        // next click or we double-create. Surface a non-blocking
+        // warning via setError (same channel the promote-to-recurring
+        // partial-success uses), then fall through to the form-reset
+        // path so the user gets a clean slate.
+        let tagWarning: string | null = null;
+        if (formTags.length > 0 && created?.id) {
+          try {
+            await apiFetch(`/api/v1/transactions/${created.id}/tags`, {
+              method: "PUT",
+              body: JSON.stringify({ tag_names: formTags }),
+            });
+          } catch (err) {
+            tagWarning = `Transaction saved. Tags couldn't be applied: ${extractErrorMessage(
+              err,
+            )}. Edit the transaction to add them.`;
+          }
+        }
         // Promote the new tx to recurring if repeat is enabled. Using
         // promote-to-recurring (vs a separate POST /recurring) sets
         // tx.recurring_id on the source transaction so a subsequent edit
         // shows the "Recurring" chip — preventing the duplicate-template
         // bug where re-toggling "Make recurring" on edit would create a
-        // second template because the source row stayed unlinked.
+        // second template because the source row stayed unlinked. A
+        // promote failure still bubbles to the outer catch (matches
+        // pre-PR behavior); this PR only changes the tag-attach arm.
         if (formRecurring && formMode === "transaction" && created?.id) {
           // next_due_date must be today-or-later (server-side guard).
           // The Date input is already constrained to today via min=,
@@ -441,6 +479,9 @@ function TransactionsPageContent() {
             },
           );
         }
+        if (tagWarning) {
+          setError(tagWarning);
+        }
       }
       setFormDescription("");
       setFormAmount("");
@@ -452,6 +493,7 @@ function TransactionsPageContent() {
       setFormAutoSettle(false);
       setFormDate(todayISO());
       setFormSettledDate("");
+      setFormTags([]);
       setShowForm(false);
       await loadTransactions(page);
     } catch (err) {
@@ -589,6 +631,10 @@ function TransactionsPageContent() {
     setEditSettledDate(tx.status === "pending" && tx.settled_date ? tx.settled_date : "");
     setEditAccountId(tx.account_id);
     setEditCategoryId(tx.category_id);
+    // Seed the chip input with the row's current tags. ``tags`` is
+    // always present on TransactionResponse (backend selectinload),
+    // but defensively coerce to [] in case of a partial test fixture.
+    setEditTags((tx.tags ?? []).map((t) => t.name));
     setEditPromoteRecurring(false);
     setEditRecFrequency("monthly");
     setEditRecNextDue(defaultNextDueISO());
@@ -615,6 +661,7 @@ function TransactionsPageContent() {
     setEditingId(null);
     setEditPartner(null);
     setEditPromoteRecurring(false);
+    setEditTags([]);
   }
 
   async function handleSaveEdit() {
@@ -670,6 +717,12 @@ function TransactionsPageContent() {
       await apiFetch(`/api/v1/transactions/${editingId}`, {
         method: "PUT",
         body: JSON.stringify(body),
+      });
+      // PR-Tags-A: replace the tag set. Sent on every edit (including
+      // when the user cleared every chip) so the PUT is authoritative.
+      await apiFetch(`/api/v1/transactions/${editingId}/tags`, {
+        method: "PUT",
+        body: JSON.stringify({ tag_names: editTags }),
       });
       if (wantsPromote) {
         // The PUT already committed the edit. If the promote step then
@@ -1042,6 +1095,17 @@ function TransactionsPageContent() {
                 />
               )}
             </div>
+            {formMode === "transaction" && (
+              <div>
+                <label htmlFor="tx-tags" className={label}>Tags</label>
+                <TagChipInput
+                  id="tx-tags"
+                  value={formTags}
+                  onChange={setFormTags}
+                  categoryId={formCategoryId}
+                />
+              </div>
+            )}
             <div>
               <label htmlFor="tx-amount" className={label}>Amount</label>
               <input id="tx-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
@@ -1375,6 +1439,15 @@ function TransactionsPageContent() {
                               <label htmlFor={`edit-amount-${tx.id}`} className={label}>Amount</label>
                               <input id={`edit-amount-${tx.id}`} aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm ${input}`} />
                             </div>
+                            <div>
+                              <label htmlFor={`edit-tags-${tx.id}`} className={label}>Tags</label>
+                              <TagChipInput
+                                id={`edit-tags-${tx.id}`}
+                                value={editTags}
+                                onChange={setEditTags}
+                                categoryId={editCategoryId}
+                              />
+                            </div>
                             {editStatus === "pending" && (
                               <div data-testid={`edit-settled-date-cell-${tx.id}`}>
                                 <label htmlFor={`edit-settled-${tx.id}`} className={label}>
@@ -1502,7 +1575,21 @@ function TransactionsPageContent() {
                               </span>
                             )}
                           </span>
-                          <span className="col-span-2 text-sm text-text-primary">{tx.description}</span>
+                          <span className="col-span-2 flex flex-col text-sm text-text-primary">
+                            <span>{tx.description}</span>
+                            {tx.tags && tx.tags.length > 0 && (
+                              <span className="mt-0.5 flex flex-wrap gap-1" data-testid={`row-tags-${tx.id}`}>
+                                {tx.tags.map((t) => (
+                                  <span
+                                    key={t.id}
+                                    className="inline-flex items-center rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-text-secondary"
+                                  >
+                                    {t.name}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
+                          </span>
                           <span className="col-span-2 text-sm text-text-secondary truncate">
                             {isTransfer && linkedTx
                               ? <>{tx.account_name} &rarr; {linkedTx.account_name}</>
@@ -1634,6 +1721,15 @@ function TransactionsPageContent() {
                                 <label className={label}>Amount</label>
                                 <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm ${input}`} />
                               </div>
+                              <div className="sm:col-span-2">
+                                <label htmlFor={`edit-tags-mobile-${tx.id}`} className={label}>Tags</label>
+                                <TagChipInput
+                                  id={`edit-tags-mobile-${tx.id}`}
+                                  value={editTags}
+                                  onChange={setEditTags}
+                                  categoryId={editCategoryId}
+                                />
+                              </div>
                               {editStatus === "pending" && (
                                 <div className="sm:col-span-2" data-testid={`edit-settled-date-cell-mobile-${tx.id}`}>
                                   <label className={label}>Expected settlement date</label>
@@ -1750,6 +1846,21 @@ function TransactionsPageContent() {
                               <div className="truncate text-sm font-medium text-text-primary">
                                 {tx.description}
                               </div>
+                              {tx.tags && tx.tags.length > 0 && (
+                                <div
+                                  className="mt-0.5 flex flex-wrap gap-1"
+                                  data-testid={`row-tags-mobile-${tx.id}`}
+                                >
+                                  {tx.tags.map((t) => (
+                                    <span
+                                      key={t.id}
+                                      className="inline-flex items-center rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-text-secondary"
+                                    >
+                                      {t.name}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                               <div className="mt-0.5 text-xs text-text-muted tabular-nums">
                                 {tx.date} · {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : tx.account_name}
                               </div>
