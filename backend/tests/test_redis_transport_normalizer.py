@@ -548,3 +548,58 @@ class TestPoisonedClientRetirement:
         with pytest.raises(RedisConnectionError):
             await helper()
         assert rc._client is None
+
+    @pytest.mark.asyncio
+    async def test_retirement_bounds_aclose_when_it_hangs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Pool cleanup runs outside the per-command Redis timeout
+        budget. A wedged ``aclose()`` would hold the translated
+        ``RedisConnectionError`` past the frontend's reactive-recovery
+        cap. Retirement MUST bound ``aclose()`` so the translated
+        exception reaches the caller promptly even when cleanup is
+        stuck."""
+        import asyncio
+        import logging
+        import app.redis_client as rc
+        from unittest.mock import MagicMock
+
+        # Shrink the bound for test speed. The constant is read off
+        # the module at call time, so monkeypatch is sufficient.
+        monkeypatch.setattr(rc, "AUTH_REDIS_ACLOSE_TIMEOUT_S", 0.05)
+        caplog.set_level(logging.WARNING, logger=rc.logger.name)
+
+        async def hang_forever() -> None:
+            # Models a wedged close path — long enough that no plausible
+            # test budget would tolerate it if the bound weren't enforced.
+            await asyncio.sleep(60)
+
+        sentinel_client = MagicMock()
+        sentinel_client.aclose = hang_forever
+        rc._client = sentinel_client
+
+        @_normalize_transport_errors
+        async def helper() -> None:
+            raise RuntimeError("the handler is closed")
+
+        # Outer wait_for makes a regression fail in ~1 s instead of
+        # running the full mocked 60 s sleep. If the inner bound is
+        # missing, this raises asyncio.TimeoutError, not
+        # RedisConnectionError — and the pytest.raises assertion fails
+        # loudly.
+        with pytest.raises(RedisConnectionError):
+            await asyncio.wait_for(helper(), timeout=1.0)
+
+        # Singleton MUST be dropped (core retirement contract).
+        assert rc._client is None
+        # Event contract: the timeout path emits a distinct warning
+        # so operators can tell wedged retirement apart from clean.
+        assert any(
+            record.msg == "redis.client.retired.aclose_timeout"
+            for record in caplog.records
+        ), (
+            "expected redis.client.retired.aclose_timeout log event; "
+            f"captured: {[r.msg for r in caplog.records]}"
+        )
