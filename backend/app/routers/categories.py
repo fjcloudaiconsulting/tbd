@@ -408,7 +408,12 @@ async def update_category(
             cat.type = new_type
             type_changed = True
 
-    if body.description is not None:
+    # Distinguish "description omitted from body" vs "description explicitly
+    # set to null". Pydantic v2's `model_fields_set` is True for fields the
+    # caller actually supplied (including explicit null), False for fields
+    # left out. Without this, an explicit null is silently dropped — clearing
+    # an existing description never persists.
+    if "description" in body.model_fields_set:
         cat.description = body.description
 
     # Audit rows staged before commit (one per logical change). Only
