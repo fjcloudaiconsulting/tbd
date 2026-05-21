@@ -21,10 +21,14 @@ import { input } from "@/lib/styles";
  *
  * Behavior:
  *   - User types -> debounced fetch (200ms). Minimum prefix length 1.
- *   - Enter / Tab / comma commits the typed text as a chip. The
- *     transactions submit path posts the chip names to
- *     PUT /api/v1/transactions/{id}/tags which auto-creates any
- *     tags the org has not used before.
+ *   - Enter / Tab / comma / Space commits the typed text as a chip.
+ *     Space is the most discoverable trigger for "add another tag" —
+ *     users coming from social platforms expect it. Multi-word tags
+ *     are no longer typeable from the keyboard once Space commits;
+ *     use hyphen ("bike-commute") or click an autocomplete suggestion
+ *     that already contains a space. The transactions submit path
+ *     posts the chip names to PUT /api/v1/transactions/{id}/tags
+ *     which auto-creates any tags the org has not used before.
  *   - Backspace on an empty input removes the last chip.
  *   - Click suggestion commits chip.
  *   - Each chip carries a remove "x" with aria-label="Remove tag <name>".
@@ -257,11 +261,19 @@ export default function TagChipInput({
   }, []);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" || e.key === "Tab" || e.key === ",") {
-      // Tab still moves focus; Enter / comma stay inside the input
-      // to commit. We only intercept Tab when there's a draft so
-      // empty Tab still moves to the next field.
+    const isCommitKey =
+      e.key === "Enter" ||
+      e.key === "Tab" ||
+      e.key === "," ||
+      e.key === " ";
+    if (isCommitKey) {
+      // Tab still moves focus when there's nothing to commit; Enter /
+      // comma / Space stay inside the input. Space at an empty draft
+      // is a no-op (passes through so the user can type a leading
+      // space if they really want one — the normalize step strips it
+      // later anyway).
       if (e.key === "Tab" && !draft.trim() && highlightIdx < 0) return;
+      if (e.key === " " && !draft.trim()) return;
       e.preventDefault();
       if (
         open &&

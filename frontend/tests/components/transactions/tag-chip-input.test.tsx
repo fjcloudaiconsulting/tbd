@@ -110,6 +110,37 @@ describe("TagChipInput", () => {
     expect(screen.getByTestId("tag-chip-rent")).toBeTruthy();
   });
 
+  it("commits a typed tag on Space and clears the draft", async () => {
+    // Space is the most discoverable "add another tag" trigger for
+    // users coming from social platforms. The previous version of the
+    // input only committed on Enter / Tab / comma — fjorge feedback
+    // 2026-05-21: nobody figures out Enter on first try.
+    const fetcher: Fetcher = vi.fn().mockResolvedValue([]);
+    render(<Harness fetcher={fetcher} />);
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "bike" } });
+      fireEvent.keyDown(input, { key: " " });
+    });
+    expect(screen.getByTestId("tag-chip-bike")).toBeTruthy();
+    expect(input.value).toBe("");
+  });
+
+  it("Space at an empty draft is a no-op (does NOT commit an empty chip)", async () => {
+    // Avoids the surprise where pressing space on focus creates a
+    // mysterious empty chip. The keyboard handler explicitly returns
+    // early when draft is empty.
+    const fetcher: Fetcher = vi.fn().mockResolvedValue([]);
+    render(<Harness fetcher={fetcher} />);
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    await act(async () => {
+      input.focus();
+      fireEvent.keyDown(input, { key: " " });
+    });
+    // No chip created.
+    expect(input.parentElement?.querySelectorAll("[data-testid^='tag-chip-']").length).toBe(0);
+  });
+
   it("normalizes uppercase to lowercase on commit", async () => {
     const fetcher: Fetcher = vi.fn().mockResolvedValue([]);
     render(<Harness fetcher={fetcher} />);
