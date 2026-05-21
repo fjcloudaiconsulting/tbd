@@ -156,9 +156,15 @@ services:
       # frontend stops rendering the widget on the next page load. The
       # secret below is the Cloudflare Turnstile siteverify secret; rotate
       # via the Cloudflare dashboard, then re-encrypt here.
+      #
+      # SHIPPING AS "false" UNTIL CLOUDFLARE SETUP IS DONE. With the secret
+      # + site key still empty, "true" would fail-closed every register
+      # attempt with REASON_MISCONFIGURED. Flip back to "true" in the same
+      # commit that lands the real site key and encrypted CAPTCHA_SECRET
+      # EV[] blob below, then redeploy.
       - key: CAPTCHA_REQUIRED
         scope: RUN_AND_BUILD_TIME
-        value: "true"
+        value: "false"
       - key: CAPTCHA_PROVIDER
         scope: RUN_AND_BUILD_TIME
         value: "turnstile"
@@ -174,12 +180,26 @@ services:
       - key: CAPTCHA_EXPECTED_ACTION
         scope: RUN_AND_BUILD_TIME
         value: "register"
-      # CAPTCHA_SECRET must be added as a SECRET-typed env in the DO
-      # console after the Cloudflare site is created (the encrypted EV[...]
-      # value goes here on the next `doctl apps update --spec`). Until then
-      # the captcha module will fail-closed with REASON_MISCONFIGURED and
-      # registrations will be refused — flip CAPTCHA_REQUIRED to "false"
-      # if needed during the gap.
+      # CAPTCHA_SECRET — Cloudflare Turnstile siteverify secret.
+      #
+      # The value MUST land here as an encrypted EV[] blob, not be left
+      # empty after a console-only update. .do/app.yaml is the authoritative
+      # spec on every `doctl apps update --spec` and on the GitHub Actions
+      # deploy; an empty value here will overwrite whatever was set via the
+      # DO console on the next deploy. See reference_do_spec_sync.md.
+      #
+      # Setup flow:
+      #   1. Create the Turnstile widget at https://dash.cloudflare.com/?to=/:account/turnstile
+      #      for app.thebetterdecision.com. Copy the site key into the
+      #      NEXT_PUBLIC_CAPTCHA_SITE_KEY value below.
+      #   2. Add the Turnstile secret via the DO console (this app's
+      #      Settings → App-Level Environment Variables → backend service).
+      #      Save — DO encrypts it server-side.
+      #   3. `doctl apps spec get <app-id> --format yaml` and copy the
+      #      fresh `value: EV[...]` blob for CAPTCHA_SECRET into this
+      #      file, replacing the empty value below.
+      #   4. Flip CAPTCHA_REQUIRED above to "true" in the same commit.
+      #   5. Push → deploy.
       - key: CAPTCHA_SECRET
         scope: RUN_AND_BUILD_TIME
         type: SECRET
