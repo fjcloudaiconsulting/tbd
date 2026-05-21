@@ -2,7 +2,6 @@
 name: Infra Follow-ups (post-cutover) — PARTIAL
 description: App Platform droplet upgrade to 2GB SHIPPED via PR #143. Ansible CI + DO dynamic inventory and Terraform-generated data-plane passwords still PENDING. Both also tracked in the project_roadmap.md Tech Debt section to avoid double-counting.
 type: project
-originSessionId: 2a9f7d60-8bf7-49a0-873b-232cfcd5e16a
 ---
 After PR #116 (self-hosted MySQL + Redis droplet) ships and the managed → droplet cutover completes, three follow-up PRs are queued in this order. Architect-endorsed sequencing 2026-05-04.
 

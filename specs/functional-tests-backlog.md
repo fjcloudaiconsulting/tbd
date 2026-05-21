@@ -2,7 +2,6 @@
 name: Functional/E2E Tests Backlog
 description: Pre-launch nice-to-have — add functional/E2E tests so UX edge cases get caught by automation, not by manual exploration
 type: project
-originSessionId: 1d48e329-4340-4f5d-a67c-182b3d3f7479
 ---
 **Pre-launch backlog (good-to-have, not blocking):** Add functional/E2E tests on top of the unit suite.
 

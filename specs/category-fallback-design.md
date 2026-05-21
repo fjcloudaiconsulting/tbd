@@ -2,7 +2,6 @@
 name: Category Fallback Design (post-L3.10) — PARTIAL
 description: Architect-approved 4-layer design. Layer A SHIPPED via PR #108 (empty-state UX on import). Layers B (type-specific category requirement at preview time + structured 400) and C (Restore recommended categories action) still PENDING. Layer D (slug aliasing) deferred to P-IL post-launch.
 type: project
-originSessionId: 672f9f52-7ffa-43a4-9e88-ffc9e47e0229
 ---
 **STATUS: 🟡 PARTIAL.**
 - **Layer A** — empty-state UX on import. ✅ SHIPPED via PR #108 (`feat/import-empty-categories-state`, 2026-05-02).

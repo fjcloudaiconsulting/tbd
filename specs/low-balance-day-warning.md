@@ -2,7 +2,6 @@
 name: Low-Balance-Day Warning (cashflow risk forecast)
 description: Surface a warning when the user's expected balance on a specific day of the month dips below upcoming expenses, based on recurring + pending + historical patterns.
 type: project
-originSessionId: 0bf77f16-13ef-4926-8a64-7a5ddd96efc6
 ---
 **Captured 2026-05-10.** Not a launch blocker. Rough idea, sized M-L, parks for future prioritization.
 

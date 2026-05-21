@@ -2,7 +2,6 @@
 name: Apex landing on AWS S3 + CloudFront (L5.2a)
 description: Strategic shift 2026-05-12 — drop Cloudflare from the apex landing plan; host the apex marketing site on AWS S3 (private) + CloudFront (OAC + ACM) instead. Standard SaaS pattern. Brainstorm + open decisions captured here pending owner decisions.
 type: project
-originSessionId: 8c696f02-828f-45cb-8352-6fc04e4fb413
 ---
 # Apex landing on AWS S3 + CloudFront
 

@@ -2,7 +2,6 @@
 name: Loan Account Type
 description: 2026-05-15 owner backlog. Critical assessment of a suggested Loan account type. Keeps principal/rate/term/origination + amortization formula + payment source linkage. Defers per-payment interest/principal split + full amortization UI to V2.
 type: project
-originSessionId: 31bd894a-67ce-4301-b8b1-880672646504
 ---
 # Loan Account Type
 

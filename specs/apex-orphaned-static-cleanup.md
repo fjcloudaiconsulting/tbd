@@ -2,7 +2,6 @@
 name: Apex S3 — clean up orphaned _next/static chunks
 description: PR #267 stopped using --delete on the immutable hashed-asset sync to avoid 404ing browser-cached HTML, leaving orphaned chunks accumulating. Needs a periodic cleanup.
 type: project
-originSessionId: e75406f8-d01b-42d2-aa05-cdc574be2d1a
 ---
 # Orphaned hashed-asset cleanup for apex S3
 

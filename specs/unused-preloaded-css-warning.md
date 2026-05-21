@@ -2,7 +2,6 @@
 name: Audit Unused Preloaded CSS Warning (Next.js Production)
 description: P3 backlog. Chrome reports `_next/static/chunks/...css` was preloaded but not used shortly after load on /dashboard. Most likely Next.js-generated CSS chunking, not first-party. Investigate before changing config.
 type: project
-originSessionId: 0bf77f16-13ef-4926-8a64-7a5ddd96efc6
 ---
 **Captured 2026-05-10.** P3 backlog item. Raise to P2 only if many repeated CSS preload warnings appear OR measurable dashboard performance impact (LCP, FOUC, layout shift, extra transfer size).
 

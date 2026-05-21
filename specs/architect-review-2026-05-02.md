@@ -2,7 +2,6 @@
 name: System Architect Review 2026-05-02
 description: External architect review of PFV — captures roadmap-level recommendations to apply post-L3.10. Also records what the team explicitly disagreed on and why.
 type: project
-originSessionId: 672f9f52-7ffa-43a4-9e88-ffc9e47e0229
 ---
 ## Context
 

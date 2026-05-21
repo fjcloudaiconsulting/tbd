@@ -2,7 +2,6 @@
 name: AppShell Header Layout Balance
 description: Rebalance AppShell header. Today's left-only cluster (trial banner + New Transaction CTA + docs + theme toggle) leaves the right side empty and looks lopsided. Use /impeccable critique when picking this up.
 type: project
-originSessionId: 0bf77f16-13ef-4926-8a64-7a5ddd96efc6
 ---
 **Captured 2026-05-10.** Backlog item, sized S. Pure layout polish on AppShell header.
 
@@ -16,7 +15,7 @@ Today's AppShell header (post-#200) has all interactive elements clustered on th
 
 The RIGHT side is empty. The visual weight is lopsided. Users coming from other SaaS apps expect primary actions and secondary chrome to split between left (brand/nav) and right (user/account/actions).
 
-Reference screenshot at `~/.claude/image-cache/0bf77f16-13ef-4926-8a64-7a5ddd96efc6/43.png`.
+Reference screenshot captured in operator's local notes (not in repo).
 
 ## What's blocking a quick fix
 
@@ -31,7 +30,7 @@ Splitting these between left and right requires deciding the convention: what go
 
 ## Recommended approach when picking up
 
-Use `/impeccable critique` on the AppShell header layout. The impeccable plugin (loaded in this project at `/Users/fjorge/.claude/plugins/cache/impeccable/impeccable/3.0.7`) will:
+Use `/impeccable critique` on the AppShell header layout. The impeccable plugin will:
 - Run the cognitive load + Nielsen heuristics scoring.
 - Surface the AppShell-specific anti-patterns (left-clustered actions, empty right side, ambiguous primary-action placement).
 - Recommend a redesign that respects DESIGN.md's tokenized colors and PRODUCT.md's editorial-confident voice (one brass moment per screen).

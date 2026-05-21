@@ -2,7 +2,6 @@
 name: i18n and l10n Goals
 description: User locale preferences — country drives date/number/timezone defaults. Number format is per-user, NOT per-currency.
 type: project
-originSessionId: 132c537e-108e-499c-8f92-fb20140f80f3
 ---
 User wants to add internationalization/localization features:
 

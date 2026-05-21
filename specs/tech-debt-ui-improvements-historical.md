@@ -2,7 +2,6 @@
 name: UI/UX Historical Log
 description: Completed-item history only. All forward-looking work migrated to project_roadmap.md (single source of truth) on 2026-04-20.
 type: project
-originSessionId: c173ba6d-e79b-4e8b-afdf-2ed15a799de4
 ---
 # UI/UX Historical Log
 

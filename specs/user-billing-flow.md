@@ -2,7 +2,6 @@
 name: User Billing Flow
 description: fjorge's real-world billing/cycle workflow — informs the org-admin period UI redesign brainstorm
 type: project
-originSessionId: 1d48e329-4340-4f5d-a67c-182b3d3f7479
 ---
 How fjorge actually runs his finances (target UX context for the period management redesign):
 

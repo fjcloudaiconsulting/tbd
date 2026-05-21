@@ -2,7 +2,6 @@
 name: localStorage Scope for Persisted Sort/Filter Keys (post-#195)
 description: PR #195 introduced sort + filter persistence keys keyed by surface only (`pfv:sort:transactions`, etc). Reviewer flagged as non-blocking residual: scope by org/user when shared-browser org switching becomes common.
 type: project
-originSessionId: 0bf77f16-13ef-4926-8a64-7a5ddd96efc6
 ---
 **Captured 2026-05-10.** Non-blocking residual flagged by external reviewer when approving PR #195. Park for post-launch.
 

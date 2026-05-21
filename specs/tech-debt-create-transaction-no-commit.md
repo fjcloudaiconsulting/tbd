@@ -2,7 +2,6 @@
 name: _create_transaction_no_commit double-lock optimization (deferred)
 description: Pre-lock pattern in convert_and_create_leg + create_transfer_pair causes _create_transaction_no_commit to re-enter the account lock internally. Acceptable today; cleanup opportunity is a no-lock "create with already-locked account" helper.
 type: project
-originSessionId: c08a4469-7a56-42db-a6cd-d380693d40d3
 ---
 **Status:** Deferred follow-up. Non-blocking. Flagged 2026-05-03 by reviewer during PR #118 final pass.
 

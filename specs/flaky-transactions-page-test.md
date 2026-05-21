@@ -2,7 +2,6 @@
 name: Flaky frontend test — transactions-page Task D7 transfer-wiring action column
 description: Frontend test tests/app/transactions-page.test.tsx > "TransactionsPage — transfer wiring (Task D7) > Per-row action column renders all actions on a single un-linked row (responsive layout)" intermittently fails in CI on getByRole('button', { name: /Mark as transfer: Solo tx/i }). Backend-only PRs (no frontend diff) have hit it. Likely a timing/visibility race with the responsive-layout DOM tree.
 type: project
-originSessionId: 8c696f02-828f-45cb-8352-6fc04e4fb413
 ---
 # Flaky test: transactions-page Task D7 action column
 

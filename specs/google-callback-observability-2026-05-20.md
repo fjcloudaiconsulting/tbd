@@ -1,10 +1,6 @@
 ---
 name: project-google-callback-observability-2026-05-20
 description: "Tomorrow-me's PR plan for the Google SSO callback hang surfaced 2026-05-19. Architect-locked constraints, framing, and scope fence."
-metadata: 
-  node_type: memory
-  type: project
-  originSessionId: 03afad38-c810-4af2-92cd-e1e586905784
 ---
 
 # Google callback observability PR — 2026-05-20

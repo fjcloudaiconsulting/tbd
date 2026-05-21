@@ -2,7 +2,6 @@
 name: uvicorn.error logger name (cosmetic)
 description: P3 polish — uvicorn's "uvicorn.error" logger name is misleading because it carries info/warning/error events alike. Cosmetic only; no behavior change.
 type: project
-originSessionId: 672f9f52-7ffa-43a4-9e88-ffc9e47e0229
 ---
 ## What
 

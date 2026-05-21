@@ -2,13 +2,12 @@
 name: Remove vs Deactivate org member — investigate semantics
 description: User-reported 2026-05-14 — clicking "Remove" on org member soft-deactivates instead of removing. Decide intent and align endpoint + UI copy.
 type: project
-originSessionId: e75406f8-d01b-42d2-aa05-cdc574be2d1a
 ---
 # Remove vs Deactivate org member
 
-## Observation (2026-05-14, fjorge)
+## Observation (2026-05-14, operator)
 
-Tried to delete user `jorge.flamarion` (email `jorge.flamarion@icloud.com`) from Org id=1 via the admin UI. Result: user was deactivated, not removed. If the UI exposes both "Deactivate" and "Remove" actions, "Remove" should effectively remove the membership.
+Tried to delete a test user from Org id=1 via the admin UI. Result: user was deactivated, not removed. If the UI exposes both "Deactivate" and "Remove" actions, "Remove" should effectively remove the membership.
 
 ## Context
 

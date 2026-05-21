@@ -2,7 +2,6 @@
 name: CSP Console Warning Audit
 description: Investigate browser CSP warning (script-src blocked eval/string evaluation). DO NOT add 'unsafe-eval' to production CSP. Investigate first; the warning is most likely dev-only or third-party.
 type: project
-originSessionId: 0bf77f16-13ef-4926-8a64-7a5ddd96efc6
 ---
 **Captured 2026-05-10.** Backlog item, P2 priority. Raise to P1 only if reproduced in deployed production AND breaks functionality.
 

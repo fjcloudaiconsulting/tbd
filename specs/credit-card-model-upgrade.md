@@ -2,7 +2,6 @@
 name: Credit Card Account Model Upgrade
 description: 2026-05-15 owner backlog. Critical assessment of a suggested CC model upgrade — keeps the useful pieces (credit limit, statement closing/due day, payment source linkage) and rejects the bank-replication pieces (cron-based statement reset, interest accrual, computed min payment).
 type: project
-originSessionId: 31bd894a-67ce-4301-b8b1-880672646504
 ---
 # Credit Card Account Model Upgrade
 

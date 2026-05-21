@@ -1,10 +1,6 @@
 ---
 name: ci-test-sharding-followup
 description: "Architect-aligned plan to shard backend pytest in GitHub Actions after a timing audit; target <3 min backend check, preserve full-suite semantics"
-metadata: 
-  node_type: memory
-  type: project
-  originSessionId: 61ba1946-1626-4e59-9b33-07b26d7a04eb
 ---
 
 # CI test sharding — near-term follow-up (2026-05-17)

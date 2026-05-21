@@ -2,7 +2,6 @@
 name: Billing Period Settlement Design
 description: settled_date field determines which billing period a transaction counts against — critical for CC late settlements
 type: project
-originSessionId: abad3c60-c398-4e0e-851e-811d6900a085
 ---
 **Design decision (2026-04-13):** Transactions have both `date` (purchase date) and `settled_date` (when settled).
 

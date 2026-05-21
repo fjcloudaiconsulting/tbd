@@ -2,7 +2,6 @@
 name: Brand consolidation (pre-1.0 launch) — PARTIAL
 description: Standardize naming on "The Better Decision" + product logo. Customer-facing surfaces mostly shipped (#125, #224, #228, #229, #230, #231). Internal/operational rename (repo, working dir, CLI script, compose services, DB name, env vars, memory slug) still open; product-logo asset set may also have residual scope beyond #224's foundation pass. Architect decision pending on internal rename scope.
 type: project
-originSessionId: 497b4e5b-526f-4ed1-bca0-0ee0c5bbc716
 ---
 **STATUS: 🟡 PARTIAL.** Customer-facing brand work shipped through multiple PRs:
 - **PR #125** (L5.7): brand-consistent error / 404 / loading fallbacks.
@@ -12,7 +11,7 @@ originSessionId: 497b4e5b-526f-4ed1-bca0-0ee0c5bbc716
 - **PR #230** (L5.1): landing brand integration.
 - **PR #231** (L5.6): brand-aligned email templates.
 
-**Still open:** internal/operational rename scope (repo `flamarion/pfv`, working dir `/Users/fjorge/src/pfv`, `./pfv` CLI → `./tbd`, compose service names, DB name `pfv2`, env var prefixes, Claude memory slug). Architect to decide full-rename vs grandfather, then scope and dispatch.
+**Still open:** internal/operational rename scope (repo `flamarion/pfv`, the local working dir under the operator's home, `./pfv` CLI → `./tbd`, compose service names, DB name `pfv2`, env var prefixes, Claude memory dir slug). Architect to decide full-rename vs grandfather, then scope and dispatch.
 
 Original 2026-05-08 capture below preserved for context.
 
@@ -33,12 +32,12 @@ Today the name splits: "The Better Decision (TBD)" in customer-facing surfaces (
 
 **Internal/operational surfaces (decision needed: full rename vs. grandfather):**
 - GitHub repo: `flamarion/pfv` → e.g. `flamarion/the-better-decision` or `flamarion/tbd` (renames preserve issue/PR history; GitHub auto-sets up redirects)
-- Local working dir: `/Users/fjorge/src/pfv` → match
+- Local working directory under the operator's home → match the chosen new name
 - CLI script: `./pfv start|stop|...` → `./tbd` (or a wrapper aliasing the old name during transition)
 - Docker compose service names: `pfv-backend`, `pfv-frontend`, `pfv-mysql`, `pfv-redis`, `pfv-nginx`
 - DB name: `pfv2` → decide
 - Env var prefixes (if any `PFV_*` exist) → decide
-- Claude memory dir slug: `~/.claude/projects/-Users-fjorge-src-pfv/` is derived from the working directory. Renaming the dir creates a new slug; old memory becomes orphaned. Plan a one-time copy.
+- Claude memory dir slug: derived from the local working directory path. Renaming the working dir creates a new slug; old memory becomes orphaned. Plan a one-time copy.
 
 ### 2. Logo design
 

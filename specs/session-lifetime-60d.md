@@ -1,10 +1,6 @@
 ---
 name: session-lifetime-60d
 description: "Pending spec — separate refresh-TTL (idle ceiling) from absolute-session-lifetime semantics, allow org override up to 60 days. Surfaced during the 2026-05-16 cookie-shadow incident when fjorge's expected \"60-day session\" turned out not to be configured anywhere."
-metadata: 
-  node_type: memory
-  type: project
-  originSessionId: 61ba1946-1626-4e59-9b33-07b26d7a04eb
 ---
 
 # Session-lifetime semantics + 60d org override (pending spec)

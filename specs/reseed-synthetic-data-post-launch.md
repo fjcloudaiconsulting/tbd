@@ -2,7 +2,6 @@
 name: In-app reseed with synthetic data
 description: 2026-05-14 fjorge — affordance to load demo / synthetic data from the UI, for users who skip the onboarding opt-in or who wipe their org data and want to see the system populated again.
 type: project
-originSessionId: e75406f8-d01b-42d2-aa05-cdc574be2d1a
 ---
 # In-app reseed with synthetic data
 

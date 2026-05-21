@@ -2,7 +2,6 @@
 name: Frontend Decimal Typing Debt (deferred)
 description: Backend serializes Decimal fields as JSON strings; frontend types them as `number` and coerces at usage sites. Working but not type-honest. Flagged 2026-05-03 during PR-D/PR-E review; explicitly not blocking, deferred to a dedicated cleanup PR.
 type: project
-originSessionId: c08a4469-7a56-42db-a6cd-d380693d40d3
 ---
 **Status:** Deferred technical debt. Not blocking any current work. Flagged 2026-05-03 by reviewer during PR-D / PR-E re-review of transfers-between-accounts: "the frontend still follows the existing project convention of typing Decimal-backed amount fields as `number`, even though backend serialization encodes Decimal as strings. Current PR-D/PR-E code coerces safely, so I would not block these PRs on that broader type debt."
 

@@ -2,7 +2,6 @@
 name: Localized Import Intelligence (long-term thread)
 description: Architect direction (2026-05-02) for evolving import categorization beyond the global deterministic L3.10 baseline into a locale-aware system. Captures the lookup order, telemetry shape, and per-locale extensions planned post-L3.10.
 type: project
-originSessionId: 672f9f52-7ffa-43a4-9e88-ffc9e47e0229
 ---
 ## Direction (architect-locked 2026-05-02)
 

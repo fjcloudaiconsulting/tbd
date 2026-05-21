@@ -1,10 +1,6 @@
 ---
 name: bot-signup-wave-captcha-gate-tomorrow-first-thing
 description: "2026-05-20 EOD — bot wave hitting /register with garbage usernames (e.g. \"XzYtsQPnOBeMfkdTQYV\"), never verifying. 403/445 emails bouncing (~90% bounce rate). Op manually deleting orgs. First-thing-tomorrow: add CAPTCHA to registration."
-metadata: 
-  node_type: memory
-  type: project
-  originSessionId: 07e4bc03-eeac-434d-b0e3-5566db6bbda8
 ---
 
 # Bot signup wave — CAPTCHA gate (P0 for 2026-05-21)

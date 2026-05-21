@@ -2,7 +2,6 @@
 name: Dashboard Recent Transactions Column Order + Status Column — SHIPPED #256
 description: SHIPPED via PR #256 on 2026-05-13. Dashboard Recent Transactions now matches /transactions column order (Date → Description → Status → Amount) with sortable Status pill and right-aligned tabular-nums Amount.
 type: project
-originSessionId: 0bf77f16-13ef-4926-8a64-7a5ddd96efc6
 ---
 **Status:** SHIPPED via PR #256, commit `44b8bf3`, merged 2026-05-13.
 

@@ -2,7 +2,6 @@
 name: Payment Source Account Foundation
 description: 2026-05-15 architect-locked sequencing — ship the shared payment_source_account_id plumbing as its own PR before any CC or Loan UX work. Foundation only. No payment automation, no generated transactions, no cron jobs.
 type: project
-originSessionId: 31bd894a-67ce-4301-b8b1-880672646504
 ---
 # Payment Source Account Foundation
 

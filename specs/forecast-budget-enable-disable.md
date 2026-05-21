@@ -2,7 +2,6 @@
 name: Forecast + Budget enable/disable at org level (post-critical-work)
 description: Owner idea captured 2026-05-13. Move the per-page "Hide details" switch on Forecast plans (and a similar future affordance on Budget) up to Org configuration as an "Enable/Disable Forecasts" + "Enable/Disable Budgets" toggle. Not a current-batch dispatch; revisit when critical work is done.
 type: project
-originSessionId: 8c696f02-828f-45cb-8352-6fc04e4fb413
 ---
 # Forecast + Budget enable/disable at org level
 

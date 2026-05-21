@@ -2,7 +2,6 @@
 name: ./pfv start dev-dependency-drift guard (XS) — SHIPPED #249
 description: SHIPPED via PR #249 on 2026-05-13. Frontend lock-file drift between host and container now warns on ./pfv start/restart/status/logs frontend/shell frontend. Optional backend stretch goal not done.
 type: project
-originSessionId: 17ea612e-f064-4be7-b422-256d0da7b876
 ---
 # `./pfv start` dev-dependency-drift guard — SHIPPED
 

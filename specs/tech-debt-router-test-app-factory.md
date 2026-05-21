@@ -2,7 +2,6 @@
 name: Centralized router test-app factory
 description: Centralize router test app construction so security middleware and exception handlers are opt-in by default, not manually re-created per file. Small tech-debt follow-up surfaced during PR #164 review.
 type: project
-originSessionId: 497b4e5b-526f-4ed1-bca0-0ee0c5bbc716
 ---
 Captured 2026-05-08. Small tech-debt follow-up, NOT blocking #164.
 

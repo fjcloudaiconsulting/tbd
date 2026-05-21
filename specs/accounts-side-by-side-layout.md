@@ -2,7 +2,6 @@
 name: Accounts Page Side-by-Side Layout (follow-up to PR #199)
 description: User suggestion 2026-05-10 to put Account Types and Accounts cards side-by-side again, but with reduced "Account" column widths so both cards fit cleanly without the cramping that made PR #199 necessary.
 type: project
-originSessionId: 0bf77f16-13ef-4926-8a64-7a5ddd96efc6
 ---
 **Captured 2026-05-10.** PR #199 stacked the two cards vertically because the side-by-side layout cramped the Accounts list at lg+ viewports. User confirmed the stack works ("it's fixed"), but suggested an alternative shape:
 

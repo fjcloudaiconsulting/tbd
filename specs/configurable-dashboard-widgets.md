@@ -2,7 +2,6 @@
 name: Configurable Dashboard / Widget System
 description: Let users add, remove, and reorder cards on Dashboard (and later other pages) like widgets. Friend feedback 2026-05-09.
 type: project
-originSessionId: 0bf77f16-13ef-4926-8a64-7a5ddd96efc6
 ---
 **Captured 2026-05-10.** Friend feedback echoed by the user. Not a launch blocker. Sized L-XL depending on scope. Parks for post-launch.
 
