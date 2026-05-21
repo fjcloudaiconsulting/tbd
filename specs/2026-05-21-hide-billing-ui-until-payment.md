@@ -42,7 +42,7 @@ Confirmed by a code survey on 2026-05-21:
 |---|---|---|
 | `frontend/components/ui/TrialBanner.tsx` | Persistent trial badge in AppShell header (countdown / "Upgrade" / "Free Plan" CTAs). | Render nothing. |
 | `frontend/components/AppShell.tsx:33,461` | Imports + places `<TrialBanner />` in the header. | No edit needed — the conditional lives inside TrialBanner. |
-| `frontend/app/settings/billing/page.tsx` | Plan grid, current-plan card, upgrade / downgrade / cancel buttons. | Render explanatory empty state: heading + body copy "Billing isn't available yet. We will let you know when subscriptions launch." Keep the page accessible by URL but skip the data-fetch effects. |
+| `frontend/app/settings/billing/page.tsx` | Plan grid, current-plan card, upgrade / downgrade / cancel buttons. | Render explanatory empty state with the architect-locked copy: "Subscriptions are not available yet. We will let you know when paid plans launch." Keep the page accessible by URL but skip the data-fetch effects. |
 | `frontend/components/SettingsLayout.tsx:13` | "Billing" tab entry in settings nav (owner-only). | Filter the entry out of the rendered nav tabs. |
 | `frontend/app/page.tsx:48` | Marketing line "Create your free account and start making better decisions with your money. 14-day free trial, no credit card required." | Conditionally drop the second sentence. See "Landing page constraint" below. |
 | `frontend/components/onboarding/OnboardingPageBody.tsx:373` | Single mention of "billing" in a feature description ("plan for what is next, and stay on top of every billing"). | Review during implementation — likely refers to transaction billing periods, not subscription billing. If transaction-billing, leave. If sub-billing, drop. |
