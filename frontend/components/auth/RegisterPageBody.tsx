@@ -266,7 +266,7 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
               <Turnstile
                 ref={turnstileRef}
                 siteKey={captchaSiteKey}
-                options={{ action: "register", appearance: "interaction-only" }}
+                options={{ action: "register", appearance: "always" }}
                 scriptOptions={{ nonce: cspNonce }}
                 onSuccess={(token) => setCaptchaToken(token)}
                 onExpire={() => setCaptchaToken("")}
