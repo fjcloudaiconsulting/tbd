@@ -21,10 +21,19 @@ import { input } from "@/lib/styles";
  *
  * Behavior:
  *   - User types -> debounced fetch (200ms). Minimum prefix length 1.
- *   - Enter / Tab / comma commits the typed text as a chip. The
+ *   - Enter / Tab / comma commits the typed text OR the currently-
+ *     highlighted autocomplete suggestion (whichever is active). The
  *     transactions submit path posts the chip names to
- *     PUT /api/v1/transactions/{id}/tags which auto-creates any
- *     tags the org has not used before.
+ *     PUT /api/v1/transactions/{id}/tags which auto-creates any tags
+ *     the org has not used before.
+ *   - Space ALWAYS commits the typed draft (never the highlighted
+ *     suggestion). Space is the most discoverable "add another tag"
+ *     shortcut for users coming from social platforms; routing it
+ *     past the suggestion list keeps the behavior intuitive — typing
+ *     "bike[space]" commits "bike" even if "biking" is highlighted.
+ *     Multi-word tags from the keyboard are no longer typeable; use
+ *     a hyphen ("bike-commute") or click a suggestion that already
+ *     contains a space.
  *   - Backspace on an empty input removes the last chip.
  *   - Click suggestion commits chip.
  *   - Each chip carries a remove "x" with aria-label="Remove tag <name>".
@@ -257,6 +266,23 @@ export default function TagChipInput({
   }, []);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    // Space is the "commit my typed draft now" shortcut. Routed
+    // separately from Enter / Tab / comma so it NEVER accepts the
+    // currently-highlighted suggestion — pressing space conceptually
+    // ends the word the user is typing, not the word autocomplete is
+    // offering. Architect call 2026-05-21 after the PR #334 review.
+    //
+    // Always preventDefault so a real browser doesn't insert a literal
+    // space character into the input (which the test harness can't
+    // observe via fireEvent.keyDown).
+    if (e.key === " ") {
+      e.preventDefault();
+      if (draft.trim()) {
+        commitChip(draft);
+      }
+      return;
+    }
+
     if (e.key === "Enter" || e.key === "Tab" || e.key === ",") {
       // Tab still moves focus; Enter / comma stay inside the input
       // to commit. We only intercept Tab when there's a draft so
