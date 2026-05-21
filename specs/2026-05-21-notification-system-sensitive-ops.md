@@ -1,7 +1,17 @@
 # Notification system for sensitive operations — design
 
-**Status:** design only, awaiting architect review. Not yet implemented.
+**Status:** good direction per architect 2026-05-21, but **needs another architecture pass before implementation**. Today's calls baked into the relevant sections; the open architecture pass concerns the larger interaction model (batching / queue-future / SSE-vs-poll / per-event dispatch model). Implement #330 first; revisit this spec after.
 **Date:** 2026-05-21.
+
+## Architect resolutions (2026-05-21)
+
+* **Rollout reorder**: audit gap closures become **PR 1** (was PR 2). They are useful independently and lower risk. Substrate (model/service/endpoints) drops to PR 2.
+* **`account.deleted` path**: capture target email BEFORE deletion. Commit the delete + audit row. THEN schedule the email via BackgroundTasks (after successful commit). SKIP the in-app notification row (no user to read it).
+* **`email_security=False` semantic**: REJECT with 400 (or coerce silently to `True`). Do NOT accept-but-ignore — that creates misleading persisted state. Spec recommendation: reject with 400 `{"code": "security_emails_required"}`.
+* **AppShell mount**: bell goes beside the avatar dropdown. NOT in the TrialBanner slot.
+* **i18n posture**: hardcoded English templates acceptable for v1.
+* **Mailgun fanout**: acceptable for small orgs. Log the recipient count on each broadcast. Batching / queue stays out of scope.
+* **Pending second architecture pass** before implementation.
 **Source:** operator request 2026-05-21 (today's CAPTCHA session follow-on scope). Users should be notified when sensitive operations happen to their account or org (plan change, user deletion, MFA toggle, password change, role change, etc.) so they can react if it wasn't them. Per-category opt-out, with security events forcibly on.
 
 ## Goal
@@ -227,13 +237,13 @@ Examples:
   * Security row is rendered as disabled / locked.
   * Mark-all-read button calls the right endpoint.
 
-## Rollout
+## Rollout (architect-reordered 2026-05-21)
 
-Single feature, but big enough to split into a PR train:
+Single feature, big enough to split into a PR train. Order updated per architect to put audit gap closures first (low risk, independently useful):
 
-1. **PR 1 — substrate.** Migrations + models + services + the GET/POST endpoints. No hooks yet. No frontend.
-2. **PR 2 — audit gap closures.** Add the missing `audit_event` writes (password, MFA, email change, plan change). Does not call `dispatch_notification` yet.
-3. **PR 3 — first hook batch (security category).** Wire `dispatch_notification` from password change, MFA enable/disable, email change. Bell icon + popover in AppShell.
+1. **PR 1 — audit gap closures.** Add the missing `audit_event` writes (password, MFA, email change, plan change). Does NOT call `dispatch_notification` yet — that wiring lands in PRs 3-4. Independently shippable + reverts cleanly. (Was PR 2.)
+2. **PR 2 — substrate.** Migrations + models + services + the GET/POST endpoints. No hooks yet. No frontend. (Was PR 1.)
+3. **PR 3 — first hook batch (security category).** Wire `dispatch_notification` from password change, MFA enable/disable, email change. Bell icon + popover in AppShell (beside avatar dropdown).
 4. **PR 4 — second hook batch (account + org_admin).** Plan change, role change, org rename, org data wipe.
 5. **PR 5 — settings page.** `/settings/notifications` with per-category toggles + full list view.
 
@@ -250,13 +260,24 @@ Each PR self-contained and reverts cleanly. PRs 2-5 can ship over multiple days.
 * **Audit ↔ notification correlation UI** — operator-facing tooling to see "this audit event → these notifications" is not built. The `event_type + user_id + created_at` correlation is enough for ad-hoc DB queries.
 * **Account deletion notification UI** — the in-app row is skipped (no user to read it), but the email still fires from the last-known address. No special UI.
 
-## Open questions for architect
+## Open questions for architect — RESOLVED 2026-05-21
 
-1. **Notification row writes for `account.deleted` (target user gone) — confirm the path that skips the row but still sends the email.** Spec recommends: the auth context for the route is the *admin* doing the delete; we look up the target user's email FIRST, then delete, then `background_tasks.add_task(send_notification_email, target_email, ...)`. Architect: agree, or is there a transactional safety concern?
-2. **AppShell mount: replace TrialBanner location or sit beside it?** Once spec #12 lands and `BILLING_UI_ENABLED=false`, TrialBanner doesn't render anyway in prod, so the slot frees up. Spec leans toward "beside the avatar dropdown."
-3. **Per-event title/body strings — i18n posture.** Spec assumes English strings hardcoded in `notification_service.py` per event type. Roadmap P2 has i18n; consistent with the rest of the codebase.
-4. **`email_security=False` semantic.** Spec says we accept the write but ignore at dispatch. Alternative: reject the write with 400. Spec recommends accept-but-ignore so the API surface is uniform; the UI shows the row as locked.
-5. **Broadcast email blast on org_data_reset.** That event fires once but emails N org members. Mailgun rate / reputation impact for N>20 should be modeled. Architect: any concerns, or is this small enough to ignore?
+1. ~~`account.deleted` path~~ → **Locked**: capture target email BEFORE delete, commit delete + audit row, THEN schedule email AFTER successful commit. Skip in-app row.
+2. ~~AppShell mount: TrialBanner slot vs avatar dropdown~~ → **Avatar dropdown locked.**
+3. ~~i18n posture~~ → **Hardcoded English locked for v1.**
+4. ~~`email_security=False` semantic~~ → **Reject with 400 `code=security_emails_required`** (or coerce to True). NOT accept-but-ignore.
+5. ~~Mailgun fanout for org-wide events~~ → **Acceptable for small orgs.** Log recipient count on each broadcast. Batching/queue stays out of scope.
+
+## Open for the second architecture pass
+
+The architect approved direction but flagged a second pass before implementation. Not yet resolved:
+
+* End-to-end interaction model under load (concurrent sensitive ops, race conditions between audit write and notification dispatch).
+* Future-queue-readiness — what's the smallest change today that wouldn't paint us into a corner if/when we introduce a real queue (RQ / arq) later?
+* SSE vs polling for bell-icon refresh — the spec defaults to 60s polling; architect may want a different cadence or push.
+* Per-event dispatch model — service-method-per-event vs single generic dispatcher with a registry. Spec assumes the former (call-site decides); architect may want explicit category→event mapping.
+
+Resolve these in the second pass, then this spec gets a "ready to implement" stamp.
 
 ## Naming + cross-references
 
