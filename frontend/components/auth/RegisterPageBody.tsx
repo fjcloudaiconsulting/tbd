@@ -3,9 +3,10 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
 import { useAuth } from "@/components/auth/AuthProvider";
 import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiResponseError } from "@/lib/api";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, error as errorCls, success } from "@/lib/styles";
@@ -22,7 +23,16 @@ interface UsernameCheck {
   suggestion: string | null;
 }
 
-export default function RegisterPageBody() {
+interface AuthStatus {
+  needs_setup: boolean;
+  captcha_required: boolean;
+}
+
+interface RegisterPageBodyProps {
+  cspNonce: string;
+}
+
+export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
   const { user, register, loading } = useAuth();
   const router = useRouter();
 
@@ -44,6 +54,29 @@ export default function RegisterPageBody() {
   const [submitting, setSubmitting] = useState(false);
   const [registered, setRegistered] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  // Backend-driven captcha gate. Read once on mount from /auth/status so
+  // a backend CAPTCHA_REQUIRED flip is also a real frontend rollback on
+  // the next page load (architect correction #2).
+  const [captchaRequired, setCaptchaRequired] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState("");
+  const turnstileRef = useRef<TurnstileInstance>(null);
+  const captchaSiteKey = process.env.NEXT_PUBLIC_CAPTCHA_SITE_KEY ?? "";
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await apiFetch<AuthStatus>("/api/v1/auth/status");
+        if (!cancelled) setCaptchaRequired(Boolean(status.captcha_required));
+      } catch {
+        // Treat a status fetch failure as "captcha not required" so the
+        // form remains usable; the backend is the real enforcement.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Auto-suggest username from name
   useEffect(() => {
@@ -92,10 +125,27 @@ export default function RegisterPageBody() {
     if (password !== password2) { setError("Passwords do not match"); return; }
     setSubmitting(true);
     try {
-      await register(username, email, password, orgName || undefined, firstName || undefined, lastName || undefined);
+      await register(
+        username,
+        email,
+        password,
+        orgName || undefined,
+        firstName || undefined,
+        lastName || undefined,
+        captchaToken || undefined,
+      );
       setRegistered(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed");
+      const message = err instanceof Error ? err.message : "Registration failed";
+      // The Cloudflare Turnstile token is single-use AND short-lived
+      // (5 min). Match the backend's structured ``code=captcha_failed``
+      // (NOT the human-readable message) so a copy edit to the message
+      // never silently breaks the widget reset.
+      if (err instanceof ApiResponseError && err.code === "captcha_failed") {
+        turnstileRef.current?.reset();
+        setCaptchaToken("");
+      }
+      setError(message);
     } finally {
       setSubmitting(false);
     }
@@ -211,6 +261,19 @@ export default function RegisterPageBody() {
             </Link>
             .
           </p>
+          {captchaRequired && captchaSiteKey && (
+            <div data-testid="captcha-widget">
+              <Turnstile
+                ref={turnstileRef}
+                siteKey={captchaSiteKey}
+                options={{ action: "register", appearance: "interaction-only" }}
+                scriptOptions={{ nonce: cspNonce }}
+                onSuccess={(token) => setCaptchaToken(token)}
+                onExpire={() => setCaptchaToken("")}
+                onError={() => setCaptchaToken("")}
+              />
+            </div>
+          )}
           <button type="submit" disabled={submitting || usernameStatus === "taken"} className={`w-full ${btnPrimary}`}>
             {submitting ? "Creating account..." : "Create Account"}
           </button>

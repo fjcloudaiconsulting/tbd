@@ -81,6 +81,14 @@ export function buildCspDirectives(nonce: string): string {
   const styleSrc = isDev
     ? `style-src 'self' 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com`
     : `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`;
+  // Cloudflare Turnstile origins — required for the bot-signup gate on
+  // /register. ``script-src`` does NOT need challenges.cloudflare.com
+  // because ``strict-dynamic`` lets the nonce-bearing loader (rendered
+  // by @marsidev/react-turnstile with the per-request nonce) fetch the
+  // remote bundle on our behalf. ``frame-src`` is required: the widget
+  // renders an iframe from that origin. ``connect-src`` covers XHRs
+  // initiated by the iframe back to its own origin.
+  const turnstileOrigin = "https://challenges.cloudflare.com";
   return [
     "default-src 'self'",
     scriptSrc,
@@ -88,7 +96,8 @@ export function buildCspDirectives(nonce: string): string {
     "style-src-attr 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data: https://fonts.gstatic.com",
-    `connect-src 'self'${apiOrigin() ? " " + apiOrigin() : ""}${isDev ? " ws: wss:" : ""}`,
+    `connect-src 'self' ${turnstileOrigin}${apiOrigin() ? " " + apiOrigin() : ""}${isDev ? " ws: wss:" : ""}`,
+    `frame-src ${turnstileOrigin}`,
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -117,7 +126,8 @@ export const cspDirectives = [
   "style-src-attr 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data: https://fonts.gstatic.com",
-  `connect-src 'self'${apiOrigin() ? " " + apiOrigin() : ""}${isDev ? " ws: wss:" : ""}`,
+  `connect-src 'self' https://challenges.cloudflare.com${apiOrigin() ? " " + apiOrigin() : ""}${isDev ? " ws: wss:" : ""}`,
+  "frame-src https://challenges.cloudflare.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

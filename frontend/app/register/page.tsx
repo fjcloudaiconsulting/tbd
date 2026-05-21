@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import RegisterPageBody from "@/components/auth/RegisterPageBody";
+import { readNonce } from "@/lib/nonce";
 import { pageSocialMeta, siteName } from "@/lib/site";
 
 const description =
@@ -18,6 +19,11 @@ export const metadata: Metadata = {
   }),
 };
 
-export default function RegisterPage() {
-  return <RegisterPageBody />;
+export default async function RegisterPage() {
+  // The Turnstile widget script must carry the per-request CSP nonce
+  // (strict-dynamic CSP rejects nonceless scripts in production). Read
+  // it from the proxy-injected ``x-nonce`` header and pass to the
+  // client component, which forwards it to ``<Turnstile scriptOptions>``.
+  const nonce = await readNonce();
+  return <RegisterPageBody cspNonce={nonce} />;
 }

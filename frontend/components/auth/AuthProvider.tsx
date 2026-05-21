@@ -76,6 +76,7 @@ interface AuthContextValue {
     orgName?: string,
     firstName?: string,
     lastName?: string,
+    captchaToken?: string,
   ) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -217,6 +218,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     orgName?: string,
     firstName?: string,
     lastName?: string,
+    captchaToken?: string,
   ) => {
     await apiFetch<User>("/api/v1/auth/register", {
       method: "POST",
@@ -227,6 +229,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         org_name: orgName || undefined,
         first_name: firstName || undefined,
         last_name: lastName || undefined,
+        captcha_token: captchaToken || undefined,
       }),
     });
   };

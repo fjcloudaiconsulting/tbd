@@ -150,6 +150,60 @@ services:
       - key: PFV_RUNTIME
         scope: RUN_AND_BUILD_TIME
         value: "app_platform"
+      # CAPTCHA gate on /api/v1/auth/register. Turnstile-by-default. Flip
+      # CAPTCHA_REQUIRED to "false" as the rollback path during a provider
+      # outage — the same value is exposed via /api/v1/auth/status so the
+      # frontend stops rendering the widget on the next page load. The
+      # secret below is the Cloudflare Turnstile siteverify secret; rotate
+      # via the Cloudflare dashboard, then re-encrypt here.
+      #
+      # SHIPPING AS "false" UNTIL CLOUDFLARE SETUP IS DONE. With the secret
+      # + site key still empty, "true" would fail-closed every register
+      # attempt with REASON_MISCONFIGURED. Flip back to "true" in the same
+      # commit that lands the real site key and encrypted CAPTCHA_SECRET
+      # EV[] blob below, then redeploy.
+      - key: CAPTCHA_REQUIRED
+        scope: RUN_AND_BUILD_TIME
+        value: "false"
+      - key: CAPTCHA_PROVIDER
+        scope: RUN_AND_BUILD_TIME
+        value: "turnstile"
+      - key: CAPTCHA_VERIFY_URL
+        scope: RUN_AND_BUILD_TIME
+        value: "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+      - key: CAPTCHA_VERIFY_TIMEOUT_S
+        scope: RUN_AND_BUILD_TIME
+        value: "5"
+      - key: CAPTCHA_EXPECTED_HOSTNAME
+        scope: RUN_AND_BUILD_TIME
+        value: "app.thebetterdecision.com"
+      - key: CAPTCHA_EXPECTED_ACTION
+        scope: RUN_AND_BUILD_TIME
+        value: "register"
+      # CAPTCHA_SECRET — Cloudflare Turnstile siteverify secret.
+      #
+      # The value MUST land here as an encrypted EV[] blob, not be left
+      # empty after a console-only update. .do/app.yaml is the authoritative
+      # spec on every `doctl apps update --spec` and on the GitHub Actions
+      # deploy; an empty value here will overwrite whatever was set via the
+      # DO console on the next deploy. See reference_do_spec_sync.md.
+      #
+      # Setup flow:
+      #   1. Create the Turnstile widget at https://dash.cloudflare.com/?to=/:account/turnstile
+      #      for app.thebetterdecision.com. Copy the site key into the
+      #      NEXT_PUBLIC_CAPTCHA_SITE_KEY value below.
+      #   2. Add the Turnstile secret via the DO console (this app's
+      #      Settings → App-Level Environment Variables → backend service).
+      #      Save — DO encrypts it server-side.
+      #   3. `doctl apps spec get <app-id> --format yaml` and copy the
+      #      fresh `value: EV[...]` blob for CAPTCHA_SECRET into this
+      #      file, replacing the empty value below.
+      #   4. Flip CAPTCHA_REQUIRED above to "true" in the same commit.
+      #   5. Push → deploy.
+      - key: CAPTCHA_SECRET
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: ""
 
   - name: frontend
     github:
@@ -192,6 +246,19 @@ services:
       - key: BACKEND_INTERNAL_URL
         scope: RUN_TIME
         value: ${backend.PRIVATE_URL}
+      # Turnstile widget site key. NEXT_PUBLIC_* envs are inlined into the
+      # static JS bundle at build, so a key change requires a frontend
+      # rebuild (`doctl apps update --spec` triggers it). Leave value
+      # empty until the Cloudflare site is created — the widget render is
+      # gated on both the backend's CAPTCHA_REQUIRED flag AND a non-empty
+      # site key, so an empty value means no widget renders even if the
+      # backend asks for one.
+      - key: NEXT_PUBLIC_CAPTCHA_PROVIDER
+        scope: RUN_AND_BUILD_TIME
+        value: "turnstile"
+      - key: NEXT_PUBLIC_CAPTCHA_SITE_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ""
 
 # Pre-deploy job: run Alembic migrations exactly once before any backend
 # replica starts. This is the canonical "init container" pattern for App

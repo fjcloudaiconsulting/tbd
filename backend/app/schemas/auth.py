@@ -22,6 +22,11 @@ class RegisterRequest(BaseModel):
     first_name: str | None = Field(default=None, max_length=100)
     last_name: str | None = Field(default=None, max_length=100)
     org_name: str | None = Field(default=None, max_length=200)
+    # Cloudflare Turnstile tokens are bounded at 2048 chars; the bound
+    # also prevents an attacker from pinning the server in the siteverify
+    # POST with an unbounded payload. The field is treated as sensitive
+    # by ``main.py`` 422 redaction (`_SENSITIVE_FIELD_NAMES`).
+    captcha_token: str | None = Field(default=None, max_length=2048)
 
 
 class LoginRequest(BaseModel):

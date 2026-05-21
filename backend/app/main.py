@@ -318,6 +318,11 @@ _SENSITIVE_FIELD_NAMES = frozenset({
     # No `country_code` / `currency_code` exists in schemas today, so the
     # bare match has no false positives.
     "code",
+    # Cloudflare Turnstile response token submitted by the register
+    # form. The token is single-use at Cloudflare's end (300 s TTL) but
+    # is still bearer-shaped data that should never round-trip into a
+    # 422 response body.
+    "captcha_token",
 })
 
 _REDACTED = "<redacted>"
