@@ -102,6 +102,32 @@ class Settings(BaseSettings):
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
     trial_duration_days: int = 14
 
+    # CAPTCHA (registration bot gate)
+    # When ``captcha_required`` is True the ``/api/v1/auth/register`` handler
+    # calls ``app.captcha.verify_captcha`` BEFORE any DB work or email send,
+    # and refuses registration on any non-OK result (rejection, timeout,
+    # mismatch). When False the verify call short-circuits to ok=disabled and
+    # registration proceeds without a captcha token.
+    #
+    # Flipping ``captcha_required`` is the rollback path during a provider
+    # outage — frontend reads the same flag from ``/api/v1/auth/status`` so a
+    # backend flip-to-False also drops the widget-render gate on the next
+    # page load.
+    #
+    # ``captcha_secret`` is provider-specific (Cloudflare Turnstile siteverify
+    # secret today). Never logged. Provider test secret
+    # ``1x0000000000000000000000000000000AA`` always returns success and is
+    # safe in dev / CI.
+    captcha_required: bool = False
+    captcha_provider: str = "turnstile"
+    captcha_secret: str = ""
+    captcha_verify_url: str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    captcha_verify_timeout_s: float = 5.0
+    # Optional defense-in-depth pins. Empty string disables the check (the
+    # provider's domain allowlist on the widget still applies).
+    captcha_expected_hostname: str = ""
+    captcha_expected_action: str = ""
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:
