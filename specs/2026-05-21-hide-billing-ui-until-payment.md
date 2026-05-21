@@ -1,7 +1,14 @@
 # Hide plan / billing UI from customers until payment platform is wired — design
 
-**Status:** design only, awaiting architect review. Not yet implemented.
+**Status:** approved by architect 2026-05-21. **First implementation candidate** of the three 2026-05-21 specs. Architect resolutions baked into the relevant sections below.
 **Date:** 2026-05-21.
+
+## Architect resolutions (2026-05-21)
+
+* **Landing copy**: use Option A (hardcoded copy edit). Do NOT add `NEXT_PUBLIC_BILLING_UI_ENABLED` for apex.
+* **Billing tab in settings nav**: inline conditional filtering. No `minFlag` abstraction for a single flag.
+* **Empty state copy**: "Subscriptions are not available yet. We will let you know when paid plans launch."
+* **Backend API gating**: not in scope. `/api/v1/subscriptions`, `/api/v1/plans` stay reachable; UI-only hide is enough for this pre-payment state.
 **Source:** operator request 2026-05-21 (session memory: today's CAPTCHA implementation session). Goal: ship a single global kill switch that hides the entire plan / billing customer-facing surface until the real payment platform is wired, without disturbing admin / operator views. Trial subscriptions still get created in the backend (the `create_trial` call in the register handler), they just aren't shown to customers.
 
 ## Goal
@@ -108,7 +115,7 @@ backend Settings.billing_ui_enabled: bool = False  ──┐
 * `frontend/components/auth/AuthProvider.tsx` — extend the `/auth/status` fetch to capture `billing_ui_enabled`. Add a new field on `AuthContextValue` (`billingUiEnabled: boolean`, default `false` until status resolves). Update `useAuth()` consumers as needed.
 * `frontend/components/ui/TrialBanner.tsx` — at the top of the render, `if (!billingUiEnabled) return null;`.
 * `frontend/components/SettingsLayout.tsx:13` — filter the `billing` tab entry out of the rendered list when `!billingUiEnabled`.
-* `frontend/app/settings/billing/page.tsx` — when `!billingUiEnabled`, short-circuit the data-fetching effects and render the empty state. Suggested copy: "Billing isn't available yet" heading + "We will let you know when subscriptions launch." body. No data calls, no plan grid.
+* `frontend/app/settings/billing/page.tsx` — when `!billingUiEnabled`, short-circuit the data-fetching effects and render the empty state. Copy (architect-locked): "Subscriptions are not available yet. We will let you know when paid plans launch." No data calls, no plan grid.
 * `frontend/app/page.tsx:48` — apply Option A copy edit: drop the trial sentence (until operator chooses Option B).
 * `frontend/components/onboarding/OnboardingPageBody.tsx:373` — review-only; likely no change.
 
@@ -138,11 +145,11 @@ Rollback is symmetric — flip the env back to `false` and redeploy.
 * Onboarding tour copy review beyond a quick read. The single "billing" mention at `OnboardingPageBody.tsx:373` is most likely about transaction billing periods (the app's domain concept), not subscription billing. Confirm during implementation; if it IS sub-billing, drop it in this PR; otherwise leave.
 * `frontend/app/page.tsx` apex build mechanics. Option A (hardcoded copy edit) keeps this PR small. Option B (`NEXT_PUBLIC_BILLING_UI_ENABLED`) is a follow-up if the operator wants the toggle pattern there too.
 
-## Open questions for architect
+## Open questions for architect — RESOLVED 2026-05-21
 
-1. **Landing copy** — operator picked "hide the trial line." Spec recommends Option A (hardcoded copy edit). Architect: agree, or push toward Option B (build-time NEXT_PUBLIC_ flag for apex)?
-2. **Billing tab nav filtering** — `SettingsLayout.tsx:13` currently lists tabs with `minRole: "owner"` gating. Should the billing entry also carry a `minFlag: "billing_ui_enabled"` shape so future flags can ride the same filter pattern, or just inline the conditional for this one case? Spec leans toward inline today (one consumer, no precedent).
-3. **Empty-state copy review** — proposed body: "Billing isn't available yet. We will let you know when subscriptions launch." Operator copy convention is no em-dashes (`feedback_no_em_dashes`). Architect: any other copy lint concerns?
+1. ~~Landing copy — Option A vs Option B~~ → **Option A locked.** Hardcoded copy edit, no NEXT_PUBLIC_ flag for apex.
+2. ~~Billing tab nav filtering — inline vs `minFlag` abstraction~~ → **Inline locked.** Single flag, no abstraction.
+3. ~~Empty-state copy review~~ → **Locked**: "Subscriptions are not available yet. We will let you know when paid plans launch."
 
 ## Naming + memory file pointers
 
