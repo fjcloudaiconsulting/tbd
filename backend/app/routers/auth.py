@@ -67,6 +67,7 @@ from app.security import (
     token_cutoff,
     verify_password,
 )
+from app.captcha import verify_captcha
 from app.rate_limit import get_client_ip, limiter
 from app.services import audit_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
@@ -156,9 +157,23 @@ async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organiza
 
 @router.get("/status")
 async def auth_status(db: AsyncSession = Depends(get_db)):
-    """Check if the system needs initial setup (no users exist)."""
+    """Boot-time signals the frontend reads before rendering /register
+    or /setup.
+
+    ``needs_setup`` toggles the first-run admin bootstrap path.
+
+    ``captcha_required`` mirrors the backend's enforcement gate so the
+    Turnstile widget renders only when the server will actually demand
+    a token. Exposing the flag here (instead of relying on a build-time
+    ``NEXT_PUBLIC_*``) makes a backend ``CAPTCHA_REQUIRED=false`` flip a
+    real rollback — the next page load drops both the verify check and
+    the widget render together.
+    """
     user_count = await db.scalar(select(func.count()).select_from(User))
-    return {"needs_setup": user_count == 0}
+    return {
+        "needs_setup": user_count == 0,
+        "captcha_required": app_settings.captcha_required,
+    }
 
 
 @router.get("/check-username", response_model=UsernameCheckResponse)
@@ -189,7 +204,48 @@ async def register(
     body: RegisterRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
+    # Bot gate (Cloudflare Turnstile by default). Verify BEFORE any DB
+    # lookup, user creation, or verification email so a flood of bad
+    # tokens never reaches the database layer or the email provider.
+    # Fail-closed on any non-OK result.
+    #
+    # First-run setup exception: when zero users exist the /setup flow
+    # hits the same endpoint and the operator has no way to obtain a
+    # token yet (no widget rendered before the app has finished
+    # bootstrapping). Skip captcha for the first user only; every
+    # subsequent registration goes through the gate.
+    user_count = await db.scalar(select(func.count()).select_from(User))
+    is_first_user_setup = user_count == 0
+    if is_first_user_setup:
+        captcha_result = None
+    else:
+        captcha_result = await verify_captcha(body.captcha_token, get_client_ip(request))
+    if captcha_result is not None and not captcha_result.ok:
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="auth.register.captcha_failed",
+            actor_user_id=None,
+            actor_email=normalize_email(body.email),
+            target_org_id=None,
+            target_org_name=None,
+            request_id=request.headers.get("x-request-id"),
+            ip_address=get_client_ip(request),
+            outcome="failure",
+            detail={
+                "reason": captcha_result.reason,
+                "provider_error_codes": list(captcha_result.provider_error_codes),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "captcha_failed",
+                "message": "Could not verify you are human. Please try again.",
+            },
+        )
+
     email_norm = normalize_email(body.email)
     existing = await db.execute(
         select(User).where(or_(User.username == body.username, User.email == email_norm))

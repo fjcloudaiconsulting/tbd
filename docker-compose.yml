@@ -73,6 +73,8 @@ services:
       # Pull NEXT_PUBLIC_* envs from host .env so dev mode mirrors prod.
       # Add new NEXT_PUBLIC_* envs here too.
       - NEXT_PUBLIC_GOOGLE_SSO_ENABLED=${NEXT_PUBLIC_GOOGLE_SSO_ENABLED:-}
+      - NEXT_PUBLIC_CAPTCHA_PROVIDER=${NEXT_PUBLIC_CAPTCHA_PROVIDER:-turnstile}
+      - NEXT_PUBLIC_CAPTCHA_SITE_KEY=${NEXT_PUBLIC_CAPTCHA_SITE_KEY:-1x00000000000000000000BB}
     depends_on:
       - backend
     volumes:

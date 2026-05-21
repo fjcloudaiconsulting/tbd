@@ -150,6 +150,40 @@ services:
       - key: PFV_RUNTIME
         scope: RUN_AND_BUILD_TIME
         value: "app_platform"
+      # CAPTCHA gate on /api/v1/auth/register. Turnstile-by-default. Flip
+      # CAPTCHA_REQUIRED to "false" as the rollback path during a provider
+      # outage — the same value is exposed via /api/v1/auth/status so the
+      # frontend stops rendering the widget on the next page load. The
+      # secret below is the Cloudflare Turnstile siteverify secret; rotate
+      # via the Cloudflare dashboard, then re-encrypt here.
+      - key: CAPTCHA_REQUIRED
+        scope: RUN_AND_BUILD_TIME
+        value: "true"
+      - key: CAPTCHA_PROVIDER
+        scope: RUN_AND_BUILD_TIME
+        value: "turnstile"
+      - key: CAPTCHA_VERIFY_URL
+        scope: RUN_AND_BUILD_TIME
+        value: "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+      - key: CAPTCHA_VERIFY_TIMEOUT_S
+        scope: RUN_AND_BUILD_TIME
+        value: "5"
+      - key: CAPTCHA_EXPECTED_HOSTNAME
+        scope: RUN_AND_BUILD_TIME
+        value: "app.thebetterdecision.com"
+      - key: CAPTCHA_EXPECTED_ACTION
+        scope: RUN_AND_BUILD_TIME
+        value: "register"
+      # CAPTCHA_SECRET must be added as a SECRET-typed env in the DO
+      # console after the Cloudflare site is created (the encrypted EV[...]
+      # value goes here on the next `doctl apps update --spec`). Until then
+      # the captcha module will fail-closed with REASON_MISCONFIGURED and
+      # registrations will be refused — flip CAPTCHA_REQUIRED to "false"
+      # if needed during the gap.
+      - key: CAPTCHA_SECRET
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: ""
 
   - name: frontend
     github:
@@ -192,6 +226,19 @@ services:
       - key: BACKEND_INTERNAL_URL
         scope: RUN_TIME
         value: ${backend.PRIVATE_URL}
+      # Turnstile widget site key. NEXT_PUBLIC_* envs are inlined into the
+      # static JS bundle at build, so a key change requires a frontend
+      # rebuild (`doctl apps update --spec` triggers it). Leave value
+      # empty until the Cloudflare site is created — the widget render is
+      # gated on both the backend's CAPTCHA_REQUIRED flag AND a non-empty
+      # site key, so an empty value means no widget renders even if the
+      # backend asks for one.
+      - key: NEXT_PUBLIC_CAPTCHA_PROVIDER
+        scope: RUN_AND_BUILD_TIME
+        value: "turnstile"
+      - key: NEXT_PUBLIC_CAPTCHA_SITE_KEY
+        scope: RUN_AND_BUILD_TIME
+        value: ""
 
 # Pre-deploy job: run Alembic migrations exactly once before any backend
 # replica starts. This is the canonical "init container" pattern for App
