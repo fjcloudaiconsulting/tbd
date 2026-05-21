@@ -164,7 +164,7 @@ services:
       # EV[] blob below, then redeploy.
       - key: CAPTCHA_REQUIRED
         scope: RUN_AND_BUILD_TIME
-        value: "false"
+        value: "true"
       - key: CAPTCHA_PROVIDER
         scope: RUN_AND_BUILD_TIME
         value: "turnstile"
@@ -203,7 +203,7 @@ services:
       - key: CAPTCHA_SECRET
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: ""
+        value: "EV[1:kg3PgeHFB8F1J+W7poJvWA4BzRWZPNMx:UUM6Ver7hx8Zi4WfpqbjfWo3+t3KeTKMLOsUooHpBSe+3AvIe+eyHGBIvtdh7/TQdyZ/]"
 
   - name: frontend
     github:
@@ -258,7 +258,7 @@ services:
         value: "turnstile"
       - key: NEXT_PUBLIC_CAPTCHA_SITE_KEY
         scope: RUN_AND_BUILD_TIME
-        value: ""
+        value: "0x4AAAAAADTu1HIFconXLShc"
 
 # Pre-deploy job: run Alembic migrations exactly once before any backend
 # replica starts. This is the canonical "init container" pattern for App
