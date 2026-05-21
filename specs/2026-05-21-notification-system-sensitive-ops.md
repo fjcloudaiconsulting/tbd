@@ -76,7 +76,7 @@ CREATE TABLE user_notification_preferences (
 ```
 
 * One row per user; lazy-created on first access by `user_notification_preferences_service.get_or_default(user_id)`.
-* `email_security` toggle is exposed to the user but **ignored at dispatch time** — security emails always send. UI shows the row as locked / read-only with explanatory tooltip. We keep the column to make a future "really, opt me out of security emails" exception possible without a migration.
+* `email_security` is **forced TRUE** at write time — the PUT endpoint rejects `email_security=false` with `400 {"code": "security_emails_required"}` (architect-locked 2026-05-21). The column stays at TRUE and is read as such at dispatch time. We keep the column shape (rather than dropping it) to make a future "really, opt me out of security emails" exception cheap if regulation or product ever calls for it, but until then the value is non-mutable through the public API.
 * Defaults: security / account / org_admin = True, org_activity = False (the "who did what" feed is noisy by nature).
 
 ## Categories — what fires what
@@ -101,7 +101,7 @@ Note: `account.deleted` notifications are theoretically pointless — the user i
 | `POST` | `/api/v1/notifications/{id}/read` | 204, idempotent |
 | `POST` | `/api/v1/notifications/read-all` | 204, marks every unread for the user |
 | `GET` | `/api/v1/users/me/notification-preferences` | the row (creating it lazily if absent) |
-| `PUT` | `/api/v1/users/me/notification-preferences` | updates the row. `email_security` writes accepted but documented as "set but ignored at dispatch." |
+| `PUT` | `/api/v1/users/me/notification-preferences` | updates the row. Rejects `email_security=false` with `400 {"code": "security_emails_required"}` (architect-locked 2026-05-21). |
 
 No admin endpoints in scope today — operators don't manage individual users' inboxes.
 
@@ -217,7 +217,7 @@ Examples:
   * GET list with unread_only filter.
   * POST read is idempotent (double POST → still 204, read_at unchanged).
   * POST read-all marks all unread, leaves already-read rows alone.
-  * Preference PUT accepts `email_security=False` (silent contract).
+  * Preference PUT REJECTS `email_security=false` with `400 {"code": "security_emails_required"}`. Other categories accept the toggle.
   * Cross-user isolation: user A's POST /read on user B's notification returns 404.
 * `tests/routers/test_users_me_notification_preferences.py`:
   * Lazy create on first GET.
