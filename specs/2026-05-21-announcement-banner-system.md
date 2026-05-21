@@ -1,7 +1,16 @@
 # Announcement banner system — design
 
-**Status:** design only, awaiting architect review. Not yet implemented.
+**Status:** approved by architect 2026-05-21, **after #330 ships**. Architect resolutions baked into the relevant sections below.
 **Date:** 2026-05-21.
+
+## Architect resolutions (2026-05-21)
+
+* **Body content**: plain text + safe auto-linkify only. No markdown dependency for v1.
+* **Authoring permission**: superadmin-only.
+* **PK type**: integer (no UUID).
+* **Title**: required.
+* **Maintenance severity**: no dismiss button rendered AND backend `POST /dismiss` returns 400 with `code=announcement_not_dismissible`. Both layers reject.
+* **Schedule validation (new)**: `end_at` must be after `start_at`. Store + compare times in UTC throughout.
 **Source:** operator request 2026-05-21 (today's CAPTCHA session, follow-on scope). Operator wants a way to post promo / maintenance / general info notices visible across the app, with per-user dismissal that survives device changes.
 
 ## Goal
@@ -180,13 +189,14 @@ No env-var kill switch needed — `is_active=FALSE` on every announcement is the
 * **Real-time push** — no SSE, no WebSocket. Next page load picks up the new announcement. Acceptable for the use cases listed (planned maintenance is scheduled hours in advance; promos aren't time-critical).
 * **Engagement metrics** — dismiss counts, view counts. The data is in the DB if we ever want it but no UI exposes it today.
 
-## Open questions for architect
+## Open questions for architect — RESOLVED 2026-05-21
 
-1. **Markdown vs plain text in `body`.** Plain text is safest (no XSS surface, no parsing dependency). Markdown is friendlier for operators who want emphasis / links. Spec recommends: plain text + auto-linkify URLs via a tiny client-side helper (no external markdown library). Architect: agree, or push toward `react-markdown` with a strict allowlist?
-2. **Superadmin-only vs any admin role for `/admin/announcements`?** Today's superadmin gate (`is_superadmin=True`) is the right ceiling for global content. Architect: any reason to lower it?
-3. **`announcement_id` as integer PK vs UUID/slug.** Integer follows the rest of the schema. UUID would be cleaner for external URL sharing but no such surface today. Spec defaults to integer.
-4. **Title — required or optional?** Spec marks required for UX clarity (so the list page has a readable handle). Architect: agree, or allow body-only announcements?
-5. **`maintenance` severity always-show behavior** — should it bypass the dismiss UI entirely (no "x" button rendered), or render the button but reject the POST? Spec recommends "no button rendered" for unambiguous UX.
+1. ~~Markdown vs plain text in body~~ → **Plain text + safe auto-linkify locked.** No markdown dep for v1.
+2. ~~Superadmin-only vs any admin role for `/admin/announcements`~~ → **Superadmin-only locked.**
+3. ~~Integer PK vs UUID~~ → **Integer locked.**
+4. ~~Title required or optional~~ → **Required locked.**
+5. ~~Maintenance dismiss UX — no button rendered vs render-but-reject-POST~~ → **Both layers locked.** No button rendered AND backend POST returns 400 `code=announcement_not_dismissible`.
+6. **NEW**: `end_at` must be after `start_at`; store/compare times in UTC throughout. Pydantic schema validator + DB-side `CHECK` constraint where MySQL supports it.
 
 ## Naming + cross-references
 
