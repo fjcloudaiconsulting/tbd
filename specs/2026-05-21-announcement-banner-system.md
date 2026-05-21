@@ -115,7 +115,7 @@ Under `/api/v1/admin/announcements`:
 | `PATCH` | `/admin/announcements/{id}` | superadmin | edit any field. |
 | `DELETE` | `/admin/announcements/{id}` | superadmin | hard delete. Cascades to `user_dismissed_announcements`. |
 
-Open: superadmin-only or any admin role? Spec leans superadmin since this is global content, not org-scoped (see "Open questions for architect").
+**Resolved**: superadmin-only (architect-locked 2026-05-21). Announcements are global content, not org-scoped, so the right ceiling matches the existing superadmin gate.
 
 ## Frontend
 
