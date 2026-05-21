@@ -48,8 +48,12 @@ vi.mock("next/navigation", () => ({
 const turnstileResetMock = vi.fn();
 type TurnstileSuccessHandler = (token: string) => void;
 
-vi.mock("@marsidev/react-turnstile", () => {
-  const React = require("react") as typeof import("react");
+vi.mock("@marsidev/react-turnstile", async () => {
+  // vi.mock factories are hoisted ABOVE top-level imports, so a normal
+  // ``import React from "react"`` at the top would be undefined here.
+  // ``vi.importActual`` resolves the real module at factory time without
+  // depending on hoisting order and keeps the file ESM-only.
+  const React = await vi.importActual<typeof import("react")>("react");
   type Props = {
     onSuccess?: TurnstileSuccessHandler;
   };
