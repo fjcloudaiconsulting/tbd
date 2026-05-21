@@ -141,6 +141,36 @@ describe("TagChipInput", () => {
     expect(input.parentElement?.querySelectorAll("[data-testid^='tag-chip-']").length).toBe(0);
   });
 
+  it("Space commits the TYPED draft even when a suggestion is highlighted (not the suggestion)", async () => {
+    // Architect-flagged contract pin (PR #334 review 2026-05-21):
+    // Space and Enter take DIFFERENT paths. Enter on an open suggestion
+    // list accepts the highlighted suggestion; Space always commits
+    // the word the user is typing. Regression covers the case where
+    // the user types "in" (suggestions "insurance" / "groceries" open
+    // with "insurance" highlighted) and presses Space — the chip MUST
+    // be "in", not "insurance".
+    const d = deferred<TagSuggestion[]>();
+    const fetcher: Fetcher = vi.fn().mockReturnValue(d.promise);
+    render(<Harness fetcher={fetcher} />);
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "in" } });
+      await vi.advanceTimersByTimeAsync(15);
+      d.resolve(SAMPLE);
+    });
+    // Confirm the suggestion list rendered before we press Space —
+    // otherwise this test is vacuous.
+    await screen.findByRole("option", { name: /insurance/ });
+    await act(async () => {
+      fireEvent.keyDown(input, { key: " " });
+    });
+    // The typed draft "in" should be the chip; "insurance" must NOT
+    // have been committed.
+    expect(screen.getByTestId("tag-chip-in")).toBeTruthy();
+    expect(screen.queryByTestId("tag-chip-insurance")).toBeNull();
+    expect(input.value).toBe("");
+  });
+
   it("normalizes uppercase to lowercase on commit", async () => {
     const fetcher: Fetcher = vi.fn().mockResolvedValue([]);
     render(<Harness fetcher={fetcher} />);
