@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
 import { useAuth } from "@/components/auth/AuthProvider";
 import GoogleSSOButton from "@/components/auth/GoogleSSOButton";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiResponseError } from "@/lib/api";
 import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { input, label, btnPrimary, error as errorCls, success } from "@/lib/styles";
@@ -138,10 +138,10 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Registration failed";
       // The Cloudflare Turnstile token is single-use AND short-lived
-      // (5 min). Any backend rejection that surfaces the captcha gate
-      // must reset the widget so the user can complete it again
-      // without a page reload.
-      if (message.toLowerCase().includes("captcha")) {
+      // (5 min). Match the backend's structured ``code=captcha_failed``
+      // (NOT the human-readable message) so a copy edit to the message
+      // never silently breaks the widget reset.
+      if (err instanceof ApiResponseError && err.code === "captcha_failed") {
         turnstileRef.current?.reset();
         setCaptchaToken("");
       }
