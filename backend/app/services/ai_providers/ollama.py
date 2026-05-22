@@ -37,7 +37,11 @@ VALIDATE_TIMEOUT_S = 10.0
 CHAT_TIMEOUT_S = 30.0
 EMBED_TIMEOUT_S = 30.0
 STREAM_TIMEOUT_S = 60.0
-DEFAULT_CAPABILITIES = ["chat", "embed"]
+# Baseline Ollama capabilities. ``function_call`` and
+# ``structured_output`` are conditional on whether any discovered model
+# matches the ``KNOWN_FUNCTION_CALL_MODELS`` prefix list — see
+# ``validate()`` below.
+BASELINE_CAPABILITIES = ["chat", "embed", "stream"]
 
 # Models Ollama is known to expose tool-calling on (best-effort —
 # refresh during the same quarterly window that touches the pricing
@@ -105,10 +109,22 @@ class OllamaAdapter:
             for m in payload.get("models", [])
             if isinstance(m, dict) and "name" in m
         ]
+        capabilities = list(BASELINE_CAPABILITIES)
+        # Ollama exposes function-calling + structured output only on a
+        # curated allowlist of models (llama3.1+, mistral-nemo, etc.).
+        # Advertise the capabilities only when at least one discovered
+        # model matches an allowlisted prefix.
+        if any(
+            m.startswith(prefix)
+            for m in models
+            for prefix in KNOWN_FUNCTION_CALL_MODELS
+        ):
+            capabilities.append("function_call")
+            capabilities.append("structured_output")
         return ValidateResult(
             ok=True,
             discovered_models=models,
-            discovered_capabilities=list(DEFAULT_CAPABILITIES),
+            discovered_capabilities=capabilities,
         )
 
     async def chat(

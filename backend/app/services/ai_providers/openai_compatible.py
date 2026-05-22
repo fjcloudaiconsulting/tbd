@@ -29,7 +29,15 @@ VALIDATE_TIMEOUT_S = 10.0
 CHAT_TIMEOUT_S = 30.0
 EMBED_TIMEOUT_S = 30.0
 STREAM_TIMEOUT_S = 60.0
-DEFAULT_CAPABILITIES = ["chat", "embed"]
+# OpenAI-compatible endpoints (vLLM, llama.cpp, LM Studio, third-party
+# hosts) cannot be introspected for ``structured_output`` or
+# ``function_call`` support — the /v1/models response is just a list
+# of model IDs with no capability metadata. We advertise the baseline
+# capabilities the OpenAI HTTP shape always supports (chat, embed,
+# stream) and intentionally OMIT structured_output + function_call.
+# Operators who know their server supports those features can add a
+# capability override on the credential row in a future PR.
+DEFAULT_CAPABILITIES = ["chat", "embed", "stream"]
 
 
 class OpenAICompatibleAdapter:
@@ -44,6 +52,16 @@ class OpenAICompatibleAdapter:
         }
 
     async def validate(self) -> ValidateResult:
+        """GET /v1/models and advertise the baseline capabilities.
+
+        OpenAI-compatible servers can't be introspected for advanced
+        capability support, so ``structured_output`` and
+        ``function_call`` are intentionally NOT advertised here even
+        if the underlying server happens to support them. Callers that
+        need those capabilities should route to a first-party provider
+        (OpenAI, Anthropic) or wait for the capability-override field
+        on the credential row in a future PR.
+        """
         headers = {"Authorization": f"Bearer {self.api_key}"}
         url = f"{self.base_url}/v1/models"
         try:

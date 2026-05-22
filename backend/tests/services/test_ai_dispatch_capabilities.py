@@ -599,3 +599,115 @@ async def test_call_llm_stream_falls_back_to_char_estimate_when_no_usage(
     assert len(rows) == 1
     # Estimated 10 completion tokens (40 chars / 4).
     assert rows[0].completion_tokens == 10
+
+
+# ---------- Structured-output token aggregation ---------------------
+
+
+@pytest.mark.asyncio
+async def test_call_llm_structured_aggregates_token_cost_across_retries(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """When the structured call retries, the ledger row must sum tokens
+    across ALL attempts that touched the provider — not just the last
+    one. Previously the ledger silently dropped tokens billed by the
+    first attempt, under-counting cap accounting.
+    """
+    adapter = MagicMock()
+    adapter.chat_structured = AsyncMock(
+        side_effect=[
+            LLMResponse(
+                content="not json",
+                prompt_tokens=20,
+                completion_tokens=10,
+                model="gpt-4o-mini",
+            ),
+            LLMResponse(
+                content='{"category": "rent"}',
+                prompt_tokens=15,
+                completion_tokens=8,
+                model="gpt-4o-mini",
+            ),
+        ]
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm_structured(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            messages=[{"role": "user", "content": "x"}],
+            response_schema={
+                "type": "object",
+                "required": ["category"],
+                "properties": {"category": {"type": "string"}},
+            },
+        )
+
+    assert result.response.retries_used == 1
+    # StructuredResponse mirrors the aggregated counts so callers
+    # downstream of dispatch can also see the real spend.
+    assert result.response.prompt_tokens == 35
+    assert result.response.completion_tokens == 18
+
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.prompt_tokens == 35
+    assert row.completion_tokens == 18
+    assert row.retries_used == 1
+    assert row.success is True
+
+
+@pytest.mark.asyncio
+async def test_call_llm_structured_exhaustion_writes_aggregate_failure_row(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """Three failed attempts each cost provider tokens. The single
+    failure ledger row must reflect the SUM across attempts, not
+    just the last one.
+    """
+    bad_response = LLMResponse(
+        content="still not json",
+        prompt_tokens=10,
+        completion_tokens=5,
+        model="gpt-4o-mini",
+    )
+    adapter = MagicMock()
+    adapter.chat_structured = AsyncMock(
+        side_effect=[bad_response, bad_response, bad_response]
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        from app.services.ai_providers.base import StructuredOutputError
+        with pytest.raises(StructuredOutputError):
+            await call_llm_structured(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                messages=[{"role": "user", "content": "x"}],
+                response_schema={
+                    "type": "object",
+                    "required": ["category"],
+                    "properties": {"category": {"type": "string"}},
+                },
+            )
+
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.prompt_tokens == 30
+    assert row.completion_tokens == 15
+    assert row.retries_used == 2
+    assert row.success is False
+    assert row.error_class == "STATUS_ERROR_STRUCTURED_OUTPUT"

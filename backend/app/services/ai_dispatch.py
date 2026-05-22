@@ -1035,8 +1035,15 @@ async def call_llm_structured(
     attempt_messages = list(messages)
 
     start = time.perf_counter()
-    last_response: Optional[LLMResponse] = None
     last_error: Optional[str] = None
+    # Aggregate token spend across every attempt that successfully
+    # returned from the adapter. The ledger row written at the end
+    # (success or exhaustion) reflects the cumulative cost of THIS
+    # ``call_llm_structured`` invocation, so cap accounting captures
+    # tokens billed by intermediate retries that the previous
+    # last-attempt-only ledger row silently dropped.
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
 
     for attempt in range(STRUCTURED_OUTPUT_MAX_RETRIES + 1):
         try:
@@ -1061,15 +1068,24 @@ async def call_llm_structured(
                 if isinstance(exc, AIProviderError)
                 else "capability_not_supported"
             )
+            # Bill any tokens already consumed by previous attempts
+            # before the adapter raised; first-attempt failures
+            # naturally land at zero because no successful response
+            # ever returned.
+            cost = estimate_cost_cents(
+                model=prepared.model,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+            )
             await _write_ledger_row(
                 db,
                 org_id=org_id,
                 credential_id=prepared.credential_id,
                 feature_key=feature_key,
                 model=prepared.model,
-                prompt_tokens=0,
-                completion_tokens=0,
-                est_cost_cents_value=0,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                est_cost_cents_value=cost,
                 latency_ms=latency_ms,
                 success=False,
                 error_class=error_code,
@@ -1084,7 +1100,11 @@ async def call_llm_structured(
             )
             raise AIDispatchFailed(error_code) from None
 
-        last_response = response
+        # Successful provider call — its tokens count regardless of
+        # whether downstream JSON parse / schema validation passes.
+        total_prompt_tokens += response.prompt_tokens
+        total_completion_tokens += response.completion_tokens
+
         try:
             parsed = json.loads(response.content)
         except (TypeError, ValueError) as exc:
@@ -1096,8 +1116,8 @@ async def call_llm_structured(
             latency_ms = int((time.perf_counter() - start) * 1000)
             cost = estimate_cost_cents(
                 model=prepared.model,
-                prompt_tokens=response.prompt_tokens,
-                completion_tokens=response.completion_tokens,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
             )
             ledger = await _write_ledger_row(
                 db,
@@ -1105,8 +1125,8 @@ async def call_llm_structured(
                 credential_id=prepared.credential_id,
                 feature_key=feature_key,
                 model=prepared.model,
-                prompt_tokens=response.prompt_tokens,
-                completion_tokens=response.completion_tokens,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
                 est_cost_cents_value=cost,
                 latency_ms=latency_ms,
                 success=True,
@@ -1127,6 +1147,8 @@ async def call_llm_structured(
                 feature_key=feature_key,
                 retries_used=attempt,
                 ledger_id=ledger.id,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
             )
             asyncio.create_task(  # noqa: RUF006
                 _touch_last_used(prepared.credential_pk_id)
@@ -1135,8 +1157,8 @@ async def call_llm_structured(
                 response=StructuredResponse(
                     parsed=parsed,
                     raw_text=response.content,
-                    prompt_tokens=response.prompt_tokens,
-                    completion_tokens=response.completion_tokens,
+                    prompt_tokens=total_prompt_tokens,
+                    completion_tokens=total_completion_tokens,
                     model=response.model,
                     retries_used=attempt,
                 ),
@@ -1146,17 +1168,13 @@ async def call_llm_structured(
             last_error = f"schema:{err}"
             attempt_messages = attempt_messages + [retry_message]
 
-    # Exhausted retries.
+    # Exhausted retries. Bill the SUM of tokens consumed across all
+    # attempts so the cap accounting reflects real spend.
     latency_ms = int((time.perf_counter() - start) * 1000)
-    # Bill tokens from the LAST attempt so the cap accounting reflects
-    # actual spend; zeroing-out on the typed failure would under-count
-    # and let unbounded retry-forever patterns slip past the cap.
-    prompt_tokens = last_response.prompt_tokens if last_response else 0
-    completion_tokens = last_response.completion_tokens if last_response else 0
     cost = estimate_cost_cents(
         model=prepared.model,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
     )
     ledger = await _write_ledger_row(
         db,
@@ -1164,8 +1182,8 @@ async def call_llm_structured(
         credential_id=prepared.credential_id,
         feature_key=feature_key,
         model=prepared.model,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
         est_cost_cents_value=cost,
         latency_ms=latency_ms,
         success=False,
@@ -1187,6 +1205,8 @@ async def call_llm_structured(
         retries_used=STRUCTURED_OUTPUT_MAX_RETRIES,
         last_error=last_error,
         ledger_id=ledger.id,
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
     )
     raise StructuredOutputError("STATUS_ERROR_STRUCTURED_OUTPUT")
 

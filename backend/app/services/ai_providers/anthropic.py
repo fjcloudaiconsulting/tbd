@@ -34,7 +34,11 @@ from app.services.ai_providers.base import (
 VALIDATE_TIMEOUT_S = 10.0
 CHAT_TIMEOUT_S = 30.0
 STREAM_TIMEOUT_S = 60.0
-DEFAULT_CAPABILITIES = ["chat"]
+# Anthropic advertises chat + tool use + structured output + streaming.
+# ``embed`` is intentionally absent — Anthropic has no embeddings API.
+# Orgs wanting embeddings must add a sibling Voyage AI credential
+# (the embed() method on this adapter raises NotImplementedError).
+DEFAULT_CAPABILITIES = ["chat", "structured_output", "function_call", "stream"]
 MODELS_URL = "https://api.anthropic.com/v1/models"
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"

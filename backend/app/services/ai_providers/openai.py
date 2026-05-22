@@ -26,7 +26,10 @@ VALIDATE_TIMEOUT_S = 10.0
 CHAT_TIMEOUT_S = 30.0
 EMBED_TIMEOUT_S = 30.0
 STREAM_TIMEOUT_S = 60.0
-DEFAULT_CAPABILITIES = ["chat", "embed"]
+# Baseline capabilities advertised for any healthy OpenAI key. The
+# ``structured_output`` capability is gated to the json_schema-capable
+# model subset and added on top of the baseline in ``validate()``.
+BASELINE_CAPABILITIES = ["chat", "embed", "function_call", "stream"]
 DEFAULT_EMBED_MODEL = "text-embedding-3-small"
 MODELS_URL = "https://api.openai.com/v1/models"
 CHAT_URL = "https://api.openai.com/v1/chat/completions"
@@ -76,10 +79,18 @@ class OpenAIAdapter:
             for m in payload.get("data", [])
             if isinstance(m, dict) and "id" in m
         ]
+        capabilities = list(BASELINE_CAPABILITIES)
+        # ``structured_output`` is gated to the json_schema-capable
+        # subset (gpt-4o family, gpt-4.1, gpt-5). If the key has access
+        # to any of those, advertise the capability.
+        if any(
+            m.startswith(prefix) for m in models for prefix in JSON_SCHEMA_MODELS
+        ):
+            capabilities.append("structured_output")
         return ValidateResult(
             ok=True,
             discovered_models=models,
-            discovered_capabilities=list(DEFAULT_CAPABILITIES),
+            discovered_capabilities=capabilities,
         )
 
     async def chat(
