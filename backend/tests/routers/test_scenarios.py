@@ -583,3 +583,524 @@ async def test_user_b_cannot_read_user_a_scenario(session_factory):
         assert cb.post(
             f"/api/v1/scenarios/{created['id']}/simulate"
         ).status_code == 404
+
+
+# ── PR3: comparison endpoint ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_compare_two_scenarios_happy_path(session_factory):
+    """Two scenario_ids → two projections returned, positionally
+    parallel to the request order.
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        s1 = client.post(
+            "/api/v1/scenarios",
+            json=_trip_payload(seeds["account_id"], name="Trip A"),
+        ).json()
+        s2 = client.post(
+            "/api/v1/scenarios",
+            json=_purchase_payload(seeds["account_id"], name="Purchase B"),
+        ).json()
+        res = client.post(
+            "/api/v1/scenarios/compare",
+            json={
+                "scenario_ids": [s1["id"], s2["id"]],
+                "horizon_months": 24,
+            },
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body["projections"]) == 2
+    # Order preserved.
+    assert body["projections"][0]["scenario_id"] == s1["id"]
+    assert body["projections"][1]["scenario_id"] == s2["id"]
+    assert body["projections"][0]["name"] == "Trip A"
+    assert body["projections"][1]["scenario_type"] == "purchase"
+    # Each projection has the full ProjectionResult shape.
+    proj = body["projections"][0]["projection"]
+    assert proj["engine_name"] == "analytic_v1"
+    assert proj["horizon_months"] == 24
+    assert len(proj["per_account_series"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_compare_three_scenarios_happy_path(session_factory):
+    """Three scenarios → three projections (the architect cap)."""
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        s1 = client.post(
+            "/api/v1/scenarios",
+            json=_trip_payload(seeds["account_id"], name="A"),
+        ).json()
+        s2 = client.post(
+            "/api/v1/scenarios",
+            json=_trip_payload(seeds["account_id"], name="B"),
+        ).json()
+        s3 = client.post(
+            "/api/v1/scenarios",
+            json=_trip_payload(seeds["account_id"], name="C"),
+        ).json()
+        res = client.post(
+            "/api/v1/scenarios/compare",
+            json={
+                "scenario_ids": [s1["id"], s2["id"], s3["id"]],
+                "horizon_months": 24,
+            },
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body["projections"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_compare_four_scenarios_rejected(session_factory):
+    """Four scenarios → 422 (max 3 by architect lock)."""
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        ids = []
+        for i in range(4):
+            row = client.post(
+                "/api/v1/scenarios",
+                json=_trip_payload(seeds["account_id"], name=f"S{i}"),
+            ).json()
+            ids.append(row["id"])
+        res = client.post(
+            "/api/v1/scenarios/compare",
+            json={"scenario_ids": ids, "horizon_months": 24},
+        )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_compare_one_scenario_allowed(session_factory):
+    """One scenario → 1 projection (preview-compare-layout case)."""
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        s = client.post(
+            "/api/v1/scenarios",
+            json=_trip_payload(seeds["account_id"]),
+        ).json()
+        res = client.post(
+            "/api/v1/scenarios/compare",
+            json={"scenario_ids": [s["id"]], "horizon_months": 24},
+        )
+    assert res.status_code == 200, res.text
+    assert len(res.json()["projections"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_compare_cross_user_scenario_id_404(session_factory):
+    """A scenario_id that belongs to a different user → 404 (the same
+    bystander-safe behavior the rest of the router uses).
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app_a = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    app_b = _make_app(session_factory, _resolver_for("bob@acme.io"))
+    with TestClient(app_a) as ca:
+        alice_scen = ca.post(
+            "/api/v1/scenarios", json=_trip_payload(seeds["account_id"])
+        ).json()
+    with TestClient(app_b) as cb:
+        res = cb.post(
+            "/api/v1/scenarios/compare",
+            json={"scenario_ids": [alice_scen["id"]], "horizon_months": 24},
+        )
+    assert res.status_code == 404, res.text
+
+
+@pytest.mark.asyncio
+async def test_compare_horizon_130_with_trip_rejected(session_factory):
+    """horizon=130 + a trip scenario → 422 with the scenario id and
+    "horizon" in the detail (trip cap is 120).
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        trip = client.post(
+            "/api/v1/scenarios", json=_trip_payload(seeds["account_id"])
+        ).json()
+        res = client.post(
+            "/api/v1/scenarios/compare",
+            json={"scenario_ids": [trip["id"]], "horizon_months": 130},
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert f"scenario_id={trip['id']}" in str(detail)
+    assert "120" in str(detail)
+
+
+@pytest.mark.asyncio
+async def test_compare_horizon_130_retirement_only_ok(session_factory):
+    """horizon=130 with ONLY retirement scenarios → 200 (retirement cap is 480)."""
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        ret = client.post(
+            "/api/v1/scenarios",
+            json=_retirement_payload(seeds["account_id"]),
+        ).json()
+        res = client.post(
+            "/api/v1/scenarios/compare",
+            json={"scenario_ids": [ret["id"]], "horizon_months": 130},
+        )
+    assert res.status_code == 200, res.text
+
+
+# ── PR3: custom-event create + patch validation ─────────────────────────
+
+
+def _custom_payload_with_events(events: list[dict], horizon: int = 36) -> dict:
+    return {
+        "name": "Sabbatical",
+        "scenario_type": "custom",
+        "horizon_months": horizon,
+        "params": {
+            "scenario_type": "custom",
+            "label": "Sabbatical year",
+            "events": events,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_custom_with_one_off_income_event_ok(session_factory):
+    """Smoke: a custom scenario with a single one_off_income event
+    persists and round-trips through GET.
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "one_off_income",
+                    "month": 5,
+                    "amount": "1500.00",
+                    "account_id": seeds["account_id"],
+                },
+            ]),
+        )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["params_json"]["events"][0]["type"] == "one_off_income"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_from_greater_than_to_rejected(session_factory):
+    """from_month > to_month → 422 (schema-level validator)."""
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "income_off",
+                    "from_month": 10,
+                    "to_month": 5,
+                },
+            ]),
+        )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_create_custom_month_over_horizon_rejected(session_factory):
+    """one_off_income with month > horizon_months → 422 with
+    ``event_invalid_reference`` code.
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "one_off_income",
+                    "month": 99,
+                    "amount": "100.00",
+                    "account_id": seeds["account_id"],
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_month_equals_horizon_rejected(session_factory):
+    """one_off_income with month == horizon_months → 422.
+
+    Engine iterates ``range(0, horizon_months)`` so the last valid month
+    index is ``horizon_months - 1``. An event at exactly ``horizon_months``
+    would silently never fire; the validator must catch it.
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "one_off_income",
+                    "month": 24,
+                    "amount": "100.00",
+                    "account_id": seeds["account_id"],
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_month_at_horizon_minus_one_ok(session_factory):
+    """one_off_income with month == horizon_months - 1 → 201.
+
+    Pins the last valid month index (inclusive upper bound).
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "one_off_income",
+                    "month": 23,
+                    "amount": "100.00",
+                    "account_id": seeds["account_id"],
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_from_month_equals_horizon_rejected(session_factory):
+    """income_off with from_month == horizon_months → 422.
+
+    from_month is a range start; valid range is [0, horizon_months - 1].
+    """
+    await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "income_off",
+                    "from_month": 24,
+                    "to_month": 30,
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_to_month_equals_horizon_rejected(session_factory):
+    """income_off with to_month == horizon_months → 422.
+
+    to_month is the inclusive end of the range; valid range is
+    [0, horizon_months - 1]. A value equal to horizon_months would
+    point past the last simulated month and silently never fire.
+    """
+    await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "income_off",
+                    "from_month": 3,
+                    "to_month": 24,
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_to_month_at_horizon_minus_one_ok(session_factory):
+    """income_off with to_month == horizon_months - 1 → 201.
+
+    Pins the inclusive upper bound on the range end.
+    """
+    await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "income_off",
+                    "from_month": 3,
+                    "to_month": 23,
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_negative_month_rejected(session_factory):
+    """one_off_income with month < 0 → 422 (Pydantic Field constraint)."""
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "one_off_income",
+                    "month": -1,
+                    "amount": "100.00",
+                    "account_id": seeds["account_id"],
+                },
+            ]),
+        )
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_cross_user_recurring_id_rejected(
+    session_factory,
+):
+    """recurring_on event referencing a recurring_id from a DIFFERENT
+    org → 422 with ``event_invalid_reference`` code.
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    # Create a SECOND org with its own recurring template.
+    async with session_factory() as db:
+        from app.models.user import Organization, Role
+        from app.models.account import AccountType
+        from app.models.category import Category, CategoryType
+        from app.models.recurring import Frequency, RecurringTransaction
+
+        other = Organization(name="Other", billing_cycle_day=1)
+        db.add(other)
+        await db.commit()
+        other_at = AccountType(
+            org_id=other.id, name="Checking", slug="checking", is_system=True
+        )
+        db.add(other_at)
+        await db.commit()
+        other_acc = Account(
+            org_id=other.id,
+            account_type_id=other_at.id,
+            name="Other Main",
+            balance=Decimal("100.00"),
+            currency="EUR",
+            is_active=True,
+            is_default=True,
+            opening_balance=Decimal("100.00"),
+            opening_balance_date=date(2026, 1, 1),
+        )
+        db.add(other_acc)
+        await db.commit()
+        other_cat = Category(
+            org_id=other.id, name="X", type=CategoryType.INCOME
+        )
+        db.add(other_cat)
+        await db.commit()
+        other_rec = RecurringTransaction(
+            org_id=other.id,
+            account_id=other_acc.id,
+            category_id=other_cat.id,
+            description="X",
+            amount=Decimal("100"),
+            type="income",
+            frequency=Frequency.MONTHLY,
+            next_due_date=date.today() + timedelta(days=14),
+            auto_settle=False,
+            is_active=True,
+        )
+        db.add(other_rec)
+        await db.commit()
+        cross_recurring_id = other_rec.id
+
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "recurring_on",
+                    "recurring_id": cross_recurring_id,
+                    "from_month": 0,
+                    "to_month": 5,
+                },
+            ]),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_cross_user_account_id_rejected(
+    session_factory,
+):
+    """one_off_expense referencing an account_id from a DIFFERENT
+    org → 422.
+    """
+    await _seed_users_and_account(session_factory)
+    # Create a second-org account.
+    async with session_factory() as db:
+        from app.models.user import Organization
+        from app.models.account import AccountType
+
+        other = Organization(name="Other", billing_cycle_day=1)
+        db.add(other)
+        await db.commit()
+        other_at = AccountType(
+            org_id=other.id, name="Checking", slug="checking", is_system=True
+        )
+        db.add(other_at)
+        await db.commit()
+        other_acc = Account(
+            org_id=other.id,
+            account_type_id=other_at.id,
+            name="Other Main",
+            balance=Decimal("100.00"),
+            currency="EUR",
+            is_active=True,
+            is_default=True,
+            opening_balance=Decimal("100.00"),
+            opening_balance_date=date(2026, 1, 1),
+        )
+        db.add(other_acc)
+        await db.commit()
+        cross_account_id = other_acc.id
+
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "one_off_expense",
+                    "month": 3,
+                    "amount": "500.00",
+                    "account_id": cross_account_id,
+                },
+            ]),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"

@@ -193,20 +193,135 @@ class RetirementParams(BaseModel):
         return self
 
 
-class CustomParams(BaseModel):
-    """Custom scenario params — minimal stub for PR1.
+# ── Custom event primitives (PR3 of the Plans train) ────────────────────
+#
+# The ``custom`` plan_type's ``events`` array is a discriminated union of
+# five primitives, all keyed on ``type``. All months are RELATIVE to the
+# scenario start (month 0 = start month). Cross-user FK references
+# (recurring_id / account_id / category_id) are validated against the
+# current user's org at the router boundary because the schema layer
+# has no DB session.
 
-    The full ``events`` event-primitives editor is PR2 territory.
-    PR1 ships the shape (label + opaque event list) so users can
-    sketch a custom scenario today; simulate ignores the events
-    (no engine support yet — also PR2).
+
+class _CustomEventIncomeOff(BaseModel):
+    """Zero out income recurring patterns for a month range."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["income_off"]
+    from_month: int = Field(ge=0)
+    to_month: Optional[int] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _check_range(self):
+        if self.to_month is not None and self.to_month < self.from_month:
+            raise ValueError(
+                "from_month must be <= to_month"
+            )
+        return self
+
+
+class _CustomEventExpenseOff(BaseModel):
+    """Zero out expense recurring patterns for a month range.
+
+    Optional ``category_ids`` scopes the silencing to specific
+    categories; omitted means every expense recurring is silenced.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["expense_off"]
+    from_month: int = Field(ge=0)
+    to_month: Optional[int] = Field(default=None, ge=0)
+    category_ids: Optional[list[int]] = None
+
+    @model_validator(mode="after")
+    def _check_range(self):
+        if self.to_month is not None and self.to_month < self.from_month:
+            raise ValueError(
+                "from_month must be <= to_month"
+            )
+        return self
+
+
+class _CustomEventRecurringOn(BaseModel):
+    """Explicitly INCLUDE a specific recurring for the given range.
+
+    PR3 punt: PR1's engine already includes ALL active recurring
+    by default, so this event is a no-op until a future
+    ``exclude_recurring`` base flag exists. The schema accepts it
+    so the UI can hand-author the event today.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["recurring_on"]
+    recurring_id: int
+    from_month: int = Field(ge=0)
+    to_month: Optional[int] = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _check_range(self):
+        if self.to_month is not None and self.to_month < self.from_month:
+            raise ValueError(
+                "from_month must be <= to_month"
+            )
+        return self
+
+
+class _CustomEventOneOffIncome(BaseModel):
+    """Single-month income injection into ``account_id``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["one_off_income"]
+    month: int = Field(ge=0)
+    amount: Decimal = Field(ge=0)
+    account_id: int
+    category_id: Optional[int] = None
+
+
+class _CustomEventOneOffExpense(BaseModel):
+    """Single-month expense charge against ``account_id``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["one_off_expense"]
+    month: int = Field(ge=0)
+    amount: Decimal = Field(ge=0)
+    account_id: int
+    category_id: Optional[int] = None
+
+
+CustomEvent = Annotated[
+    Union[
+        _CustomEventIncomeOff,
+        _CustomEventExpenseOff,
+        _CustomEventRecurringOn,
+        _CustomEventOneOffIncome,
+        _CustomEventOneOffExpense,
+    ],
+    Field(discriminator="type"),
+]
+
+
+class CustomParams(BaseModel):
+    """Custom scenario params (PR3 of the Plans train).
+
+    ``events`` is a discriminated-union list of the five primitive
+    event types. Each event's months are RELATIVE to the scenario
+    start (month 0 = start month). Range validation (``from_month``
+    <= ``to_month``) lives on each event's model_validator. The
+    router additionally validates each event's month/from_month/to_month
+    against the scenario's horizon and resolves cross-user FK leaks
+    on recurring_id / account_id / category_id.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     scenario_type: Literal["custom"]
     label: str = Field(min_length=1, max_length=200)
-    events: list[dict[str, Any]] = Field(default_factory=list)
+    events: list[CustomEvent] = Field(default_factory=list)
 
 
 ScenarioParams = Annotated[
@@ -376,3 +491,54 @@ class ProjectionResult(BaseModel):
     # Set True when the regression overlay was applied (PR2). Helps the
     # UI label the chart and helps tests assert the path was taken.
     smoothed_with_regression: bool = False
+
+
+# ── PR3 of the Plans train: comparison view ─────────────────────────────
+
+
+# Architect-locked: max 3 scenarios side-by-side. 4+ would make the
+# chart visually unreadable; the cap is enforced here so the router
+# returns 422 (not 200 with truncation) on overflow.
+COMPARE_MIN_SCENARIOS = 1
+COMPARE_MAX_SCENARIOS = 3
+
+
+class CompareRequest(BaseModel):
+    """Body for ``POST /api/v1/scenarios/compare`` (PR3).
+
+    Runs the analytic engine on each scenario at the SAME horizon so
+    the projections can be overlaid on one chart. The horizon is
+    validated against every scenario's per-type cap before the engine
+    runs; if any scenario rejects it, the WHOLE compare fails with
+    422 and the offending scenario id in the detail.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_ids: List[int] = Field(
+        min_length=COMPARE_MIN_SCENARIOS,
+        max_length=COMPARE_MAX_SCENARIOS,
+    )
+    horizon_months: int = Field(ge=HORIZON_MIN_MONTHS)
+    smooth_with_regression: bool = False
+
+
+class CompareProjection(BaseModel):
+    """One scenario's projection enriched with its name + type so the
+    UI can label series without a second round-trip.
+    """
+
+    scenario_id: int
+    name: str
+    scenario_type: ScenarioType
+    projection: ProjectionResult
+
+
+class CompareResponse(BaseModel):
+    """Response for ``POST /api/v1/scenarios/compare``.
+
+    Order is parallel to the request's ``scenario_ids`` so the
+    frontend can index by position.
+    """
+
+    projections: List[CompareProjection]
