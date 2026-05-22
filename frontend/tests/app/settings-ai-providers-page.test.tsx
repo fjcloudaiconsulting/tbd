@@ -90,6 +90,36 @@ const fixtureCredential = {
   validation_error: null,
 };
 
+// The page now hits four endpoints in parallel on every fetchAll: list,
+// options, routing, caps. The routing + caps responses are optional
+// (the page tolerates them missing), but ``providers`` must be an array
+// for the modal picker to render. The factory below mocks the URL the
+// caller hit so tests can stay focused on the credentials behavior they
+// were written for.
+function mockAuxiliaryEndpoints(credentials: unknown[]) {
+  vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+    if (url.endsWith("/api/v1/settings/ai-providers")) {
+      return credentials as never;
+    }
+    if (url.endsWith("/options")) {
+      return {
+        providers: [
+          { key: "openai", label: "OpenAI", availability: "available" },
+          { key: "native", label: "Native", availability: "not_yet_available" },
+        ],
+        ai_native_enabled: false,
+      } as never;
+    }
+    if (url.endsWith("/routing")) {
+      return { default: null, features: [] } as never;
+    }
+    if (url.endsWith("/caps")) {
+      return { default: null, features: [] } as never;
+    }
+    return undefined as never;
+  });
+}
+
 describe("AiProvidersPage", () => {
   beforeEach(() => {
     vi.mocked(apiFetch).mockReset();
@@ -101,7 +131,7 @@ describe("AiProvidersPage", () => {
   });
 
   it("renders the credentials table with the fixture row", async () => {
-    vi.mocked(apiFetch).mockResolvedValueOnce([fixtureCredential]);
+    mockAuxiliaryEndpoints([fixtureCredential]);
 
     render(<AiProvidersPage />);
 
@@ -116,7 +146,7 @@ describe("AiProvidersPage", () => {
   });
 
   it("opens the add-credential modal when the button is clicked", async () => {
-    vi.mocked(apiFetch).mockResolvedValueOnce([]);
+    mockAuxiliaryEndpoints([]);
 
     render(<AiProvidersPage />);
 
@@ -133,10 +163,37 @@ describe("AiProvidersPage", () => {
   });
 
   it("closes the modal and refreshes the list on a successful add", async () => {
-    vi.mocked(apiFetch)
-      .mockResolvedValueOnce([]) // initial list
-      .mockResolvedValueOnce({ ...fixtureCredential }) // POST create
-      .mockResolvedValueOnce([fixtureCredential]); // re-list after create
+    // First mount: zero credentials. After POST + refresh: one row.
+    let creds: unknown[] = [];
+    vi.mocked(apiFetch).mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url.endsWith("/api/v1/settings/ai-providers") &&
+          init?.method === "POST"
+        ) {
+          creds = [fixtureCredential];
+          return fixtureCredential as never;
+        }
+        if (url.endsWith("/api/v1/settings/ai-providers")) {
+          return creds as never;
+        }
+        if (url.endsWith("/options")) {
+          return {
+            providers: [
+              { key: "openai", label: "OpenAI", availability: "available" },
+            ],
+            ai_native_enabled: false,
+          } as never;
+        }
+        if (url.endsWith("/routing")) {
+          return { default: null, features: [] } as never;
+        }
+        if (url.endsWith("/caps")) {
+          return { default: null, features: [] } as never;
+        }
+        return undefined as never;
+      },
+    );
 
     render(<AiProvidersPage />);
 
@@ -162,17 +219,41 @@ describe("AiProvidersPage", () => {
         screen.queryByRole("dialog", { name: /Add AI credential/i }),
       ).not.toBeInTheDocument();
     });
-    await waitFor(() =>
-      expect(screen.getByText(/prod/)).toBeInTheDocument(),
-    );
+    await waitFor(() => {
+      const table = screen.getByTestId("credentials-table");
+      expect(within(table).getByText("prod")).toBeInTheDocument();
+    });
   });
 
   it("keeps the modal open and displays the error on a validation failure", async () => {
-    vi.mocked(apiFetch)
-      .mockResolvedValueOnce([]) // initial list
-      .mockRejectedValueOnce(
-        new Error("credential_validation_failed: Unauthorized"),
-      ); // POST create
+    vi.mocked(apiFetch).mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        if (
+          url.endsWith("/api/v1/settings/ai-providers") &&
+          init?.method === "POST"
+        ) {
+          throw new Error("credential_validation_failed: Unauthorized");
+        }
+        if (url.endsWith("/api/v1/settings/ai-providers")) {
+          return [] as never;
+        }
+        if (url.endsWith("/options")) {
+          return {
+            providers: [
+              { key: "openai", label: "OpenAI", availability: "available" },
+            ],
+            ai_native_enabled: false,
+          } as never;
+        }
+        if (url.endsWith("/routing")) {
+          return { default: null, features: [] } as never;
+        }
+        if (url.endsWith("/caps")) {
+          return { default: null, features: [] } as never;
+        }
+        return undefined as never;
+      },
+    );
 
     render(<AiProvidersPage />);
 
@@ -200,5 +281,110 @@ describe("AiProvidersPage", () => {
       ).toBeInTheDocument();
       expect(screen.getByText(/Unauthorized/)).toBeInTheDocument();
     });
+  });
+
+  it("renders the routing section with default + feature override picker", async () => {
+    mockAuxiliaryEndpoints([fixtureCredential]);
+
+    render(<AiProvidersPage />);
+    await waitFor(() =>
+      expect(screen.getByTestId("routing-section")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("feature-routing-table")).toBeInTheDocument();
+    // The closed feature set surfaces in the UI.
+    expect(screen.getByText("Categorize transactions")).toBeInTheDocument();
+    expect(screen.getByText("Smart forecast")).toBeInTheDocument();
+  });
+
+  it("PUTs the default routing payload on save", async () => {
+    const calls: { url: string; body: string | null; method: string }[] = [];
+    vi.mocked(apiFetch).mockImplementation(
+      async (url: string, init?: RequestInit) => {
+        calls.push({
+          url,
+          body: (init?.body as string) ?? null,
+          method: init?.method ?? "GET",
+        });
+        if (url.endsWith("/api/v1/settings/ai-providers")) {
+          return [fixtureCredential] as never;
+        }
+        if (url.endsWith("/options")) {
+          return {
+            providers: [
+              { key: "openai", label: "OpenAI", availability: "available" },
+            ],
+            ai_native_enabled: false,
+          } as never;
+        }
+        if (url.endsWith("/routing")) {
+          return { default: null, features: [] } as never;
+        }
+        if (url.endsWith("/caps")) {
+          return { default: null, features: [] } as never;
+        }
+        return undefined as never;
+      },
+    );
+
+    render(<AiProvidersPage />);
+    await waitFor(() =>
+      expect(screen.getByTestId("routing-section")).toBeInTheDocument(),
+    );
+
+    fireEvent.change(screen.getByLabelText(/^Credential$/i), {
+      target: { value: "42" },
+    });
+    fireEvent.change(screen.getByLabelText(/^Model$/i), {
+      target: { value: "gpt-4o-mini" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Save default/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        calls.find(
+          (c) =>
+            c.method === "PUT" &&
+            c.url.endsWith("/routing/default") &&
+            (c.body ?? "").includes("gpt-4o-mini") &&
+            (c.body ?? "").includes("42"),
+        ),
+      ).toBeTruthy();
+    });
+  });
+
+  it("disables the native option in the provider picker when not_yet_available", async () => {
+    mockAuxiliaryEndpoints([]);
+
+    render(<AiProvidersPage />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/No credentials configured yet/i),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Add credential/i }));
+
+    const dialog = screen.getByRole("dialog", {
+      name: /Add AI credential/i,
+    });
+    const select = within(dialog).getByLabelText(/^Provider$/i) as HTMLSelectElement;
+    const nativeOption = Array.from(select.options).find(
+      (o) => o.value === "native",
+    );
+    expect(nativeOption).toBeTruthy();
+    expect(nativeOption?.disabled).toBe(true);
+    expect(nativeOption?.textContent).toMatch(/coming soon/i);
+  });
+
+  it("renders the caps section even when no caps are set", async () => {
+    mockAuxiliaryEndpoints([]);
+
+    render(<AiProvidersPage />);
+    await waitFor(() =>
+      expect(screen.getByTestId("caps-section")).toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText(/Default soft cap/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Default hard cap/i)).toBeInTheDocument();
   });
 });
