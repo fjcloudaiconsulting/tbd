@@ -1,0 +1,263 @@
+/**
+ * Tests for the Plans page (spec 2026-05-22).
+ *
+ * Architect-locked checks:
+ * - Empty state copy renders when there are zero plans yet.
+ * - List view renders one row per plan returned by the API.
+ * - "New plan" with template = Trip opens the modal with the
+ *   destination field; submit POSTs to /api/v1/scenarios with the
+ *   right body shape.
+ * - "Re-simulate" button calls POST /api/v1/scenarios/{id}/simulate.
+ * - Verdict badge color matches the API verdict.
+ */
+import React from "react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import PlansPage from "@/app/plans/page";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { apiFetch } from "@/lib/api";
+
+const replaceMock = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
+  usePathname: () => "/plans",
+}));
+
+vi.mock("@/components/AppShell", () => ({
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="app-shell">{children}</div>
+  ),
+}));
+
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: vi.fn(),
+}));
+
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+  return { ...actual, apiFetch: vi.fn() };
+});
+
+const USER = {
+  id: 1,
+  username: "alice",
+  email: "alice@acme.io",
+  first_name: null,
+  last_name: null,
+  phone: null,
+  avatar_url: null,
+  email_verified: true,
+  role: "owner" as const,
+  org_id: 1,
+  org_name: "Acme",
+  billing_cycle_day: 1,
+  is_superadmin: false,
+  is_active: true,
+  mfa_enabled: false,
+  subscription_status: null,
+  subscription_plan: null,
+  trial_end: null,
+};
+
+const TRIP_PLAN = {
+  id: 7,
+  org_id: 1,
+  user_id: 1,
+  name: "Lisbon trip",
+  scenario_type: "trip" as const,
+  params_json: {
+    scenario_type: "trip",
+    destination: "Lisbon, Portugal",
+    start_date: "2026-09-15",
+    duration_days: 10,
+    currency: "EUR",
+    transport_cost: "450.00",
+    accommodation_per_night: "85.00",
+    daily_budget: "70.00",
+    one_off_extras: [],
+    source_account_id: 12,
+  },
+  projection_json: {
+    engine_name: "analytic_v1",
+    computed_at: "2026-05-22T09:15:00",
+    horizon_months: 24,
+    currency: "EUR",
+    per_account_series: [
+      {
+        account_id: 12,
+        account_name: "Main checking",
+        currency: "EUR",
+        points: [{ month: "2026-06", projected_balance: "4200.00" }],
+      },
+    ],
+    alerts: [],
+    verdict: {
+      color: "yellow" as const,
+      headline: "Plan is feasible but cuts close",
+      reason: "x",
+    },
+    suggestions: [],
+  },
+  projection_engine: "analytic_v1",
+  projection_computed_at: "2026-05-22T09:15:00",
+  horizon_months: 24,
+  is_active: true,
+  created_at: "2026-05-22T00:00:00",
+  updated_at: "2026-05-22T00:00:00",
+};
+
+const SAMPLE_ACCOUNT = {
+  id: 12,
+  name: "Main checking",
+  currency: "EUR",
+  balance: "5000.00",
+};
+
+describe("/plans page", () => {
+  const apiFetchMock = vi.mocked(apiFetch);
+  const useAuthMock = vi.mocked(useAuth);
+
+  beforeEach(() => {
+    apiFetchMock.mockReset();
+    replaceMock.mockReset();
+  });
+
+  function setUser() {
+    useAuthMock.mockReturnValue({
+      user: USER as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+  }
+
+  it("redirects an unauthenticated visitor to /login", async () => {
+    useAuthMock.mockReturnValue({
+      user: null,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+    render(<PlansPage />);
+    await waitFor(() => {
+      expect(replaceMock).toHaveBeenCalledWith("/login");
+    });
+  });
+
+  it("renders the empty state when the user has no plans", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByTestId("plans-empty");
+    expect(screen.getByTestId("plans-empty")).toHaveTextContent(/No plans yet/i);
+  });
+
+  it("renders a row per plan and shows the verdict badge", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    expect(screen.getByText(/Trip.*Horizon 24mo/i)).toBeInTheDocument();
+    expect(screen.getByText("YELLOW")).toBeInTheDocument();
+  });
+
+  it("opens the New plan modal with the destination field for Trip template", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByTestId("plans-empty");
+    fireEvent.click(screen.getByTestId("plans-new"));
+    await screen.findByTestId("new-plan-modal");
+    expect(screen.getByTestId("new-plan-destination")).toBeInTheDocument();
+    // The template selector defaults to trip.
+    const select = screen.getByTestId("new-plan-template") as HTMLSelectElement;
+    expect(select.value).toBe("trip");
+  });
+
+  it("POSTs to /api/v1/scenarios when the Create button is clicked", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (url === "/api/v1/scenarios" && options?.method === "POST") {
+        return Promise.resolve({ ...TRIP_PLAN, id: 9, name: "Sample trip" });
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByTestId("plans-empty");
+    fireEvent.click(screen.getByTestId("plans-new"));
+    await screen.findByTestId("new-plan-modal");
+    fireEvent.change(screen.getByTestId("new-plan-name"), {
+      target: { value: "Sample trip" },
+    });
+    fireEvent.click(screen.getByTestId("new-plan-submit"));
+    await waitFor(() => {
+      const postCall = apiFetchMock.mock.calls.find(
+        ([url, opts]) =>
+          url === "/api/v1/scenarios" && (opts as RequestInit | undefined)?.method === "POST",
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse((postCall![1] as RequestInit).body as string);
+      expect(body.name).toBe("Sample trip");
+      expect(body.scenario_type).toBe("trip");
+      expect(body.horizon_months).toBe(24);
+      expect(body.params.scenario_type).toBe("trip");
+      expect(body.params.source_account_id).toBe(SAMPLE_ACCOUNT.id);
+    });
+  });
+
+  it("Simulate button on a row POSTs to /api/v1/scenarios/{id}/simulate", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+        && options?.method === "POST"
+      ) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-simulate-${TRIP_PLAN.id}`));
+    await waitFor(() => {
+      const simulateCall = apiFetchMock.mock.calls.find(
+        ([url, opts]) =>
+          url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+          && (opts as RequestInit | undefined)?.method === "POST",
+      );
+      expect(simulateCall).toBeDefined();
+      const body = JSON.parse((simulateCall![1] as RequestInit).body as string);
+      expect(body.engine).toBe("analytic");
+    });
+  });
+});

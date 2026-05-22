@@ -145,7 +145,10 @@ describe("AppShell — system nav gating", () => {
     // admin.view alone does NOT grant the more specific destinations.
     expect(screen.queryByText("Organizations")).toBeNull();
     expect(screen.queryByText("Audit log")).toBeNull();
-    expect(screen.queryByText("Plans")).toBeNull();
+    // System Plan Catalog link gated on plans.manage. Customer "Plans"
+    // link in the main nav is always visible — disambiguate by exact
+    // accessible name on the system-side label.
+    expect(screen.queryByRole("link", { name: "Plan Catalog" })).toBeNull();
   });
 
   it("shows only the Audit log link for a non-superadmin with audit.view alone", async () => {
@@ -165,7 +168,7 @@ describe("AppShell — system nav gating", () => {
     expect(screen.getByText("Audit log")).toBeInTheDocument();
     expect(screen.queryByText("Admin")).toBeNull();
     expect(screen.queryByText("Organizations")).toBeNull();
-    expect(screen.queryByText("Plans")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Plan Catalog" })).toBeNull();
   });
 
   it("shows only the Organizations link for a non-superadmin with orgs.view alone", async () => {
@@ -185,10 +188,10 @@ describe("AppShell — system nav gating", () => {
     expect(screen.getByText("Organizations")).toBeInTheDocument();
     expect(screen.queryByText("Admin")).toBeNull();
     expect(screen.queryByText("Audit log")).toBeNull();
-    expect(screen.queryByText("Plans")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Plan Catalog" })).toBeNull();
   });
 
-  it("shows only the Plans link for a non-superadmin with plans.manage alone", async () => {
+  it("shows only the Plan Catalog link for a non-superadmin with plans.manage alone", async () => {
     useAuthMock.mockReturnValue({
       user: { ...BASE_USER, permissions: ["plans.manage"] } as never,
       loading: false,
@@ -202,7 +205,13 @@ describe("AppShell — system nav gating", () => {
     await renderShell();
 
     expect(screen.getByText(/^System$/)).toBeInTheDocument();
-    expect(screen.getByText("Plans")).toBeInTheDocument();
+    // System-side subscription-tier catalog renders as "Plan Catalog"
+    // to disambiguate from the customer-facing "/plans" scenarios link
+    // in the main nav (both would otherwise share the accessible name
+    // "Plans" and break ambiguous-selector queries).
+    expect(
+      screen.getByRole("link", { name: "Plan Catalog" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Admin")).toBeNull();
     expect(screen.queryByText("Organizations")).toBeNull();
     expect(screen.queryByText("Audit log")).toBeNull();
