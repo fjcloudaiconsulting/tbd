@@ -74,10 +74,13 @@ async def get_provider_options(
 ) -> dict:
     """Provider picker metadata for the admin UI.
 
-    Native is always present in the list but carries an ``availability``
-    field — ``available`` only when ``AI_NATIVE_ENABLED`` is true AND a
-    real backend exists. PR1 ships the gate but no backend, so this
-    always returns ``not_yet_available`` for native.
+    Always returns ``not_yet_available`` for native in PR1. The
+    ``AI_NATIVE_ENABLED`` env flag is reported back for visibility, but
+    it does NOT control this field: even when the gate is flipped on,
+    the credential-create path still refuses native (no backend ships
+    in PR1). A future PR will gate this on ``AI_NATIVE_ENABLED`` once a
+    real native backend exists. Returning ``available`` here while the
+    create path rejects would be a UI lie.
     """
     return {
         "providers": [
@@ -88,9 +91,7 @@ async def get_provider_options(
             {
                 "key": AiProvider.NATIVE.value,
                 "label": "Native (hosted by The Better Decision)",
-                "availability": (
-                    "available" if settings.ai_native_enabled else "not_yet_available"
-                ),
+                "availability": "not_yet_available",
             },
         ],
         "ai_native_enabled": settings.ai_native_enabled,

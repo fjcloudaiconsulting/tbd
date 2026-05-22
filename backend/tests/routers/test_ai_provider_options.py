@@ -135,6 +135,31 @@ async def test_options_endpoint_lists_five_providers_native_not_yet(
     assert keys["openai"]["availability"] == "available"
 
 
+async def test_options_returns_not_yet_available_for_native_when_flag_true(
+    session_factory, monkeypatch
+):
+    """Architect-locked: /options must NOT lie when the gate flips on.
+
+    PR1 ships no native backend, so the create path always refuses
+    native regardless of ``AI_NATIVE_ENABLED``. The /options endpoint
+    must match — advertising ``available`` while creation rejects would
+    be a UI lie. The env flag is reported back for visibility only.
+    """
+    monkeypatch.setattr(app_settings, "ai_native_enabled", True)
+    owner_id = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, owner_id)
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.get("/api/v1/settings/ai-providers/options")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ai_native_enabled"] is True
+    keys = {p["key"]: p for p in body["providers"]}
+    assert keys["native"]["availability"] == "not_yet_available"
+
+
 async def test_create_credential_with_native_provider_rejected(session_factory):
     owner_id = await _seed(session_factory)
 

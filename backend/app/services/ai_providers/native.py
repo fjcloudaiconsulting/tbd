@@ -1,25 +1,25 @@
 """TBD-native adapter shell (PR1 stub).
 
-The spec ships the full scaffolding here in PR1 because the substrate
-work for routing/caps/consent has to know "native is a thing that
-exists in the registry" — but **no real native backend exists yet**.
+Always returns ``not_yet_available`` in PR1. A future PR will gate this
+on ``AI_NATIVE_ENABLED`` once a real native backend exists. The
+substrate work for routing/caps/consent has to know "native is a thing
+that exists in the registry" — hence this stub — but no real native
+backend ships in PR1.
 
 Behavior contract (spec §5):
 
-- ``AI_NATIVE_ENABLED=false`` (default): all methods raise
-  ``NativeNotAvailable("not_yet_available")``. Selection endpoints map
-  this to a typed refusal so a hand-rolled API client gets a
-  machine-readable answer instead of a 500.
-- ``AI_NATIVE_ENABLED=true``: PR1 STILL raises ``NativeNotAvailable``
-  because no native backend exists. A structlog warning fires so
-  operators see "gate is on but backend isn't ready" in their logs.
-  PR4 ships the actual consent-gated dispatch; the real backend is a
-  separate work item past PR4.
-
-Credential creation for ``provider=native`` is independently rejected
-at the service layer with a 400 / ``native_not_available`` code,
-regardless of the gate, because there's nothing to store a credential
-for yet.
+- Regardless of ``AI_NATIVE_ENABLED``, ``validate()`` raises
+  ``NativeNotAvailable("not_yet_available")``. The env flag is read
+  only to emit an operator warning when it's been flipped on without a
+  backend behind it.
+- The ``/options`` endpoint mirrors this contract: native is reported
+  with ``availability="not_yet_available"`` for PR1 regardless of the
+  flag, so the UI never advertises an option the create path will
+  refuse.
+- Credential creation for ``provider=native`` is independently
+  rejected at the service layer with a 400 / ``native_not_available``
+  code, regardless of the gate, because there's nothing to store a
+  credential for yet.
 """
 from __future__ import annotations
 
