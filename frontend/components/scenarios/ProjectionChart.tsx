@@ -22,7 +22,7 @@
  * scenarios" view (PR3) without coupling to API shape.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Area,
   CartesianGrid,
@@ -123,6 +123,18 @@ export function ProjectionChart({
   projection: ProjectionInput;
   testId?: string;
 }) {
+  // ResponsiveContainer measures its parent on mount. When the chart
+  // lives in a freshly painted flex/grid pane (the right column of the
+  // Plans editor), the parent's width can come back as -1 on the first
+  // synchronous read, which logs the loud "width(-1) and height(-1) of
+  // chart should be greater than 0" warning. Deferring the
+  // ResponsiveContainer render by one effect tick gives the layout
+  // engine a chance to commit before Recharts measures.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const months = useMemo(
     () =>
       projection.per_account_series.length > 0
@@ -172,11 +184,17 @@ export function ProjectionChart({
 
   return (
     <div
-      className="h-72 w-full"
+      // `min-w-0` is required because the chart sits in a CSS-grid
+      // column (`minmax(0, 2fr)`). Without it, a wide chart row can
+      // bully its grid track wider than the column's intrinsic min and
+      // ResponsiveContainer's parent read goes negative on the first
+      // measurement. `min-h-0` does the same for the vertical axis.
+      className="h-72 w-full min-w-0 min-h-0"
       data-testid={testId}
       role="img"
       aria-label="Projected account balances over the horizon"
     >
+      {!mounted ? null : (
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
           data={rows}
@@ -250,6 +268,7 @@ export function ProjectionChart({
           ))}
         </ComposedChart>
       </ResponsiveContainer>
+      )}
     </div>
   );
 }

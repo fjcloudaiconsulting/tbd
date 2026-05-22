@@ -56,6 +56,26 @@ function validateCurve(curve: RetirementCurveStep[]): string | null {
   return null;
 }
 
+// In-context microcopy lives next to the field it explains so the
+// "lazy user" path the product owner flagged (someone who opens the
+// form should not have to leave the page to learn what each input
+// means) stays satisfied without bloating component logic.
+const HELP_TARGET_DATE = "When you plan to stop earning income.";
+const HELP_TARGET_BALANCE =
+  "What you want to have invested at retirement, in today's money. The chart's red dashed line plots this in real (inflation-adjusted) terms.";
+const HELP_MONTHLY =
+  "Default amount you set aside each month. Override for specific date ranges using the curve below.";
+const HELP_RETURN =
+  "Expected annual investment return after fees. Long-term stock market average is around 6 to 8 percent.";
+const HELP_INFLATION =
+  "How fast prices rise per year. Eurozone target is 2 percent; historical 30-year average is around 2.5 to 3 percent.";
+const HELP_ACCOUNT =
+  "Which account receives the monthly contribution in the projection.";
+const HELP_CURVE =
+  "Optional. Each row sets a new monthly contribution starting on a given date. Useful when you expect to save more later (for example, after kids leave school). Rows must be in chronological order. The base contribution applies before the first row's date.";
+
+const helpText = "mt-1 max-w-prose text-xs text-text-muted";
+
 export function RetirementParamsEditor({
   params,
   setParams,
@@ -123,7 +143,9 @@ export function RetirementParamsEditor({
           onChange={(e) => set("target_retirement_date", e.target.value)}
           className={input}
           data-testid="ret-target-date"
+          aria-describedby="ret-target-date-hint"
         />
+        <p id="ret-target-date-hint" className={helpText}>{HELP_TARGET_DATE}</p>
       </div>
       <div>
         <label className={labelCls} htmlFor="ret-target-balance">Target balance</label>
@@ -136,7 +158,9 @@ export function RetirementParamsEditor({
           onChange={(e) => set("target_balance", e.target.value)}
           className={input}
           data-testid="ret-target-balance"
+          aria-describedby="ret-target-balance-hint"
         />
+        <p id="ret-target-balance-hint" className={helpText}>{HELP_TARGET_BALANCE}</p>
       </div>
       <div>
         <label className={labelCls} htmlFor="ret-monthly">Monthly contribution (base)</label>
@@ -149,7 +173,9 @@ export function RetirementParamsEditor({
           onChange={(e) => set("monthly_contribution", e.target.value)}
           className={input}
           data-testid="ret-monthly"
+          aria-describedby="ret-monthly-hint"
         />
+        <p id="ret-monthly-hint" className={helpText}>{HELP_MONTHLY}</p>
       </div>
       <div>
         <label className={labelCls} htmlFor="ret-return">Annual return percent</label>
@@ -163,7 +189,9 @@ export function RetirementParamsEditor({
           onChange={(e) => set("annual_return_pct", e.target.value)}
           className={input}
           data-testid="ret-return"
+          aria-describedby="ret-return-hint"
         />
+        <p id="ret-return-hint" className={helpText}>{HELP_RETURN}</p>
       </div>
       <div>
         <label className={labelCls} htmlFor="ret-inflation">Annual inflation percent</label>
@@ -177,7 +205,9 @@ export function RetirementParamsEditor({
           onChange={(e) => set("inflation_pct", e.target.value)}
           className={input}
           data-testid="ret-inflation"
+          aria-describedby="ret-inflation-hint"
         />
+        <p id="ret-inflation-hint" className={helpText}>{HELP_INFLATION}</p>
       </div>
       <div>
         <label className={labelCls} htmlFor="ret-account">Contribution account</label>
@@ -187,6 +217,7 @@ export function RetirementParamsEditor({
           onChange={(e) => set("contribution_account_id", Number(e.target.value))}
           className={input}
           data-testid="ret-account"
+          aria-describedby="ret-account-hint"
         >
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
@@ -194,13 +225,11 @@ export function RetirementParamsEditor({
             </option>
           ))}
         </select>
+        <p id="ret-account-hint" className={helpText}>{HELP_ACCOUNT}</p>
       </div>
       <div>
         <p className={`${labelCls} mb-2`}>Contribution curve (step function)</p>
-        <p className="mb-2 text-xs text-text-muted">
-          Optional. Each row sets a new monthly contribution starting on
-          the given date. Leave empty to use the base contribution throughout.
-        </p>
+        <p className={`${helpText} mt-0 mb-2`}>{HELP_CURVE}</p>
         {curveError && (
           <p className={`mb-2 text-xs ${errorCls}`} data-testid="ret-curve-error">
             {curveError}
