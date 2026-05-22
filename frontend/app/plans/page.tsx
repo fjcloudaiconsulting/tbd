@@ -513,14 +513,25 @@ function PlanEditor({
   // react-hooks/refs lint rule forbids reading refs in the render
   // phase. Storing the snapshot in state keeps it observable as part
   // of the render contract while still letting Save/Discard advance
-  // or restore it imperatively. setSnapshot does not need to be in
-  // any dep arrays beyond the switching-plans reset effect; Save
-  // calls it explicitly.
-  const [snapshot, setSnapshot] = useState<EditorSnapshot>({
+  // or restore it imperatively.
+  //
+  // The initializer captures the editor's starting baseline ONCE per
+  // mount. The snapshot then advances only via handleSave (after the
+  // server PATCH acks the new value) or handleDiscard (after the
+  // server PATCH acks the rollback). Crucially there is no effect
+  // tying the snapshot to the `plan` prop: the parent feeds every
+  // auto-PATCH response back through `onUpdated -> setItems ->
+  // active`, which would re-fire such an effect and silently advance
+  // the snapshot to the just-PATCHed value, collapsing dirty state
+  // and destroying Discard's rollback target. The PlanEditor is
+  // keyed by `plan.id` upstream, so switching plans remounts the
+  // component and re-runs this initializer with the new plan's
+  // baseline — that's the only path that resets the snapshot.
+  const [snapshot, setSnapshot] = useState<EditorSnapshot>(() => ({
     name: plan.name,
     horizon: plan.horizon_months,
     params: plan.params_json,
-  });
+  }));
   // Microcopy line announced via aria-live so screen readers and a
   // glanceable visual indicator both see "Saved" / "Discarded" after
   // the corresponding action.
@@ -537,29 +548,15 @@ function PlanEditor({
   // isDirty compares current editor state to the snapshot (NOT to
   // `plan`). The debounced auto-PATCH keeps the server in sync with
   // every keystroke; the snapshot moves only when the user clicks
-  // Save (or when they switch plans / open a different row). That's
-  // why "Save" is meaningful even though every change already round-
-  // tripped to the server: Save advances the pivot Discard reverts to.
+  // Save or Discard. Switching plans remounts the editor (via
+  // key={plan.id} upstream), which re-runs the snapshot initializer
+  // against the new plan's baseline. That's why "Save" is meaningful
+  // even though every change already round-tripped to the server:
+  // Save advances the pivot Discard reverts to.
   const isDirty =
     name !== snapshot.name ||
     horizon !== snapshot.horizon ||
     JSON.stringify(params) !== JSON.stringify(snapshot.params);
-
-  // Reset state AND snapshot when switching plans. Opening a different
-  // plan must start with a clean "no unsaved changes" baseline; without
-  // this, the snapshot from the previous plan would mark every field
-  // as dirty the moment the new plan paints.
-  useEffect(() => {
-    setParams(plan.params_json);
-    setName(plan.name);
-    setHorizon(plan.horizon_months);
-    setSnapshot({
-      name: plan.name,
-      horizon: plan.horizon_months,
-      params: plan.params_json,
-    });
-    setStatusMsg("");
-  }, [plan.id, plan.params_json, plan.name, plan.horizon_months]);
 
   // Stale-status guard: once the user makes a fresh change after a
   // "Saved" / "Discarded" microcopy, the message is no longer accurate.

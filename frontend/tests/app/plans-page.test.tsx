@@ -1111,4 +1111,192 @@ describe("/plans page", () => {
       { timeout: 2000 },
     );
   });
+
+  // Regression for the snapshot-init bug. The original implementation
+  // had a useEffect that reset the snapshot whenever
+  // plan.params_json / plan.name / plan.horizon_months changed.
+  // Because the parent feeds every auto-PATCH response back through
+  // onUpdated -> setItems -> active, the prop changed on every
+  // debounced PATCH, the effect re-fired, and the snapshot advanced
+  // to the just-PATCHed value — silently collapsing dirty state and
+  // destroying Discard's rollback target. Fix: drop the effect; the
+  // initializer captures the baseline once per mount, and remount on
+  // plan switch (key={plan.id}) handles the only legitimate reset
+  // path. These two tests pin that contract.
+  it("snapshot does not advance on auto-PATCH while the user keeps editing", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+        && options?.method === "PATCH"
+      ) {
+        const body = JSON.parse((options.body as string) ?? "{}");
+        // Echo the server row back with the patched name applied so
+        // the parent's onUpdated -> setActive cycle feeds a fresh
+        // plan prop to the editor.
+        return Promise.resolve({
+          ...TRIP_PLAN,
+          name: body.name,
+          horizon_months: body.horizon_months ?? TRIP_PLAN.horizon_months,
+          params_json: {
+            ...(TRIP_PLAN.params_json as Record<string, unknown>),
+            ...((body.params as Record<string, unknown>) ?? {}),
+          },
+        });
+      }
+      if (url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-row-${TRIP_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+
+    // First edit: change the name. The debounced auto-PATCH fires
+    // ~400ms later and the parent re-feeds the updated plan prop.
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "Lisbon edit 1" },
+    });
+
+    // Wait for the auto-PATCH to round-trip.
+    await waitFor(
+      () => {
+        const autoPatch = apiFetchMock.mock.calls.find(
+          ([url, opts]) =>
+            url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+            && (opts as RequestInit | undefined)?.method === "PATCH"
+            && JSON.parse(((opts as RequestInit).body as string) ?? "{}")
+              .name === "Lisbon edit 1",
+        );
+        expect(autoPatch).toBeDefined();
+      },
+      { timeout: 2000 },
+    );
+
+    // The dirty indicator must STILL be visible. With the bug, the
+    // effect would have rebuilt the snapshot from the just-PATCHed
+    // prop, the editor would equal the snapshot, and the indicator
+    // would disappear.
+    await waitFor(() => {
+      expect(screen.getByTestId("plan-dirty-indicator")).toBeInTheDocument();
+    });
+
+    // Second edit on top of the first one. The dirty indicator
+    // must remain visible across both edits.
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "Lisbon edit 2" },
+    });
+    expect(screen.getByTestId("plan-dirty-indicator")).toBeInTheDocument();
+
+    // And Discard must roll all the way back to the ORIGINAL name
+    // ("Lisbon trip"), not the auto-PATCHed intermediate.
+    fireEvent.click(screen.getByTestId("plan-discard"));
+    await waitFor(() => {
+      const discardPatch = apiFetchMock.mock.calls.findLast(
+        ([url, opts]) =>
+          url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+          && (opts as RequestInit | undefined)?.method === "PATCH"
+          && JSON.parse(((opts as RequestInit).body as string) ?? "{}")
+            .name === "Lisbon trip",
+      );
+      expect(discardPatch).toBeDefined();
+    });
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId("plan-name-input") as HTMLInputElement).value,
+      ).toBe("Lisbon trip");
+    });
+  });
+
+  it("Discard reverts to the initial snapshot even after an auto-PATCH has fired", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([{ ...TRIP_PLAN, name: "Vacation" }]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+        && options?.method === "PATCH"
+      ) {
+        const body = JSON.parse((options.body as string) ?? "{}");
+        return Promise.resolve({
+          ...TRIP_PLAN,
+          name: body.name,
+          horizon_months: body.horizon_months ?? TRIP_PLAN.horizon_months,
+          params_json: {
+            ...(TRIP_PLAN.params_json as Record<string, unknown>),
+            ...((body.params as Record<string, unknown>) ?? {}),
+          },
+        });
+      }
+      if (url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<PlansPage />);
+    await screen.findByText("Vacation");
+    fireEvent.click(screen.getByTestId(`plan-row-${TRIP_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+
+    // Type into the name field: "Vacation" -> "Vacation A".
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "Vacation A" },
+    });
+
+    // Wait for the auto-PATCH to land "Vacation A" server-side.
+    await waitFor(
+      () => {
+        const autoPatch = apiFetchMock.mock.calls.find(
+          ([url, opts]) =>
+            url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+            && (opts as RequestInit | undefined)?.method === "PATCH"
+            && JSON.parse(((opts as RequestInit).body as string) ?? "{}")
+              .name === "Vacation A",
+        );
+        expect(autoPatch).toBeDefined();
+      },
+      { timeout: 2000 },
+    );
+
+    // Now type again: "Vacation A" -> "Vacation AB".
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "Vacation AB" },
+    });
+
+    // Click Discard. The rollback target is the ORIGINAL name
+    // ("Vacation"), not the auto-PATCHed intermediate ("Vacation A").
+    fireEvent.click(screen.getByTestId("plan-discard"));
+
+    await waitFor(() => {
+      const discardPatch = apiFetchMock.mock.calls.findLast(
+        ([url, opts]) =>
+          url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+          && (opts as RequestInit | undefined)?.method === "PATCH"
+          && JSON.parse(((opts as RequestInit).body as string) ?? "{}")
+            .name === "Vacation",
+      );
+      expect(discardPatch).toBeDefined();
+    });
+
+    // Local state shows the original name, not the intermediate.
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId("plan-name-input") as HTMLInputElement).value,
+      ).toBe("Vacation");
+    });
+  });
 });
