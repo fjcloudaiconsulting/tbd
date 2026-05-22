@@ -33,6 +33,11 @@ from app.models.announcement import (  # noqa: F401
     AnnouncementSeverity,
     UserDismissedAnnouncement,
 )
+from app.models.notification import (  # noqa: F401
+    Notification,
+    NotificationCategory,
+    UserNotificationPreferences,
+)
 
 __all__ = [
     "Base",
@@ -81,4 +86,7 @@ __all__ = [
     "Announcement",
     "AnnouncementSeverity",
     "UserDismissedAnnouncement",
+    "Notification",
+    "NotificationCategory",
+    "UserNotificationPreferences",
 ]
