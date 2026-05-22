@@ -127,6 +127,98 @@ describe("Billing period polish: inline validation, busy state, error mapping", 
     expect(hint?.textContent).toMatch(/Day of the month/i);
   });
 
+  // ── L5.5 form polish: Cancel + projected close preview ──────────────────
+  //
+  // Cancel mirrors the Forecast Plans Save/Cancel pattern: it only shows
+  // up when the field is dirty and reverts to the last server-confirmed
+  // value. The projected-close preview surfaces under the input so the
+  // admin sees the consequence of saving before they commit.
+
+  it("hides Cancel when the field is clean and shows it once dirty", async () => {
+    render(<OrganizationSettingsPage />);
+    const input = (await screen.findByLabelText(
+      /Billing cycle day/i,
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("1"));
+    // Clean state: only the row-level rename Cancel + member Cancel may
+    // exist; the billing-cycle Cancel must not.
+    expect(
+      screen.queryByRole("button", {
+        name: /Cancel billing cycle day edit/i,
+      }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "15" } });
+    expect(
+      await screen.findByRole("button", {
+        name: /Cancel billing cycle day edit/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("Cancel reverts the field to the saved value and clears errors", async () => {
+    render(<OrganizationSettingsPage />);
+    const input = (await screen.findByLabelText(
+      /Billing cycle day/i,
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("1"));
+
+    // Dirty + invalid first, to confirm the error clears too.
+    fireEvent.change(input, { target: { value: "31" } });
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+
+    const cancel = await screen.findByRole("button", {
+      name: /Cancel billing cycle day edit/i,
+    });
+    fireEvent.click(cancel);
+
+    await waitFor(() => expect(input.value).toBe("1"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // Cancel removes itself once the field is clean again.
+    expect(
+      screen.queryByRole("button", {
+        name: /Cancel billing cycle day edit/i,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders the projected close preview when the new value is dirty + valid", async () => {
+    render(<OrganizationSettingsPage />);
+    const input = (await screen.findByLabelText(
+      /Billing cycle day/i,
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("1"));
+
+    fireEvent.change(input, { target: { value: "15" } });
+    // start_date=2026-05-01, new cycle day=15 → projected close = 2026-06-14
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Saving will close the current period on 2026-06-14/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("clears the preview once the value matches the saved one again", async () => {
+    render(<OrganizationSettingsPage />);
+    const input = (await screen.findByLabelText(
+      /Billing cycle day/i,
+    )) as HTMLInputElement;
+    await waitFor(() => expect(input.value).toBe("1"));
+
+    fireEvent.change(input, { target: { value: "15" } });
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Saving will close the current period/i),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.change(input, { target: { value: "1" } });
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Saving will close the current period/i),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   it("maps a 422 save error to friendly copy without echoing raw body", async () => {
     render(<OrganizationSettingsPage />);
     const input = await screen.findByLabelText(/Billing cycle day/i);

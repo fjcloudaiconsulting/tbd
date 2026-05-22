@@ -606,7 +606,14 @@ export default function OrganizationSettingsPage() {
                       setCycleFieldError(null);
                     }}
                     disabled={savingCycle}
-                    aria-label="Discard billing cycle day changes"
+                    // Visible text "Cancel" carries the action; the
+                    // aria-label augments it with the field context so
+                    // screen reader users hear "Cancel billing cycle day"
+                    // instead of a bare "Cancel" that could be confused
+                    // with the rename/danger-zone Cancel buttons on this
+                    // same page. WCAG 2.5.3: visible text "Cancel" is
+                    // included as the first word of the accessible name.
+                    aria-label="Cancel billing cycle day edit"
                     className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
                   >
                     Cancel
