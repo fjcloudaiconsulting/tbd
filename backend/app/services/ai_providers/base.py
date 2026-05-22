@@ -1,23 +1,35 @@
 """Capability protocols + adapter factory for BYO AI providers.
 
-PR1 shipped ``ValidateCapable`` only. PR2 adds:
+PR1 shipped ``ValidateCapable`` only. PR2 added ``ChatCapable.chat`` +
+``LLMResponse`` + ``AIProviderError``. PR3 (this layer) implements the
+remaining capability protocols:
 
-- ``LLMResponse`` — provider-neutral chat response shape consumed by
-  the dispatch chokepoint (``call_llm`` in ``ai_dispatch``).
-- ``AIProviderError`` — typed wrapper raised by every adapter when
-  the provider call fails. The wrapped message is **sanitized** (no
-  provider response body), per the PR1 SSRF / sanitization lock.
-- ``ChatCapable.chat`` — protocol signature for the chat dispatch.
-  OpenAI, Anthropic, Ollama, and OpenAI-compatible adapters implement
-  it as a thin pass-through; Native still raises ``NativeNotAvailable``.
-- ``StructuredOutputCapable.chat_structured`` — protocol signature
-  only. The implementation is deferred to PR3 (architect lock: retry
-  cap).
+- ``EmbedCapable.embed`` — vector embedding for OpenAI, Ollama,
+  OpenAI-compatible. Anthropic does not expose embeddings; the adapter
+  raises ``NotImplementedError`` so callers can fall back. A future PR
+  may add Voyage AI as a sibling provider.
+- ``StructuredOutputCapable.chat_structured`` — JSON-mode + schema
+  validation, with the architect-locked retry cap of 2 (3 attempts
+  total). Adapters return the raw provider response; the service layer
+  validates against the schema and applies the retry budget. On
+  exhaustion the service raises ``StructuredOutputError`` with code
+  ``STATUS_ERROR_STRUCTURED_OUTPUT``.
+- ``FunctionCallCapable.function_call`` — provider-side tool use
+  (OpenAI function-calling shape, Anthropic tool_use). Ollama is
+  model-dependent; the adapter raises ``CapabilityNotSupported`` for
+  models we know don't support it.
+- ``StreamCapable.stream`` — async-iterator streaming of chat
+  responses. The ledger is written once at end-of-stream with the
+  final token usage (estimated if the provider doesn't report tokens
+  for the streamed response).
+
+The Native adapter still raises ``NativeNotAvailable`` for every
+capability, including the PR3 ones, until PR4 wires a real backend.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Protocol, runtime_checkable
+from typing import AsyncIterator, Optional, Protocol, runtime_checkable
 
 from app.models.org_ai_credential import AiProvider
 
@@ -47,6 +59,80 @@ class LLMResponse:
     prompt_tokens: int
     completion_tokens: int
     model: str
+
+
+@dataclass(frozen=True)
+class EmbedResponse:
+    """Provider-neutral embedding response.
+
+    ``vectors`` is one float vector per input text (same order as the
+    request). ``prompt_tokens`` feeds the ledger / cap accounting;
+    embedding APIs charge per-input-token only (no completion side).
+    """
+
+    vectors: list[list[float]]
+    model: str
+    prompt_tokens: int
+
+
+@dataclass(frozen=True)
+class StructuredResponse:
+    """Provider-neutral structured-output response.
+
+    ``parsed`` is the JSON object after schema validation; ``raw_text``
+    is the raw assistant text (kept for forensic logging). ``retries_used``
+    is 0, 1, or 2 — the count of retries the SERVICE layer needed before
+    the parse succeeded. Architect lock #13: max 2 retries (3 total
+    attempts) before ``STATUS_ERROR_STRUCTURED_OUTPUT``.
+    """
+
+    parsed: dict
+    raw_text: str
+    prompt_tokens: int
+    completion_tokens: int
+    model: str
+    retries_used: int
+
+
+@dataclass(frozen=True)
+class FunctionCallResponse:
+    """Provider-neutral function-call response.
+
+    ``tool_calls`` is the structured list of tool invocations the model
+    requested. Each entry has ``name`` (the tool name) and
+    ``arguments`` (a dict — already JSON-parsed). ``content`` is any
+    free-text the model emitted alongside the tool call (typically
+    empty when a tool was invoked).
+    """
+
+    tool_calls: list[dict]
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
+    model: str
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    """Token usage summary attached to the final stream chunk."""
+
+    prompt_tokens: int
+    completion_tokens: int
+
+
+@dataclass(frozen=True)
+class StreamChunk:
+    """One chunk of a streamed chat response.
+
+    ``delta_text`` is the incremental text since the previous chunk.
+    ``done`` is True for the final synthetic chunk (which carries
+    ``final_usage``); all other chunks have ``done=False`` and
+    ``final_usage=None``.
+    """
+
+    delta_text: str
+    done: bool
+    final_usage: Optional[TokenUsage] = None
 
 
 class NativeNotAvailable(Exception):
@@ -81,6 +167,37 @@ class AIProviderError(Exception):
         self.status_code = status_code
 
 
+class StructuredOutputError(Exception):
+    """Service-layer failure after the architect-locked retry budget.
+
+    Architect lock #13: max 2 retries (3 total attempts) on JSON
+    parse / schema-validation failure before this fires. The ledger
+    row still gets written (with ``retries_used=2``, success=False,
+    error_class=``STATUS_ERROR_STRUCTURED_OUTPUT``) so the failed
+    attempts count against the cap.
+    """
+
+    def __init__(self, code: str = "STATUS_ERROR_STRUCTURED_OUTPUT") -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class CapabilityNotSupported(Exception):
+    """Adapter refuses a capability the static class flag advertises.
+
+    Used by Ollama's ``function_call`` when the requested model isn't
+    known to support tool use — Ollama exposes function calling per
+    model, not per server. Callers (the service layer) decide whether
+    to fall back to free-text JSON, a smaller model, or surface a 412
+    to the user.
+    """
+
+    def __init__(self, *, model: str, capability: str = "function_call") -> None:
+        super().__init__(f"{capability} not supported by model {model!r}")
+        self.model = model
+        self.capability = capability
+
+
 @runtime_checkable
 class ValidateCapable(Protocol):
     async def validate(self) -> ValidateResult:
@@ -101,17 +218,24 @@ class ChatCapable(Protocol):
 
 @runtime_checkable
 class EmbedCapable(Protocol):
-    ...  # implemented in PR3+
+    async def embed(
+        self,
+        *,
+        texts: list[str],
+        model: Optional[str] = None,
+    ) -> EmbedResponse:
+        ...
 
 
 @runtime_checkable
 class StructuredOutputCapable(Protocol):
-    """Protocol signature only — implementation deferred to PR3.
+    """Adapter side of structured output.
 
-    Architect lock: ``chat_structured`` ships in PR3 with the
-    documented retry cap of 2 on JSON parse / schema-validation
-    failure. Defining the signature here lets PR3 add adapter
-    implementations without re-shaping the protocol layer.
+    Returns the raw provider response (text). The SERVICE layer
+    validates against the schema and applies the architect-locked
+    retry cap. Keeping the schema enforcement out of the adapter lets
+    the retry counter live in one place (``call_llm_structured``) and
+    keeps adapters thin.
     """
 
     async def chat_structured(
@@ -127,12 +251,27 @@ class StructuredOutputCapable(Protocol):
 
 @runtime_checkable
 class StreamCapable(Protocol):
-    ...  # implemented in PR3+
+    async def stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        max_tokens: Optional[int] = None,
+    ) -> AsyncIterator[StreamChunk]:
+        ...
 
 
 @runtime_checkable
 class FunctionCallCapable(Protocol):
-    ...  # implemented in PR3+
+    async def function_call(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: Optional[int] = None,
+    ) -> FunctionCallResponse:
+        ...
 
 
 def get_adapter(
