@@ -66,9 +66,7 @@ export default function SparklineWidget({ widget, canvasFilters }: Props) {
         <div
           data-testid="sparkline-widget-empty"
           className="text-2xl font-semibold text-text-muted"
-        >
-          —
-        </div>
+        >—</div>
       ) : (
         <>
           <div
