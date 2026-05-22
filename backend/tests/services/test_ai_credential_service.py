@@ -269,3 +269,146 @@ async def test_validate_now_records_error_on_failure(
             **_ACTOR_KW,
         )
     assert updated.validation_error == "Unauthorized"
+
+
+# ---------------------------------------------------------------
+# Bearer-token-only-for-Ollama on rotate (architect round-3 blocker).
+# Create's schema validator catches this for create; rotate's schema
+# can't (provider isn't in the body), so the service layer enforces.
+# ---------------------------------------------------------------
+
+
+async def _seed_credential(db, session_factory, org, *, provider, api_key, base_url=None):
+    payload = OrgAICredentialCreate(
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+        label="seed",
+    )
+    with _patch_adapter(_ok_validate()):
+        return await ai_credential_service.create_credential(
+            db,
+            org_id=org.id,
+            payload=payload,
+            session_factory=session_factory,
+            **_ACTOR_KW,
+        )
+
+
+async def test_rotate_rejects_bearer_token_for_openai(db, session_factory, org):
+    row = await _seed_credential(
+        db,
+        session_factory,
+        org,
+        provider=AiProvider.OPENAI,
+        api_key="sk-test-good-key-aaaa",
+    )
+    with _patch_adapter(_ok_validate()):
+        with pytest.raises(Exception) as ei:
+            await ai_credential_service.rotate_credential(
+                db,
+                credential=row,
+                new_api_key="sk-test-rotated-9999",
+                new_bearer_token="leaked-bearer",
+                session_factory=session_factory,
+                **_ACTOR_KW,
+            )
+    assert getattr(ei.value, "status_code", None) == 400
+    assert ei.value.detail["code"] == "bearer_token_only_for_ollama"
+
+
+async def test_rotate_rejects_bearer_token_for_anthropic(db, session_factory, org):
+    row = await _seed_credential(
+        db,
+        session_factory,
+        org,
+        provider=AiProvider.ANTHROPIC,
+        api_key="sk-ant-test-good-aaaa",
+    )
+    with _patch_adapter(_ok_validate()):
+        with pytest.raises(Exception) as ei:
+            await ai_credential_service.rotate_credential(
+                db,
+                credential=row,
+                new_api_key="sk-ant-test-rotated-9999",
+                new_bearer_token="leaked-bearer",
+                session_factory=session_factory,
+                **_ACTOR_KW,
+            )
+    assert getattr(ei.value, "status_code", None) == 400
+    assert ei.value.detail["code"] == "bearer_token_only_for_ollama"
+
+
+async def test_rotate_rejects_bearer_token_for_openai_compatible(
+    db, session_factory, org
+):
+    row = await _seed_credential(
+        db,
+        session_factory,
+        org,
+        provider=AiProvider.OPENAI_COMPATIBLE,
+        api_key="sk-compat-good-aaaa",
+        base_url="https://llm.example.com",
+    )
+    with _patch_adapter(_ok_validate()):
+        with pytest.raises(Exception) as ei:
+            await ai_credential_service.rotate_credential(
+                db,
+                credential=row,
+                new_api_key="sk-compat-rotated-9999",
+                new_bearer_token="leaked-bearer",
+                session_factory=session_factory,
+                **_ACTOR_KW,
+            )
+    assert getattr(ei.value, "status_code", None) == 400
+    assert ei.value.detail["code"] == "bearer_token_only_for_ollama"
+
+
+async def test_rotate_accepts_bearer_token_for_ollama(db, session_factory, org):
+    row = await _seed_credential(
+        db,
+        session_factory,
+        org,
+        provider=AiProvider.OLLAMA,
+        api_key="ollama-key-aaaa",
+        base_url="https://ollama.example.com",
+    )
+    with _patch_adapter(_ok_validate()):
+        updated = await ai_credential_service.rotate_credential(
+            db,
+            credential=row,
+            new_api_key="ollama-key-rotated-9999",
+            new_bearer_token="new-bearer-token",
+            session_factory=session_factory,
+            **_ACTOR_KW,
+        )
+    assert updated.last_four == "9999"
+    assert updated.encrypted_bearer_token is not None
+
+
+@pytest.mark.parametrize(
+    "provider, api_key, base_url",
+    [
+        (AiProvider.OPENAI, "sk-test-no-bt-aaaa", None),
+        (AiProvider.ANTHROPIC, "sk-ant-no-bt-aaaa", None),
+        (AiProvider.OPENAI_COMPATIBLE, "sk-compat-no-bt-aaaa", "https://llm.example.com"),
+        (AiProvider.OLLAMA, "ollama-no-bt-aaaa", "https://ollama.example.com"),
+    ],
+)
+async def test_rotate_accepts_no_bearer_token_for_any_provider(
+    db, session_factory, org, provider, api_key, base_url
+):
+    row = await _seed_credential(
+        db, session_factory, org, provider=provider, api_key=api_key, base_url=base_url,
+    )
+    with _patch_adapter(_ok_validate()):
+        updated = await ai_credential_service.rotate_credential(
+            db,
+            credential=row,
+            new_api_key=api_key[:-4] + "9999",
+            new_bearer_token=None,
+            session_factory=session_factory,
+            **_ACTOR_KW,
+        )
+    assert updated.last_four == "9999"
+    assert updated.encrypted_bearer_token is None

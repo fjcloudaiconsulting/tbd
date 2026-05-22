@@ -135,6 +135,11 @@ class OrgAICredentialRotate(BaseModel):
     api_key: str = Field(
         min_length=API_KEY_MIN_LENGTH, max_length=API_KEY_MAX_LENGTH
     )
+    # bearer_token is Ollama-only. Unlike OrgAICredentialCreate, the
+    # provider isn't in the request body (the rotate route looks up the
+    # existing credential by id), so the schema can't enforce the rule
+    # here — the service layer does (see ai_credential_service.
+    # rotate_credential). Mirrors the create-path schema check.
     bearer_token: Optional[str] = Field(
         default=None, max_length=API_KEY_MAX_LENGTH
     )

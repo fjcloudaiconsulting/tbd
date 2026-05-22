@@ -170,6 +170,22 @@ async def rotate_credential(
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> OrgAICredential:
+    # Bearer token is Ollama-only — same rule the create-path schema
+    # validator enforces. Rotate's schema can't enforce it because the
+    # provider isn't in the request body (it's looked up by id), so the
+    # service layer is the enforcement point. See OrgAICredentialRotate
+    # field comment.
+    if (
+        new_bearer_token is not None
+        and credential.provider != AiProvider.OLLAMA
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "bearer_token_only_for_ollama",
+                "message": "bearer_token is only valid for Ollama credentials.",
+            },
+        )
     result = await _run_validate(
         provider=credential.provider,
         api_key=new_api_key,
