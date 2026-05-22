@@ -17,12 +17,14 @@ Pins the architect-locked invariants exercised at the function level
 """
 from __future__ import annotations
 
+import ast
+import json
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime
 
 import pytest
 import pytest_asyncio
-import structlog
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -43,6 +45,73 @@ from app.models.notification import (
 from app.models.user import Organization, Role, User
 from app.security import hash_password
 from app.services import notification_service
+
+
+@pytest.fixture
+def _structlog_via_stdlib():
+    """Ensure structlog routes events through stdlib for the test.
+
+    The notification fanout tests assert on structured fields emitted
+    by :mod:`app.services.notification_service`. The service uses
+    ``structlog.stdlib.get_logger()``; whether ``caplog`` sees those
+    events depends on whether structlog has been configured to route
+    through the stdlib pipeline. ``app.logging.setup_logging`` installs
+    that wiring in production and in the FastAPI lifespan, but the
+    bare unit-test conftest does not — so structlog falls back to its
+    default ``PrintLogger`` which bypasses stdlib entirely.
+
+    This fixture calls ``setup_logging()`` once per test so events
+    land in ``caplog`` regardless of test ordering. Without it, the
+    test passes only when an earlier test in the session happened to
+    initialise the FastAPI app stack first; that ordering is what made
+    the original ``structlog.testing.capture_logs()`` form pass locally
+    and fail in CI.
+    """
+    import structlog
+
+    from app.logging import setup_logging
+
+    original_config = structlog.get_config() if structlog.is_configured() else None
+    setup_logging()
+    yield
+    if original_config is not None:
+        structlog.configure(**original_config)
+
+
+def _collect_structlog_events(caplog) -> list[dict]:
+    """Pull structlog events out of pytest's ``caplog`` capture.
+
+    With ``_structlog_via_stdlib`` active, structlog is configured to
+    end its processor chain with ``ProcessorFormatter.wrap_for_formatter``
+    which hands the event dict to stdlib. ``caplog`` then sees a
+    :class:`logging.LogRecord` whose ``msg`` is either the event dict
+    itself (when ``wrap_for_formatter`` ran) or a string the formatter
+    chain rendered. This helper normalises both shapes into a list of
+    event ``dict``s so assertions can reach the structured fields.
+    """
+    events: list[dict] = []
+    for rec in caplog.records:
+        # Path 1: wrap_for_formatter — record.msg is the event dict OR a
+        # tuple of (event_dict,). Older structlog versions ship the dict
+        # straight through; newer versions pass it as the first positional.
+        candidate = rec.msg
+        if isinstance(candidate, tuple) and candidate:
+            candidate = candidate[0]
+        if isinstance(candidate, dict):
+            events.append(candidate)
+            continue
+        # Path 2: rendered to text — try JSON first, then fall back to a
+        # Python-literal eval for repr-style dict strings.
+        message = rec.getMessage()
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                payload = parser(message)
+            except (ValueError, SyntaxError, TypeError):
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+                break
+    return events
 
 
 @pytest_asyncio.fixture
@@ -760,7 +829,7 @@ async def test_dispatch_org_admin_fanout_continues_on_individual_failure(
 
 @pytest.mark.asyncio
 async def test_fanout_savepoint_isolates_recipient_flush_failure(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, caplog, _structlog_via_stdlib
 ):
     """A flush-time IntegrityError on recipient #2 must NOT poison
     the outer session: recipient #1 (already flushed) and recipient #3
@@ -817,7 +886,7 @@ async def test_fanout_savepoint_isolates_recipient_flush_failure(
         notification_service, "dispatch_notification", poisoning_dispatch
     )
 
-    with structlog.testing.capture_logs() as captured:
+    with caplog.at_level(logging.WARNING, logger="app.services.notification_service"):
         async with session_factory() as db:
             written = await notification_service.dispatch_notification_to_org_admins(
                 db,
@@ -852,9 +921,10 @@ async def test_fanout_savepoint_isolates_recipient_flush_failure(
     # leaked past the savepoint rollback.
     assert 999_999 not in recipient_ids
 
+    captured_events = _collect_structlog_events(caplog)
     failed_events = [
         ev
-        for ev in captured
+        for ev in captured_events
         if ev.get("event") == "notification.dispatch.fanout.recipient_failed"
     ]
     assert len(failed_events) == 1
@@ -866,7 +936,7 @@ async def test_fanout_savepoint_isolates_recipient_flush_failure(
 
 @pytest.mark.asyncio
 async def test_fanout_returns_success_and_failure_counts(
-    session_factory, monkeypatch
+    session_factory, monkeypatch, caplog, _structlog_via_stdlib
 ):
     """Mix 2 successes + 2 failures: the helper returns the success
     count (rows actually written) and emits a structured completion
@@ -906,7 +976,7 @@ async def test_fanout_returns_success_and_failure_counts(
         notification_service, "dispatch_notification", half_failing_dispatch
     )
 
-    with structlog.testing.capture_logs() as captured:
+    with caplog.at_level(logging.INFO, logger="app.services.notification_service"):
         async with session_factory() as db:
             written = await notification_service.dispatch_notification_to_org_admins(
                 db,
@@ -921,9 +991,10 @@ async def test_fanout_returns_success_and_failure_counts(
     # 2 successes (owner + admin_b); 2 failures (admin_a + admin_c).
     assert written == 2
 
+    captured_events = _collect_structlog_events(caplog)
     complete_events = [
         ev
-        for ev in captured
+        for ev in captured_events
         if ev.get("event") == "notification.dispatch.fanout.complete"
     ]
     assert len(complete_events) == 1
@@ -935,7 +1006,7 @@ async def test_fanout_returns_success_and_failure_counts(
 
     failed_events = [
         ev
-        for ev in captured
+        for ev in captured_events
         if ev.get("event") == "notification.dispatch.fanout.recipient_failed"
     ]
     assert {ev["recipient_user_id"] for ev in failed_events} == failing_ids
