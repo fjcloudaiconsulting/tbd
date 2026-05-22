@@ -29,10 +29,10 @@ Every AI feature surface (`call_llm` chokepoint today, future `embed_text` choke
 
 * **Provider abstraction shape**: Protocol-based capabilities (Shape B below). One adapter per provider kind, with `oai_compatible_adapter` parameterized by `base_url` so new OpenAI-compatible endpoints add a row, not code.
 * **Encryption library**: Fernet, separate key (`AI_CREDENTIAL_ENCRYPTION_KEY`), envelope-style payload that lets us rotate the master key without re-prompting users for their keys.
-* **Per-feature routing**: per-org default provider + optional per-feature override row. Same shape as `OrgFeatureOverride` for booleans.
+* **Per-feature routing**: **split tables — `org_ai_default_routing` (PK `org_id`) + `org_ai_feature_routing` (PK `(org_id, feature_name)`)**. Rejected single-table-with-nullable-feature shape because MySQL unique indexes treat `NULL` as distinct, allowing multiple defaults per org. See §4.
 * **Native + consent**: separate `org_ai_consents` row with version pin; consent is binary per axis (training, RAG, telemetry) with future ToS bumps re-prompting.
 * **Caps**: hard cap + soft cap per org, ledger via `ai_usage` (PR-C of LAI Foundation, now part of this rollout train).
-* **Navigation**: keep Reports / AI / Plans as **frame-menu items**, not tabs. Reasoning in §12.
+* **Navigation**: AI configuration lives under **Settings**, not as a top-level frame-menu item. `/settings/ai-providers` and `/settings/ai-consent` are owner-only Settings pages. Reports (spec #336) and Plans (spec #337) are top-level in their own specs. Reasoning in §12.
 
 ## Design decisions
 
@@ -214,34 +214,56 @@ async def unwrap(db, *, org_id, provider_kind, label=None) -> ProviderCredential
 - `validate_credential` is rate-limited per (org, provider_kind) to one call per 5 seconds to prevent the validate button from being weaponized as a provider-side abuse vector.
 - `unwrap` is the **only** code path that decrypts. It updates `last_used_at` in a fire-and-forget background task so the read path isn't blocked on a write.
 
-### 4. Org-level config: routing
+### 4. Org-level config: routing (LOCKED — split tables)
 
-Two new tables (or one table — see open question Q1):
+**Architect-locked decision (2026-05-22):** routing is **two tables**, not one with a nullable `feature_name`. Reason: MySQL treats `NULL` values as distinct from each other in unique indexes, so `UNIQUE(org_id, feature_key)` with `feature_key IS NULL` does **not** prevent multiple "default" rows per org. The split-table shape makes "exactly one default per org" a structural invariant (primary key on `org_id`) instead of a runtime check that can drift.
 
-**`org_ai_routing`** (per-org default + optional per-feature override):
+**`org_ai_default_routing`** — exactly one row per org. One-to-one with `organizations`.
 
 ```sql
-CREATE TABLE org_ai_routing (
-    id INT NOT NULL AUTO_INCREMENT,
+CREATE TABLE org_ai_default_routing (
     org_id INT NOT NULL,
-    feature_key VARCHAR(80) NULL,                -- NULL = the org default; non-NULL = per-feature override
     credential_id INT NOT NULL,
     model VARCHAR(120) NOT NULL,                 -- e.g. "gpt-4o-mini", "claude-3-5-sonnet-20241022"
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_org_feature (org_id, feature_key),
-    CONSTRAINT fk_routing_org FOREIGN KEY (org_id)
+    PRIMARY KEY (org_id),
+    KEY ix_default_cred (credential_id),
+    CONSTRAINT fk_default_routing_org FOREIGN KEY (org_id)
         REFERENCES organizations (id) ON DELETE CASCADE,
-    CONSTRAINT fk_routing_cred FOREIGN KEY (credential_id)
+    CONSTRAINT fk_default_routing_cred FOREIGN KEY (credential_id)
         REFERENCES org_ai_credentials (id) ON DELETE CASCADE
 );
 ```
 
-Resolution order at `_resolve_provider(org_id, feature_key)`:
-1. Per-feature override row where `feature_key = ?`.
-2. Default row where `feature_key IS NULL`.
-3. No row → raise `NoProviderConfigured`. `call_llm` maps this to HTTP 409 `code=ai_provider_not_configured`. UI prompts the owner to configure.
+**`org_ai_feature_routing`** — N rows per org, one per per-feature override.
+
+```sql
+CREATE TABLE org_ai_feature_routing (
+    org_id INT NOT NULL,
+    feature_name VARCHAR(80) NOT NULL,
+    credential_id INT NOT NULL,
+    model VARCHAR(120) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (org_id, feature_name),
+    KEY ix_feature_cred (credential_id),
+    CONSTRAINT fk_feature_routing_org FOREIGN KEY (org_id)
+        REFERENCES organizations (id) ON DELETE CASCADE,
+    CONSTRAINT fk_feature_routing_cred FOREIGN KEY (credential_id)
+        REFERENCES org_ai_credentials (id) ON DELETE CASCADE
+);
+```
+
+**Resolution order at `_resolve_provider(org_id, feature_name)`:**
+
+1. Look up `(org_id, feature_name)` in `org_ai_feature_routing`. If hit, use it.
+2. Otherwise look up `org_id` in `org_ai_default_routing`. If hit, use it.
+3. Otherwise raise `NoProviderConfigured`. `call_llm` maps this to HTTP 409 `code=ai_provider_not_configured`. UI prompts the owner to configure a default.
+
+**Cross-org credential validation (decision: service layer, not composite FK).** A row in either routing table could in principle reference a credential belonging to a different org. We enforce same-org integrity in the **service layer** (`routing_service.set_default`, `routing_service.set_feature_override`): every write verifies that `credential.org_id == routing.org_id` before commit. A composite FK like `FOREIGN KEY (org_id, credential_id) REFERENCES org_ai_credentials (org_id, id)` would catch this at the DB layer too, but it requires `org_ai_credentials` to expose `(org_id, id)` as a unique key (which it does via `uq_org_provider_label` indirectly, but not directly), and we already enforce org-scoping uniformly in the service layer for all org-scoped tables. Service-layer enforcement keeps the pattern consistent. A regression test asserts the invariant.
+
+**Admin UI shape (updated):** one "default provider/model" picker on top, then a list of "per-feature overrides" below. Removing a per-feature override deletes the row; the call falls back to default automatically on the next dispatch.
 
 ### 5. Native option + consent
 
@@ -427,6 +449,7 @@ All credential events follow the audit-service contract: independent session, wr
 | **T11 — Credential exfil via SQL injection** | An adversarial query reads `encrypted_payload` raw. | The payload is still Fernet-encrypted. Without the KEK, the dump is opaque. SQL injection mitigations stay our primary control — but the encryption is the safety net. |
 | **T12 — Native consent bypass** | Code path forgets to check consent before calling the native adapter. | `TBDNativeAdapter.dispatch()` itself reads consent on every call and refuses if missing (defense in depth, same posture as the feature-gate re-check in `call_llm`). |
 | **T13 — Stale `last_used_at` correlation** | Forensics needs to know which key was used at a given time, but `last_used_at` is overwritten on every call. | The `ai_usage` ledger row has `credential_id` and `created_at` — that is the forensic source. `last_used_at` is a UX convenience, not a forensic record. |
+| **T14 — Cross-org routing reference** | A row in `org_ai_default_routing` or `org_ai_feature_routing` for Org A references a `credential_id` that belongs to Org B (bug in service code, or a hand-crafted DB write). At call time Org A's traffic would dispatch through Org B's key. | The routing-table FKs are by `credential_id` alone, so the DB does not block this. Mitigation: `routing_service.set_default` and `routing_service.set_feature_override` verify `credential.org_id == routing.org_id` before commit and refuse otherwise. A regression test pins the invariant. `_resolve_provider` re-checks at dispatch time as defense in depth and emits `ai.routing.cross_org_drift` structlog on violation (refuses dispatch). |
 
 #### Posture summary
 
@@ -457,15 +480,15 @@ All credential events follow the audit-service contract: independent session, wr
 │ "Local Ollama"     Ollama       (none)      2026-05-22 14:10  [validate]│
 │                    base_url: http://10.0.1.42:11434                     │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ Per-feature routing                                                     │
+│ Default provider (used unless overridden below)                         │
 │ ──────────────                                                          │
-│ Categorization     [Main OpenAI ▼]   model [gpt-4o-mini ▼]              │
-│ Forecast           [(use default) ▼]                                    │
-│ Smart Budget       [Anthropic prod ▼] model [claude-3-5-haiku ▼]        │
-│ Smart Plan         [(use default) ▼]                                    │
-│ Chat               [(use default) ▼]                                    │
-│                                                                         │
 │ Default            [Main OpenAI ▼]   model [gpt-4o-mini ▼]              │
+│                                                                         │
+│ Per-feature overrides                                  [+ Add override] │
+│ ──────────────                                                          │
+│ Categorization     [Main OpenAI ▼]   model [gpt-4o-mini ▼]    [remove]  │
+│ Smart Budget       [Anthropic prod ▼] model [claude-3-5-haiku ▼] [remove]│
+│ (features without an override row fall through to the default)          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -534,28 +557,28 @@ On Validate click:
 
 Save → POST to `/api/v1/ai/consent` with full payload. On `consent_version` mismatch → frontend reloads the page with the new ToS text.
 
-### 12. Navigation question: tabs vs frame menu for Reports / AI Tier / Plans
+### 12. Navigation (LOCKED): AI configuration lives under Settings
 
-**Recommend: frame-menu items, not tabs.** Reasoning:
+**Architect-locked decision (2026-05-22):** AI is org-admin / operator configuration. It belongs in **Settings**, not in the top-level frame menu.
 
-- Reports, AI, and Plans each have multiple sub-pages. Reports has spending, income, net-worth, and (future) custom-report sub-views. AI has providers, consent, usage. Plans has goal-by-goal sub-routes. Tabs assume a single working surface with shallow lateral navigation; the frame menu assumes a section with its own routing tree. These three are sections.
-- The frame menu is the source of truth for "where can I go in this app". A first-class entry there makes Reports / AI / Plans discoverable; burying them as tabs inside a parent page (e.g. "Settings → AI Providers") hides them and conflates settings with capabilities.
-- Existing analog: `/budgets`, `/forecast-plans`, `/categories` are frame-menu items, not tabs. They have shape comparable to Reports / AI / Plans.
-- Exception — for the AI tier, the *user-facing* surfaces (categorization, forecast hint, chat) keep living inside the existing frame items (categories page, forecast page, etc.). Only the **configuration** of AI moves to a top-level entry. So the new entry is **`/settings/ai-providers` + `/settings/ai-consent`** inside the existing Settings tree, plus a new top-level `Reports` and `Plans` (the latter exists today as `/forecast-plans`).
-- **Decision matrix**:
+- `/settings/ai-providers` — org admin only. Credentials CRUD (add, rotate, revoke), validate button, per-feature routing UI, usage panel.
+- `/settings/ai-consent` — org admin only. Native-mode consent toggles (training, RAG, telemetry), consent-version pin, purge-embeddings action.
+- **No top-level frame-menu item for AI.** Discovery happens via Settings, the same way users find org rename, member management, billing, audit, and other admin surfaces today.
 
-| Surface | Recommendation | Rationale |
+Reports and Plans are separate top-level concerns owned by their own specs:
+
+| Surface | Where it lives | Spec |
 |---|---|---|
-| Reports | New frame-menu item `/reports` | Multiple sub-pages. Top-level navigation aid. |
-| AI providers / consent | **Tabs inside `/settings`** | Configuration belongs in settings. Two flat pages. No further nesting needed. |
-| Plans (formerly forecast-plans, possibly renamed) | Existing frame-menu item; possibly renamed to "Plans" if the product wants the shorter label | Already has its own route. |
+| Reports | Top-level frame-menu item (`/reports`) | #336 |
+| Plans | Top-level frame-menu item (`/plans`) | #337 |
+| AI providers / consent | Under `/settings/*` (admin/operator config) | this spec |
 
-The AI configuration is **not** a top-level frame-menu item. It's settings — and settings tabs is what we have for configuration.
+The *user-facing* AI surfaces (categorization hint on transactions, forecast hint, smart-budget suggestions, chat when it ships) continue to live inside the existing frame items they augment. This spec only governs the **configuration** of AI, which is administrative work, not a destination users navigate to during normal use.
 
 ### 13. Phased rollout
 
 **PR 1 — Provider abstraction + BYO key storage + admin UI (no native, no features wired, no caps).**
-- Migration: `org_ai_credentials` + `org_ai_routing` tables. Empty.
+- Migration: `org_ai_credentials` + `org_ai_default_routing` + `org_ai_feature_routing` tables. Empty.
 - Backend: `credential_service` (create / rotate / revoke / validate / list / unwrap). `OpenAIAdapter`, `AnthropicAdapter`, `OllamaAdapter`, `OAICompatibleAdapter` with only the `validate()` method implemented. New routes under `/api/v1/ai/credentials/*` and `/api/v1/ai/routing/*`. Audit events for credential lifecycle. New env var `AI_CREDENTIAL_ENCRYPTION_KEY`.
 - Frontend: `/settings/ai-providers` page with credentials table + add/rotate/revoke modals + per-feature routing UI (read-only routing in PR1; routing writes ride in PR3).
 - Tests: validate flows, encryption round-trip, key never returned over the wire, audit trail.
@@ -667,7 +690,7 @@ HTTP 412 {code: "ai_consent_missing", consent_version: "ai-tos-2026-05-22"}
 
 ### 15. Migrations
 
-Single Alembic revision per PR. PR1: `org_ai_credentials` + `org_ai_routing`. PR2: `ai_usage` + `org_ai_caps`. PR4: `org_ai_consents`. No data backfill — all tables start empty. Downgrade is `DROP TABLE` in each case.
+Single Alembic revision per PR. PR1: `org_ai_credentials` + `org_ai_default_routing` + `org_ai_feature_routing`. PR2: `ai_usage` + `org_ai_caps`. PR4: `org_ai_consents`. No data backfill — all tables start empty. Downgrade is `DROP TABLE` in each case.
 
 Per `CLAUDE.md`: migrations run via the lifespan + migrate wrapper. The Alembic env var `PFV_MIGRATE_OK_OFF_MAIN` interaction is unchanged.
 
@@ -690,7 +713,48 @@ ai_cost_estimate_last_updated: str = "2026-05-22"
 
 All non-secret defaults are safe in dev. `ai_credential_encryption_key` empty → backend refuses to start if any `org_ai_credentials` row exists; allowed empty when the table is empty (dev convenience). Production `.do/app.yaml` must set both `ai_credential_encryption_key` (encrypted EV[] blob) and `ai_native_enabled` per `reference_do_spec_sync`.
 
-### 17. Tests
+### 17. Startup guard: KEK key separation (BLOCKER)
+
+`AI_CREDENTIAL_ENCRYPTION_KEY` is a **separate KEK** from `MFA_ENCRYPTION_KEY`. The blast radius of a compromise in one domain (MFA secrets) must not extend to the other (provider API keys). Documentation alone is not enough — the application enforces this at startup and refuses to boot if either current or rotation keys collide across domains.
+
+**Enforcement:**
+
+- In the FastAPI lifespan (before any router accepts traffic), compute SHA-256 of each non-empty key across both domains. If any two hashes are equal, log `config.ai_credential_key_reuses_mfa_key` at fatal level and abort startup.
+- Pairs checked:
+  - `AI_CREDENTIAL_ENCRYPTION_KEY` vs `MFA_ENCRYPTION_KEY`
+  - `AI_CREDENTIAL_ENCRYPTION_KEY` vs `MFA_ENCRYPTION_KEY_PREV` (if set)
+  - `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` vs `MFA_ENCRYPTION_KEY` (if set)
+  - `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` vs `MFA_ENCRYPTION_KEY_PREV` (if both set)
+- The check is **skipped when `APP_ENV == "test"`** so the test suite can use a single dev key without ceremony. **Do not "fix" this by removing the skip — it is deliberate; the test suite would otherwise have to maintain two distinct Fernet keys for unrelated coverage.** Production, staging, and dev all run the check.
+
+**Sketch:**
+
+```python
+# backend/app/main.py (lifespan startup)
+import hashlib
+
+def _enforce_kek_separation(settings) -> None:
+    if settings.app_env == "test":
+        return
+    pairs = [
+        ("AI_CREDENTIAL_ENCRYPTION_KEY", settings.ai_credential_encryption_key,
+         "MFA_ENCRYPTION_KEY", settings.mfa_encryption_key),
+        ("AI_CREDENTIAL_ENCRYPTION_KEY", settings.ai_credential_encryption_key,
+         "MFA_ENCRYPTION_KEY_PREV", getattr(settings, "mfa_encryption_key_prev", "")),
+        ("AI_CREDENTIAL_ENCRYPTION_KEY_PREV", settings.ai_credential_encryption_key_prev,
+         "MFA_ENCRYPTION_KEY", settings.mfa_encryption_key),
+        ("AI_CREDENTIAL_ENCRYPTION_KEY_PREV", settings.ai_credential_encryption_key_prev,
+         "MFA_ENCRYPTION_KEY_PREV", getattr(settings, "mfa_encryption_key_prev", "")),
+    ]
+    for name_a, a, name_b, b in pairs:
+        if a and b and hashlib.sha256(a.encode()).digest() == hashlib.sha256(b.encode()).digest():
+            log.fatal("config.ai_credential_key_reuses_mfa_key", key_a=name_a, key_b=name_b)
+            raise SystemExit(1)
+```
+
+This guard runs alongside the existing "empty KEK with non-empty credentials table" refusal in section 9. Both are startup-time fatal conditions.
+
+### 18. Tests
 
 Backend (`backend/tests/`):
 - `services/test_credential_service.py`: round-trip encrypt/decrypt, validate-then-persist invariant, plaintext never in row.
@@ -702,13 +766,13 @@ Backend (`backend/tests/`):
 - `services/test_cap_service.py`: hard cap blocks, soft cap notifies, ledger aggregation correct across month boundary.
 - `routers/test_ai_credentials_router.py`: list returns masked rows, GET does not echo plaintext, POST validates before persist, rate-limit on validate.
 - `services/test_redaction_service.py`: PII scrubbing patterns + Prompt key rejection.
-- **Security-specific tests** (`tests/security/`): the `ProviderCredentials.__repr__` mask is invariant; structlog calls never include `api_key` (grep-based assertion); 401 from provider does not echo the key.
+- **Security-specific tests** (`tests/security/`): the `ProviderCredentials.__repr__` mask is invariant; structlog calls never include `api_key` (grep-based assertion); 401 from provider does not echo the key; KEK separation guard refuses to boot when `AI_CREDENTIAL_ENCRYPTION_KEY == MFA_ENCRYPTION_KEY` (and across `*_PREV` pairs) with `APP_ENV != "test"`, and skips cleanly when `APP_ENV == "test"`.
 
 Frontend (`frontend/tests/`):
 - `settings-ai-providers.test.tsx`: add/rotate/revoke flows, validate-on-add, key never displayed after save, masked list rendering, per-feature routing dropdown writes.
 - `settings-ai-consent.test.tsx`: consent toggles, version pin re-prompt, revoke flow, purge embeddings confirmation.
 
-### 18. Out of scope
+### 19. Out of scope
 
 - **OAuth-based provider auth** (e.g. Google Vertex AI workload identity). Future spec.
 - **Bring-your-own-KMS** for the KEK. Future spec when the customer base demands it.
@@ -736,7 +800,7 @@ Frontend (`frontend/tests/`):
 ## Open questions for architect
 
 1. **R1 vs R2 vs R3 for RAG vector store** (pgvector sidecar vs Qdrant vs Pinecone). Spec recommends R1. Architect to confirm before the PR 5 follow-on spec opens.
-2. **One routing table or two**: combine default + per-feature in `org_ai_routing` (with nullable `feature_key` and a unique constraint as proposed) vs split into `org_ai_default_provider` + `org_ai_feature_overrides`. Spec recommends combined for fewer joins; reviewer may prefer split for clarity.
+2. ~~One routing table or two~~ **RESOLVED 2026-05-22**: split into `org_ai_default_routing` (PK = `org_id`) and `org_ai_feature_routing` (PK = `(org_id, feature_name)`). Rationale: MySQL unique indexes treat `NULL` as distinct, so a single-table shape with nullable `feature_key` cannot structurally enforce "exactly one default per org". See §4.
 3. **Per-feature capability requirements**: should categorization require `FunctionCallCapable` strictly, or accept structured-output-via-JSON-mode as equivalent? Affects what providers can be selected per feature. Spec leans toward "accept JSON-mode as equivalent" so Ollama models can run categorization too.
 4. **Cost-estimate table refresh cadence**: quarterly via manual PR vs nightly job pulling from provider price pages. Spec proposes quarterly PR for now; nightly job is overkill until the catalog is large.
 5. **TBD-native v1 substrate**: the native adapter in PR4 needs a real backend. Options: (a) wrap our own Anthropic key behind it, (b) stand up a managed inference endpoint, (c) gate native behind a "coming soon" flag and ship only the consent + opt-in scaffolding. Spec leans toward (c) — ship the consent UI, refuse with `not_yet_available` until (a) or (b) lands.
