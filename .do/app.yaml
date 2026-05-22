@@ -204,6 +204,14 @@ services:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: "EV[1:kg3PgeHFB8F1J+W7poJvWA4BzRWZPNMx:UUM6Ver7hx8Zi4WfpqbjfWo3+t3KeTKMLOsUooHpBSe+3AvIe+eyHGBIvtdh7/TQdyZ/]"
+      # Billing UI kill switch. SHIPPING AS "false" until the payment
+      # platform is wired — hides the customer-facing trial banner,
+      # settings Billing tab, and /settings/billing plan grid. Admin and
+      # operator views are unaffected. Exposed via /api/v1/auth/status so
+      # a flip to "true" restores the surface on the next page load.
+      - key: BILLING_UI_ENABLED
+        scope: RUN_AND_BUILD_TIME
+        value: "false"
 
   - name: frontend
     github:

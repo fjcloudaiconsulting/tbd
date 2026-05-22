@@ -60,11 +60,19 @@ async function renderShell() {
   });
 }
 
-function mockAuth(user: Record<string, unknown>) {
+function mockAuth(
+  user: Record<string, unknown>,
+  opts: { billingUiEnabled?: boolean } = {},
+) {
   vi.mocked(useAuth).mockReturnValue({
     user: user as never,
     loading: false,
     needsSetup: false,
+    // Trial banner is gated on this flag (BILLING_UI_ENABLED kill
+    // switch). Default true here so the existing header-polish tests
+    // that exercise the trial chip keep working; tests asserting the
+    // banner is hidden don't depend on the flag.
+    billingUiEnabled: opts.billingUiEnabled ?? true,
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),

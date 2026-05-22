@@ -14,7 +14,7 @@ const tabs = [
 ];
 
 export default function SettingsLayout({ children, activeTab }: { children: React.ReactNode; activeTab: string }) {
-  const { user, loading } = useAuth();
+  const { user, loading, billingUiEnabled } = useAuth();
 
   if (loading || !user) {
     return (
@@ -28,6 +28,12 @@ export default function SettingsLayout({ children, activeTab }: { children: Reac
   }
 
   const visibleTabs = tabs.filter((tab) => {
+    // Customer-facing billing surface kill switch — hide the Billing
+    // tab entirely until the payment platform is wired
+    // (BILLING_UI_ENABLED backend env, surfaced via /auth/status).
+    // Inline conditional per spec; no minFlag abstraction for a
+    // single flag.
+    if (tab.href === "/settings/billing" && !billingUiEnabled) return false;
     if (tab.minRole === "owner") return isOwner(user);
     if (tab.minRole === "admin") return isAdmin(user);
     return true;
