@@ -54,6 +54,7 @@ from app.models.org_ai_caps import (  # noqa: F401
     OrgAIFeatureCaps,
 )
 from app.models.org_ai_consent import OrgAIConsent  # noqa: F401
+from app.models.ai_usage_ledger import AIUsageLedger  # noqa: F401
 
 __all__ = [
     "Base",
@@ -108,6 +109,7 @@ __all__ = [
     "OrgAIDefaultCaps",
     "OrgAIFeatureCaps",
     "OrgAIConsent",
+    "AIUsageLedger",
     "ROUTABLE_FEATURE_NAMES",
     "UserDismissedAnnouncement",
     "Notification",

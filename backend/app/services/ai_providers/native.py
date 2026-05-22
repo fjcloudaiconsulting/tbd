@@ -49,3 +49,13 @@ class NativeAdapter:
         # registry symmetric and lets PR4 plug in real validation
         # without changing the call sites.
         raise NativeNotAvailable("not_yet_available")
+
+    async def chat(self, *, model, messages, max_tokens=None):
+        # PR4 will gate this on ``AI_NATIVE_ENABLED`` once a real native
+        # backend exists. For PR2 the adapter is wired into the
+        # registry so the dispatch layer is symmetric, but the chat
+        # path still refuses immediately.
+        raise NativeNotAvailable("not_yet_available")
+
+    async def chat_structured(self, *, model, messages, schema, max_tokens=None):
+        raise NativeNotAvailable("not_yet_available")
