@@ -453,7 +453,7 @@ Each widget owns its own SWR key `(report_id, widget_id, hash(resolvedQuery))`. 
 
 * **No legacy report routes to preserve.** The old fixed-reports surface was scoped but never shipped. Nothing to remove.
 * **Single Alembic migration** in PR 1 creates `reports`, adds composite indexes on `transactions`.
-* **No data backfill.** Existing orgs see "No reports yet — start from a template."
+* **No data backfill.** Existing orgs see "No reports yet. Start from a template."
 * **`.do/app.yaml`** unchanged; no new env vars.
 
 ## 10. Navigation — Reports + AI Tier + Plans
