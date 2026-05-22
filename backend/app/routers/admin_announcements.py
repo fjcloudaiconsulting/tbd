@@ -152,10 +152,12 @@ async def update_announcement(
     Pydantic validator only sees what the request carries.
 
     Null-rejection on non-nullable columns (``title``, ``body``,
-    ``severity``, ``is_active``, ``start_at``) is enforced by the
-    schema's ``mode="before"`` validator — by the time we get here,
-    those values can never be ``None`` AND in the payload at the same
-    time. We only ever ``setattr`` keys the caller actually sent
+    ``severity``, ``is_active``) is enforced by the schema's
+    ``mode="before"`` validator — by the time we get here, those
+    values can never be ``None`` AND in the payload at the same
+    time. ``start_at`` and ``end_at`` are both nullable on the row;
+    sending either as ``null`` clears that side of the window. We
+    only ever ``setattr`` keys the caller actually sent
     (``exclude_unset=True``), so a missing key is a no-op and a bool
     field set to ``False`` still applies.
     """

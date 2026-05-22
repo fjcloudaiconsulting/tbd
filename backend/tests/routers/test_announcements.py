@@ -486,12 +486,14 @@ async def test_dismiss_unknown_id_returns_404(session_factory):
 # non-nullable column must return a deterministic 422 with a
 # field-level error BEFORE any DB write. The first revision relied on
 # SQLAlchemy / enum-coerce blowing up at flush time, which surfaced as
-# a generic 500 with no actionable diagnostic. End_at remains
-# legitimately nullable — clearing a scheduled end via
-# ``PATCH {"end_at": null}`` still succeeds.
+# a generic 500 with no actionable diagnostic. ``start_at`` and
+# ``end_at`` are both legitimately nullable on the row — the admin
+# form sends them as ``null`` when the optional schedule fields are
+# left blank, and that payload must round-trip cleanly. Only
+# ``title``, ``body``, ``severity``, and ``is_active`` are rejected.
 
 
-@pytest.mark.parametrize("field", ["title", "body", "severity", "start_at", "is_active"])
+@pytest.mark.parametrize("field", ["title", "body", "severity", "is_active"])
 @pytest.mark.asyncio
 async def test_update_rejects_explicit_null_for_non_nullable_field(
     session_factory, field
@@ -517,8 +519,8 @@ async def test_update_rejects_explicit_null_for_non_nullable_field(
 
 @pytest.mark.asyncio
 async def test_update_accepts_null_end_at_clearing_schedule(session_factory):
-    """``end_at`` is the one legitimately nullable column on PATCH —
-    operators must be able to clear a previously-set end via
+    """``end_at`` is legitimately nullable on PATCH — operators must
+    be able to clear a previously-set end via
     ``PATCH {"end_at": null}``.
     """
     await _seed_users(session_factory)
@@ -537,6 +539,69 @@ async def test_update_accepts_null_end_at_clearing_schedule(session_factory):
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["end_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_accepts_null_start_at_clearing_schedule(session_factory):
+    """``start_at`` is legitimately nullable on PATCH — operators must
+    be able to clear a previously-set start via
+    ``PATCH {"start_at": null}``. The admin form depends on this:
+    when the optional Start field is left blank, the form sends
+    ``start_at: null`` for the patch payload (see
+    ``frontend/app/system/announcements/page.tsx:fromDatetimeLocal``).
+    """
+    await _seed_users(session_factory)
+    now = utcnow_naive()
+    ann_id = await _seed_announcement(
+        session_factory,
+        start_at=now - timedelta(hours=1),
+        end_at=now + timedelta(hours=10),
+    )
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/announcements/{ann_id}",
+            json={"start_at": None},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["start_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_accepts_null_for_both_schedule_endpoints(session_factory):
+    """The admin form's edit flow for an unbounded announcement sends
+    ``{ start_at: null, end_at: null, ... }`` — both keys must be
+    accepted in the SAME patch payload, clearing both columns to NULL
+    in one round-trip. Pins
+    ``frontend/app/system/announcements/page.tsx`` against silent
+    422s on the edit form.
+    """
+    await _seed_users(session_factory)
+    now = utcnow_naive()
+    ann_id = await _seed_announcement(
+        session_factory,
+        start_at=now - timedelta(hours=1),
+        end_at=now + timedelta(hours=10),
+    )
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/announcements/{ann_id}",
+            json={
+                "title": "Updated",
+                "body": "Updated body",
+                "severity": "info",
+                "is_active": True,
+                "start_at": None,
+                "end_at": None,
+            },
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["start_at"] is None
+    assert body["end_at"] is None
+    assert body["title"] == "Updated"
 
 
 @pytest.mark.asyncio

@@ -67,15 +67,15 @@ class AnnouncementCreate(_ScheduleValidatedMixin):
 
 # Columns on ``announcements`` that a PATCH update rejects explicit
 # ``null`` for. Architect-locked PR #340 review (2026-05-22):
-# ``title``, ``severity``, ``start_at``, ``body`` are the four called
-# out by name; ``is_active`` is the bool column (NULL would surface as
-# a generic 500 the same way the four named columns would). Sending
-# any of these as ``null`` returns a deterministic 422 with a
-# field-level error BEFORE any DB write. ``end_at`` is the one
-# legitimately nullable column — clearing a scheduled end via
-# ``PATCH {"end_at": null}`` stays 200.
+# ``title``, ``body``, ``severity``, ``is_active`` are the four
+# columns that are NOT NULL on the model + migration. Sending any of
+# these as ``null`` returns a deterministic 422 with a field-level
+# error BEFORE any DB write. ``start_at`` and ``end_at`` are both
+# legitimately nullable — the admin form sends both as ``null`` when
+# the operator leaves the optional schedule fields blank, and that
+# payload must round-trip cleanly (set/clear the column to NULL).
 _NON_NULLABLE_UPDATE_KEYS = frozenset(
-    {"title", "body", "severity", "is_active", "start_at"}
+    {"title", "body", "severity", "is_active"}
 )
 
 
@@ -85,7 +85,7 @@ class AnnouncementUpdate(_ScheduleValidatedMixin):
 
     Architect-locked contract (PR #340 review, 2026-05-22):
 
-    - ``title``, ``body``, ``severity``, ``start_at`` are non-nullable
+    - ``title``, ``body``, ``severity``, ``is_active`` are non-nullable
       on the DB row. An update payload that *omits* the key is fine
       (means "leave this field alone"), but a payload that sends the
       key with an explicit ``null`` must return a deterministic 422
@@ -94,9 +94,13 @@ class AnnouncementUpdate(_ScheduleValidatedMixin):
       coupling the type to ``Optional[...]`` (which would silently
       accept ``null`` and then explode at SQLAlchemy / enum-coerce
       time as a generic 500).
-    - ``end_at`` is the one legitimately nullable column — sending
-      ``end_at: null`` means "clear the scheduled end", and stays
-      200.
+    - ``start_at`` and ``end_at`` are both legitimately nullable on
+      the DB row — sending either as ``null`` means "clear that side
+      of the schedule window", and stays 200. The admin form relies
+      on this: when an operator leaves the optional Start / End
+      fields blank, the form sends ``start_at: null`` and / or
+      ``end_at: null`` and expects the row to round-trip with the
+      column set to NULL.
     - ``is_active`` is a bool; sending ``null`` is rejected with the
       same field-level 422 as the strings.
 
