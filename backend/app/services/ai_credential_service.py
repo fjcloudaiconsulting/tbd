@@ -8,7 +8,7 @@ safe to display.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -113,7 +113,7 @@ async def create_credential(
         discovered_capabilities=result.discovered_capabilities,
         discovered_models=result.discovered_models,
         label=payload.label,
-        last_validated_at=datetime.utcnow(),
+        last_validated_at=datetime.now(timezone.utc),
         validation_error=None,
     )
     db.add(row)
@@ -168,7 +168,7 @@ async def rotate_credential(
     credential.last_four = last_four(new_api_key)
     credential.discovered_capabilities = result.discovered_capabilities
     credential.discovered_models = result.discovered_models
-    credential.last_validated_at = datetime.utcnow()
+    credential.last_validated_at = datetime.now(timezone.utc)
     credential.validation_error = None
     await db.commit()
     await db.refresh(credential)
@@ -214,7 +214,7 @@ async def validate_credential(
         bearer_token=bearer_token,
         base_url=credential.base_url,
     )
-    credential.last_validated_at = datetime.utcnow()
+    credential.last_validated_at = datetime.now(timezone.utc)
     if result.ok:
         credential.discovered_capabilities = result.discovered_capabilities
         credential.discovered_models = result.discovered_models

@@ -2,7 +2,7 @@
 
 Mounted at ``/api/v1/settings/ai-providers``. Org-admin gating via
 ``require_org_admin``; cross-org isolation is enforced by querying
-through ``get_credential_for_org(org_id=current_user.organization_id)``
+through ``get_credential_for_org(org_id=current_user.org_id)``
 on every read/write path.
 """
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.org_permissions import require_org_admin
@@ -45,7 +45,7 @@ async def list_credentials(
     current_user: User = Depends(require_org_admin),
 ) -> list[OrgAICredentialResponse]:
     rows = await ai_credential_service.list_credentials_for_org(
-        db, org_id=current_user.organization_id
+        db, org_id=current_user.org_id
     )
     return [OrgAICredentialResponse.model_validate(r) for r in rows]
 
@@ -66,7 +66,7 @@ async def create_credential(
 ) -> OrgAICredentialResponse:
     row = await ai_credential_service.create_credential(
         db,
-        org_id=current_user.organization_id,
+        org_id=current_user.org_id,
         payload=payload,
         session_factory=session_factory,
         actor_user_id=current_user.id,
@@ -85,7 +85,7 @@ async def get_credential(
 ) -> OrgAICredentialResponse:
     row = await ai_credential_service.get_credential_for_org(
         db,
-        org_id=current_user.organization_id,
+        org_id=current_user.org_id,
         credential_id=credential_id,
     )
     if row is None:
@@ -106,7 +106,7 @@ async def update_credential(
 ) -> OrgAICredentialResponse:
     row = await ai_credential_service.get_credential_for_org(
         db,
-        org_id=current_user.organization_id,
+        org_id=current_user.org_id,
         credential_id=credential_id,
     )
     if row is None:
@@ -139,7 +139,7 @@ async def rotate_credential(
 ) -> OrgAICredentialResponse:
     row = await ai_credential_service.get_credential_for_org(
         db,
-        org_id=current_user.organization_id,
+        org_id=current_user.org_id,
         credential_id=credential_id,
     )
     if row is None:
@@ -172,7 +172,7 @@ async def validate_credential(
 ) -> OrgAICredentialResponse:
     row = await ai_credential_service.get_credential_for_org(
         db,
-        org_id=current_user.organization_id,
+        org_id=current_user.org_id,
         credential_id=credential_id,
     )
     if row is None:
@@ -190,7 +190,9 @@ async def validate_credential(
 
 
 @router.delete(
-    "/{credential_id}", status_code=status.HTTP_204_NO_CONTENT
+    "/{credential_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
 )
 async def delete_credential(
     credential_id: int,
@@ -200,10 +202,10 @@ async def delete_credential(
         get_session_factory
     ),
     current_user: User = Depends(require_org_admin),
-) -> None:
+):
     row = await ai_credential_service.get_credential_for_org(
         db,
-        org_id=current_user.organization_id,
+        org_id=current_user.org_id,
         credential_id=credential_id,
     )
     if row is None:
@@ -217,4 +219,4 @@ async def delete_credential(
         request_id=_request_id(),
         ip_address=get_client_ip(request),
     )
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
