@@ -1183,7 +1183,7 @@ function TransactionsPageContent() {
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
         <div className="w-full sm:flex-1 sm:min-w-[200px]">
           <label htmlFor="f-search" className="sr-only">Search transactions</label>
-          <input id="f-search" type="text" placeholder="Search descriptions..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className={input} />
+          <input id="f-search" type="text" placeholder="Search by description or amount..." value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} className={input} />
         </div>
         <div className="flex flex-wrap gap-1">
           {(() => {
