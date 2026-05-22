@@ -38,6 +38,7 @@ from app.models.notification import (  # noqa: F401
     NotificationCategory,
     UserNotificationPreferences,
 )
+from app.models.report import Report, ReportVisibility  # noqa: F401
 
 __all__ = [
     "Base",
@@ -89,4 +90,6 @@ __all__ = [
     "Notification",
     "NotificationCategory",
     "UserNotificationPreferences",
+    "Report",
+    "ReportVisibility",
 ]
