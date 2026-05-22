@@ -129,34 +129,34 @@ Every sensitive-op hook calls one of these renderers, never builds the string in
 
 **Revisit before implementation.** The parent spec has a parenthetical "(or coerce silently to True)" in two places that disagrees with the locked behavior elsewhere. Implementation should treat the locked behavior as canonical: 400 `{"code": "security_emails_required"}`. The coerce branch should NOT be implemented. (Surfacing per task rules — not editing the parent.)
 
-**Suggested PUT request shape.** Pydantic schema rejects `email_security=False` at validation time, NOT in the route body. This keeps the 400 deterministic and the response shape uniform with other 400 envelopes already in the codebase. Concretely:
+**400 mechanism — locked.** The route handler does the check manually AFTER the body parses. The schema accepts `email_security` as a plain `bool`, Pydantic does its normal coercion, and the route raises the 400 envelope itself.
 
 ```python
 class NotificationPreferencesUpdate(BaseModel):
-    email_security: Literal[True] = True
+    email_security: bool
     email_account: bool
     email_org_admin: bool
     email_org_activity: bool
+
+
+@router.put("/preferences", ...)
+async def update_preferences(body: NotificationPreferencesUpdate, ...):
+    if body.email_security is False:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "security_emails_required",
+                "message": "Security notifications cannot be disabled.",
+            },
+        )
+    # ... persist ...
 ```
 
-**Why `Literal[True]` alone is not enough.** Pydantic v2's default `literal_error` body looks like `{"type": "literal_error", "loc": [...], "msg": "Input should be True", "input": false, "ctx": {"expected": "True"}}`. That body does NOT include the stable `security_emails_required` code the frontend keys off. The code constant is a contract; the raw Pydantic shape is not.
+**Why a Pydantic validator does NOT work here.** A body-model validator raising `ValueError` is caught by FastAPI's request-validation layer BEFORE the route handler runs. FastAPI converts it into a `RequestValidationError` and returns the default 422 envelope, not the custom 400 `{code, message}` shape the frontend keys off. The "route catches the ValueError" path is unreachable because the route never sees the exception. Manual route-level validation sidesteps this entirely.
 
-**Validator mechanism — locked.** Use a Pydantic v2 `field_validator(mode="before")` on `email_security` (or a `model_validator(mode="before")` on the model — either works; field-level is the smaller surface). When `email_security` is present in the input and its value is anything other than `True`, the validator raises `ValueError("security_emails_required")`. The error envelope is shaped to match the existing 400 contract used by `routers/auth.py:241-247` (the `captcha_failed` 400) — `HTTPException(status_code=400, detail={"code": "security_emails_required", "message": "Security emails are required and cannot be disabled."})`. The implementer copies that exact shape from auth.py:241-247.
+**Reference for the 400 envelope shape.** `backend/app/routers/auth.py:241-247` — the `captcha_failed` 400 raised by `/api/v1/auth/register`. Copy the `HTTPException(status_code=400, detail={"code": ..., "message": ...})` structure verbatim. Other call sites in the codebase using the same envelope: `backend/app/routers/admin_users.py:434`, `backend/app/routers/org_data.py:73`, `backend/app/routers/import_router.py:48`, `backend/app/routers/org_members.py:63`.
 
-The route-level handler catches the `ValueError` from validation and re-raises as the 400 above. (Alternative: let the validator raise `HTTPException` directly — Pydantic supports this in v2 since validators run inside the request lifecycle. Implementer picks whichever is cleaner against existing patterns at the time.)
-
-**Validator sketch.**
-
-```python
-@field_validator("email_security", mode="before")
-@classmethod
-def _security_required(cls, v):
-    if v is not True:
-        raise ValueError("security_emails_required")
-    return v
-```
-
-**Reference for the 400 envelope shape.** `backend/app/routers/auth.py:241-247` — the captcha_failed 400 raised by `/api/v1/auth/register`. Copy the `HTTPException(status_code=400, detail={"code": ..., "message": ...})` structure verbatim. Other call sites in the codebase using the same envelope: `backend/app/routers/admin_users.py:434`, `backend/app/routers/org_data.py:73`, `backend/app/routers/import_router.py:48`, `backend/app/routers/org_members.py:63`.
+**Bonus property.** Because the check is at the route layer, any future code path that bypasses the schema (direct service call, internal admin tool reusing the model) is also caught if it routes through the same handler.
 
 ---
 
@@ -323,7 +323,7 @@ I am NOT editing the parent. Surfacing these here per task rules.
 
 1. **The `(or coerce silently to True)` parenthetical** appears twice (top resolutions block, open-questions block). Disagrees with the locked reject-with-400 behavior. Implementation should treat the lock as canonical and ignore the coerce branch. (See section 4 above.)
 2. **The `notifications` schema as designed lacks `seen_at` and `audit_event_id`.** Both are added by this delta (G1, G5). The migration in PR 2 must include them — not as a follow-up PR.
-3. **The "rejection with `{"code": "security_emails_required"}` body shape" requires a custom Pydantic validator** — vanilla `Literal[True]` gives a different body. Pin the implementation approach. (See section 4 above.)
+3. **The "rejection with `{"code": "security_emails_required"}` body shape" requires a route-level check, NOT a Pydantic validator** — a body-model validator raising `ValueError` is caught by FastAPI's request-validation layer and produces a 422 `RequestValidationError`, never the custom 400 envelope. Pin the implementation approach to manual route validation. (See section 4 above.)
 4. **`dispatch_notification` signature in parent does not include `audit_event_id`.** Add it per G5.
 5. **Background task ordering for `account.deleted`**: parent says "after successful commit" without specifying which commit (delete vs audit). This delta locks it to AFTER the audit commit (section 1). The parent should be read with this constraint applied.
 
@@ -336,7 +336,7 @@ The parent's 5-PR train still holds, with these adjustments:
 | PR | Parent (2026-05-21) | Delta (this spec) |
 |---|---|---|
 | **PR 1** | Audit gap closures | **Unchanged.** Independent. Lowest risk. |
-| **PR 2** | Substrate (migrations + models + services + GET/POST endpoints) | **+** Migration includes `seen_at` + `audit_event_id` columns (G1, G5). **+** New `notification_templates.py` module (section 3). **+** Email template HTML file (G4). **+** `Literal[True]` + custom validator on the preferences PUT (section 4). |
+| **PR 2** | Substrate (migrations + models + services + GET/POST endpoints) | **+** Migration includes `seen_at` + `audit_event_id` columns (G1, G5). **+** New `notification_templates.py` module (section 3). **+** Email template HTML file (G4). **+** Route-level 400 check for `email_security=false` on the preferences PUT, NOT a Pydantic validator (section 4). |
 | **PR 3** | First hook batch (security) + bell icon + popover | **+** `/notifications/mark-seen` endpoint wired to popover-open (G1). **+** Bell mounts in AppShell header row, NOT in TrialBanner slot (section 2). |
 | **PR 4** | Second hook batch (account + org_admin) | **+** `account.deleted` follows the section 1 sequence: snapshot → delete commit → audit commit → email task. **+** Plan-change `link_url` gated by `BILLING_UI_ENABLED` (G9). **+** Broadcast helper uses single SELECT with JOIN + returns scheduled count (section 5). |
 | **PR 5** | Settings page | **Unchanged.** Per-category toggles + full list view. |
@@ -350,7 +350,7 @@ The parent's 5-PR train still holds, with these adjustments:
   - `audit_event_id` is persisted when passed.
 - `tests/routers/test_notifications.py`:
   - `POST /notifications/mark-seen` sets `seen_at` for all unseen rows, leaves `read_at` alone.
-  - Preferences PUT with `email_security=false` returns 400 with `{"code": "security_emails_required"}` body shape (custom validator path, not raw Pydantic).
+  - Preferences PUT with `email_security=false` returns 400 with `{"code": "security_emails_required"}` body shape (route-level check, NOT a 422 from a Pydantic validator).
 - `tests/routers/test_admin_users_delete_email.py`:
   - Hard-deleting a user triggers `send_account_deleted_email` with the snapshot email AFTER the audit row write.
   - If audit write raises, email is NOT scheduled.
@@ -362,7 +362,7 @@ The parent's 5-PR train still holds, with these adjustments:
 - `backend/app/services/notification_templates.py` — NEW (section 3, G4).
 - `backend/app/services/email_templates/notification_email.html` — NEW (G4).
 - `backend/app/services/notification_service.py` — gains `audit_event_id` arg + scheduled-count return on broadcast (G5, section 5).
-- `backend/app/schemas/notification_preferences.py` — `Literal[True]` + custom validator (section 4).
+- `backend/app/schemas/notification_preferences.py` — plain `bool` for `email_security`; the 400 check lives in the route handler, not in the schema (section 4).
 - `frontend/components/notifications/NotificationBell.tsx` — mounts in AppShell header `<div className="flex items-center gap-3">` row at position 3 (after TrialBanner + AddTransactionCta) (section 2).
 
 Parent spec sections still authoritative for everything not overridden here.
