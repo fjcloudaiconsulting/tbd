@@ -17,6 +17,9 @@ Pins the architect-locked invariants exercised at the function level
 """
 from __future__ import annotations
 
+import ast
+import json
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime
 
@@ -24,6 +27,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -41,6 +45,73 @@ from app.models.notification import (
 from app.models.user import Organization, Role, User
 from app.security import hash_password
 from app.services import notification_service
+
+
+@pytest.fixture
+def _structlog_via_stdlib():
+    """Ensure structlog routes events through stdlib for the test.
+
+    The notification fanout tests assert on structured fields emitted
+    by :mod:`app.services.notification_service`. The service uses
+    ``structlog.stdlib.get_logger()``; whether ``caplog`` sees those
+    events depends on whether structlog has been configured to route
+    through the stdlib pipeline. ``app.logging.setup_logging`` installs
+    that wiring in production and in the FastAPI lifespan, but the
+    bare unit-test conftest does not — so structlog falls back to its
+    default ``PrintLogger`` which bypasses stdlib entirely.
+
+    This fixture calls ``setup_logging()`` once per test so events
+    land in ``caplog`` regardless of test ordering. Without it, the
+    test passes only when an earlier test in the session happened to
+    initialise the FastAPI app stack first; that ordering is what made
+    the original ``structlog.testing.capture_logs()`` form pass locally
+    and fail in CI.
+    """
+    import structlog
+
+    from app.logging import setup_logging
+
+    original_config = structlog.get_config() if structlog.is_configured() else None
+    setup_logging()
+    yield
+    if original_config is not None:
+        structlog.configure(**original_config)
+
+
+def _collect_structlog_events(caplog) -> list[dict]:
+    """Pull structlog events out of pytest's ``caplog`` capture.
+
+    With ``_structlog_via_stdlib`` active, structlog is configured to
+    end its processor chain with ``ProcessorFormatter.wrap_for_formatter``
+    which hands the event dict to stdlib. ``caplog`` then sees a
+    :class:`logging.LogRecord` whose ``msg`` is either the event dict
+    itself (when ``wrap_for_formatter`` ran) or a string the formatter
+    chain rendered. This helper normalises both shapes into a list of
+    event ``dict``s so assertions can reach the structured fields.
+    """
+    events: list[dict] = []
+    for rec in caplog.records:
+        # Path 1: wrap_for_formatter — record.msg is the event dict OR a
+        # tuple of (event_dict,). Older structlog versions ship the dict
+        # straight through; newer versions pass it as the first positional.
+        candidate = rec.msg
+        if isinstance(candidate, tuple) and candidate:
+            candidate = candidate[0]
+        if isinstance(candidate, dict):
+            events.append(candidate)
+            continue
+        # Path 2: rendered to text — try JSON first, then fall back to a
+        # Python-literal eval for repr-style dict strings.
+        message = rec.getMessage()
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                payload = parser(message)
+            except (ValueError, SyntaxError, TypeError):
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+                break
+    return events
 
 
 @pytest_asyncio.fixture
@@ -522,3 +593,431 @@ async def test_update_preferences_forces_security_true_defense_in_depth(session_
         )
         await db.commit()
     assert prefs.email_security is True
+
+
+# ── PR3: preference-aware dispatch + org-admin fanout ─────────────
+
+
+async def _seed_extra_admin(
+    factory, org_id: int, *, username: str, email: str, role
+) -> int:
+    """Add a second user with ``role`` to an existing org. Returns id."""
+    from app.security import hash_password as _hp  # local import — test scope
+
+    async with factory() as db:
+        user = User(
+            org_id=org_id,
+            username=username,
+            email=email,
+            password_hash=_hp("pw-1234567"),
+            role=role,
+            is_active=True,
+            email_verified=True,
+        )
+        db.add(user)
+        await db.commit()
+        return user.id
+
+
+@pytest.mark.asyncio
+async def test_dispatch_respects_in_app_preference(session_factory):
+    """When the user has ``in_app_account=False``, an ACCOUNT category
+    dispatch must NOT write a row. Locks the preference-aware
+    behaviour added in PR3 — without it the bell would surface rows
+    the user explicitly opted out of.
+    """
+    user_id = await _seed_user(session_factory)
+    # Persist a preference row with account turned off.
+    payload = _PrefPayload(in_app_account=False)
+    async with session_factory() as db:
+        await notification_service.update_preferences(
+            db, user_id=user_id, payload=payload
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        row = await notification_service.dispatch_notification(
+            db,
+            user_id=user_id,
+            category=NotificationCategory.ACCOUNT,
+            event_type="account.role_changed",
+            title="Role changed",
+            body="Body",
+        )
+        await db.commit()
+    # Skipped → returns None and no row exists.
+    assert row is None
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(Notification.user_id == user_id)
+            )
+        ).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_force_writes_for_security_category(session_factory):
+    """Even with every in_app_* preference flipped off, a SECURITY
+    dispatch still writes the row. Architect-locked force-on rule —
+    the user cannot opt out of security signals in the inbox.
+    """
+    user_id = await _seed_user(session_factory)
+    payload = _PrefPayload(
+        in_app_security=False,
+        in_app_account=False,
+        in_app_org_admin=False,
+        in_app_org_activity=False,
+    )
+    async with session_factory() as db:
+        await notification_service.update_preferences(
+            db, user_id=user_id, payload=payload
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        row = await notification_service.dispatch_notification(
+            db,
+            user_id=user_id,
+            category=NotificationCategory.SECURITY,
+            event_type="user.password.changed",
+            title="Your password was changed",
+            body="Body",
+        )
+        await db.commit()
+    assert row is not None
+    assert row.category == NotificationCategory.SECURITY
+
+
+@pytest.mark.asyncio
+async def test_dispatch_org_admin_fanout_to_multiple_admins(session_factory):
+    """3-admin org → 3 dispatched rows. Pins the architect-locked
+    fanout behavior: a single SELECT pulls the admin set, then per-user
+    rows are written. A spy on the session counts the SELECTs against
+    ``users`` to prove the helper doesn't N+1.
+    """
+    # Seed the org + 1st owner via the standard helper.
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+
+    # Need the owner's org_id to add siblings.
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        assert owner is not None
+        org_id = owner.org_id
+
+    # Add two more admins (role=ADMIN) — total 3 admins in the org.
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+
+    # And a MEMBER who must NOT receive the broadcast.
+    member_id = await _seed_extra_admin(
+        session_factory,
+        org_id,
+        username="member",
+        email="m@ex.io",
+        role=Role.MEMBER,
+    )
+
+    select_counts = {"users": 0}
+    async with session_factory() as db:
+        # Patch the session's execute to count SELECTs against users.
+        original_execute = db.execute
+
+        async def counting_execute(clause, *args, **kwargs):
+            text = str(clause).lower()
+            if "from users" in text:
+                select_counts["users"] += 1
+            return await original_execute(clause, *args, **kwargs)
+
+        db.execute = counting_execute  # type: ignore[method-assign]
+
+        written = await notification_service.dispatch_notification_to_org_admins(
+            db,
+            org_id=org_id,
+            category=NotificationCategory.ORG_ADMIN,
+            event_type="admin.org.plan.changed",
+            title="Plan changed",
+            body="Body",
+        )
+        await db.commit()
+
+    assert written == 3
+    # One SELECT against users for the admin lookup. Even if other
+    # SELECTs run from prior context, the helper itself must add
+    # exactly one — assert "at most" to absorb any session bookkeeping.
+    assert select_counts["users"] == 1
+
+    # All three admins got a row; the member did not.
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    recipient_ids = {row.user_id for row in rows}
+    assert recipient_ids == {seed_user_id, admin_a, admin_b}
+    assert member_id not in recipient_ids
+
+
+@pytest.mark.asyncio
+async def test_dispatch_org_admin_fanout_continues_on_individual_failure(
+    session_factory, monkeypatch
+):
+    """One admin's dispatch raises → the other two still get their
+    rows. Locks the best-effort contract: a poison-pill row write
+    cannot poison the broadcast.
+    """
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        org_id = owner.org_id
+
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+
+    real_dispatch = notification_service.dispatch_notification
+
+    async def flaky_dispatch(db, *, user_id, **kwargs):
+        if user_id == admin_a:
+            raise RuntimeError("simulated per-user failure")
+        return await real_dispatch(db, user_id=user_id, **kwargs)
+
+    monkeypatch.setattr(
+        notification_service, "dispatch_notification", flaky_dispatch
+    )
+
+    async with session_factory() as db:
+        written = await notification_service.dispatch_notification_to_org_admins(
+            db,
+            org_id=org_id,
+            category=NotificationCategory.ORG_ADMIN,
+            event_type="admin.org.plan.changed",
+            title="Plan changed",
+            body="Body",
+        )
+        await db.commit()
+
+    # 2 written: owner + admin_b. admin_a raised and was skipped.
+    assert written == 2
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    recipient_ids = {row.user_id for row in rows}
+    assert seed_user_id in recipient_ids
+    assert admin_b in recipient_ids
+    assert admin_a not in recipient_ids
+
+
+@pytest.mark.asyncio
+async def test_fanout_savepoint_isolates_recipient_flush_failure(
+    session_factory, monkeypatch, caplog, _structlog_via_stdlib
+):
+    """A flush-time IntegrityError on recipient #2 must NOT poison
+    the outer session: recipient #1 (already flushed) and recipient #3
+    (after the SAVEPOINT rollback) both keep their rows, and the
+    caller's commit succeeds.
+
+    Without ``db.begin_nested()`` per recipient, a failed flush leaves
+    the session in "rollback-required" state — recipient #3's
+    subsequent ``db.flush()`` would raise ``PendingRollbackError`` and
+    the eventual ``db.commit()`` would fail too, even though the loop
+    swallows the per-user exception.
+    """
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        org_id = owner.org_id
+
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+
+    real_dispatch = notification_service.dispatch_notification
+
+    async def poisoning_dispatch(db, *, user_id, **kwargs):
+        if user_id == admin_a:
+            # Force a real flush-time failure: insert a Notification
+            # with a user_id that violates the FK. SQLite has
+            # PRAGMA foreign_keys=ON in our fixture so this raises
+            # IntegrityError on flush, leaving the session in
+            # rollback-required state. This is the contract we need
+            # the savepoint to isolate.
+            from app.models.notification import Notification
+            from app._time import utcnow_naive
+
+            bad = Notification(
+                user_id=999_999,  # no such user
+                category=kwargs["category"],
+                event_type=kwargs["event_type"],
+                title=kwargs["title"],
+                body=kwargs["body"],
+                created_at=utcnow_naive(),
+            )
+            db.add(bad)
+            await db.flush()  # raises IntegrityError
+            return bad  # unreachable
+        return await real_dispatch(db, user_id=user_id, **kwargs)
+
+    monkeypatch.setattr(
+        notification_service, "dispatch_notification", poisoning_dispatch
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.services.notification_service"):
+        async with session_factory() as db:
+            written = await notification_service.dispatch_notification_to_org_admins(
+                db,
+                org_id=org_id,
+                category=NotificationCategory.ORG_ADMIN,
+                event_type="admin.org.plan.changed",
+                title="Plan changed",
+                body="Body",
+            )
+            # CRITICAL: the outer commit must succeed. Without the
+            # savepoint wrap this raises PendingRollbackError because
+            # recipient #2's flush poisoned the session.
+            await db.commit()
+
+    # 2 written: owner + admin_b. admin_a's flush failed and the
+    # savepoint rolled back cleanly.
+    assert written == 2
+
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    recipient_ids = {row.user_id for row in rows}
+    assert seed_user_id in recipient_ids
+    assert admin_b in recipient_ids
+    assert admin_a not in recipient_ids
+    # The FK-violating row from the poisoned dispatch must not have
+    # leaked past the savepoint rollback.
+    assert 999_999 not in recipient_ids
+
+    captured_events = _collect_structlog_events(caplog)
+    failed_events = [
+        ev
+        for ev in captured_events
+        if ev.get("event") == "notification.dispatch.fanout.recipient_failed"
+    ]
+    assert len(failed_events) == 1
+    failed = failed_events[0]
+    assert failed["recipient_user_id"] == admin_a
+    assert failed["org_id"] == org_id
+    assert failed["error_class"] == "IntegrityError"
+
+
+@pytest.mark.asyncio
+async def test_fanout_returns_success_and_failure_counts(
+    session_factory, monkeypatch, caplog, _structlog_via_stdlib
+):
+    """Mix 2 successes + 2 failures: the helper returns the success
+    count (rows actually written) and emits a structured completion
+    log carrying both ``rows_written`` and ``failures``.
+
+    This pins the observable shape callers (admin_orgs.py) depend on:
+    return is the integer success count; failure count is reachable
+    via structlog for ops dashboards.
+    """
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        org_id = owner.org_id
+
+    # Three more admins → 4 total (owner + 3 admins).
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+    admin_c = await _seed_extra_admin(
+        session_factory, org_id, username="admin_c", email="c@ex.io", role=Role.ADMIN
+    )
+
+    real_dispatch = notification_service.dispatch_notification
+    failing_ids = {admin_a, admin_c}
+
+    async def half_failing_dispatch(db, *, user_id, **kwargs):
+        if user_id in failing_ids:
+            raise RuntimeError(f"simulated dispatch failure for {user_id}")
+        return await real_dispatch(db, user_id=user_id, **kwargs)
+
+    monkeypatch.setattr(
+        notification_service, "dispatch_notification", half_failing_dispatch
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.services.notification_service"):
+        async with session_factory() as db:
+            written = await notification_service.dispatch_notification_to_org_admins(
+                db,
+                org_id=org_id,
+                category=NotificationCategory.ORG_ADMIN,
+                event_type="admin.org.plan.changed",
+                title="Plan changed",
+                body="Body",
+            )
+            await db.commit()
+
+    # 2 successes (owner + admin_b); 2 failures (admin_a + admin_c).
+    assert written == 2
+
+    captured_events = _collect_structlog_events(caplog)
+    complete_events = [
+        ev
+        for ev in captured_events
+        if ev.get("event") == "notification.dispatch.fanout.complete"
+    ]
+    assert len(complete_events) == 1
+    complete = complete_events[0]
+    assert complete["org_id"] == org_id
+    assert complete["admin_count"] == 4
+    assert complete["rows_written"] == 2
+    assert complete["failures"] == 2
+
+    failed_events = [
+        ev
+        for ev in captured_events
+        if ev.get("event") == "notification.dispatch.fanout.recipient_failed"
+    ]
+    assert {ev["recipient_user_id"] for ev in failed_events} == failing_ids
+
+    # Verify only the 2 successful rows actually landed.
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    assert {row.user_id for row in rows} == {seed_user_id, admin_b}
