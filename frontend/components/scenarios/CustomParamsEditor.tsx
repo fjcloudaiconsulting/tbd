@@ -150,7 +150,12 @@ export function CustomParamsEditor({
 
   useEffect(() => {
     // Scroll the newest event card into view when one was just added.
-    if (newestRef.current) {
+    // Guarded so jsdom (which doesn't implement scrollIntoView) doesn't
+    // throw in unit tests.
+    if (
+      newestRef.current
+      && typeof newestRef.current.scrollIntoView === "function"
+    ) {
       newestRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }, [events.length]);
