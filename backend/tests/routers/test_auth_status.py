@@ -114,3 +114,68 @@ async def test_status_billing_flag_is_independent_of_captcha_flag(
     body = resp.json()
     assert body["captcha_required"] is True
     assert body["billing_ui_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_exposes_feature_reports_v2_default_false(
+    session_factory, monkeypatch
+) -> None:
+    """Pre-launch default: feature_reports_v2=false in the response.
+
+    The Reports v2 nav item + ``/reports/*`` frontend routes consume
+    this signal. Default false until the canvas + widget catalog ship.
+    """
+    monkeypatch.setattr(app_settings, "feature_reports_v2", False)
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+    monkeypatch.setattr(app_settings, "captcha_required", False)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/auth/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["feature_reports_v2"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_exposes_feature_reports_v2_true_when_flag_on(
+    session_factory, monkeypatch
+) -> None:
+    """When the operator flips ``FEATURE_REPORTS_V2`` to true, the
+    same endpoint must surface it so the next page load shows the
+    Reports nav item + lights up the ``/reports`` routes.
+    """
+    monkeypatch.setattr(app_settings, "feature_reports_v2", True)
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+    monkeypatch.setattr(app_settings, "captcha_required", False)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/auth/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["feature_reports_v2"] is True
+
+
+@pytest.mark.asyncio
+async def test_status_reports_flag_is_independent_of_other_flags(
+    session_factory, monkeypatch
+) -> None:
+    """Defense against regression — feature_reports_v2 is an
+    independent control-plane signal, not coupled to captcha /
+    billing.
+    """
+    monkeypatch.setattr(app_settings, "feature_reports_v2", True)
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+    monkeypatch.setattr(app_settings, "captcha_required", False)
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/auth/status")
+
+    body = resp.json()
+    assert body["feature_reports_v2"] is True
+    assert body["billing_ui_enabled"] is False
+    assert body["captcha_required"] is False

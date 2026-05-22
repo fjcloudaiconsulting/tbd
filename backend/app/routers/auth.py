@@ -174,12 +174,21 @@ async def auth_status(db: AsyncSession = Depends(get_db)):
     landing-page trial copy). Same flip-to-rollback contract as
     ``captcha_required`` — backend False hides the surface on the next
     page load, backend True restores it.
+
+    ``feature_reports_v2`` gates the Reports v2 surface (nav item,
+    ``/reports/*`` routes). Same flip-to-rollback contract as the other
+    feature flags here — when False the frontend hides the nav item and
+    every ``/reports`` route returns 404; when True the surface lights
+    up. The backend's own ``/api/v1/reports/*`` routes are independently
+    gated via the ``require_reports_v2_enabled`` router dependency, so
+    flipping this flag while the backend is False is a no-op.
     """
     user_count = await db.scalar(select(func.count()).select_from(User))
     return {
         "needs_setup": user_count == 0,
         "captcha_required": app_settings.captcha_required,
         "billing_ui_enabled": app_settings.billing_ui_enabled,
+        "feature_reports_v2": app_settings.feature_reports_v2,
     }
 
 
