@@ -39,9 +39,16 @@ Soft-cap warning idempotence — design note:
 
 The Redis marker ``ai_soft_cap_warned:{org_id}:{feature_key}:{period}``
 is keyed on ``feature_key="__default__"`` when the soft cap that
-fired was the org-wide default rather than a per-feature override.
-This keeps a default-only soft-cap from re-firing once per feature
-in the same month.
+fired was the org-wide default rather than a per-feature soft-cap
+override. This keeps a default-only soft-cap from re-firing once per
+feature in the same month.
+
+The "did the feature row override this" decision is made on the
+**soft cap alone**. A feature row that supplies only a hard cap (soft
+left null, default soft still winning) MUST NOT scope the marker to
+the feature — that would let the same org-wide soft-cap warning fire
+once per feature in a period. See ``_resolve_caps`` for the source-
+tracking implementation.
 
 Open spec ambiguity resolved here: the brief asks whether a
 rejected-by-hard-cap call writes a ledger row. **We do not write a
@@ -171,9 +178,16 @@ def http_for_dispatch_error(exc: AIDispatchError) -> HTTPException:
 class _ResolvedCaps:
     soft_cap_cents: Optional[int]
     hard_cap_cents: Optional[int]
-    # ``True`` if the resolved row was the per-feature override, which
-    # changes the Redis marker key shape.
-    from_feature_override: bool
+    # ``True`` iff the EFFECTIVE soft cap (the one ``soft_cap_cents``
+    # holds) came from the per-feature override row. This is used to
+    # shape the Redis dedupe marker for soft-cap warnings.
+    #
+    # IMPORTANT: this tracks the source of the SOFT cap only. The hard
+    # cap's source is intentionally not tracked here — it does not
+    # affect warning dedupe, and conflating the two would let a
+    # feature-specific hard cap silently fragment an org-wide soft-cap
+    # warning into one-per-feature.
+    soft_from_feature_override: bool
 
 
 def _tighter_cap(a: Optional[int], b: Optional[int]) -> Optional[int]:
@@ -189,6 +203,34 @@ def _tighter_cap(a: Optional[int], b: Optional[int]) -> Optional[int]:
     return min(a, b)
 
 
+def _soft_cap_from_feature(
+    default_soft: Optional[int], feat_soft: Optional[int]
+) -> bool:
+    """Decide whether the effective soft cap came from the feature row.
+
+    The effective soft cap is ``_tighter_cap(default_soft, feat_soft)``.
+    "From feature" means the feature row supplied a soft cap AND that
+    soft cap is the one that won (i.e. the feature soft cap is tighter
+    than the default, or the default is absent).
+
+    Examples:
+      default=None, feat=None      -> False  (no soft cap at all)
+      default=100,  feat=None      -> False  (default wins)
+      default=None, feat=50        -> True   (feature wins, default absent)
+      default=100,  feat=50        -> True   (feature wins, tighter)
+      default=50,   feat=100       -> False  (default wins, tighter)
+      default=50,   feat=50        -> False  (tie — default wins; the
+                                              dedupe scope is org-wide
+                                              and that's the safer default)
+    """
+    if feat_soft is None:
+        return False
+    if default_soft is None:
+        return True
+    # Strict less-than: ties resolve to the default (org-wide marker).
+    return feat_soft < default_soft
+
+
 async def _resolve_caps(
     db: AsyncSession, *, org_id: int, feature_key: str
 ) -> _ResolvedCaps:
@@ -197,6 +239,15 @@ async def _resolve_caps(
     Both default + feature caps must pass — whichever is tighter
     wins. We return a single (soft, hard) tuple representing the
     composite enforcement.
+
+    Source tracking — only the SOFT cap's source is tracked, via
+    ``soft_from_feature_override``. The hard cap's source is not
+    surfaced because it does not affect any downstream behavior; in
+    particular it must NOT influence the soft-cap warning dedupe
+    marker. Bug guard: a feature row with ``soft_cap_cents=None`` and
+    ``hard_cap_cents=300`` (default soft still wins) must produce
+    ``soft_from_feature_override=False`` so the warning dedupe stays
+    org-wide via the ``__default__`` marker.
     """
     default_row = (
         await db.execute(
@@ -219,16 +270,12 @@ async def _resolve_caps(
 
     soft = _tighter_cap(default_soft, feat_soft)
     hard = _tighter_cap(default_hard, feat_hard)
-    # The marker key distinguishes "feature override caused this" vs
-    # "org default caused this". Whichever cap value actually fired
-    # wins. The choice only matters for soft-cap warning dedup.
-    from_feature_override = feat_row is not None and (
-        feat_soft is not None or feat_hard is not None
-    )
     return _ResolvedCaps(
         soft_cap_cents=soft,
         hard_cap_cents=hard,
-        from_feature_override=from_feature_override,
+        soft_from_feature_override=_soft_cap_from_feature(
+            default_soft, feat_soft
+        ),
     )
 
 
@@ -307,8 +354,13 @@ async def _maybe_warn_soft_cap(
     if cost_before_call < resolved.soft_cap_cents:
         return False
 
+    # The marker is scoped by where the EFFECTIVE soft cap came from.
+    # If the org-default soft cap is the one that fired, the marker is
+    # ``__default__`` so the warning fires ONCE for the org per period
+    # (not once per feature). If a feature row supplied its own tighter
+    # soft cap, that warning is feature-scoped instead.
     marker_feature = (
-        feature_key if resolved.from_feature_override else "__default__"
+        feature_key if resolved.soft_from_feature_override else "__default__"
     )
     marker_key = (
         f"ai_soft_cap_warned:{org_id}:{marker_feature}:{period}"

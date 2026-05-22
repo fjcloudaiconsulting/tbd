@@ -824,3 +824,285 @@ async def test_feature_routing_wins_over_default(
     adapter.chat.assert_awaited_once()
     kwargs = adapter.chat.await_args.kwargs
     assert kwargs["model"] == "claude-haiku-4-5"
+
+
+# ---------- soft-cap marker source-tracking ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_soft_warning_marker_is_default_when_only_hard_cap_is_feature_specific(
+    db: AsyncSession,
+    org: Organization,
+    admin_user,
+    credential,
+    default_routing,
+    monkeypatch,
+):
+    """Feature row with ONLY a hard cap must NOT scope the soft-cap
+    marker to the feature.
+
+    Setup:
+      - org_ai_default_caps: soft=100, hard=200
+      - org_ai_feature_caps[categorize_transactions]: soft=None, hard=300
+      - feature row contributes NOTHING to the effective soft cap
+        (300 > 200 default-hard, so default-hard wins for hard; default
+        soft=100 wins for soft).
+
+    The soft cap that fires is the org-wide default (100). The Redis
+    marker MUST be ``__default__`` so the warning is org-wide and a
+    second crossing on a different feature in the same period does
+    NOT re-dispatch.
+    """
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=100,
+            hard_cap_cents=200,
+            period="monthly",
+        )
+    )
+    db.add(
+        OrgAIFeatureCaps(
+            org_id=org.id,
+            feature_key="categorize_transactions",
+            soft_cap_cents=None,
+            hard_cap_cents=300,
+            period="monthly",
+        )
+    )
+    # 90 cents prior usage; one 20-cent call crosses the 100-cent default
+    # soft cap on the post-write check.
+    db.add(
+        AIUsageLedger(
+            org_id=org.id,
+            credential_id=credential.id,
+            feature_key="categorize_transactions",
+            model="gpt-4o-mini",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            est_cost_cents=90,
+            latency_ms=1,
+            success=True,
+            error_class=None,
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    )
+    await db.commit()
+
+    redis_state: dict[str, str] = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in redis_state:
+                return False
+            redis_state[key] = value
+            return True
+
+    fake = FakeRedis()
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
+    )
+
+    dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.notification_service.dispatch_notification",
+        dispatch_mock,
+    )
+
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 20,
+    )
+
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="categorize_transactions",
+            request_payload={"messages": []},
+        )
+    # Boundary call dispatched the warning exactly once.
+    assert dispatch_mock.await_count == 1
+    # The marker must be org-wide (``__default__``), NOT feature-specific.
+    period = ai_dispatch._current_period()
+    expected_key = f"ai_soft_cap_warned:{org.id}:__default__:{period}"
+    assert expected_key in redis_state, (
+        f"expected org-wide marker, got keys: {sorted(redis_state)}"
+    )
+    feature_specific_key = (
+        f"ai_soft_cap_warned:{org.id}:categorize_transactions:{period}"
+    )
+    assert feature_specific_key not in redis_state, (
+        "feature-specific marker leaked despite feature row contributing "
+        "only a hard cap"
+    )
+
+    # Second call against a DIFFERENT feature in the same period that
+    # also crosses the same default soft cap MUST NOT re-dispatch.
+    # Ledger now totals 110 cents; another 5-cent call keeps it above
+    # the 100-cent default soft cap.
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 5,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="smart_forecast",
+            request_payload={"messages": []},
+        )
+    # The ``__default__`` marker covers org-wide -> no second dispatch.
+    assert dispatch_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft_cap(
+    db: AsyncSession,
+    org: Organization,
+    admin_user,
+    credential,
+    default_routing,
+    monkeypatch,
+):
+    """Feature row with its OWN tighter soft cap must scope the marker
+    to that feature.
+
+    Setup:
+      - org_ai_default_caps: soft=100, hard=200
+      - org_ai_feature_caps[categorize_transactions]: soft=50, hard=None
+
+    A call against categorize_transactions that crosses the 50-cent
+    feature soft cap sets a feature-scoped marker. A SAME-feature
+    follow-up call does NOT re-dispatch. A DIFFERENT-feature call
+    (smart_forecast) that crosses the 100-cent default soft cap fires
+    a NEW notification (separate marker scope).
+    """
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=100,
+            hard_cap_cents=200,
+            period="monthly",
+        )
+    )
+    db.add(
+        OrgAIFeatureCaps(
+            org_id=org.id,
+            feature_key="categorize_transactions",
+            soft_cap_cents=50,
+            hard_cap_cents=None,
+            period="monthly",
+        )
+    )
+    # 45 cents prior usage; a 10-cent categorize call crosses
+    # feature soft cap (50) on post-write.
+    db.add(
+        AIUsageLedger(
+            org_id=org.id,
+            credential_id=credential.id,
+            feature_key="categorize_transactions",
+            model="gpt-4o-mini",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            est_cost_cents=45,
+            latency_ms=1,
+            success=True,
+            error_class=None,
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    )
+    await db.commit()
+
+    redis_state: dict[str, str] = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in redis_state:
+                return False
+            redis_state[key] = value
+            return True
+
+    fake = FakeRedis()
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
+    )
+
+    dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.notification_service.dispatch_notification",
+        dispatch_mock,
+    )
+
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 10,
+    )
+
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="categorize_transactions",
+            request_payload={"messages": []},
+        )
+    # First crossing dispatched once with a feature-scoped marker.
+    assert dispatch_mock.await_count == 1
+    period = ai_dispatch._current_period()
+    feature_key_marker = (
+        f"ai_soft_cap_warned:{org.id}:categorize_transactions:{period}"
+    )
+    default_marker = f"ai_soft_cap_warned:{org.id}:__default__:{period}"
+    assert feature_key_marker in redis_state, (
+        f"expected feature-scoped marker, got keys: {sorted(redis_state)}"
+    )
+    assert default_marker not in redis_state, (
+        "default marker leaked despite feature row supplying its own soft cap"
+    )
+
+    # Same-feature follow-up call past the cap -> no dupe notification.
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 5,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="categorize_transactions",
+            request_payload={"messages": []},
+        )
+    assert dispatch_mock.await_count == 1
+
+    # Different feature with no feature soft cap. The default soft (100)
+    # is now the effective soft cap. Ledger totals 60 cents after the
+    # previous calls; we need a smart_forecast call that crosses 100.
+    # Use a 50-cent call: cost_before=60, cost_after=110 -> crosses.
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 50,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="smart_forecast",
+            request_payload={"messages": []},
+        )
+    # NEW notification fired — different marker scope (__default__).
+    assert dispatch_mock.await_count == 2
+    assert default_marker in redis_state
