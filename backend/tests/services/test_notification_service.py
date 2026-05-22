@@ -22,8 +22,10 @@ from datetime import datetime
 
 import pytest
 import pytest_asyncio
+import structlog
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -754,3 +756,197 @@ async def test_dispatch_org_admin_fanout_continues_on_individual_failure(
     assert seed_user_id in recipient_ids
     assert admin_b in recipient_ids
     assert admin_a not in recipient_ids
+
+
+@pytest.mark.asyncio
+async def test_fanout_savepoint_isolates_recipient_flush_failure(
+    session_factory, monkeypatch
+):
+    """A flush-time IntegrityError on recipient #2 must NOT poison
+    the outer session: recipient #1 (already flushed) and recipient #3
+    (after the SAVEPOINT rollback) both keep their rows, and the
+    caller's commit succeeds.
+
+    Without ``db.begin_nested()`` per recipient, a failed flush leaves
+    the session in "rollback-required" state — recipient #3's
+    subsequent ``db.flush()`` would raise ``PendingRollbackError`` and
+    the eventual ``db.commit()`` would fail too, even though the loop
+    swallows the per-user exception.
+    """
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        org_id = owner.org_id
+
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+
+    real_dispatch = notification_service.dispatch_notification
+
+    async def poisoning_dispatch(db, *, user_id, **kwargs):
+        if user_id == admin_a:
+            # Force a real flush-time failure: insert a Notification
+            # with a user_id that violates the FK. SQLite has
+            # PRAGMA foreign_keys=ON in our fixture so this raises
+            # IntegrityError on flush, leaving the session in
+            # rollback-required state. This is the contract we need
+            # the savepoint to isolate.
+            from app.models.notification import Notification
+            from app._time import utcnow_naive
+
+            bad = Notification(
+                user_id=999_999,  # no such user
+                category=kwargs["category"],
+                event_type=kwargs["event_type"],
+                title=kwargs["title"],
+                body=kwargs["body"],
+                created_at=utcnow_naive(),
+            )
+            db.add(bad)
+            await db.flush()  # raises IntegrityError
+            return bad  # unreachable
+        return await real_dispatch(db, user_id=user_id, **kwargs)
+
+    monkeypatch.setattr(
+        notification_service, "dispatch_notification", poisoning_dispatch
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        async with session_factory() as db:
+            written = await notification_service.dispatch_notification_to_org_admins(
+                db,
+                org_id=org_id,
+                category=NotificationCategory.ORG_ADMIN,
+                event_type="admin.org.plan.changed",
+                title="Plan changed",
+                body="Body",
+            )
+            # CRITICAL: the outer commit must succeed. Without the
+            # savepoint wrap this raises PendingRollbackError because
+            # recipient #2's flush poisoned the session.
+            await db.commit()
+
+    # 2 written: owner + admin_b. admin_a's flush failed and the
+    # savepoint rolled back cleanly.
+    assert written == 2
+
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    recipient_ids = {row.user_id for row in rows}
+    assert seed_user_id in recipient_ids
+    assert admin_b in recipient_ids
+    assert admin_a not in recipient_ids
+    # The FK-violating row from the poisoned dispatch must not have
+    # leaked past the savepoint rollback.
+    assert 999_999 not in recipient_ids
+
+    failed_events = [
+        ev
+        for ev in captured
+        if ev.get("event") == "notification.dispatch.fanout.recipient_failed"
+    ]
+    assert len(failed_events) == 1
+    failed = failed_events[0]
+    assert failed["recipient_user_id"] == admin_a
+    assert failed["org_id"] == org_id
+    assert failed["error_class"] == "IntegrityError"
+
+
+@pytest.mark.asyncio
+async def test_fanout_returns_success_and_failure_counts(
+    session_factory, monkeypatch
+):
+    """Mix 2 successes + 2 failures: the helper returns the success
+    count (rows actually written) and emits a structured completion
+    log carrying both ``rows_written`` and ``failures``.
+
+    This pins the observable shape callers (admin_orgs.py) depend on:
+    return is the integer success count; failure count is reachable
+    via structlog for ops dashboards.
+    """
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        org_id = owner.org_id
+
+    # Three more admins → 4 total (owner + 3 admins).
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+    admin_c = await _seed_extra_admin(
+        session_factory, org_id, username="admin_c", email="c@ex.io", role=Role.ADMIN
+    )
+
+    real_dispatch = notification_service.dispatch_notification
+    failing_ids = {admin_a, admin_c}
+
+    async def half_failing_dispatch(db, *, user_id, **kwargs):
+        if user_id in failing_ids:
+            raise RuntimeError(f"simulated dispatch failure for {user_id}")
+        return await real_dispatch(db, user_id=user_id, **kwargs)
+
+    monkeypatch.setattr(
+        notification_service, "dispatch_notification", half_failing_dispatch
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        async with session_factory() as db:
+            written = await notification_service.dispatch_notification_to_org_admins(
+                db,
+                org_id=org_id,
+                category=NotificationCategory.ORG_ADMIN,
+                event_type="admin.org.plan.changed",
+                title="Plan changed",
+                body="Body",
+            )
+            await db.commit()
+
+    # 2 successes (owner + admin_b); 2 failures (admin_a + admin_c).
+    assert written == 2
+
+    complete_events = [
+        ev
+        for ev in captured
+        if ev.get("event") == "notification.dispatch.fanout.complete"
+    ]
+    assert len(complete_events) == 1
+    complete = complete_events[0]
+    assert complete["org_id"] == org_id
+    assert complete["admin_count"] == 4
+    assert complete["rows_written"] == 2
+    assert complete["failures"] == 2
+
+    failed_events = [
+        ev
+        for ev in captured
+        if ev.get("event") == "notification.dispatch.fanout.recipient_failed"
+    ]
+    assert {ev["recipient_user_id"] for ev in failed_events} == failing_ids
+
+    # Verify only the 2 successful rows actually landed.
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    assert {row.user_id for row in rows} == {seed_user_id, admin_b}

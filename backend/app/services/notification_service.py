@@ -220,11 +220,21 @@ async def dispatch_notification_to_org_admins(
     users (``is_active=True``) receive the notification.
 
     Uses ONE SQL SELECT to fetch the admin set, then iterates and
-    calls ``dispatch_notification`` per recipient. Per-user failure
-    is logged and swallowed so one user's bad row write doesn't kill
-    the entire fanout (best-effort contract). Preference-aware writes
-    still happen per-user: an admin who has opted out of ``org_admin``
-    in-app notifications gets skipped.
+    calls ``dispatch_notification`` per recipient inside a SAVEPOINT.
+    Per-user failure is logged and swallowed so one user's bad row
+    write doesn't kill the entire fanout (best-effort contract).
+    Preference-aware writes still happen per-user: an admin who has
+    opted out of ``org_admin`` in-app notifications gets skipped.
+
+    The savepoint wrap is load-bearing: SQLAlchemy async sessions
+    are "poisoned" once a flush fails inside them — any subsequent
+    ORM operation or commit raises ``InvalidRequestError`` until the
+    transaction is rolled back. Wrapping each per-recipient dispatch
+    in ``db.begin_nested()`` scopes the failure to the savepoint,
+    so the outer transaction (and the next recipient's flush, and
+    the caller's eventual commit) stays clean. Without this, the
+    "best-effort" log was technically swallowed but the eventual
+    commit would still fail downstream.
 
     Returns the count of notification rows actually written (skips
     via preference and per-user failures both count against the
@@ -240,7 +250,9 @@ async def dispatch_notification_to_org_admins(
     admins = list(result.scalars().all())
 
     written = 0
+    failures = 0
     for admin in admins:
+        savepoint = await db.begin_nested()
         try:
             row = await dispatch_notification(
                 db,
@@ -252,27 +264,40 @@ async def dispatch_notification_to_org_admins(
                 link_url=link_url,
                 audit_event_id=audit_event_id,
             )
-            if row is not None:
-                written += 1
         except Exception as exc:  # noqa: BLE001 — best-effort fanout
-            await logger.aerror(
-                "notification.fanout.user_failed",
+            # Roll the savepoint back BEFORE logging so the outer
+            # transaction is clean by the time control returns to
+            # the loop head. A failed flush leaves the session in
+            # "rollback-required" state; without this rollback the
+            # next recipient's flush would raise InvalidRequestError
+            # and the caller's commit would fail too.
+            await savepoint.rollback()
+            await logger.awarning(
+                "notification.dispatch.fanout.recipient_failed",
                 org_id=org_id,
-                user_id=admin.id,
+                recipient_user_id=admin.id,
                 event_type=event_type,
                 error=str(exc),
-                error_type=type(exc).__name__,
+                error_class=type(exc).__name__,
             )
+            failures += 1
             # Continue to the next admin — one user's failure must
             # not poison the rest of the broadcast.
             continue
+        else:
+            # Commit the savepoint; the row stays pending in the
+            # outer transaction (so the caller still owns commit).
+            await savepoint.commit()
+            if row is not None:
+                written += 1
 
     await logger.ainfo(
-        "notification.fanout.org_admins",
+        "notification.dispatch.fanout.complete",
         org_id=org_id,
         event_type=event_type,
         admin_count=len(admins),
         rows_written=written,
+        failures=failures,
     )
     return written
 
