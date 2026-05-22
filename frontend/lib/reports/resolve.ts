@@ -171,14 +171,19 @@ export function resolveFilters(
   }
 
   if (widget?.tag_names && widget.tag_names.length > 0) {
-    for (const tag of widget.tag_names) {
-      out.push({
-        field: "tag_name",
-        op: "eq",
-        value: tag,
-        tag_match: widget.tag_match ?? "all",
-      });
-    }
+    // One ``in`` filter with the full tag list. The backend's tag
+    // compiler at ``backend/app/services/reports_query_service.py:185``
+    // reads ``tag_match`` off the single filter and either OR-combines
+    // the names (``any``) or AND-combines per-name IN subqueries
+    // (``all``). Emitting per-tag filters here would force the AST
+    // compiler to AND them together, which inverts the UI promise
+    // for ``tag_match=any``.
+    out.push({
+      field: "tag_name",
+      op: "in",
+      value: [...widget.tag_names],
+      tag_match: widget.tag_match ?? "all",
+    });
   }
 
   return out;

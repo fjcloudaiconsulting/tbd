@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isFieldOverridden } from "@/lib/reports/resolve";
+import { isFieldOverridden, resolveFilters } from "@/lib/reports/resolve";
 import type { CanvasFilters, WidgetFilters } from "@/lib/reports/types";
 
 /**
@@ -160,6 +160,109 @@ describe("isFieldOverridden", () => {
       const canvas: CanvasFilters = {};
       const widget: WidgetFilters = { tag_match: "any" };
       expect(isFieldOverridden("tag_match", widget, canvas)).toBe(false);
+    });
+  });
+});
+
+/**
+ * Architect bug fix: the previous emitter looped over ``tag_names`` and
+ * pushed one ``{op: "eq"}`` filter per tag. The AST compiler AND-combines
+ * filters, so ``tag_match="any"`` with N tags actually ran as "match ALL"
+ * — the opposite of the UI promise. The canonical shape is ONE ``in``
+ * filter carrying the full list, with ``tag_match`` riding on that single
+ * filter. Backend reference:
+ * ``backend/app/services/reports_query_service.py:185``.
+ */
+describe("resolveFilters — tag emission", () => {
+  it("emits a single 'in' filter with one tag when tag_match='any' and 1 tag is selected", () => {
+    const widget: WidgetFilters = {
+      tag_names: ["groceries"],
+      tag_match: "any",
+    };
+    const out = resolveFilters(undefined, widget);
+    const tagFilters = out.filter((f) => f.field === "tag_name");
+    expect(tagFilters).toHaveLength(1);
+    expect(tagFilters[0]).toEqual({
+      field: "tag_name",
+      op: "in",
+      value: ["groceries"],
+      tag_match: "any",
+    });
+  });
+
+  it("emits ONE filter (not N) with the full tag list when tag_match='any' and 3 tags are selected", () => {
+    const widget: WidgetFilters = {
+      tag_names: ["groceries", "essentials", "treat"],
+      tag_match: "any",
+    };
+    const out = resolveFilters(undefined, widget);
+    const tagFilters = out.filter((f) => f.field === "tag_name");
+    // The bug: previously this would have been 3 separate eq filters,
+    // which the AST compiler AND-combines — collapsing "any" into "all".
+    expect(tagFilters).toHaveLength(1);
+    expect(tagFilters[0]).toEqual({
+      field: "tag_name",
+      op: "in",
+      value: ["groceries", "essentials", "treat"],
+      tag_match: "any",
+    });
+  });
+
+  it("emits a single 'in' filter with one tag when tag_match='all' and 1 tag is selected", () => {
+    const widget: WidgetFilters = {
+      tag_names: ["essentials"],
+      tag_match: "all",
+    };
+    const out = resolveFilters(undefined, widget);
+    const tagFilters = out.filter((f) => f.field === "tag_name");
+    expect(tagFilters).toHaveLength(1);
+    expect(tagFilters[0]).toEqual({
+      field: "tag_name",
+      op: "in",
+      value: ["essentials"],
+      tag_match: "all",
+    });
+  });
+
+  it("emits ONE filter with the full tag list when tag_match='all' and 3 tags are selected", () => {
+    const widget: WidgetFilters = {
+      tag_names: ["groceries", "essentials", "treat"],
+      tag_match: "all",
+    };
+    const out = resolveFilters(undefined, widget);
+    const tagFilters = out.filter((f) => f.field === "tag_name");
+    // The backend's tag compiler handles ``tag_match=all`` server-side
+    // by AND-combining per-name IN subqueries; the wire shape stays
+    // ONE filter with the full list.
+    expect(tagFilters).toHaveLength(1);
+    expect(tagFilters[0]).toEqual({
+      field: "tag_name",
+      op: "in",
+      value: ["groceries", "essentials", "treat"],
+      tag_match: "all",
+    });
+  });
+
+  it("emits no tag filter when tag_names is an empty array", () => {
+    const widget: WidgetFilters = {
+      tag_names: [],
+      tag_match: "any",
+    };
+    const out = resolveFilters(undefined, widget);
+    const tagFilters = out.filter((f) => f.field === "tag_name");
+    expect(tagFilters).toHaveLength(0);
+  });
+
+  it("defaults tag_match to 'all' when only tag_names is set", () => {
+    const widget: WidgetFilters = { tag_names: ["essentials"] };
+    const out = resolveFilters(undefined, widget);
+    const tagFilters = out.filter((f) => f.field === "tag_name");
+    expect(tagFilters).toHaveLength(1);
+    expect(tagFilters[0]).toEqual({
+      field: "tag_name",
+      op: "in",
+      value: ["essentials"],
+      tag_match: "all",
     });
   });
 });
