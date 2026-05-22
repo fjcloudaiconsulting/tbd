@@ -259,6 +259,98 @@ describe("Security page MFA polish: copy, validation, error mapping", () => {
     });
   });
 
+  // ── L5.5 form polish: copy-to-clipboard + QR alt text ────────────────────
+  //
+  // The QR-page secret block, the post-enable recovery codes block, and
+  // the regenerate recovery codes block each got a "Copy" button next to
+  // the existing copy-by-selection / Download codes affordances. The
+  // microcopy is announced via an aria-live status region so screen
+  // readers know the copy succeeded.
+
+  it("copies the TOTP setup key to clipboard and announces it via aria-live", async () => {
+    mockUser(false);
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/auth/mfa/setup") {
+        return Promise.resolve({ qr_code: "Zm9v", secret: "SECRETKEYABC123" });
+      }
+      return Promise.resolve([]);
+    }) as never);
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    render(<SecurityPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
+    );
+    // Expand the manual-key disclosure and trigger the copy.
+    fireEvent.click(await screen.findByText(/Enter this key manually/i));
+    fireEvent.click(await screen.findByRole("button", { name: /^Copy key$/i }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("SECRETKEYABC123");
+    });
+    // Button label flips to Copied for the confirmation window.
+    expect(await screen.findByRole("button", { name: /^Copied$/i })).toBeInTheDocument();
+    // aria-live confirmation surfaces for screen readers.
+    expect(
+      screen.getByText(/Setup key copied to clipboard/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders descriptive QR alt text and a sighted-user figcaption", async () => {
+    mockUser(false);
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/auth/mfa/setup") {
+        return Promise.resolve({ qr_code: "Zm9v", secret: "SECRET" });
+      }
+      return Promise.resolve([]);
+    }) as never);
+
+    render(<SecurityPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
+    );
+    const qr = await screen.findByAltText(/Scan with your authenticator app/i);
+    expect(qr.tagName).toBe("IMG");
+    // Sighted caption restates the action; both must be present so
+    // visual + screen-reader users get the same hint.
+    expect(screen.getByText(/^Scan with your authenticator app$/i)).toBeInTheDocument();
+  });
+
+  it("copies recovery codes to clipboard from the post-enable screen", async () => {
+    mockUser(false);
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/auth/mfa/setup") {
+        return Promise.resolve({ qr_code: "Zm9v", secret: "SECRET" });
+      }
+      if (url === "/api/v1/auth/mfa/enable") {
+        return Promise.resolve({ recovery_codes: ["A1B2C3D4", "E5F6G7H8"] });
+      }
+      return Promise.resolve([]);
+    }) as never);
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    render(<SecurityPage />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Set Up Two-Factor Authentication/i }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^Continue$/i }));
+    const codeInput = await screen.findByLabelText(/Verification Code/i);
+    fireEvent.change(codeInput, { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: /Verify and Enable/i }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Copy codes$/i }));
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("A1B2C3D4\nE5F6G7H8");
+    });
+    expect(
+      await screen.findByText(/Recovery codes copied to clipboard/i),
+    ).toBeInTheDocument();
+  });
+
   it("MFA disable surfaces a reload hint when refreshMe rejects", async () => {
     vi.mocked(useAuth).mockReturnValue({
       user: makeUser(true) as never,

@@ -532,12 +532,37 @@ export default function OrganizationSettingsPage() {
                   }}
                   className={`${input} w-full sm:w-24`}
                   aria-describedby={
-                    cycleFieldError ? "billing-cycle-day-err billing-cycle-day-hint" : "billing-cycle-day-hint"
+                    cycleFieldError
+                      ? "billing-cycle-day-err billing-cycle-day-hint billing-cycle-day-preview"
+                      : "billing-cycle-day-hint billing-cycle-day-preview"
                   }
                   aria-invalid={cycleFieldError ? true : undefined}
                 />
                 <p id="billing-cycle-day-hint" className="mt-1.5 text-xs text-text-muted">
                   Day of the month each new period starts. Days 1 to 28 only, so every month has it.
+                </p>
+                {/*
+                  Dirty + valid + changed preview. Tells the admin what the
+                  current period would look like the moment they save, so
+                  the consequence of changing the cycle day is visible
+                  before they commit. Static placeholder keeps layout
+                  stable when no preview is shown.
+                */}
+                <p
+                  id="billing-cycle-day-preview"
+                  className="mt-1.5 min-h-[1rem] text-xs text-text-muted"
+                  aria-live="polite"
+                >
+                  {(() => {
+                    if (cycleFieldError) return "";
+                    if (billingCycleDay.trim() === "") return "";
+                    if (billingCycleDay === savedCycleDay) return "";
+                    const day = Number(billingCycleDay);
+                    if (!Number.isFinite(day) || !currentPeriod?.start_date) return "";
+                    const projected = projectedPeriodEnd(currentPeriod.start_date, day);
+                    if (!projected) return "";
+                    return `Saving will close the current period on ${projected} and open a new one on day ${day}.`;
+                  })()}
                 </p>
                 {cycleFieldError && (
                   <p
@@ -550,22 +575,51 @@ export default function OrganizationSettingsPage() {
                   </p>
                 )}
               </div>
-              <button
-                type="submit"
-                disabled={
-                  savingCycle ||
-                  cycleFieldError !== null ||
-                  billingCycleDay.trim() === "" ||
-                  billingCycleDay === savedCycleDay
-                }
-                aria-busy={savingCycle}
-                className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2 sm:mt-[26px]`}
-              >
-                {savingCycle && (
-                  <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+              <div className="flex flex-col gap-2 sm:flex-row sm:mt-[26px]">
+                <button
+                  type="submit"
+                  disabled={
+                    savingCycle ||
+                    cycleFieldError !== null ||
+                    billingCycleDay.trim() === "" ||
+                    billingCycleDay === savedCycleDay
+                  }
+                  aria-busy={savingCycle}
+                  className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                >
+                  {savingCycle && (
+                    <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                  )}
+                  {savingCycle ? "Saving..." : "Save"}
+                </button>
+                {/*
+                  Discard mirrors the Forecast Plans Save/Cancel pattern.
+                  Hidden until the field is dirty so it doesn't add noise
+                  to the resting state.
+                */}
+                {billingCycleDay !== savedCycleDay && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      userEditedCycleDayRef.current = false;
+                      setBillingCycleDay(savedCycleDay);
+                      setCycleFieldError(null);
+                    }}
+                    disabled={savingCycle}
+                    // Visible text "Cancel" carries the action; the
+                    // aria-label augments it with the field context so
+                    // screen reader users hear "Cancel billing cycle day"
+                    // instead of a bare "Cancel" that could be confused
+                    // with the rename/danger-zone Cancel buttons on this
+                    // same page. WCAG 2.5.3: visible text "Cancel" is
+                    // included as the first word of the accessible name.
+                    aria-label="Cancel billing cycle day edit"
+                    className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                  >
+                    Cancel
+                  </button>
                 )}
-                {savingCycle ? "Saving..." : "Save"}
-              </button>
+              </div>
             </form>
           </div>
         </div>
