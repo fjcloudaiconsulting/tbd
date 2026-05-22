@@ -21,6 +21,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { Loader2 } from "lucide-react";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -146,6 +147,23 @@ export default function PlansPage() {
   // (and open the plan) or fail to match, we clear the query string so a
   // refresh doesn't re-trigger and re-open repeatedly.
   const openParamConsumedRef = useRef(false);
+  // Per-plan in-flight tracking so multiple list-row Simulate clicks
+  // (across different plans) can run in parallel, while a second click
+  // on the same plan is blocked. A single boolean would falsely lock
+  // every row when any one is in flight.
+  const [simulating, setSimulating] = useState<Set<number>>(() => new Set());
+  // Per-plan "just simulated at <ts>" microcopy. Each entry clears
+  // ~3s after a simulate resolves so a fresh result is visibly
+  // acknowledged even if the verdict color didn't change.
+  const [lastSimulatedAt, setLastSimulatedAt] = useState<Record<number, string>>({});
+  const flashTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    const timers = flashTimersRef.current;
+    return () => {
+      for (const t of Object.values(timers)) clearTimeout(t);
+    };
+  }, []);
 
   useEffect(() => {
     if (loading) return;
@@ -203,6 +221,11 @@ export default function PlansPage() {
   }
 
   async function simulate(plan: Scenario): Promise<Scenario | null> {
+    setSimulating((prev) => {
+      const next = new Set(prev);
+      next.add(plan.id);
+      return next;
+    });
     try {
       const next = await apiFetch<Scenario>(
         `/api/v1/scenarios/${plan.id}/simulate`,
@@ -210,10 +233,35 @@ export default function PlansPage() {
       );
       setItems((rows) => rows.map((r) => (r.id === next.id ? next : r)));
       if (active && active.id === next.id) setActive(next);
+      // Flash an "Updated," timestamp next to the verdict pill so the
+      // user has visible feedback even when the verdict color is
+      // identical to the previous run. The flash clears after ~3s.
+      const stamp = new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      setLastSimulatedAt((prev) => ({ ...prev, [plan.id]: stamp }));
+      if (flashTimersRef.current[plan.id]) {
+        clearTimeout(flashTimersRef.current[plan.id]);
+      }
+      flashTimersRef.current[plan.id] = setTimeout(() => {
+        setLastSimulatedAt((prev) => {
+          const { [plan.id]: _drop, ...rest } = prev;
+          return rest;
+        });
+        delete flashTimersRef.current[plan.id];
+      }, 3000);
       return next;
     } catch (e) {
       setLoadErr(extractErrorMessage(e, "Simulate failed"));
       return null;
+    } finally {
+      setSimulating((prev) => {
+        const next = new Set(prev);
+        next.delete(plan.id);
+        return next;
+      });
     }
   }
 
@@ -271,6 +319,8 @@ export default function PlansPage() {
           onOpen={setActive}
           onDelete={deletePlan}
           onSimulate={simulate}
+          isSimulating={(id) => simulating.has(id)}
+          lastSimulatedAt={lastSimulatedAt}
         />
       )}
 
@@ -300,11 +350,15 @@ function PlansList({
   onOpen,
   onDelete,
   onSimulate,
+  isSimulating,
+  lastSimulatedAt,
 }: {
   items: Scenario[];
   onOpen: (plan: Scenario) => void;
   onDelete: (id: number) => void;
   onSimulate: (plan: Scenario) => Promise<Scenario | null>;
+  isSimulating: (planId: number) => boolean;
+  lastSimulatedAt: Record<number, string>;
 }) {
   if (items.length === 0) {
     return (
@@ -320,49 +374,77 @@ function PlansList({
   return (
     <section className={`${card} p-0`} data-testid="plans-list">
       <ul className="divide-y divide-border">
-        {items.map((plan) => (
-          <li
-            key={plan.id}
-            className="flex items-center justify-between gap-4 px-5 py-3"
-          >
-            <button
-              type="button"
-              className="flex-1 text-left"
-              onClick={() => onOpen(plan)}
-              data-testid={`plan-row-${plan.id}`}
+        {items.map((plan) => {
+          const busy = isSimulating(plan.id);
+          const flashStamp = lastSimulatedAt[plan.id];
+          return (
+            <li
+              key={plan.id}
+              className="flex items-center justify-between gap-4 px-5 py-3"
             >
-              <p className="text-sm font-medium text-text-primary">{plan.name}</p>
-              <p className="text-xs text-text-muted">
-                {TYPE_LABEL[plan.scenario_type]} · Horizon {plan.horizon_months}mo
-              </p>
-            </button>
-            {plan.projection_json && (
-              <span
-                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                  VERDICT_BADGE[plan.projection_json.verdict.color]
-                }`}
+              <button
+                type="button"
+                className="flex-1 text-left"
+                onClick={() => onOpen(plan)}
+                data-testid={`plan-row-${plan.id}`}
               >
-                {plan.projection_json.verdict.color.toUpperCase()}
-              </span>
-            )}
-            <button
-              type="button"
-              className={`${btnSecondary} sm:min-h-0`}
-              onClick={() => void onSimulate(plan)}
-              data-testid={`plan-simulate-${plan.id}`}
-            >
-              Simulate
-            </button>
-            <button
-              type="button"
-              className="text-xs text-danger underline-offset-2 hover:underline"
-              onClick={() => onDelete(plan.id)}
-              data-testid={`plan-delete-${plan.id}`}
-            >
-              Delete
-            </button>
-          </li>
-        ))}
+                <p className="text-sm font-medium text-text-primary">{plan.name}</p>
+                <p className="text-xs text-text-muted">
+                  {TYPE_LABEL[plan.scenario_type]} · Horizon {plan.horizon_months}mo
+                </p>
+              </button>
+              <div
+                className="flex items-center gap-2"
+                role="status"
+                aria-live="polite"
+                data-testid={`plan-verdict-region-${plan.id}`}
+              >
+                {plan.projection_json && (
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      VERDICT_BADGE[plan.projection_json.verdict.color]
+                    }`}
+                  >
+                    {plan.projection_json.verdict.color.toUpperCase()}
+                  </span>
+                )}
+                {flashStamp && (
+                  <span
+                    className="text-[11px] text-text-muted"
+                    data-testid={`plan-simulate-flash-${plan.id}`}
+                  >
+                    Updated, {flashStamp}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                className={`${btnSecondary} sm:min-h-0 inline-flex items-center justify-center gap-1.5`}
+                onClick={() => void onSimulate(plan)}
+                disabled={busy}
+                aria-busy={busy}
+                data-testid={`plan-simulate-${plan.id}`}
+              >
+                {busy && (
+                  <Loader2
+                    className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none"
+                    aria-hidden="true"
+                    data-testid={`plan-simulate-spinner-${plan.id}`}
+                  />
+                )}
+                {busy ? "Simulating..." : "Simulate"}
+              </button>
+              <button
+                type="button"
+                className="text-xs text-danger underline-offset-2 hover:underline"
+                onClick={() => onDelete(plan.id)}
+                data-testid={`plan-delete-${plan.id}`}
+              >
+                Delete
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
