@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Copy, Check } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import SettingsLayout from "@/components/SettingsLayout";
 import PasswordInput from "@/components/ui/PasswordInput";
@@ -213,6 +213,38 @@ export default function SecurityPage() {
   const [regenerating, setRegenerating] = useState(false);
   const [showRegen, setShowRegen] = useState(false);
   const [regenCodes, setRegenCodes] = useState<string[]>([]);
+
+  // ── Copy-to-clipboard ────────────────────────────────────────────────────
+  // One small bit of UI state tracks which payload was most recently
+  // copied so the button label can swap to "Copied" for a beat without
+  // pulling in a toast library. Cleared automatically after ~2s.
+  const [copiedKey, setCopiedKey] = useState<"secret" | "codes" | "regen-codes" | null>(null);
+  async function copyToClipboard(text: string, key: "secret" | "codes" | "regen-codes") {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // No clipboard API (older browsers, insecure contexts). Fall back
+        // to a hidden textarea + execCommand so the affordance still works.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "absolute";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopiedKey(key);
+      setTimeout(() => {
+        setCopiedKey((current) => (current === key ? null : current));
+      }, 2000);
+    } catch {
+      // Silently ignore copy failures (denied permission, etc.) — the
+      // secret stays select-all so the user can copy manually.
+    }
+  }
 
   // ── Session Lifetime ──────────────────────────────────────────────────
   const [sessionDays, setSessionDays] = useState("30");
@@ -503,20 +535,55 @@ export default function SecurityPage() {
               <p className="text-sm text-text-muted">
                 Scan this QR code with your authenticator app (Google Authenticator, Authy, 1Password, etc.)
               </p>
-              <div className="flex justify-center rounded-lg bg-white p-4">
-                <img
-                  src={`data:image/png;base64,${setupData.qr_code}`}
-                  alt="TOTP QR Code"
-                  className="h-48 w-48 max-w-full"
-                />
-              </div>
+              <figure className="space-y-2">
+                <div className="flex justify-center rounded-lg bg-white p-4">
+                  <img
+                    src={`data:image/png;base64,${setupData.qr_code}`}
+                    alt="QR code for two-factor authentication. Scan with your authenticator app, or expand the manual key below."
+                    className="h-48 w-48 max-w-full"
+                  />
+                </div>
+                <figcaption className="text-center text-xs text-text-muted">
+                  Scan with your authenticator app
+                </figcaption>
+              </figure>
               <details className="text-sm">
                 <summary className="cursor-pointer text-text-muted hover:text-text-primary">
                   Can&apos;t scan? Enter this key manually
                 </summary>
-                <code className="mt-2 block rounded bg-surface-raised px-3 py-2 text-xs text-text-primary break-all select-all">
-                  {setupData.secret}
-                </code>
+                <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-start">
+                  <code
+                    id="mfa-setup-secret"
+                    className="flex-1 block rounded bg-surface-raised px-3 py-2 text-xs text-text-primary break-all select-all"
+                  >
+                    {setupData.secret}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(setupData.secret, "secret")}
+                    aria-describedby="mfa-setup-secret"
+                    className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                  >
+                    {copiedKey === "secret" ? (
+                      <>
+                        <Check className="h-4 w-4" aria-hidden="true" />
+                        Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-4 w-4" aria-hidden="true" />
+                        Copy key
+                      </>
+                    )}
+                  </button>
+                </div>
+                <p
+                  role="status"
+                  aria-live="polite"
+                  className="mt-1.5 min-h-[1rem] text-xs text-success"
+                >
+                  {copiedKey === "secret" ? "Setup key copied to clipboard." : ""}
+                </p>
               </details>
               <div className="flex flex-col gap-3 sm:flex-row">
                 <button onClick={() => { setMfaStep("idle"); setSetupData(null); }} className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}>
@@ -599,13 +666,39 @@ export default function SecurityPage() {
                   </code>
                 ))}
               </div>
-              <button
-                type="button"
-                onClick={() => downloadCodes(recoveryCodes)}
-                className={`w-full ${btnSecondary}`}
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(recoveryCodes.join("\n"), "codes")}
+                  className={`${btnSecondary} w-full sm:flex-1 min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                >
+                  {copiedKey === "codes" ? (
+                    <>
+                      <Check className="h-4 w-4" aria-hidden="true" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="h-4 w-4" aria-hidden="true" />
+                      Copy codes
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => downloadCodes(recoveryCodes)}
+                  className={`${btnSecondary} w-full sm:flex-1 min-h-[44px] sm:min-h-0`}
+                >
+                  Download codes
+                </button>
+              </div>
+              <p
+                role="status"
+                aria-live="polite"
+                className="min-h-[1rem] text-xs text-success"
               >
-                Download codes
-              </button>
+                {copiedKey === "codes" ? "Recovery codes copied to clipboard." : ""}
+              </p>
               <label className="flex items-center gap-2 text-sm text-text-muted">
                 <input
                   type="checkbox"
@@ -717,13 +810,39 @@ export default function SecurityPage() {
                       </code>
                     ))}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => downloadCodes(regenCodes)}
-                    className={`w-full ${btnSecondary}`}
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(regenCodes.join("\n"), "regen-codes")}
+                      className={`${btnSecondary} w-full sm:flex-1 min-h-[44px] sm:min-h-0 inline-flex items-center justify-center gap-2`}
+                    >
+                      {copiedKey === "regen-codes" ? (
+                        <>
+                          <Check className="h-4 w-4" aria-hidden="true" />
+                          Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-4 w-4" aria-hidden="true" />
+                          Copy codes
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => downloadCodes(regenCodes)}
+                      className={`${btnSecondary} w-full sm:flex-1 min-h-[44px] sm:min-h-0`}
+                    >
+                      Download codes
+                    </button>
+                  </div>
+                  <p
+                    role="status"
+                    aria-live="polite"
+                    className="min-h-[1rem] text-xs text-success"
                   >
-                    Download codes
-                  </button>
+                    {copiedKey === "regen-codes" ? "Recovery codes copied to clipboard." : ""}
+                  </p>
                   <button
                     type="button"
                     onClick={() => { setRegenCodes([]); setShowRegen(false); }}
