@@ -21,7 +21,7 @@ describe("<TopNav />", () => {
     expect(homeLink).toHaveTextContent("The Better Decision");
   });
 
-  it("renders only the spec-mandated Sign in + Get started links", () => {
+  it("renders the spec-mandated Sign in + Get started auth links", () => {
     render(<TopNav />);
     expect(
       screen.getByRole("link", { name: /^sign in$/i }),
@@ -29,9 +29,19 @@ describe("<TopNav />", () => {
     expect(
       screen.getByRole("link", { name: /^get started$/i }),
     ).toHaveAttribute("href", "/register");
-    // Docs link from prior iteration must not appear — spec §3.1 lists
-    // only Sign in + Get started + theme toggle.
+    // Docs link from prior iteration must not appear here.
     expect(screen.queryByRole("link", { name: /docs/i })).toBeNull();
+  });
+
+  it("exposes the L5.1 in-page jump links to Pricing and FAQ", () => {
+    render(<TopNav />);
+    // Jump links target stable anchors on the long-form sections. They
+    // are <a> tags (not Next <Link>) so the URL stays as a hash ref
+    // even after client-side navigation.
+    const pricing = screen.getByRole("link", { name: /^pricing$/i });
+    expect(pricing).toHaveAttribute("href", "#pricing");
+    const faq = screen.getByRole("link", { name: /^faq$/i });
+    expect(faq).toHaveAttribute("href", "#faq");
   });
 
   it("exposes the theme toggle button", () => {

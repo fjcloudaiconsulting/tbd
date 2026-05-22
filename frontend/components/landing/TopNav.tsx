@@ -28,6 +28,23 @@ export default function TopNav() {
         </span>
       </Link>
       <div className="flex items-center gap-2 sm:gap-4">
+        {/* In-page jump links to the new long-form sections. Hidden on
+            phones to keep the right-hand actions clear of crowding. The
+            anchor targets (#pricing, #faq) are stable IDs on the
+            respective landing sections so deep-links from emails or
+            future blog posts can land directly. */}
+        <a
+          href="#pricing"
+          className="hidden whitespace-nowrap px-2 text-sm text-text-muted transition-colors hover:text-text-primary md:inline"
+        >
+          Pricing
+        </a>
+        <a
+          href="#faq"
+          className="hidden whitespace-nowrap px-2 text-sm text-text-muted transition-colors hover:text-text-primary md:inline"
+        >
+          FAQ
+        </a>
         <Link
           href={signinHref()}
           className="whitespace-nowrap px-2 text-sm text-text-muted transition-colors hover:text-text-primary"

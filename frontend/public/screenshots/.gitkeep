@@ -1,0 +1,14 @@
+Reserved for future product screenshots used by the landing page.
+
+The L5.1 landing currently renders product previews as in-code mock UI
+(see components/landing/ScreenshotShowcase.tsx). When polished marketing
+shots become available, drop them here using the convention:
+
+  public/screenshots/transactions.png
+  public/screenshots/reports.png
+  public/screenshots/plans.png
+
+Then swap each `<div role="img">` frame in ScreenshotShowcase for a
+Next.js <Image /> tag pointing at the matching file. Keep the chrome
+frame ("dots + URL bar") so the visual voice stays consistent with
+the in-code previews.

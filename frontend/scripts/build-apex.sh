@@ -87,6 +87,12 @@ ALLOWED_OUTPUT_GLOBS=(
   "icon.svg"
   "favicon.ico"
   "__next.*.txt"
+  # Reserved directory under public/ for future marketing screenshots
+  # used by the landing surface. Next.js copies the whole public/ tree
+  # into the build output, so the placeholder folder (currently just a
+  # .gitkeep) lands here. Allow it through so the apex post-build guard
+  # doesn't trip when polished screenshots get dropped in later.
+  "screenshots"
 )
 
 STAGING_DIR="${FRONTEND_DIR}/.apex-staged-routes"
