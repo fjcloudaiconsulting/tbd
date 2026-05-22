@@ -130,13 +130,38 @@ class PurchaseParams(BaseModel):
     financing: Optional[_PurchaseFinancing] = None
 
 
-class RetirementParams(BaseModel):
-    """Retirement scenario params — minimal stub for PR1.
+class _RetirementCurveStep(BaseModel):
+    """One step in the ``contribution_curve``.
 
-    Full retirement UX (contribution curve editor, projected balance
-    visualization) lands in PR2. PR1 accepts the shape so a user can
-    create a retirement plan and stash params; ``simulate`` runs the
-    analytic engine on the existing fields.
+    ``from_date`` is the first month the step applies (the field name is
+    serialized as ``from`` in JSON to match the spec's wire shape; ``from``
+    is a Python reserved word so the Python field uses ``from_date`` and is
+    aliased on serialization). For any month ``m >= from_date``, the
+    monthly contribution becomes ``monthly`` and overrides the base
+    ``monthly_contribution``. Steps are evaluated in ascending date order;
+    a later step takes precedence over an earlier one.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    from_date: date = Field(alias="from")
+    monthly: Decimal = Field(ge=0)
+
+
+class RetirementParams(BaseModel):
+    """Retirement scenario params (spec §Plan templates, ``retirement``).
+
+    Engine derivation: monthly contribution lands in ``contribution_account_id``,
+    compounded at ``annual_return_pct / 12`` per month. The optional
+    ``contribution_curve`` is a step function ascending in date; for any
+    month at or after a step's ``from``, the contribution overrides
+    ``monthly_contribution``. ``inflation_pct`` is the assumed annual
+    inflation rate used to deflate the projected balance into real terms
+    (the chart overlays a "real-terms" line alongside the nominal one).
+
+    The architect-locked verdict bands for retirement compare the
+    real-terms balance at ``target_retirement_date`` to ``target_balance``:
+    green if real >= target, yellow if within 15% below, red otherwise.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -148,6 +173,24 @@ class RetirementParams(BaseModel):
     contribution_account_id: int
     target_balance: Decimal = Field(ge=0)
     annual_return_pct: Decimal = Field(ge=0, le=100)
+    inflation_pct: Decimal = Field(default=Decimal("2.5"), ge=0, le=100)
+    contribution_curve: list[_RetirementCurveStep] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_curve(self):
+        # Steps must be monotonic ascending by ``from`` date; same-day
+        # entries are rejected (they're never meaningful and almost
+        # always a UI bug). The curve editor surfaces the same error
+        # client-side, but we re-validate server-side because UI
+        # validation is hygiene, not a contract.
+        prev = None
+        for step in self.contribution_curve:
+            if prev is not None and step.from_date <= prev:
+                raise ValueError(
+                    "contribution_curve must be strictly ascending by 'from' date"
+                )
+            prev = step.from_date
+        return self
 
 
 class CustomParams(BaseModel):
@@ -250,6 +293,12 @@ class SimulateRequest(BaseModel):
     engine uses the row's stored ``horizon_months``. When supplied, it
     is validated against the cap for the row's scenario_type by the
     router before the engine runs.
+
+    ``smooth_with_regression`` (PR2 of the Plans train) tells the engine
+    to fit a least-squares regression on the last 12 months of the user's
+    per-account net cashflow and overlay the projected drift on top of
+    the deterministic projection. Default False keeps PR1's exact math.
+    Applies to all plan_types.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -257,6 +306,7 @@ class SimulateRequest(BaseModel):
     engine: Literal["analytic", "ai_enhanced"] = "analytic"
     options: dict[str, Any] = Field(default_factory=dict)
     horizon_months: Optional[int] = Field(default=None, ge=HORIZON_MIN_MONTHS)
+    smooth_with_regression: bool = False
 
 
 # ── Projection (engine output) shape ────────────────────────────────────
@@ -300,6 +350,18 @@ class Suggestion(BaseModel):
     by_amount: Optional[str] = None
 
 
+class RealTermsSeries(BaseModel):
+    """Inflation-adjusted "real terms" balance series (retirement only).
+
+    Mirrors ``ProjectionPoint`` shape but reports the projected balance
+    in today's purchasing power (deflated by ``inflation_pct``). Surfaced
+    in the chart as an overlay line alongside the nominal projection.
+    """
+
+    points: List[ProjectionPoint]
+    inflation_pct: str
+
+
 class ProjectionResult(BaseModel):
     engine_name: str
     computed_at: datetime
@@ -309,3 +371,8 @@ class ProjectionResult(BaseModel):
     alerts: List[DipAlert]
     verdict: AffordabilityVerdict
     suggestions: List[Suggestion]
+    # Retirement-only. Empty for non-retirement plans.
+    real_terms_series: Optional[RealTermsSeries] = None
+    # Set True when the regression overlay was applied (PR2). Helps the
+    # UI label the chart and helps tests assert the path was taken.
+    smoothed_with_regression: bool = False
