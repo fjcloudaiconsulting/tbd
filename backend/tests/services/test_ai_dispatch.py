@@ -401,6 +401,272 @@ async def test_soft_cap_dispatches_notification_once_per_period(
     assert dispatch_mock.await_count == 1
 
 
+# ---------- soft cap boundary-crossing (post-write check) -----------
+
+
+@pytest.mark.asyncio
+async def test_soft_cap_crossing_warns_on_boundary_call(
+    db: AsyncSession,
+    org: Organization,
+    admin_user,
+    credential,
+    default_routing,
+    monkeypatch,
+):
+    """The call that takes usage from below to at-or-above the soft cap
+    must trigger the warning, not the NEXT call after the crossing.
+
+    Pre-condition: cost_before=90 cents, soft_cap=100 cents.
+    Call cost: 20 cents -> cost_after=110 cents.
+    Boundary condition cost_before < soft_cap <= cost_after holds, so
+    the post-write check fires exactly once.
+    """
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=100,
+            hard_cap_cents=None,
+            period="monthly",
+        )
+    )
+    # 90 cents of prior usage — below the 100-cent soft cap.
+    db.add(
+        AIUsageLedger(
+            org_id=org.id,
+            credential_id=credential.id,
+            feature_key="chat",
+            model="gpt-4o-mini",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            est_cost_cents=90,
+            latency_ms=1,
+            success=True,
+            error_class=None,
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    )
+    await db.commit()
+
+    redis_state: dict[str, str] = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in redis_state:
+                return False
+            redis_state[key] = value
+            return True
+
+    fake = FakeRedis()
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
+    )
+
+    dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.notification_service.dispatch_notification",
+        dispatch_mock,
+    )
+
+    # Pin the cost-estimate function so this call costs exactly 20 cents
+    # (cost_before=90, cost_after=110, crosses soft_cap=100).
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 20,
+    )
+
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            request_payload={"messages": []},
+        )
+    # Boundary call dispatched the warning exactly once.
+    assert dispatch_mock.await_count == 1
+    # Redis marker present after the crossing call.
+    assert any(k.startswith("ai_soft_cap_warned:") for k in redis_state)
+
+    # Make a follow-up call costing 5 cents (cost_before=110,
+    # cost_after=115, both >= soft_cap). Pre-call check would fire,
+    # but the marker is already set so notification is NOT re-dispatched.
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 5,
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            request_payload={"messages": []},
+        )
+    assert dispatch_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_soft_cap_not_crossed_no_warn(
+    db: AsyncSession,
+    org: Organization,
+    admin_user,
+    credential,
+    default_routing,
+    monkeypatch,
+):
+    """When neither the pre-call nor the post-write check matches, no
+    warning is dispatched. cost_before=50, cost_after=80, soft_cap=100.
+    """
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=100,
+            hard_cap_cents=None,
+            period="monthly",
+        )
+    )
+    db.add(
+        AIUsageLedger(
+            org_id=org.id,
+            credential_id=credential.id,
+            feature_key="chat",
+            model="gpt-4o-mini",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            est_cost_cents=50,
+            latency_ms=1,
+            success=True,
+            error_class=None,
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    )
+    await db.commit()
+
+    redis_state: dict[str, str] = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in redis_state:
+                return False
+            redis_state[key] = value
+            return True
+
+    fake = FakeRedis()
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
+    )
+
+    dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.notification_service.dispatch_notification",
+        dispatch_mock,
+    )
+
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 30,
+    )
+
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            request_payload={"messages": []},
+        )
+    assert dispatch_mock.await_count == 0
+    assert not any(k.startswith("ai_soft_cap_warned:") for k in redis_state)
+
+
+@pytest.mark.asyncio
+async def test_already_above_soft_cap_no_dupe_warn(
+    db: AsyncSession,
+    org: Organization,
+    admin_user,
+    credential,
+    default_routing,
+    monkeypatch,
+):
+    """If pre-existing usage is already past the soft cap, the pre-call
+    check fires once and sets the Redis marker. The post-write check
+    on the SAME call must not re-dispatch because the boundary
+    condition (cost_before < soft_cap) is false.
+    """
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=100,
+            hard_cap_cents=None,
+            period="monthly",
+        )
+    )
+    # 150 cents of prior usage — already past the 100-cent soft cap.
+    db.add(
+        AIUsageLedger(
+            org_id=org.id,
+            credential_id=credential.id,
+            feature_key="chat",
+            model="gpt-4o-mini",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            est_cost_cents=150,
+            latency_ms=1,
+            success=True,
+            error_class=None,
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    )
+    await db.commit()
+
+    redis_state: dict[str, str] = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in redis_state:
+                return False
+            redis_state[key] = value
+            return True
+
+    fake = FakeRedis()
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.redis_client.get_client", lambda: fake
+    )
+
+    dispatch_mock = AsyncMock(side_effect=lambda *a, **k: None)
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.notification_service.dispatch_notification",
+        dispatch_mock,
+    )
+
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.estimate_cost_cents",
+        lambda *, model, prompt_tokens, completion_tokens: 10,
+    )
+
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            request_payload={"messages": []},
+        )
+    # Pre-call check fired once. Post-write check skipped because the
+    # boundary condition (cost_before < soft_cap) is false.
+    assert dispatch_mock.await_count == 1
+
+
 # ---------- cap resolution ------------------------------------------
 
 

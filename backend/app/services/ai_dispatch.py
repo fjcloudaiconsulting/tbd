@@ -20,7 +20,12 @@ Flow (spec §3, PR2 scope):
    for the first time in the period, enqueue a notification via
    ``notification_service.dispatch_notification`` for every owner /
    admin of the org. Idempotent per (org, feature_key, period) via
-   a Redis marker with a 35-day TTL.
+   a Redis marker with a 35-day TTL. The warning fires from two
+   sites: a pre-call check (catches usage that was already at-or-above
+   the cap going in — e.g., marker expired, retroactive ledger rows)
+   and a post-write check (catches the boundary call that takes usage
+   from below to at-or-above the cap for the first time). The Redis
+   marker dedupes across both sites.
 4. Decrypt credentials via ``ai_credential_crypto.decrypt``, build
    the adapter via ``ai_providers.get_adapter``, dispatch.
 5. Time the call. Write a ledger row with token counts, cost,
@@ -623,6 +628,27 @@ async def call_llm(
         success=True,
         error_class=None,
     )
+
+    # 7. Post-write boundary check: catch the very first call that
+    # CROSSES the soft cap. The pre-call check (step 3) only fires when
+    # ``cost_so_far`` is already at-or-above the cap, so the call that
+    # takes us from below to at-or-above the cap was previously missed.
+    # The Redis dedupe marker shared with ``_maybe_warn_soft_cap``
+    # ensures we don't double-fire when both checks would otherwise
+    # match (pre-call already set the marker -> post-write SET NX
+    # returns False -> warning skipped).
+    if (
+        resolved.soft_cap_cents is not None
+        and cost_so_far < resolved.soft_cap_cents <= cost_so_far + cost
+    ):
+        await _maybe_warn_soft_cap(
+            db,
+            org_id=org_id,
+            feature_key=feature_key,
+            resolved=resolved,
+            cost_before_call=cost_so_far + cost,
+            period=_current_period(),
+        )
 
     logger.info(
         "ai.dispatch.success",
