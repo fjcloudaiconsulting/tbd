@@ -40,6 +40,20 @@ from app.models.notification import (  # noqa: F401
 )
 from app.models.report import Report, ReportVisibility  # noqa: F401
 from app.models.scenario import Scenario, ScenarioType  # noqa: F401
+from app.models.org_ai_credential import (  # noqa: F401
+    AiProvider,
+    OrgAICredential,
+)
+from app.models.org_ai_routing import (  # noqa: F401
+    ROUTABLE_FEATURE_NAMES,
+    OrgAIDefaultRouting,
+    OrgAIFeatureRouting,
+)
+from app.models.org_ai_caps import (  # noqa: F401
+    OrgAIDefaultCaps,
+    OrgAIFeatureCaps,
+)
+from app.models.org_ai_consent import OrgAIConsent  # noqa: F401
 
 __all__ = [
     "Base",
@@ -87,6 +101,14 @@ __all__ = [
     "FeedbackEntry",
     "Announcement",
     "AnnouncementSeverity",
+    "AiProvider",
+    "OrgAICredential",
+    "OrgAIDefaultRouting",
+    "OrgAIFeatureRouting",
+    "OrgAIDefaultCaps",
+    "OrgAIFeatureCaps",
+    "OrgAIConsent",
+    "ROUTABLE_FEATURE_NAMES",
     "UserDismissedAnnouncement",
     "Notification",
     "NotificationCategory",

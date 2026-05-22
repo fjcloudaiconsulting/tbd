@@ -130,6 +130,27 @@ services:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: EV[1:ggw+koUI35JWzQb6g8N8GJ/psPs70qhS:e7BxGsGJdq35DlsFdA1CfTJrUFPwMa8kJDm5dQJkWNB2+vlwy3nkwEmdRnaYpy3DMurH67d7yKFsc1Z5]
+      # AI tier (PR1) — Fernet key for per-org provider API keys at rest.
+      # Operator action required before deploy: generate a NEW Fernet key
+      # via `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+      # and DOSC-encrypt it into the EV[] blob below. MUST NOT equal
+      # MFA_ENCRYPTION_KEY — lifespan KEK guard refuses to boot.
+      - key: AI_CREDENTIAL_ENCRYPTION_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: ""
+      - key: AI_CREDENTIAL_ENCRYPTION_KEY_PREV
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: ""
+      - key: AI_NATIVE_ENABLED
+        scope: RUN_AND_BUILD_TIME
+        value: "false"
+      # Pinned ToS version. Bump to force every org to re-consent on
+      # the next admin-UI mount. Existing rows are never auto-upgraded.
+      - key: AI_NATIVE_CURRENT_CONSENT_VERSION
+        scope: RUN_AND_BUILD_TIME
+        value: "ai-tos-2026-05-22"
       - key: MAILGUN_API_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET
