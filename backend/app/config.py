@@ -91,6 +91,29 @@ class Settings(BaseSettings):
     # MFA
     mfa_encryption_key: str = ""  # Fernet key for encrypting TOTP secrets
 
+    # AI credentials (BYO provider keys, PR1 of AI tier train)
+    # Fernet key for encrypting per-org provider API keys in
+    # ``org_ai_credentials.encrypted_api_key`` / ``encrypted_bearer_token``.
+    # MUST be a different Fernet key from ``mfa_encryption_key`` — the
+    # lifespan KEK guard refuses to boot when the two SHA-256 hashes match.
+    # ``_PREV`` is the previous-rotation key; decrypt falls back to it
+    # when the current key fails, enabling lazy rotation in place.
+    ai_credential_encryption_key: str = ""
+    ai_credential_encryption_key_prev: str = ""
+    # Master gate for the native (server-hosted) provider option. Stays
+    # OFF in PR1 — flipped on later when the native adapter ships
+    # alongside the consent UI (PR4).
+    ai_native_enabled: bool = False
+    # Pinned ToS version for the native-provider consent flow. POSTs to
+    # /api/v1/settings/ai-providers/consent must carry this exact
+    # consent_version string — any mismatch (older OR newer) returns
+    # 400 code=consent_version_outdated. Bump this value when shipping
+    # a new ToS to force every org to re-consent on the next admin-UI
+    # mount; existing consent rows are never auto-upgraded (spec §3.5).
+    # The string is included in the error response so the frontend can
+    # re-prompt with the current version.
+    ai_native_current_consent_version: str = "ai-tos-2026-05-22"
+
     # Google SSO
     google_client_id: str = ""
     google_client_secret: str = ""
