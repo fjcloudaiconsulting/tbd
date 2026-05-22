@@ -165,6 +165,52 @@ async def credential(db: AsyncSession, org: Organization) -> OrgAICredential:
 
 
 @pytest_asyncio.fixture
+async def openai_compatible_credential(
+    db: AsyncSession, org: Organization
+) -> OrgAICredential:
+    """Credential row simulating a freshly-validated OpenAI-compatible
+    endpoint advertising the full 5-cap surface (chat, embed,
+    structured_output, function_call, stream).
+    """
+    cred = OrgAICredential(
+        org_id=org.id,
+        provider=AiProvider.OPENAI_COMPATIBLE,
+        encrypted_api_key=encrypt("sk-compat-12345"),
+        encrypted_bearer_token=None,
+        base_url="https://vllm.example.com",
+        key_fingerprint="fedcba9876543210",
+        last_four="2345",
+        label="compat-primary",
+        discovered_capabilities=[
+            "chat",
+            "embed",
+            "structured_output",
+            "function_call",
+            "stream",
+        ],
+    )
+    db.add(cred)
+    await db.commit()
+    return cred
+
+
+@pytest_asyncio.fixture
+async def openai_compatible_routing(
+    db: AsyncSession,
+    org: Organization,
+    openai_compatible_credential: OrgAICredential,
+) -> OrgAIDefaultRouting:
+    row = OrgAIDefaultRouting(
+        org_id=org.id,
+        credential_id=openai_compatible_credential.id,
+        model="mixtral-8x7b",
+    )
+    db.add(row)
+    await db.commit()
+    return row
+
+
+@pytest_asyncio.fixture
 async def default_routing(
     db: AsyncSession, org: Organization, credential: OrgAICredential
 ) -> OrgAIDefaultRouting:
@@ -711,3 +757,100 @@ async def test_call_llm_structured_exhaustion_writes_aggregate_failure_row(
     assert row.retries_used == 2
     assert row.success is False
     assert row.error_class == "STATUS_ERROR_STRUCTURED_OUTPUT"
+
+
+# ---------- OpenAI-compatible reaches the adapter -------------------
+
+
+@pytest.mark.asyncio
+async def test_call_llm_structured_routes_to_openai_compatible_when_capability_advertised(
+    db: AsyncSession,
+    org,
+    admin_user,
+    openai_compatible_credential,
+    openai_compatible_routing,
+):
+    """Round-3 reversal: openai-compatible now advertises the full
+    5-cap surface. With ``structured_output`` in the credential's
+    discovered_capabilities, ``call_llm_structured`` must reach the
+    adapter (not raise ``AICapabilityNotSupported``).
+
+    Pins the behavior that depends on the
+    ``DEFAULT_CAPABILITIES = [..., "structured_output", ...]`` shape
+    in ``openai_compatible.py``.
+    """
+    adapter = MagicMock()
+    adapter.chat_structured = AsyncMock(
+        return_value=LLMResponse(
+            content='{"category": "rent"}',
+            prompt_tokens=8,
+            completion_tokens=4,
+            model="mixtral-8x7b",
+        )
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm_structured(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            messages=[{"role": "user", "content": "x"}],
+            response_schema={
+                "type": "object",
+                "required": ["category"],
+                "properties": {"category": {"type": "string"}},
+            },
+        )
+
+    # Adapter actually invoked — the capability gate did NOT trip.
+    adapter.chat_structured.assert_awaited_once()
+    assert result.response.parsed == {"category": "rent"}
+    assert result.response.retries_used == 0
+
+
+@pytest.mark.asyncio
+async def test_call_llm_function_routes_to_openai_compatible_when_capability_advertised(
+    db: AsyncSession,
+    org,
+    admin_user,
+    openai_compatible_credential,
+    openai_compatible_routing,
+):
+    """Same round-3 reversal but for ``function_call``: the adapter
+    implements it, and the credential's discovered_capabilities now
+    advertises it, so the dispatch gate must let the call through.
+    """
+    adapter = MagicMock()
+    adapter.function_call = AsyncMock(
+        return_value=FunctionCallResponse(
+            tool_calls=[
+                {"name": "set_category", "arguments": {"slug": "rent"}}
+            ],
+            content="",
+            prompt_tokens=9,
+            completion_tokens=3,
+            model="mixtral-8x7b",
+        )
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm_function(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            messages=[{"role": "user", "content": "classify"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "set_category",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        )
+
+    adapter.function_call.assert_awaited_once()
+    assert result.response.tool_calls[0]["name"] == "set_category"

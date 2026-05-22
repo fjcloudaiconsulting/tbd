@@ -14,9 +14,11 @@ Rules pinned here:
 - Ollama: chat, embed, stream always; function_call + structured_output
   conditional on any discovered model matching the
   ``KNOWN_FUNCTION_CALL_MODELS`` prefix allowlist.
-- OpenAI-compatible: chat, embed, stream only. structured_output and
-  function_call are intentionally NOT advertised because the
-  /v1/models response carries no capability metadata.
+- OpenAI-compatible: chat, embed, structured_output, function_call,
+  stream — the full surface this adapter implements. The /v1/models
+  response carries no capability metadata, so we trust the
+  user-configured endpoint and rely on the sanitized provider error
+  path (PR1) when the underlying server doesn't honor a request.
 """
 from __future__ import annotations
 
@@ -206,14 +208,18 @@ async def test_ollama_validate_with_non_function_capable_model_omits_function(
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_validate_omits_structured_and_function(
+async def test_openai_compatible_advertises_all_five_capabilities(
     monkeypatch,
 ):
     """OpenAI-compatible endpoints (vLLM, llama.cpp, LM Studio, hosted
-    third parties) cannot be introspected for advanced capability
-    support, so structured_output and function_call are intentionally
-    NOT advertised even when the underlying server happens to support
-    them.
+    third parties) advertise the full capability surface this adapter
+    implements: chat, embed, structured_output, function_call, stream.
+
+    The /v1/models response carries no capability metadata, so we can't
+    introspect individual support. Instead, the adapter trusts the
+    user-configured endpoint (they typed in its URL) and falls back on
+    the sanitized error path (PR1 contract) when the underlying server
+    doesn't honor a particular request.
     """
     _patch_models_response(
         monkeypatch,
@@ -226,6 +232,24 @@ async def test_openai_compatible_validate_omits_structured_and_function(
     result = await adapter.validate()
     assert result.ok is True
     caps = set(result.discovered_capabilities)
-    assert caps == {"chat", "embed", "stream"}
-    assert "structured_output" not in caps
-    assert "function_call" not in caps
+    assert caps == {
+        "chat",
+        "embed",
+        "structured_output",
+        "function_call",
+        "stream",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_default_capabilities_constant(monkeypatch):
+    """Module-level DEFAULT_CAPABILITIES pins the full 5-cap set so
+    accidental edits to the constant fail loudly.
+    """
+    assert set(oai_compat_mod.DEFAULT_CAPABILITIES) == {
+        "chat",
+        "embed",
+        "structured_output",
+        "function_call",
+        "stream",
+    }

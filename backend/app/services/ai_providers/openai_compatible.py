@@ -6,6 +6,15 @@ chat_structured, function_call, stream — but with hostile-endpoint
 sanitization on every error path (these endpoints can mirror request
 headers back, which would leak the plaintext API key that just left
 this process).
+
+Capability advertising: this adapter implements all 5 capabilities
+(chat, embed, structured_output, function_call, stream) against the
+OpenAI HTTP shape. The validate() probe advertises them all because
+the user explicitly opted into trusting their configured endpoint by
+typing in its URL. If the underlying server doesn't honor a request,
+the sanitized error path returns a generic ``Provider rejected the
+request (status)`` envelope rather than leaking provider response
+data — see the PR1 sanitization contract.
 """
 from __future__ import annotations
 
@@ -30,14 +39,22 @@ CHAT_TIMEOUT_S = 30.0
 EMBED_TIMEOUT_S = 30.0
 STREAM_TIMEOUT_S = 60.0
 # OpenAI-compatible endpoints (vLLM, llama.cpp, LM Studio, third-party
-# hosts) cannot be introspected for ``structured_output`` or
-# ``function_call`` support — the /v1/models response is just a list
-# of model IDs with no capability metadata. We advertise the baseline
-# capabilities the OpenAI HTTP shape always supports (chat, embed,
-# stream) and intentionally OMIT structured_output + function_call.
-# Operators who know their server supports those features can add a
-# capability override on the credential row in a future PR.
-DEFAULT_CAPABILITIES = ["chat", "embed", "stream"]
+# hosts) cannot be introspected for individual capability support — the
+# /v1/models response is just a list of model IDs with no capability
+# metadata. We advertise the full OpenAI HTTP capability surface that
+# this adapter actually implements (chat, embed, structured_output,
+# function_call, stream). The user opted into trusting the endpoint
+# when they typed in its URL; if the underlying server doesn't honor a
+# request, the sanitized error path returns a generic ``Provider
+# rejected the request (status)`` envelope without leaking provider
+# response data (PR1 sanitization contract).
+DEFAULT_CAPABILITIES = [
+    "chat",
+    "embed",
+    "structured_output",
+    "function_call",
+    "stream",
+]
 
 
 class OpenAICompatibleAdapter:
@@ -52,15 +69,16 @@ class OpenAICompatibleAdapter:
         }
 
     async def validate(self) -> ValidateResult:
-        """GET /v1/models and advertise the baseline capabilities.
+        """GET /v1/models and advertise the full capability surface.
 
-        OpenAI-compatible servers can't be introspected for advanced
-        capability support, so ``structured_output`` and
-        ``function_call`` are intentionally NOT advertised here even
-        if the underlying server happens to support them. Callers that
-        need those capabilities should route to a first-party provider
-        (OpenAI, Anthropic) or wait for the capability-override field
-        on the credential row in a future PR.
+        OpenAI-compatible servers can't be introspected for individual
+        capability support, so we advertise everything this adapter
+        implements (chat, embed, structured_output, function_call,
+        stream) and trust the user-configured endpoint. If the
+        underlying server doesn't honor a particular capability, the
+        sanitized error path (PR1 contract) surfaces a generic
+        ``Provider rejected the request (status)`` envelope without
+        leaking provider response data into the error.
         """
         headers = {"Authorization": f"Bearer {self.api_key}"}
         url = f"{self.base_url}/v1/models"
