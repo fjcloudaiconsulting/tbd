@@ -68,6 +68,20 @@ interface AuthContextValue {
   user: User | null;
   loading: boolean;
   needsSetup: boolean;
+  /**
+   * Customer-facing plan / trial / billing surface kill switch. Mirrors
+   * the backend's ``BILLING_UI_ENABLED`` env via /api/v1/auth/status.
+   * Default false until status resolves so any premature render of a
+   * gated component (trial banner, settings Billing tab,
+   * /settings/billing) stays in the hidden state. Same shape as the
+   * captcha_required pattern.
+   *
+   * Optional in the interface so existing test mocks that pre-date
+   * this field don't have to be updated. Consumers must treat
+   * ``undefined`` as ``false`` — the safe default for the pre-payment
+   * hidden state.
+   */
+  billingUiEnabled?: boolean;
   login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,
@@ -88,6 +102,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
+  // Defaults to false until /auth/status resolves so gated components
+  // stay in their hidden state on first render. The backend default is
+  // also false (pre-payment), so a missing key in the status payload
+  // (older API revision) is equivalent to "billing UI hidden" — the
+  // safe default for the pre-payment state.
+  const [billingUiEnabled, setBillingUiEnabled] = useState(false);
 
   const fetchMe = useCallback(async () => {
     // 2026-05-18 review fix: fetchMe is the shared current-user load
@@ -132,10 +152,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // exactly one retry / classification contract.
     const restore = async () => {
       try {
-        // Check if system needs initial setup
+        // Check if system needs initial setup. Also captures the
+        // billing-UI kill switch so the trial banner, settings Billing
+        // tab, and /settings/billing plan grid are gated on the
+        // backend's BILLING_UI_ENABLED env on the next page load.
         const status = await withAuthRetry(() =>
-          apiFetch<{ needs_setup: boolean }>("/api/v1/auth/status"),
+          apiFetch<{ needs_setup: boolean; billing_ui_enabled?: boolean }>(
+            "/api/v1/auth/status",
+          ),
         );
+        setBillingUiEnabled(Boolean(status.billing_ui_enabled));
         if (status.needs_setup) {
           setNeedsSetup(true);
           setLoading(false);
@@ -246,7 +272,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, needsSetup, login, register, logout, refreshMe: fetchMe }}
+      value={{
+        user,
+        loading,
+        needsSetup,
+        billingUiEnabled,
+        login,
+        register,
+        logout,
+        refreshMe: fetchMe,
+      }}
     >
       {children}
     </AuthContext.Provider>

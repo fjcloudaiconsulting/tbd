@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useAuth } from "@/components/auth/AuthProvider";
 import type { User } from "@/lib/types";
 
 interface Props {
@@ -8,7 +9,13 @@ interface Props {
 }
 
 export default function TrialBanner({ user }: Props) {
+  const { billingUiEnabled } = useAuth();
   const { subscription_status, subscription_plan, trial_end } = user;
+
+  // Customer-facing billing surface kill switch. Hides the trial /
+  // upgrade chip in the AppShell header until the payment platform is
+  // wired (BILLING_UI_ENABLED backend env, surfaced via /auth/status).
+  if (!billingUiEnabled) return null;
 
   if (!subscription_status) return null;
 

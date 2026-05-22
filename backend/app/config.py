@@ -128,6 +128,24 @@ class Settings(BaseSettings):
     captcha_expected_hostname: str = ""
     captcha_expected_action: str = ""
 
+    # Billing UI (customer-facing plan / trial / billing surface)
+    # When ``billing_ui_enabled`` is False (the pre-payment default), the
+    # customer-facing billing surface is hidden: the trial banner returns
+    # null, the settings Billing tab is filtered out of the nav, and
+    # ``/settings/billing`` renders an explanatory empty state instead of
+    # the plan grid. Admin / operator views under ``/admin/*`` and
+    # ``/system/*`` are unaffected.
+    #
+    # The flag is exposed via ``/api/v1/auth/status`` (same shape as
+    # ``captcha_required``) so a backend flip becomes a real customer-
+    # facing change on the next page load. Flip to True when the payment
+    # platform is wired.
+    #
+    # Backend API gating is NOT in scope — ``/api/v1/subscriptions`` and
+    # ``/api/v1/plans`` stay reachable; the gated frontend components just
+    # don't call them when the flag is off.
+    billing_ui_enabled: bool = False
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:
