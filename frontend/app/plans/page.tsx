@@ -349,29 +349,7 @@ function PlanEditor({
     setHorizon(plan.horizon_months);
   }, [plan.id, plan.params_json, plan.name, plan.horizon_months]);
 
-  // Debounced re-simulate when the editor's local params drift from the
-  // server-side plan. Architect-locked 400ms.
-  useEffect(() => {
-    if (
-      JSON.stringify(params) === JSON.stringify(plan.params_json)
-      && name === plan.name
-      && horizon === plan.horizon_months
-    ) {
-      return;
-    }
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      void persist();
-    }, 400);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
-    // We deliberately do NOT include persist in deps — useCallback
-    // makes it stable but ESLint can't see that here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params, name, horizon, plan]);
-
-  async function persist() {
+  const persist = useCallback(async () => {
     setBusy(true);
     setErr("");
     try {
@@ -398,7 +376,26 @@ function PlanEditor({
     } finally {
       setBusy(false);
     }
-  }
+  }, [plan.id, plan.scenario_type, name, horizon, params, onUpdated, onSimulate]);
+
+  // Debounced re-simulate when the editor's local params drift from the
+  // server-side plan. Architect-locked 400ms.
+  useEffect(() => {
+    if (
+      JSON.stringify(params) === JSON.stringify(plan.params_json)
+      && name === plan.name
+      && horizon === plan.horizon_months
+    ) {
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      void persist();
+    }, 400);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [params, name, horizon, plan, persist]);
 
   async function manualSimulate() {
     setBusy(true);
