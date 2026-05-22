@@ -194,8 +194,66 @@ async def _run_migrations() -> None:
         raise RuntimeError(f"Migration failed: {result.stderr}")
 
 
+class AiCredentialKeyReusesMfaKey(RuntimeError):
+    """Raised when ``AI_CREDENTIAL_ENCRYPTION_KEY`` shares its value with
+    ``MFA_ENCRYPTION_KEY`` (or either of their _PREV rotations).
+
+    The two KEKs guard distinct datasets (TOTP secrets vs. provider API
+    keys) and MUST stay separated so a compromise of one envelope key
+    doesn't unlock the other. The PR1 startup guard refuses to boot
+    when the SHA-256 fingerprints collide.
+    """
+
+
+def _sha256_hex(value: str) -> str:
+    import hashlib
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def verify_ai_credential_kek_separation(settings_obj=app_settings) -> None:
+    """Refuse to boot when the AI KEK matches the MFA KEK.
+
+    Skipped in ``APP_ENV=test`` so the unit-test harness can run with
+    a single fixture key. Do not re-add this check in tests — see #338
+    spec. The production + development + staging paths all run it.
+    """
+    if settings_obj.app_env == "test":
+        return
+    ai_key = settings_obj.ai_credential_encryption_key
+    if not ai_key:
+        # Empty AI key: the encryption helper raises a clear error at
+        # first use. No KEK collision possible with an empty key.
+        return
+    mfa_key = settings_obj.mfa_encryption_key
+    ai_keys = {_sha256_hex(ai_key)}
+    if settings_obj.ai_credential_encryption_key_prev:
+        ai_keys.add(_sha256_hex(settings_obj.ai_credential_encryption_key_prev))
+    mfa_keys: set[str] = set()
+    if mfa_key:
+        mfa_keys.add(_sha256_hex(mfa_key))
+    # MFA_ENCRYPTION_KEY_PREV is not currently a setting; if added in
+    # future, include it here. Today the MFA service only carries the
+    # current key, so this set has at most one element.
+    collision = ai_keys & mfa_keys
+    if collision:
+        logger.error(
+            "config.ai_credential_key_reuses_mfa_key",
+            message=(
+                "AI_CREDENTIAL_ENCRYPTION_KEY must not equal MFA_ENCRYPTION_KEY. "
+                "Generate a separate Fernet key for AI credentials."
+            ),
+        )
+        raise AiCredentialKeyReusesMfaKey(
+            "AI_CREDENTIAL_ENCRYPTION_KEY reuses MFA_ENCRYPTION_KEY value"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # PR1 of the AI tier train — refuse to boot if the AI KEK collides
+    # with the MFA KEK (covers _PREV rotation slots too). See
+    # ``verify_ai_credential_kek_separation`` docstring.
+    verify_ai_credential_kek_separation()
     # Production runs migrations as a true init step (App Platform
     # PRE_DEPLOY job in .do/app.yaml; initContainer in k8s/templates/
     # backend.yaml) so they don't gate uvicorn's port-bind. Dev runs them

@@ -86,6 +86,9 @@ the env-var name (uppercased).
 | `EMAIL_FROM` | no | `"The Better Decision <noreply@thebetterdecision.com>"` | `.env` | unset | `.do/app.yaml` | no | RFC-5322 `From:` header for outbound mail. | Default sender used. |
 | `APP_URL` | yes | `http://localhost` | `.env` | unset | `.do/app.yaml` (`https://app.thebetterdecision.com`) | no | Base URL embedded in password-reset, email-verify, MFA, invite, and Google SSO callback links. | Email links point at localhost. |
 | `MFA_ENCRYPTION_KEY` | yes if MFA used | `""` | `.env` (Fernet key) | unset | `.do/app.yaml` SECRET | yes | Fernet key for `users.mfa_secret_encrypted` at rest. | TOTP enroll / verify returns 500. |
+| `AI_CREDENTIAL_ENCRYPTION_KEY` | yes when AI providers used | `""` | `.env` (Fernet key) | unset | `.do/app.yaml` SECRET | yes | Fernet key for `org_ai_credentials.encrypted_api_key` / `encrypted_bearer_token`. MUST differ from `MFA_ENCRYPTION_KEY`; lifespan KEK guard fatal-logs `config.ai_credential_key_reuses_mfa_key` and refuses to boot on collision (except `APP_ENV=test`). | All `/api/v1/settings/ai-providers` writes return 500. |
+| `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` | no | `""` | unset | unset | `.do/app.yaml` SECRET during rotation | yes | Previous-rotation Fernet key. Decrypt falls back to it when current key fails. Clear after re-encrypting all rows. | Existing rows can't be decrypted post-rotation until cleared. |
+| `AI_NATIVE_ENABLED` | no | `false` | `.env` `false` | `.env` `false` | `.do/app.yaml` `false` | no | Master gate for the native (server-hosted) provider option. Flipped on with the native adapter + consent UI in PR4. | Native option hidden in the UI. |
 | `GOOGLE_CLIENT_ID` | yes for SSO | `""` | `.env` (OAuth client id) | unset | `.do/app.yaml` SECRET | yes | Google OAuth2 client id. | SSO endpoints 503; button (if forcibly shown) crashes the redirect. |
 | `CAPTCHA_REQUIRED` | no | `false` | `.env` `false` | unset (defaults to `false`) | `.do/app.yaml` `true` | no | Master switch for the register bot gate. When `true`, `/api/v1/auth/register` refuses any request without a token verified by the provider. Exposed to the frontend via `/api/v1/auth/status` so a backend flip is a real rollback on the next page load. First-run setup (`user_count == 0`) bypasses the gate so bootstrap stays usable. | Bot signups not blocked when `false`. When `true` with `CAPTCHA_SECRET=""` the verify call fails closed with `REASON_MISCONFIGURED` and all registrations are refused. |
 | `CAPTCHA_PROVIDER` | no | `"turnstile"` | `.env` | `.env` | `.do/app.yaml` | no | Label only today (no dispatch logic). Reserved for a second provider later. | Mislabeled events / metrics; no functional impact. |
@@ -201,6 +204,8 @@ These MUST be `SECRET` scope in `.do/app.yaml`:
 - `REDIS_URL`
 - `JWT_SECRET_KEY`
 - `MFA_ENCRYPTION_KEY`
+- `AI_CREDENTIAL_ENCRYPTION_KEY`
+- `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` (when rotating)
 - `MAILGUN_API_KEY`
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`

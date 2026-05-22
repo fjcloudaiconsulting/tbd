@@ -91,6 +91,20 @@ class Settings(BaseSettings):
     # MFA
     mfa_encryption_key: str = ""  # Fernet key for encrypting TOTP secrets
 
+    # AI credentials (BYO provider keys, PR1 of AI tier train)
+    # Fernet key for encrypting per-org provider API keys in
+    # ``org_ai_credentials.encrypted_api_key`` / ``encrypted_bearer_token``.
+    # MUST be a different Fernet key from ``mfa_encryption_key`` — the
+    # lifespan KEK guard refuses to boot when the two SHA-256 hashes match.
+    # ``_PREV`` is the previous-rotation key; decrypt falls back to it
+    # when the current key fails, enabling lazy rotation in place.
+    ai_credential_encryption_key: str = ""
+    ai_credential_encryption_key_prev: str = ""
+    # Master gate for the native (server-hosted) provider option. Stays
+    # OFF in PR1 — flipped on later when the native adapter ships
+    # alongside the consent UI (PR4).
+    ai_native_enabled: bool = False
+
     # Google SSO
     google_client_id: str = ""
     google_client_secret: str = ""
