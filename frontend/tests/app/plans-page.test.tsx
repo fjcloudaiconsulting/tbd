@@ -598,4 +598,115 @@ describe("/plans page", () => {
     expect(region.getAttribute("aria-live")).toBe("polite");
     expect(region.getAttribute("role")).toBe("status");
   });
+
+  // Regression: editorValid must not leak across plan switches. The
+  // RetirementParamsEditor is the only validity-bearing child today;
+  // its invalid state used to keep the debounced PATCH gate closed on
+  // the next plan the user opened. Fix is to remount the editor
+  // subtree per plan via key={plan.id}. See PR #356 architect notes.
+  it("resets validity state when switching plans (key remount)", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([RETIREMENT_PLAN, TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+        && options?.method === "PATCH"
+      ) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+        && options?.method === "POST"
+      ) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      if (
+        url === `/api/v1/scenarios/${RETIREMENT_PLAN.id}`
+        && options?.method === "PATCH"
+      ) {
+        return Promise.resolve(RETIREMENT_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<PlansPage />);
+    await screen.findByText("Retire at 65");
+
+    // Open the Retirement plan. The mocked RetirementParamsEditor (see
+    // the vi.doMock above this test file's local scope is not used —
+    // instead we rely on the real RetirementParamsEditor firing
+    // onValidityChange(false) for an empty curve added via the curve
+    // editor). Drive it via the real Add step + leave-from-blank path
+    // so the invalid path actually fires.
+    fireEvent.click(screen.getByTestId(`plan-row-${RETIREMENT_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+    const retirementEditorEl = screen.getByTestId("plan-editor");
+
+    // Add a curve row with `from` empty -> validity becomes false.
+    fireEvent.click(screen.getByTestId("ret-curve-add"));
+    await waitFor(() => {
+      expect(screen.getByTestId("ret-curve-error")).toBeInTheDocument();
+    });
+
+    // Snapshot how many PATCH calls were fired for the retirement
+    // plan up to now (should be zero — gate is closed).
+    const patchCountBeforeWait = apiFetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        url === `/api/v1/scenarios/${RETIREMENT_PLAN.id}`
+        && (opts as RequestInit | undefined)?.method === "PATCH",
+    ).length;
+
+    // Wait past the 400ms debounce window. No PATCH should fire while
+    // the curve row is invalid.
+    await new Promise((r) => setTimeout(r, 500));
+    const patchCountAfterWait = apiFetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        url === `/api/v1/scenarios/${RETIREMENT_PLAN.id}`
+        && (opts as RequestInit | undefined)?.method === "PATCH",
+    ).length;
+    expect(patchCountAfterWait).toBe(patchCountBeforeWait);
+
+    // Go back to the list view, then open the Trip plan. Without the
+    // key={plan.id} fix, editorValid would still be false here and
+    // the Trip plan's debounced PATCHes would be silently dropped.
+    fireEvent.click(screen.getByText(/Back to plans/i));
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-row-${TRIP_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+    const tripEditorEl = screen.getByTestId("plan-editor");
+
+    // Option B sanity check: the editor DOM node is a fresh one
+    // because we remount per plan (key={plan.id}). Same-identity
+    // would indicate React reused the instance and our reset
+    // mechanism is not actually unmounting the subtree.
+    expect(tripEditorEl).not.toBe(retirementEditorEl);
+
+    // Make a param change on the Trip plan. Use the name field — it
+    // lives in the parent PlanEditor (not the inner template editor)
+    // so this exercises the debounced PATCH path directly.
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "Lisbon trip (renamed)" },
+    });
+
+    // Now the gate must be open (editorValid reset to true on
+    // remount). The debounced PATCH should fire within ~400ms.
+    await waitFor(
+      () => {
+        const tripPatch = apiFetchMock.mock.calls.find(
+          ([url, opts]) =>
+            url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+            && (opts as RequestInit | undefined)?.method === "PATCH",
+        );
+        expect(tripPatch).toBeDefined();
+        const body = JSON.parse((tripPatch![1] as RequestInit).body as string);
+        expect(body.name).toBe("Lisbon trip (renamed)");
+      },
+      { timeout: 2000 },
+    );
+  });
 });

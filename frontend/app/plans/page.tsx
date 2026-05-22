@@ -312,6 +312,12 @@ export default function PlansPage() {
 
       {active ? (
         <PlanEditor
+          // Key by plan.id so React unmounts + remounts the editor when
+          // the active plan changes. This naturally resets all local
+          // state (editorValid, params draft, etc.) so a previous
+          // plan's invalid editor state can't leak into the next plan
+          // and silently suppress its debounced PATCHes.
+          key={active.id}
           plan={active}
           accounts={accounts}
           onBack={() => setActive(null)}
