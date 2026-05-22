@@ -30,7 +30,7 @@ Ship a Reports surface where any authed user (in their org) can:
 * **Filter scope:** canvas-wide cascade with per-widget override. Per widget, an explicit field on the widget filter overrides the canvas filter on that field; absent fields inherit.
 * **Permissions:** any org member can create reports. Owner + org admins can edit; other org members can view if `visibility = 'org'`. No public links in v1.
 * **Aggregation engine:** live SQL queries in v1. Performance budget: widget p95 < 400 ms with 10k transactions. No materialized rollups, no Redis caching yet. Defer until measured. (Index plan below ensures the budget is achievable; revisit only if missed.)
-* **Navigation:** `/reports` lands as a new top-level frame menu item between Forecast Plans and Categories. No umbrella parent, no tabs. Forecast Plans keeps its existing icon and path; AI Tier and Plans stay separate when they exist.
+* **Navigation:** `/reports` lands as a new top-level frame menu item between Forecast Plans and Categories. No umbrella parent, no tabs. Forecast Plans keeps its existing icon and path. Reports does not interact with AI placement decisions; AI configuration lives under Settings (`/settings/ai-providers`, `/settings/ai-consent`).
 
 The rest of this document drills each axis.
 
@@ -201,9 +201,11 @@ CREATE TABLE reports (
     KEY ix_reports_org (org_id),
     KEY ix_reports_owner (owner_user_id),
     CONSTRAINT fk_reports_org FOREIGN KEY (org_id) REFERENCES organizations (id) ON DELETE CASCADE,
-    CONSTRAINT fk_reports_owner FOREIGN KEY (owner_user_id) REFERENCES users (id) ON DELETE CASCADE
+    CONSTRAINT fk_reports_owner FOREIGN KEY (owner_user_id) REFERENCES users (id) ON DELETE RESTRICT
 );
 ```
+
+> Note: `owner_user_id` uses `ON DELETE RESTRICT` because user deletion semantics are enforced at the service layer (see section 8): org-shared reports transfer ownership to the org owner; private reports are hard-deleted. The DB-level `RESTRICT` is a safety net — any code path that tries to delete a user without going through the service layer will hit the FK and fail loudly, instead of silently nuking org-shared reports via cascade.
 
 Default reports (preinstalled): we DO NOT seed rows per organization. Instead a small set of canonical layouts ship as JSON fixtures registered in `backend/app/reports/templates/__init__.py` and appear in the "Templates" tab of the reports list. "Use template" creates a new private `reports` row owned by the calling user. This avoids dead seed rows and lets templates evolve in code without data migrations.
 
@@ -449,7 +451,7 @@ Each widget owns its own SWR key `(report_id, widget_id, hash(resolvedQuery))`. 
 
 ### Owner-change, member-removal, user-delete, org-delete semantics
 
-`reports.owner_user_id` does NOT cascade-delete on `users` delete from the user's perspective. Concrete rules:
+`reports.owner_user_id` uses `ON DELETE RESTRICT` at the DB level (see section 5 schema). All user-deletion semantics are enforced at the service layer; the FK only catches code paths that bypass the service. Concrete rules:
 
 * **Org-owner change** (org transfers from user A to user B). Org-shared reports (`visibility = 'org'`) authored by the previous owner stay attached to the org and become owned by the new owner. The previous owner's private reports follow the same rule as any other removed member (see below).
 * **Member removal from an org** (member M leaves or is removed). Org-shared reports authored by M transfer ownership to the org owner. Private reports authored by M are hard-deleted. Handled in the existing org-member-removal service; mirrors how budgets and forecast plans treat ownership on member removal.
@@ -461,7 +463,7 @@ Each widget owns its own SWR key `(report_id, widget_id, hash(resolvedQuery))`. 
 * **No legacy report routes to preserve.** The old fixed-reports surface was scoped but never shipped. Nothing to remove.
 * **Single Alembic migration** in PR 1 creates `reports`, adds composite indexes on `transactions`.
 * **No data backfill.** Existing organizations see "No reports yet. Start from a template."
-* **`.do/app.yaml`** unchanged; no new env vars.
+* **Env vars.** PRs 1 to 3 add no env vars (`FEATURE_REPORTS_V2` defaults to `false` at code level and gates ALL `/api/v1/reports/*` routes and the frontend nav item). PR 4 adds `FEATURE_REPORTS_V2` (and `NEXT_PUBLIC_FEATURE_REPORTS_V2`) to `.env.example`, and lands them in `.do/app.yaml` when the owner signs off on production rollout. See `[[reference_do_spec_sync.md]]` and the "Decisions locked" section for the flag's exact scope.
 
 ## 10. Navigation — Reports as a top-level item
 
@@ -480,11 +482,11 @@ Reports          <-- new in this spec
 Categories
 ```
 
-AI Tier, when its spec ships, lands as its own separate top-level item above Reports (between Forecast Plans and Reports). That decision is locked in the "Decisions locked" section.
+AI configuration lives under Settings (`/settings/ai-providers`, `/settings/ai-consent`), not under the top-level frame menu. Reports does not interact with that placement decision; see the AI Tier spec for its own surface decisions.
 
 ### Rejected alternative
 
-* **Tabs under one parent.** Hides first-class surfaces behind a parent click. Reports (exploratory data viz), Plans (scenario modeling), and AI Tier (ML-generated insights) have distinct mental models. Forcing them into tabs implies they are facets of one thing; they are not.
+* **Tabs under one parent.** Hides first-class surfaces behind a parent click. Reports (exploratory data viz) and Plans (scenario modeling) have distinct mental models. Forcing them into tabs implies they are facets of one thing; they are not.
 
 ## 11. Phased rollout
 
@@ -559,11 +561,10 @@ Lands first. No frontend changes visible to the user.
 2. **Templates are code fixtures, not DB seed rows.** `backend/app/reports/templates/__init__.py` registers each template; "use template" creates a new private report owned by the calling user. No per-org seed, no data migration.
 3. **CSV export auth.** Normal Bearer / session auth, same as the rest of `/api/v1`. No separate one-shot signed URL or token machinery.
 4. **Tag filter `all` vs `any`.** Mirrors the existing transactions list semantics: query param `tag_match=all|any`, default `all`. Reference implementation: `backend/app/routers/transactions.py:90` (router) and `backend/app/services/transaction_service.py:1697` (service).
-5. **AI Tier nav placement.** AI Tier is a separate top-level frame-menu item, placed above Reports (between Forecast Plans and Reports) when its spec ships. AI Tier is consumption ("here are insights for you"); Reports is authoring.
 
 ## Open questions for architect
 
-(none — all five open questions resolved above.)
+(none — all four open questions resolved above.)
 
 ## Out of scope (v1)
 
