@@ -24,6 +24,8 @@ import { useRouter } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { ProjectionChart } from "@/components/scenarios/ProjectionChart";
+import { RetirementParamsEditor } from "@/components/scenarios/RetirementParamsEditor";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import {
   btnPrimary,
@@ -80,6 +82,11 @@ export interface Suggestion {
   by_amount?: string | null;
 }
 
+export interface RealTermsSeries {
+  points: ProjectionPoint[];
+  inflation_pct: string;
+}
+
 export interface ProjectionResult {
   engine_name: string;
   computed_at: string;
@@ -89,6 +96,8 @@ export interface ProjectionResult {
   alerts: DipAlert[];
   verdict: AffordabilityVerdict;
   suggestions: Suggestion[];
+  real_terms_series?: RealTermsSeries | null;
+  smoothed_with_regression?: boolean;
 }
 
 export interface Scenario {
@@ -453,10 +462,17 @@ function PlanEditor({
             {plan.scenario_type === "purchase" && (
               <PurchaseParamsEditor params={params} setParams={setParams} accounts={accounts} />
             )}
-            {(plan.scenario_type === "retirement" || plan.scenario_type === "custom") && (
+            {plan.scenario_type === "retirement" && (
+              <RetirementParamsEditor
+                params={params}
+                setParams={setParams}
+                accounts={accounts}
+                onValidityChange={() => { /* server re-validates on PATCH */ }}
+              />
+            )}
+            {plan.scenario_type === "custom" && (
               <p className="text-xs text-text-muted">
-                The {TYPE_LABEL[plan.scenario_type].toLowerCase()} template editor is
-                available in a later release.
+                The custom template editor is available in a later release.
               </p>
             )}
             <button
@@ -491,7 +507,7 @@ function PlanEditor({
 function ProjectionView({ projection }: { projection: ProjectionResult }) {
   return (
     <div data-testid="projection-view">
-      <div className={`mb-3 flex items-center gap-2`}>
+      <div className="mb-3 flex items-center gap-2">
         <span
           className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${VERDICT_BADGE[projection.verdict.color]}`}
           data-testid="verdict-badge"
@@ -499,24 +515,20 @@ function ProjectionView({ projection }: { projection: ProjectionResult }) {
           {projection.verdict.color.toUpperCase()}
         </span>
         <span className="text-sm text-text-primary">{projection.verdict.headline}</span>
+        {projection.smoothed_with_regression && (
+          <span
+            className="ml-auto rounded-full bg-info-dim px-2 py-0.5 text-[11px] text-info"
+            data-testid="projection-smoothed-badge"
+          >
+            Trend-adjusted
+          </span>
+        )}
       </div>
       <p className="mb-4 text-xs text-text-muted">{projection.verdict.reason}</p>
-      <ul className="mb-4 space-y-1">
-        {projection.per_account_series.map((s) => {
-          const last = s.points[s.points.length - 1];
-          return (
-            <li key={s.account_id} className="text-sm text-text-primary">
-              <span className="font-medium">{s.account_name}</span>{" "}
-              <span className="text-text-muted">
-                ends at {last?.projected_balance ?? "?"} {s.currency}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
+      <ProjectionChart projection={projection} />
       {projection.alerts.length > 0 && (
-        <div className="mb-4">
-          <p className={`mb-1 text-xs uppercase tracking-wide text-text-muted`}>Alerts</p>
+        <div className="mt-4">
+          <p className="mb-1 text-xs uppercase tracking-wide text-text-muted">Alerts</p>
           <ul className="space-y-1">
             {projection.alerts.map((a, idx) => (
               <li key={`${a.account_id}-${a.month}-${idx}`} className={`text-xs ${errorCls}`}>
@@ -527,8 +539,8 @@ function ProjectionView({ projection }: { projection: ProjectionResult }) {
         </div>
       )}
       {projection.suggestions.length > 0 && (
-        <div>
-          <p className={`mb-1 text-xs uppercase tracking-wide text-text-muted`}>Suggestions</p>
+        <div className="mt-4" data-testid="projection-suggestions">
+          <p className="mb-1 text-xs uppercase tracking-wide text-text-muted">Suggestions</p>
           <ul className="space-y-1">
             {projection.suggestions.map((s, idx) => (
               <li key={idx} className="text-xs text-text-primary">
@@ -793,10 +805,12 @@ function NewPlanModal({
         Object.assign(baseParams, {
           target_retirement_date: new Date().toISOString().slice(0, 10),
           currency: accounts[0]?.currency ?? "EUR",
-          monthly_contribution: "0",
+          monthly_contribution: "500.00",
           contribution_account_id: firstAccount,
-          target_balance: "0",
-          annual_return_pct: "5.0",
+          target_balance: "100000.00",
+          annual_return_pct: "6.0",
+          inflation_pct: "2.5",
+          contribution_curve: [],
         });
       } else {
         Object.assign(baseParams, {

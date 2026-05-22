@@ -38,6 +38,27 @@ vi.mock("@/lib/api", async () => {
   return { ...actual, apiFetch: vi.fn() };
 });
 
+// Stub Recharts: the real chart renders into a JSDOM-incompatible SVG
+// pipeline. The structural stub keeps it out of the way while letting
+// us assert that the chart wrapper renders by data-testid.
+vi.mock("recharts", () => ({
+  ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="recharts-responsive">{children}</div>
+  ),
+  ComposedChart: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="recharts-chart">{children}</div>
+  ),
+  CartesianGrid: () => null,
+  XAxis: () => null,
+  YAxis: () => null,
+  Tooltip: () => null,
+  Legend: () => null,
+  Area: () => null,
+  Line: () => null,
+  ReferenceDot: () => null,
+  Dot: () => null,
+}));
+
 const USER = {
   id: 1,
   username: "alice",
@@ -101,6 +122,69 @@ const TRIP_PLAN = {
   projection_engine: "analytic_v1",
   projection_computed_at: "2026-05-22T09:15:00",
   horizon_months: 24,
+  is_active: true,
+  created_at: "2026-05-22T00:00:00",
+  updated_at: "2026-05-22T00:00:00",
+};
+
+const RETIREMENT_PLAN = {
+  id: 8,
+  org_id: 1,
+  user_id: 1,
+  name: "Retire at 65",
+  scenario_type: "retirement" as const,
+  params_json: {
+    scenario_type: "retirement",
+    target_retirement_date: "2050-01-01",
+    currency: "EUR",
+    monthly_contribution: "500.00",
+    contribution_account_id: 12,
+    target_balance: "100000.00",
+    annual_return_pct: "6.0",
+    inflation_pct: "2.5",
+    contribution_curve: [],
+  },
+  projection_json: {
+    engine_name: "analytic_v1",
+    computed_at: "2026-05-22T09:15:00",
+    horizon_months: 360,
+    currency: "EUR",
+    per_account_series: [
+      {
+        account_id: 12,
+        account_name: "Retirement",
+        currency: "EUR",
+        points: [
+          { month: "2026-06", projected_balance: "500.00" },
+          { month: "2026-07", projected_balance: "1002.50" },
+        ],
+      },
+    ],
+    alerts: [],
+    verdict: {
+      color: "red" as const,
+      headline: "Retirement target out of reach at current pace.",
+      reason: "Real-terms balance falls below the target.",
+    },
+    suggestions: [
+      {
+        action: "raise_monthly_contribution",
+        by_amount: "200.00",
+        expected_outcome: "Raise the monthly contribution by 200.00 to close the gap.",
+      },
+    ],
+    real_terms_series: {
+      points: [
+        { month: "2026-06", projected_balance: "499.00" },
+        { month: "2026-07", projected_balance: "997.00" },
+      ],
+      inflation_pct: "2.50",
+    },
+    smoothed_with_regression: false,
+  },
+  projection_engine: "analytic_v1",
+  projection_computed_at: "2026-05-22T09:15:00",
+  horizon_months: 360,
   is_active: true,
   created_at: "2026-05-22T00:00:00",
   updated_at: "2026-05-22T00:00:00",
@@ -227,6 +311,84 @@ describe("/plans page", () => {
       expect(body.params.scenario_type).toBe("trip");
       expect(body.params.source_account_id).toBe(SAMPLE_ACCOUNT.id);
     });
+  });
+
+  it("renders the retirement form with target date and curve editor", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([RETIREMENT_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Retire at 65");
+    fireEvent.click(screen.getByTestId(`plan-row-${RETIREMENT_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+    expect(screen.getByTestId("ret-target-date")).toBeInTheDocument();
+    expect(screen.getByTestId("ret-target-balance")).toBeInTheDocument();
+    expect(screen.getByTestId("ret-monthly")).toBeInTheDocument();
+    expect(screen.getByTestId("ret-curve-table")).toBeInTheDocument();
+    expect(screen.getByTestId("ret-curve-add")).toBeInTheDocument();
+  });
+
+  it("retirement curve editor adds a row when 'Add step' is clicked", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([RETIREMENT_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Retire at 65");
+    fireEvent.click(screen.getByTestId(`plan-row-${RETIREMENT_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+    fireEvent.click(screen.getByTestId("ret-curve-add"));
+    expect(screen.getByTestId("ret-curve-row-0")).toBeInTheDocument();
+    expect(screen.getByTestId("ret-curve-from-0")).toBeInTheDocument();
+  });
+
+  it("retirement curve editor rejects out-of-order date entries", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([RETIREMENT_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Retire at 65");
+    fireEvent.click(screen.getByTestId(`plan-row-${RETIREMENT_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+    fireEvent.click(screen.getByTestId("ret-curve-add"));
+    fireEvent.click(screen.getByTestId("ret-curve-add"));
+    fireEvent.change(screen.getByTestId("ret-curve-from-0"), {
+      target: { value: "2030-01-01" },
+    });
+    fireEvent.change(screen.getByTestId("ret-curve-from-1"), {
+      target: { value: "2028-01-01" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("ret-curve-error")).toHaveTextContent(/ascending/i);
+    });
+  });
+
+  it("retirement plan renders chart, verdict badge color, and suggestion text", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([RETIREMENT_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Retire at 65");
+    fireEvent.click(screen.getByTestId(`plan-row-${RETIREMENT_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+    expect(screen.getByTestId("projection-chart")).toBeInTheDocument();
+    const badge = screen.getByTestId("verdict-badge");
+    expect(badge).toHaveTextContent("RED");
+    expect(badge.className).toMatch(/danger/);
+    expect(screen.getByTestId("projection-suggestions")).toHaveTextContent(
+      /close the gap/i,
+    );
   });
 
   it("Simulate button on a row POSTs to /api/v1/scenarios/{id}/simulate", async () => {
