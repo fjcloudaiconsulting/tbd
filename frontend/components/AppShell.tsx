@@ -149,7 +149,7 @@ const systemItems: readonly SystemNavItem[] = [
   },
   {
     href: "/system/plans",
-    label: "Plans",
+    label: "Plan Catalog",
     permission: "plans.manage",
     icon: <CreditCard {...NAV_ICON_PROPS} />,
   },
