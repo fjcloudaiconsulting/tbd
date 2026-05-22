@@ -17,11 +17,17 @@ Indexes mirror the read patterns in spec §7 / the PR2 brief:
 - ``(org_id, feature_key, dispatched_at)`` — same shape for the
   per-feature cap query.
 
-Composite FK ``(org_id, credential_id) → org_ai_credentials
-(org_id, id)`` matches the routing tables — cross-org references
-fail at the DB layer (T14 in the spec's threat model). The column
-is nullable + ON DELETE SET NULL so a credential revoke leaves
-historical ledger rows intact (forensics depends on this).
+FK shape note: the ledger uses a single-column FK on
+``credential_id`` (ON DELETE SET NULL) rather than the composite
+``(org_id, credential_id)`` pattern used by the routing tables.
+Reason: MySQL refuses ON DELETE SET NULL on a composite FK where
+``org_id`` is NOT NULL (errno 1830). Cross-org integrity for the
+ledger is enforced UPSTREAM — every ledger row is written by the
+dispatch chokepoint (``ai_dispatch.call_llm``) using a credential
+the routing FK already pinned to the org, so a cross-org row is
+unreachable through normal code. The column stays nullable + ON
+DELETE SET NULL so a credential revoke leaves the historical row
+intact (T13 forensic source).
 """
 from __future__ import annotations
 
@@ -99,8 +105,8 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
-            ["org_id", "credential_id"],
-            ["org_ai_credentials.org_id", "org_ai_credentials.id"],
+            ["credential_id"],
+            ["org_ai_credentials.id"],
             name="fk_ai_usage_ledger_cred",
             ondelete="SET NULL",
         ),

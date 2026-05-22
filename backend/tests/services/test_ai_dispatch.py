@@ -260,7 +260,7 @@ async def test_hard_cap_blocks_dispatch_no_adapter_call_no_ledger_row(
             latency_ms=1,
             success=True,
             error_class=None,
-            dispatched_at=datetime.utcnow(),
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
     )
     await db.commit()
@@ -347,7 +347,7 @@ async def test_soft_cap_dispatches_notification_once_per_period(
             latency_ms=1,
             success=True,
             error_class=None,
-            dispatched_at=datetime.utcnow(),
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
     )
     await db.commit()
@@ -437,7 +437,7 @@ async def test_feature_cap_tighter_than_default_wins(
             latency_ms=1,
             success=True,
             error_class=None,
-            dispatched_at=datetime.utcnow(),
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
     )
     await db.commit()
@@ -488,7 +488,7 @@ async def test_default_cap_tighter_than_feature_cap_wins(
             latency_ms=1,
             success=True,
             error_class=None,
-            dispatched_at=datetime.utcnow(),
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
     )
     await db.commit()
