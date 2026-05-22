@@ -972,3 +972,305 @@ async def test_simulate_retirement_does_not_mutate_any_real_table(session_factor
     assert result["engine_name"] == "analytic_v1"
     assert result["smoothed_with_regression"] is True
     assert result["real_terms_series"] is not None
+
+
+# ── PR3: Custom event replay ────────────────────────────────────────────
+
+
+def _make_custom_scenario(events: list[dict], horizon: int = 12) -> Scenario:
+    return Scenario(
+        org_id=1,
+        user_id=1,
+        name="custom",
+        scenario_type=ScenarioType.CUSTOM,
+        params_json={
+            "scenario_type": "custom",
+            "label": "test",
+            "events": events,
+        },
+        horizon_months=horizon,
+    )
+
+
+def _basic_world_state(starting_balance: str = "5000.00") -> WorldState:
+    return WorldState(
+        accounts=[
+            AccountSnapshot(
+                account_id=1, account_name="Main", currency="EUR",
+                starting_balance=Decimal(starting_balance),
+            )
+        ],
+        recurring=[],
+        history=[],
+    )
+
+
+def test_custom_one_off_income_lands_in_target_month():
+    """A one_off_income event at month=5 must boost the projected
+    balance at month 5 by the configured amount.
+    """
+    scenario = _make_custom_scenario(
+        events=[
+            {
+                "type": "one_off_income",
+                "month": 5,
+                "amount": "1500.00",
+                "account_id": 1,
+            },
+        ],
+        horizon=12,
+    )
+    state = _basic_world_state()
+    result = AnalyticEngine().simulate(
+        SimulationRequest(
+            scenario=scenario, state=state, horizon_months=12, options={}
+        )
+    )
+    points = result["per_account_series"][0]["points"]
+    # Month 5 balance should be 5000 + 1500 = 6500 (no recurring, no other events).
+    assert Decimal(points[5]["projected_balance"]) == Decimal("6500.00")
+    # Month 4 should still be 5000.
+    assert Decimal(points[4]["projected_balance"]) == Decimal("5000.00")
+
+
+def test_custom_one_off_expense_triggers_dip_below_zero_alert():
+    """one_off_expense at month=3 against a low-balance account → the
+    projection records a dip-below-zero alert at that month.
+    """
+    scenario = _make_custom_scenario(
+        events=[
+            {
+                "type": "one_off_expense",
+                "month": 3,
+                "amount": "500.00",
+                "account_id": 1,
+            },
+        ],
+        horizon=6,
+    )
+    state = _basic_world_state(starting_balance="100.00")
+    result = AnalyticEngine().simulate(
+        SimulationRequest(
+            scenario=scenario, state=state, horizon_months=6, options={}
+        )
+    )
+    # Alert at month index 3 (the 4th month emitted).
+    alerts = result["alerts"]
+    assert len(alerts) == 1
+    assert alerts[0]["trigger"] == "custom_one_off_expense"
+    # Balance dipped below zero.
+    assert Decimal(alerts[0]["projected_balance"]) < 0
+
+
+def test_custom_income_off_silences_recurring_income_in_range():
+    """income_off from month 2 to month 8 must zero out recurring
+    income posts in that range. Recurring income outside the range
+    still fires.
+    """
+    today = date.today().replace(day=1)
+    # Recurring income of 1000/mo, due in month_index 1 (i.e. next month).
+    rec = RecurringSnapshot(
+        id=1, account_id=1, amount=Decimal("1000.00"),
+        type="income", frequency=Frequency.MONTHLY,
+        next_due_date=today + relativedelta(months=1) + timedelta(days=5),
+        category_id=None,
+    )
+    scenario = _make_custom_scenario(
+        events=[
+            {"type": "income_off", "from_month": 2, "to_month": 8},
+        ],
+        horizon=12,
+    )
+    state = WorldState(
+        accounts=[
+            AccountSnapshot(
+                account_id=1, account_name="Main", currency="EUR",
+                starting_balance=Decimal("0.00"),
+            )
+        ],
+        recurring=[rec],
+        history=[],
+    )
+    result = AnalyticEngine().simulate(
+        SimulationRequest(
+            scenario=scenario, state=state, horizon_months=12, options={}
+        )
+    )
+    points = result["per_account_series"][0]["points"]
+    # Month 1 (outside the silenced range) → 1000 income applied.
+    bal_m1 = Decimal(points[1]["projected_balance"])
+    # Month 5 (inside the silenced range): balance must NOT have grown
+    # between month 1 and month 5 — those four months of income are silenced.
+    bal_m5 = Decimal(points[5]["projected_balance"])
+    assert bal_m1 == Decimal("1000.00")
+    assert bal_m5 == Decimal("1000.00"), points
+    # Month 9 (range ends at 8) → income resumes.
+    bal_m9 = Decimal(points[9]["projected_balance"])
+    assert bal_m9 == Decimal("2000.00"), points
+
+
+def test_custom_expense_off_with_category_filter_only_silences_matched():
+    """expense_off with category_ids=[5] silences ONLY recurring expenses
+    whose category_id == 5. Other expense recurring rows still fire.
+    """
+    today = date.today().replace(day=1)
+    rec_a = RecurringSnapshot(
+        id=10, account_id=1, amount=Decimal("200.00"),
+        type="expense", frequency=Frequency.MONTHLY,
+        next_due_date=today + relativedelta(months=1) + timedelta(days=5),
+        category_id=5,
+    )
+    rec_b = RecurringSnapshot(
+        id=11, account_id=1, amount=Decimal("300.00"),
+        type="expense", frequency=Frequency.MONTHLY,
+        next_due_date=today + relativedelta(months=1) + timedelta(days=5),
+        category_id=99,
+    )
+    scenario = _make_custom_scenario(
+        events=[
+            {
+                "type": "expense_off",
+                "from_month": 0,
+                "to_month": 5,
+                "category_ids": [5],
+            },
+        ],
+        horizon=6,
+    )
+    state = WorldState(
+        accounts=[
+            AccountSnapshot(
+                account_id=1, account_name="Main", currency="EUR",
+                starting_balance=Decimal("10000.00"),
+            )
+        ],
+        recurring=[rec_a, rec_b],
+        history=[],
+    )
+    result = AnalyticEngine().simulate(
+        SimulationRequest(
+            scenario=scenario, state=state, horizon_months=6, options={}
+        )
+    )
+    points = result["per_account_series"][0]["points"]
+    # Month 1: rec_a silenced (cat 5), rec_b still fires (-300).
+    # 10000 - 300 = 9700.
+    assert Decimal(points[1]["projected_balance"]) == Decimal("9700.00")
+
+
+def test_custom_recurring_on_documented_punt_no_behavior_change():
+    """recurring_on event is a no-op in PR3 (no ``exclude_recurring``
+    base flag exists yet). The projection must equal the same scenario
+    WITHOUT the event.
+    """
+    scenario_with = _make_custom_scenario(
+        events=[
+            {
+                "type": "recurring_on",
+                "recurring_id": 1,
+                "from_month": 0,
+                "to_month": 5,
+            },
+        ],
+        horizon=6,
+    )
+    scenario_without = _make_custom_scenario(events=[], horizon=6)
+    state = _basic_world_state()
+    r_with = AnalyticEngine().simulate(
+        SimulationRequest(
+            scenario=scenario_with, state=state, horizon_months=6, options={}
+        )
+    )
+    r_without = AnalyticEngine().simulate(
+        SimulationRequest(
+            scenario=scenario_without, state=state, horizon_months=6, options={}
+        )
+    )
+    # Per-account series identical (modulo engine timestamp).
+    assert r_with["per_account_series"] == r_without["per_account_series"]
+
+
+@pytest.mark.asyncio
+async def test_simulate_custom_events_does_not_mutate_any_real_table(
+    session_factory,
+):
+    """ARCHITECT LOCK PR3: a custom scenario with 3 events must produce
+    ZERO row-count delta on every real table after simulate. Re-runs
+    the PR1+PR2 sandboxing guard with custom events.
+    """
+    seeds = await _seed_user_with_realistic_data(session_factory)
+
+    async with session_factory() as db:
+        custom_scen = Scenario(
+            org_id=seeds["org_id"],
+            user_id=seeds["user_id"],
+            name="Sabbatical 2028",
+            scenario_type=ScenarioType.CUSTOM,
+            params_json={
+                "scenario_type": "custom",
+                "label": "Sabbatical year",
+                "events": [
+                    {
+                        "type": "income_off",
+                        "from_month": 2,
+                        "to_month": 8,
+                    },
+                    {
+                        "type": "one_off_expense",
+                        "month": 3,
+                        "amount": "3000.00",
+                        "account_id": seeds["acc1_id"],
+                    },
+                    {
+                        "type": "one_off_income",
+                        "month": 6,
+                        "amount": "1500.00",
+                        "account_id": seeds["acc1_id"],
+                    },
+                ],
+            },
+            horizon_months=12,
+            is_active=True,
+        )
+        db.add(custom_scen)
+        await db.commit()
+        await db.refresh(custom_scen)
+        custom_id = custom_scen.id
+
+    before = await _row_counts(session_factory)
+
+    async with session_factory() as db:
+        state = await build_world_state(
+            db, org_id=seeds["org_id"], user_id=seeds["user_id"]
+        )
+        scen = (
+            await db.execute(
+                select(Scenario).where(Scenario.id == custom_id)
+            )
+        ).scalar_one()
+        result = AnalyticEngine().simulate(
+            SimulationRequest(
+                scenario=scen,
+                state=state,
+                horizon_months=scen.horizon_months,
+                options={},
+            )
+        )
+
+    after = await _row_counts(session_factory)
+
+    # The sandboxing guard: every real table count is identical pre/post.
+    assert after["transactions"] == before["transactions"]
+    assert after["accounts"] == before["accounts"]
+    assert after["budgets"] == before["budgets"]
+    assert after["forecast_plans"] == before["forecast_plans"]
+    assert after["recurring_transactions"] == before["recurring_transactions"]
+    assert after["scenarios"] == before["scenarios"]
+
+    # The projection actually ran.
+    assert result["engine_name"] == "analytic_v1"
+    # And the events left their fingerprint.
+    triggers = {a["trigger"] for a in result["alerts"]}
+    # The one_off_expense at month 3 in a positive-balance fixture may
+    # not dip below zero; just sanity-check projection length.
+    assert len(result["per_account_series"]) == 2

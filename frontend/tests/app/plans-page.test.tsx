@@ -18,9 +18,11 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 
 const replaceMock = vi.fn();
+let searchParamsString = "";
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
   usePathname: () => "/plans",
+  useSearchParams: () => new URLSearchParams(searchParamsString),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -204,6 +206,7 @@ describe("/plans page", () => {
   beforeEach(() => {
     apiFetchMock.mockReset();
     replaceMock.mockReset();
+    searchParamsString = "";
   });
 
   function setUser() {
@@ -422,4 +425,56 @@ describe("/plans page", () => {
       expect(body.engine).toBe("analytic");
     });
   });
+
+  it(
+    "test_open_query_param_opens_matching_scenario_in_editor: "
+    + "?open=<id> matches a loaded scenario → editor renders, "
+    + "URL is replaced to /plans (no query string)",
+    async () => {
+      setUser();
+      // Land on /plans?open=7 — should open TRIP_PLAN in the editor.
+      searchParamsString = `open=${TRIP_PLAN.id}`;
+      apiFetchMock.mockImplementation(((url: string) => {
+        if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+        if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+        return Promise.resolve(undefined);
+      }) as never);
+      render(<PlansPage />);
+      // The editor renders with the deep-linked plan active.
+      await screen.findByTestId("plan-editor");
+      // List view is gone.
+      expect(screen.queryByTestId("plans-list")).not.toBeInTheDocument();
+      // Plan name shows in the editor's name input.
+      const nameInput = screen.getByTestId("plan-name-input") as HTMLInputElement;
+      expect(nameInput.value).toBe(TRIP_PLAN.name);
+      // URL was cleaned to /plans (no query string) so a refresh doesn't
+      // re-trigger the open behavior.
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/plans");
+      });
+    },
+  );
+
+  it(
+    "test_open_query_param_with_unknown_id_stays_on_list: "
+    + "?open=99 with no matching scenario → list renders, URL replaced",
+    async () => {
+      setUser();
+      // Land on /plans?open=99 but the loaded list only has id=7.
+      searchParamsString = "open=99";
+      apiFetchMock.mockImplementation(((url: string) => {
+        if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+        if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+        return Promise.resolve(undefined);
+      }) as never);
+      render(<PlansPage />);
+      // List view renders.
+      await screen.findByTestId("plans-list");
+      expect(screen.queryByTestId("plan-editor")).not.toBeInTheDocument();
+      // URL is still cleaned up so a refresh doesn't retry forever.
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/plans");
+      });
+    },
+  );
 });

@@ -71,6 +71,10 @@ class RecurringSnapshot:
     type: str  # "income" | "expense"
     frequency: Frequency
     next_due_date: datetime.date
+    # PR3: category_id is carried so custom ``expense_off`` events with
+    # ``category_ids`` can scope the silencing. Optional because some
+    # legacy fixtures may not set it.
+    category_id: Optional[int] = None
 
 
 @dataclass
@@ -332,6 +336,10 @@ class AnalyticEngine(ScenarioEngine):
         ]
 
         overlays = _build_overlay_events(scenario)
+        # PR3 custom-event filter: silences specific recurring rows
+        # for the configured month range. Non-custom plans get the
+        # identity filter (always True).
+        recurring_filter = _custom_event_recurring_filter(scenario)
 
         series_by_account: dict[int, list[dict[str, str]]] = {
             a.account_id: [] for a in state.accounts
@@ -379,11 +387,20 @@ class AnalyticEngine(ScenarioEngine):
             month_label = _month_label(month_date)
 
             # (1) Apply recurring whose next_due_date falls in [month_date, month_end].
+            # PR3: custom-event ``income_off`` / ``expense_off`` filters
+            # silence the matching rows for the configured month range.
             new_queue: list[tuple[RecurringSnapshot, datetime.date]] = []
             for snap, due in recurring_queue:
                 next_due = due
+                apply_this_month = recurring_filter.should_apply(
+                    snap, snap.category_id, m_index
+                )
                 while next_due <= month_end:
-                    if next_due >= month_date and next_due <= month_end:
+                    if (
+                        apply_this_month
+                        and next_due >= month_date
+                        and next_due <= month_end
+                    ):
                         delta = Decimal(snap.amount)
                         if snap.type == "expense":
                             delta = -delta
@@ -620,6 +637,7 @@ async def build_world_state(
             type=str(r.type),
             frequency=r.frequency,
             next_due_date=r.next_due_date,
+            category_id=r.category_id,
         )
         for r in recurring_rows
     ]
@@ -808,11 +826,113 @@ def _build_overlay_events(
                 cursor = cursor + relativedelta(months=1)
 
     elif stype == ScenarioType.CUSTOM.value:
-        # PR1 minimal: custom events not replayed yet. Full event
-        # replay (income_off, expense_off, recurring_on, etc.) is PR2.
-        pass
+        # PR3: replay one_off_income / one_off_expense events as
+        # per-month overlays. The off-recurring / on-recurring events
+        # are NOT overlay events (they modify the recurring queue
+        # itself); the engine consults them out-of-band via
+        # ``_apply_custom_event_filters``. See the simulate loop.
+        events = params.get("events") or []
+        start = _start_of_horizon()
+        for ev in events:
+            ev_type = ev.get("type")
+            if ev_type == "one_off_income":
+                month_offset = int(ev.get("month", 0) or 0)
+                when = start + relativedelta(months=month_offset)
+                amount = Decimal(str(ev.get("amount", "0") or "0"))
+                account_id = ev.get("account_id")
+                if account_id is not None and amount > 0:
+                    add(when.year, when.month, {
+                        "kind": "income",
+                        "amount": amount,
+                        "account_id": int(account_id),
+                        "trigger": "custom_one_off_income",
+                    })
+            elif ev_type == "one_off_expense":
+                month_offset = int(ev.get("month", 0) or 0)
+                when = start + relativedelta(months=month_offset)
+                amount = Decimal(str(ev.get("amount", "0") or "0"))
+                account_id = ev.get("account_id")
+                if account_id is not None and amount > 0:
+                    add(when.year, when.month, {
+                        "kind": "expense",
+                        "amount": amount,
+                        "account_id": int(account_id),
+                        "trigger": "custom_one_off_expense",
+                    })
+            # income_off / expense_off / recurring_on are NOT overlay
+            # events; they're filters on the recurring queue applied
+            # inside the simulate loop.
 
     return out
+
+
+def _custom_event_recurring_filter(
+    scenario: Scenario,
+) -> "_RecurringFilter":
+    """Compile the scenario's custom events into a per-month recurring
+    filter callable.
+
+    Returns an opaque _RecurringFilter object the engine consults inside
+    the simulate loop. The filter takes (recurring_snapshot, month_index)
+    and returns True (apply the recurring) or False (silence it for this
+    month). For non-custom plans the filter is the identity (always True).
+    """
+    stype = (
+        scenario.scenario_type.value
+        if hasattr(scenario.scenario_type, "value")
+        else str(scenario.scenario_type)
+    )
+    if stype != ScenarioType.CUSTOM.value:
+        return _RecurringFilter([])
+    params = scenario.params_json or {}
+    events = params.get("events") or []
+    return _RecurringFilter(events)
+
+
+class _RecurringFilter:
+    """Per-month recurring filter compiled from custom events.
+
+    ``income_off`` and ``expense_off`` events silence the matching
+    recurring rows for a month range. ``expense_off`` with
+    ``category_ids`` set scopes the silencing to those categories.
+    ``recurring_on`` is currently a no-op (PR3 punt: the engine
+    already includes ALL active recurring by default; this event
+    becomes meaningful when a future ``exclude_recurring`` base flag
+    exists).
+    """
+
+    def __init__(self, events: list[dict[str, Any]]):
+        self.events = events
+
+    def should_apply(
+        self,
+        recurring: RecurringSnapshot,
+        category_id: Optional[int],
+        month_index: int,
+    ) -> bool:
+        """Return True if the recurring should fire on this month_index."""
+        for ev in self.events:
+            ev_type = ev.get("type")
+            if ev_type not in ("income_off", "expense_off"):
+                continue
+            from_month = int(ev.get("from_month", 0) or 0)
+            to_month = ev.get("to_month")
+            if to_month is None:
+                # Open-ended silencing from from_month onward.
+                in_range = month_index >= from_month
+            else:
+                in_range = from_month <= month_index <= int(to_month)
+            if not in_range:
+                continue
+            if ev_type == "income_off" and recurring.type == "income":
+                return False
+            if ev_type == "expense_off" and recurring.type == "expense":
+                cat_ids = ev.get("category_ids")
+                if not cat_ids:
+                    return False
+                if category_id is not None and category_id in cat_ids:
+                    return False
+        return True
 
 
 def _parse_date(value: Any) -> Optional[datetime.date]:

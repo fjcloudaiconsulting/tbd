@@ -27,9 +27,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app._time import utcnow_naive
 from app.database import get_db
 from app.deps import get_current_user
+from app.models.account import Account
+from app.models.category import Category
+from app.models.recurring import RecurringTransaction
 from app.models.scenario import Scenario, ScenarioType
 from app.models.user import User
 from app.schemas.scenario import (
+    COMPARE_MAX_SCENARIOS,
+    CompareRequest,
+    CompareResponse,
+    CompareProjection,
     ScenarioCreate,
     ScenarioResponse,
     ScenarioUpdate,
@@ -112,12 +119,22 @@ async def create_scenario(
     """Create a new scenario (Plan in UI terms) for the current user."""
     _validate_horizon_or_422(body.scenario_type.value, body.horizon_months)
 
+    params_json = body.params.model_dump(mode="json")
+    # PR3: custom events get cross-user FK + horizon-bound validation.
+    if body.scenario_type == ScenarioType.CUSTOM:
+        await _validate_custom_event_references(
+            db,
+            org_id=current_user.org_id,
+            horizon_months=body.horizon_months,
+            params=params_json,
+        )
+
     row = Scenario(
         org_id=current_user.org_id,
         user_id=current_user.id,
         name=body.name,
         scenario_type=body.scenario_type,
-        params_json=body.params.model_dump(mode="json"),
+        params_json=params_json,
         horizon_months=body.horizon_months,
         is_active=True,
     )
@@ -167,7 +184,18 @@ async def update_scenario(
                     "scenario_type on the row"
                 ),
             )
-        row.params_json = body.params.model_dump(mode="json")
+        new_params = body.params.model_dump(mode="json")
+        # PR3: custom events get cross-user FK + horizon-bound validation
+        # on PATCH too. Use the row's CURRENT horizon (possibly just
+        # updated above) so the bound check stays consistent.
+        if row.scenario_type == ScenarioType.CUSTOM:
+            await _validate_custom_event_references(
+                db,
+                org_id=current_user.org_id,
+                horizon_months=row.horizon_months,
+                params=new_params,
+            )
+        row.params_json = new_params
 
     if body.is_active is not None:
         row.is_active = body.is_active
@@ -255,3 +283,195 @@ async def simulate_scenario(
     await db.commit()
     await db.refresh(row)
     return row
+
+
+# ── PR3: comparison view ────────────────────────────────────────────────
+
+
+@router.post("/compare", response_model=CompareResponse)
+async def compare_scenarios(
+    body: CompareRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run the analytic engine on 1-3 scenarios at the SAME horizon
+    and return the projections side-by-side.
+
+    Architect-locked rules:
+
+    - Max 3 scenarios (enforced by ``CompareRequest`` Field constraint).
+    - Each scenario must belong to the current user; 404 on cross-user
+      (matches the per-user privacy lock on the rest of the router).
+    - The request's horizon is validated against EACH scenario's
+      ``scenario_type`` cap. If any scenario rejects it, the whole
+      compare 422s with the offending scenario id in the message.
+    - Engine runs are sequential — sub-second each, max 3, so parallel
+      gather adds complexity for no measurable win.
+    - World state is built ONCE and reused across all engine runs (it
+      depends only on org_id/user_id, not on the scenario).
+    """
+    # Load every scenario the request asked for, in the SAME order as
+    # the request's scenario_ids list. Order preserved so the response
+    # is positionally parallel.
+    rows: list[Scenario] = []
+    for sid in body.scenario_ids:
+        row = await db.get(Scenario, sid)
+        if row is None or row.user_id != current_user.id or row.org_id != current_user.org_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Scenario not found: {sid}",
+            )
+        rows.append(row)
+
+    # Validate horizon against EACH scenario's per-type cap. The first
+    # offender wins the 422 with its id in the detail.
+    for row in rows:
+        try:
+            validate_horizon(row.scenario_type.value, body.horizon_months)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"scenario_id={row.id}: {exc}",
+            )
+
+    # Build the world state once (it's per-org, not per-scenario).
+    state = await build_world_state(
+        db, org_id=current_user.org_id, user_id=current_user.id
+    )
+
+    engine = get_engine("analytic")
+    projections: list[CompareProjection] = []
+    for row in rows:
+        sim_request = SimulationRequest(
+            scenario=row,
+            state=state,
+            horizon_months=body.horizon_months,
+            options={},
+        )
+        result = engine.simulate(
+            sim_request,
+            smooth_with_regression=body.smooth_with_regression,
+        )
+        projections.append(
+            CompareProjection(
+                scenario_id=row.id,
+                name=row.name,
+                scenario_type=row.scenario_type,
+                projection=result,
+            )
+        )
+
+    return CompareResponse(projections=projections)
+
+
+# ── Custom-event cross-user FK validation ───────────────────────────────
+
+
+async def _validate_custom_event_references(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    horizon_months: int,
+    params: dict,
+) -> None:
+    """Pin custom events to the current user's org and the row's horizon.
+
+    Raises HTTPException(422) with detail code ``event_invalid_reference``
+    when an event references a recurring_id / account_id / category_id
+    that does not belong to the current user's org, or when a month
+    (or from_month / to_month) is < 0 or >= horizon_months.
+
+    The engine iterates ``range(0, horizon_months)`` so valid month
+    indices are ``[0, horizon_months - 1]``. An event at
+    ``month == horizon_months`` (or ``from_month == horizon_months``,
+    or ``to_month == horizon_months``) would silently never fire; we
+    reject it as a misconfiguration instead.
+
+    Schema-level validators already enforce ``from_month <= to_month``
+    and ``>= 0`` on each event; this function is the cross-user
+    leak gate plus the horizon-relative bound check.
+    """
+    events = params.get("events") or []
+    for ev in events:
+        ev_type = ev.get("type")
+        # Bound month / from_month / to_month against horizon. The engine
+        # iterates range(0, horizon_months), so the last valid month index
+        # is horizon_months - 1. Anything >= horizon_months silently does
+        # nothing — reject it.
+        for field_name in ("month", "from_month", "to_month"):
+            val = ev.get(field_name)
+            if val is None:
+                continue
+            try:
+                ival = int(val)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "event_invalid_reference",
+                        "message": f"custom event {field_name} must be an integer",
+                    },
+                )
+            if ival >= horizon_months:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "event_invalid_reference",
+                        "message": (
+                            f"custom event {field_name}={ival} is outside the "
+                            f"simulated range [0, horizon_months - 1] "
+                            f"(horizon_months={horizon_months})"
+                        ),
+                    },
+                )
+
+        # FK leak prevention: each referenced row must belong to the
+        # current user's org.
+        if ev_type == "recurring_on":
+            rid = ev.get("recurring_id")
+            if rid is None:
+                continue
+            rec = await db.get(RecurringTransaction, int(rid))
+            if rec is None or rec.org_id != org_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "event_invalid_reference",
+                        "message": f"recurring_id {rid} not found for this org",
+                    },
+                )
+        if ev_type in ("one_off_income", "one_off_expense"):
+            aid = ev.get("account_id")
+            if aid is not None:
+                acc = await db.get(Account, int(aid))
+                if acc is None or acc.org_id != org_id:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "event_invalid_reference",
+                            "message": f"account_id {aid} not found for this org",
+                        },
+                    )
+            cid = ev.get("category_id")
+            if cid is not None:
+                cat = await db.get(Category, int(cid))
+                if cat is None or cat.org_id != org_id:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "event_invalid_reference",
+                            "message": f"category_id {cid} not found for this org",
+                        },
+                    )
+        if ev_type == "expense_off":
+            cat_ids = ev.get("category_ids") or []
+            for cid in cat_ids:
+                cat = await db.get(Category, int(cid))
+                if cat is None or cat.org_id != org_id:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "code": "event_invalid_reference",
+                            "message": f"category_id {cid} not found for this org",
+                        },
+                    )
