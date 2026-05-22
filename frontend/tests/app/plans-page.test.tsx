@@ -394,6 +394,241 @@ describe("/plans page", () => {
     );
   });
 
+  // ── Save / Discard editor controls (PR #plans-editor-save-discard) ──
+  //
+  // The /plans editor auto-PATCHes on every param change. That makes the
+  // chart respond live but leaves the user without an explicit handle on
+  // "this is the version I want to keep" vs "throw this away." These
+  // tests lock the Save+Discard contract:
+  //   - dirty -> Save/Discard enabled + "Unsaved changes" hint shown
+  //   - clean -> both disabled
+  //   - Save advances the snapshot WITHOUT firing an extra PATCH
+  //   - Discard fires a PATCH with the snapshot values and reverts
+  //     local state
+  //   - Saved/Discarded microcopy fires in the aria-live region
+  it("Save + Discard are disabled and the dirty hint is hidden until a change is made", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-row-${TRIP_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+
+    expect(screen.getByTestId("plan-save")).toBeDisabled();
+    expect(screen.getByTestId("plan-discard")).toBeDisabled();
+    expect(screen.queryByTestId("plan-dirty-indicator")).toBeNull();
+  });
+
+  it("typing into the editor enables Save + Discard and shows 'Unsaved changes'", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-row-${TRIP_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "Lisbon trip (revised)" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("plan-save")).not.toBeDisabled();
+    });
+    expect(screen.getByTestId("plan-discard")).not.toBeDisabled();
+    expect(screen.getByTestId("plan-dirty-indicator")).toHaveTextContent(
+      /Unsaved changes/i,
+    );
+  });
+
+  it("Save advances the snapshot, clears dirty, and announces 'Saved' — without an extra PATCH from the click", async () => {
+    setUser();
+    let lastPatchBody: Record<string, unknown> | null = null;
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+        && options?.method === "PATCH"
+      ) {
+        lastPatchBody = JSON.parse((options.body as string) ?? "{}");
+        return Promise.resolve({ ...TRIP_PLAN, name: lastPatchBody?.name as string });
+      }
+      if (url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-row-${TRIP_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+
+    // Type a change — auto-PATCH will fire (debounced). We're testing
+    // that Save does NOT additionally PATCH on top of the auto-PATCH.
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "Lisbon revised" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("plan-save")).not.toBeDisabled();
+    });
+
+    // Snapshot how many PATCHes the auto-debounce has fired by now.
+    const patchCountBeforeSave = apiFetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+        && (opts as RequestInit | undefined)?.method === "PATCH",
+    ).length;
+
+    fireEvent.click(screen.getByTestId("plan-save"));
+
+    // Dirty hint vanishes; both buttons re-disable; "Saved" lights up
+    // in the aria-live region.
+    await waitFor(() => {
+      expect(screen.queryByTestId("plan-dirty-indicator")).toBeNull();
+    });
+    expect(screen.getByTestId("plan-save")).toBeDisabled();
+    expect(screen.getByTestId("plan-discard")).toBeDisabled();
+    expect(screen.getByTestId("plan-save-status")).toHaveTextContent(/^Saved$/);
+
+    // No additional PATCH from the click itself.
+    const patchCountAfterSave = apiFetchMock.mock.calls.filter(
+      ([url, opts]) =>
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+        && (opts as RequestInit | undefined)?.method === "PATCH",
+    ).length;
+    expect(patchCountAfterSave).toBe(patchCountBeforeSave);
+  });
+
+  it("Discard PATCHes the snapshot back, reverts local state, and announces 'Discarded'", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+        && options?.method === "PATCH"
+      ) {
+        const body = JSON.parse((options.body as string) ?? "{}");
+        return Promise.resolve({
+          ...TRIP_PLAN,
+          name: body.name,
+          horizon_months: body.horizon_months ?? TRIP_PLAN.horizon_months,
+        });
+      }
+      if (url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-row-${TRIP_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+
+    // Edit the name.
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "Lisbon revised" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("plan-discard")).not.toBeDisabled();
+    });
+
+    // Click Discard — it must PATCH with the snapshot name ("Lisbon
+    // trip"), not the typed-over "Lisbon revised" value.
+    fireEvent.click(screen.getByTestId("plan-discard"));
+
+    await waitFor(() => {
+      const discardPatch = apiFetchMock.mock.calls.findLast(
+        ([url, opts]) =>
+          url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+          && (opts as RequestInit | undefined)?.method === "PATCH"
+          && JSON.parse(((opts as RequestInit).body as string) ?? "{}").name
+            === "Lisbon trip",
+      );
+      expect(discardPatch).toBeDefined();
+    });
+
+    // Local state reverts (input shows the snapshot name again) and
+    // the "Discarded" microcopy fires.
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId("plan-name-input") as HTMLInputElement).value,
+      ).toBe("Lisbon trip");
+    });
+    expect(screen.getByTestId("plan-save-status")).toHaveTextContent(
+      /^Discarded$/,
+    );
+    // Buttons re-disable now that local == snapshot.
+    expect(screen.getByTestId("plan-save")).toBeDisabled();
+    expect(screen.getByTestId("plan-discard")).toBeDisabled();
+  });
+
+  it("Save / Discard status microcopy clears when the user edits again", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}`
+        && options?.method === "PATCH"
+      ) {
+        const body = JSON.parse((options.body as string) ?? "{}");
+        return Promise.resolve({ ...TRIP_PLAN, name: body.name });
+      }
+      if (url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-row-${TRIP_PLAN.id}`));
+    await screen.findByTestId("plan-editor");
+
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "v2" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("plan-save")).not.toBeDisabled();
+    });
+    fireEvent.click(screen.getByTestId("plan-save"));
+    await waitFor(() => {
+      expect(screen.getByTestId("plan-save-status")).toHaveTextContent(
+        /^Saved$/,
+      );
+    });
+
+    // Make a fresh change — the stale "Saved" message must clear so
+    // the aria-live region doesn't lie about state.
+    fireEvent.change(screen.getByTestId("plan-name-input"), {
+      target: { value: "v3" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("plan-save-status")).toHaveTextContent("");
+    });
+    expect(screen.getByTestId("plan-dirty-indicator")).toBeInTheDocument();
+  });
+
   it("Simulate button on a row POSTs to /api/v1/scenarios/{id}/simulate", async () => {
     setUser();
     apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {

@@ -42,6 +42,19 @@ import {
   pageTitle,
 } from "@/lib/styles";
 
+// Editor snapshot — the "committed" state Save/Discard pivot around.
+// PR #plans-editor-save-discard adds explicit Save and Discard buttons
+// on top of the existing debounced auto-PATCH behaviour. The snapshot
+// captures the state the editor "considers committed"; Save advances
+// the snapshot to the current local state, Discard rolls local state
+// (and the server row) back to the snapshot. Auto-PATCH keeps firing
+// for live projection feedback — the buttons are a UX layer on top.
+type EditorSnapshot = {
+  name: string;
+  horizon: number;
+  params: Record<string, unknown>;
+};
+
 // Internal type name uses the DB / API word; the UI label is "Plans".
 export type ScenarioType = "trip" | "purchase" | "retirement" | "custom";
 
@@ -495,6 +508,24 @@ function PlanEditor({
   const [editorValid, setEditorValid] = useState(true);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Save/Discard snapshot. We use state (not useRef) because isDirty
+  // is computed against the snapshot DURING render, and the new
+  // react-hooks/refs lint rule forbids reading refs in the render
+  // phase. Storing the snapshot in state keeps it observable as part
+  // of the render contract while still letting Save/Discard advance
+  // or restore it imperatively. setSnapshot does not need to be in
+  // any dep arrays beyond the switching-plans reset effect; Save
+  // calls it explicitly.
+  const [snapshot, setSnapshot] = useState<EditorSnapshot>({
+    name: plan.name,
+    horizon: plan.horizon_months,
+    params: plan.params_json,
+  });
+  // Microcopy line announced via aria-live so screen readers and a
+  // glanceable visual indicator both see "Saved" / "Discarded" after
+  // the corresponding action.
+  const [statusMsg, setStatusMsg] = useState<string>("");
+
   // Horizon bounds match the server-side validator. Pre-checking on the
   // client keeps the debounced PATCH from firing 422s while the user
   // walks an out-of-range number up or down with the spinner.
@@ -503,12 +534,41 @@ function PlanEditor({
   const nameValid = name.trim().length > 0;
   const isValid = editorValid && horizonValid && nameValid;
 
-  // Reset state when switching plans.
+  // isDirty compares current editor state to the snapshot (NOT to
+  // `plan`). The debounced auto-PATCH keeps the server in sync with
+  // every keystroke; the snapshot moves only when the user clicks
+  // Save (or when they switch plans / open a different row). That's
+  // why "Save" is meaningful even though every change already round-
+  // tripped to the server: Save advances the pivot Discard reverts to.
+  const isDirty =
+    name !== snapshot.name ||
+    horizon !== snapshot.horizon ||
+    JSON.stringify(params) !== JSON.stringify(snapshot.params);
+
+  // Reset state AND snapshot when switching plans. Opening a different
+  // plan must start with a clean "no unsaved changes" baseline; without
+  // this, the snapshot from the previous plan would mark every field
+  // as dirty the moment the new plan paints.
   useEffect(() => {
     setParams(plan.params_json);
     setName(plan.name);
     setHorizon(plan.horizon_months);
+    setSnapshot({
+      name: plan.name,
+      horizon: plan.horizon_months,
+      params: plan.params_json,
+    });
+    setStatusMsg("");
   }, [plan.id, plan.params_json, plan.name, plan.horizon_months]);
+
+  // Stale-status guard: once the user makes a fresh change after a
+  // "Saved" / "Discarded" microcopy, the message is no longer accurate.
+  // Clear it as soon as the editor goes dirty again.
+  useEffect(() => {
+    if (isDirty && statusMsg) {
+      setStatusMsg("");
+    }
+  }, [isDirty, statusMsg]);
 
   const persist = useCallback(async () => {
     setBusy(true);
@@ -574,6 +634,57 @@ function PlanEditor({
     setErr("");
     try {
       await onSimulate(plan);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Save advances the snapshot to the current local state. The auto-PATCH
+  // has already persisted those values; Save's job is to update the
+  // pivot point Discard will revert to, plus give the user the
+  // psychological hand-off they asked for ("this is the version I
+  // intended to keep"). No additional network call from this path.
+  function handleSave() {
+    if (!isDirty) return;
+    setSnapshot({ name, horizon, params });
+    setStatusMsg("Saved");
+  }
+
+  // Discard rolls local state back to the snapshot AND PATCHes the
+  // server row with the snapshot values. The server PATCH is required
+  // because the auto-PATCH layer has already written every interim
+  // edit; Discard is the only way to undo those server-side writes.
+  async function handleDiscard() {
+    if (!isDirty) return;
+    const target = snapshot;
+    setBusy(true);
+    setErr("");
+    try {
+      const updated = await apiFetch<Scenario>(
+        `/api/v1/scenarios/${plan.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            name: target.name,
+            horizon_months: target.horizon,
+            params: {
+              scenario_type: plan.scenario_type,
+              ...target.params,
+            },
+          }),
+        },
+      );
+      // Reset local editor state in lockstep with the rolled-back
+      // server row. Don't await onUpdated — its `setActive` would loop
+      // through the snapshot-resetting effect we already control here.
+      setParams(target.params);
+      setName(target.name);
+      setHorizon(target.horizon);
+      onUpdated(updated);
+      await onSimulate(updated);
+      setStatusMsg("Discarded");
+    } catch (e) {
+      setErr(extractErrorMessage(e, "Discard failed"));
     } finally {
       setBusy(false);
     }
@@ -650,15 +761,58 @@ function PlanEditor({
                 accounts={accounts}
               />
             )}
-            <button
-              type="button"
-              className={`${btnPrimary} sm:min-h-0`}
-              onClick={manualSimulate}
-              disabled={busy}
-              data-testid="plan-simulate-now"
+            {/* Save / Discard / Re-simulate cluster.
+                isDirty drives both Save and Discard so an unchanged
+                editor doesn't offer either control. The "Unsaved
+                changes" hint is the visual mirror of isDirty for the
+                user; the aria-live region beneath it announces the
+                resulting state ("Saved" / "Discarded") for assistive
+                tech and as a glanceable confirmation. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className={`${btnPrimary} sm:min-h-0`}
+                onClick={handleSave}
+                disabled={!isDirty || busy}
+                data-testid="plan-save"
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className={`${btnSecondary} sm:min-h-0`}
+                onClick={handleDiscard}
+                disabled={!isDirty || busy}
+                data-testid="plan-discard"
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                className={`${btnSecondary} sm:min-h-0`}
+                onClick={manualSimulate}
+                disabled={busy}
+                data-testid="plan-simulate-now"
+              >
+                Re-simulate
+              </button>
+              {isDirty && (
+                <span
+                  className="text-xs text-text-muted"
+                  data-testid="plan-dirty-indicator"
+                >
+                  Unsaved changes
+                </span>
+              )}
+            </div>
+            <p
+              role="status"
+              aria-live="polite"
+              className="min-h-[1rem] text-xs text-text-muted"
+              data-testid="plan-save-status"
             >
-              Re-simulate
-            </button>
+              {statusMsg}
+            </p>
           </div>
         </div>
         <div className={`${card} p-5`}>
