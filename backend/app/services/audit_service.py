@@ -73,10 +73,19 @@ async def record_audit_event(
     ip_address: Optional[str],
     outcome: Literal["success", "failure"],
     detail: Optional[dict[str, Any]] = None,
-) -> None:
+) -> Optional[int]:
     """Persist an audit event in its OWN transaction.
 
-    Failures are logged via structlog and swallowed. Never raises.
+    Returns the newly persisted audit row's id on success, or
+    ``None`` when the write failed (failure is logged via structlog
+    and swallowed — this function never raises). Callers that don't
+    need the id can keep ignoring the return value.
+
+    The return value is the substrate for the notification system's
+    forensic correlation (G5 in the 2nd-arch delta): notification
+    rows carry the ``audit_event_id`` of the row that triggered them
+    so an operator can correlate the two even when the business
+    event_type alone is ambiguous.
 
     Use this when the audit write must succeed regardless of the
     business txn outcome (e.g. a failed delete still needs an audit
@@ -93,7 +102,7 @@ async def record_audit_event(
     """
     try:
         async with session_factory() as session:
-            session.add(_build_audit_event(
+            row = _build_audit_event(
                 event_type=event_type,
                 actor_user_id=actor_user_id,
                 actor_email=actor_email,
@@ -103,8 +112,10 @@ async def record_audit_event(
                 ip_address=ip_address,
                 outcome=outcome,
                 detail=detail,
-            ))
+            )
+            session.add(row)
             await session.commit()
+            return row.id
     except Exception as exc:  # noqa: BLE001 — defensive: never bubble.
         # Kept as a backstop. Logged at ERROR so a regression in a
         # caller that doesn't pre-snapshot (like the original
@@ -122,6 +133,7 @@ async def record_audit_event(
             error=str(exc),
             error_type=type(exc).__name__,
         )
+        return None
 
 
 def add_audit_event_to_session(

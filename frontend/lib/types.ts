@@ -725,3 +725,39 @@ export interface AdminSubscriptionKPIs {
   mock_revenue: boolean;
   generated_at: string;
 }
+
+// ── Notifications (PR3 of notification train) ──────────────────────
+//
+// Mirrors backend/app/schemas/notification.py. Four categories map to
+// preference toggles; ``security`` is force-on per architect lock.
+// ``link_url`` is a relative app path, ``audit_event_id`` is the
+// forensic correlation back to the audit row that triggered the
+// notification (nullable — not every dispatch has an audit row).
+
+export type NotificationCategory =
+  | "security"
+  | "account"
+  | "org_admin"
+  | "org_activity";
+
+export interface Notification {
+  id: number;
+  category: NotificationCategory;
+  event_type: string;
+  title: string;
+  body: string;
+  link_url: string | null;
+  seen_at: string | null;
+  read_at: string | null;
+  audit_event_id: number | null;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  items: Notification[];
+  next_cursor: string | null;
+}
+
+export interface NotificationUnseenCountResponse {
+  count: number;
+}

@@ -17,10 +17,15 @@ from app.schemas.auth import (
     USERNAME_PATTERN,
     UserResponse,
 )
+from app.models.notification import NotificationCategory
 from app.schemas.user import PasswordChange, ProfileUpdate
 from app.security import create_email_verification_token, hash_password, verify_password
-from app.services import audit_service
+from app.services import audit_service, notification_service
 from app.services.email_service import send_verification_email
+from app.services.notification_templates import (
+    user_email_changed as _tpl_user_email_changed,
+    user_password_changed as _tpl_user_password_changed,
+)
 
 
 def _request_id() -> str | None:
@@ -206,7 +211,7 @@ async def update_profile(
         # actor_email so a future "who was this" lookup after a malicious
         # email swap can recover the original address. New email lives
         # in detail.new_email.
-        await audit_service.record_audit_event(
+        audit_event_id = await audit_service.record_audit_event(
             session_factory,
             event_type="user.email.changed",
             actor_user_id=current_user.id,
@@ -221,6 +226,27 @@ async def update_profile(
                 "new_email": current_user.email,
             },
         )
+
+        # PR3: dispatch the security notification AFTER the audit row
+        # commits. The recipient is the actor (self) — the audit
+        # convention uses ``actor_user_id`` for self-target events.
+        # The NEW email is interpolated into the body so the recipient
+        # can confirm the change at a glance.
+        if audit_event_id is not None:
+            title, body, link_url = _tpl_user_email_changed(
+                new_email=current_user.email
+            )
+            await notification_service.dispatch_notification(
+                db,
+                user_id=current_user.id,
+                category=NotificationCategory.SECURITY,
+                event_type="user.email.changed",
+                title=title,
+                body=body,
+                link_url=link_url,
+                audit_event_id=audit_event_id,
+            )
+            await db.commit()
 
     return _user_response(current_user)
 
@@ -292,7 +318,7 @@ async def change_password(
     # Failure paths above raise HTTPException before reaching this
     # point — failure-path auditing is intentionally not added in this
     # PR (separate scope per the audit-gap-closures task).
-    await audit_service.record_audit_event(
+    audit_event_id = await audit_service.record_audit_event(
         session_factory,
         event_type="user.password.changed",
         actor_user_id=current_user.id,
@@ -304,3 +330,22 @@ async def change_password(
         outcome="success",
         detail={"password_set_initial": was_initial_password_set},
     )
+
+    # PR3 of the notification train: dispatch the in-app notification
+    # AFTER the audit row commits. ``record_audit_event`` returns the
+    # new row's id on success and ``None`` on failure; we skip the
+    # notification when audit failed so the forensic trail stays
+    # consistent (architect-locked ordering — audit IS the trigger).
+    if audit_event_id is not None:
+        title, body, link_url = _tpl_user_password_changed()
+        await notification_service.dispatch_notification(
+            db,
+            user_id=current_user.id,
+            category=NotificationCategory.SECURITY,
+            event_type="user.password.changed",
+            title=title,
+            body=body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await db.commit()
