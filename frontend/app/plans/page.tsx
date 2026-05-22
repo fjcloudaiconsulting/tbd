@@ -639,15 +639,64 @@ function PlanEditor({
     }
   }
 
-  // Save advances the snapshot to the current local state. The auto-PATCH
-  // has already persisted those values; Save's job is to update the
-  // pivot point Discard will revert to, plus give the user the
-  // psychological hand-off they asked for ("this is the version I
-  // intended to keep"). No additional network call from this path.
-  function handleSave() {
-    if (!isDirty) return;
-    setSnapshot({ name, horizon, params });
-    setStatusMsg("Saved");
+  // Save persists the current local state to the server and only then
+  // advances the snapshot. The auto-PATCH layer keeps the chart in
+  // sync between edits, but it's *gated* on isValid — when the editor
+  // is invalid (e.g., a retirement curve row missing `from`), the
+  // auto-PATCH intentionally short-circuits. Without the explicit
+  // server round-trip here, clicking Save in an invalid state would
+  // advance the snapshot to a value the server never accepted, and
+  // Discard would happily roll forward to that broken state. So Save
+  // is also gated on isValid (button disabled below), and we still
+  // PATCH explicitly so the snapshot only advances on the server-
+  // acknowledged value.
+  async function handleSave() {
+    if (!isDirty || !isValid) return;
+    // Cancel any pending debounced PATCH so the explicit Save isn't
+    // racing the auto-PATCH for the same row. Content is identical
+    // either way; killing the debounce just keeps the call count
+    // tight and avoids ordering surprises in tests.
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    setBusy(true);
+    setErr("");
+    try {
+      const updated = await apiFetch<Scenario>(
+        `/api/v1/scenarios/${plan.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            name,
+            horizon_months: horizon,
+            params: {
+              scenario_type: plan.scenario_type,
+              ...params,
+            },
+          }),
+        },
+      );
+      // Advance the snapshot to the server-acknowledged value. If the
+      // PATCH rejected (422 / 500 / network blip), the catch branch
+      // leaves the snapshot at its previous good state, so Discard
+      // can still bail the user out.
+      const serverParams =
+        (updated.params_json as Record<string, unknown>) ?? params;
+      setSnapshot({
+        name: updated.name,
+        horizon: updated.horizon_months,
+        params: serverParams,
+      });
+      onUpdated(updated);
+      await onSimulate(updated);
+      setStatusMsg("Saved");
+    } catch (e) {
+      setStatusMsg("");
+      setErr(`Save failed: ${extractErrorMessage(e, "unknown error")}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   // Discard rolls local state back to the snapshot AND PATCHes the
@@ -773,7 +822,7 @@ function PlanEditor({
                 type="button"
                 className={`${btnPrimary} sm:min-h-0`}
                 onClick={handleSave}
-                disabled={!isDirty || busy}
+                disabled={!isDirty || busy || !isValid}
                 data-testid="plan-save"
               >
                 Save
@@ -796,12 +845,20 @@ function PlanEditor({
               >
                 Re-simulate
               </button>
-              {isDirty && (
+              {isDirty && isValid && (
                 <span
                   className="text-xs text-text-muted"
                   data-testid="plan-dirty-indicator"
                 >
                   Unsaved changes
+                </span>
+              )}
+              {isDirty && !isValid && (
+                <span
+                  className="text-xs text-text-muted"
+                  data-testid="plan-invalid-hint"
+                >
+                  Fix validation errors before saving.
                 </span>
               )}
             </div>
