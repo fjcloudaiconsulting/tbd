@@ -16,6 +16,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { createReport, listReports } from "@/lib/reports/api";
 import type { ReportSummary } from "@/lib/reports/types";
@@ -74,14 +75,16 @@ export default function ReportsListPage() {
 
   if (authLoading) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
-      </div>
+      <AppShell>
+        <div className="flex h-full items-center justify-center">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
+        </div>
+      </AppShell>
     );
   }
 
   return (
-    <main className="mx-auto w-full max-w-5xl px-4 py-8">
+    <AppShell>
       <header className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">Reports</h1>
@@ -153,6 +156,6 @@ export default function ReportsListPage() {
           ))}
         </ul>
       )}
-    </main>
+    </AppShell>
   );
 }

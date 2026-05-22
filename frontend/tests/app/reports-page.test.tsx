@@ -9,6 +9,12 @@ vi.mock("@/lib/reports/api", () => ({
   createReport: vi.fn(),
 }));
 
+vi.mock("@/components/AppShell", () => ({
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="app-shell">{children}</div>
+  ),
+}));
+
 vi.mock("@/components/auth/AuthProvider", async () => {
   const actual = await vi.importActual<
     typeof import("@/components/auth/AuthProvider")
@@ -73,6 +79,16 @@ describe("ReportsListPage", () => {
     createMock.mockReset();
     pushMock.mockReset();
     replaceMock.mockReset();
+  });
+
+  it("renders inside AppShell so users see the sidebar/nav frame", async () => {
+    mockUser(true);
+    listMock.mockResolvedValue([]);
+
+    render(<ReportsListPage />);
+
+    await screen.findByTestId("reports-empty-state");
+    expect(screen.getByTestId("app-shell")).toBeInTheDocument();
   });
 
   it("renders the list of reports from the API", async () => {

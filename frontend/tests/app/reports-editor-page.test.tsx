@@ -27,6 +27,12 @@ vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
 }));
 
+vi.mock("@/components/AppShell", () => ({
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="app-shell">{children}</div>
+  ),
+}));
+
 vi.mock("@/components/auth/AuthProvider", async () => {
   const actual = await vi.importActual<
     typeof import("@/components/auth/AuthProvider")
@@ -140,6 +146,9 @@ describe("ReportEditorPage", () => {
     renderIsolated(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
+    // The editor renders inside AppShell so users keep the
+    // sidebar/nav frame + shell-level surfaces.
+    expect(screen.getByTestId("app-shell")).toBeInTheDocument();
     expect(screen.getByTestId("report-editor-empty")).toBeInTheDocument();
 
     // Add widget opens the picker dialog.

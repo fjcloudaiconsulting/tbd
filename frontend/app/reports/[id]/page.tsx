@@ -25,6 +25,7 @@ import { use, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { getReport, saveLayout } from "@/lib/reports/api";
 import type {
@@ -221,18 +222,20 @@ export default function ReportEditorPage({ params }: PageProps) {
 
   if (authLoading || (!report && !loadError)) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <div
-          data-testid="report-editor-loading"
-          className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent"
-        />
-      </div>
+      <AppShell>
+        <div className="flex h-full items-center justify-center">
+          <div
+            data-testid="report-editor-loading"
+            className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent"
+          />
+        </div>
+      </AppShell>
     );
   }
 
   if (loadError) {
     return (
-      <main className="mx-auto w-full max-w-3xl px-4 py-8">
+      <AppShell>
         <div
           role="alert"
           className="rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger"
@@ -245,14 +248,15 @@ export default function ReportEditorPage({ params }: PageProps) {
         >
           Back to reports
         </Link>
-      </main>
+      </AppShell>
     );
   }
 
   if (!report) return null;
 
   return (
-    <main className="flex h-full flex-col" data-testid="report-editor">
+    <AppShell>
+      <div className="flex h-full flex-col" data-testid="report-editor">
       <header className="flex items-center justify-between border-b border-border bg-surface px-4 py-3">
         <div className="flex items-center gap-3">
           <Link
@@ -363,11 +367,12 @@ export default function ReportEditorPage({ params }: PageProps) {
         )}
       </div>
 
-      <WidgetPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onPick={addWidget}
-      />
-    </main>
+        <WidgetPicker
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          onPick={addWidget}
+        />
+      </div>
+    </AppShell>
   );
 }
