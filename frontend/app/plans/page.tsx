@@ -24,6 +24,7 @@ import { useRouter } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { CustomParamsEditor } from "@/components/scenarios/CustomParamsEditor";
 import { ProjectionChart } from "@/components/scenarios/ProjectionChart";
 import { RetirementParamsEditor } from "@/components/scenarios/RetirementParamsEditor";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -201,14 +202,26 @@ export default function PlansPage() {
             Plan one-off life events. Nothing here touches your real transactions.
           </p>
         </div>
-        <button
-          type="button"
-          className={`${btnPrimary} sm:min-h-0`}
-          onClick={() => setCreateOpen(true)}
-          data-testid="plans-new"
-        >
-          + New plan
-        </button>
+        <div className="flex items-center gap-2">
+          {items.length >= 2 && (
+            <button
+              type="button"
+              className={`${btnSecondary} sm:min-h-0`}
+              onClick={() => router.push("/plans/compare")}
+              data-testid="plans-compare"
+            >
+              Compare plans
+            </button>
+          )}
+          <button
+            type="button"
+            className={`${btnPrimary} sm:min-h-0`}
+            onClick={() => setCreateOpen(true)}
+            data-testid="plans-new"
+          >
+            + New plan
+          </button>
+        </div>
       </header>
 
       {loadErr && <p className={`mb-3 ${errorCls}`}>{loadErr}</p>}
@@ -471,9 +484,11 @@ function PlanEditor({
               />
             )}
             {plan.scenario_type === "custom" && (
-              <p className="text-xs text-text-muted">
-                The custom template editor is available in a later release.
-              </p>
+              <CustomParamsEditor
+                params={params}
+                setParams={setParams}
+                accounts={accounts}
+              />
             )}
             <button
               type="button"
