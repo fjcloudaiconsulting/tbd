@@ -836,6 +836,128 @@ async def test_create_custom_month_over_horizon_rejected(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_create_custom_event_month_equals_horizon_rejected(session_factory):
+    """one_off_income with month == horizon_months → 422.
+
+    Engine iterates ``range(0, horizon_months)`` so the last valid month
+    index is ``horizon_months - 1``. An event at exactly ``horizon_months``
+    would silently never fire; the validator must catch it.
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "one_off_income",
+                    "month": 24,
+                    "amount": "100.00",
+                    "account_id": seeds["account_id"],
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_month_at_horizon_minus_one_ok(session_factory):
+    """one_off_income with month == horizon_months - 1 → 201.
+
+    Pins the last valid month index (inclusive upper bound).
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "one_off_income",
+                    "month": 23,
+                    "amount": "100.00",
+                    "account_id": seeds["account_id"],
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_from_month_equals_horizon_rejected(session_factory):
+    """income_off with from_month == horizon_months → 422.
+
+    from_month is a range start; valid range is [0, horizon_months - 1].
+    """
+    await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "income_off",
+                    "from_month": 24,
+                    "to_month": 30,
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_to_month_equals_horizon_rejected(session_factory):
+    """income_off with to_month == horizon_months → 422.
+
+    to_month is the inclusive end of the range; valid range is
+    [0, horizon_months - 1]. A value equal to horizon_months would
+    point past the last simulated month and silently never fire.
+    """
+    await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "income_off",
+                    "from_month": 3,
+                    "to_month": 24,
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert detail.get("code") == "event_invalid_reference"
+
+
+@pytest.mark.asyncio
+async def test_create_custom_event_to_month_at_horizon_minus_one_ok(session_factory):
+    """income_off with to_month == horizon_months - 1 → 201.
+
+    Pins the inclusive upper bound on the range end.
+    """
+    await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/scenarios",
+            json=_custom_payload_with_events([
+                {
+                    "type": "income_off",
+                    "from_month": 3,
+                    "to_month": 23,
+                },
+            ], horizon=24),
+        )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
 async def test_create_custom_event_negative_month_rejected(session_factory):
     """one_off_income with month < 0 → 422 (Pydantic Field constraint)."""
     seeds = await _seed_users_and_account(session_factory)

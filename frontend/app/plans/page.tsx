@@ -20,7 +20,7 @@
  */
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -133,12 +133,19 @@ const VERDICT_BADGE: Record<AffordabilityVerdict["color"], string> = {
 export default function PlansPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [items, setItems] = useState<Scenario[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [active, setActive] = useState<Scenario | null>(null);
   const [loadErr, setLoadErr] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [createType, setCreateType] = useState<ScenarioType>("trip");
+  const [itemsLoaded, setItemsLoaded] = useState(false);
+  // We consume ?open=<id> exactly once per page mount so a deep-link from
+  // the compare page lands directly in the editor. After we either match
+  // (and open the plan) or fail to match, we clear the query string so a
+  // refresh doesn't re-trigger and re-open repeatedly.
+  const openParamConsumedRef = useRef(false);
 
   useEffect(() => {
     if (loading) return;
@@ -157,12 +164,33 @@ export default function PlansPage() {
       setAccounts(accs);
     } catch (e) {
       setLoadErr(extractErrorMessage(e, "Failed to load plans"));
+    } finally {
+      setItemsLoaded(true);
     }
   }, []);
 
   useEffect(() => {
     if (user) void loadAll();
   }, [user, loadAll]);
+
+  // ?open=<id> from the compare page → open the matching plan in the
+  // editor as soon as the scenarios list has loaded. If no scenario
+  // matches, just drop the param and stay on the list. Either way,
+  // strip the query string so a refresh doesn't re-open.
+  useEffect(() => {
+    if (openParamConsumedRef.current) return;
+    if (!user) return;
+    if (!itemsLoaded) return;
+    const raw = searchParams?.get("open");
+    if (!raw) return;
+    const id = Number(raw);
+    if (Number.isFinite(id)) {
+      const match = items.find((s) => s.id === id);
+      if (match) setActive(match);
+    }
+    openParamConsumedRef.current = true;
+    router.replace("/plans");
+  }, [searchParams, items, itemsLoaded, user, router]);
 
   async function deletePlan(id: number) {
     try {

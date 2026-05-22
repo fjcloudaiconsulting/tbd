@@ -379,7 +379,13 @@ async def _validate_custom_event_references(
     Raises HTTPException(422) with detail code ``event_invalid_reference``
     when an event references a recurring_id / account_id / category_id
     that does not belong to the current user's org, or when a month
-    (or from_month / to_month) is < 0 or > horizon_months.
+    (or from_month / to_month) is < 0 or >= horizon_months.
+
+    The engine iterates ``range(0, horizon_months)`` so valid month
+    indices are ``[0, horizon_months - 1]``. An event at
+    ``month == horizon_months`` (or ``from_month == horizon_months``,
+    or ``to_month == horizon_months``) would silently never fire; we
+    reject it as a misconfiguration instead.
 
     Schema-level validators already enforce ``from_month <= to_month``
     and ``>= 0`` on each event; this function is the cross-user
@@ -388,7 +394,10 @@ async def _validate_custom_event_references(
     events = params.get("events") or []
     for ev in events:
         ev_type = ev.get("type")
-        # Bound month / from_month / to_month against horizon.
+        # Bound month / from_month / to_month against horizon. The engine
+        # iterates range(0, horizon_months), so the last valid month index
+        # is horizon_months - 1. Anything >= horizon_months silently does
+        # nothing — reject it.
         for field_name in ("month", "from_month", "to_month"):
             val = ev.get(field_name)
             if val is None:
@@ -403,14 +412,15 @@ async def _validate_custom_event_references(
                         "message": f"custom event {field_name} must be an integer",
                     },
                 )
-            if ival > horizon_months:
+            if ival >= horizon_months:
                 raise HTTPException(
                     status_code=422,
                     detail={
                         "code": "event_invalid_reference",
                         "message": (
-                            f"custom event {field_name}={ival} exceeds "
-                            f"horizon_months={horizon_months}"
+                            f"custom event {field_name}={ival} is outside the "
+                            f"simulated range [0, horizon_months - 1] "
+                            f"(horizon_months={horizon_months})"
                         ),
                     },
                 )
