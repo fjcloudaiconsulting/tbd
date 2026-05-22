@@ -13,6 +13,7 @@ import {
   HelpCircle,
   LayoutDashboard,
   LogOut,
+  Megaphone,
   Menu,
   PieChart,
   RefreshCw,
@@ -27,6 +28,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import AppShellAddTransactionCta, {
   shouldShowAddTransactionCta,
 } from "@/components/AppShellAddTransactionCta";
+import AnnouncementBar from "@/components/announcements/AnnouncementBar";
 import AppShellFooter from "@/components/AppShellFooter";
 import { Logo } from "@/components/brand/Logo";
 import ThemeToggle from "@/components/ui/ThemeToggle";
@@ -144,6 +146,18 @@ const systemItems: readonly SystemNavItem[] = [
     label: "Plans",
     permission: "plans.manage",
     icon: <CreditCard {...NAV_ICON_PROPS} />,
+  },
+  {
+    href: "/system/announcements",
+    label: "Announcements",
+    // No DB-role permission key exists for announcements (architect-locked
+    // superadmin-only, see specs/2026-05-21-announcement-banner-system.md).
+    // The forward-compatible gate in lib/auth.ts short-circuits true on
+    // is_superadmin and false on anything else, so this filters
+    // correctly today and is ready for a future "announcements.manage"
+    // permission without touching this file.
+    permission: "announcements.manage",
+    icon: <Megaphone {...NAV_ICON_PROPS} />,
   },
 ];
 
@@ -471,6 +485,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <ThemeToggle />
           </div>
         </header>
+        <AnnouncementBar />
         <main className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
         <AppShellFooter />
       </div>

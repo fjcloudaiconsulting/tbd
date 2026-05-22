@@ -10,3 +10,29 @@ beforeEach(() => {
     window.localStorage.clear();
   }
 });
+
+// Global stub for the announcement banner.
+//
+// ``AnnouncementBar`` is mounted unconditionally in ``AppShell`` and
+// fetches ``/api/v1/announcements`` on every page render. Almost every
+// page test mocks ``apiFetch`` with ad-hoc ``mockResolvedValueOnce``
+// chains scoped to the page's own endpoints, so the bar's hidden call
+// either (a) consumes a fixture meant for the page (causing the page
+// to receive ``undefined`` from the now-empty queue) or (b) crashes
+// the global render with ``items.map is not a function``.
+//
+// Tests that exercise the bar itself live in
+// ``tests/components/announcements/announcement-bar.test.tsx`` and
+// import the component directly — they call ``vi.unmock`` to restore
+// the real module before their own ``vi.mock`` declaration.
+//
+// Architect-locked decision (PR #340 review, 2026-05-22): the global
+// stub is at the *component* layer rather than the route table layer
+// because there is no shared route-table helper today, and adding one
+// would touch every page test. A no-op stub keeps the AppShell test
+// surface honest without forcing each test to re-declare an
+// announcement fixture.
+vi.mock("@/components/announcements/AnnouncementBar", () => ({
+  __esModule: true,
+  default: () => null,
+}));
