@@ -1,6 +1,6 @@
 # L4.4 admin slices — admin invite, account-recovery resets, read-only impersonation — design
 
-**Status:** draft for architect review 2026-05-22. Spec covers the three remaining L4.4 slices after the cross-org user search slice already shipped (see Substrate audit). Replaces no prior spec; this is the first full L4.4 doc.
+**Status:** ready for implementation (2026-05-22). All architect questions resolved; see §17 for the third-pass locks on Q1-Q6. Spec covers the three remaining L4.4 slices after the cross-org user search slice already shipped (see Substrate audit). Replaces no prior spec; this is the first full L4.4 doc.
 **Date:** 2026-05-22.
 
 **Source:** roadmap L4.4 (`memory/project_roadmap.md:124`). The user-management row was reset to partial after PRs #221/#222/#223/#280 closed the org-member-management slice. Open work: cross-org user search, admin invite, password / email / MFA reset, impersonate read-only. Cross-org search is already in `main` (PR #347-class, see Substrate audit §1.4). This spec scopes the remaining three slices.
@@ -393,6 +393,51 @@ Three buttons in a new "Account recovery" card on `/admin/users/{user_id}`:
 
 All three modals reuse `ConfirmModal` / `Modal` primitives from `components/ui/`.
 
+#### 4.5 Reset-spike alert (Q4 lock — mitigates T-Reset-2)
+
+A peer-detection layer on top of the per-actor 10/hour rate limit. When a single admin triggers 5 or more resets within a rolling 10-minute window, every OTHER superadmin receives a SECURITY-category notification flagging the spike. The actor themselves is NEVER a recipient (a compromised admin would otherwise see their own alert and act on it).
+
+**Counter shape**: Redis-backed rolling window keyed per actor.
+
+```
+Key:    reset_spike:{actor_user_id}:{rolling_10min_window}
+        where rolling_10min_window = floor(now_unix / 600) — bucketed
+Value:  monotonically-incrementing counter (INCR)
+TTL:    660 seconds (11 minutes — one minute of slack past the window)
+```
+
+Each of the three reset endpoints (`/admin/users/{id}/password-reset`, `/admin/users/{id}/email-change`, `/admin/users/{id}/mfa/disable`), AFTER the audit row commits successfully, performs:
+
+```python
+# Sketch — full impl in the resets PR (PR 3 of this train).
+window = int(time.time()) // 600
+key = f"reset_spike:{actor.id}:{window}"
+count = await redis.incr(key)
+if count == 1:
+    await redis.expire(key, 660)
+
+if count >= 5:
+    # Fanout SECURITY notification to every OTHER superadmin
+    await dispatch_notification_to_org_admins(
+        db,
+        category=NotificationCategory.SECURITY,
+        event_type="admin.reset_spike.detected",
+        title="Admin reset-spike threshold reached",
+        body=f"Admin {actor.email} triggered {count} account-recovery resets in the last 10 minutes.",
+        link_url="/admin/audit",
+        filter_to=Role.SUPERADMIN,
+        exclude_user_ids=[actor.id],
+    )
+```
+
+The fanout helper is `dispatch_notification_to_org_admins` from `notification_service`, filtered to superadmins (NOT org admins of any specific org — the audience is platform-wide superadmins). The actor is excluded via `exclude_user_ids`.
+
+**Threshold rationale**: 5-in-10-min sits well below the 10/hour per-actor cap, giving peers a chance to see the spike at half-cap rather than waiting for it to hit the hard limit. The actor still has 5 more resets available before the rate limiter fires, but every additional reset above the 5-threshold continues to refire the fanout (the check is `count >= 5`, not `count == 5`) — this means the 6th, 7th, etc. reset in-window each fire a fresh notification. We accept the duplicate-notification cost for the stronger signal.
+
+**Audit row**: each fanout-firing reset still writes its own per-action audit row (`admin.user.password_reset.triggered` etc.). The spike-detection event itself does NOT write a separate audit row — the per-reset rows in close temporal sequence ARE the audit record. The fanout notifications are recoverable from the notifications table.
+
+**Threat-model coverage**: T-Reset-2 (compromised admin mass-reset DoS) — see §7. The mitigation is the rate limit at 10/hour plus peer detection at the 5-in-10-min threshold; the residual is that an attacker still gets 5 free resets before peers are alerted, which is acceptable for v1.
+
 ### 5. Impersonate read-only
 
 #### 5.1 Token shape
@@ -725,6 +770,53 @@ Superadmin               Frontend                Backend                Redis   
     │                       │ Banner unmounts       │                      │                 │
 ```
 
+#### 5.7 Immediate revocation on superadmin demotion (Q6 lock — mitigates T-Imp-3 "actor demoted" branch)
+
+When superadmin A is mid-impersonation and superadmin B (or any path that clears `is_superadmin`) removes A's superadmin status, every active impersonation session A holds must end immediately. Relying on the 15-min Redis TTL would leave a window where a demoted superadmin retains cross-org read access; that window is unacceptable.
+
+**Mechanism**: the superadmin-removal endpoint (the path that flips `is_superadmin=False`, typically owned by the L4.8 role editor or the platform-admin-management surface) runs a sweep AFTER the role-change row commits.
+
+```python
+# Sketch — full impl in the role-management PR.
+# After: await db.commit()  (role change committed)
+
+# Find every active impersonation jti where THIS user is the impersonator.
+# The Redis schema stores impersonation:active:{jti} = {actor_id, target_id, ...}.
+# We use the by_actor key as the index (one active session per actor invariant from §5.2).
+by_actor_key = f"impersonation:by_actor:{demoted_user.id}"
+active_jti = await redis.get(by_actor_key)
+
+if active_jti is not None:
+    active_key = f"impersonation:active:{active_jti}"
+    # Read the session detail BEFORE deletion so the audit row can carry target info
+    session_blob = await redis.get(active_key)
+    await redis.delete(active_key)
+    await redis.delete(by_actor_key)
+
+    # Audit row records the forced revocation
+    await record_audit_event(
+        actor_user_id=demoted_user.id,        # the demoted superadmin (now ex-superadmin)
+        actor_email=demoted_user.email,
+        target_org_id=session_blob.get("target_org_id") if session_blob else None,
+        event_type="admin.impersonation.revoked",
+        detail={
+            "jti": active_jti,
+            "target_user_id": session_blob.get("target_id") if session_blob else None,
+            "reason": "actor_superadmin_revoked",
+            "revoked_by_user_id": revoker.id,
+            "revoked_by_email": revoker.email,
+        },
+    )
+```
+
+If the by_actor scan needs to evolve to handle multiple active sessions per actor (currently one, enforced by §5.2), the Redis schema would need a SCAN-based index — flagged for the impl PR but not required by v1.
+
+**Frontend behaviour for the demoted actor**: the next request the frontend makes with the now-revoked impersonation token resolves through `get_current_user` → Redis lookup → key missing → 401. The frontend catches the 401 and bounces back to the regular admin shell (same path as natural 15-min expiry); the difference is timing, not UX. The toast message is "Impersonation session ended" (generic — we don't disclose the demotion details on the demoted user's screen).
+
+**Audit ordering**: the role-change audit row (`admin.role.changed` or equivalent from the role-management surface) commits FIRST; the `admin.impersonation.revoked` row commits SECOND. Both rows are queryable for forensic reconstruction of "when did the cross-org read access actually end".
+
+**Threat-model coverage**: T-Imp-3 (persistent impersonation session — specifically the "actor demoted while session active" branch). The mitigation closes the 15-min residual window for the demotion case. The natural-expiry T-Imp-3 mitigation (15-min TTL + auto-exit) still covers the non-demotion case.
+
 ### 6. Migrations
 
 Single Alembic revision per PR:
@@ -749,12 +841,12 @@ Per `CLAUDE.md`: migrations run via the lifespan + migrate wrapper.
 | T-Inv-3 | Email change between invite send and accept | Admin invite | Token embeds the email. Accept endpoint refuses if a User row already has the embedded email (409 user_already_exists). | None. |
 | T-Inv-4 | Org-admin invite used to plant a backdoor admin into a customer's org | Admin invite (org) | Audit row carries `detail.via_platform_admin=true` so a customer org owner querying their org's audit feed (when L3.9 ships) sees that a platform admin issued the invite. v1 doesn't surface this to the org owner; customers must trust platform. | Pre-launch: acceptable. Post-launch: L3.9 customer-facing org audit should surface platform-admin-issued invites. |
 | T-Reset-1 | Reset poisoning — admin types `evi1.com` instead of `evil.com` on email change | Reset | Two-key typed confirmation (new_email + new_email_confirm must match). normalize_email + uniqueness preflight. Notification to OLD email so user catches the move. | Skilled attacker who can also intercept the OLD email won't be stopped here. Detection: `admin.user.email_change.triggered` audit row with old + new in detail. |
-| T-Reset-2 | Mass-reset by a compromised admin (DoS against users) | Reset | 10/hour per actor rate limit. SECURITY-category notification to every affected user. | Compromised admin can still lock 10 users/hour out of their accounts. Detection by audit feed + user notifications spike. Acceptable bound for v1. |
+| T-Reset-2 | Mass-reset by a compromised admin (DoS against users) | Reset | 10/hour per actor rate limit. SECURITY-category notification to every affected user. **Plus reset-spike alert (Q4 lock, §4.5)**: at 5 resets in 10 min by the same actor, every OTHER superadmin gets a SECURITY-category notification (`admin.reset_spike.detected`). Peer detection at half-cap. | Compromised admin still gets 5 free resets before peers are alerted (5-in-10-min threshold) and 10/hour before the rate limiter fires. Acceptable bound for v1. |
 | T-Reset-3 | Admin sees the new password (key knowledge) | Reset | Admin NEVER sets the new credential. Token-mediated reset means only the user can choose the new password. | None — by design. |
 | T-Reset-4 | MFA disable without justification | Reset (MFA) | `reason` field is REQUIRED, persisted in `audit_events.detail.reason`. Notification to user includes the reason verbatim. | A compromised admin can put garbage in reason; the audit + notification still records who did it. |
 | T-Imp-1 | Impersonation token used to mutate (hijack via stolen token) | Impersonation | Middleware blocks ALL non-GET/HEAD. Plus 15-min hardcoded expiry. Plus Redis jti revocation. Plus sensitive-admin-route allowlist explicitly rejects impersonation tokens (T-Imp-1 lock). | Stolen impersonation token can READ the target user's app surface for up to 15 minutes. Audit + notification record this. |
 | T-Imp-2 | Token leak via logging / error messages | Impersonation | Tokens never appear in structlog (no `logger.info("...", token=t)` paths; same hygiene as access tokens). Errors return generic envelope; no token echo. | Future careless code. Covered by grep-based test. |
-| T-Imp-3 | Persistent impersonation session (never exits) | Impersonation | Hardcoded 15-min Redis TTL. Token JWT `exp` matches. Auto-exit on expiry from the frontend. Redis key disappearance forces a fresh 401 next request. | Banner shows expiry countdown — user can see when session ends. |
+| T-Imp-3 | Persistent impersonation session (never exits) | Impersonation | Hardcoded 15-min Redis TTL. Token JWT `exp` matches. Auto-exit on expiry from the frontend. Redis key disappearance forces a fresh 401 next request. **Plus immediate revocation on superadmin demotion (Q6 lock, §5.7)**: the role-removal endpoint sweeps Redis for any `impersonation:active:{jti}` keys where actor matches the demoted user and DELs them, writing `admin.impersonation.revoked` with `detail.reason="actor_superadmin_revoked"`. Closes the "actor demoted while session active" branch. | Banner shows expiry countdown for the natural-expiry case. Demotion case: next request after the role flip resolves 401 and frontend bounces back to admin shell with "Impersonation session ended" toast. |
 | T-Imp-4 | Admin impersonates self / superadmin to escalate | Impersonation | Router preflight rejects `target == actor` (400) and `target.is_superadmin=True` (409). | None. |
 | T-Imp-5 | Concurrent impersonation sessions per actor (forensic confusion) | Impersonation | Redis `impersonation:by_actor:{actor_id}` enforces ONE active session per actor. 2nd Enter returns 409 `impersonation_session_active`. | Actor can rapidly Enter → Exit → Enter different targets; each cycle writes audit rows so the trail stays clean. |
 | T-Imp-6 | Impersonation banner CSS'd away by attacker | Impersonation | Banner uses hardcoded inline styles, not theme tokens. Z-index normal flow (pushes content; can't be `display: none`'d via theme override). | Browser dev tools can override anything client-side. Server-side correctness (mutations rejected, audit rows written) is the real defense — the banner is for the LEGITIMATE admin's awareness, not against an attacker. |
@@ -775,8 +867,11 @@ All new event_type strings:
 | `admin.user.mfa_disabled` | Admin disables MFA | superadmin | target.org_id | `target_user_id, target_email, kind="mfa", reason` |
 | `admin.impersonation.entered` | Impersonation session starts | superadmin | target.org_id | `target_user_id, target_email, jti, reason, expires_at_iso` |
 | `admin.impersonation.exited` | Impersonation session ends (manual or expiry) | superadmin | target.org_id | `target_user_id, target_email, jti, duration_seconds, ended_by="manual"|"expiry"` |
+| `admin.impersonation.revoked` | Impersonation session force-ended because actor lost superadmin status (Q6 lock, §5.7) | demoted user (ex-superadmin) | target.org_id (from session blob) | `target_user_id, jti, reason="actor_superadmin_revoked", revoked_by_user_id, revoked_by_email` |
 
 (Existing `org.invitation.sent` / `org.invitation.accepted` get an additional `detail.via_platform_admin: true` flag when issued by a superadmin acting on the org.)
+
+The reset-spike alert (Q4 lock, §4.5) does NOT write its own event_type. The per-reset rows (`admin.user.password_reset.triggered` etc.) already form the audit record; the spike-detection layer only fires notifications.
 
 ### 9. Notification dispatch
 
@@ -790,6 +885,7 @@ All notifications in this spec use `category=SECURITY` per #354's lock. Security
 | `admin.impersonation.session` | target_user_id | An administrator viewed your account |
 | `admin.platform_admin.granted` | new_superadmin_user_id | Welcome — you're now a platform administrator |
 | `admin.platform_admin.granted` (fanout) | every existing superadmin (one row each) | A new platform administrator was added |
+| `admin.reset_spike.detected` (Q4 lock, §4.5) | every OTHER superadmin (excluding the actor) | Admin reset-spike threshold reached |
 
 Dispatch contract: notification rows are written in the SAME `AsyncSession` as the action that caused them (per the #354 persistence-first lock). Audit rows are written through `audit_service.record_audit_event` which opens its own session.
 
@@ -825,8 +921,8 @@ If operations needs to flex any of these, the PR is a 1-line constant change; we
 | `backend/app/models/platform_admin_invitation.py` | NEW model |
 | `backend/alembic/versions/056_platform_admin_invitations.py` | NEW migration |
 | `backend/app/services/platform_admin_invitation_service.py` | NEW service (send/list/revoke/accept) |
-| `backend/app/services/admin_user_recovery_service.py` | NEW service (password / email / MFA admin-triggered reset) |
-| `backend/app/services/impersonation_service.py` | NEW service (enter/exit/status, Redis key management) |
+| `backend/app/services/admin_user_recovery_service.py` | NEW service (password / email / MFA admin-triggered reset, plus reset-spike Redis counter + fanout per Q4 lock §4.5) |
+| `backend/app/services/impersonation_service.py` | NEW service (enter/exit/status, Redis key management, plus `revoke_active_sessions_for_actor` helper per Q6 lock §5.7) |
 | `backend/app/middleware/impersonation_middleware.py` | NEW pure-ASGI middleware |
 | `backend/app/main.py` | Mount `ImpersonationReadOnlyMiddleware` after RequestContextMiddleware |
 | `backend/app/deps.py` | Extend `get_current_user` to handle `type=impersonation` tokens |
@@ -877,8 +973,8 @@ If operations needs to flex any of these, the PR is a 1-line constant change; we
 |---|---|---|---|---|
 | 1 | **L4.4 audit taxonomy seed + permissions** | none | 80 / 0 | Adds the 3 new permissions to `app/auth/permissions.py`. Documents the 8 new event_type strings in a code comment on `audit_event.py` for searchability. No new endpoints, no migration. Low-risk first PR. |
 | 2 | **L4.4 admin invite (org-admin + platform-admin)** | PR 1 | 600 / 350 | New `platform_admin_invitations` table + service + router. Extends existing org-invitation audit detail with `via_platform_admin`. New Mailgun template. Frontend: invite buttons on `/admin/users` + `/admin/orgs/{id}`, accept page. **One migration**: revision `056`. |
-| 3 | **L4.4 admin-triggered account recovery (password / email / MFA)** | PR 1 | 450 / 300 | New `admin_user_recovery_service`. 3 new endpoints on `admin_users` router. Frontend: "Account recovery" card on `/admin/users/{id}` with 3 modals. Notification + audit on each. No migration. |
-| 4 | **L4.4 impersonation backend (token + middleware + endpoints)** | PR 1 | 500 / 0 | New `create_impersonation_token`. New pure-ASGI middleware. New `impersonation_service` (Redis-backed). New `admin_impersonation` router. Extends `get_current_user` to recognize the token type. `forbid_impersonation_session` dependency added to 8 admin routes. NO frontend in this PR. No migration. |
+| 3 | **L4.4 admin-triggered account recovery (password / email / MFA)** | PR 1 | 480 / 300 | New `admin_user_recovery_service`. 3 new endpoints on `admin_users` router. Frontend: "Account recovery" card on `/admin/users/{id}` with 3 modals. Notification + audit on each. **Plus reset-spike alert (Q4, §4.5)** — Redis counter + SECURITY-fanout to peer superadmins at 5-in-10-min. No migration. |
+| 4 | **L4.4 impersonation backend (token + middleware + endpoints)** | PR 1 | 540 / 0 | New `create_impersonation_token`. New pure-ASGI middleware. New `impersonation_service` (Redis-backed). New `admin_impersonation` router. Extends `get_current_user` to recognize the token type. `forbid_impersonation_session` dependency added to 8 admin routes. **Plus immediate-revocation sweep helper (Q6, §5.7)** — exported from `impersonation_service` as `revoke_active_sessions_for_actor(actor_user_id, revoker)`, called by whichever role-removal surface lands first (this PR ships the helper; the role-management surface wires the call site). NO frontend in this PR. No migration. |
 | 5 | **L4.4 impersonation UI + audit completion** | PR 4 | 80 / 450 | New `ImpersonationBanner` component. `apiFetch` impersonation-token preference. "Impersonate" button on `/admin/users/{id}`. ConfirmModal + reason textarea. Exit notification dispatch wired (writes the SECURITY-category notification to the impersonated user). No migration. |
 
 Total estimate: **~1700 backend LOC, ~1100 frontend LOC** across 5 PRs.
@@ -897,15 +993,23 @@ Total estimate: **~1700 backend LOC, ~1100 frontend LOC** across 5 PRs.
 10. **Impersonation notification**: written at END of session, single SECURITY-category row.
 11. **Token storage frontend**: localStorage (`impersonation_token`); regular access token unaffected.
 12. **MFA reset is asymmetric**: server-side disable, REQUIRED reason. No "email me an MFA reset link" path — users locked out of their device can't receive that anyway.
+13. **(Q1, 2026-05-22)** Org-admin invite "issued by platform admin" badge in org-members UI: NO in v1. `via_platform_admin` lives in `audit_events.detail` only until L3.9 customer audit feed ships.
+14. **(Q2, 2026-05-22)** Impersonation Exit → Enter cooldown: NO cooldown. Per-actor 20/hour cap plus the one-active-session invariant cover the abuse case.
+15. **(Q3, 2026-05-22)** Platform-admin-accept fanout cap: NO cap. Every existing superadmin gets a notification per accept; opt-out lives in the existing notification preference layer.
+16. **(Q4, 2026-05-22)** Reset-spike alert: YES. At 5 resets in 10 min by one actor, fanout `admin.reset_spike.detected` SECURITY notification to every OTHER superadmin. Implementation in §4.5; mitigates T-Reset-2. Lands as part of resets PR (PR 3).
+17. **(Q5, 2026-05-22)** Reset-modal typeahead for common reasons: NO in v1. Free-text reason fields only.
+18. **(Q6, 2026-05-22)** Immediate impersonation revocation when actor loses superadmin status: YES. Role-removal endpoint sweeps Redis for active impersonation jtis where actor matches the demoted user and DELs them, writing `admin.impersonation.revoked` with `detail.reason="actor_superadmin_revoked"`. Implementation in §5.7; mitigates the demotion branch of T-Imp-3.
 
-### 17. Open questions for architect
+### 17. Decisions locked (2026-05-22, third pass — architect answers to open questions)
 
-1. **Org-admin invite via platform admin** — should the customer org owner see "invite was issued by a platform admin" in the v1 org members view, or is this purely an `audit_events.detail.via_platform_admin` field for the L3.9-future customer audit feed?
-2. **Impersonation cooldown between sessions**: should there be a forced cooldown (e.g. 60 seconds) after Exit before the same actor can Enter again on a different target? Argument for: prevents drive-by impersonation chains. Argument against: hampers legitimate "let me check both alice and bob" debug flow. Spec defaults to NO cooldown; bring this up if there's a compliance reason.
-3. **Multiple-superadmin notification fanout on platform admin accept**: spec writes one notification PER existing superadmin. With N=3 superadmins this is 3 rows; with N=20 it's 20 rows + 20 emails (if all have `email_security=true`, which is forced). At low N this is fine; do we want to cap?
-4. **Mass-reset alert threshold**: if a single admin triggers 5+ resets in 10 minutes, do we want to alert the OTHER superadmins via an `admin.reset_spike.detected` notification? Not in v1, but flagging now.
-5. **`reason` field UX defaults**: should the reset modals carry a typeahead of common reasons ("user request", "lost device", "support ticket #XYZ")? V1 has free text only; raise if there's a structured-classification need.
-6. **Impersonation token revocation across superadmins**: if superadmin A is mid-impersonation and superadmin B revokes A's superadmin status, does the impersonation session end immediately? Current spec: no, because impersonation token jti is in Redis with 15-min TTL independent of the impersonator's user status. Acceptable per the 15-min cap. Architect may want a stronger "impersonator no longer superadmin → revoke all their active impersonation jtis" sweep.
+All six open questions are now resolved. Spec is in ready-for-implementation state.
+
+1. **Q1 — Org-admin invite "issued by platform admin" badge in v1 org-members UI**: **NO** in v1. The `audit_events.detail.via_platform_admin` field is the durable record; surfacing it to the customer org owner is deferred until L3.9 ships a customer-facing audit feed. Rationale: pre-launch we have no L3.9 customer audit surface yet; the v1 badge would add UI without a coherent audit feed to back it.
+2. **Q2 — Forced cooldown between impersonation Exit and next Enter**: **NO** cooldown. Spec stays at "actor may immediately Enter a new target after Exit". Rationale: legitimate debug flows ("check alice then bob") outweigh the drive-by-chain risk, and every Enter still writes an audit row + per-actor 20/hour cap is already in place.
+3. **Q3 — Cap on platform-admin-accept fanout notifications**: **NO** cap. Every existing superadmin receives a notification per accept, regardless of N. Rationale: the notification system's existing per-user opt-out (within the SECURITY category's forced-on constraints) is the right mechanism; introducing a fanout cap would create a transparency gap when N grows.
+4. **Q4 — Mass-reset alert threshold (alert other superadmins when one admin triggers 5+ resets in 10 min)**: **YES**, implement the reset-spike alert. Rationale: mass-reset is a high-signal compromised-admin indicator; firing a SECURITY-category notification to every OTHER superadmin (excluding the actor) gives peer detection within the same audit window. Implementation sketch in §4.5; threat-model entry as mitigation for T-Reset-2. Lands as part of PR 3 (resets).
+5. **Q5 — Typeahead common reasons on reset modals**: **NO** typeahead in v1. Reset modals keep free-text reason fields. Rationale: without operational data we don't know which reasons cluster; locking a v1 taxonomy risks coding the wrong shape. Revisit post-launch if a structured-classification need emerges.
+6. **Q6 — Immediate impersonation revocation when superadmin status is removed**: **YES**, immediate revocation; do not rely on the 15-min TTL. Rationale: a demoted superadmin should lose ALL active capabilities immediately, including read-only impersonation; allowing up to 15 more minutes of cross-org read access after demotion is an unacceptable seam. Implementation sketch in §5.7; threat-model entry as mitigation for T-Imp-3 "actor demoted while session active" branch. Lands as part of the superadmin-role-management PR (PR 4 of this train extended, or the L4.8 role editor PR — whichever lands first owns the sweep code).
 
 ## Naming + cross-references
 
