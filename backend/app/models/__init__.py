@@ -53,6 +53,7 @@ from app.models.org_ai_caps import (  # noqa: F401
     OrgAIDefaultCaps,
     OrgAIFeatureCaps,
 )
+from app.models.org_ai_consent import OrgAIConsent  # noqa: F401
 
 __all__ = [
     "Base",
@@ -106,6 +107,7 @@ __all__ = [
     "OrgAIFeatureRouting",
     "OrgAIDefaultCaps",
     "OrgAIFeatureCaps",
+    "OrgAIConsent",
     "ROUTABLE_FEATURE_NAMES",
     "UserDismissedAnnouncement",
     "Notification",

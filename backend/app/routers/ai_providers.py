@@ -30,6 +30,11 @@ from app.schemas.org_ai_caps import (
     DefaultCapsResponse,
     FeatureCapsResponse,
 )
+from app.schemas.org_ai_consent import (
+    ConsentCreate,
+    ConsentResponse,
+    ConsentSnapshotResponse,
+)
 from app.schemas.org_ai_routing import (
     DefaultRoutingResponse,
     DefaultRoutingWrite,
@@ -39,6 +44,7 @@ from app.schemas.org_ai_routing import (
 )
 from app.services import (
     ai_caps_service,
+    ai_consent_service,
     ai_credential_service,
     ai_routing_service,
 )
@@ -362,6 +368,66 @@ async def delete_feature_caps(
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------
+# Consent endpoints (PR1). Append-only — POST writes a new row, GET
+# returns the effective snapshot. Refusal logic in the native adapter
+# lands in PR4 alongside the AI_NATIVE_ENABLED gate flip.
+# --------------------------------------------------------------------
+
+CONSENT_PREFIX = "/consent"
+
+
+@router.get(CONSENT_PREFIX, response_model=ConsentSnapshotResponse)
+async def get_consent(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_org_admin),
+) -> ConsentSnapshotResponse:
+    snapshot = await ai_consent_service.get_current_consents(
+        db, org_id=current_user.org_id
+    )
+    return ConsentSnapshotResponse(
+        allow_training=snapshot.allow_training,
+        allow_rag=snapshot.allow_rag,
+        allow_telemetry=snapshot.allow_telemetry,
+        consent_version=snapshot.consent_version,
+        consented_by_user_id=snapshot.consented_by_user_id,
+        consented_at=snapshot.consented_at,
+        has_consent=snapshot.has_consent,
+    )
+
+
+@router.post(
+    CONSENT_PREFIX,
+    response_model=ConsentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_consent(
+    payload: ConsentCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+) -> ConsentResponse:
+    row = await ai_consent_service.write_consent_row(
+        db,
+        org_id=current_user.org_id,
+        consent_version=payload.consent_version,
+        allow_training=payload.allow_training,
+        allow_rag=payload.allow_rag,
+        allow_telemetry=payload.allow_telemetry,
+        revoked=payload.revoked,
+        consented_by_user_id=current_user.id,
+        session_factory=session_factory,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+    )
+    return ConsentResponse.model_validate(row)
 
 
 @router.get("/{credential_id}", response_model=OrgAICredentialResponse)
