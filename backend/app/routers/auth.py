@@ -68,9 +68,14 @@ from app.security import (
     verify_password,
 )
 from app.captcha import verify_captcha
+from app.models.notification import NotificationCategory
 from app.rate_limit import get_client_ip, limiter
-from app.services import audit_service
+from app.services import audit_service, notification_service
 from app.services.email_service import send_mfa_email_code, send_password_reset_email, send_verification_email
+from app.services.notification_templates import (
+    user_mfa_disabled as _tpl_user_mfa_disabled,
+    user_mfa_enabled as _tpl_user_mfa_enabled,
+)
 from app.services.mfa_service import (
     MfaConfigError,
     decrypt_secret,
@@ -2077,7 +2082,7 @@ async def mfa_enable(
 
     # Audit AFTER the business commit succeeds. PR3 of the notification
     # train uses this row as the trigger source for user.mfa.enabled.
-    await audit_service.record_audit_event(
+    audit_event_id = await audit_service.record_audit_event(
         session_factory,
         event_type="user.mfa.enabled",
         actor_user_id=current_user.id,
@@ -2089,6 +2094,23 @@ async def mfa_enable(
         outcome="success",
         detail=None,
     )
+
+    # PR3 of the notification train: dispatch the in-app security
+    # notification AFTER the audit row commits. Self-target — the
+    # user who flipped MFA on receives the confirmation.
+    if audit_event_id is not None:
+        title, body, link_url = _tpl_user_mfa_enabled()
+        await notification_service.dispatch_notification(
+            db,
+            user_id=current_user.id,
+            category=NotificationCategory.SECURITY,
+            event_type="user.mfa.enabled",
+            title=title,
+            body=body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await db.commit()
 
     return MfaEnableResponse(recovery_codes=codes)
 
@@ -2115,7 +2137,7 @@ async def mfa_disable(
     # Audit AFTER the business commit succeeds. PR3 of the notification
     # train uses this row as the trigger source for user.mfa.disabled —
     # a security-critical signal (the user can react if it wasn't them).
-    await audit_service.record_audit_event(
+    audit_event_id = await audit_service.record_audit_event(
         session_factory,
         event_type="user.mfa.disabled",
         actor_user_id=current_user.id,
@@ -2127,6 +2149,24 @@ async def mfa_disable(
         outcome="success",
         detail=None,
     )
+
+    # PR3: dispatch the in-app security notification AFTER the audit
+    # row commits. MFA-disabled is the louder of the two MFA signals
+    # since a stolen credential is now sufficient for full access; the
+    # template recommends re-enable.
+    if audit_event_id is not None:
+        title, body, link_url = _tpl_user_mfa_disabled()
+        await notification_service.dispatch_notification(
+            db,
+            user_id=current_user.id,
+            category=NotificationCategory.SECURITY,
+            event_type="user.mfa.disabled",
+            title=title,
+            body=body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await db.commit()
 
     return {"detail": "MFA disabled"}
 
