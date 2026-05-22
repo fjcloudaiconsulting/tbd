@@ -35,7 +35,24 @@ Read order: parent first, then this. Sections here OVERRIDE the parent only wher
 
 **GDPR posture.** Sending one final transactional email to a last-known address for a security event the user (or admin acting on their behalf) just executed is legitimate-interest, not marketing. It mirrors the password-change pattern. No retention concern: we are not storing the email beyond the audit snapshot, which already exists for compliance reasons. State this explicitly in the email helper docstring so we don't regress.
 
-**Override of parent ambiguity.** Parent says "fire email path, skip row write". Parent says BackgroundTasks "after successful commit" but does not nail down which commit. **This delta locks: AFTER audit commit, not delete commit.** Reason: if audit write fails (rare; separate session, but possible), we still want the user to receive the email — but we don't want to dispatch the email AND fail the audit, because audit failure must be loud. Putting email last keeps email "best-effort" and audit "must-succeed" on the same trip.
+**Override of parent ambiguity.** Parent says "fire email path, skip row write". Parent says BackgroundTasks "after successful commit" but does not nail down which commit. **This delta locks the rule: "After audit commit only. If the audit commit fails, no email task is enqueued."** Reason: audit failure must be loud. We never want a user-facing notification (email) to outlive a missing audit row, because then the only forensic trail for the deletion is the email itself, and we can't correlate it back to who acted or why. The audit gap becomes the recoverable signal: the user sees the delete succeed without the email, ops sees the missing audit row in `/admin/audit`, and we can manually reissue the email after triage.
+
+**Hard rules (no exceptions).**
+- The `background_tasks.add_task(send_account_deleted_email, ...)` call is placed AFTER `await db.commit()` for the audit row. Not before, not in parallel, not in a `finally`.
+- If the audit insert or its commit raises, the email task is NEVER added. The exception propagates; the user-delete commit already happened (step 2), so the delete still succeeded from the user's perspective. The audit gap is the signal we triage on.
+- No `try/finally` wrapper that enqueues the email regardless of audit outcome. The enqueue lives on the success path only.
+- No enqueue between the user-delete commit and the audit commit. If we crash between steps 2 and 3 we ship neither audit nor email — that's strictly better than email-without-audit.
+
+**Code sketch.**
+
+```python
+# delete user (commit)
+await db.delete(user); await db.commit()
+# audit (commit). If this raises, no email is scheduled.
+audit_row = AuditEvent(...); db.add(audit_row); await db.commit()
+# only after audit commit succeeds, enqueue email task
+background_tasks.add_task(send_account_deleted_email, snapshot_email, ...)
+```
 
 ---
 
@@ -112,7 +129,7 @@ Every sensitive-op hook calls one of these renderers, never builds the string in
 
 **Revisit before implementation.** The parent spec has a parenthetical "(or coerce silently to True)" in two places that disagrees with the locked behavior elsewhere. Implementation should treat the locked behavior as canonical: 400 `{"code": "security_emails_required"}`. The coerce branch should NOT be implemented. (Surfacing per task rules — not editing the parent.)
 
-**Suggested PUT request shape.** Pydantic schema rejects `email_security=False` at validation time, NOT in the route body. This keeps the 400 deterministic and the response shape uniform with other Pydantic validation errors. Concretely:
+**Suggested PUT request shape.** Pydantic schema rejects `email_security=False` at validation time, NOT in the route body. This keeps the 400 deterministic and the response shape uniform with other 400 envelopes already in the codebase. Concretely:
 
 ```python
 class NotificationPreferencesUpdate(BaseModel):
@@ -122,7 +139,24 @@ class NotificationPreferencesUpdate(BaseModel):
     email_org_activity: bool
 ```
 
-A `Literal[True]` is the cleanest way to reject `False` without custom validators. The 400 body will be FastAPI's default validation error shape. To get the spec's `{"code": "security_emails_required"}` shape we need either (a) a custom validator that raises with that code, or (b) a route-level handler. **Decision: (a) — custom validator.** The code constant is a stable contract; raw Pydantic shape is not.
+**Why `Literal[True]` alone is not enough.** Pydantic v2's default `literal_error` body looks like `{"type": "literal_error", "loc": [...], "msg": "Input should be True", "input": false, "ctx": {"expected": "True"}}`. That body does NOT include the stable `security_emails_required` code the frontend keys off. The code constant is a contract; the raw Pydantic shape is not.
+
+**Validator mechanism — locked.** Use a Pydantic v2 `field_validator(mode="before")` on `email_security` (or a `model_validator(mode="before")` on the model — either works; field-level is the smaller surface). When `email_security` is present in the input and its value is anything other than `True`, the validator raises `ValueError("security_emails_required")`. The error envelope is shaped to match the existing 400 contract used by `routers/auth.py:241-247` (the `captcha_failed` 400) — `HTTPException(status_code=400, detail={"code": "security_emails_required", "message": "Security emails are required and cannot be disabled."})`. The implementer copies that exact shape from auth.py:241-247.
+
+The route-level handler catches the `ValueError` from validation and re-raises as the 400 above. (Alternative: let the validator raise `HTTPException` directly — Pydantic supports this in v2 since validators run inside the request lifecycle. Implementer picks whichever is cleaner against existing patterns at the time.)
+
+**Validator sketch.**
+
+```python
+@field_validator("email_security", mode="before")
+@classmethod
+def _security_required(cls, v):
+    if v is not True:
+        raise ValueError("security_emails_required")
+    return v
+```
+
+**Reference for the 400 envelope shape.** `backend/app/routers/auth.py:241-247` — the captcha_failed 400 raised by `/api/v1/auth/register`. Copy the `HTTPException(status_code=400, detail={"code": ..., "message": ...})` structure verbatim. Other call sites in the codebase using the same envelope: `backend/app/routers/admin_users.py:434`, `backend/app/routers/org_data.py:73`, `backend/app/routers/import_router.py:48`, `backend/app/routers/org_members.py:63`.
 
 ---
 
