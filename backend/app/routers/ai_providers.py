@@ -24,6 +24,12 @@ from app.schemas.org_ai_credential import (
     OrgAICredentialRotate,
     OrgAICredentialUpdate,
 )
+from app.schemas.org_ai_caps import (
+    CapsBundleResponse,
+    CapsWrite,
+    DefaultCapsResponse,
+    FeatureCapsResponse,
+)
 from app.schemas.org_ai_routing import (
     DefaultRoutingResponse,
     DefaultRoutingWrite,
@@ -31,7 +37,11 @@ from app.schemas.org_ai_routing import (
     FeatureRoutingWrite,
     RoutingBundleResponse,
 )
-from app.services import ai_credential_service, ai_routing_service
+from app.services import (
+    ai_caps_service,
+    ai_credential_service,
+    ai_routing_service,
+)
 from app.services.ai_routing_service import (
     CrossOrgRoutingDenied,
     UnknownFeatureName,
@@ -224,6 +234,125 @@ async def delete_feature_routing(
         db,
         org_id=current_user.org_id,
         feature_name=feature_name,
+        session_factory=session_factory,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+    )
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------
+# Caps endpoints (PR1). CRUD only — enforcement lands in PR2 alongside
+# the ai_usage ledger. Declared BEFORE /{credential_id} to win the
+# match for the literal /caps prefix.
+# --------------------------------------------------------------------
+
+CAPS_PREFIX = "/caps"
+
+
+@router.get(CAPS_PREFIX, response_model=CapsBundleResponse)
+async def get_caps(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_org_admin),
+) -> CapsBundleResponse:
+    default = await ai_caps_service.get_default_caps(
+        db, org_id=current_user.org_id
+    )
+    features = await ai_caps_service.get_feature_caps(
+        db, org_id=current_user.org_id
+    )
+    return CapsBundleResponse(
+        default=(
+            DefaultCapsResponse.model_validate(default)
+            if default is not None
+            else None
+        ),
+        features=[
+            FeatureCapsResponse.model_validate(f) for f in features
+        ],
+    )
+
+
+@router.put(f"{CAPS_PREFIX}/default", response_model=DefaultCapsResponse)
+async def put_default_caps(
+    payload: CapsWrite,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+) -> DefaultCapsResponse:
+    row = await ai_caps_service.set_default_caps(
+        db,
+        org_id=current_user.org_id,
+        soft_cap_cents=payload.soft_cap_cents,
+        hard_cap_cents=payload.hard_cap_cents,
+        period=payload.period,
+        session_factory=session_factory,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+    )
+    return DefaultCapsResponse.model_validate(row)
+
+
+@router.put(
+    f"{CAPS_PREFIX}/features/{{feature_key}}",
+    response_model=FeatureCapsResponse,
+)
+async def put_feature_caps(
+    feature_key: str,
+    payload: CapsWrite,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+) -> FeatureCapsResponse:
+    try:
+        row = await ai_caps_service.set_feature_caps(
+            db,
+            org_id=current_user.org_id,
+            feature_key=feature_key,
+            soft_cap_cents=payload.soft_cap_cents,
+            hard_cap_cents=payload.hard_cap_cents,
+            period=payload.period,
+            session_factory=session_factory,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+        )
+    except UnknownFeatureName:
+        raise _unknown_feature(feature_key)
+    return FeatureCapsResponse.model_validate(row)
+
+
+@router.delete(
+    f"{CAPS_PREFIX}/features/{{feature_key}}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_feature_caps(
+    feature_key: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+):
+    deleted = await ai_caps_service.delete_feature_caps(
+        db,
+        org_id=current_user.org_id,
+        feature_key=feature_key,
         session_factory=session_factory,
         actor_user_id=current_user.id,
         actor_email=current_user.email,

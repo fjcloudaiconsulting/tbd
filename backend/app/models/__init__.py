@@ -49,6 +49,10 @@ from app.models.org_ai_routing import (  # noqa: F401
     OrgAIDefaultRouting,
     OrgAIFeatureRouting,
 )
+from app.models.org_ai_caps import (  # noqa: F401
+    OrgAIDefaultCaps,
+    OrgAIFeatureCaps,
+)
 
 __all__ = [
     "Base",
@@ -100,6 +104,8 @@ __all__ = [
     "OrgAICredential",
     "OrgAIDefaultRouting",
     "OrgAIFeatureRouting",
+    "OrgAIDefaultCaps",
+    "OrgAIFeatureCaps",
     "ROUTABLE_FEATURE_NAMES",
     "UserDismissedAnnouncement",
     "Notification",
