@@ -25,13 +25,16 @@ Every AI feature surface (`call_llm` chokepoint today, future `embed_text` choke
 - `backend/app/auth/org_permissions.py` already gates owner-only routes. Credentials management is owner-only.
 - Frontend admin pattern: `frontend/app/admin/*` for superadmin (platform), `frontend/app/settings/*` for org-owner. AI provider credentials live at `frontend/app/settings/ai-providers/` (org-scoped, owner permission).
 
-## Architect resolutions (pending — spec proposes)
+## Architect resolutions (LOCKED 2026-05-22)
 
-* **Provider abstraction shape**: Protocol-based capabilities (Shape B below). One adapter per provider kind, with `oai_compatible_adapter` parameterized by `base_url` so new OpenAI-compatible endpoints add a row, not code.
+* **Provider abstraction shape**: Protocol-based capabilities (Shape B below). One adapter per provider kind, with `oai_compatible_adapter` parameterized by `base_url` so new OpenAI-compatible endpoints add a row, not code. Adds `StructuredOutputCapable` alongside the chat/embed/stream/function-call capability protocols.
 * **Encryption library**: Fernet, separate key (`AI_CREDENTIAL_ENCRYPTION_KEY`), envelope-style payload that lets us rotate the master key without re-prompting users for their keys.
-* **Per-feature routing**: **split tables — `org_ai_default_routing` (PK `org_id`) + `org_ai_feature_routing` (PK `(org_id, feature_name)`)**. Rejected single-table-with-nullable-feature shape because MySQL unique indexes treat `NULL` as distinct, allowing multiple defaults per org. See §4.
-* **Native + consent**: separate `org_ai_consents` row with version pin; consent is binary per axis (training, RAG, telemetry) with future ToS bumps re-prompting.
-* **Caps**: hard cap + soft cap per org, ledger via `ai_usage` (PR-C of LAI Foundation, now part of this rollout train).
+* **Per-feature routing**: **split tables — `org_ai_default_routing` (PK `org_id`) + `org_ai_feature_routing` (PK `(org_id, feature_name)`)**. Rejected single-table-with-nullable-feature shape because MySQL unique indexes treat `NULL` as distinct, allowing multiple defaults per org. Routing FKs are composite `(org_id, credential_id) → org_ai_credentials(org_id, id)` for DB-level cross-org refusal (T14). See §4.
+* **Caps**: hard cap + soft cap per org, ledger via `ai_usage`. **Split tables, same shape as routing** — `org_ai_default_caps` (PK `org_id`) + `org_ai_feature_caps` (PK `(org_id, feature_key)`). Same nullable-unique reason. See §7.
+* **Cost-estimate refresh**: **quarterly manual PR**, baked into adapter code as a constant table. No nightly price crawler.
+* **RAG store**: **pgvector sidecar (R1)** is the v1 vector store. Qdrant (R2) and Pinecone (R3) are **rejected** for v1. The pgvector schema lives in a separate follow-on spec (`specs/ai-rag-pgvector-sidecar.md`) and is **not part of this MVP**; PR 5 of the rollout train is the placeholder for that spec, not for the embedded RAG pipeline.
+* **Native + consent**: separate `org_ai_consents` row with version pin; consent is binary per axis (training, RAG, telemetry) with future ToS bumps re-prompting. **Native is gated behind `AI_NATIVE_ENABLED` (default `false`)** — when false, the native option returns `not_yet_available` from selection endpoints and is hidden in the UI even though the full consent + adapter scaffolding is present. See §5, §11, §16.
+* **Ollama auth**: optional `bearer_token` field on the Ollama credential payload for reverse-proxy auth (homelab setups fronting Ollama with auth). Treated as a secret like an API key (same Fernet at rest). Ollama with no bearer is also valid (LAN-only). See §1, §2.
 * **Navigation**: AI configuration lives under **Settings**, not as a top-level frame-menu item. `/settings/ai-providers` and `/settings/ai-consent` are owner-only Settings pages. Reports (spec #336) and Plans (spec #337) are top-level in their own specs. Reasoning in §12.
 
 ## Design decisions
@@ -56,12 +59,13 @@ class ProviderCredentials:
     """
     provider_kind: str           # "openai" | "anthropic" | "ollama" | "oai_compatible" | "tbd_native"
     api_key: str | None          # None for Ollama anonymous, TBD-native internal
+    bearer_token: str | None     # Ollama reverse-proxy auth only; None otherwise
     base_url: str | None         # set for ollama + oai_compatible; provider-default otherwise
     model: str                   # resolved at call time from org settings
     extra: dict[str, str]        # provider-specific (e.g. Azure deployment id)
 
     def __repr__(self) -> str:
-        # api_key NEVER renders; base_url is fine to show in debug.
+        # api_key + bearer_token NEVER render; base_url is fine to show in debug.
         return f"ProviderCredentials(kind={self.provider_kind!r}, base_url={self.base_url!r}, model={self.model!r})"
 
 
@@ -86,6 +90,28 @@ class StreamCapable(Protocol):
 
 
 @runtime_checkable
+class StructuredOutputCapable(Protocol):
+    """Adapters that can return a typed structured output validated against
+    a JSON schema. May be backed by the provider's native structured-output
+    feature (OpenAI JSON mode, Anthropic tool use, etc.) or by JSON-mode +
+    server-side schema validation with a retry cap.
+
+    The adapter MUST cap retries at 2 on JSON parse / schema-validation
+    failure. On the third failure the call returns a typed error
+    (``STATUS_ERROR_STRUCTURED_OUTPUT``) and writes the failure to
+    ``ai_usage`` so it counts against the cap.
+    """
+    async def chat_structured(
+        self,
+        *,
+        creds: ProviderCredentials,
+        prompt: "Prompt",
+        schema: dict,
+        request_id: str,
+    ) -> "StructuredResult": ...
+
+
+@runtime_checkable
 class ValidateCapable(Protocol):
     """Every adapter implements this. ``validate`` is a cheap GET to the
     provider's models endpoint (or equivalent) used by the credentials UI.
@@ -93,24 +119,27 @@ class ValidateCapable(Protocol):
     async def validate(self, *, creds: ProviderCredentials) -> "ValidateResult": ...
 ```
 
+**Categorization and other high-stakes features require `StructuredOutputCapable`.** JSON-mode-backed implementations are acceptable, but ONLY when paired with server-side schema validation AND the documented retry cap of 2. This is what lets Ollama models run categorization — they don't have OpenAI-style native JSON mode, but the adapter wraps the call with JSON-mode prompting + schema validation + the same retry budget. After the retry budget is exhausted the call fails closed with `STATUS_ERROR_STRUCTURED_OUTPUT`; we do not silently fall back to free-text parsing.
+
 Each concrete adapter (`OpenAIAdapter`, `AnthropicAdapter`, `OllamaAdapter`, `OAICompatibleAdapter`, `TBDNativeAdapter`) is a class implementing the subset of protocols it supports. Static capability flags live as a class attribute:
 
 ```python
 class OpenAIAdapter:
     KIND = "openai"
-    CAPABILITIES = frozenset({"chat", "embed", "function_call", "stream", "validate"})
+    CAPABILITIES = frozenset({"chat", "embed", "function_call", "stream", "structured_output", "validate"})
     DEFAULT_BASE_URL = "https://api.openai.com/v1"
     ...
 
 class AnthropicAdapter:
     KIND = "anthropic"
-    CAPABILITIES = frozenset({"chat", "function_call", "stream", "validate"})
+    CAPABILITIES = frozenset({"chat", "function_call", "stream", "structured_output", "validate"})
     # no embed — Anthropic doesn't ship one
     ...
 
 class OllamaAdapter:
     KIND = "ollama"
-    CAPABILITIES = frozenset({"chat", "embed", "stream", "validate"})
+    # structured_output via JSON-mode + schema validation + retry cap of 2 (see StructuredOutputCapable).
+    CAPABILITIES = frozenset({"chat", "embed", "stream", "structured_output", "validate"})
     # no function_call by default — depends on the local model
     ...
 
@@ -123,7 +152,7 @@ class OAICompatibleAdapter:
 
 class TBDNativeAdapter:
     KIND = "tbd_native"
-    CAPABILITIES = frozenset({"chat", "embed", "function_call", "stream", "validate"})
+    CAPABILITIES = frozenset({"chat", "embed", "function_call", "stream", "structured_output", "validate"})
     ...
 ```
 
@@ -163,6 +192,7 @@ CREATE TABLE org_ai_credentials (
     created_by_user_id INT NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uq_org_provider_label (org_id, provider_kind, label),
+    UNIQUE KEY uq_oaicred_org_id (org_id, id),    -- composite-key surface for routing/caps FK reference
     KEY ix_org_provider (org_id, provider_kind),
     CONSTRAINT fk_oaicred_org FOREIGN KEY (org_id)
         REFERENCES organizations (id) ON DELETE CASCADE,
@@ -171,6 +201,8 @@ CREATE TABLE org_ai_credentials (
 );
 ```
 
+The redundant-looking `uq_oaicred_org_id (org_id, id)` exists to expose the composite key `(org_id, id)` so the routing tables (and any future per-credential reference) can declare a composite foreign key that enforces same-org integrity at the DB layer. `id` alone is still the primary key.
+
 **Encryption format inside `encrypted_payload`** (Fernet token wrapping a JSON blob):
 
 ```json
@@ -178,11 +210,13 @@ CREATE TABLE org_ai_credentials (
   "v": 1,
   "kek_id": "kek-2026-05",
   "api_key": "sk-...",
+  "bearer_token": null,
   "extra": {"azure_deployment": "...", "...": "..."}
 }
 ```
 
 - `v` is the schema version. Bumping `v` is how we evolve the payload (e.g. adding OAuth refresh tokens later) without breaking existing rows.
+- `bearer_token` is **Ollama-only**. Set when the org fronts a self-hosted Ollama with a reverse proxy that requires bearer auth (homelab pattern). For OpenAI, Anthropic, OAI-compatible, and TBD-native, this field is `null`. The bearer token is treated as a secret with the same Fernet-at-rest posture as `api_key` and is **never** returned over the wire after creation. Ollama with no bearer (LAN-only) is also valid — `bearer_token` stays `null` and the OllamaAdapter sends no Authorization header.
 - `kek_id` identifies which master key encrypted this token. Master keys are environment-sourced (`AI_CREDENTIAL_ENCRYPTION_KEY`, `AI_CREDENTIAL_ENCRYPTION_KEY_PREV` for one-step rotation). On unwrap we try the current key first, then prev. After all rows are re-encrypted to the new key, the prev env var goes away.
 - `api_key` is the plaintext. **It never leaves this payload** unless the adapter is mid-call. The unwrap function returns a `ProviderCredentials` dataclass that is dropped at the end of the call's scope.
 
@@ -228,11 +262,11 @@ CREATE TABLE org_ai_default_routing (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (org_id),
-    KEY ix_default_cred (credential_id),
+    KEY ix_default_cred (org_id, credential_id),
     CONSTRAINT fk_default_routing_org FOREIGN KEY (org_id)
         REFERENCES organizations (id) ON DELETE CASCADE,
-    CONSTRAINT fk_default_routing_cred FOREIGN KEY (credential_id)
-        REFERENCES org_ai_credentials (id) ON DELETE CASCADE
+    CONSTRAINT fk_default_routing_cred FOREIGN KEY (org_id, credential_id)
+        REFERENCES org_ai_credentials (org_id, id) ON DELETE CASCADE
 );
 ```
 
@@ -247,11 +281,11 @@ CREATE TABLE org_ai_feature_routing (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (org_id, feature_name),
-    KEY ix_feature_cred (credential_id),
+    KEY ix_feature_cred (org_id, credential_id),
     CONSTRAINT fk_feature_routing_org FOREIGN KEY (org_id)
         REFERENCES organizations (id) ON DELETE CASCADE,
-    CONSTRAINT fk_feature_routing_cred FOREIGN KEY (credential_id)
-        REFERENCES org_ai_credentials (id) ON DELETE CASCADE
+    CONSTRAINT fk_feature_routing_cred FOREIGN KEY (org_id, credential_id)
+        REFERENCES org_ai_credentials (org_id, id) ON DELETE CASCADE
 );
 ```
 
@@ -261,11 +295,25 @@ CREATE TABLE org_ai_feature_routing (
 2. Otherwise look up `org_id` in `org_ai_default_routing`. If hit, use it.
 3. Otherwise raise `NoProviderConfigured`. `call_llm` maps this to HTTP 409 `code=ai_provider_not_configured`. UI prompts the owner to configure a default.
 
-**Cross-org credential validation (decision: service layer, not composite FK).** A row in either routing table could in principle reference a credential belonging to a different org. We enforce same-org integrity in the **service layer** (`routing_service.set_default`, `routing_service.set_feature_override`): every write verifies that `credential.org_id == routing.org_id` before commit. A composite FK like `FOREIGN KEY (org_id, credential_id) REFERENCES org_ai_credentials (org_id, id)` would catch this at the DB layer too, but it requires `org_ai_credentials` to expose `(org_id, id)` as a unique key (which it does via `uq_org_provider_label` indirectly, but not directly), and we already enforce org-scoping uniformly in the service layer for all org-scoped tables. Service-layer enforcement keeps the pattern consistent. A regression test asserts the invariant.
+**Cross-org credential validation (DB + service layer, belt and suspenders).** A row in either routing table can never legally reference a credential belonging to a different org. We enforce this **at the DB layer** via the composite FK `FOREIGN KEY (org_id, credential_id) REFERENCES org_ai_credentials (org_id, id)` on both `org_ai_default_routing` and `org_ai_feature_routing` (see DDL above). The composite key is exposed on `org_ai_credentials` via `uq_oaicred_org_id (org_id, id)`. The DB now structurally refuses any cross-org reference — direct DB writes, ORM bugs, and service-layer mistakes all fail with an FK constraint error rather than silently routing Org A's traffic through Org B's key.
+
+We **also** keep the service-layer check: `routing_service.set_default` and `routing_service.set_feature_override` verify `credential.org_id == routing.org_id` before commit and return a typed `CrossOrgRoutingDenied` error with a clear message — much friendlier than a raw FK violation. The DB check is the safety net; the service check is the UX. A regression test pins both layers (the DB-level rejection AND the service-level rejection).
 
 **Admin UI shape (updated):** one "default provider/model" picker on top, then a list of "per-feature overrides" below. Removing a per-feature override deletes the row; the call falls back to default automatically on the next dispatch.
 
 ### 5. Native option + consent
+
+**Native v1 availability (LOCKED — gated, default off).** The full native + consent infrastructure (this table, the consent service, the `TBDNativeAdapter` shell, the `/settings/ai-consent` page) ships in PR 4, but the operator toggle `AI_NATIVE_ENABLED` (default `false`) keeps it dormant in production until a real native backend exists. Toggle behavior:
+
+- **`AI_NATIVE_ENABLED=false` (default).**
+  - The native provider is hidden from the "Mode" radio on `/settings/ai-providers`. The page renders only the BYO option.
+  - The `GET /api/v1/ai/providers` (or equivalent selection endpoint) returns the native option with `availability: "not_yet_available"`, so a hand-rolled API client gets a typed, machine-readable refusal instead of a 500.
+  - `POST /api/v1/ai/credentials` with `provider_kind=tbd_native` returns 409 `code=ai_native_not_available`.
+  - `POST /api/v1/ai/consent` continues to accept writes (consent can be granted ahead of native going live), but any subsequent `call_llm` that resolves to `tbd_native` refuses with the same `ai_native_not_available` code regardless of consent state.
+  - `TBDNativeAdapter` is wired into the registry but its `chat` / `embed` / `chat_structured` methods raise `NativeNotAvailable` immediately, before any consent or capability check.
+- **`AI_NATIVE_ENABLED=true`.** Native is fully available; consent gates apply as documented below. The toggle is a one-way decision per environment (we do not expect to flip it off after launching).
+
+The dormant-but-present design lets us land all the consent infrastructure, audit events, and UI copy in PR 4, then flip the toggle when a real native backend is ready without an additional code change.
 
 New table `org_ai_consents` — independent from credentials because consent applies only to the native mode and has its own ToS-version contract:
 
@@ -322,23 +370,14 @@ Server validates `consent_version` matches the current ToS pin. Mismatch returns
 - We add a `redaction_service.scrub_transaction_text(text) -> str` that strips long numeric runs (16+ digits = potential card / IBAN), email addresses, and patterns matching common identifiers. Caller still owes the certification but the scrub gives a second layer.
 - Native + RAG mode: the **embedded text** is the scrubbed text, never the raw transaction memo. The user can see exactly what is indexed via a `/settings/ai/data-flow` page that shows samples.
 
-**RAG vector DB choice — recommend pgvector.** Rationale:
-- We already run MySQL, not Postgres. **This is the spec's biggest open question.** Two sub-options:
-  - **R1**: stand up a small Postgres+pgvector sidecar on the data-plane droplet. Same VPC, same backup posture, no new vendor.
-  - **R2**: use Qdrant (Docker on the droplet or DO managed). More vector-native, slightly higher ops surface.
-  - **R3**: Pinecone — managed, SaaS. Lowest ops cost; highest data-flow concern (third party gets transaction embeddings).
-- **Spec recommends R1 (pgvector on a sidecar Postgres)** because: (a) consent posture is best when the data stays inside our VPC, (b) ops surface is one new container, (c) we already have the droplet, and (d) embeddings are a single-tenant concern — the latency wins of a dedicated vector DB don't outweigh the data-residency concern at our scale.
-- **Out of scope for this spec**: the actual pgvector schema lives in a follow-on spec (`specs/ai-rag-pgvector-sidecar.md`) once consent + the native adapter ship.
+**RAG vector store — LOCKED: pgvector sidecar (R1).** Architect resolution 2026-05-22.
+- v1 ships with a small Postgres + pgvector sidecar on the data-plane droplet — same VPC, same backup posture, no new vendor, no third party receiving transaction embeddings.
+- **Qdrant (R2) and Pinecone (R3) are rejected for v1.** Qdrant is a future option if pgvector hits a scale ceiling; Pinecone is structurally incompatible with the consent posture (third party receives transaction embeddings).
+- **The full RAG pipeline (schema, embedding service, retrieval shape, scrub rules, refresh strategy, RL signal capture) is OUT OF SCOPE for this spec and lives in `specs/ai-rag-pgvector-sidecar.md`.** That spec is PR 5 of the rollout train and is sequenced after PR 4 (native + consent) ships. The AI Tier MVP defined in this spec covers PR 1 through PR 4 only — BYO providers, the metering / caps ledger, real chat dispatch, and the native adapter + consent infrastructure. RAG (embedding pipeline, vector store, retrieval) is deliberately deferred to a separate spec and is not part of this MVP.
+- This spec retains the consent-axis design (`allow_rag` in `org_ai_consents`) so the consent infrastructure is in place when PR 5 lands. The `allow_rag` flag is operative as a refusal gate in PR 4: it can be granted, but until PR 5 ships there is no embedding pipeline to enable. Granting `allow_rag` before PR 5 ships has no observable effect beyond the audit-log row.
 
-**Embedding refresh strategy:**
-- On every transaction create / update / delete with `allow_rag=True`: enqueue an embedding job. Jobs run async (BackgroundTasks in v1, real queue in v2).
-- Nightly job re-validates a sample of embeddings against current scrub rules — catches scrub-rule changes (e.g. a new PII pattern we want to strip) without re-embedding the whole corpus.
-- Full re-embed on `allow_rag` flip from True → True with `consent_version` change (treat as a fresh consent).
-
-**Reinforcement-learning signal capture (links to LAI.6):**
-- `ai_feedback` table (existing in feedback model space — confirm at implementation): user thumbs-up / thumbs-down on AI outputs.
-- With `allow_training=True`: feedback rows + the originating prompt + completion are exported nightly to the training pipeline.
-- With `allow_training=False`: feedback rows are kept (for the user's own UX), but never leave the org's row.
+**RL signal capture (deferred to the RAG spec):**
+- Specification of `ai_feedback` and the export pipeline lives in `specs/ai-rag-pgvector-sidecar.md`. The consent axis (`allow_training`) exists in `org_ai_consents` so PR 4 can write the consent row, but the training pipeline itself is out of scope here.
 
 ### 7. Usage caps + metering (LAI.5)
 
@@ -371,29 +410,56 @@ CREATE TABLE ai_usage (
 );
 ```
 
-**Cap shape:**
+**Cap shape (LOCKED — split tables).** Same nullable-unique problem the routing tables had: a single-table shape with nullable `feature_key + UNIQUE(org_id, feature_key)` cannot structurally enforce "exactly one org-wide cap per org" in MySQL, because `NULL` values are treated as distinct in unique indexes. Caps are therefore split into two tables that mirror the routing shape.
+
+**`org_ai_default_caps`** — exactly one row per org. The org-wide cap.
 
 ```sql
-CREATE TABLE org_ai_caps (
-    id INT NOT NULL AUTO_INCREMENT,
+CREATE TABLE org_ai_default_caps (
     org_id INT NOT NULL,
-    feature_key VARCHAR(80) NULL,                -- NULL = org-wide cap; non-NULL = per-feature
     soft_cap_cents INT NULL,                     -- warn at this threshold
     hard_cap_cents INT NULL,                     -- refuse new calls past this
     period ENUM('monthly') NOT NULL DEFAULT 'monthly',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_org_feature (org_id, feature_key),
-    CONSTRAINT fk_caps_org FOREIGN KEY (org_id)
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (org_id),
+    CONSTRAINT fk_default_caps_org FOREIGN KEY (org_id)
         REFERENCES organizations (id) ON DELETE CASCADE
 );
 ```
 
-**Enforcement point**: `call_llm` calls `cap_service.check_cap(db, org_id, feature_key)` AFTER feature-gate check, BEFORE adapter dispatch. Aggregates `SUM(cost_cents)` for the current month from `ai_usage` and compares.
+**`org_ai_feature_caps`** — N rows per org, one per per-feature override.
+
+```sql
+CREATE TABLE org_ai_feature_caps (
+    org_id INT NOT NULL,
+    feature_key VARCHAR(80) NOT NULL,
+    soft_cap_cents INT NULL,
+    hard_cap_cents INT NULL,
+    period ENUM('monthly') NOT NULL DEFAULT 'monthly',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (org_id, feature_key),
+    CONSTRAINT fk_feature_caps_org FOREIGN KEY (org_id)
+        REFERENCES organizations (id) ON DELETE CASCADE
+);
+```
+
+Caps do not reference credentials, so the composite-FK pattern used by the routing tables does not apply here. Same-org integrity is structural via the per-table PK on `org_id`.
+
+**Resolution order at `cap_service.check_cap(org_id, feature_key)`:**
+
+1. Look up `(org_id, feature_key)` in `org_ai_feature_caps`. If hit, use it.
+2. Otherwise look up `org_id` in `org_ai_default_caps`. If hit, use it.
+3. Otherwise no cap applies (org is uncapped — typically only for trusted internal orgs).
+
+**Enforcement point**: `call_llm` calls `cap_service.check_cap(db, org_id, feature_key)` AFTER feature-gate check, BEFORE adapter dispatch. Resolves the cap per the order above, then aggregates `SUM(cost_cents)` for the current month from `ai_usage` and compares.
 - Over soft cap → log + send notification (uses the notification system in `specs/2026-05-21-notification-system-sensitive-ops.md`). Dispatch proceeds.
 - Over hard cap → refuse with `FeatureCapped` (already exists at `ai_service.py:108`). Maps to HTTP 402.
 
-**Cost estimation**: each adapter ships a `cost_per_1k_tokens(model)` static table. We update these quarterly. Approximate cost is fine — the cap is a guardrail, not an accounting truth.
+**Admin UI shape (caps):** one "default cap" picker on top (soft + hard for the whole org), then a list of "per-feature cap overrides" below. Same shape as the routing UI; removing an override row falls back to the default automatically.
+
+**Cost estimation (LOCKED — quarterly manual PR).** Each adapter ships a `cost_per_1k_tokens(model)` static table baked in as a code constant. Updated **quarterly via manual PR** — no nightly price crawler, no provider scraper, no managed price feed. Approximate cost is fine; the cap is a guardrail, not an accounting truth. The `ai_cost_estimate_last_updated` config field (see §16) records the quarter the table was last refreshed.
 
 ### 8. Audit / observability
 
@@ -449,7 +515,7 @@ All credential events follow the audit-service contract: independent session, wr
 | **T11 — Credential exfil via SQL injection** | An adversarial query reads `encrypted_payload` raw. | The payload is still Fernet-encrypted. Without the KEK, the dump is opaque. SQL injection mitigations stay our primary control — but the encryption is the safety net. |
 | **T12 — Native consent bypass** | Code path forgets to check consent before calling the native adapter. | `TBDNativeAdapter.dispatch()` itself reads consent on every call and refuses if missing (defense in depth, same posture as the feature-gate re-check in `call_llm`). |
 | **T13 — Stale `last_used_at` correlation** | Forensics needs to know which key was used at a given time, but `last_used_at` is overwritten on every call. | The `ai_usage` ledger row has `credential_id` and `created_at` — that is the forensic source. `last_used_at` is a UX convenience, not a forensic record. |
-| **T14 — Cross-org routing reference** | A row in `org_ai_default_routing` or `org_ai_feature_routing` for Org A references a `credential_id` that belongs to Org B (bug in service code, or a hand-crafted DB write). At call time Org A's traffic would dispatch through Org B's key. | The routing-table FKs are by `credential_id` alone, so the DB does not block this. Mitigation: `routing_service.set_default` and `routing_service.set_feature_override` verify `credential.org_id == routing.org_id` before commit and refuse otherwise. A regression test pins the invariant. `_resolve_provider` re-checks at dispatch time as defense in depth and emits `ai.routing.cross_org_drift` structlog on violation (refuses dispatch). |
+| **T14 — Cross-org routing reference** | A row in `org_ai_default_routing` or `org_ai_feature_routing` for Org A references a `credential_id` that belongs to Org B (bug in service code, or a hand-crafted DB write). At call time Org A's traffic would dispatch through Org B's key. | **DB-enforced and service-enforced (belt and suspenders).** (a) Composite FK `FOREIGN KEY (org_id, credential_id) REFERENCES org_ai_credentials (org_id, id)` on both routing tables — `org_ai_credentials` exposes `(org_id, id)` via `uq_oaicred_org_id`. Any cross-org reference fails with an InnoDB FK constraint error at write time. (b) `routing_service.set_default` and `routing_service.set_feature_override` pre-check `credential.org_id == routing.org_id` and return `CrossOrgRoutingDenied` (friendlier than a raw FK violation). (c) `_resolve_provider` re-checks at dispatch time and emits `ai.routing.cross_org_drift` structlog on the (now structurally impossible) drift before refusing dispatch. Regression tests pin all three layers. |
 
 #### Posture summary
 
@@ -458,7 +524,7 @@ All credential events follow the audit-service contract: independent session, wr
 - **Plaintext lifecycle**: minimum-window. Plaintext lives in memory inside a `ProviderCredentials` dataclass only for the duration of a single adapter call.
 - **Never re-emit**: keys are write-only after creation. No "show me the key" UI under any circumstance.
 - **Audit trail**: every lifecycle event hits `audit_events` with snapshots; every call hits `ai_usage` with no key fragment.
-- **Defense in depth**: feature-gate re-check inside `call_llm`, consent re-check inside `TBDNativeAdapter`, capability re-check at protocol-isinstance, validate-rate-limit, structured-output schemas for high-stakes features.
+- **Defense in depth**: feature-gate re-check inside `call_llm`, consent re-check inside `TBDNativeAdapter`, capability re-check at protocol-isinstance, validate-rate-limit, structured-output schemas for high-stakes features, composite FK `(org_id, credential_id)` on routing tables for DB-level cross-org refusal (T14).
 
 ### 11. Admin UI sketch
 
@@ -479,6 +545,7 @@ All credential events follow the audit-service contract: independent session, wr
 │ "Anthropic prod"   Anthropic    sk-ant-…XY  2026-05-22 14:05  [validate]│
 │ "Local Ollama"     Ollama       (none)      2026-05-22 14:10  [validate]│
 │                    base_url: http://10.0.1.42:11434                     │
+│                    bearer: (none)  -- optional, for reverse-proxy auth  │
 ├─────────────────────────────────────────────────────────────────────────┤
 │ Default provider (used unless overridden below)                         │
 │ ──────────────                                                          │
@@ -578,33 +645,34 @@ The *user-facing* AI surfaces (categorization hint on transactions, forecast hin
 ### 13. Phased rollout
 
 **PR 1 — Provider abstraction + BYO key storage + admin UI (no native, no features wired, no caps).**
-- Migration: `org_ai_credentials` + `org_ai_default_routing` + `org_ai_feature_routing` tables. Empty.
-- Backend: `credential_service` (create / rotate / revoke / validate / list / unwrap). `OpenAIAdapter`, `AnthropicAdapter`, `OllamaAdapter`, `OAICompatibleAdapter` with only the `validate()` method implemented. New routes under `/api/v1/ai/credentials/*` and `/api/v1/ai/routing/*`. Audit events for credential lifecycle. New env var `AI_CREDENTIAL_ENCRYPTION_KEY`.
-- Frontend: `/settings/ai-providers` page with credentials table + add/rotate/revoke modals + per-feature routing UI (read-only routing in PR1; routing writes ride in PR3).
-- Tests: validate flows, encryption round-trip, key never returned over the wire, audit trail.
+- Migration: `org_ai_credentials` + `org_ai_default_routing` + `org_ai_feature_routing` tables. Empty. Routing tables carry the composite `(org_id, credential_id) → org_ai_credentials(org_id, id)` FK (see §4, T14).
+- Backend: `credential_service` (create / rotate / revoke / validate / list / unwrap). `OpenAIAdapter`, `AnthropicAdapter`, `OllamaAdapter`, `OAICompatibleAdapter` with only the `validate()` method implemented (Ollama validate honors the optional `bearer_token` field). New routes under `/api/v1/ai/credentials/*` and `/api/v1/ai/routing/*`. Audit events for credential lifecycle. New env var `AI_CREDENTIAL_ENCRYPTION_KEY`.
+- Frontend: `/settings/ai-providers` page with credentials table + add/rotate/revoke modals + per-feature routing UI (read-only routing in PR1; routing writes ride in PR3). Ollama add-modal exposes the optional `bearer_token` field.
+- Tests: validate flows, encryption round-trip, key never returned over the wire, audit trail, composite-FK cross-org refusal (DB layer) + service-layer `CrossOrgRoutingDenied` (UX layer).
 
-**PR 2 — `ai_usage` ledger + caps.**
-- Migration: `ai_usage`, `org_ai_caps`.
-- Backend: `cap_service.check_cap`. `call_llm` wires the cap check + ledger write. Notification on soft-cap.
+**PR 2 — `ai_usage` ledger + caps (split tables).**
+- Migration: `ai_usage`, `org_ai_default_caps`, `org_ai_feature_caps`. **Two cap tables, not one** — same nullable-unique reason the routing tables are split (see §7).
+- Backend: `cap_service.check_cap` with the feature-then-default resolution order. `call_llm` wires the cap check + ledger write. Notification on soft-cap. Cost-estimate constant table baked into each adapter (quarterly manual PR cadence, see §7).
 - No new admin UI yet (caps managed via existing `OrgSetting`-style admin tool in the platform-admin surface). Customer-facing usage view: `/settings/ai-providers` adds a "Usage this month" panel.
-- Tests: cap soft + hard, ledger writes, notification fires once per overage day.
+- Tests: default cap applies when no override, feature override beats default, soft + hard, ledger writes, notification fires once per overage day.
 
 **PR 3 — Per-feature routing writes + adapter chat dispatch.**
-- Backend: `OpenAIAdapter.chat`, `AnthropicAdapter.chat`, `OllamaAdapter.chat`, `OAICompatibleAdapter.chat`. Real implementations against provider SDKs (or `httpx` for OAI-compatible). `call_llm` dispatches to the real adapter when routing is set up; falls back to mock when no routing.
+- Backend: `OpenAIAdapter.chat`, `AnthropicAdapter.chat`, `OllamaAdapter.chat`, `OAICompatibleAdapter.chat`. Real implementations against provider SDKs (or `httpx` for OAI-compatible). `StructuredOutputCapable.chat_structured` ships for OpenAI, Anthropic, and Ollama with the retry cap of 2. `call_llm` dispatches to the real adapter when routing is set up; falls back to mock when no routing.
 - Frontend: per-feature dropdown becomes writable.
-- Tests: smoke against real providers (gated behind env var presence in CI, real on staging).
+- Tests: smoke against real providers (gated behind env var presence in CI, real on staging); JSON-mode + schema-validation + retry-cap path for the structured-output adapters.
 
-**PR 4 — TBD-native adapter + consent.**
+**PR 4 — TBD-native adapter scaffolding + consent (gated, default OFF).**
 - Migration: `org_ai_consents`.
-- Backend: `TBDNativeAdapter` (initially a wrapper around an internal Anthropic/OpenAI key in dev; productized as a managed endpoint in v2). Consent service. Refusal logic in `TBDNativeAdapter.dispatch`.
-- Frontend: `/settings/ai-consent` page. Mode switcher in `/settings/ai-providers`.
-- Tests: consent missing → refuse, consent revoked → refuse, consent version mismatch → re-prompt.
+- Backend: `TBDNativeAdapter` shell. `AI_NATIVE_ENABLED=false` (default) — adapter raises `NativeNotAvailable` immediately; selection endpoints return `not_yet_available`; native option hidden in UI. Consent service. Refusal logic for the `AI_NATIVE_ENABLED=true` case (consent missing / revoked / version mismatch) is implemented and tested even though it is dormant in prod.
+- Frontend: `/settings/ai-consent` page. Mode switcher in `/settings/ai-providers` conditional on `AI_NATIVE_ENABLED` (sourced via a public config endpoint).
+- Tests: gate-off path returns `not_yet_available` for all native endpoints; gate-on path covers consent missing → refuse, consent revoked → refuse, consent version mismatch → re-prompt.
+- **No real native backend in this PR.** Flipping `AI_NATIVE_ENABLED=true` requires the native backend to exist; that backend is a separate work item.
 
-**PR 5 — RAG + embedding pipeline (pgvector sidecar).**
-- Separate spec required (see §6). Defers until PR 4 ships and consent is in production.
+**PR 5 — RAG + embedding pipeline (pgvector sidecar) — SEPARATE SPEC.**
+- Tracked in `specs/ai-rag-pgvector-sidecar.md` (TBD). **Not part of this MVP.** Sequenced after PR 4 ships and consent infrastructure is in production. Pinecone and Qdrant are rejected for v1 (see §6).
 
 **PR 6 — Feature surfaces using the dispatch layer.**
-- Categorization fallback (LAI.1) — first real consumer.
+- Categorization fallback (LAI.1) — first real consumer; requires `StructuredOutputCapable` so the category_slug return is typed.
 - Subsequent features (forecast, budget rebalance, smart plan, chat) each in their own PR.
 
 ### 14. Sequence diagrams (ASCII)
@@ -690,7 +758,7 @@ HTTP 412 {code: "ai_consent_missing", consent_version: "ai-tos-2026-05-22"}
 
 ### 15. Migrations
 
-Single Alembic revision per PR. PR1: `org_ai_credentials` + `org_ai_default_routing` + `org_ai_feature_routing`. PR2: `ai_usage` + `org_ai_caps`. PR4: `org_ai_consents`. No data backfill — all tables start empty. Downgrade is `DROP TABLE` in each case.
+Single Alembic revision per PR. PR1: `org_ai_credentials` (with `uq_oaicred_org_id (org_id, id)`) + `org_ai_default_routing` + `org_ai_feature_routing` (both with composite `(org_id, credential_id)` FK). PR2: `ai_usage` + `org_ai_default_caps` + `org_ai_feature_caps`. PR4: `org_ai_consents`. No data backfill — all tables start empty. Downgrade is `DROP TABLE` in each case.
 
 Per `CLAUDE.md`: migrations run via the lifespan + migrate wrapper. The Alembic env var `PFV_MIGRATE_OK_OFF_MAIN` interaction is unchanged.
 
@@ -703,8 +771,8 @@ New env vars (added to `backend/app/config.py`):
 ai_credential_encryption_key: str = ""
 ai_credential_encryption_key_prev: str = ""    # for one-step KEK rotation
 
-# Native option
-ai_native_enabled: bool = False                # operator toggle — disables the mode entirely
+# Native option (LOCKED — default off; flip on per-environment when native backend exists)
+ai_native_enabled: bool = False                # see §5 for the full not-yet-available behavior contract
 ai_native_current_consent_version: str = "ai-tos-2026-05-22"
 
 # Cost-estimate refresh period (informational only)
@@ -784,7 +852,7 @@ Frontend (`frontend/tests/`):
 ## Naming + cross-references
 
 - Backend modules:
-  - `backend/app/models/ai_credential.py`, `ai_routing.py`, `ai_consent.py`, `ai_usage.py`, `ai_cap.py`.
+  - `backend/app/models/ai_credential.py`, `ai_routing.py`, `ai_consent.py`, `ai_usage.py`, `ai_cap.py` (declares both `OrgAiDefaultCap` and `OrgAiFeatureCap`).
   - `backend/app/services/credential_service.py`, `consent_service.py`, `cap_service.py`, `redaction_service.py`.
   - `backend/app/services/ai_adapters/{base,openai,anthropic,ollama,oai_compatible,tbd_native}.py`.
   - `backend/app/routers/ai_credentials.py`, `ai_routing.py`, `ai_consent.py`.
@@ -797,11 +865,15 @@ Frontend (`frontend/tests/`):
   - `reference_do_spec_sync` — every new env var must land in `.do/app.yaml`.
   - `reference_anonymous_route_client_ip_gap` — credential routes are authed; the IP walker fires here.
 
-## Open questions for architect
+## Architect decisions (LOCKED 2026-05-22 — second round)
 
-1. **R1 vs R2 vs R3 for RAG vector store** (pgvector sidecar vs Qdrant vs Pinecone). Spec recommends R1. Architect to confirm before the PR 5 follow-on spec opens.
-2. ~~One routing table or two~~ **RESOLVED 2026-05-22**: split into `org_ai_default_routing` (PK = `org_id`) and `org_ai_feature_routing` (PK = `(org_id, feature_name)`). Rationale: MySQL unique indexes treat `NULL` as distinct, so a single-table shape with nullable `feature_key` cannot structurally enforce "exactly one default per org". See §4.
-3. **Per-feature capability requirements**: should categorization require `FunctionCallCapable` strictly, or accept structured-output-via-JSON-mode as equivalent? Affects what providers can be selected per feature. Spec leans toward "accept JSON-mode as equivalent" so Ollama models can run categorization too.
-4. **Cost-estimate table refresh cadence**: quarterly via manual PR vs nightly job pulling from provider price pages. Spec proposes quarterly PR for now; nightly job is overkill until the catalog is large.
-5. **TBD-native v1 substrate**: the native adapter in PR4 needs a real backend. Options: (a) wrap our own Anthropic key behind it, (b) stand up a managed inference endpoint, (c) gate native behind a "coming soon" flag and ship only the consent + opt-in scaffolding. Spec leans toward (c) — ship the consent UI, refuse with `not_yet_available` until (a) or (b) lands.
-6. **Ollama anonymous-by-default**: Ollama base_url is the only auth surface for a self-hosted Ollama. Should we require a Bearer token field anyway, for orgs that put Ollama behind a reverse-proxy with auth? Spec proposes optional Bearer field in the OllamaAdapter credential payload.
+All previously open questions are resolved. Kept here for traceability.
+
+1. ~~**R1 vs R2 vs R3 for RAG vector store**~~ **RESOLVED**: R1 — pgvector sidecar. Qdrant and Pinecone are rejected for v1. The RAG pipeline (schema, embedding service, retrieval, scrub) is **out of scope for this spec** and lives in a separate spec (`specs/ai-rag-pgvector-sidecar.md`) sequenced after PR 4. See §6.
+2. ~~One routing table or two~~ **RESOLVED (round 1)**: split into `org_ai_default_routing` (PK = `org_id`) and `org_ai_feature_routing` (PK = `(org_id, feature_name)`). MySQL unique indexes treat `NULL` as distinct, so a single-table shape with nullable `feature_key` cannot structurally enforce "exactly one default per org". See §4.
+3. ~~Per-feature capability requirements~~ **RESOLVED**: add `StructuredOutputCapable` alongside the existing capability protocols. JSON mode is acceptable ONLY when paired with server-side schema validation AND a documented retry cap (max 2 retries on JSON parse / schema-validation failure; third failure returns `STATUS_ERROR_STRUCTURED_OUTPUT`). Lets Ollama and OAI-compatible models run categorization. See §1.
+4. ~~Cost-estimate table refresh cadence~~ **RESOLVED**: quarterly manual PR. No nightly price crawler. The price table is a code constant in each adapter; `ai_cost_estimate_last_updated` config records the quarter. See §7, §16.
+5. ~~TBD-native v1 substrate~~ **RESOLVED**: option (c) — ship behind `AI_NATIVE_ENABLED=false` (default off). Full consent + adapter scaffolding lands in PR 4, but the adapter raises `NativeNotAvailable` and selection endpoints return `not_yet_available` until the toggle is flipped on per-environment. See §5, §13, §16.
+6. ~~Ollama anonymous-by-default~~ **RESOLVED**: add optional `bearer_token` field on the Ollama credential payload for reverse-proxy auth (homelab pattern). Treated as a secret with the same Fernet-at-rest posture as `api_key`. Ollama unprotected (LAN-only, no bearer) is also valid. See §1, §2.
+7. ~~Caps single table with nullable feature_key~~ **RESOLVED (round 2)**: split caps into `org_ai_default_caps` (PK `org_id`) + `org_ai_feature_caps` (PK `(org_id, feature_key)`). Same nullable-unique reason as routing. See §7.
+8. ~~Cross-org routing FK enforcement~~ **RESOLVED (round 2)**: composite FK `(org_id, credential_id) → org_ai_credentials(org_id, id)` on both routing tables, backed by `uq_oaicred_org_id` on `org_ai_credentials`. DB-layer refusal in addition to the existing service-layer check. T14 is now belt-and-suspenders. See §2, §4, T14 in §10.
