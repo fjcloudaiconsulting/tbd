@@ -1244,17 +1244,31 @@ function ItemSection({
                         </>
                       )}
                       <div className="flex justify-end gap-2">
+                        {/* Save + Cancel rendered as proper buttons (PR
+                            #forecast-plans-cancel). Before, both were
+                            `text-xs` link-style controls and the Cancel
+                            in particular was nearly invisible — the
+                            user's only obvious bail-out from an edit
+                            session was the page-level Discard, which
+                            wipes the whole plan. Keep the inline edit
+                            local (no server call) so opening a row by
+                            mistake and clicking Cancel just restores
+                            the row to its persisted state. */}
                         <button
-                          onClick={() => onSaveEdit(item.id)}
-                          className="text-xs text-accent hover:text-accent-hover"
-                        >
-                          Save
-                        </button>
-                        <button
+                          type="button"
                           onClick={onCancelEdit}
-                          className="text-xs text-text-muted hover:text-text-secondary"
+                          className="rounded-md border border-border px-2 py-1 text-xs font-medium text-text-secondary hover:bg-surface-raised"
+                          data-testid={`fp-edit-cancel-${item.id}`}
                         >
                           Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onSaveEdit(item.id)}
+                          className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-accent-text hover:bg-accent-hover"
+                          data-testid={`fp-edit-save-${item.id}`}
+                        >
+                          Save
                         </button>
                       </div>
                     </>

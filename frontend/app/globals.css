@@ -316,6 +316,28 @@ a, button { transition: all 0.15s ease; }
   }
 }
 
+/* ─── Landing-page entrance keyframes (L5.1) ───
+   Subtle fade + lift used on landing sections (Pricing, FAQ,
+   Testimonials, screenshots). Tailwind callers pair these with the
+   `motion-safe:` variant so the global reduced-motion block below
+   nukes them for visitors with the OS-level preference set.
+   The classes are scoped (no global * selector), so they only fire
+   on opted-in elements. */
+@keyframes tbd-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes tbd-fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: tbd-fade-in 480ms ease-out both;
+}
+.animate-fade-in-up {
+  animation: tbd-fade-in-up 520ms ease-out both;
+}
+
 /* Honor user's reduced-motion preference. WCAG 2.2 AA + PRODUCT.md
    commitment. Disables animations, transitions, and smooth-scroll for
    anyone with the OS-level preference set. Placed last so it wins

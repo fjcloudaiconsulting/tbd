@@ -12,7 +12,7 @@ export default function Hero() {
   return (
     <section className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-28">
       <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">
-        <div>
+        <div className="motion-safe:animate-fade-in-up">
           <p className="mb-4 font-display text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
             {BRAND_NAME}
           </p>
@@ -53,7 +53,7 @@ export default function Hero() {
             <span>Cancel anytime</span>
           </p>
         </div>
-        <div className="lg:pl-8">
+        <div className="motion-safe:animate-fade-in lg:pl-8">
           <HeroDashboard />
         </div>
       </div>
