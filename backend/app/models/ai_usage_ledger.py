@@ -110,3 +110,8 @@ class AIUsageLedger(Base):
     error_class: Mapped[Optional[str]] = mapped_column(
         String(120), nullable=True
     )
+    # PR3: structured-output retry budget counter (0/1/2). Stays 0 for
+    # every non-structured row (chat, embed, function_call, stream).
+    retries_used: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
