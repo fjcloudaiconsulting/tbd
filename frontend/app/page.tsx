@@ -1,10 +1,14 @@
 import type { Metadata } from "next";
+import Faq from "@/components/landing/Faq";
 import FeatureTiles from "@/components/landing/FeatureTiles";
 import Hero from "@/components/landing/Hero";
 import HowItWorks from "@/components/landing/HowItWorks";
 import LandingAuthRedirect from "@/components/landing/LandingAuthRedirect";
 import LandingFooter from "@/components/landing/LandingFooter";
+import PricingPreview from "@/components/landing/PricingPreview";
+import ScreenshotShowcase from "@/components/landing/ScreenshotShowcase";
 import SecondCta from "@/components/landing/SecondCta";
+import Testimonials from "@/components/landing/Testimonials";
 import TopNav from "@/components/landing/TopNav";
 import { readNonce } from "@/lib/nonce";
 import {
@@ -77,7 +81,11 @@ export default async function LandingPage() {
         <main>
           <Hero />
           <FeatureTiles />
+          <ScreenshotShowcase />
           <HowItWorks />
+          <PricingPreview />
+          <Testimonials />
+          <Faq />
           <SecondCta />
         </main>
         <LandingFooter />
