@@ -80,6 +80,23 @@ async def get_credential_for_org(
     return result.scalar_one_or_none()
 
 
+def _native_not_available() -> HTTPException:
+    """PR1: native is structurally rejected at credential creation.
+
+    The full consent + adapter scaffolding ships now (so PR4 only flips
+    a gate, not a code path), but there is no native backend yet. We
+    use HTTP 400 with a typed code so a hand-rolled API client sees a
+    machine-readable refusal. Spec §5.
+    """
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "native_not_available",
+            "message": "Native provider is not yet available",
+        },
+    )
+
+
 async def create_credential(
     db: AsyncSession,
     *,
@@ -91,6 +108,8 @@ async def create_credential(
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> OrgAICredential:
+    if payload.provider == AiProvider.NATIVE:
+        raise _native_not_available()
     result = await _run_validate(
         provider=payload.provider,
         api_key=payload.api_key,

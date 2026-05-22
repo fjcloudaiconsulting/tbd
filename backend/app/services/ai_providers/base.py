@@ -20,6 +20,21 @@ class ValidateResult:
     discovered_capabilities: list[str] = field(default_factory=list)
 
 
+class NativeNotAvailable(Exception):
+    """Raised by the native adapter while AI_NATIVE_ENABLED is False.
+
+    PR4 keeps raising this even when the gate is true until a real
+    native backend exists (spec §5: "the toggle is a one-way decision
+    per environment"). Selection endpoints map this to the
+    ``not_yet_available`` typed code; ``call_llm`` maps it to
+    ``ai_native_not_available``.
+    """
+
+    def __init__(self, code: str = "not_yet_available") -> None:
+        super().__init__(code)
+        self.code = code
+
+
 @runtime_checkable
 class ValidateCapable(Protocol):
     async def validate(self) -> ValidateResult:
@@ -91,4 +106,11 @@ def get_adapter(
         if not base_url:
             raise ValueError("base_url required for openai_compatible provider")
         return OpenAICompatibleAdapter(api_key=api_key, base_url=base_url)
+    if provider == AiProvider.NATIVE:
+        # The credential service refuses creation for native earlier
+        # (PR1 has no native backend), so this branch is dead code for
+        # PR1. Keeping it wired in keeps the registry symmetric — PR4's
+        # gate flip uses the same factory.
+        from app.services.ai_providers.native import NativeAdapter
+        return NativeAdapter()
     raise ValueError(f"Unknown AI provider: {provider!r}")

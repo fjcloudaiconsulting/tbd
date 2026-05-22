@@ -14,8 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.org_permissions import require_org_admin
+from app.config import settings
 from app.database import get_db
 from app.deps import get_session_factory
+from app.models.org_ai_credential import AiProvider
 from app.models.user import User
 from app.rate_limit import get_client_ip
 from app.schemas.org_ai_credential import (
@@ -64,6 +66,35 @@ router = APIRouter(
 
 def _request_id() -> Optional[str]:
     return structlog.contextvars.get_contextvars().get("request_id")
+
+
+@router.get("/options")
+async def get_provider_options(
+    current_user: User = Depends(require_org_admin),
+) -> dict:
+    """Provider picker metadata for the admin UI.
+
+    Native is always present in the list but carries an ``availability``
+    field — ``available`` only when ``AI_NATIVE_ENABLED`` is true AND a
+    real backend exists. PR1 ships the gate but no backend, so this
+    always returns ``not_yet_available`` for native.
+    """
+    return {
+        "providers": [
+            {"key": AiProvider.OPENAI.value, "label": "OpenAI", "availability": "available"},
+            {"key": AiProvider.ANTHROPIC.value, "label": "Anthropic", "availability": "available"},
+            {"key": AiProvider.OLLAMA.value, "label": "Ollama", "availability": "available"},
+            {"key": AiProvider.OPENAI_COMPATIBLE.value, "label": "OpenAI-compatible", "availability": "available"},
+            {
+                "key": AiProvider.NATIVE.value,
+                "label": "Native (hosted by The Better Decision)",
+                "availability": (
+                    "available" if settings.ai_native_enabled else "not_yet_available"
+                ),
+            },
+        ],
+        "ai_native_enabled": settings.ai_native_enabled,
+    }
 
 
 @router.get("", response_model=list[OrgAICredentialResponse])

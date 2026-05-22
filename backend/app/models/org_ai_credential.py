@@ -31,6 +31,7 @@ class AiProvider(str, enum.Enum):
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
     OPENAI_COMPATIBLE = "openai_compatible"
+    NATIVE = "native"
 
 
 class OrgAICredential(Base):
