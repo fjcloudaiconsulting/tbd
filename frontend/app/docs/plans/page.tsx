@@ -101,9 +101,41 @@ export default function PlansDocsPage() {
                 adjusted real-terms overlay on the chart.
               </li>
               <li>
-                <strong>Custom.</strong> Reserved for a later release.
-                A bring-your-own-events editor for plans that don't fit
-                the three templates.
+                <strong>Custom.</strong> A fully editable plan type for
+                anything that doesn't fit the three templates above.
+                You add a list of events to the timeline and the
+                simulator replays them month by month. Five event types
+                are available:
+                <ul>
+                  <li>
+                    <code>income_off</code>: silence your recurring
+                    income for a date range (sabbatical, parental leave,
+                    a planned career break).
+                  </li>
+                  <li>
+                    <code>expense_off</code>: silence recurring expenses
+                    for a date range, optionally scoped to a single
+                    category (cancel the gym while travelling).
+                  </li>
+                  <li>
+                    <code>recurring_on</code>: marker for the future
+                    exclude-recurring base flag. Currently a documented
+                    no-op; the event lands on the plan but the simulator
+                    does not yet alter the baseline.
+                  </li>
+                  <li>
+                    <code>one_off_income</code>: a single income lump on
+                    a given month (bonus, tax refund, gift).
+                  </li>
+                  <li>
+                    <code>one_off_expense</code>: a single expense lump
+                    on a given month (replacement laptop, vet bill).
+                  </li>
+                </ul>
+                Example: plan a 3-month sabbatical by adding an
+                <code>income_off</code> from month 6 to month 9 and
+                watch the chart show the dip and the recovery once
+                income resumes.
               </li>
             </ul>
           </section>
@@ -217,9 +249,12 @@ export default function PlansDocsPage() {
                 watch the chart respond.
               </li>
               <li>
-                Save the plan. It stays in your list under
-                <code>/plans</code>. You can come back later, edit it,
-                re-simulate.
+                The editor auto-saves as you type (about 400 ms after
+                you stop). Your plan stays in your list under
+                <code>/plans</code>, ready to revisit and edit later.
+                Use the Re-simulate button if you want to refresh the
+                chart with your latest changes without waiting for the
+                debounce.
               </li>
               <li>
                 When you have two or more plans, the Compare plans
