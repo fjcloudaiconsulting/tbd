@@ -59,6 +59,17 @@ class NotificationListResponse(BaseModel):
     next_cursor: Optional[str] = None
 
 
+class NotificationUnseenCountResponse(BaseModel):
+    """Bell-badge count shape for GET /notifications/unseen-count.
+
+    Raw count — no server-side cap. The bell caps the rendered label
+    at ``99+`` client-side so a future "show 250" tweak is
+    frontend-only.
+    """
+
+    count: int
+
+
 class NotificationPreferencesResponse(BaseModel):
     """Full preference shape for the current user."""
 

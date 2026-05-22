@@ -320,6 +320,114 @@ async def test_list_malformed_cursor_returns_400(session_factory):
     assert body["detail"]["code"] == "invalid_cursor"
 
 
+# ── unseen-count ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_unseen_count_requires_auth(session_factory):
+    app = FastAPI()
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.include_router(notifications_router)
+    with TestClient(app) as client:
+        res = client.get("/api/v1/notifications/unseen-count")
+    assert res.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_unseen_count_zero_when_no_rows(session_factory):
+    await _seed_users(session_factory)
+    app = _make_app(session_factory, _user_resolver("alice"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/notifications/unseen-count")
+    assert res.status_code == 200
+    assert res.json() == {"count": 0}
+
+
+@pytest.mark.asyncio
+async def test_unseen_count_returns_unseen_only(session_factory):
+    """Five rows, two already seen, one read-but-not-seen edge case
+    — count must equal exactly the rows where ``seen_at IS NULL``."""
+    seeds = await _seed_users(session_factory)
+    async with session_factory() as db:
+        rows = []
+        for i in range(5):
+            row = await notification_service.dispatch_notification(
+                db,
+                user_id=seeds["alice_id"],
+                category=NotificationCategory.SECURITY,
+                event_type=f"e.{i}",
+                title=f"T{i}",
+                body=f"B{i}",
+            )
+            rows.append(row)
+        # Mark two as already seen.
+        rows[0].seen_at = rows[0].created_at
+        rows[1].seen_at = rows[1].created_at
+        # One row is read but NOT seen — should still count toward
+        # unseen (the two columns are distinct events).
+        rows[2].read_at = rows[2].created_at
+        await db.commit()
+
+    app = _make_app(session_factory, _user_resolver("alice"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/notifications/unseen-count")
+    assert res.status_code == 200
+    assert res.json() == {"count": 3}
+
+
+@pytest.mark.asyncio
+async def test_unseen_count_isolated_per_user(session_factory):
+    """A row owned by another user must not bleed into the current
+    user's count."""
+    seeds = await _seed_users(session_factory)
+    async with session_factory() as db:
+        await notification_service.dispatch_notification(
+            db,
+            user_id=seeds["bob_id"],
+            category=NotificationCategory.SECURITY,
+            event_type="e.b",
+            title="B",
+            body="B",
+        )
+        await db.commit()
+
+    app = _make_app(session_factory, _user_resolver("alice"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/notifications/unseen-count")
+    assert res.status_code == 200
+    assert res.json() == {"count": 0}
+
+
+@pytest.mark.asyncio
+async def test_unseen_count_uncapped_returns_raw_value(session_factory):
+    """The wire payload is uncapped — the bell does its own ``99+``
+    cap client-side so a future "show 250" tweak stays
+    frontend-only."""
+    seeds = await _seed_users(session_factory)
+    async with session_factory() as db:
+        for i in range(100):
+            await notification_service.dispatch_notification(
+                db,
+                user_id=seeds["alice_id"],
+                category=NotificationCategory.SECURITY,
+                event_type=f"e.{i}",
+                title=f"T{i}",
+                body=f"B{i}",
+            )
+        await db.commit()
+
+    app = _make_app(session_factory, _user_resolver("alice"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/notifications/unseen-count")
+    assert res.status_code == 200
+    assert res.json() == {"count": 100}
+
+
 # ── mark-seen ─────────────────────────────────────────────────────
 
 

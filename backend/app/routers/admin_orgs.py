@@ -28,6 +28,7 @@ from app.auth.permissions import require_permission
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.feature_override import OrgFeatureOverride
+from app.models.notification import NotificationCategory
 from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.user import Organization, Role, User
 from app.rate_limit import get_client_ip
@@ -44,8 +45,12 @@ from app.services import (
     admin_orgs_service,
     audit_service,
     feature_service,
+    notification_service,
 )
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.notification_templates import (
+    admin_org_plan_changed as _tpl_admin_org_plan_changed,
+)
 
 logger = structlog.stdlib.get_logger()
 
@@ -153,7 +158,7 @@ async def update_org_subscription(
     # notification dispatcher key off the specific event_type without
     # parsing detail.before/detail.after.
     if "plan_id" in before:
-        await audit_service.record_audit_event(
+        audit_event_id = await audit_service.record_audit_event(
             session_factory,
             event_type="admin.org.plan.changed",
             actor_user_id=current_user.id,
@@ -168,6 +173,44 @@ async def update_org_subscription(
                 "new_plan_id": after["plan_id"],
             },
         )
+
+        # PR3 of the notification train: fan out the in-app
+        # ``org_admin`` notification to every active org admin of the
+        # affected org. Architect-locked recipient set is OWNER ∪
+        # ADMIN; the actor is included (a superadmin operator may also
+        # be an org admin elsewhere, but here the broadcast is scoped
+        # to ``org_id`` so the operator-self exclusion isn't a concern).
+        if audit_event_id is not None:
+            # Resolve the new plan's display name so the notification
+            # body carries human copy rather than a numeric id. Best
+            # effort — fall back to a stable placeholder if the lookup
+            # fails so the notification still ships.
+            new_plan_name = "Updated plan"
+            new_plan_id = after.get("plan_id")
+            if new_plan_id is not None:
+                plan_row = (
+                    await db.execute(
+                        select(Plan).where(Plan.id == new_plan_id)
+                    )
+                ).scalar_one_or_none()
+                if plan_row is not None:
+                    new_plan_name = plan_row.name
+
+            title, body, link_url = _tpl_admin_org_plan_changed(
+                new_plan_name=new_plan_name,
+                actor_email=current_user.email,
+            )
+            await notification_service.dispatch_notification_to_org_admins(
+                db,
+                org_id=org_id,
+                category=NotificationCategory.ORG_ADMIN,
+                event_type="admin.org.plan.changed",
+                title=title,
+                body=body,
+                link_url=link_url,
+                audit_event_id=audit_event_id,
+            )
+            await db.commit()
     return {"before": before, "after": after}
 
 

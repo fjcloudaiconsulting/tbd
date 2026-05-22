@@ -2,10 +2,15 @@
 ``2026-05-21-notification-system-sensitive-ops.md`` +
 ``2026-05-22-notification-system-2nd-arch-pass.md``).
 
-Mounted at ``/api/v1/notifications``. Five endpoints:
+Mounted at ``/api/v1/notifications``. Six endpoints:
 
 - ``GET /notifications`` — cursor-paginated inbox feed for the
   current user. Newest first.
+- ``GET /notifications/unseen-count`` — lightweight ``{count: int}``
+  for the bell badge. ``SELECT COUNT(*) WHERE seen_at IS NULL``;
+  does not load row payloads. The bell polls this on its 60s
+  cadence so the badge stays truthful even when unseen > the
+  popover's display limit.
 - ``POST /notifications/mark-seen`` — clears the unseen-count badge
   for the bell icon. Idempotent.
 - ``PATCH /notifications/{id}`` — marks a single row as read. Returns
@@ -35,6 +40,7 @@ from app.schemas.notification import (
     NotificationPreferencesResponse,
     NotificationPreferencesUpdate,
     NotificationResponse,
+    NotificationUnseenCountResponse,
 )
 from app.services import notification_service
 
@@ -77,6 +83,31 @@ async def list_notifications(
         items=[NotificationResponse.model_validate(row) for row in page.items],
         next_cursor=page.next_cursor,
     )
+
+
+@router.get(
+    "/unseen-count",
+    response_model=NotificationUnseenCountResponse,
+)
+async def get_unseen_count(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the count of unseen notifications for the current user.
+
+    Lightweight ``SELECT COUNT(*) WHERE seen_at IS NULL`` — does NOT
+    load row payloads. The bell badge polls this on its 60s cadence
+    so the displayed count stays truthful even when the unseen total
+    exceeds the popover's preview page size.
+
+    Returns the raw count. The bell caps the rendered label at
+    ``99+`` client-side; the wire payload is uncapped so a future
+    "show 250" tweak is frontend-only.
+    """
+    count = await notification_service.get_unseen_count(
+        db, user_id=current_user.id
+    )
+    return NotificationUnseenCountResponse(count=count)
 
 
 @router.post(

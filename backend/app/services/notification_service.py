@@ -4,8 +4,14 @@ Per the 2nd-arch delta (G7 — future-queue readiness) and the parent
 spec, this layer is the single home for:
 
 - ``dispatch_notification`` — write a single notification row for a
-  user. PR1 carries the row-write side only; the email-dispatch side
-  is wired in PR3+ when the hook points are added.
+  user. PR3 consults the user's in-app preferences for non-security
+  categories before writing; ``security`` is force-on and always
+  writes (architect-locked).
+- ``dispatch_notification_to_org_admins`` — fanout helper for
+  org-broadcast events (plan change today, role + rename + reset in
+  PR4). One SELECT for the admin set, then per-user dispatch.
+  Per-user failure does NOT abort the fanout — the contract is
+  best-effort, log-and-continue.
 - ``mark_seen`` — bell-open clears the badge for all the user's
   unseen rows. Idempotent.
 - ``mark_read`` — row-click clears a single row's unread state.
@@ -19,15 +25,11 @@ spec, this layer is the single home for:
   ``email_security=False`` is the route's job; this function trusts
   its caller.
 
-PR1 scope intentionally excludes:
+PR3 scope intentionally excludes:
 
-- ``dispatch_notification_to_org`` (broadcast helper). Lands in
-  PR4 with the hooks that need it.
-- Email scheduling. The function signature here will gain an
-  ``email_service`` dispatcher in PR3 when the first hook hits.
-- ``notification_templates.py``. Hardcoded English strings are
-  passed in by the caller in v1; the template module centralizes
-  them in PR3+.
+- Email scheduling. The 5 sensitive-op routes write the in-app row
+  only in PR3; the Mailgun side wires in PR5.
+- ``/settings/notifications`` UI — PR5.
 """
 from __future__ import annotations
 
@@ -35,7 +37,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import and_, or_, select, update
+import structlog
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app._time import utcnow_naive
@@ -44,6 +47,10 @@ from app.models.notification import (
     NotificationCategory,
     UserNotificationPreferences,
 )
+from app.models.user import Role, User
+
+
+logger = structlog.stdlib.get_logger()
 
 
 # Page size cap mirrors the parent spec's pagination decision (G3):
@@ -64,6 +71,60 @@ class NotificationPage:
 # ── dispatch ──────────────────────────────────────────────────────
 
 
+# In-app category → preference-column mapping. Used by
+# ``_in_app_preference_allows`` to decide whether to skip a row write
+# when the user has opted out of the category. ``security`` is
+# intentionally absent — that category is force-on and never
+# consults the preference row.
+_IN_APP_PREF_FIELD: dict[NotificationCategory, str] = {
+    NotificationCategory.ACCOUNT: "in_app_account",
+    NotificationCategory.ORG_ADMIN: "in_app_org_admin",
+    NotificationCategory.ORG_ACTIVITY: "in_app_org_activity",
+}
+
+
+async def _in_app_preference_allows(
+    db: AsyncSession, *, user_id: int, category: NotificationCategory
+) -> bool:
+    """Return whether the in-app row should be written for ``user_id``.
+
+    Always True for ``security`` — architect-locked force-on
+    (see parent spec "Architect resolutions" + 2nd-arch delta
+    section 4). For the other three categories, consult the user's
+    preference row; ``True`` (default) means write, ``False`` means
+    skip.
+
+    A missing preference row is treated as the defaults (security +
+    account + org_admin allowed, org_activity not). ``get_preferences``
+    auto-creates rows on first read, but during dispatch we avoid
+    inserting a preference row purely for a dispatch decision — a
+    direct SELECT is cheaper and the default-allow path mirrors
+    ``_default_preferences``.
+    """
+    if category == NotificationCategory.SECURITY:
+        return True
+
+    field = _IN_APP_PREF_FIELD.get(category)
+    if field is None:
+        # Defensive: a future category that forgets to register here
+        # falls through as "allowed" rather than silently dropping
+        # every dispatch.
+        return True
+
+    stmt = select(UserNotificationPreferences).where(
+        UserNotificationPreferences.user_id == user_id
+    )
+    result = await db.execute(stmt)
+    prefs = result.scalar_one_or_none()
+    if prefs is None:
+        # No preference row → defaults apply. account + org_admin
+        # default-on; org_activity default-off.
+        if category == NotificationCategory.ORG_ACTIVITY:
+            return False
+        return True
+    return bool(getattr(prefs, field))
+
+
 async def dispatch_notification(
     db: AsyncSession,
     *,
@@ -74,19 +135,45 @@ async def dispatch_notification(
     body: str,
     link_url: Optional[str] = None,
     audit_event_id: Optional[int] = None,
-) -> Notification:
+) -> Optional[Notification]:
     """Write a single notification row for ``user_id``.
 
     Caller is responsible for commit semantics — this matches the
     parent spec's "persistence-first, dispatch-after" guardrail (the
     notification ROW write goes through the request's ``AsyncSession``
-    so it commits atomically with the action that caused it). PR1
-    has no email-dispatch side; that wires in PR3+.
+    so it commits atomically with the action that caused it).
+
+    Preference contract (PR3):
+
+    - ``category == security`` → ALWAYS write the row. Architect-locked
+      force-on. The user cannot opt out of security signals via the
+      in-app channel.
+    - ``category in {account, org_admin, org_activity}`` → consult the
+      user's ``in_app_{category}`` preference. If the toggle is False
+      the row is NOT written; a ``notification.skipped_by_pref``
+      structlog event fires so an operator can spot the skip.
+
+    Returns the persisted ``Notification`` row, or ``None`` when the
+    preference check skipped the write. Callers that need to chain
+    the id (e.g. for analytics) should null-check.
 
     Per G8 idempotency note: callers must invoke this at most once
     per request per ``(user_id, event_type)`` pair. There is no
     DB-level dedup; a duplicate invocation produces a duplicate row.
     """
+    allowed = await _in_app_preference_allows(
+        db, user_id=user_id, category=category
+    )
+    if not allowed:
+        await logger.ainfo(
+            "notification.skipped_by_pref",
+            user_id=user_id,
+            category=category.value,
+            event_type=event_type,
+            audit_event_id=audit_event_id,
+        )
+        return None
+
     # Set created_at explicitly in Python rather than relying on the
     # server_default (``func.now(6)`` on MySQL, plain CURRENT_TIMESTAMP
     # on SQLite). The dialect mismatch matters for cursor pagination:
@@ -113,6 +200,106 @@ async def dispatch_notification(
     await db.flush()
     await db.refresh(row)
     return row
+
+
+async def dispatch_notification_to_org_admins(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    category: NotificationCategory,
+    event_type: str,
+    title: str,
+    body: str,
+    link_url: Optional[str] = None,
+    audit_event_id: Optional[int] = None,
+) -> int:
+    """Fan out a notification to every active org admin of ``org_id``.
+
+    "Org admin" today = ``Role.OWNER`` ∪ ``Role.ADMIN`` (matches
+    ``auth/org_permissions.py``'s ``require_admin``). Only active
+    users (``is_active=True``) receive the notification.
+
+    Uses ONE SQL SELECT to fetch the admin set, then iterates and
+    calls ``dispatch_notification`` per recipient inside a SAVEPOINT.
+    Per-user failure is logged and swallowed so one user's bad row
+    write doesn't kill the entire fanout (best-effort contract).
+    Preference-aware writes still happen per-user: an admin who has
+    opted out of ``org_admin`` in-app notifications gets skipped.
+
+    The savepoint wrap is load-bearing: SQLAlchemy async sessions
+    are "poisoned" once a flush fails inside them — any subsequent
+    ORM operation or commit raises ``InvalidRequestError`` until the
+    transaction is rolled back. Wrapping each per-recipient dispatch
+    in ``db.begin_nested()`` scopes the failure to the savepoint,
+    so the outer transaction (and the next recipient's flush, and
+    the caller's eventual commit) stays clean. Without this, the
+    "best-effort" log was technically swallowed but the eventual
+    commit would still fail downstream.
+
+    Returns the count of notification rows actually written (skips
+    via preference and per-user failures both count against the
+    total). The caller logs this count for the audit-correlation UI
+    (future PR).
+    """
+    stmt = select(User).where(
+        User.org_id == org_id,
+        User.role.in_((Role.OWNER, Role.ADMIN)),
+        User.is_active.is_(True),
+    )
+    result = await db.execute(stmt)
+    admins = list(result.scalars().all())
+
+    written = 0
+    failures = 0
+    for admin in admins:
+        savepoint = await db.begin_nested()
+        try:
+            row = await dispatch_notification(
+                db,
+                user_id=admin.id,
+                category=category,
+                event_type=event_type,
+                title=title,
+                body=body,
+                link_url=link_url,
+                audit_event_id=audit_event_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort fanout
+            # Roll the savepoint back BEFORE logging so the outer
+            # transaction is clean by the time control returns to
+            # the loop head. A failed flush leaves the session in
+            # "rollback-required" state; without this rollback the
+            # next recipient's flush would raise InvalidRequestError
+            # and the caller's commit would fail too.
+            await savepoint.rollback()
+            await logger.awarning(
+                "notification.dispatch.fanout.recipient_failed",
+                org_id=org_id,
+                recipient_user_id=admin.id,
+                event_type=event_type,
+                error=str(exc),
+                error_class=type(exc).__name__,
+            )
+            failures += 1
+            # Continue to the next admin — one user's failure must
+            # not poison the rest of the broadcast.
+            continue
+        else:
+            # Commit the savepoint; the row stays pending in the
+            # outer transaction (so the caller still owns commit).
+            await savepoint.commit()
+            if row is not None:
+                written += 1
+
+    await logger.ainfo(
+        "notification.dispatch.fanout.complete",
+        org_id=org_id,
+        event_type=event_type,
+        admin_count=len(admins),
+        rows_written=written,
+        failures=failures,
+    )
+    return written
 
 
 # ── reads ─────────────────────────────────────────────────────────
@@ -198,6 +385,24 @@ async def list_for_user(
         items = rows
         next_cursor = None
     return NotificationPage(items=items, next_cursor=next_cursor)
+
+
+async def get_unseen_count(db: AsyncSession, *, user_id: int) -> int:
+    """Return the number of unseen notifications for ``user_id``.
+
+    Lightweight ``SELECT COUNT(*) ... WHERE seen_at IS NULL`` — does
+    NOT load row payloads. Backs the bell badge so the count stays
+    truthful even when unseen rows exceed the popover's preview page
+    size (which caps at 10).
+    """
+    stmt = (
+        select(func.count())
+        .select_from(Notification)
+        .where(Notification.user_id == user_id)
+        .where(Notification.seen_at.is_(None))
+    )
+    result = await db.execute(stmt)
+    return int(result.scalar_one() or 0)
 
 
 # ── mark seen / mark read ─────────────────────────────────────────
