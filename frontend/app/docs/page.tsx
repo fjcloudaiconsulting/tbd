@@ -131,6 +131,19 @@ export default function DocsPage() {
                 forward-looking projections per category, used by the
                 dashboard to show what the period is on track for.
               </li>
+              <li>
+                <strong>Plans.</strong> A separate simulation sandbox
+                for one-off life events (trip, purchase, retirement).
+                Plans never touch your real transactions. See the{" "}
+                <Link
+                  href="/docs/plans"
+                  className="underline hover:text-text-primary"
+                  data-testid="docs-plans-link"
+                >
+                  Plans guide
+                </Link>{" "}
+                for the full mental model.
+              </li>
             </ul>
           </section>
 

@@ -20,6 +20,7 @@
  */
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2 } from "lucide-react";
 
@@ -271,11 +272,18 @@ export default function PlansPage() {
 
   return (
     <AppShell>
-      <header className="mb-4 flex items-center justify-between">
+      <header className="mb-4 flex items-center justify-between gap-3">
         <div>
           <h1 className={`${pageTitle} mb-0`}>Plans</h1>
           <p className="mt-1 text-sm text-text-muted">
-            Plan one-off life events. Nothing here touches your real transactions.
+            Plan one-off life events. Nothing here touches your real transactions.{" "}
+            <Link
+              href="/docs/plans"
+              className="underline-offset-2 hover:underline"
+              data-testid="plans-docs-link"
+            >
+              Read the Plans guide.
+            </Link>
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -304,6 +312,12 @@ export default function PlansPage() {
 
       {active ? (
         <PlanEditor
+          // Key by plan.id so React unmounts + remounts the editor when
+          // the active plan changes. This naturally resets all local
+          // state (editorValid, params draft, etc.) so a previous
+          // plan's invalid editor state can't leak into the next plan
+          // and silently suppress its debounced PATCHes.
+          key={active.id}
           plan={active}
           accounts={accounts}
           onBack={() => setActive(null)}
@@ -472,7 +486,22 @@ function PlanEditor({
   const [horizon, setHorizon] = useState<number>(plan.horizon_months);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // Client-side validity flag set by child editors (RetirementParamsEditor
+  // owns curve validation). When any inline error is showing, the
+  // debounced PATCH below skips the network call so we don't spam the
+  // server with 422s while the user is still typing. The inline error
+  // is already visible to the user; firing the request on top of that
+  // is pure noise.
+  const [editorValid, setEditorValid] = useState(true);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Horizon bounds match the server-side validator. Pre-checking on the
+  // client keeps the debounced PATCH from firing 422s while the user
+  // walks an out-of-range number up or down with the spinner.
+  const horizonMax = plan.scenario_type === "retirement" ? 480 : 120;
+  const horizonValid = horizon >= 1 && horizon <= horizonMax;
+  const nameValid = name.trim().length > 0;
+  const isValid = editorValid && horizonValid && nameValid;
 
   // Reset state when switching plans.
   useEffect(() => {
@@ -512,12 +541,23 @@ function PlanEditor({
 
   // Debounced re-simulate when the editor's local params drift from the
   // server-side plan. Architect-locked 400ms.
+  //
+  // Gate on isValid so a typed-but-incomplete curve row (or any other
+  // inline validation error) doesn't fire a PATCH that the server will
+  // reject with 422. The inline error is already on screen; the
+  // network noise on top would just spam the console. Once the user
+  // fixes the offending field, isValid flips back to true and the next
+  // change-driven render schedules a fresh debounce.
   useEffect(() => {
     if (
       JSON.stringify(params) === JSON.stringify(plan.params_json)
       && name === plan.name
       && horizon === plan.horizon_months
     ) {
+      return;
+    }
+    if (!isValid) {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
       return;
     }
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -527,7 +567,7 @@ function PlanEditor({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [params, name, horizon, plan, persist]);
+  }, [params, name, horizon, plan, persist, isValid]);
 
   async function manualSimulate() {
     setBusy(true);
@@ -573,11 +613,21 @@ function PlanEditor({
                 id="plan-horizon"
                 type="number"
                 min={1}
-                max={plan.scenario_type === "retirement" ? 480 : 120}
+                max={horizonMax}
                 value={horizon}
                 onChange={(e) => setHorizon(Number(e.target.value || 0))}
                 className={input}
+                aria-describedby="plan-horizon-hint"
               />
+              <p
+                id="plan-horizon-hint"
+                className="mt-1 max-w-prose text-xs text-text-muted"
+              >
+                How many months to project from today. Max{" "}
+                {plan.scenario_type === "retirement"
+                  ? "480 (40 years) for retirement"
+                  : "120 (10 years) for trip and purchase plans"}.
+              </p>
             </div>
             {plan.scenario_type === "trip" && (
               <TripParamsEditor params={params} setParams={setParams} accounts={accounts} />
@@ -590,7 +640,7 @@ function PlanEditor({
                 params={params}
                 setParams={setParams}
                 accounts={accounts}
-                onValidityChange={() => { /* server re-validates on PATCH */ }}
+                onValidityChange={setEditorValid}
               />
             )}
             {plan.scenario_type === "custom" && (
@@ -680,6 +730,11 @@ function ProjectionView({ projection }: { projection: ProjectionResult }) {
 }
 
 
+// Shared helper-text class. `max-w-prose` keeps the explanation
+// readable on wide layouts and prevents a long sentence from forcing
+// the right pane into horizontal scroll on narrow viewports.
+const fieldHelp = "mt-1 max-w-prose text-xs text-text-muted";
+
 function TripParamsEditor({
   params,
   setParams,
@@ -702,7 +757,11 @@ function TripParamsEditor({
           onChange={(e) => set("destination", e.target.value)}
           className={input}
           data-testid="trip-destination-input"
+          aria-describedby="trip-destination-hint"
         />
+        <p id="trip-destination-hint" className={fieldHelp}>
+          Free text. Used only as a label on the plan; the projection ignores it.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="trip-start">Start date</label>
@@ -712,7 +771,11 @@ function TripParamsEditor({
           value={(params.start_date as string) ?? ""}
           onChange={(e) => set("start_date", e.target.value)}
           className={input}
+          aria-describedby="trip-start-hint"
         />
+        <p id="trip-start-hint" className={fieldHelp}>
+          When the trip kicks off. The cost lands in a single dip on this month.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="trip-duration">Duration (days)</label>
@@ -724,7 +787,11 @@ function TripParamsEditor({
           value={(params.duration_days as number) ?? 1}
           onChange={(e) => set("duration_days", Number(e.target.value || 0))}
           className={input}
+          aria-describedby="trip-duration-hint"
         />
+        <p id="trip-duration-hint" className={fieldHelp}>
+          Multiplied by daily budget and accommodation per night to get the on-the-ground total.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="trip-transport">Transport cost</label>
@@ -736,7 +803,11 @@ function TripParamsEditor({
           value={(params.transport_cost as string) ?? "0"}
           onChange={(e) => set("transport_cost", e.target.value)}
           className={input}
+          aria-describedby="trip-transport-hint"
         />
+        <p id="trip-transport-hint" className={fieldHelp}>
+          Flights, trains, fuel. Counted once at the start of the trip.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="trip-accom">Accommodation per night</label>
@@ -748,7 +819,11 @@ function TripParamsEditor({
           value={(params.accommodation_per_night as string) ?? "0"}
           onChange={(e) => set("accommodation_per_night", e.target.value)}
           className={input}
+          aria-describedby="trip-accom-hint"
         />
+        <p id="trip-accom-hint" className={fieldHelp}>
+          Multiplied by duration to get the total stay cost.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="trip-daily">Daily budget</label>
@@ -760,7 +835,11 @@ function TripParamsEditor({
           value={(params.daily_budget as string) ?? "0"}
           onChange={(e) => set("daily_budget", e.target.value)}
           className={input}
+          aria-describedby="trip-daily-hint"
         />
+        <p id="trip-daily-hint" className={fieldHelp}>
+          Food, sights, ground transport. Multiplied by duration.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="trip-account">Source account</label>
@@ -769,6 +848,7 @@ function TripParamsEditor({
           value={(params.source_account_id as number) ?? ""}
           onChange={(e) => set("source_account_id", Number(e.target.value))}
           className={input}
+          aria-describedby="trip-account-hint"
         >
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
@@ -776,6 +856,9 @@ function TripParamsEditor({
             </option>
           ))}
         </select>
+        <p id="trip-account-hint" className={fieldHelp}>
+          Which account the trip's cash dip is deducted from in the projection.
+        </p>
       </div>
     </>
   );
@@ -803,7 +886,11 @@ function PurchaseParamsEditor({
           value={(params.subtype as string) ?? "car"}
           onChange={(e) => set("subtype", e.target.value)}
           className={input}
+          aria-describedby="p-subtype-hint"
         />
+        <p id="p-subtype-hint" className={fieldHelp}>
+          Free text (car, house, appliance, etc.). Used only as a label.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="p-label">Label</label>
@@ -812,7 +899,11 @@ function PurchaseParamsEditor({
           value={(params.label as string) ?? ""}
           onChange={(e) => set("label", e.target.value)}
           className={input}
+          aria-describedby="p-label-hint"
         />
+        <p id="p-label-hint" className={fieldHelp}>
+          Short name shown on the plan, for example "Family car 2027".
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="p-target">Target date</label>
@@ -822,7 +913,11 @@ function PurchaseParamsEditor({
           value={(params.target_date as string) ?? ""}
           onChange={(e) => set("target_date", e.target.value)}
           className={input}
+          aria-describedby="p-target-hint"
         />
+        <p id="p-target-hint" className={fieldHelp}>
+          When the purchase happens. The down payment lands on this month in the projection.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="p-price">Total price</label>
@@ -834,7 +929,11 @@ function PurchaseParamsEditor({
           value={(params.total_price as string) ?? "0"}
           onChange={(e) => set("total_price", e.target.value)}
           className={input}
+          aria-describedby="p-price-hint"
         />
+        <p id="p-price-hint" className={fieldHelp}>
+          Sticker price before any financing. Reference number only; the projection moves cash based on down payment and (later) monthly financing.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="p-down">Down payment</label>
@@ -846,7 +945,11 @@ function PurchaseParamsEditor({
           value={(params.down_payment as string) ?? "0"}
           onChange={(e) => set("down_payment", e.target.value)}
           className={input}
+          aria-describedby="p-down-hint"
         />
+        <p id="p-down-hint" className={fieldHelp}>
+          Cash you put up front on the target date. Comes out of the account you pick below.
+        </p>
       </div>
       <div>
         <label className={labelCls} htmlFor="p-account">Down-payment account</label>
@@ -855,6 +958,7 @@ function PurchaseParamsEditor({
           value={(params.down_payment_account_id as number) ?? ""}
           onChange={(e) => set("down_payment_account_id", Number(e.target.value))}
           className={input}
+          aria-describedby="p-account-hint"
         >
           {accounts.map((a) => (
             <option key={a.id} value={a.id}>
@@ -862,6 +966,9 @@ function PurchaseParamsEditor({
             </option>
           ))}
         </select>
+        <p id="p-account-hint" className={fieldHelp}>
+          Which account funds the down payment in the projection.
+        </p>
       </div>
     </>
   );
