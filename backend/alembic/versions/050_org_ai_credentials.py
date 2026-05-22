@@ -5,12 +5,16 @@ Revises: 049_announcements
 Create Date: 2026-05-22
 
 Creates the single ``org_ai_credentials`` table that backs the BYO
-provider-key substrate. Subsequent PRs add routing / caps / consents /
-native and reference ``(org_id, id)`` as a composite FK target — the
-named UNIQUE in this migration exists for that future reference.
+provider-key substrate. The composite ``UNIQUE (id, org_id)`` named
+constraint exists so later migrations can reference ``(org_id, id)``
+as a composite FK target -- routing, caps, and consents all use it
+for DB-level cross-org refusal.
 
-Out of scope for PR1: routing tables, caps tables, consents table,
-native adapter, usage ledger. See ``specs/2026-05-22-ai-tier-byo-and-native-providers.md``.
+Scope expansion since the original PR1 spec: routing / caps / consents
+and the native adapter shell now ship in the same PR, via migrations
+051 / 052 / 053. The usage ledger and the real native backend remain
+out of scope and land in subsequent PRs. See
+``specs/2026-05-22-ai-tier-byo-and-native-providers.md``.
 """
 from __future__ import annotations
 
