@@ -354,3 +354,114 @@ async def test_bad_validation_returns_400_and_no_row_persisted(session_factory):
     assert resp.json()["detail"]["code"] == "credential_validation_failed"
     listr = client.get("/api/v1/settings/ai-providers")
     assert listr.json() == []
+
+
+# ----------------------------------------------------------------
+# Validate-endpoint cooldown (architect round-3 blocker, spec §6 T10).
+# Per-(org, credential) 5 s cooldown via redis SET NX EX. Tests stub
+# the redis helper so they don't require a live Redis.
+# ----------------------------------------------------------------
+
+
+async def test_validate_second_call_within_5s_returns_429(session_factory):
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with _patch_adapter(_ok_validate()):
+        post = client.post(
+            "/api/v1/settings/ai-providers",
+            json={"provider": "openai", "api_key": "sk-test-cd-aaaa"},
+        )
+    cred_id = post.json()["id"]
+
+    # First call: cooldown free. Second call within the TTL window:
+    # cooldown held. Mocks return True then False to simulate the
+    # SET NX EX semantics without needing a live Redis or sleep.
+    acquire_mock = AsyncMock(side_effect=[True, False])
+    with patch(
+        "app.routers.ai_providers.redis_client.ai_validate_cooldown_acquire",
+        new=acquire_mock,
+    ):
+        with _patch_adapter(_ok_validate()):
+            first = client.post(f"/api/v1/settings/ai-providers/{cred_id}/validate")
+        assert first.status_code == 200
+        second = client.post(f"/api/v1/settings/ai-providers/{cred_id}/validate")
+    assert second.status_code == 429
+    assert second.json()["detail"]["code"] == "validate_rate_limited"
+
+
+async def test_validate_after_5s_succeeds(session_factory):
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with _patch_adapter(_ok_validate()):
+        post = client.post(
+            "/api/v1/settings/ai-providers",
+            json={"provider": "openai", "api_key": "sk-test-cd2-aaaa"},
+        )
+    cred_id = post.json()["id"]
+
+    # First call: claim. Time passes, TTL expires. Second call: claim
+    # again. Simulate by returning True both times (the cooldown helper
+    # would return True on the second call once the prior key has
+    # expired).
+    acquire_mock = AsyncMock(side_effect=[True, True])
+    with patch(
+        "app.routers.ai_providers.redis_client.ai_validate_cooldown_acquire",
+        new=acquire_mock,
+    ):
+        with _patch_adapter(_ok_validate()):
+            first = client.post(f"/api/v1/settings/ai-providers/{cred_id}/validate")
+            second = client.post(f"/api/v1/settings/ai-providers/{cred_id}/validate")
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+
+async def test_validate_different_credentials_independent(session_factory):
+    """Each (org, credential_id) tuple has its own cooldown bucket.
+
+    Two credentials in the same org can be validated back-to-back even
+    inside the 5 s window — independent buckets.
+    """
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with _patch_adapter(_ok_validate()):
+        a = client.post(
+            "/api/v1/settings/ai-providers",
+            json={"provider": "openai", "api_key": "sk-test-cd3-aaaa"},
+        )
+        b = client.post(
+            "/api/v1/settings/ai-providers",
+            json={"provider": "anthropic", "api_key": "sk-ant-test-cd-bbbb"},
+        )
+    a_id = a.json()["id"]
+    b_id = b.json()["id"]
+
+    # The helper is keyed on (org_id, credential_id) so each call gets
+    # its own slot — both acquire True.
+    acquire_mock = AsyncMock(side_effect=[True, True])
+    with patch(
+        "app.routers.ai_providers.redis_client.ai_validate_cooldown_acquire",
+        new=acquire_mock,
+    ):
+        with _patch_adapter(_ok_validate()):
+            r_a = client.post(f"/api/v1/settings/ai-providers/{a_id}/validate")
+            r_b = client.post(f"/api/v1/settings/ai-providers/{b_id}/validate")
+    assert r_a.status_code == 200
+    assert r_b.status_code == 200
+    # Confirm the helper was keyed per-credential.
+    assert acquire_mock.call_args_list[0].kwargs["credential_id"] == a_id
+    assert acquire_mock.call_args_list[1].kwargs["credential_id"] == b_id

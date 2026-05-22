@@ -13,6 +13,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app import redis_client
 from app.auth.org_permissions import require_org_admin
 from app.config import settings
 from app.database import get_db
@@ -563,6 +564,22 @@ async def validate_credential(
     )
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    # Per-(org, credential) 5 s cooldown. Spec §6 T10. Redis-backed
+    # SET NX EX; admin-gated path so dev-mode (no Redis) skip is OK.
+    # Acquired AFTER the 404 check so probing nonexistent credentials
+    # can't poison real cooldown slots; the look-up is a cheap DB read.
+    if not await redis_client.ai_validate_cooldown_acquire(
+        org_id=current_user.org_id,
+        credential_id=credential_id,
+        ttl_seconds=5,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "validate_rate_limited",
+                "message": "Please wait before validating this credential again.",
+            },
+        )
     updated = await ai_credential_service.validate_credential(
         db,
         credential=row,
