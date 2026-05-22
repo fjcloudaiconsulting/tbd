@@ -1,21 +1,24 @@
-"""Provider adapter package for BYO AI credentials (PR1).
+"""Provider adapter package for BYO AI credentials.
 
-PR1 ships only the ``ValidateCapable`` protocol — adapters reach out to
-each provider's ``/models`` endpoint to confirm the key works and
-discover available models. The other Capable protocols
-(``ChatCapable``, ``EmbedCapable``, ``StructuredOutputCapable``,
-``StreamCapable``, ``FunctionCallCapable``) are declared as empty
-``Protocol`` stubs so type-checking lights up in later PRs without a
-follow-up refactor of this module.
+PR1 shipped the ``ValidateCapable`` protocol. PR2 adds:
+
+- ``ChatCapable.chat`` — implementations on OpenAI, Anthropic,
+  Ollama, and OpenAI-compatible adapters.
+- ``LLMResponse`` — provider-neutral response shape.
+- ``AIProviderError`` — typed wrapper with a sanitized message.
+- ``StructuredOutputCapable.chat_structured`` — protocol signature
+  only (implementations deferred to PR3 per architect lock).
 
 Distinct from the older ``ai_adapters`` package (LAI foundation mock
 adapter) — that one is the call_llm() chokepoint; this one is the
 provider abstraction for BYO credentials.
 """
 from app.services.ai_providers.base import (
+    AIProviderError,
     ChatCapable,
     EmbedCapable,
     FunctionCallCapable,
+    LLMResponse,
     NativeNotAvailable,
     StreamCapable,
     StructuredOutputCapable,
@@ -25,9 +28,11 @@ from app.services.ai_providers.base import (
 )
 
 __all__ = [
+    "AIProviderError",
     "ChatCapable",
     "EmbedCapable",
     "FunctionCallCapable",
+    "LLMResponse",
     "NativeNotAvailable",
     "StreamCapable",
     "StructuredOutputCapable",
