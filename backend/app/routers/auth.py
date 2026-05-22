@@ -2052,8 +2052,10 @@ async def mfa_setup(
 @router.post("/mfa/enable", response_model=MfaEnableResponse)
 async def mfa_enable(
     body: MfaEnableRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Confirm MFA setup with a TOTP code, activate MFA, return recovery codes."""
     if current_user.mfa_enabled:
@@ -2073,14 +2075,31 @@ async def mfa_enable(
     current_user.recovery_codes = ",".join(hash_recovery_code(c) for c in codes)
     await db.commit()
 
+    # Audit AFTER the business commit succeeds. PR3 of the notification
+    # train uses this row as the trigger source for user.mfa.enabled.
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="user.mfa.enabled",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=None,
+        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=None,
+    )
+
     return MfaEnableResponse(recovery_codes=codes)
 
 
 @router.post("/mfa/disable")
 async def mfa_disable(
     body: MfaDisableRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Disable MFA. Requires password confirmation."""
     if not current_user.mfa_enabled:
@@ -2092,6 +2111,22 @@ async def mfa_disable(
     current_user.totp_secret = None
     current_user.recovery_codes = None
     await db.commit()
+
+    # Audit AFTER the business commit succeeds. PR3 of the notification
+    # train uses this row as the trigger source for user.mfa.disabled —
+    # a security-critical signal (the user can react if it wasn't them).
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="user.mfa.disabled",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=None,
+        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=None,
+    )
 
     return {"detail": "MFA disabled"}
 

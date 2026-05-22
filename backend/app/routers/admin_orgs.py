@@ -141,6 +141,33 @@ async def update_org_subscription(
         outcome="success",
         detail={"before": before, "after": after},
     )
+
+    # Plan-change-specific audit row (audit-gap closure PR2 of the
+    # notification train). The generic `admin.org.subscription.override`
+    # event above covers any field change on the subscription — plan,
+    # status, trial_end, current_period_end — but PR3 of the
+    # notification train needs a clean trigger source that fires
+    # ONLY when the plan_id actually changes (status flips don't notify
+    # org members about a plan change). Emitting both rows lets the
+    # generic compliance log keep its coverage AND the future
+    # notification dispatcher key off the specific event_type without
+    # parsing detail.before/detail.after.
+    if "plan_id" in before:
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="admin.org.plan.changed",
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            target_org_id=org_id,
+            target_org_name=detail["name"],
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail={
+                "old_plan_id": before["plan_id"],
+                "new_plan_id": after["plan_id"],
+            },
+        )
     return {"before": before, "after": after}
 
 
