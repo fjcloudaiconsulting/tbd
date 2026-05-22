@@ -44,7 +44,10 @@ import KPIWidget from "@/components/reports/widgets/KPIWidget";
 import BarWidget from "@/components/reports/widgets/BarWidget";
 
 interface PageProps {
-  params: Promise<{ id: string }>;
+  // Next 15 makes ``params`` a promise on server-rendered pages; in
+  // tests we can also pass a plain object so we don't have to wrap
+  // every render in a Suspense boundary that handles ``use()``.
+  params: Promise<{ id: string }> | { id: string };
 }
 
 const DEFAULT_LAYOUT: LayoutJson = { version: 1, widgets: [] };
@@ -92,8 +95,14 @@ function newWidgetId(): string {
 
 export default function ReportEditorPage({ params }: PageProps) {
   // Next 15 makes ``params`` a promise; ``use()`` unwraps it on the
-  // client without awaiting at the top level.
-  const { id } = use(params);
+  // client without awaiting at the top level. In test harnesses we
+  // can pass a plain object and skip the promise branch entirely so
+  // the editor doesn't suspend.
+  const resolvedParams =
+    params && typeof (params as Promise<{ id: string }>).then === "function"
+      ? use(params as Promise<{ id: string }>)
+      : (params as { id: string });
+  const { id } = resolvedParams;
   const router = useRouter();
   const { user, loading: authLoading, featureReportsV2 } = useAuth();
 
@@ -138,7 +147,11 @@ export default function ReportEditorPage({ params }: PageProps) {
     return () => {
       cancelled = true;
     };
-  }, [id, user, authLoading, featureReportsV2, router]);
+    // ``router`` is intentionally omitted — useRouter() may not
+    // guarantee a referentially-stable identity across renders, and
+    // refiring the load effect would clobber unsaved canvas edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, user, authLoading, featureReportsV2]);
 
   const selectedWidget = useMemo(
     () => layout.widgets.find((w) => w.id === selectedWidgetId) ?? null,

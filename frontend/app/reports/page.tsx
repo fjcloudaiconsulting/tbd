@@ -48,7 +48,11 @@ export default function ReportsListPage() {
     return () => {
       cancelled = true;
     };
-  }, [user, authLoading, featureReportsV2, router]);
+    // ``router`` is intentionally omitted — useRouter() identity is
+    // not guaranteed stable across renders, and refiring the list
+    // effect on every render would churn the list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, authLoading, featureReportsV2]);
 
   async function handleNewReport() {
     if (creating) return;
