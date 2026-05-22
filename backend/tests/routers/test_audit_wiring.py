@@ -163,6 +163,98 @@ async def test_subscription_override_writes_audit(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_subscription_override_with_plan_change_writes_plan_changed_audit(
+    session_factory,
+):
+    """Audit gap closure PR2 (notification train).
+
+    The generic ``admin.org.subscription.override`` row already covered
+    any field change; PR3's notification dispatcher needs a clean
+    ``admin.org.plan.changed`` trigger that fires ONLY when the plan
+    actually changes (status flips, trial-end nudges shouldn't fan a
+    "your plan changed" notification to every org member).
+
+    This pins both rows on a plan-change PUT and only the generic row
+    on a status-only PUT.
+    """
+    # Seed with an extra plan so we can switch to it.
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        pro = Plan(slug="pro", name="Pro")
+        db.add(pro)
+        await db.commit()
+        pro_plan_id = pro.id
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/subscription",
+            json={"plan_id": pro_plan_id},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        override_rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "admin.org.subscription.override"
+                )
+            )
+        ).scalars().all()
+        plan_rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    # Generic compliance row still emitted.
+    assert len(override_rows) == 1
+    # AND the plan-specific row landed.
+    assert len(plan_rows) == 1
+    plan_row = plan_rows[0]
+    assert plan_row.outcome == AuditOutcome.SUCCESS
+    assert plan_row.actor_user_id == seed["admin_user_id"]
+    assert plan_row.actor_email == "root@platform.io"
+    assert plan_row.target_org_id == seed["target_id"]
+    assert plan_row.target_org_name == seed["target_name"]
+    assert plan_row.detail is not None
+    # Old plan id is whatever the seed used (the free plan), new is `pro`.
+    assert plan_row.detail["new_plan_id"] == pro_plan_id
+    assert plan_row.detail["old_plan_id"] != pro_plan_id
+
+
+@pytest.mark.asyncio
+async def test_subscription_override_status_only_skips_plan_changed_audit(
+    session_factory,
+):
+    """Status-only PUT must NOT emit ``admin.org.plan.changed`` —
+    otherwise PR3's notification dispatcher would send a misleading
+    "your plan changed" notification on every trial-status flip."""
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/subscription",
+            json={"status": "active"},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        plan_rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    assert len(plan_rows) == 0, (
+        "admin.org.plan.changed leaked on a status-only override — "
+        "the conditional gate on 'plan_id' in before is broken"
+    )
+
+
+@pytest.mark.asyncio
 async def test_delete_success_persists_audit_with_snapshot(session_factory):
     """PR-C / PR #139 #1: the org-delete success audit row must be
     durably persisted to ``audit_events`` (it used to be lost because
