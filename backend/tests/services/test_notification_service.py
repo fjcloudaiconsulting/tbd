@@ -522,3 +522,235 @@ async def test_update_preferences_forces_security_true_defense_in_depth(session_
         )
         await db.commit()
     assert prefs.email_security is True
+
+
+# ── PR3: preference-aware dispatch + org-admin fanout ─────────────
+
+
+async def _seed_extra_admin(
+    factory, org_id: int, *, username: str, email: str, role
+) -> int:
+    """Add a second user with ``role`` to an existing org. Returns id."""
+    from app.security import hash_password as _hp  # local import — test scope
+
+    async with factory() as db:
+        user = User(
+            org_id=org_id,
+            username=username,
+            email=email,
+            password_hash=_hp("pw-1234567"),
+            role=role,
+            is_active=True,
+            email_verified=True,
+        )
+        db.add(user)
+        await db.commit()
+        return user.id
+
+
+@pytest.mark.asyncio
+async def test_dispatch_respects_in_app_preference(session_factory):
+    """When the user has ``in_app_account=False``, an ACCOUNT category
+    dispatch must NOT write a row. Locks the preference-aware
+    behaviour added in PR3 — without it the bell would surface rows
+    the user explicitly opted out of.
+    """
+    user_id = await _seed_user(session_factory)
+    # Persist a preference row with account turned off.
+    payload = _PrefPayload(in_app_account=False)
+    async with session_factory() as db:
+        await notification_service.update_preferences(
+            db, user_id=user_id, payload=payload
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        row = await notification_service.dispatch_notification(
+            db,
+            user_id=user_id,
+            category=NotificationCategory.ACCOUNT,
+            event_type="account.role_changed",
+            title="Role changed",
+            body="Body",
+        )
+        await db.commit()
+    # Skipped → returns None and no row exists.
+    assert row is None
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(Notification.user_id == user_id)
+            )
+        ).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_force_writes_for_security_category(session_factory):
+    """Even with every in_app_* preference flipped off, a SECURITY
+    dispatch still writes the row. Architect-locked force-on rule —
+    the user cannot opt out of security signals in the inbox.
+    """
+    user_id = await _seed_user(session_factory)
+    payload = _PrefPayload(
+        in_app_security=False,
+        in_app_account=False,
+        in_app_org_admin=False,
+        in_app_org_activity=False,
+    )
+    async with session_factory() as db:
+        await notification_service.update_preferences(
+            db, user_id=user_id, payload=payload
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        row = await notification_service.dispatch_notification(
+            db,
+            user_id=user_id,
+            category=NotificationCategory.SECURITY,
+            event_type="user.password.changed",
+            title="Your password was changed",
+            body="Body",
+        )
+        await db.commit()
+    assert row is not None
+    assert row.category == NotificationCategory.SECURITY
+
+
+@pytest.mark.asyncio
+async def test_dispatch_org_admin_fanout_to_multiple_admins(session_factory):
+    """3-admin org → 3 dispatched rows. Pins the architect-locked
+    fanout behavior: a single SELECT pulls the admin set, then per-user
+    rows are written. A spy on the session counts the SELECTs against
+    ``users`` to prove the helper doesn't N+1.
+    """
+    # Seed the org + 1st owner via the standard helper.
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+
+    # Need the owner's org_id to add siblings.
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        assert owner is not None
+        org_id = owner.org_id
+
+    # Add two more admins (role=ADMIN) — total 3 admins in the org.
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+
+    # And a MEMBER who must NOT receive the broadcast.
+    member_id = await _seed_extra_admin(
+        session_factory,
+        org_id,
+        username="member",
+        email="m@ex.io",
+        role=Role.MEMBER,
+    )
+
+    select_counts = {"users": 0}
+    async with session_factory() as db:
+        # Patch the session's execute to count SELECTs against users.
+        original_execute = db.execute
+
+        async def counting_execute(clause, *args, **kwargs):
+            text = str(clause).lower()
+            if "from users" in text:
+                select_counts["users"] += 1
+            return await original_execute(clause, *args, **kwargs)
+
+        db.execute = counting_execute  # type: ignore[method-assign]
+
+        written = await notification_service.dispatch_notification_to_org_admins(
+            db,
+            org_id=org_id,
+            category=NotificationCategory.ORG_ADMIN,
+            event_type="admin.org.plan.changed",
+            title="Plan changed",
+            body="Body",
+        )
+        await db.commit()
+
+    assert written == 3
+    # One SELECT against users for the admin lookup. Even if other
+    # SELECTs run from prior context, the helper itself must add
+    # exactly one — assert "at most" to absorb any session bookkeeping.
+    assert select_counts["users"] == 1
+
+    # All three admins got a row; the member did not.
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    recipient_ids = {row.user_id for row in rows}
+    assert recipient_ids == {seed_user_id, admin_a, admin_b}
+    assert member_id not in recipient_ids
+
+
+@pytest.mark.asyncio
+async def test_dispatch_org_admin_fanout_continues_on_individual_failure(
+    session_factory, monkeypatch
+):
+    """One admin's dispatch raises → the other two still get their
+    rows. Locks the best-effort contract: a poison-pill row write
+    cannot poison the broadcast.
+    """
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        org_id = owner.org_id
+
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+
+    real_dispatch = notification_service.dispatch_notification
+
+    async def flaky_dispatch(db, *, user_id, **kwargs):
+        if user_id == admin_a:
+            raise RuntimeError("simulated per-user failure")
+        return await real_dispatch(db, user_id=user_id, **kwargs)
+
+    monkeypatch.setattr(
+        notification_service, "dispatch_notification", flaky_dispatch
+    )
+
+    async with session_factory() as db:
+        written = await notification_service.dispatch_notification_to_org_admins(
+            db,
+            org_id=org_id,
+            category=NotificationCategory.ORG_ADMIN,
+            event_type="admin.org.plan.changed",
+            title="Plan changed",
+            body="Body",
+        )
+        await db.commit()
+
+    # 2 written: owner + admin_b. admin_a raised and was skipped.
+    assert written == 2
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    recipient_ids = {row.user_id for row in rows}
+    assert seed_user_id in recipient_ids
+    assert admin_b in recipient_ids
+    assert admin_a not in recipient_ids
