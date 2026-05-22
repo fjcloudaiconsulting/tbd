@@ -21,16 +21,23 @@ class OpenAIAdapter:
             async with httpx.AsyncClient(timeout=VALIDATE_TIMEOUT_S) as client:
                 resp = await client.get(MODELS_URL, headers=headers)
         except (httpx.HTTPError, httpx.TimeoutException) as exc:
-            return ValidateResult(ok=False, error=f"network error: {exc}")
+            return ValidateResult(
+                ok=False, error=f"Network error: {type(exc).__name__}"
+            )
         if resp.status_code != 200:
+            if 400 <= resp.status_code < 500:
+                return ValidateResult(
+                    ok=False,
+                    error=f"Provider rejected the request ({resp.status_code})",
+                )
             return ValidateResult(
                 ok=False,
-                error=f"HTTP {resp.status_code}: {resp.text[:200]}",
+                error=f"Provider unavailable ({resp.status_code})",
             )
         try:
             payload = resp.json()
-        except ValueError as exc:
-            return ValidateResult(ok=False, error=f"bad JSON: {exc}")
+        except ValueError:
+            return ValidateResult(ok=False, error="Provider returned invalid JSON")
         models = [
             m["id"]
             for m in payload.get("data", [])
