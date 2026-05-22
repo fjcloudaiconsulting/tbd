@@ -62,13 +62,51 @@ function renderBell() {
   );
 }
 
+/**
+ * URL-aware default mock for apiFetch.
+ *
+ * The bell now fires two separate GETs on mount — the unseen-count
+ * endpoint backs the badge, the list endpoint backs the popover
+ * preview — plus a POST mark-seen on open. Routing by URL makes the
+ * tests resilient to call ordering across SWR's two concurrent
+ * fetches.
+ */
+function installRouteMock({
+  count = 0,
+  items = [] as Notification[],
+}: { count?: number; items?: Notification[] }): void {
+  mockedApiFetch.mockImplementation((path: string, opts?: RequestInit) => {
+    if (
+      typeof path === "string" &&
+      path.endsWith("/api/v1/notifications/unseen-count")
+    ) {
+      return Promise.resolve({ count });
+    }
+    if (
+      typeof path === "string" &&
+      path.endsWith("/api/v1/notifications/mark-seen") &&
+      opts?.method === "POST"
+    ) {
+      return Promise.resolve(undefined);
+    }
+    if (
+      typeof path === "string" &&
+      path.startsWith("/api/v1/notifications") &&
+      (!opts || opts.method === undefined || opts.method === "GET")
+    ) {
+      return Promise.resolve({ items, next_cursor: null });
+    }
+    return Promise.resolve(undefined);
+  });
+}
+
 describe("NotificationBell", () => {
   beforeEach(() => {
     mockedApiFetch.mockReset();
   });
 
-  it("renders without a badge when there are no unseen items", async () => {
-    mockedApiFetch.mockResolvedValueOnce({ items: [], next_cursor: null });
+  it("renders without a badge when the unseen count is zero", async () => {
+    installRouteMock({ count: 0, items: [] });
 
     await act(async () => {
       renderBell();
@@ -82,10 +120,10 @@ describe("NotificationBell", () => {
     expect(screen.queryByTestId("notification-badge")).toBeNull();
   });
 
-  it("renders a numeric badge when there are unseen items", async () => {
-    mockedApiFetch.mockResolvedValueOnce({
+  it("renders a numeric badge from the unseen-count endpoint", async () => {
+    installRouteMock({
+      count: 3,
       items: [mkNotification(1), mkNotification(2), mkNotification(3)],
-      next_cursor: null,
     });
 
     await act(async () => {
@@ -102,8 +140,10 @@ describe("NotificationBell", () => {
   });
 
   it("caps the badge label at 99+ above the threshold", async () => {
-    const many = Array.from({ length: 120 }, (_, i) => mkNotification(i + 1));
-    mockedApiFetch.mockResolvedValueOnce({ items: many, next_cursor: null });
+    // The count endpoint returns 120 — well above the list limit of
+    // 10. The bell must still display 99+ from the count, not be
+    // capped by the list size.
+    installRouteMock({ count: 120, items: [] });
 
     await act(async () => {
       renderBell();
@@ -116,13 +156,13 @@ describe("NotificationBell", () => {
     });
   });
 
-  it("does not show a badge for items that are already seen", async () => {
-    mockedApiFetch.mockResolvedValueOnce({
+  it("does not show a badge when the count is zero even with seen items in the list", async () => {
+    installRouteMock({
+      count: 0,
       items: [
         mkNotification(1, { seen_at: "2026-05-22T17:01:00" }),
         mkNotification(2, { seen_at: "2026-05-22T17:01:00" }),
       ],
-      next_cursor: null,
     });
 
     await act(async () => {
@@ -130,23 +170,14 @@ describe("NotificationBell", () => {
     });
 
     await waitFor(() => {
-      // List has data, but every row is seen → no badge.
       expect(screen.queryByTestId("notification-badge")).toBeNull();
     });
   });
 
   it("opens the popover on click and fires mark-seen", async () => {
-    // First call: initial fetch.
-    mockedApiFetch.mockResolvedValueOnce({
+    installRouteMock({
+      count: 1,
       items: [mkNotification(1)],
-      next_cursor: null,
-    });
-    // Second call: POST /mark-seen returns void.
-    mockedApiFetch.mockResolvedValueOnce(undefined);
-    // Third call: mutate() triggers a refetch.
-    mockedApiFetch.mockResolvedValueOnce({
-      items: [mkNotification(1, { seen_at: "2026-05-22T17:02:00" })],
-      next_cursor: null,
     });
 
     await act(async () => {

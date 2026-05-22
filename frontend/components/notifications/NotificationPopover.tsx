@@ -41,7 +41,7 @@ interface Props {
 }
 
 const SEVERITY_DOT: Record<NotificationCategory, string> = {
-  security: "bg-red-500",
+  security: "bg-danger",
   account: "bg-text-muted",
   org_admin: "bg-text-muted",
   org_activity: "bg-text-muted/40",

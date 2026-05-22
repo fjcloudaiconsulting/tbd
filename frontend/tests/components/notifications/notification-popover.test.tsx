@@ -87,12 +87,12 @@ describe("NotificationPopover", () => {
         onClose={() => {}}
       />,
     );
-    // Security dot uses a red class; the other three use neutral
-    // / muted classes. Class-based assertions match the
+    // Security dot uses the danger token; the other three use
+    // neutral / muted classes. Class-based assertions match the
     // SEVERITY_DOT mapping in the component.
     expect(
       screen.getByTestId("severity-dot-security").className,
-    ).toContain("bg-red-500");
+    ).toContain("bg-danger");
     expect(
       screen.getByTestId("severity-dot-account").className,
     ).toContain("bg-text-muted");

@@ -757,3 +757,7 @@ export interface NotificationListResponse {
   items: Notification[];
   next_cursor: string | null;
 }
+
+export interface NotificationUnseenCountResponse {
+  count: number;
+}

@@ -38,7 +38,7 @@ from datetime import datetime
 from typing import Optional
 
 import structlog
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app._time import utcnow_naive
@@ -360,6 +360,24 @@ async def list_for_user(
         items = rows
         next_cursor = None
     return NotificationPage(items=items, next_cursor=next_cursor)
+
+
+async def get_unseen_count(db: AsyncSession, *, user_id: int) -> int:
+    """Return the number of unseen notifications for ``user_id``.
+
+    Lightweight ``SELECT COUNT(*) ... WHERE seen_at IS NULL`` — does
+    NOT load row payloads. Backs the bell badge so the count stays
+    truthful even when unseen rows exceed the popover's preview page
+    size (which caps at 10).
+    """
+    stmt = (
+        select(func.count())
+        .select_from(Notification)
+        .where(Notification.user_id == user_id)
+        .where(Notification.seen_at.is_(None))
+    )
+    result = await db.execute(stmt)
+    return int(result.scalar_one() or 0)
 
 
 # ── mark seen / mark read ─────────────────────────────────────────
