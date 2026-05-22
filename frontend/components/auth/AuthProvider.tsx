@@ -82,6 +82,16 @@ interface AuthContextValue {
    * hidden state.
    */
   billingUiEnabled?: boolean;
+  /**
+   * Reports v2 (flexible canvas + AST query engine) kill switch.
+   * Mirrors the backend's ``FEATURE_REPORTS_V2`` env via
+   * /api/v1/auth/status. Default false until the canvas + widget
+   * catalog ship and the operator flips the flag. Same shape as
+   * ``billingUiEnabled`` — optional in the interface so existing
+   * test mocks that pre-date this field still type-check; consumers
+   * treat ``undefined`` as ``false`` (the safe pre-launch state).
+   */
+  featureReportsV2?: boolean;
   login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,
@@ -108,6 +118,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // (older API revision) is equivalent to "billing UI hidden" — the
   // safe default for the pre-payment state.
   const [billingUiEnabled, setBillingUiEnabled] = useState(false);
+  // Defaults to false until /auth/status resolves so the Reports nav
+  // item stays hidden on first render. Backend default is also false
+  // (pre-launch); a missing key in the status payload (older API
+  // revision) is equivalent to "Reports surface hidden" — the safe
+  // pre-launch default.
+  const [featureReportsV2, setFeatureReportsV2] = useState(false);
 
   const fetchMe = useCallback(async () => {
     // 2026-05-18 review fix: fetchMe is the shared current-user load
@@ -157,11 +173,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // tab, and /settings/billing plan grid are gated on the
         // backend's BILLING_UI_ENABLED env on the next page load.
         const status = await withAuthRetry(() =>
-          apiFetch<{ needs_setup: boolean; billing_ui_enabled?: boolean }>(
-            "/api/v1/auth/status",
-          ),
+          apiFetch<{
+            needs_setup: boolean;
+            billing_ui_enabled?: boolean;
+            feature_reports_v2?: boolean;
+          }>("/api/v1/auth/status"),
         );
         setBillingUiEnabled(Boolean(status.billing_ui_enabled));
+        setFeatureReportsV2(Boolean(status.feature_reports_v2));
         if (status.needs_setup) {
           setNeedsSetup(true);
           setLoading(false);
@@ -277,6 +296,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         needsSetup,
         billingUiEnabled,
+        featureReportsV2,
         login,
         register,
         logout,

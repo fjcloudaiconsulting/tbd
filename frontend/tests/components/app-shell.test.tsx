@@ -191,6 +191,52 @@ describe("AppShell — system nav gating", () => {
     expect(screen.queryByRole("link", { name: "Plan Catalog" })).toBeNull();
   });
 
+  it("hides the Reports nav entry when feature_reports_v2 is false", async () => {
+    useAuthMock.mockReturnValue({
+      user: BASE_USER as never,
+      loading: false,
+      needsSetup: false,
+      featureReportsV2: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+
+    await renderShell();
+
+    // "Reports" should not appear in the sidebar when the flag is off.
+    // Use exact-match so neighboring labels (e.g. "Forecast Plans",
+    // "Plans") don't accidentally satisfy the assertion.
+    expect(screen.queryByRole("link", { name: "Reports" })).toBeNull();
+    // Sanity: the rest of the nav still renders.
+    expect(screen.getAllByText("Dashboard").length).toBeGreaterThan(0);
+  });
+
+  it("shows the Reports nav entry when feature_reports_v2 is true", async () => {
+    useAuthMock.mockReturnValue({
+      user: BASE_USER as never,
+      loading: false,
+      needsSetup: false,
+      featureReportsV2: true,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+
+    await renderShell();
+
+    // Exact-match by accessible role so neither "Forecast Plans" nor
+    // the existing "Plans" frame item satisfies a substring query.
+    expect(
+      screen.getByRole("link", { name: "Reports" }),
+    ).toBeInTheDocument();
+    // Plans entry must remain (architect-locked: Reports is a peer of
+    // Plans, not a replacement).
+    expect(screen.getByRole("link", { name: "Plans" })).toBeInTheDocument();
+  });
+
   it("shows only the Plan Catalog link for a non-superadmin with plans.manage alone", async () => {
     useAuthMock.mockReturnValue({
       user: { ...BASE_USER, permissions: ["plans.manage"] } as never,

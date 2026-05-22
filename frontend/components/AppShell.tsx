@@ -55,7 +55,10 @@ const NAV_ICON_PROPS = {
   strokeWidth: 1.5,
 } as const;
 
-const navItems = [
+// Static base nav items. Reports v2 is injected conditionally based on
+// the ``feature_reports_v2`` signal from /auth/status; see the gated
+// build inside the AppShell component below.
+const baseNavItems = [
   {
     href: "/dashboard",
     label: "Dashboard",
@@ -97,6 +100,29 @@ const navItems = [
     icon: <Tag {...NAV_ICON_PROPS} />,
   },
 ];
+
+// Reports v2 entry. Inserted between Forecast Plans and Categories
+// when ``featureReportsV2`` resolves true. Kept as a top-level item
+// (NOT under Planning, NOT under Settings) per spec §10.
+const REPORTS_NAV_ITEM = {
+  href: "/reports",
+  label: "Reports",
+  icon: <BarChart3 {...NAV_ICON_PROPS} />,
+} as const;
+
+function buildNavItems(featureReportsV2: boolean) {
+  if (!featureReportsV2) return baseNavItems;
+  // Insert Reports just after Forecast Plans (index where Plans sits)
+  // so the order stays Dashboard / Transactions / Accounts / Recurring
+  // / Budgets / Forecast Plans / Reports / Plans / Categories.
+  const idx = baseNavItems.findIndex((i) => i.href === "/plans");
+  if (idx === -1) return [...baseNavItems, REPORTS_NAV_ITEM];
+  return [
+    ...baseNavItems.slice(0, idx),
+    REPORTS_NAV_ITEM,
+    ...baseNavItems.slice(idx),
+  ];
+}
 
 // Per-item permission gating: each System nav link declares the
 // platform permission its destination requires. AppShell renders only
@@ -168,7 +194,8 @@ const systemItems: readonly SystemNavItem[] = [
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, loading, logout } = useAuth();
+  const { user, loading, logout, featureReportsV2 } = useAuth();
+  const navItems = buildNavItems(Boolean(featureReportsV2));
   const router = useRouter();
   const pathname = usePathname();
   const [userExpanded, setUserExpanded] = useState(false);
