@@ -11,7 +11,7 @@ instead of HTTPException — callers map these to the appropriate response.
 """
 
 import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import structlog
 from sqlalchemy import func, or_, select
@@ -1682,6 +1682,40 @@ async def get_transaction(db: AsyncSession, org_id: int, transaction_id: int) ->
     return tx
 
 
+def _parse_search_amount(raw: str) -> Decimal | None:
+    """Best-effort extraction of a Decimal amount from a free-text search.
+
+    Returns ``None`` when the input does not look like a number so the
+    caller can skip the amount predicate. We intentionally accept a small
+    set of normalizations rather than try to be a full currency parser:
+
+    - Strip leading/trailing whitespace.
+    - Strip a leading sign ("+" or "-") since the search is sign-agnostic
+      (the caller matches both +value and -value).
+    - Strip common currency markers ("$", "€", "£") and whitespace.
+    - Strip thousands separators (commas). Decimal point stays ".".
+
+    Anything else that isn't a valid Decimal yields ``None``.
+    """
+    if not raw:
+        return None
+    s = raw.strip()
+    # Remove leading sign — we match both signs downstream.
+    if s.startswith(("+", "-")):
+        s = s[1:]
+    # Strip currency symbols and inner whitespace.
+    for ch in ("$", "€", "£", " ", "\t"):
+        s = s.replace(ch, "")
+    # Treat commas as thousands separators.
+    s = s.replace(",", "")
+    if not s:
+        return None
+    try:
+        return Decimal(s)
+    except (InvalidOperation, ValueError):
+        return None
+
+
 async def list_transactions(
     db: AsyncSession,
     org_id: int,
@@ -1734,8 +1768,22 @@ async def list_transactions(
         q = q.where(effective_period_date_expr() >= date_from)
     if date_to is not None:
         q = q.where(effective_period_date_expr() <= date_to)
-    if search is not None:
-        q = q.where(Transaction.description.ilike(f"%{search}%"))
+    if search is not None and search.strip():
+        # Extended search: match description OR amount.
+        #
+        # The text predicate is always applied (a numeric input like "1234"
+        # may still appear in a description such as "Order #1234"). The
+        # amount predicate is added only when the input parses cleanly to
+        # a Decimal — and matches both signs so that searching "42" finds
+        # both +42.00 and -42.00 rows (users don't think in signs when
+        # they look for "that 42 euro charge").
+        predicates = [Transaction.description.ilike(f"%{search}%")]
+        amount_value = _parse_search_amount(search)
+        if amount_value is not None:
+            predicates.append(
+                Transaction.amount.in_([amount_value, -amount_value])
+            )
+        q = q.where(or_(*predicates))
 
     # Tag filters (PR-Tags-A contract).
     #
