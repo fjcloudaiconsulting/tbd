@@ -61,10 +61,12 @@ adding ops signal. Hard-cap events are surfaced via the structlog
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 from fastapi import HTTPException, status
@@ -82,11 +84,25 @@ from app.services.ai_credential_crypto import decrypt
 from app.services.ai_pricing import estimate_cost_cents
 from app.services.ai_providers import (
     AIProviderError,
+    CapabilityNotSupported,
+    EmbedResponse,
+    FunctionCallResponse,
     LLMResponse,
     NativeNotAvailable,
+    StreamChunk,
+    StructuredOutputError,
+    StructuredResponse,
+    TokenUsage,
     get_adapter,
 )
 from app.services.notification_templates import ai_cap_soft_warning
+
+
+# Architect lock #13 (StructuredOutputCapable retry cap): max 2 retries
+# on JSON parse / schema-validation failure (3 total attempts) before
+# ``STATUS_ERROR_STRUCTURED_OUTPUT``. The counter lives at the SERVICE
+# level (not the adapter) — each adapter emits a single response.
+STRUCTURED_OUTPUT_MAX_RETRIES = 2
 
 
 logger = structlog.stdlib.get_logger()
@@ -138,6 +154,24 @@ class AIDispatchFailed(AIDispatchError):
         super().__init__(code)
 
 
+class AICapabilityNotSupported(AIDispatchError):
+    """The credential resolved by routing does not advertise the
+    requested capability in its ``discovered_capabilities``. Maps to
+    HTTP 412 ``ai_capability_not_supported``. Caller is expected to
+    surface a "reconfigure routing" hint to the user.
+
+    Distinct from ``CapabilityNotSupported`` (adapter-level — raised
+    when the wire-call itself isn't honored, e.g. Ollama function
+    calling on a non-tool model). This dispatch-level error fires
+    BEFORE the adapter call.
+    """
+
+    def __init__(self, *, capability: str, feature_key: str) -> None:
+        super().__init__("ai_capability_not_supported")
+        self.capability = capability
+        self.feature_key = feature_key
+
+
 # --- HTTPException mappers ------------------------------------------
 
 
@@ -154,6 +188,20 @@ def http_for_dispatch_error(exc: AIDispatchError) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_412_PRECONDITION_FAILED,
             detail={"code": exc.code},
+        )
+    if isinstance(exc, AICapabilityNotSupported):
+        return HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "code": exc.code,
+                "capability": exc.capability,
+                "feature_key": exc.feature_key,
+                "message": (
+                    f"Configured credential for {exc.feature_key} does not "
+                    f"support {exc.capability}. Reconfigure routing to use "
+                    "a provider that supports it."
+                ),
+            },
         )
     if isinstance(exc, AICapExceeded):
         return HTTPException(
@@ -439,6 +487,7 @@ async def _write_ledger_row(
     latency_ms: int,
     success: bool,
     error_class: Optional[str],
+    retries_used: int = 0,
 ) -> AIUsageLedger:
     row = AIUsageLedger(
         org_id=org_id,
@@ -452,6 +501,7 @@ async def _write_ledger_row(
         latency_ms=latency_ms,
         success=success,
         error_class=error_class,
+        retries_used=retries_used,
         dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(row)
@@ -730,3 +780,753 @@ async def _touch_last_used(credential_id: int) -> None:  # pragma: no cover
     """
     _ = credential_id
     return
+
+
+# ----------------------------------------------------------------------
+# PR3 capability dispatch wrappers
+# ----------------------------------------------------------------------
+#
+# The chat path (``call_llm``) above stays unchanged. The PR3 wrappers
+# share a ``_prepare_dispatch`` helper that handles routing,
+# credential decryption, adapter construction, the capability check,
+# and the cap pre-check. Each wrapper then dispatches the adapter
+# method, writes the ledger row, and applies its capability-specific
+# post-processing (retry budget for structured output, end-of-stream
+# ledger write for streams, etc.).
+
+
+@dataclass(frozen=True)
+class _PreparedDispatch:
+    """Output of ``_prepare_dispatch``.
+
+    Carries everything ``call_llm_*`` wrappers need to talk to the
+    adapter and write the ledger row at the end.
+    """
+
+    adapter: Any
+    credential_id: int
+    credential_pk_id: int
+    model: str
+    resolved: _ResolvedCaps
+    cost_so_far: int
+
+
+async def _prepare_dispatch(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    feature_key: str,
+    capability: str,
+) -> _PreparedDispatch:
+    """Resolve routing + credential + caps for one dispatch.
+
+    Raises ``NoRoutingConfigured``, ``AICapExceeded``, or
+    ``AICapabilityNotSupported`` before the adapter is built. The
+    capability check uses ``discovered_capabilities`` on the
+    credential row (populated by the validate() probe) — if the
+    credential doesn't list the capability we refuse with a 412 so
+    the caller routes to a different provider.
+    """
+    routing = await ai_routing_service.get_routing_for_feature(
+        db, org_id=org_id, feature_name=feature_key
+    )
+    if routing is None:
+        logger.info(
+            "ai.dispatch.routing.missing",
+            org_id=org_id,
+            feature_key=feature_key,
+            capability=capability,
+        )
+        raise NoRoutingConfigured()
+    credential_id, model = routing
+
+    cred = (
+        await db.execute(
+            select(OrgAICredential).where(
+                OrgAICredential.id == credential_id,
+                OrgAICredential.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if cred is None:
+        logger.error(
+            "ai.dispatch.routing.dangling",
+            org_id=org_id,
+            feature_key=feature_key,
+            credential_id=credential_id,
+            capability=capability,
+        )
+        raise NoRoutingConfigured()
+
+    # Capability check — credential must advertise the capability.
+    # ``chat`` is always allowed (the original call_llm path doesn't
+    # do this check for backcompat); other capabilities check the
+    # credential's ``discovered_capabilities`` array. An empty/None
+    # array on a legacy credential row falls through to "no
+    # capabilities known" → refuse so the user re-runs validate.
+    if capability != "chat":
+        capabilities = cred.discovered_capabilities or []
+        if capability not in capabilities:
+            logger.info(
+                "ai.dispatch.capability.unsupported",
+                org_id=org_id,
+                feature_key=feature_key,
+                capability=capability,
+                credential_id=credential_id,
+                discovered=capabilities,
+            )
+            raise AICapabilityNotSupported(
+                capability=capability, feature_key=feature_key
+            )
+
+    resolved = await _resolve_caps(
+        db, org_id=org_id, feature_key=feature_key
+    )
+    cost_so_far = await _aggregate_cost_cents(
+        db, org_id=org_id, since=_month_start()
+    )
+    if (
+        resolved.hard_cap_cents is not None
+        and cost_so_far >= resolved.hard_cap_cents
+    ):
+        logger.info(
+            "ai.dispatch.cap.exceeded",
+            org_id=org_id,
+            feature_key=feature_key,
+            capability=capability,
+            cost_so_far=cost_so_far,
+            hard_cap_cents=resolved.hard_cap_cents,
+        )
+        raise AICapExceeded()
+
+    await _maybe_warn_soft_cap(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        resolved=resolved,
+        cost_before_call=cost_so_far,
+        period=_current_period(),
+    )
+
+    api_key = decrypt(cred.encrypted_api_key)
+    bearer = (
+        decrypt(cred.encrypted_bearer_token)
+        if cred.encrypted_bearer_token
+        else None
+    )
+    adapter = get_adapter(
+        cred.provider,
+        api_key=api_key,
+        bearer_token=bearer,
+        base_url=cred.base_url,
+    )
+
+    return _PreparedDispatch(
+        adapter=adapter,
+        credential_id=credential_id,
+        credential_pk_id=cred.id,
+        model=model,
+        resolved=resolved,
+        cost_so_far=cost_so_far,
+    )
+
+
+async def _post_write_soft_cap_crossing(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    feature_key: str,
+    resolved: _ResolvedCaps,
+    cost_so_far: int,
+    cost_this_call: int,
+) -> None:
+    """Catch the call that takes usage from below to at-or-above the
+    soft cap (post-write check). Mirrors step 7 of ``call_llm``.
+    """
+    if (
+        resolved.soft_cap_cents is not None
+        and cost_so_far < resolved.soft_cap_cents <= cost_so_far + cost_this_call
+    ):
+        await _maybe_warn_soft_cap(
+            db,
+            org_id=org_id,
+            feature_key=feature_key,
+            resolved=resolved,
+            cost_before_call=cost_so_far + cost_this_call,
+            period=_current_period(),
+        )
+
+
+# --- Schema validation -------------------------------------------------
+
+
+def _validate_json_against_schema(data: Any, schema: dict) -> Optional[str]:
+    """Minimal JSON-schema check for structured-output validation.
+
+    Returns ``None`` on success, or a short error string on failure.
+    Only checks the schema's ``type`` ("object" or "array") and
+    ``required`` keys — feature surfaces that need richer validation
+    should pair this with a Pydantic model and re-validate after the
+    dispatch returns.
+
+    A full JSON Schema validator is a PR3-followup candidate; the
+    retry-cap contract only requires "parse failure or structural
+    failure triggers a retry", and required-keys is the structural
+    property feature surfaces care about today.
+    """
+    schema_type = schema.get("type")
+    if schema_type == "object":
+        if not isinstance(data, dict):
+            return "expected object"
+        required = schema.get("required") or []
+        for key in required:
+            if key not in data:
+                return f"missing required key {key!r}"
+    elif schema_type == "array" and not isinstance(data, list):
+        return "expected array"
+    return None
+
+
+# --- call_llm_structured ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class StructuredDispatchResult:
+    response: StructuredResponse
+    ledger_id: int
+
+
+async def call_llm_structured(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    feature_key: str,
+    messages: list[dict],
+    response_schema: dict,
+    max_tokens: Optional[int] = None,
+) -> StructuredDispatchResult:
+    """Dispatch a structured-output call with the architect-locked
+    retry cap (max 2 retries, 3 total attempts).
+
+    Flow:
+    1. Resolve routing/credential/caps via ``_prepare_dispatch``.
+    2. Call the adapter's ``chat_structured`` up to 3 times. After a
+       JSON parse / schema-validation failure, append a system message
+       asking for a valid JSON object and try again.
+    3. On the third failure, write the failure ledger row with
+       ``retries_used=2`` and raise ``StructuredOutputError``.
+    4. On success, the ledger row carries ``retries_used`` = the
+       number of retries actually taken.
+    """
+    prepared = await _prepare_dispatch(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        capability="structured_output",
+    )
+
+    retry_message = {
+        "role": "system",
+        "content": (
+            "Previous response was not valid JSON matching the schema. "
+            "Output ONLY the JSON object."
+        ),
+    }
+    attempt_messages = list(messages)
+
+    start = time.perf_counter()
+    last_response: Optional[LLMResponse] = None
+    last_error: Optional[str] = None
+
+    for attempt in range(STRUCTURED_OUTPUT_MAX_RETRIES + 1):
+        try:
+            response: LLMResponse = await prepared.adapter.chat_structured(
+                model=prepared.model,
+                messages=attempt_messages,
+                schema=response_schema,
+                max_tokens=max_tokens,
+            )
+        except NativeNotAvailable:
+            logger.info(
+                "ai.dispatch.native.unavailable",
+                org_id=org_id,
+                feature_key=feature_key,
+                capability="structured_output",
+            )
+            raise
+        except (AIProviderError, CapabilityNotSupported) as exc:
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            error_code = (
+                exc.code
+                if isinstance(exc, AIProviderError)
+                else "capability_not_supported"
+            )
+            await _write_ledger_row(
+                db,
+                org_id=org_id,
+                credential_id=prepared.credential_id,
+                feature_key=feature_key,
+                model=prepared.model,
+                prompt_tokens=0,
+                completion_tokens=0,
+                est_cost_cents_value=0,
+                latency_ms=latency_ms,
+                success=False,
+                error_class=error_code,
+                retries_used=attempt,
+            )
+            logger.info(
+                "ai.dispatch.structured.failed",
+                org_id=org_id,
+                feature_key=feature_key,
+                error_class=error_code,
+                latency_ms=latency_ms,
+            )
+            raise AIDispatchFailed(error_code) from None
+
+        last_response = response
+        try:
+            parsed = json.loads(response.content)
+        except (TypeError, ValueError) as exc:
+            last_error = f"json_decode:{type(exc).__name__}"
+            attempt_messages = attempt_messages + [retry_message]
+            continue
+        err = _validate_json_against_schema(parsed, response_schema)
+        if err is None:
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            cost = estimate_cost_cents(
+                model=prepared.model,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+            )
+            ledger = await _write_ledger_row(
+                db,
+                org_id=org_id,
+                credential_id=prepared.credential_id,
+                feature_key=feature_key,
+                model=prepared.model,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                est_cost_cents_value=cost,
+                latency_ms=latency_ms,
+                success=True,
+                error_class=None,
+                retries_used=attempt,
+            )
+            await _post_write_soft_cap_crossing(
+                db,
+                org_id=org_id,
+                feature_key=feature_key,
+                resolved=prepared.resolved,
+                cost_so_far=prepared.cost_so_far,
+                cost_this_call=cost,
+            )
+            logger.info(
+                "ai.dispatch.structured.success",
+                org_id=org_id,
+                feature_key=feature_key,
+                retries_used=attempt,
+                ledger_id=ledger.id,
+            )
+            asyncio.create_task(  # noqa: RUF006
+                _touch_last_used(prepared.credential_pk_id)
+            )
+            return StructuredDispatchResult(
+                response=StructuredResponse(
+                    parsed=parsed,
+                    raw_text=response.content,
+                    prompt_tokens=response.prompt_tokens,
+                    completion_tokens=response.completion_tokens,
+                    model=response.model,
+                    retries_used=attempt,
+                ),
+                ledger_id=ledger.id,
+            )
+        else:
+            last_error = f"schema:{err}"
+            attempt_messages = attempt_messages + [retry_message]
+
+    # Exhausted retries.
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    # Bill tokens from the LAST attempt so the cap accounting reflects
+    # actual spend; zeroing-out on the typed failure would under-count
+    # and let unbounded retry-forever patterns slip past the cap.
+    prompt_tokens = last_response.prompt_tokens if last_response else 0
+    completion_tokens = last_response.completion_tokens if last_response else 0
+    cost = estimate_cost_cents(
+        model=prepared.model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+    ledger = await _write_ledger_row(
+        db,
+        org_id=org_id,
+        credential_id=prepared.credential_id,
+        feature_key=feature_key,
+        model=prepared.model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        est_cost_cents_value=cost,
+        latency_ms=latency_ms,
+        success=False,
+        error_class="STATUS_ERROR_STRUCTURED_OUTPUT",
+        retries_used=STRUCTURED_OUTPUT_MAX_RETRIES,
+    )
+    await _post_write_soft_cap_crossing(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        resolved=prepared.resolved,
+        cost_so_far=prepared.cost_so_far,
+        cost_this_call=cost,
+    )
+    logger.warning(
+        "ai.dispatch.structured.exhausted",
+        org_id=org_id,
+        feature_key=feature_key,
+        retries_used=STRUCTURED_OUTPUT_MAX_RETRIES,
+        last_error=last_error,
+        ledger_id=ledger.id,
+    )
+    raise StructuredOutputError("STATUS_ERROR_STRUCTURED_OUTPUT")
+
+
+# --- call_llm_embed --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EmbedDispatchResult:
+    response: EmbedResponse
+    ledger_id: int
+
+
+async def call_llm_embed(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    feature_key: str,
+    texts: list[str],
+    model: Optional[str] = None,
+) -> EmbedDispatchResult:
+    """Dispatch an embedding call through the cap + ledger chokepoint.
+
+    The routing row's ``model`` is the default embedding model; the
+    caller can override with the ``model`` kwarg if a feature surface
+    pins a specific model.
+    """
+    prepared = await _prepare_dispatch(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        capability="embed",
+    )
+    embed_model = model or prepared.model
+
+    start = time.perf_counter()
+    try:
+        response: EmbedResponse = await prepared.adapter.embed(
+            texts=texts, model=embed_model
+        )
+    except NativeNotAvailable:
+        raise
+    except NotImplementedError:
+        # Anthropic path — surface as a typed dispatch error and log a
+        # failure ledger row so the misconfiguration is visible.
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        await _write_ledger_row(
+            db,
+            org_id=org_id,
+            credential_id=prepared.credential_id,
+            feature_key=feature_key,
+            model=embed_model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            est_cost_cents_value=0,
+            latency_ms=latency_ms,
+            success=False,
+            error_class="embed_not_implemented",
+        )
+        raise AIDispatchFailed("embed_not_implemented") from None
+    except AIProviderError as exc:
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        await _write_ledger_row(
+            db,
+            org_id=org_id,
+            credential_id=prepared.credential_id,
+            feature_key=feature_key,
+            model=embed_model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            est_cost_cents_value=0,
+            latency_ms=latency_ms,
+            success=False,
+            error_class=exc.code,
+        )
+        raise AIDispatchFailed(exc.code) from None
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    cost = estimate_cost_cents(
+        model=response.model,
+        prompt_tokens=response.prompt_tokens,
+        completion_tokens=0,
+    )
+    ledger = await _write_ledger_row(
+        db,
+        org_id=org_id,
+        credential_id=prepared.credential_id,
+        feature_key=feature_key,
+        model=response.model,
+        prompt_tokens=response.prompt_tokens,
+        completion_tokens=0,
+        est_cost_cents_value=cost,
+        latency_ms=latency_ms,
+        success=True,
+        error_class=None,
+    )
+    await _post_write_soft_cap_crossing(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        resolved=prepared.resolved,
+        cost_so_far=prepared.cost_so_far,
+        cost_this_call=cost,
+    )
+    logger.info(
+        "ai.dispatch.embed.success",
+        org_id=org_id,
+        feature_key=feature_key,
+        model=response.model,
+        prompt_tokens=response.prompt_tokens,
+        ledger_id=ledger.id,
+    )
+    asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
+    return EmbedDispatchResult(response=response, ledger_id=ledger.id)
+
+
+# --- call_llm_function -----------------------------------------------
+
+
+@dataclass(frozen=True)
+class FunctionCallDispatchResult:
+    response: FunctionCallResponse
+    ledger_id: int
+
+
+async def call_llm_function(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    feature_key: str,
+    messages: list[dict],
+    tools: list[dict],
+    max_tokens: Optional[int] = None,
+) -> FunctionCallDispatchResult:
+    """Dispatch a function-calling chat through the chokepoint."""
+    prepared = await _prepare_dispatch(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        capability="function_call",
+    )
+
+    start = time.perf_counter()
+    try:
+        response: FunctionCallResponse = await prepared.adapter.function_call(
+            model=prepared.model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+        )
+    except NativeNotAvailable:
+        raise
+    except CapabilityNotSupported as exc:
+        # Adapter-level (model-level) refusal — Ollama with a non-tool
+        # model. Surface as a dispatch-level 412 so the caller can
+        # reconfigure to a supported model.
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        await _write_ledger_row(
+            db,
+            org_id=org_id,
+            credential_id=prepared.credential_id,
+            feature_key=feature_key,
+            model=prepared.model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            est_cost_cents_value=0,
+            latency_ms=latency_ms,
+            success=False,
+            error_class="capability_not_supported",
+        )
+        logger.info(
+            "ai.dispatch.function_call.model_unsupported",
+            org_id=org_id,
+            feature_key=feature_key,
+            model=exc.model,
+        )
+        raise AICapabilityNotSupported(
+            capability="function_call", feature_key=feature_key
+        ) from None
+    except AIProviderError as exc:
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        await _write_ledger_row(
+            db,
+            org_id=org_id,
+            credential_id=prepared.credential_id,
+            feature_key=feature_key,
+            model=prepared.model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            est_cost_cents_value=0,
+            latency_ms=latency_ms,
+            success=False,
+            error_class=exc.code,
+        )
+        raise AIDispatchFailed(exc.code) from None
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    cost = estimate_cost_cents(
+        model=prepared.model,
+        prompt_tokens=response.prompt_tokens,
+        completion_tokens=response.completion_tokens,
+    )
+    ledger = await _write_ledger_row(
+        db,
+        org_id=org_id,
+        credential_id=prepared.credential_id,
+        feature_key=feature_key,
+        model=prepared.model,
+        prompt_tokens=response.prompt_tokens,
+        completion_tokens=response.completion_tokens,
+        est_cost_cents_value=cost,
+        latency_ms=latency_ms,
+        success=True,
+        error_class=None,
+    )
+    await _post_write_soft_cap_crossing(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        resolved=prepared.resolved,
+        cost_so_far=prepared.cost_so_far,
+        cost_this_call=cost,
+    )
+    logger.info(
+        "ai.dispatch.function_call.success",
+        org_id=org_id,
+        feature_key=feature_key,
+        model=prepared.model,
+        tool_calls=len(response.tool_calls),
+        ledger_id=ledger.id,
+    )
+    asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
+    return FunctionCallDispatchResult(response=response, ledger_id=ledger.id)
+
+
+# --- call_llm_stream -------------------------------------------------
+
+
+async def call_llm_stream(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    feature_key: str,
+    messages: list[dict],
+    max_tokens: Optional[int] = None,
+) -> AsyncIterator[StreamChunk]:
+    """Dispatch a streamed chat call.
+
+    Yields adapter ``StreamChunk``s. Writes exactly ONE ledger row at
+    end-of-stream — never per-chunk — using the final usage block
+    from the provider when available, falling back to a char/4
+    estimate of the accumulated delta text when not. Errors mid-stream
+    wrap into ``AIDispatchFailed`` and write a single failure ledger
+    row.
+    """
+    prepared = await _prepare_dispatch(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        capability="stream",
+    )
+
+    accumulated: list[str] = []
+    final_usage: Optional[TokenUsage] = None
+    start = time.perf_counter()
+    try:
+        async for chunk in prepared.adapter.stream(
+            model=prepared.model,
+            messages=messages,
+            max_tokens=max_tokens,
+        ):
+            if chunk.done:
+                final_usage = chunk.final_usage
+                yield chunk
+                break
+            accumulated.append(chunk.delta_text)
+            yield chunk
+    except NativeNotAvailable:
+        raise
+    except AIProviderError as exc:
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        await _write_ledger_row(
+            db,
+            org_id=org_id,
+            credential_id=prepared.credential_id,
+            feature_key=feature_key,
+            model=prepared.model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            est_cost_cents_value=0,
+            latency_ms=latency_ms,
+            success=False,
+            error_class=exc.code,
+        )
+        raise AIDispatchFailed(exc.code) from None
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    if final_usage is None:
+        # Fallback estimate when the provider doesn't emit usage at
+        # end-of-stream. Prompt tokens we can't estimate without the
+        # original messages, so 0; completion tokens via char/4 of the
+        # accumulated text.
+        full_text = "".join(accumulated)
+        final_usage = TokenUsage(
+            prompt_tokens=0,
+            completion_tokens=max(0, len(full_text) // 4),
+        )
+    cost = estimate_cost_cents(
+        model=prepared.model,
+        prompt_tokens=final_usage.prompt_tokens,
+        completion_tokens=final_usage.completion_tokens,
+    )
+    ledger = await _write_ledger_row(
+        db,
+        org_id=org_id,
+        credential_id=prepared.credential_id,
+        feature_key=feature_key,
+        model=prepared.model,
+        prompt_tokens=final_usage.prompt_tokens,
+        completion_tokens=final_usage.completion_tokens,
+        est_cost_cents_value=cost,
+        latency_ms=latency_ms,
+        success=True,
+        error_class=None,
+    )
+    await _post_write_soft_cap_crossing(
+        db,
+        org_id=org_id,
+        feature_key=feature_key,
+        resolved=prepared.resolved,
+        cost_so_far=prepared.cost_so_far,
+        cost_this_call=cost,
+    )
+    logger.info(
+        "ai.dispatch.stream.success",
+        org_id=org_id,
+        feature_key=feature_key,
+        model=prepared.model,
+        ledger_id=ledger.id,
+        prompt_tokens=final_usage.prompt_tokens,
+        completion_tokens=final_usage.completion_tokens,
+    )
+    asyncio.create_task(_touch_last_used(prepared.credential_pk_id))  # noqa: RUF006
