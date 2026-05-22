@@ -20,7 +20,7 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 
 const replaceMock = vi.fn();
-let searchParamsString = "";
+const searchParamsString = "";
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
   usePathname: () => "/plans",
