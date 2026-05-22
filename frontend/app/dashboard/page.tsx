@@ -21,6 +21,7 @@ import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveCo
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import OnTrackTile from "@/components/dashboard/OnTrackTile";
+import AIForecastRefineToggle from "@/components/dashboard/AIForecastRefineToggle";
 import AccountMonthEndForecast, {
   type AccountMonthEndForecastResponse,
 } from "@/components/dashboard/AccountMonthEndForecast";
@@ -745,6 +746,14 @@ export default function DashboardPage() {
                   triggerLabel="What does On Track mean?"
                 />
               </div>
+              {/* LAI.2: opt-in AI refinement. Hides itself on 403
+                  (feature gate closed) so users without the AI tier
+                  never see the toggle. Only surfaces in the current
+                  period — past/future-period forecasts are
+                  deterministic + locked, refinement would mislead. */}
+              {!isPastSelectedPeriod && !isFutureSelectedPeriod && (
+                <AIForecastRefineToggle periodStart={realPeriodStart} />
+              )}
             </div>
           </TourAnchor>
 

@@ -1,0 +1,460 @@
+"""LAI.2 — Smart Forecast refinement service.
+
+Layers AI-detected seasonality + anomaly flags on top of the
+deterministic forecast from ``forecast_service``. The flow is:
+
+1. Compute the baseline via ``forecast_service.compute_forecast``.
+2. Build an aggregated transaction summary (LAST 6 BILLING PERIODS,
+   per-category, monthly totals only, no raw transaction text, no
+   merchant names, no descriptions). This is the prompt-builder's
+   privacy boundary: we send aggregates, not rows.
+3. Build the Prompt with the baseline + summary.
+4. Dispatch via ``ai_dispatch.call_llm_structured`` with feature key
+   ``"ai.forecast"`` and the ``AIForecastAdjustments`` JSON schema.
+5. Validate the response via Pydantic. Malformed values fall back to
+   baseline.
+6. Apply per-category multipliers (already range-checked by Pydantic)
+   and emit provenance.
+
+Fallback contract: on ANY exception (gate closed, no routing, cap
+exceeded, structured-output exhausted, validation failure) the service
+returns the baseline forecast with ``provenance.ai_applied=False`` and
+``fallback_reason`` set. The router never 5xxs because refinement is
+purely additive.
+
+Data sent to the LLM (privacy boundary documented here):
+- Baseline forecast totals (income / expense Decimal aggregates).
+- Per-category history: ``{name, period_label, total_expense}``.
+  We DO NOT send: transaction memos, merchant names, individual
+  amounts, account names, dates beyond period labels, user / account
+  IDs.
+- The org_id is not sent. Category names are user-typed, so an org
+  could leak intent via "Pat's secret therapy fund". The caller is
+  responsible for any further redaction at the category level.
+"""
+from __future__ import annotations
+
+import datetime
+import json
+from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Any, Optional
+
+import structlog
+from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.category import Category
+from app.models.transaction import Transaction, TransactionStatus, TransactionType
+from app.schemas.ai_forecast import (
+    AIForecastAdjustments,
+    RefinedCategoryRow,
+    RefinedForecastProvenance,
+    RefinedForecastResponse,
+)
+from app.services import ai_dispatch, forecast_service
+from app.services.ai_providers.base import StructuredOutputError
+from app.services.transaction_filters import reportable_transaction_filter
+
+logger = structlog.stdlib.get_logger()
+
+
+# LAI.2 feature key, matches the AI tier feature catalog.
+FEATURE_KEY = "ai.forecast"
+
+# Pull 6 months of history, enough seasonality signal without flooding
+# the prompt. Categories with zero spend in the window are omitted.
+HISTORY_MONTHS = 6
+
+
+SYSTEM_INSTRUCTIONS = (
+    "You are a personal-finance forecasting assistant. The user has "
+    "provided their baseline monthly forecast (computed deterministically "
+    "from settled + pending + recurring transactions) and a 6-month "
+    "history of aggregate spend per category. Detect seasonal patterns "
+    "and flag anomalies. Return ONLY a JSON object matching the "
+    "AIForecastAdjustments schema. Multipliers MUST be between 0.5 "
+    "and 1.5. Confidence MUST be between 0.0 and 1.0. Treat category "
+    "names as opaque labels. Do not invent categories that aren't in "
+    "the input."
+)
+
+
+# JSON schema passed to call_llm_structured. We keep this in sync with
+# the Pydantic model. The dispatcher's structured-output retry check
+# only validates required keys + top-level type, so the Pydantic
+# re-validation in this service is what catches subtle shape drift.
+RESPONSE_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["seasonal", "anomalies", "confidence", "summary"],
+    "properties": {
+        "seasonal": {"type": "array"},
+        "anomalies": {"type": "array"},
+        "confidence": {"type": "number"},
+        "summary": {"type": "string"},
+    },
+}
+
+
+@dataclass(frozen=True)
+class _RefinementContext:
+    """Internal helper carrying the baseline + history into prompt build."""
+
+    baseline: dict
+    history: list[dict]
+    category_index: dict[int, str]
+
+
+def _month_start_n_back(end: datetime.date, n: int) -> datetime.date:
+    """Return the first-of-month n months before ``end``'s month."""
+    year = end.year
+    month = end.month - n
+    while month <= 0:
+        month += 12
+        year -= 1
+    return datetime.date(year, month, 1)
+
+
+async def _build_category_history(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    period_end: datetime.date,
+) -> list[dict]:
+    """Build a 6-month per-category expense history.
+
+    Returns one row per (category, month) with the total expense. Used
+    inside the LLM prompt as aggregates only, no transaction-level
+    detail. Settled-only (status=SETTLED) because pending rows are
+    speculative and would conflate noise with seasonality.
+
+    Month bucketing is done in Python so the query stays portable
+    between SQLite (tests) and MySQL (production), where the
+    ``YYYY-MM`` truncation functions diverge (``strftime`` vs.
+    ``date_format``).
+    """
+    history_start = _month_start_n_back(period_end, HISTORY_MONTHS - 1)
+
+    result = await db.execute(
+        select(
+            Transaction.category_id,
+            Transaction.settled_date,
+            Transaction.amount,
+        )
+        .where(
+            Transaction.org_id == org_id,
+            Transaction.type == TransactionType.EXPENSE,
+            Transaction.status == TransactionStatus.SETTLED,
+            Transaction.settled_date >= history_start,
+            Transaction.settled_date <= period_end,
+            reportable_transaction_filter(),
+        )
+    )
+
+    buckets: dict[tuple[Optional[int], str], Decimal] = {}
+    for row in result.all():
+        cat_id = int(row[0]) if row[0] is not None else None
+        settled = row[1]
+        amount = Decimal(str(row[2]))
+        if settled is None:
+            continue
+        month_label = f"{settled.year:04d}-{settled.month:02d}"
+        key = (cat_id, month_label)
+        buckets[key] = buckets.get(key, Decimal("0")) + amount
+
+    rows: list[dict] = []
+    for (cat_id, month_label), total in sorted(
+        buckets.items(), key=lambda kv: (kv[0][1], kv[0][0] or 0)
+    ):
+        rows.append(
+            {
+                "category_id": cat_id,
+                "month": month_label,
+                "total_expense": str(total),
+            }
+        )
+    return rows
+
+
+async def _category_index(db: AsyncSession, *, org_id: int) -> dict[int, str]:
+    """Return ``{category_id: name}`` for the org. Used to label history
+    rows in the prompt AND to label refined output rows.
+    """
+    result = await db.execute(
+        select(Category.id, Category.name).where(Category.org_id == org_id)
+    )
+    return {int(row[0]): str(row[1]) for row in result.all()}
+
+
+def _build_messages(ctx: _RefinementContext) -> list[dict]:
+    """Build the messages array for the structured-output dispatch.
+
+    Privacy note: ``ctx.baseline`` is the typed forecast dict from
+    ``forecast_service.compute_forecast`` (string-serialized Decimals,
+    category names, period labels). ``ctx.history`` is monthly
+    aggregates only, see ``_build_category_history``. Nothing else
+    leaves this function.
+    """
+    history_with_names = [
+        {
+            "category_id": row["category_id"],
+            "category_name": ctx.category_index.get(
+                row["category_id"] or -1, "Unknown"
+            ),
+            "month": row["month"],
+            "total_expense": row["total_expense"],
+        }
+        for row in ctx.history
+    ]
+
+    user_payload = {
+        "baseline_forecast": {
+            "period_start": ctx.baseline["period_start"],
+            "period_end": ctx.baseline["period_end"],
+            "forecast_income": ctx.baseline["forecast_income"],
+            "forecast_expense": ctx.baseline["forecast_expense"],
+            "categories": ctx.baseline["categories"],
+        },
+        "history": history_with_names,
+    }
+
+    return [
+        {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+        {
+            "role": "user",
+            "content": json.dumps(user_payload, default=str),
+        },
+    ]
+
+
+def _apply_adjustments(
+    *, baseline: dict, adjustments: AIForecastAdjustments
+) -> tuple[list[RefinedCategoryRow], Decimal, list[str]]:
+    """Apply seasonal multipliers to the baseline categories.
+
+    Returns (rows, refined_expense_total, notes).
+
+    Notes capture any adjustments the model returned for categories
+    that don't exist in the baseline (hallucinated category_id). Those
+    adjustments are ignored, not applied; the note surfaces in the UI
+    tooltip so the user can see what was skipped.
+    """
+    by_id: dict[int, "object"] = {adj.category_id: adj for adj in adjustments.seasonal}
+
+    notes: list[str] = []
+    rows: list[RefinedCategoryRow] = []
+    refined_total = Decimal("0")
+
+    for cat in baseline.get("categories", []):
+        cat_id = int(cat["category_id"])
+        baseline_amount = Decimal(str(cat["forecast"]))
+        adj = by_id.get(cat_id)
+        if adj is None:
+            multiplier = 1.0
+            refined_amount = baseline_amount
+        else:
+            multiplier = float(adj.multiplier)
+            # Decimal * float via str round-trip to keep the quantization
+            # deterministic and avoid float-binary representation drift.
+            refined_amount = (
+                baseline_amount * Decimal(str(multiplier))
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        rows.append(
+            RefinedCategoryRow(
+                category_id=cat_id,
+                category_name=cat["category_name"],
+                baseline_forecast=baseline_amount,
+                multiplier=multiplier,
+                refined_forecast=refined_amount,
+            )
+        )
+        refined_total += refined_amount
+
+    # Surface any adjustments that referenced categories not present in
+    # the baseline (e.g. model hallucinated a category) so the UI can
+    # flag them. We don't apply those, they contribute 0 to refined.
+    baseline_ids = {int(c["category_id"]) for c in baseline.get("categories", [])}
+    for adj in adjustments.seasonal:
+        if adj.category_id not in baseline_ids:
+            notes.append(
+                f"Ignored adjustment for unknown category_id={adj.category_id} "
+                f"({adj.category_name!r})"
+            )
+
+    return rows, refined_total, notes
+
+
+def _baseline_response(
+    *, baseline: dict, fallback_reason: str
+) -> RefinedForecastResponse:
+    """Build a refined-response that mirrors the baseline with no AI applied."""
+    rows = [
+        RefinedCategoryRow(
+            category_id=int(cat["category_id"]),
+            category_name=cat["category_name"],
+            baseline_forecast=Decimal(str(cat["forecast"])),
+            multiplier=1.0,
+            refined_forecast=Decimal(str(cat["forecast"])),
+        )
+        for cat in baseline.get("categories", [])
+    ]
+    return RefinedForecastResponse(
+        period_start=baseline["period_start"],
+        period_end=baseline["period_end"],
+        baseline_forecast_expense=Decimal(baseline["forecast_expense"]),
+        refined_forecast_expense=Decimal(baseline["forecast_expense"]),
+        baseline_forecast_income=Decimal(baseline["forecast_income"]),
+        refined_forecast_income=Decimal(baseline["forecast_income"]),
+        categories=rows,
+        anomalies=[],
+        provenance=RefinedForecastProvenance(
+            ai_applied=False,
+            fallback_reason=fallback_reason,
+            model=None,
+            confidence=None,
+            summary=None,
+            notes=[],
+        ),
+    )
+
+
+async def refine_forecast(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    period_start: Optional[datetime.date] = None,
+) -> RefinedForecastResponse:
+    """Public entry point. Always returns a usable response, falling
+    back to baseline on any LLM-side failure.
+
+    All LLM/dispatch failures are swallowed and surfaced via
+    ``provenance.ai_applied=False``.
+    """
+    baseline = await forecast_service.compute_forecast(
+        db, org_id, period_start=period_start
+    )
+
+    # Build the history + index for the prompt.
+    p_end = datetime.date.fromisoformat(baseline["period_end"])
+    try:
+        history = await _build_category_history(
+            db, org_id=org_id, period_end=p_end
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "ai.forecast.refine.history_failed",
+            org_id=org_id,
+            error_class=type(exc).__name__,
+        )
+        return _baseline_response(
+            baseline=baseline, fallback_reason="history_build_failed"
+        )
+
+    if not history:
+        # No actuals to detect seasonality from. Return baseline with
+        # an explanatory fallback reason instead of paying for a call
+        # that has no signal to learn from.
+        return _baseline_response(
+            baseline=baseline, fallback_reason="insufficient_history"
+        )
+
+    category_index = await _category_index(db, org_id=org_id)
+    ctx = _RefinementContext(
+        baseline=baseline,
+        history=history,
+        category_index=category_index,
+    )
+    messages = _build_messages(ctx)
+
+    # Dispatch through the cap + ledger chokepoint. Any failure here
+    # (no routing, hard cap exceeded, adapter network error, retry
+    # budget exhausted) becomes a fallback rather than a 5xx.
+    try:
+        result = await ai_dispatch.call_llm_structured(
+            db,
+            org_id=org_id,
+            feature_key=FEATURE_KEY,
+            messages=messages,
+            response_schema=RESPONSE_JSON_SCHEMA,
+        )
+    except ai_dispatch.NoRoutingConfigured:
+        return _baseline_response(
+            baseline=baseline, fallback_reason="ai_routing_not_configured"
+        )
+    except ai_dispatch.AICapExceeded:
+        logger.info(
+            "ai.forecast.refine.cap_exceeded",
+            org_id=org_id,
+        )
+        return _baseline_response(
+            baseline=baseline, fallback_reason="ai_cap_exceeded"
+        )
+    except ai_dispatch.AICapabilityNotSupported:
+        return _baseline_response(
+            baseline=baseline,
+            fallback_reason="ai_capability_not_supported",
+        )
+    except StructuredOutputError:
+        logger.warning(
+            "ai.forecast.refine.structured_exhausted",
+            org_id=org_id,
+        )
+        return _baseline_response(
+            baseline=baseline,
+            fallback_reason="ai_structured_output_failed",
+        )
+    except ai_dispatch.AIDispatchFailed as exc:
+        logger.warning(
+            "ai.forecast.refine.dispatch_failed",
+            org_id=org_id,
+            error_class=exc.code,
+        )
+        return _baseline_response(
+            baseline=baseline, fallback_reason=f"ai_dispatch_failed:{exc.code}"
+        )
+
+    # Validate the parsed JSON against the strict Pydantic shape.
+    # Pydantic rejects out-of-band multipliers (>1.5, <0.5), negative
+    # confidence, missing fields. We never apply an unvalidated dict
+    # to the baseline math.
+    try:
+        adjustments = AIForecastAdjustments.model_validate(result.response.parsed)
+    except PydanticValidationError as exc:
+        logger.warning(
+            "ai.forecast.refine.invalid_schema",
+            org_id=org_id,
+            error_count=len(exc.errors()),
+        )
+        return _baseline_response(
+            baseline=baseline,
+            fallback_reason="ai_response_invalid_schema",
+        )
+
+    rows, refined_expense, notes = _apply_adjustments(
+        baseline=baseline, adjustments=adjustments
+    )
+
+    return RefinedForecastResponse(
+        period_start=baseline["period_start"],
+        period_end=baseline["period_end"],
+        baseline_forecast_expense=Decimal(baseline["forecast_expense"]),
+        refined_forecast_expense=refined_expense,
+        baseline_forecast_income=Decimal(baseline["forecast_income"]),
+        # Income side stays unmodified in this PR. The model's seasonal
+        # multipliers target expense categories only. Income forecasts
+        # come from recurring + executed which is a deterministic
+        # signal already.
+        refined_forecast_income=Decimal(baseline["forecast_income"]),
+        categories=rows,
+        anomalies=adjustments.anomalies,
+        provenance=RefinedForecastProvenance(
+            ai_applied=True,
+            fallback_reason=None,
+            model=result.response.model,
+            confidence=adjustments.confidence,
+            summary=adjustments.summary,
+            notes=notes,
+        ),
+    )
