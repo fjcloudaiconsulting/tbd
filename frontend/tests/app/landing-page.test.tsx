@@ -5,8 +5,12 @@
 //
 // Per-section a11y / mark-up correctness lives in
 // tests/components/landing/*; this file is the surface-level safety
-// net for the L5.1 scope: pricing / FAQ / testimonials / screenshots /
+// net for the L5.1 scope: pricing / FAQ / screenshots /
 // animation discipline.
+//
+// Testimonials are intentionally not covered here. The component is
+// stubbed to render nothing until we have real, consented quotes from
+// named customers. See components/landing/Testimonials.tsx.
 
 import React from "react";
 import { render, screen, within } from "@testing-library/react";
@@ -15,7 +19,6 @@ import { describe, expect, it } from "vitest";
 import Faq from "@/components/landing/Faq";
 import PricingPreview from "@/components/landing/PricingPreview";
 import ScreenshotShowcase from "@/components/landing/ScreenshotShowcase";
-import Testimonials from "@/components/landing/Testimonials";
 
 const EM_DASH = "—";
 
@@ -121,38 +124,6 @@ describe("L5.1 landing — Faq", () => {
   });
 });
 
-describe("L5.1 landing — Testimonials", () => {
-  it("renders three testimonial cards", () => {
-    const { container } = render(<Testimonials />);
-    const cards = container.querySelectorAll("ul > li");
-    expect(cards.length).toBe(3);
-  });
-
-  it("each testimonial has a name and a role", () => {
-    render(<Testimonials />);
-    // Names use first-name + initial, e.g. "Anna S."
-    expect(screen.getByText(/Anna S\./)).toBeInTheDocument();
-    expect(screen.getByText(/Marco R\./)).toBeInTheDocument();
-    expect(screen.getByText(/Jana K\./)).toBeInTheDocument();
-  });
-
-  it("uses entrance animation classes guarded by motion-safe", () => {
-    const { container } = render(<Testimonials />);
-    // Reduced-motion users will not see the animation because the
-    // class is prefixed with `motion-safe:`; here we just verify
-    // the prefixed class is present, not that the animation fires.
-    const cards = container.querySelectorAll("ul > li");
-    cards.forEach((card) => {
-      expect(card.className).toMatch(/motion-safe:animate-fade-in-up/);
-    });
-  });
-
-  it("contains zero em-dashes (locked policy)", () => {
-    const { container } = render(<Testimonials />);
-    expect(allText(container)).not.toContain(EM_DASH);
-  });
-});
-
 describe("L5.1 landing — ScreenshotShowcase", () => {
   it("renders three product previews with aria-labels", () => {
     render(<ScreenshotShowcase />);
@@ -194,12 +165,11 @@ describe("L5.1 landing — ScreenshotShowcase", () => {
 });
 
 describe("L5.1 landing — em-dash discipline across all new sections", () => {
-  it("all four new sections together contain zero em-dashes", () => {
+  it("all new sections together contain zero em-dashes", () => {
     const { container } = render(
       <div>
         <PricingPreview />
         <ScreenshotShowcase />
-        <Testimonials />
         <Faq />
       </div>,
     );

@@ -8,7 +8,6 @@ import LandingFooter from "@/components/landing/LandingFooter";
 import PricingPreview from "@/components/landing/PricingPreview";
 import ScreenshotShowcase from "@/components/landing/ScreenshotShowcase";
 import SecondCta from "@/components/landing/SecondCta";
-import Testimonials from "@/components/landing/Testimonials";
 import TopNav from "@/components/landing/TopNav";
 import { readNonce } from "@/lib/nonce";
 import {
@@ -84,7 +83,6 @@ export default async function LandingPage() {
           <ScreenshotShowcase />
           <HowItWorks />
           <PricingPreview />
-          <Testimonials />
           <Faq />
           <SecondCta />
         </main>
