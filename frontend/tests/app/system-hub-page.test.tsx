@@ -62,8 +62,12 @@ describe("SystemHubPage (L5.8)", () => {
     const allLinks = screen.getAllByRole("link");
     const plansLink = allLinks.find((a) => a.getAttribute("href") === "/system/plans");
     expect(plansLink).toBeDefined();
-    // Card-level heading ("Plans") is reachable inside the link element.
-    expect(plansLink!.textContent).toMatch(/plans/i);
+    // Card-level heading ("Plan Catalog") is reachable inside the link
+    // element. Match the substring case-insensitively so the assertion
+    // still passes if the hub card title changes shape (e.g. "Plan
+    // Catalog" vs "Subscription Plan Catalog") as long as it keeps the
+    // word "plan".
+    expect(plansLink!.textContent).toMatch(/plan/i);
     expect(replaceMock).not.toHaveBeenCalled();
   });
 

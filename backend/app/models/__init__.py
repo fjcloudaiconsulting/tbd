@@ -39,6 +39,7 @@ from app.models.notification import (  # noqa: F401
     UserNotificationPreferences,
 )
 from app.models.report import Report, ReportVisibility  # noqa: F401
+from app.models.scenario import Scenario, ScenarioType  # noqa: F401
 
 __all__ = [
     "Base",
@@ -92,4 +93,6 @@ __all__ = [
     "UserNotificationPreferences",
     "Report",
     "ReportVisibility",
+    "Scenario",
+    "ScenarioType",
 ]

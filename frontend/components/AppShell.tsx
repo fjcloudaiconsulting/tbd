@@ -7,6 +7,7 @@ import {
   ArrowLeftRight,
   BarChart3,
   Building2,
+  CalendarClock,
   ChevronUp,
   CreditCard,
   FileText,
@@ -86,6 +87,11 @@ const navItems = [
     icon: <BarChart3 {...NAV_ICON_PROPS} />,
   },
   {
+    href: "/plans",
+    label: "Plans",
+    icon: <CalendarClock {...NAV_ICON_PROPS} />,
+  },
+  {
     href: "/categories",
     label: "Categories",
     icon: <Tag {...NAV_ICON_PROPS} />,
@@ -143,7 +149,7 @@ const systemItems: readonly SystemNavItem[] = [
   },
   {
     href: "/system/plans",
-    label: "Plans",
+    label: "Plan Catalog",
     permission: "plans.manage",
     icon: <CreditCard {...NAV_ICON_PROPS} />,
   },

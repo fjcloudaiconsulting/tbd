@@ -22,7 +22,7 @@ type SystemSection = {
 const SECTIONS: readonly SystemSection[] = [
   {
     href: "/system/plans",
-    title: "Plans",
+    title: "Plan Catalog",
     description:
       "Manage subscription plans (free, premium, custom) and per-plan feature flags. Duplicate a plan to build a custom variant for sales-negotiated deals.",
     permission: "plans.manage",
