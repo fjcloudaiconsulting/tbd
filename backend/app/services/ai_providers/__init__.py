@@ -1,13 +1,20 @@
 """Provider adapter package for BYO AI credentials.
 
-PR1 shipped the ``ValidateCapable`` protocol. PR2 adds:
+PR1 shipped the ``ValidateCapable`` protocol. PR2 added ``ChatCapable``,
+``LLMResponse``, ``AIProviderError``. PR3 adds the remaining
+capabilities:
 
-- ``ChatCapable.chat`` — implementations on OpenAI, Anthropic,
-  Ollama, and OpenAI-compatible adapters.
-- ``LLMResponse`` — provider-neutral response shape.
-- ``AIProviderError`` — typed wrapper with a sanitized message.
-- ``StructuredOutputCapable.chat_structured`` — protocol signature
-  only (implementations deferred to PR3 per architect lock).
+- ``EmbedCapable.embed`` — OpenAI, Ollama, OpenAI-compatible (Anthropic
+  raises NotImplementedError).
+- ``StructuredOutputCapable.chat_structured`` — adapter-side
+  implementation; service layer applies the architect-locked retry cap
+  via ``ai_dispatch.call_llm_structured``.
+- ``FunctionCallCapable.function_call`` — OpenAI/Anthropic adapters;
+  Ollama raises ``CapabilityNotSupported`` for non-tool-using models.
+- ``StreamCapable.stream`` — async iterator over ``StreamChunk``s.
+
+Native still raises ``NativeNotAvailable`` for every capability until
+PR4 wires a real backend.
 
 Distinct from the older ``ai_adapters`` package (LAI foundation mock
 adapter) — that one is the call_llm() chokepoint; this one is the
@@ -15,13 +22,20 @@ provider abstraction for BYO credentials.
 """
 from app.services.ai_providers.base import (
     AIProviderError,
+    CapabilityNotSupported,
     ChatCapable,
     EmbedCapable,
+    EmbedResponse,
     FunctionCallCapable,
+    FunctionCallResponse,
     LLMResponse,
     NativeNotAvailable,
     StreamCapable,
+    StreamChunk,
     StructuredOutputCapable,
+    StructuredOutputError,
+    StructuredResponse,
+    TokenUsage,
     ValidateCapable,
     ValidateResult,
     get_adapter,
@@ -29,13 +43,20 @@ from app.services.ai_providers.base import (
 
 __all__ = [
     "AIProviderError",
+    "CapabilityNotSupported",
     "ChatCapable",
     "EmbedCapable",
+    "EmbedResponse",
     "FunctionCallCapable",
+    "FunctionCallResponse",
     "LLMResponse",
     "NativeNotAvailable",
     "StreamCapable",
+    "StreamChunk",
     "StructuredOutputCapable",
+    "StructuredOutputError",
+    "StructuredResponse",
+    "TokenUsage",
     "ValidateCapable",
     "ValidateResult",
     "get_adapter",

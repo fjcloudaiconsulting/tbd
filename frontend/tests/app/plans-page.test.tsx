@@ -18,9 +18,11 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 
 const replaceMock = vi.fn();
+let searchParamsString = "";
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
   usePathname: () => "/plans",
+  useSearchParams: () => new URLSearchParams(searchParamsString),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -204,6 +206,7 @@ describe("/plans page", () => {
   beforeEach(() => {
     apiFetchMock.mockReset();
     replaceMock.mockReset();
+    searchParamsString = "";
   });
 
   function setUser() {
@@ -421,5 +424,178 @@ describe("/plans page", () => {
       const body = JSON.parse((simulateCall![1] as RequestInit).body as string);
       expect(body.engine).toBe("analytic");
     });
+  });
+
+  it(
+    "test_open_query_param_opens_matching_scenario_in_editor: "
+    + "?open=<id> matches a loaded scenario → editor renders, "
+    + "URL is replaced to /plans (no query string)",
+    async () => {
+      setUser();
+      // Land on /plans?open=7 — should open TRIP_PLAN in the editor.
+      searchParamsString = `open=${TRIP_PLAN.id}`;
+      apiFetchMock.mockImplementation(((url: string) => {
+        if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+        if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+        return Promise.resolve(undefined);
+      }) as never);
+      render(<PlansPage />);
+      // The editor renders with the deep-linked plan active.
+      await screen.findByTestId("plan-editor");
+      // List view is gone.
+      expect(screen.queryByTestId("plans-list")).not.toBeInTheDocument();
+      // Plan name shows in the editor's name input.
+      const nameInput = screen.getByTestId("plan-name-input") as HTMLInputElement;
+      expect(nameInput.value).toBe(TRIP_PLAN.name);
+      // URL was cleaned to /plans (no query string) so a refresh doesn't
+      // re-trigger the open behavior.
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/plans");
+      });
+    },
+  );
+
+  it(
+    "test_open_query_param_with_unknown_id_stays_on_list: "
+    + "?open=99 with no matching scenario → list renders, URL replaced",
+    async () => {
+      setUser();
+      // Land on /plans?open=99 but the loaded list only has id=7.
+      searchParamsString = "open=99";
+      apiFetchMock.mockImplementation(((url: string) => {
+        if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+        if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+        return Promise.resolve(undefined);
+      }) as never);
+      render(<PlansPage />);
+      // List view renders.
+      await screen.findByTestId("plans-list");
+      expect(screen.queryByTestId("plan-editor")).not.toBeInTheDocument();
+      // URL is still cleaned up so a refresh doesn't retry forever.
+      await waitFor(() => {
+        expect(replaceMock).toHaveBeenCalledWith("/plans");
+      });
+    },
+  );
+  it("disables the Simulate button and shows a spinner while in flight", async () => {
+    setUser();
+    let resolveSimulate: ((value: typeof TRIP_PLAN) => void) | null = null;
+    const simulatePromise = new Promise<typeof TRIP_PLAN>((resolve) => {
+      resolveSimulate = resolve;
+    });
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+        && options?.method === "POST"
+      ) {
+        return simulatePromise;
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    const btn = screen.getByTestId(`plan-simulate-${TRIP_PLAN.id}`) as HTMLButtonElement;
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(btn).toBeDisabled();
+    });
+    expect(btn.getAttribute("aria-busy")).toBe("true");
+    expect(
+      screen.getByTestId(`plan-simulate-spinner-${TRIP_PLAN.id}`),
+    ).toBeInTheDocument();
+    expect(btn).toHaveTextContent(/Simulating/i);
+    // Resolve and verify the button comes back.
+    resolveSimulate!(TRIP_PLAN);
+    await waitFor(() => {
+      expect(btn).not.toBeDisabled();
+    });
+    expect(
+      screen.queryByTestId(`plan-simulate-spinner-${TRIP_PLAN.id}`),
+    ).not.toBeInTheDocument();
+    expect(btn).toHaveTextContent(/^Simulate$/);
+  });
+
+  it("only disables the simulated plan's button, leaving other rows clickable", async () => {
+    setUser();
+    const SECOND_PLAN = { ...TRIP_PLAN, id: 99, name: "Porto trip" };
+    let resolveSimulate: ((value: typeof TRIP_PLAN) => void) | null = null;
+    const simulatePromise = new Promise<typeof TRIP_PLAN>((resolve) => {
+      resolveSimulate = resolve;
+    });
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN, SECOND_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+        && options?.method === "POST"
+      ) {
+        return simulatePromise;
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    await screen.findByText("Porto trip");
+    const btnA = screen.getByTestId(`plan-simulate-${TRIP_PLAN.id}`) as HTMLButtonElement;
+    const btnB = screen.getByTestId(`plan-simulate-${SECOND_PLAN.id}`) as HTMLButtonElement;
+    fireEvent.click(btnA);
+    await waitFor(() => {
+      expect(btnA).toBeDisabled();
+    });
+    // Plan B's button must NOT be disabled — that was the broken
+    // shape of a single shared boolean.
+    expect(btnB).not.toBeDisabled();
+    resolveSimulate!(TRIP_PLAN);
+    await waitFor(() => {
+      expect(btnA).not.toBeDisabled();
+    });
+  });
+
+  it("shows the 'Updated' microcopy flash after a successful simulate", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+        && options?.method === "POST"
+      ) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-simulate-${TRIP_PLAN.id}`));
+    const flash = await screen.findByTestId(`plan-simulate-flash-${TRIP_PLAN.id}`);
+    expect(flash).toHaveTextContent(/Updated,/i);
+  });
+
+  it("wraps the verdict pill area in an aria-live polite region", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    const region = screen.getByTestId(`plan-verdict-region-${TRIP_PLAN.id}`);
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.getAttribute("role")).toBe("status");
   });
 });

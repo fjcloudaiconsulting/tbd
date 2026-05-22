@@ -6,14 +6,42 @@
  * ``onUpdate`` so the report's full layout state stays the single
  * source of truth (debounced save handled at the editor level).
  *
- * For each field with a per-widget override, the rail surfaces an
- * "Overrides canvas" pill (spec §4) computed via ``isFieldOverridden``.
+ * PR3 expands this rail to support:
+ *
+ *  - All 8 v1 widget types via the ``WidgetType`` union.
+ *  - Multi-series widgets (line / area / stacked bar / table) expose
+ *    one aggregation row per entry in ``config.measures`` with an
+ *    "Add series" button to grow the list. Table caps at 5 columns;
+ *    series widgets cap at 5 too (visual register breaks past that).
+ *  - Pie / Sparkline are locked to a single dimension + single
+ *    aggregation (no add-series button).
+ *  - Per-widget filter overrides go through the new filter
+ *    primitives (CategoryPicker, TagFilter, AccountFilter,
+ *    DatePresetChips); the "Overrides canvas" pill from PR2 still
+ *    fires when the widget value DIFFERS from the canvas value on
+ *    the same field.
  */
+import { useId } from "react";
+
+import AccountFilter from "@/components/reports/filters/AccountFilter";
+import CategoryPicker from "@/components/reports/filters/CategoryPicker";
+import DatePresetChips from "@/components/reports/filters/DatePresetChips";
+import TagFilter from "@/components/reports/filters/TagFilter";
 import type {
+  AreaConfig,
+  Aggregation,
   BarConfig,
   CanvasFilters,
   Dimension,
   KPIConfig,
+  LineConfig,
+  Measure,
+  MeasureField,
+  PieConfig,
+  SeriesConfig,
+  SparklineConfig,
+  StackedBarConfig,
+  TableConfig,
   TagMatch,
   Widget,
   WidgetFilters,
@@ -27,11 +55,18 @@ interface Props {
   onClose: () => void;
 }
 
-const AGG_OPTIONS: Array<{ value: "sum" | "count" | "avg" | "distinct"; label: string }> = [
+const AGG_OPTIONS: Array<{ value: Aggregation; label: string }> = [
   { value: "sum", label: "Sum" },
   { value: "count", label: "Count" },
   { value: "avg", label: "Average" },
   { value: "distinct", label: "Distinct count" },
+];
+
+const FIELD_OPTIONS: Array<{ value: MeasureField; label: string }> = [
+  { value: "amount", label: "Amount" },
+  { value: "id", label: "Row count (id)" },
+  { value: "category_id", label: "Category" },
+  { value: "account_id", label: "Account" },
 ];
 
 const DIMENSION_OPTIONS: Array<{ value: Dimension; label: string }> = [
@@ -46,6 +81,26 @@ const DIMENSION_OPTIONS: Array<{ value: Dimension; label: string }> = [
   { value: "day", label: "Day" },
 ];
 
+const MAX_SERIES = 5;
+const MAX_TABLE_COLUMNS = 5;
+
+/** Widget types that carry ``config.measures`` (multi-series). */
+function isMultiSeries(
+  w: Widget,
+): w is Widget & { config: LineConfig | AreaConfig | StackedBarConfig | TableConfig } {
+  return (
+    w.type === "line" ||
+    w.type === "area" ||
+    w.type === "stacked_bar" ||
+    w.type === "table"
+  );
+}
+
+/** Widget types locked to a single dimension + single aggregation. */
+function isSingleAggLocked(w: Widget): boolean {
+  return w.type === "pie" || w.type === "sparkline";
+}
+
 export default function ConfigRail({
   widget,
   canvasFilters,
@@ -58,19 +113,6 @@ export default function ConfigRail({
     onUpdate({ ...widget, title });
   }
 
-  function setAgg(agg: "sum" | "count" | "avg" | "distinct") {
-    // Keep widget.config narrow per type — Bar and KPI share the
-    // measure shape.
-    const next = {
-      ...widget,
-      config: {
-        ...widget.config,
-        measure: { ...widget.config.measure, agg },
-      },
-    } as Widget;
-    onUpdate(next);
-  }
-
   function setFilters(nextFilters: WidgetFilters) {
     const next = {
       ...widget,
@@ -79,12 +121,64 @@ export default function ConfigRail({
     onUpdate(next);
   }
 
-  function setDimension(dim: Dimension) {
-    if (widget.type !== "bar") return;
+  function setSingleMeasure(measure: Measure) {
+    if (isMultiSeries(widget)) return;
+    const next = {
+      ...widget,
+      config: {
+        ...(widget.config as KPIConfig | BarConfig | PieConfig | SparklineConfig),
+        measure,
+      },
+    } as Widget;
+    onUpdate(next);
+  }
+
+  function setSeries(measures: SeriesConfig[]) {
+    if (!isMultiSeries(widget)) return;
     const next: Widget = {
       ...widget,
-      config: { ...(widget.config as BarConfig), dimensions: [dim] },
-    };
+      config: { ...widget.config, measures },
+    } as Widget;
+    onUpdate(next);
+  }
+
+  function setPrimaryDimension(dim: Dimension) {
+    if (widget.type === "kpi") return; // KPI has no dimensions
+    const cfg = widget.config as
+      | BarConfig
+      | LineConfig
+      | AreaConfig
+      | PieConfig
+      | SparklineConfig
+      | StackedBarConfig
+      | TableConfig;
+    const dims = [...(cfg.dimensions ?? [])];
+    dims[0] = dim;
+    const next: Widget = {
+      ...widget,
+      config: { ...cfg, dimensions: dims },
+    } as Widget;
+    onUpdate(next);
+  }
+
+  function setSecondaryDimension(dim: Dimension | "") {
+    if (widget.type === "kpi" || isSingleAggLocked(widget)) return;
+    const cfg = widget.config as
+      | BarConfig
+      | LineConfig
+      | AreaConfig
+      | StackedBarConfig
+      | TableConfig;
+    const dims = [...(cfg.dimensions ?? [])];
+    if (dim === "") {
+      dims.splice(1, 1);
+    } else {
+      dims[1] = dim;
+    }
+    const next: Widget = {
+      ...widget,
+      config: { ...cfg, dimensions: dims },
+    } as Widget;
     onUpdate(next);
   }
 
@@ -100,10 +194,31 @@ export default function ConfigRail({
     onUpdate(next);
   }
 
+  function setTopN(value: number) {
+    if (widget.type !== "pie") return;
+    const next: Widget = {
+      ...widget,
+      config: { ...(widget.config as PieConfig), top_n: value },
+    };
+    onUpdate(next);
+  }
+
+  function setStacked(value: boolean) {
+    if (widget.type !== "area" && widget.type !== "stacked_bar") return;
+    const next: Widget = {
+      ...widget,
+      config: {
+        ...(widget.config as AreaConfig | StackedBarConfig),
+        stacked: value,
+      },
+    } as Widget;
+    onUpdate(next);
+  }
+
   return (
     <aside
       data-testid="config-rail"
-      className="flex h-full w-80 shrink-0 flex-col gap-4 border-l border-border bg-surface p-4 overflow-y-auto"
+      className="flex h-full w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l border-border bg-surface p-4"
     >
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-text-primary">
@@ -139,31 +254,61 @@ export default function ConfigRail({
         </select>
       </Section>
 
-      <Section label="Aggregation">
-        <select
-          value={widget.config.measure.agg}
-          onChange={(e) =>
-            setAgg(e.target.value as "sum" | "count" | "avg" | "distinct")
+      {/* Aggregation / measures section. Single-measure widgets show
+          one row; multi-series widgets show one row per series with
+          an "Add series" button at the bottom. */}
+      {isMultiSeries(widget) ? (
+        <MeasuresEditor
+          widget={widget}
+          onChange={setSeries}
+        />
+      ) : (
+        <SingleMeasureEditor
+          measure={
+            (widget.config as KPIConfig | BarConfig | PieConfig | SparklineConfig)
+              .measure
           }
-          aria-label="Aggregation"
-          className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-        >
-          {AGG_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </Section>
+          onChange={setSingleMeasure}
+        />
+      )}
 
-      {widget.type === "bar" && (
-        <Section label="Dimension">
+      {widget.type !== "kpi" && (
+        <Section label="Primary dimension">
           <select
-            value={widget.config.dimensions[0] ?? "category"}
-            onChange={(e) => setDimension(e.target.value as Dimension)}
-            aria-label="Dimension"
+            value={
+              ((widget.config as BarConfig).dimensions ?? [])[0] ?? "category"
+            }
+            onChange={(e) => setPrimaryDimension(e.target.value as Dimension)}
+            aria-label="Primary dimension"
             className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
           >
+            {DIMENSION_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </Section>
+      )}
+
+      {/* Secondary dimension picker — Table-only in v1. Bar / line /
+          area / stacked widgets currently only consume ``dimensions[0]``,
+          so exposing a secondary picker for them would be a no-op UX
+          (architect-locked). Split-series rendering is a follow-up if
+          users ask for it. */}
+      {widget.type === "table" && (
+        <Section label="Secondary dimension (optional)">
+          <select
+            value={
+              ((widget.config as TableConfig).dimensions ?? [])[1] ?? ""
+            }
+            onChange={(e) =>
+              setSecondaryDimension((e.target.value || "") as Dimension | "")
+            }
+            aria-label="Secondary dimension"
+            className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+          >
+            <option value="">None</option>
             {DIMENSION_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
@@ -178,11 +323,45 @@ export default function ConfigRail({
           <label className="flex items-center gap-2 text-sm text-text-primary">
             <input
               type="checkbox"
-              checked={Boolean(widget.config.compare_prior_period)}
+              checked={Boolean(
+                (widget.config as KPIConfig).compare_prior_period,
+              )}
               onChange={(e) => setComparePrior(e.target.checked)}
               aria-label="Compare to prior period"
             />
             <span>Show delta vs prior period</span>
+          </label>
+        </Section>
+      )}
+
+      {widget.type === "pie" && (
+        <Section label="Top N slices">
+          <input
+            type="number"
+            min={2}
+            max={20}
+            value={(widget.config as PieConfig).top_n ?? 8}
+            onChange={(e) => setTopN(Number(e.target.value) || 8)}
+            aria-label="Top N slices"
+            className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+          />
+        </Section>
+      )}
+
+      {(widget.type === "area" || widget.type === "stacked_bar") && (
+        <Section label={widget.type === "stacked_bar" ? "Stack mode" : "Stack series"}>
+          <label className="flex items-center gap-2 text-sm text-text-primary">
+            <input
+              type="checkbox"
+              checked={
+                widget.type === "stacked_bar"
+                  ? (widget.config as StackedBarConfig).stacked !== false
+                  : Boolean((widget.config as AreaConfig).stacked)
+              }
+              onChange={(e) => setStacked(e.target.checked)}
+              aria-label="Stack series"
+            />
+            <span>Stack multiple series</span>
           </label>
         </Section>
       )}
@@ -224,6 +403,174 @@ function OverridePill() {
   );
 }
 
+function SingleMeasureEditor({
+  measure,
+  onChange,
+}: {
+  measure: Measure;
+  onChange: (m: Measure) => void;
+}) {
+  return (
+    <>
+      <Section label="Aggregation">
+        <select
+          value={measure.agg}
+          onChange={(e) =>
+            onChange({ ...measure, agg: e.target.value as Aggregation })
+          }
+          aria-label="Aggregation"
+          className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+        >
+          {AGG_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </Section>
+      <Section label="Field">
+        <select
+          value={measure.field}
+          onChange={(e) =>
+            onChange({ ...measure, field: e.target.value as MeasureField })
+          }
+          aria-label="Field"
+          className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+        >
+          {FIELD_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </Section>
+    </>
+  );
+}
+
+function MeasuresEditor({
+  widget,
+  onChange,
+}: {
+  widget: Widget & { config: LineConfig | AreaConfig | StackedBarConfig | TableConfig };
+  onChange: (m: SeriesConfig[]) => void;
+}) {
+  const measures = widget.config.measures;
+  const cap = widget.type === "table" ? MAX_TABLE_COLUMNS : MAX_SERIES;
+
+  function update(idx: number, next: SeriesConfig) {
+    const copy = [...measures];
+    copy[idx] = next;
+    onChange(copy);
+  }
+
+  function add() {
+    if (measures.length >= cap) return;
+    onChange([
+      ...measures,
+      { measure: { agg: "sum", field: "amount" } },
+    ]);
+  }
+
+  function remove(idx: number) {
+    if (measures.length <= 1) return;
+    onChange(measures.filter((_, i) => i !== idx));
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+        {widget.type === "table" ? "Columns" : "Series"}
+      </div>
+      {measures.map((s, idx) => (
+        <div
+          key={idx}
+          data-testid={`measure-row-${idx}`}
+          className="flex flex-col gap-1 rounded-md border border-border bg-bg p-2"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-text-muted">
+              {widget.type === "table" ? `Column ${idx + 1}` : `Series ${idx + 1}`}
+            </span>
+            {measures.length > 1 && (
+              <button
+                type="button"
+                data-testid={`measure-remove-${idx}`}
+                onClick={() => remove(idx)}
+                className="text-xs text-text-muted hover:text-danger"
+                aria-label={`Remove ${widget.type === "table" ? "column" : "series"} ${idx + 1}`}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          <input
+            type="text"
+            value={s.label ?? ""}
+            onChange={(e) =>
+              update(idx, { ...s, label: e.target.value || undefined })
+            }
+            placeholder={
+              widget.type === "table" ? "Column label" : "Series label"
+            }
+            aria-label={`Series ${idx + 1} label`}
+            className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
+          />
+          <div className="flex gap-1">
+            <select
+              value={s.measure.agg}
+              onChange={(e) =>
+                update(idx, {
+                  ...s,
+                  measure: { ...s.measure, agg: e.target.value as Aggregation },
+                })
+              }
+              aria-label={`Series ${idx + 1} aggregation`}
+              className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
+            >
+              {AGG_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={s.measure.field}
+              onChange={(e) =>
+                update(idx, {
+                  ...s,
+                  measure: {
+                    ...s.measure,
+                    field: e.target.value as MeasureField,
+                  },
+                })
+              }
+              aria-label={`Series ${idx + 1} field`}
+              className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
+            >
+              {FIELD_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      ))}
+      {measures.length < cap && (
+        <button
+          type="button"
+          data-testid="measure-add"
+          onClick={add}
+          className="rounded-md border border-dashed border-border px-2 py-1 text-xs text-text-secondary transition hover:border-accent hover:text-accent"
+        >
+          + Add {widget.type === "table" ? "column" : "series"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function FilterEditor({
   filters,
   canvasFilters,
@@ -246,107 +593,62 @@ function FilterEditor({
             <OverridePill />
           )}
         </div>
-        <div className="flex gap-2">
-          <input
-            type="date"
-            aria-label="Widget date from"
-            value={filters.date_range?.start ?? ""}
-            onChange={(e) =>
-              onChange({
-                ...filters,
-                date_range: {
-                  ...(filters.date_range ?? {}),
-                  start: e.target.value || undefined,
-                },
-              })
-            }
-            className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-          />
-          <input
-            type="date"
-            aria-label="Widget date to"
-            value={filters.date_range?.end ?? ""}
-            onChange={(e) =>
-              onChange({
-                ...filters,
-                date_range: {
-                  ...(filters.date_range ?? {}),
-                  end: e.target.value || undefined,
-                },
-              })
-            }
-            className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-          />
-        </div>
+        <DatePresetChips
+          value={filters.date_range}
+          ariaPrefix="Widget"
+          onChange={(next) =>
+            onChange({
+              ...filters,
+              date_range: next || undefined,
+            })
+          }
+        />
       </div>
 
       <div className="flex flex-col gap-1">
         <div className="flex items-center text-xs text-text-secondary">
-          Accounts (ids)
+          Accounts
           {isFieldOverridden("account_ids", filters, canvasFilters) && (
             <OverridePill />
           )}
         </div>
-        <input
-          type="text"
-          aria-label="Widget accounts"
-          inputMode="numeric"
-          placeholder="e.g. 12, 14"
-          value={(filters.account_ids ?? []).join(",")}
-          onChange={(e) =>
+        <AccountFilter
+          value={filters.account_ids ?? []}
+          ariaPrefix="Widget account"
+          label=""
+          onChange={(account_ids) =>
             onChange({
               ...filters,
-              account_ids: parseIdList(e.target.value),
+              account_ids: account_ids.length > 0 ? account_ids : undefined,
             })
           }
-          className="rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
         />
       </div>
 
       <div className="flex flex-col gap-1">
         <div className="flex items-center text-xs text-text-secondary">
-          Categories (ids)
+          Categories
           {isFieldOverridden("category_ids", filters, canvasFilters) && (
             <OverridePill />
           )}
         </div>
-        <input
-          type="text"
-          aria-label="Widget categories"
-          inputMode="numeric"
-          placeholder="e.g. 3, 5"
-          value={(filters.category_ids ?? []).join(",")}
-          onChange={(e) =>
+        <CategoryPicker
+          value={filters.category_ids ?? []}
+          label=""
+          onChange={(category_ids) =>
             onChange({
               ...filters,
-              category_ids: parseIdList(e.target.value),
+              category_ids: category_ids.length > 0 ? category_ids : undefined,
             })
           }
-          className="rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
         />
       </div>
 
       <div className="flex flex-col gap-1">
-        <div className="text-xs text-text-secondary">Transaction type</div>
-        <select
-          value={filters.txn_type ?? ""}
-          aria-label="Widget transaction type"
-          onChange={(e) =>
-            onChange({
-              ...filters,
-              txn_type:
-                e.target.value === ""
-                  ? undefined
-                  : (e.target.value as "income" | "expense" | "transfer"),
-            })
-          }
-          className="rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-        >
-          <option value="">Any</option>
-          <option value="income">Income</option>
-          <option value="expense">Expense</option>
-          <option value="transfer">Transfer</option>
-        </select>
+        <TxnTypeRadioRow
+          value={filters.txn_type}
+          onChange={(txn_type) => onChange({ ...filters, txn_type })}
+        />
       </div>
 
       <div className="flex flex-col gap-1">
@@ -387,58 +689,52 @@ function FilterEditor({
         </div>
       </div>
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs text-text-secondary">Tags</div>
-        <input
-          type="text"
-          aria-label="Widget tags"
-          placeholder="comma list of tag names"
-          value={(filters.tag_names ?? []).join(",")}
-          onChange={(e) =>
-            onChange({
-              ...filters,
-              tag_names: e.target.value
-                .split(",")
-                .map((s) => s.trim().toLowerCase())
-                .filter(Boolean),
-            })
-          }
-          className="rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-        />
-        <div className="mt-1 flex gap-3 text-xs text-text-secondary">
-          <label className="flex items-center gap-1">
-            <input
-              type="radio"
-              name="tag-match"
-              aria-label="Tag match all"
-              checked={(filters.tag_match ?? "all") === "all"}
-              onChange={() => onChange({ ...filters, tag_match: "all" })}
-            />
-            <span>Match all</span>
-          </label>
-          <label className="flex items-center gap-1">
-            <input
-              type="radio"
-              name="tag-match"
-              aria-label="Tag match any"
-              checked={filters.tag_match === "any"}
-              onChange={() =>
-                onChange({ ...filters, tag_match: "any" as TagMatch })
-              }
-            />
-            <span>Match any</span>
-          </label>
-        </div>
-      </div>
+      <TagFilter
+        value={filters.tag_names ?? []}
+        match={(filters.tag_match ?? "all") as TagMatch}
+        onChange={({ tag_names, tag_match }) =>
+          onChange({
+            ...filters,
+            tag_names: tag_names.length > 0 ? tag_names : undefined,
+            tag_match: tag_names.length > 0 ? tag_match : undefined,
+          })
+        }
+      />
     </div>
   );
 }
 
-function parseIdList(raw: string): number[] {
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => Number(s))
-    .filter((n) => Number.isInteger(n) && n > 0);
+function TxnTypeRadioRow({
+  value,
+  onChange,
+}: {
+  value: "income" | "expense" | "transfer" | undefined;
+  onChange: (next: "income" | "expense" | "transfer" | undefined) => void;
+}) {
+  const name = useId();
+  const choices: Array<{ value: "" | "income" | "expense" | "transfer"; label: string }> = [
+    { value: "", label: "Any" },
+    { value: "income", label: "Income" },
+    { value: "expense", label: "Expense" },
+    { value: "transfer", label: "Transfer" },
+  ];
+  return (
+    <>
+      <div className="text-xs text-text-secondary">Transaction type</div>
+      <div className="flex flex-wrap gap-3 text-xs text-text-secondary">
+        {choices.map((c) => (
+          <label key={c.value} className="flex items-center gap-1">
+            <input
+              type="radio"
+              name={name}
+              aria-label={`Widget transaction type ${c.label}`}
+              checked={(value ?? "") === c.value}
+              onChange={() => onChange(c.value === "" ? undefined : (c.value as "income" | "expense" | "transfer"))}
+            />
+            <span>{c.label}</span>
+          </label>
+        ))}
+      </div>
+    </>
+  );
 }

@@ -48,6 +48,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
+from app.models.notification import Notification, NotificationCategory
 from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import router as auth_router
@@ -208,6 +209,24 @@ async def test_password_change_writes_audit(session_factory):
     # Rotation (not initial set) — password_set was True.
     assert row.detail.get("password_set_initial") is False
 
+    # PR3: a security notification row was dispatched to the actor,
+    # carrying the audit_event_id for forensic correlation.
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "user.password.changed"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 1
+    notif = notifs[0]
+    assert notif.user_id == seed["user_id"]
+    assert notif.category == NotificationCategory.SECURITY
+    assert notif.title == "Your password was changed"
+    assert notif.audit_event_id == row.id
+    assert notif.link_url == "/settings/security"
+
 
 @pytest.mark.asyncio
 async def test_password_change_failure_writes_no_audit(session_factory):
@@ -282,6 +301,25 @@ async def test_email_change_writes_audit_with_old_email(session_factory):
     assert row.detail["old_email"] == "alice@acme.io"
     assert row.detail["new_email"] == "new-address@acme.io"
 
+    # PR3: security notification dispatched to the actor. The body
+    # carries the NEW email (so a recipient receiving this at the OLD
+    # address can confirm where the account was moved to).
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "user.email.changed"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 1
+    notif = notifs[0]
+    assert notif.user_id == seed["user_id"]
+    assert notif.category == NotificationCategory.SECURITY
+    assert notif.title == "Your account email was changed"
+    assert "new-address@acme.io" in notif.body
+    assert notif.audit_event_id == row.id
+
 
 @pytest.mark.asyncio
 async def test_email_change_no_change_writes_no_audit(session_factory):
@@ -350,6 +388,22 @@ async def test_mfa_enable_writes_audit(session_factory):
     assert row.actor_email == seed["email"]
     assert row.target_org_id == seed["org_id"]
 
+    # PR3: security notification dispatched to the actor.
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "user.mfa.enabled"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 1
+    notif = notifs[0]
+    assert notif.user_id == seed["user_id"]
+    assert notif.category == NotificationCategory.SECURITY
+    assert notif.title == "Two-factor authentication enabled"
+    assert notif.audit_event_id == row.id
+
 
 @pytest.mark.asyncio
 async def test_mfa_disable_writes_audit(session_factory):
@@ -384,6 +438,24 @@ async def test_mfa_disable_writes_audit(session_factory):
     assert row.actor_user_id == seed["user_id"]
     assert row.actor_email == seed["email"]
     assert row.target_org_id == seed["org_id"]
+
+    # PR3: security notification dispatched to the actor. Body
+    # encourages re-enable (architect-locked copy).
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "user.mfa.disabled"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 1
+    notif = notifs[0]
+    assert notif.user_id == seed["user_id"]
+    assert notif.category == NotificationCategory.SECURITY
+    assert notif.title == "Two-factor authentication disabled"
+    assert "re-enabling" in notif.body
+    assert notif.audit_event_id == row.id
 
 
 @pytest.mark.asyncio
