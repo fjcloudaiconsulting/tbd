@@ -796,9 +796,9 @@ async def test_regression_overlay_diff_within_5pct_of_deterministic():
     )
     smoothed = AnalyticEngine().simulate(
         SimulationRequest(
-            scenario=scenario, state=state, horizon_months=horizon,
-            options={"smooth_with_regression": True},
-        )
+            scenario=scenario, state=state, horizon_months=horizon, options={},
+        ),
+        smooth_with_regression=True,
     )
     assert deterministic["smoothed_with_regression"] is False
     assert smoothed["smoothed_with_regression"] is True
@@ -956,8 +956,9 @@ async def test_simulate_retirement_does_not_mutate_any_real_table(session_factor
                 scenario=scen,
                 state=state,
                 horizon_months=scen.horizon_months,
-                options={"smooth_with_regression": True},
-            )
+                options={},
+            ),
+            smooth_with_regression=True,
         )
 
     after = await _row_counts(session_factory)

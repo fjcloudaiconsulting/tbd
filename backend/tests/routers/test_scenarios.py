@@ -506,6 +506,57 @@ async def test_simulate_empty_body_defaults_to_analytic(session_factory):
     assert res.json()["projection_engine"] == "analytic_v1"
 
 
+# ── PR2 wiring: smooth_with_regression is a top-level field ─────────────
+
+
+@pytest.mark.asyncio
+async def test_simulate_smooth_with_regression_top_level_field_is_honored(
+    session_factory,
+):
+    """Architect-locked: ``smooth_with_regression`` lives at the top
+    level of ``SimulateRequest`` (NOT inside ``options``). The router
+    must pass it through to the engine, and the engine must echo
+    ``smoothed_with_regression: true`` back on the projection.
+
+    This pins the wiring fix so a regression that routes the flag back
+    into ``options`` (the original broken shape) fails here.
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/scenarios", json=_trip_payload(seeds["account_id"])
+        ).json()
+        res = client.post(
+            f"/api/v1/scenarios/{created['id']}/simulate",
+            json={"horizon_months": 12, "smooth_with_regression": True},
+        )
+    assert res.status_code == 200, res.text
+    projection = res.json()["projection_json"]
+    assert projection["smoothed_with_regression"] is True
+
+
+@pytest.mark.asyncio
+async def test_simulate_smooth_with_regression_defaults_false(session_factory):
+    """When the top-level flag is omitted, the engine must NOT smooth
+    and must echo ``smoothed_with_regression: false``. Pins the default
+    so a future flip can't sneak the overlay on without a request opt-in.
+    """
+    seeds = await _seed_users_and_account(session_factory)
+    app = _make_app(session_factory, _resolver_for("alice@acme.io"))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/scenarios", json=_trip_payload(seeds["account_id"])
+        ).json()
+        res = client.post(
+            f"/api/v1/scenarios/{created['id']}/simulate",
+            json={"horizon_months": 12},
+        )
+    assert res.status_code == 200, res.text
+    projection = res.json()["projection_json"]
+    assert projection["smoothed_with_regression"] is False
+
+
 # ── Cross-user isolation (per-user scoping) ─────────────────────────────
 
 

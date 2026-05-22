@@ -240,7 +240,14 @@ async def simulate_scenario(
         options=payload.options,
     )
 
-    result = engine.simulate(sim_request)
+    # The regression-overlay flag is a top-level field on
+    # ``SimulateRequest`` (architect-locked spec), passed explicitly as
+    # a kwarg to the engine. The engine never reads it from
+    # ``req.options`` — there is exactly one source of truth.
+    result = engine.simulate(
+        sim_request,
+        smooth_with_regression=payload.smooth_with_regression,
+    )
 
     row.projection_json = result
     row.projection_engine = result.get("engine_name") or engine.name

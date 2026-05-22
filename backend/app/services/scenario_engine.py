@@ -245,9 +245,20 @@ class ScenarioEngine(ABC):
     name: str
 
     @abstractmethod
-    def simulate(self, req: SimulationRequest) -> dict[str, Any]:
+    def simulate(
+        self,
+        req: SimulationRequest,
+        *,
+        smooth_with_regression: bool = False,
+    ) -> dict[str, Any]:
         """Run the simulation. Return a JSON-serializable dict matching
         ``schemas/scenario.py::ProjectionResult``.
+
+        ``smooth_with_regression`` is the SINGLE source of truth for the
+        regression-overlay toggle. It comes from the top-level field on
+        ``SimulateRequest`` (the spec's request-level toggle), passed
+        through the router as an explicit kwarg — NOT a magic key inside
+        ``req.options``.
         """
         raise NotImplementedError
 
@@ -274,7 +285,12 @@ class AnalyticEngine(ScenarioEngine):
 
     name = "analytic_v1"
 
-    def simulate(self, req: SimulationRequest) -> dict[str, Any]:
+    def simulate(
+        self,
+        req: SimulationRequest,
+        *,
+        smooth_with_regression: bool = False,
+    ) -> dict[str, Any]:
         """Run the deterministic month-by-month projection.
 
         Architect-locked PR2 extensions:
@@ -284,11 +300,12 @@ class AnalyticEngine(ScenarioEngine):
           with stepped contribution curve overrides. A parallel
           ``real_terms_series`` is computed using ``inflation_pct`` so
           the UI can overlay an inflation-adjusted line.
-        - **Regression overlay**: when
-          ``req.options.smooth_with_regression`` is True, a least-squares
-          fit on the last 12 months of per-account net cashflow yields
-          a per-month drift that gets added to every projected balance.
-          Applies to every plan_type. Default off keeps PR1's exact math.
+        - **Regression overlay**: when ``smooth_with_regression`` is True,
+          a least-squares fit on the last 12 months of per-account net
+          cashflow yields a per-month drift that gets added to every
+          projected balance. Applies to every plan_type. Default off
+          keeps PR1's exact math. Wired in via the top-level field on
+          ``SimulateRequest`` — see the router for the call site.
         - **Verdict refinement**: dispatch by ``scenario_type`` so trip /
           purchase / custom use the refined dip-duration + end-balance
           bands and retirement uses its real-terms-vs-target bands.
@@ -296,8 +313,7 @@ class AnalyticEngine(ScenarioEngine):
         scenario = req.scenario
         horizon = req.horizon_months
         state = req.state
-        options = req.options or {}
-        smooth = bool(options.get("smooth_with_regression", False))
+        smooth = bool(smooth_with_regression)
 
         currency = _resolve_report_currency(state, scenario)
         stype = (
@@ -542,7 +558,12 @@ class AIEngine(ScenarioEngine):
 
     name = "ai_enhanced"
 
-    def simulate(self, req: SimulationRequest) -> dict[str, Any]:  # pragma: no cover
+    def simulate(
+        self,
+        req: SimulationRequest,
+        *,
+        smooth_with_regression: bool = False,
+    ) -> dict[str, Any]:  # pragma: no cover
         raise NotImplementedError("PR4")
 
 
@@ -606,8 +627,8 @@ async def build_world_state(
     # Last 12 months of per-account net cashflow, used by the optional
     # regression overlay in the engine (PR2). Transfers excluded — net =
     # income - expense. This read is unconditional so the engine has the
-    # data when ``options.smooth_with_regression`` is True; for plans that
-    # don't smooth, the points are simply ignored.
+    # data when ``smooth_with_regression`` is True at the request level;
+    # for plans that don't smooth, the points are simply ignored.
     today = utcnow_naive().date()
     history_start = today.replace(day=1) - relativedelta(months=12)
     txn_rows = (
