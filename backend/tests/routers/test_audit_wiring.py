@@ -29,6 +29,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
+from app.models.notification import Notification, NotificationCategory
 from app.models.subscription import (
     BillingInterval,
     Plan,
@@ -100,7 +101,19 @@ async def _seed(factory) -> dict:
             role=Role.OWNER, is_superadmin=True, is_active=True,
             email_verified=True,
         )
-        db.add(sa)
+        # Target org owner — receives the PR3 plan-changed
+        # org_admin notification when the superadmin overrides the
+        # plan_id. Without this, the broadcast would have zero
+        # recipients and the notification assertion below would be
+        # trivially satisfied.
+        target_owner = User(
+            org_id=target.id, username="target_owner",
+            email="owner@target.io",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.OWNER, is_superadmin=False, is_active=True,
+            email_verified=True,
+        )
+        db.add_all([sa, target_owner])
         await db.commit()
         target_sub = Subscription(
             org_id=target.id, plan_id=plan.id,
@@ -120,6 +133,7 @@ async def _seed(factory) -> dict:
             "admin_org_id": admin_org.id,
             "target_id": target.id,
             "target_name": target.name,
+            "target_owner_id": target_owner.id,
         }
 
 
@@ -222,6 +236,26 @@ async def test_subscription_override_with_plan_change_writes_plan_changed_audit(
     # Old plan id is whatever the seed used (the free plan), new is `pro`.
     assert plan_row.detail["new_plan_id"] == pro_plan_id
     assert plan_row.detail["old_plan_id"] != pro_plan_id
+
+    # PR3: the plan_changed notification fans out to every active
+    # org_admin of the target org. The seed has exactly one owner
+    # in the target org; that owner receives a row carrying the
+    # audit_event_id for forensic correlation.
+    async with session_factory() as db:
+        plan_notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+    assert len(plan_notifs) == 1
+    notif = plan_notifs[0]
+    assert notif.user_id == seed["target_owner_id"]
+    assert notif.category == NotificationCategory.ORG_ADMIN
+    assert "Pro" in notif.title
+    assert "root@platform.io" in notif.body
+    assert notif.audit_event_id == plan_row.id
 
 
 @pytest.mark.asyncio

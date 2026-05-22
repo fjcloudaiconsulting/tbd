@@ -36,3 +36,21 @@ vi.mock("@/components/announcements/AnnouncementBar", () => ({
   __esModule: true,
   default: () => null,
 }));
+
+// Global stub for the notification bell.
+//
+// Same reasoning as the AnnouncementBar stub above: ``NotificationBell``
+// is mounted unconditionally in the ``AppShell`` header row and on
+// every page render it fires ``GET /api/v1/notifications?limit=10``
+// via SWR. That polls every 60s and refetches on focus, so without a
+// global stub every page test must add a no-op handler for that URL
+// to keep ad-hoc ``mockResolvedValueOnce`` queues honest.
+//
+// Tests that exercise the bell itself live in
+// ``tests/components/notifications/notification-bell.test.tsx`` and
+// import the component directly — they call ``vi.unmock`` to restore
+// the real module before their own ``vi.mock`` declaration.
+vi.mock("@/components/notifications/NotificationBell", () => ({
+  __esModule: true,
+  default: () => null,
+}));
