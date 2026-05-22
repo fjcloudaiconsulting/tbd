@@ -26,8 +26,8 @@ from app.deps import get_current_user, get_session_factory
 from app.models.user import User
 from app.rate_limit import get_client_ip
 from app.rate_limit_endpoint_catalogue import (
-    PRE_AUTH_PATTERNS,
-    sorted_patterns,
+    sorted_overridable_patterns,
+    sorted_pre_auth_patterns,
 )
 from app.schemas.rate_limit_override import (
     RateLimitOverrideCreate,
@@ -80,16 +80,21 @@ async def get_endpoint_catalogue(
 ):
     """Return the catalogue of supported endpoint patterns.
 
-    Drives the admin UI's pattern dropdown so an operator can only
-    pick a string the codebase actually has a ``@limiter.limit``
-    decorator for. The response also flags pre-auth patterns; the UI
-    surfaces a warning when one of those is selected (overrides on
-    pre-auth routes are accepted but the resolver short-circuits to
-    the static default).
+    Response shape is split into two arrays so the admin UI can render
+    both surfaces but only allow selection from the overridable list:
+
+    * ``overridable`` — patterns the schema validator accepts on
+      create / update. These are post-auth routes where the resolver
+      can resolve a user/org identity and apply the override.
+    * ``pre_auth_informational`` — patterns whose decorator runs
+      before auth, surfaced here so operators can see the full
+      decorator surface and learn why they cannot create overrides
+      for those routes. The schema validator rejects these with a
+      typed 422 (see ``rate_limit_override._validate_endpoint_pattern``).
     """
     return {
-        "patterns": sorted_patterns(),
-        "pre_auth_patterns": sorted(PRE_AUTH_PATTERNS),
+        "overridable": sorted_overridable_patterns(),
+        "pre_auth_informational": sorted_pre_auth_patterns(),
     }
 
 

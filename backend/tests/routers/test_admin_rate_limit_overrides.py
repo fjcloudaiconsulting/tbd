@@ -168,7 +168,7 @@ async def test_create_requires_superadmin(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "org_id": seeded["org_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
         },
@@ -185,7 +185,7 @@ async def test_create_happy_path_writes_audit(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "org_id": seeded["org_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
             "note": "B2B customer ramp",
@@ -224,7 +224,7 @@ async def test_create_rejects_both_scopes(session_factory):
         json={
             "org_id": seeded["org_id"],
             "user_id": seeded["member_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
         },
@@ -240,7 +240,7 @@ async def test_create_rejects_no_scope(session_factory):
     resp = client.post(
         "/api/v1/admin/rate-limit-overrides",
         json={
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
         },
@@ -261,7 +261,7 @@ async def test_create_rejects_zero_max_requests(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "org_id": seeded["org_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 0,
             "period_seconds": 60,
         },
@@ -279,7 +279,7 @@ async def test_create_rejects_past_expiry(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "org_id": seeded["org_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
             "expires_at": past,
@@ -297,7 +297,7 @@ async def test_update_happy_path_writes_audit(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "org_id": seeded["org_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
         },
@@ -348,7 +348,7 @@ async def test_update_rejects_scope_change(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "org_id": seeded["org_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
         },
@@ -370,7 +370,7 @@ async def test_delete_writes_audit(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "org_id": seeded["org_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
         },
@@ -408,7 +408,7 @@ async def test_list_filters_by_org(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "org_id": seeded["org_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 100,
             "period_seconds": 60,
         },
@@ -417,7 +417,7 @@ async def test_list_filters_by_org(session_factory):
         "/api/v1/admin/rate-limit-overrides",
         json={
             "user_id": seeded["member_id"],
-            "endpoint_pattern": "auth.login",
+            "endpoint_pattern": "reports.query",
             "max_requests": 5,
             "period_seconds": 60,
         },
@@ -433,11 +433,15 @@ async def test_list_filters_by_org(session_factory):
 
 @pytest.mark.asyncio
 async def test_create_rejects_unknown_endpoint_pattern(session_factory):
-    """An override referencing a pattern not in the catalogue is 422'd
-    before it ever reaches the DB. The error body includes the full
-    catalogue so the caller can recover without a separate round-trip.
+    """An override referencing a pattern not in either catalogue set
+    is 422'd before it ever reaches the DB. The error body includes
+    the typed ``endpoint_pattern_unknown`` code and the full
+    overridable catalogue so the caller can recover without a
+    separate round-trip.
     """
-    from app.rate_limit_endpoint_catalogue import sorted_patterns
+    from app.rate_limit_endpoint_catalogue import (
+        sorted_overridable_patterns,
+    )
 
     seeded = await _seed(session_factory)
     app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
@@ -452,24 +456,57 @@ async def test_create_rejects_unknown_endpoint_pattern(session_factory):
         },
     )
     assert resp.status_code == 422, resp.text
-    # The error message lists at least one known pattern, signalling
-    # that the catalogue made it into the 422 body.
     body = resp.text
-    catalogue = sorted_patterns()
-    assert "auth.login" in body
+    # Typed error code lets the UI branch on shape, not string match.
+    assert "endpoint_pattern_unknown" in body
     # And the typo'd value is echoed back so the operator sees what
     # was rejected.
     assert "fake.endpoint" in body
-    # And every catalogue entry shows up — keeps the response usable
-    # as a recovery hint instead of a guessing game.
+    # Every OVERRIDABLE catalogue entry shows up so the response is a
+    # usable recovery hint instead of a guessing game.
+    catalogue = sorted_overridable_patterns()
     for pattern in catalogue:
         assert pattern in body
+    # And the post-auth ``auth.resend_verification`` survives the
+    # split as a sanity check on membership.
+    assert "auth.resend_verification" in body
 
 
 @pytest.mark.asyncio
 async def test_update_rejects_unknown_endpoint_pattern(session_factory):
     """Same catalogue guard applies on PATCH so an operator can't
-    typo a rename either.
+    typo a rename either. Uses ``reports.query`` as the seed pattern
+    since it is in the OVERRIDABLE set (post auth.login moved to
+    PRE_AUTH).
+    """
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/admin/rate-limit-overrides",
+        json={
+            "org_id": seeded["org_id"],
+            "endpoint_pattern": "reports.query",
+            "max_requests": 100,
+            "period_seconds": 60,
+        },
+    )
+    override_id = resp.json()["id"]
+    resp = client.patch(
+        f"/api/v1/admin/rate-limit-overrides/{override_id}",
+        json={"endpoint_pattern": "transactiosn.list"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "transactiosn.list" in resp.text
+    assert "endpoint_pattern_unknown" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_pre_auth_endpoint_pattern(session_factory):
+    """A pre-auth pattern is rejected at the schema layer with a
+    distinct typed error code. Otherwise the row would persist and
+    silently no-op at request time, which is exactly the operator-
+    confusing footgun the architect-locked split closes.
     """
     seeded = await _seed(session_factory)
     app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
@@ -483,25 +520,62 @@ async def test_update_rejects_unknown_endpoint_pattern(session_factory):
             "period_seconds": 60,
         },
     )
-    override_id = resp.json()["id"]
-    resp = client.patch(
-        f"/api/v1/admin/rate-limit-overrides/{override_id}",
-        json={"endpoint_pattern": "transactiosn.list"},
-    )
     assert resp.status_code == 422, resp.text
-    assert "transactiosn.list" in resp.text
+    body = resp.text
+    # Typed code distinct from the unknown-pattern code so the admin
+    # UI can render a different message.
+    assert "endpoint_pattern_pre_auth_non_overridable" in body
+    # The offending pattern is echoed back.
+    assert "auth.login" in body
+    # And the operator is pointed at the actual fix (slowapi decorator
+    # in code, not an override row).
+    assert "slowapi" in body
 
 
 @pytest.mark.asyncio
-async def test_endpoint_catalogue_endpoint_returns_list(session_factory):
-    """The GET catalogue endpoint returns a deterministic sorted list
-    that matches the in-memory frozenset. Pre-auth patterns are
-    flagged in a second key so the admin UI can warn the operator
-    without re-deriving the list client-side.
+async def test_update_rejects_pre_auth_endpoint_pattern(session_factory):
+    """PATCH cannot rename an override to a pre-auth pattern either.
+    Same typed code as create so the UI handler is one branch.
+    """
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/admin/rate-limit-overrides",
+        json={
+            "org_id": seeded["org_id"],
+            "endpoint_pattern": "reports.query",
+            "max_requests": 100,
+            "period_seconds": 60,
+        },
+    )
+    override_id = resp.json()["id"]
+    resp = client.patch(
+        f"/api/v1/admin/rate-limit-overrides/{override_id}",
+        json={"endpoint_pattern": "auth.register"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "endpoint_pattern_pre_auth_non_overridable" in resp.text
+    assert "auth.register" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_endpoint_catalogue_returns_split_shape(session_factory):
+    """The GET catalogue endpoint returns the two-array shape the
+    admin UI consumes:
+
+    * ``overridable`` — patterns the schema validator accepts. Sorted
+      deterministically so the dropdown order is stable across
+      requests.
+    * ``pre_auth_informational`` — patterns surfaced for context only.
+      The UI renders them as disabled options. Sorted so the
+      informational list is stable too.
     """
     from app.rate_limit_endpoint_catalogue import (
-        PRE_AUTH_PATTERNS,
-        sorted_patterns,
+        OVERRIDABLE_ENDPOINT_PATTERNS,
+        PRE_AUTH_ENDPOINT_PATTERNS,
+        sorted_overridable_patterns,
+        sorted_pre_auth_patterns,
     )
 
     seeded = await _seed(session_factory)
@@ -512,12 +586,18 @@ async def test_endpoint_catalogue_endpoint_returns_list(session_factory):
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload["patterns"] == sorted_patterns()
-    assert set(payload["pre_auth_patterns"]) == PRE_AUTH_PATTERNS
-    # Sorted contract for the UI dropdown.
-    assert payload["pre_auth_patterns"] == sorted(
-        payload["pre_auth_patterns"]
+    assert set(payload.keys()) == {"overridable", "pre_auth_informational"}
+    assert payload["overridable"] == sorted_overridable_patterns()
+    assert payload["pre_auth_informational"] == sorted_pre_auth_patterns()
+    # The two sets must be disjoint — a pattern is either overridable
+    # or pre-auth, never both.
+    assert (
+        OVERRIDABLE_ENDPOINT_PATTERNS & PRE_AUTH_ENDPOINT_PATTERNS == set()
     )
+    # Sanity-check the resend_verification split: post-auth is
+    # overridable, public is pre-auth.
+    assert "auth.resend_verification" in payload["overridable"]
+    assert "auth.resend_verification_public" in payload["pre_auth_informational"]
 
 
 @pytest.mark.asyncio

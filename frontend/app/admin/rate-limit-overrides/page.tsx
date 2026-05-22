@@ -69,8 +69,12 @@ type FormState = {
 };
 
 type EndpointCatalogue = {
-  patterns: string[];
-  pre_auth_patterns: string[];
+  // Patterns the backend will accept on create / update. Sorted.
+  overridable: string[];
+  // Patterns surfaced for context only. Rendered as disabled options
+  // in the dropdown so operators can see the full decorator surface
+  // and learn why those routes are not overridable. Sorted.
+  pre_auth_informational: string[];
 };
 
 const EMPTY_FORM: FormState = {
@@ -579,25 +583,26 @@ export default function AdminRateLimitOverridesPage() {
                 <option value="" disabled>
                   Select an endpoint
                 </option>
-                {catalogue?.patterns.map((p) => (
+                {catalogue?.overridable.map((p) => (
                   <option key={p} value={p}>
                     {p}
-                    {catalogue.pre_auth_patterns.includes(p)
-                      ? " (pre-auth, will no-op)"
-                      : ""}
                   </option>
                 ))}
+                {catalogue?.pre_auth_informational.length ? (
+                  <optgroup label="Pre-auth (not overridable)">
+                    {catalogue.pre_auth_informational.map((p) => (
+                      <option
+                        key={p}
+                        value={p}
+                        disabled
+                        title="Pre-auth route. Overrides are not honored; adjust slowapi default in code."
+                      >
+                        {p}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
               </select>
-              {form.endpoint_pattern &&
-                catalogue?.pre_auth_patterns.includes(
-                  form.endpoint_pattern,
-                ) && (
-                  <p className="mt-1 text-xs text-text-muted">
-                    This is a pre-auth endpoint. The override will be
-                    saved but the resolver will fall back to the static
-                    default at request time.
-                  </p>
-                )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">

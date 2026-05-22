@@ -70,13 +70,8 @@ const LIST_RESPONSE = {
 };
 
 const CATALOGUE_RESPONSE = {
-  patterns: [
-    "accounts.adjust_balance",
-    "auth.login",
-    "auth.register",
-    "reports.query",
-  ],
-  pre_auth_patterns: ["auth.login", "auth.register"],
+  overridable: ["accounts.adjust_balance", "reports.query"],
+  pre_auth_informational: ["auth.login", "auth.register"],
 };
 
 // Helper: every URL the page fetches gets the canned response so
@@ -217,8 +212,10 @@ describe("AdminRateLimitOverridesPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add override/i }));
     await screen.findByRole("heading", { name: /New override/i });
 
-    // The dropdown shows every catalogue pattern, and pre-auth ones
-    // are annotated so the operator sees the warning at pick time.
+    // The dropdown shows every catalogue pattern. Overridable patterns
+    // are selectable; pre-auth patterns are rendered as DISABLED
+    // options under an optgroup so operators can see the full surface
+    // but cannot accidentally persist a no-op override.
     const dropdown = screen.getByLabelText(
       "Endpoint pattern",
     ) as HTMLSelectElement;
@@ -228,11 +225,70 @@ describe("AdminRateLimitOverridesPage", () => {
     expect(optionValues).toContain("reports.query");
     expect(optionValues).toContain("accounts.adjust_balance");
 
-    // Pre-auth annotation visible on at least one option.
+    // Overridable options are NOT disabled.
+    const overridableOption = Array.from(dropdown.options).find(
+      (o) => o.value === "reports.query",
+    );
+    expect(overridableOption?.disabled).toBe(false);
+
+    // Pre-auth options ARE disabled — this is the behavioral guard.
     const preAuthOption = Array.from(dropdown.options).find(
       (o) => o.value === "auth.login",
     );
-    expect(preAuthOption?.textContent).toMatch(/pre-auth/i);
+    expect(preAuthOption?.disabled).toBe(true);
+    // Tooltip explains why so the surface stays discoverable.
+    expect(preAuthOption?.title).toMatch(/pre-auth/i);
+
+    // Pre-auth options are grouped under an optgroup labelled to
+    // explain the disabled state.
+    const optgroup = dropdown.querySelector("optgroup");
+    expect(optgroup?.getAttribute("label")).toMatch(/pre-auth/i);
+  });
+
+  it("surfaces a typed 422 when the backend rejects a pre-auth pattern", async () => {
+    // Defensive: if the disabled-in-dropdown gate is somehow bypassed
+    // (devtools, stale catalogue, etc.) the backend's typed 422 must
+    // still surface to the operator with the right message.
+    render(<AdminRateLimitOverridesPage />);
+
+    await screen.findByText("auth.login");
+    fireEvent.click(screen.getByRole("button", { name: /Add override/i }));
+    await screen.findByRole("heading", { name: /New override/i });
+
+    // Force-pick a pre-auth pattern by setting the select's value
+    // directly (operator-bypassed disabled state).
+    const dropdown = screen.getByLabelText(
+      "Endpoint pattern",
+    ) as HTMLSelectElement;
+    Object.defineProperty(dropdown, "value", {
+      writable: true,
+      value: "auth.login",
+    });
+    fireEvent.change(dropdown, { target: { value: "auth.login" } });
+    fireEvent.change(screen.getByLabelText(/^Org id$/i), {
+      target: { value: "1" },
+    });
+    fireEvent.change(screen.getByLabelText(/Max requests/i), {
+      target: { value: "10" },
+    });
+    fireEvent.change(screen.getByLabelText(/Period \(seconds\)/i), {
+      target: { value: "60" },
+    });
+
+    // Backend rejects the submit with the typed 422.
+    apiFetchMock.mockImplementationOnce(() =>
+      Promise.reject(
+        new Error(
+          "endpoint_pattern_pre_auth_non_overridable: endpoint 'auth.login' is a pre-auth route; overrides are not honored. Adjust the slowapi decorator default in code instead.",
+        ),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    expect(
+      await screen.findByText(/pre-auth route/i),
+    ).toBeInTheDocument();
   });
 
   it("validates that an endpoint pattern is selected before submit", async () => {

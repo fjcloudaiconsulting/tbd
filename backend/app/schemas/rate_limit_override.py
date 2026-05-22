@@ -14,11 +14,16 @@ Architect-locked invariants enforced here:
   not an override.
 - ``endpoint_pattern`` is a short opaque string (max 80 chars,
   matching the column width) AND must appear in
-  ``app.rate_limit_endpoint_catalogue.RATE_LIMITED_ENDPOINT_PATTERNS``.
-  Free-form strings that no decorator references silently no-op at
-  request time, so the catalogue check at the schema layer surfaces
-  the typo as a 422 with the full catalogue echoed back in the
-  error body.
+  ``app.rate_limit_endpoint_catalogue.OVERRIDABLE_ENDPOINT_PATTERNS``.
+  Two failure modes get distinct 422 codes:
+
+  * ``endpoint_pattern_unknown`` — the string is not in any catalogue
+    set (typo, route doesn't exist). Echoes the overridable list back.
+  * ``endpoint_pattern_pre_auth_non_overridable`` — the string IS a
+    known pattern but it is pre-auth, where the resolver short-
+    circuits to the static default. Overrides on those rows would
+    be no-ops, so we reject at the schema layer rather than letting
+    operators create silent dead config.
 - ``expires_at``, when sent, must be strictly in the future. A row
   with ``expires_at`` in the past is treated as inert by the resolver
   but creating one in the past is rejected here so the admin UI
@@ -32,8 +37,9 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.rate_limit_endpoint_catalogue import (
-    RATE_LIMITED_ENDPOINT_PATTERNS,
-    sorted_patterns,
+    OVERRIDABLE_ENDPOINT_PATTERNS,
+    PRE_AUTH_ENDPOINT_PATTERNS,
+    sorted_overridable_patterns,
 )
 
 
@@ -44,19 +50,37 @@ ENDPOINT_PATTERN_MIN = 1
 ENDPOINT_PATTERN_MAX = 80
 
 
-def _validate_endpoint_pattern(value: str) -> str:
-    """Reject patterns the codebase has no decorator for.
+# Typed error codes the admin UI can branch on. Plain strings so the
+# 422 body stays JSON-serialisable without an extra enum import.
+ERR_CODE_UNKNOWN = "endpoint_pattern_unknown"
+ERR_CODE_PRE_AUTH = "endpoint_pattern_pre_auth_non_overridable"
 
-    The error message lists the full catalogue so the API caller (and
-    the admin UI) can recover without a separate round-trip. The list
-    is sorted for determinism in tests + UI parity.
+
+def _validate_endpoint_pattern(value: str) -> str:
+    """Reject patterns that cannot be persisted as overrides.
+
+    Two failure modes:
+
+    * Pre-auth pattern — known to the catalogue but the resolver
+      short-circuits at request time, so an override row would be a
+      no-op. Caller sees ``ERR_CODE_PRE_AUTH``.
+    * Unknown pattern — not in any catalogue set (typo or stale).
+      Caller sees ``ERR_CODE_UNKNOWN`` plus the full overridable
+      list echoed back so they can recover without a round-trip.
     """
-    if value not in RATE_LIMITED_ENDPOINT_PATTERNS:
-        catalogue = ", ".join(sorted_patterns())
+    if value in OVERRIDABLE_ENDPOINT_PATTERNS:
+        return value
+    if value in PRE_AUTH_ENDPOINT_PATTERNS:
         raise ValueError(
-            f"unknown endpoint_pattern {value!r}. Valid patterns: {catalogue}"
+            f"{ERR_CODE_PRE_AUTH}: endpoint {value!r} is a pre-auth route; "
+            "overrides are not honored. Adjust the slowapi decorator default "
+            "in code instead."
         )
-    return value
+    catalogue = ", ".join(sorted_overridable_patterns())
+    raise ValueError(
+        f"{ERR_CODE_UNKNOWN}: unknown endpoint pattern {value!r}. "
+        f"Valid overridable patterns: {catalogue}"
+    )
 
 
 NOTE_MAX = 5000

@@ -36,7 +36,7 @@ is by design; per-identity throttling is meaningless before an
 identity is known. Pre-auth rate limits should be tuned by editing
 the static slowapi decorator default itself, not by creating an
 override. The full list of pre-auth patterns lives in
-``app.rate_limit_endpoint_catalogue.PRE_AUTH_PATTERNS`` and the
+``app.rate_limit_endpoint_catalogue.PRE_AUTH_ENDPOINT_PATTERNS`` and the
 admin UI surfaces a warning when one of those patterns is picked.
 """
 from __future__ import annotations
@@ -272,7 +272,7 @@ def dynamic_limit(endpoint_pattern: str, default: str) -> Callable[..., str]:
     Tune those routes via the static ``@limiter.limit("N/period")``
     string at the decorator site. See module docstring above for the
     full rationale; the catalogue is the authoritative list at
-    ``app.rate_limit_endpoint_catalogue.PRE_AUTH_PATTERNS``.
+    ``app.rate_limit_endpoint_catalogue.PRE_AUTH_ENDPOINT_PATTERNS``.
     """
     # Force-parse the default once. If this raises, the import
     # explodes loudly instead of silently shipping a broken decorator.
