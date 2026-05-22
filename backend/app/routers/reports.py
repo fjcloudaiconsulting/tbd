@@ -86,7 +86,7 @@ def _can_view(user: User, report: Report) -> bool:
         return True
     return (
         report.visibility == ReportVisibility.ORG
-        and report.organization_id == user.org_id
+        and report.org_id == user.org_id
     )
 
 
@@ -95,7 +95,7 @@ def _can_edit(user: User, report: Report) -> bool:
         return True
     # Org owner / admin can edit org-shared reports inside their org.
     if (
-        report.organization_id == user.org_id
+        report.org_id == user.org_id
         and report.visibility == ReportVisibility.ORG
         and user.role in (Role.OWNER, Role.ADMIN)
     ):
@@ -138,7 +138,7 @@ async def list_reports(
         .where(
             (Report.owner_user_id == current_user.id)
             | (
-                (Report.organization_id == current_user.org_id)
+                (Report.org_id == current_user.org_id)
                 & (Report.visibility == ReportVisibility.ORG)
             )
         )
@@ -156,7 +156,7 @@ async def create_report(
 ):
     row = Report(
         owner_user_id=current_user.id,
-        organization_id=current_user.org_id,
+        org_id=current_user.org_id,
         visibility=body.visibility,
         name=body.name,
         description=body.description,

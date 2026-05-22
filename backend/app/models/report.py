@@ -14,8 +14,10 @@ Architect-locked decisions baked into the schema (spec sections 5 + 8):
   (org-shared transfer to org owner, private hard-delete) are
   enforced at the service layer. The DB-level RESTRICT is a safety
   net for any code path that bypasses the service.
-- ``organization_id`` is ``ON DELETE CASCADE`` so a future org-delete
-  pathway (out of scope today) takes the rows with it.
+- ``org_id`` is ``ON DELETE CASCADE`` so a future org-delete pathway
+  (out of scope today) takes the rows with it. The column name follows
+  the repo-wide convention (every multi-tenant table uses ``org_id``;
+  see ``accounts``, ``transactions``, ``categories``).
 - ``layout_json`` + ``canvas_filters_json`` are dialect-agnostic JSON
   columns. SQLite-under-pytest stores TEXT; MySQL stores JSON.
 - ``schema_version`` starts at 1 and gives us a non-breaking upgrade
@@ -56,9 +58,9 @@ class Report(Base):
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    organization_id: Mapped[int] = mapped_column(
+    org_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("organizations.id", ondelete="CASCADE"),
+        ForeignKey("organizations.id", name="fk_reports_org", ondelete="CASCADE"),
         nullable=False,
     )
     visibility: Mapped[ReportVisibility] = mapped_column(
@@ -94,7 +96,7 @@ class Report(Base):
         # "Shared by your org" + "Yours" reads.
         Index(
             "ix_reports_org_visibility",
-            "organization_id",
+            "org_id",
             "visibility",
         ),
         Index("ix_reports_owner", "owner_user_id"),

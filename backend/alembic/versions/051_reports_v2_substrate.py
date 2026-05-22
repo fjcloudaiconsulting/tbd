@@ -50,9 +50,13 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column(
-            "organization_id",
+            "org_id",
             sa.Integer(),
-            sa.ForeignKey("organizations.id", ondelete="CASCADE"),
+            sa.ForeignKey(
+                "organizations.id",
+                name="fk_reports_org",
+                ondelete="CASCADE",
+            ),
             nullable=False,
         ),
         sa.Column(
@@ -93,12 +97,12 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
-    # List page reads: filter by (organization_id, visibility) to fetch
-    # the "shared by your org" section.
+    # List page reads: filter by (org_id, visibility) to fetch the
+    # "shared by your org" section.
     op.create_index(
         "ix_reports_org_visibility",
         "reports",
-        ["organization_id", "visibility"],
+        ["org_id", "visibility"],
     )
     # "Yours" section: filter by owner_user_id alone.
     op.create_index(

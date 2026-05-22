@@ -340,6 +340,37 @@ def compile_ast_to_query(
 # ─── execution helpers ──────────────────────────────────────────────
 
 
+# Spec §6 "Hard caps" — "Per-request query timeout 5 s". MySQL 8.0
+# supports the ``MAX_EXECUTION_TIME(ms)`` optimizer hint inside the
+# statement, so we attach it as a SELECT prefix at compile time. The
+# hint binds the limit to THIS statement only (not the connection or
+# the pool), so a long-running report can't poison the next request.
+#
+# Under SQLite (pytest) the hint is meaningless: SQLite ignores
+# unrecognized comment-form hints, but ``prefix_with`` also injects it
+# OUTSIDE the comment markers. To keep the test backend happy we only
+# attach the hint when the dialect is MySQL.
+QUERY_TIMEOUT_MS = 5000
+_MYSQL_TIMEOUT_HINT = f"/*+ MAX_EXECUTION_TIME({QUERY_TIMEOUT_MS}) */"
+
+
+def _apply_query_timeout(stmt: Select, dialect_name: str) -> Select:
+    """Attach a per-statement timeout to the compiled SELECT.
+
+    MySQL: inject the ``MAX_EXECUTION_TIME`` optimizer hint via
+    ``prefix_with`` so it lands right after the ``SELECT`` keyword. The
+    server aborts the query (and only the query — not the connection)
+    once the wall-clock exceeds ``QUERY_TIMEOUT_MS``.
+
+    SQLite (pytest harness): no-op. SQLite does not understand the hint
+    syntax and tests don't need the cap. The router still relies on the
+    Pydantic-validated AST + ``MAX_LIMIT`` to keep test queries small.
+    """
+    if dialect_name == "mysql":
+        return stmt.prefix_with(_MYSQL_TIMEOUT_HINT, dialect="mysql")
+    return stmt
+
+
 async def execute_query(
     db: AsyncSession,
     ast: ReportsQuery,
@@ -351,14 +382,17 @@ async def execute_query(
     Returns dicts keyed by dimension name plus ``"value"``. Caller
     serializes to ``ReportsQueryResponse``.
 
-    Query timeout: NOT applied at the statement layer yet — see the PR
-    description. The compose stack relies on the pool-side
-    ``connect_timeout`` and ``pool_recycle`` ceilings; a statement-
-    timeout pattern is a follow-up PR (gap documented in the spec §6
-    "Hard caps" - "Per-request query timeout 5 s").
+    Per-request query timeout (spec §6 "Hard caps"): on MySQL the
+    compiled SELECT carries a ``MAX_EXECUTION_TIME(5000)`` optimizer
+    hint so the server aborts a runaway aggregation after 5 s without
+    poisoning the connection. SQLite (the pytest backend) does not
+    understand the hint and silently skips it; the small fixture
+    datasets used in tests finish in milliseconds, so the gap is
+    intentional rather than a defect.
     """
     dialect = db.bind.dialect.name if db.bind is not None else "mysql"
     stmt = compile_ast_to_query(ast, org_id=org_id, dialect_name=dialect)
+    stmt = _apply_query_timeout(stmt, dialect)
     started = time.perf_counter()
     result = await db.execute(stmt)
     rows = result.mappings().all()

@@ -62,7 +62,7 @@ class ReportResponse(BaseModel):
 
     id: int
     owner_user_id: int
-    organization_id: int
+    org_id: int
     visibility: ReportVisibility
     name: str
     description: Optional[str] = None

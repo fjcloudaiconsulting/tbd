@@ -478,21 +478,21 @@ async def test_list_returns_own_and_org_visible(session_factory):
         db.add_all([
             Report(
                 owner_user_id=seeds["user_a_id"],
-                organization_id=seeds["org_a_id"],
+                org_id=seeds["org_a_id"],
                 visibility=ReportVisibility.PRIVATE,
                 name="mine",
                 layout_json={}, canvas_filters_json={},
             ),
             Report(
                 owner_user_id=seeds["member_a_id"],
-                organization_id=seeds["org_a_id"],
+                org_id=seeds["org_a_id"],
                 visibility=ReportVisibility.ORG,
                 name="org-shared",
                 layout_json={}, canvas_filters_json={},
             ),
             Report(
                 owner_user_id=seeds["user_b_id"],
-                organization_id=seeds["org_b_id"],
+                org_id=seeds["org_b_id"],
                 visibility=ReportVisibility.ORG,
                 name="other-org",
                 layout_json={}, canvas_filters_json={},
@@ -514,7 +514,7 @@ async def test_get_cross_org_returns_404(session_factory):
     async with session_factory() as db:
         report = Report(
             owner_user_id=seeds["user_b_id"],
-            organization_id=seeds["org_b_id"],
+            org_id=seeds["org_b_id"],
             visibility=ReportVisibility.PRIVATE,
             name="b-private",
             layout_json={}, canvas_filters_json={},
@@ -540,7 +540,7 @@ async def test_member_cannot_edit_org_shared_report_by_other(session_factory):
     async with session_factory() as db:
         report = Report(
             owner_user_id=seeds["user_a_id"],  # owner role in org A
-            organization_id=seeds["org_a_id"],
+            org_id=seeds["org_a_id"],
             visibility=ReportVisibility.ORG,
             name="org-shared",
             layout_json={}, canvas_filters_json={},
@@ -563,7 +563,7 @@ async def test_owner_can_delete_own_report(session_factory):
     async with session_factory() as db:
         report = Report(
             owner_user_id=seeds["user_a_id"],
-            organization_id=seeds["org_a_id"],
+            org_id=seeds["org_a_id"],
             visibility=ReportVisibility.PRIVATE,
             name="to-delete",
             layout_json={}, canvas_filters_json={},
@@ -589,7 +589,7 @@ async def test_org_admin_can_edit_org_shared_report(session_factory):
         # member_a authored the org-shared report. user_a is OWNER role.
         report = Report(
             owner_user_id=seeds["member_a_id"],
-            organization_id=seeds["org_a_id"],
+            org_id=seeds["org_a_id"],
             visibility=ReportVisibility.ORG,
             name="shared",
             layout_json={}, canvas_filters_json={},

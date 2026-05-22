@@ -45,6 +45,8 @@ from app.schemas.reports_query import (
 )
 from app.security import hash_password
 from app.services.reports_query_service import (
+    QUERY_TIMEOUT_MS,
+    _apply_query_timeout,
     compile_ast_to_query,
     execute_query,
 )
@@ -372,3 +374,40 @@ async def test_date_between_filter(session_factory):
     async with session_factory() as db:
         rows, _ = await execute_query(db, ast, org_id=seeds["org_a_id"])
     assert rows == []
+
+
+# ─── per-statement query timeout (spec §6 "Hard caps") ─────────────
+
+
+def test_mysql_compile_includes_max_execution_time_hint():
+    """When compiled for MySQL, the SELECT carries the
+    ``MAX_EXECUTION_TIME(5000)`` optimizer hint so the server aborts
+    runaway queries after 5 s without poisoning the connection.
+
+    The hint lives in a ``/*+ ... */`` comment that lands right after
+    the ``SELECT`` keyword (via SQLAlchemy ``prefix_with``).
+    """
+    from sqlalchemy.dialects import mysql
+
+    ast = _sum_by_category_ast()
+    stmt = compile_ast_to_query(ast, org_id=1, dialect_name="mysql")
+    stmt = _apply_query_timeout(stmt, "mysql")
+
+    compiled = stmt.compile(dialect=mysql.dialect())
+    sql = str(compiled)
+    assert f"MAX_EXECUTION_TIME({QUERY_TIMEOUT_MS})" in sql
+    # Hint must live in the optimizer-hint comment so MySQL parses it.
+    assert "/*+" in sql and "*/" in sql
+
+
+def test_sqlite_compile_skips_timeout_hint():
+    """On SQLite (the pytest backend) the hint is omitted — SQLite
+    doesn't understand MySQL optimizer hints and would either ignore or
+    error on the comment. The compiled SQL must not contain the hint.
+    """
+    ast = _sum_by_category_ast()
+    stmt = compile_ast_to_query(ast, org_id=1, dialect_name="sqlite")
+    stmt = _apply_query_timeout(stmt, "sqlite")
+
+    compiled = stmt.compile(compile_kwargs={"literal_binds": False})
+    assert "MAX_EXECUTION_TIME" not in str(compiled)
