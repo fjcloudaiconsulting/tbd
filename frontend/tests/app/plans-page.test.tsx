@@ -477,4 +477,125 @@ describe("/plans page", () => {
       });
     },
   );
+  it("disables the Simulate button and shows a spinner while in flight", async () => {
+    setUser();
+    let resolveSimulate: ((value: typeof TRIP_PLAN) => void) | null = null;
+    const simulatePromise = new Promise<typeof TRIP_PLAN>((resolve) => {
+      resolveSimulate = resolve;
+    });
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+        && options?.method === "POST"
+      ) {
+        return simulatePromise;
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    const btn = screen.getByTestId(`plan-simulate-${TRIP_PLAN.id}`) as HTMLButtonElement;
+    fireEvent.click(btn);
+    await waitFor(() => {
+      expect(btn).toBeDisabled();
+    });
+    expect(btn.getAttribute("aria-busy")).toBe("true");
+    expect(
+      screen.getByTestId(`plan-simulate-spinner-${TRIP_PLAN.id}`),
+    ).toBeInTheDocument();
+    expect(btn).toHaveTextContent(/Simulating/i);
+    // Resolve and verify the button comes back.
+    resolveSimulate!(TRIP_PLAN);
+    await waitFor(() => {
+      expect(btn).not.toBeDisabled();
+    });
+    expect(
+      screen.queryByTestId(`plan-simulate-spinner-${TRIP_PLAN.id}`),
+    ).not.toBeInTheDocument();
+    expect(btn).toHaveTextContent(/^Simulate$/);
+  });
+
+  it("only disables the simulated plan's button, leaving other rows clickable", async () => {
+    setUser();
+    const SECOND_PLAN = { ...TRIP_PLAN, id: 99, name: "Porto trip" };
+    let resolveSimulate: ((value: typeof TRIP_PLAN) => void) | null = null;
+    const simulatePromise = new Promise<typeof TRIP_PLAN>((resolve) => {
+      resolveSimulate = resolve;
+    });
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN, SECOND_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+        && options?.method === "POST"
+      ) {
+        return simulatePromise;
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    await screen.findByText("Porto trip");
+    const btnA = screen.getByTestId(`plan-simulate-${TRIP_PLAN.id}`) as HTMLButtonElement;
+    const btnB = screen.getByTestId(`plan-simulate-${SECOND_PLAN.id}`) as HTMLButtonElement;
+    fireEvent.click(btnA);
+    await waitFor(() => {
+      expect(btnA).toBeDisabled();
+    });
+    // Plan B's button must NOT be disabled — that was the broken
+    // shape of a single shared boolean.
+    expect(btnB).not.toBeDisabled();
+    resolveSimulate!(TRIP_PLAN);
+    await waitFor(() => {
+      expect(btnA).not.toBeDisabled();
+    });
+  });
+
+  it("shows the 'Updated' microcopy flash after a successful simulate", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/scenarios" && !options?.method) {
+        return Promise.resolve([TRIP_PLAN]);
+      }
+      if (url === "/api/v1/accounts") {
+        return Promise.resolve([SAMPLE_ACCOUNT]);
+      }
+      if (
+        url === `/api/v1/scenarios/${TRIP_PLAN.id}/simulate`
+        && options?.method === "POST"
+      ) {
+        return Promise.resolve(TRIP_PLAN);
+      }
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    fireEvent.click(screen.getByTestId(`plan-simulate-${TRIP_PLAN.id}`));
+    const flash = await screen.findByTestId(`plan-simulate-flash-${TRIP_PLAN.id}`);
+    expect(flash).toHaveTextContent(/Updated,/i);
+  });
+
+  it("wraps the verdict pill area in an aria-live polite region", async () => {
+    setUser();
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([TRIP_PLAN]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    await screen.findByText("Lisbon trip");
+    const region = screen.getByTestId(`plan-verdict-region-${TRIP_PLAN.id}`);
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.getAttribute("role")).toBe("status");
+  });
 });
