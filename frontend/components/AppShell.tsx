@@ -7,6 +7,7 @@ import {
   ArrowLeftRight,
   BarChart3,
   Building2,
+  CalendarClock,
   ChevronUp,
   CreditCard,
   FileText,
@@ -84,6 +85,11 @@ const navItems = [
     href: "/forecast-plans",
     label: "Forecast Plans",
     icon: <BarChart3 {...NAV_ICON_PROPS} />,
+  },
+  {
+    href: "/plans",
+    label: "Plans",
+    icon: <CalendarClock {...NAV_ICON_PROPS} />,
   },
   {
     href: "/categories",
