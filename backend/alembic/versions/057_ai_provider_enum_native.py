@@ -1,7 +1,7 @@
 """Add 'native' to the ai_provider enum (PR1 follow-up).
 
-Revision ID: 054_ai_provider_enum_native
-Revises: 053_org_ai_consents
+Revision ID: 057_ai_provider_enum_native
+Revises: 056_org_ai_consents
 Create Date: 2026-05-22
 
 PR1 ships the native adapter scaffolding (gated, default off). The
@@ -19,8 +19,8 @@ from alembic import op
 from sqlalchemy import text
 
 
-revision = "054_ai_provider_enum_native"
-down_revision = "053_org_ai_consents"
+revision = "057_ai_provider_enum_native"
+down_revision = "056_org_ai_consents"
 branch_labels = None
 depends_on = None
 

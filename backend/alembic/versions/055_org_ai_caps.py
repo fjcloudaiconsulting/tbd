@@ -1,7 +1,7 @@
 """Per-org AI spend caps (PR1 follow-up).
 
-Revision ID: 052_org_ai_caps
-Revises: 051_org_ai_routing
+Revision ID: 055_org_ai_caps
+Revises: 054_org_ai_routing
 Create Date: 2026-05-22
 
 Split caps tables, same nullable-unique reason as routing (spec §7).
@@ -20,8 +20,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "052_org_ai_caps"
-down_revision = "051_org_ai_routing"
+revision = "055_org_ai_caps"
+down_revision = "054_org_ai_routing"
 branch_labels = None
 depends_on = None
 

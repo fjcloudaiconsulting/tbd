@@ -1,7 +1,7 @@
 """Per-org AI consents (PR1 follow-up).
 
-Revision ID: 053_org_ai_consents
-Revises: 052_org_ai_caps
+Revision ID: 056_org_ai_consents
+Revises: 055_org_ai_caps
 Create Date: 2026-05-22
 
 Append-only consent table. New consent => new row, never an UPDATE.
@@ -21,8 +21,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "053_org_ai_consents"
-down_revision = "052_org_ai_caps"
+revision = "056_org_ai_consents"
+down_revision = "055_org_ai_caps"
 branch_labels = None
 depends_on = None
 

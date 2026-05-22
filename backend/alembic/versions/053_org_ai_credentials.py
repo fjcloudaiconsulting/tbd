@@ -1,7 +1,7 @@
 """Per-org AI provider credentials (PR1 of AI tier train).
 
-Revision ID: 050_org_ai_credentials
-Revises: 049_announcements
+Revision ID: 053_org_ai_credentials
+Revises: 052_scenarios
 Create Date: 2026-05-22
 
 Creates the single ``org_ai_credentials`` table that backs the BYO
@@ -22,8 +22,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "050_org_ai_credentials"
-down_revision = "049_announcements"
+revision = "053_org_ai_credentials"
+down_revision = "052_scenarios"
 branch_labels = None
 depends_on = None
 

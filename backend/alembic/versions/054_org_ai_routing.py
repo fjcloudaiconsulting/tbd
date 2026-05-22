@@ -1,7 +1,7 @@
 """Per-org AI routing tables (PR1 of AI tier train, follow-up).
 
-Revision ID: 051_org_ai_routing
-Revises: 050_org_ai_credentials
+Revision ID: 054_org_ai_routing
+Revises: 053_org_ai_credentials
 Create Date: 2026-05-22
 
 Split routing tables (architect-locked, see spec §4) — a single table
@@ -19,8 +19,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "051_org_ai_routing"
-down_revision = "050_org_ai_credentials"
+revision = "054_org_ai_routing"
+down_revision = "053_org_ai_credentials"
 branch_labels = None
 depends_on = None
 
