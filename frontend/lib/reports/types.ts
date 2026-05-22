@@ -19,9 +19,10 @@ export type WidgetType =
   | "sparkline"
   | "table";
 
-// v1 only ships kpi + bar; the rest are declared so the layout JSON
-// schema is forward-compatible with PR3 widgets without a migration.
-export type WidgetTypeV1 = "kpi" | "bar";
+// PR3 exposes the full v1 catalog. ``WidgetTypeV1`` retains its name
+// as the "widgets shipped in v1" union; the picker hands one of these
+// values to the editor's ``addWidget`` factory.
+export type WidgetTypeV1 = WidgetType;
 
 export type Dataset = "transactions";
 
@@ -168,11 +169,100 @@ export interface BaseWidget<T extends WidgetType, C> {
   config: C;
 }
 
+export interface SeriesConfig {
+  measure: Measure;
+  /** Optional label override; defaults to "<agg> of <field>" when blank. */
+  label?: string;
+}
+
+/**
+ * Multi-series widget config. The backend AST carries one ``measure``
+ * per request, so widgets that render multiple series (line, area,
+ * stacked bar) fire one ``runQuery`` per entry in ``measures`` and the
+ * client merges the rows by the dimension key. ``measures`` always
+ * has at least one entry; UIs that pin to a single series (pie,
+ * sparkline) keep this list at length 1.
+ */
+export interface SeriesWidgetConfig {
+  dataset: Dataset;
+  measures: SeriesConfig[];
+  dimensions: Dimension[];
+  filters?: WidgetFilters;
+  sort?: SortSpec;
+  limit?: number;
+  format?: "currency" | "number" | "percent";
+}
+
+export interface LineConfig extends SeriesWidgetConfig {
+  /** Visual register only; no AST impact. */
+  smooth?: boolean;
+}
+
+export interface AreaConfig extends SeriesWidgetConfig {
+  /** When multiple series are configured, stack them. */
+  stacked?: boolean;
+}
+
+export interface PieConfig {
+  dataset: Dataset;
+  measure: Measure;
+  dimensions: Dimension[]; // pinned to length 1 by the UI
+  filters?: WidgetFilters;
+  sort?: SortSpec;
+  limit?: number;
+  format?: "currency" | "number" | "percent";
+  /** Slices beyond ``top_n`` are folded into an "Other" bucket. */
+  top_n?: number;
+}
+
+export interface SparklineConfig {
+  dataset: Dataset;
+  measure: Measure;
+  dimensions: Dimension[]; // exactly one time-bucket dimension
+  filters?: WidgetFilters;
+  sort?: SortSpec;
+  limit?: number;
+  format?: "currency" | "number" | "percent";
+}
+
+export interface StackedBarConfig extends SeriesWidgetConfig {
+  /** Defaults to true — a stacked bar with stacking off is just a bar
+   * chart, so this only flips off when the user explicitly wants
+   * grouped (side-by-side) bars from the same widget. */
+  stacked?: boolean;
+}
+
+export interface TableConfig {
+  dataset: Dataset;
+  /** 1..5 entries. Each becomes a numeric column on the table. */
+  measures: SeriesConfig[];
+  dimensions: Dimension[];
+  filters?: WidgetFilters;
+  sort?: SortSpec;
+  limit?: number;
+  format?: "currency" | "number" | "percent";
+}
+
 export type KPIWidget = BaseWidget<"kpi", KPIConfig>;
 export type BarWidget = BaseWidget<"bar", BarConfig>;
+export type LineWidget = BaseWidget<"line", LineConfig>;
+export type AreaWidget = BaseWidget<"area", AreaConfig>;
+export type PieWidget = BaseWidget<"pie", PieConfig>;
+export type SparklineWidget = BaseWidget<"sparkline", SparklineConfig>;
+export type StackedBarWidget = BaseWidget<"stacked_bar", StackedBarConfig>;
+export type TableWidget = BaseWidget<"table", TableConfig>;
 
-// v1 widget union. PR3 adds the rest.
-export type Widget = KPIWidget | BarWidget;
+// Full v1 widget union. PR3 expands this from KPI + Bar to the
+// architect-locked eight-widget catalog (spec §2 "Widget catalog v1").
+export type Widget =
+  | KPIWidget
+  | BarWidget
+  | LineWidget
+  | AreaWidget
+  | PieWidget
+  | SparklineWidget
+  | StackedBarWidget
+  | TableWidget;
 
 export interface LayoutJson {
   version: 1;
