@@ -40,6 +40,10 @@ from app.models.notification import (  # noqa: F401
 )
 from app.models.report import Report, ReportVisibility  # noqa: F401
 from app.models.scenario import Scenario, ScenarioType  # noqa: F401
+from app.models.org_ai_credential import (  # noqa: F401
+    AiProvider,
+    OrgAICredential,
+)
 
 __all__ = [
     "Base",
@@ -87,6 +91,8 @@ __all__ = [
     "FeedbackEntry",
     "Announcement",
     "AnnouncementSeverity",
+    "AiProvider",
+    "OrgAICredential",
     "UserDismissedAnnouncement",
     "Notification",
     "NotificationCategory",
