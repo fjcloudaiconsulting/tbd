@@ -24,7 +24,18 @@ from app.schemas.org_ai_credential import (
     OrgAICredentialRotate,
     OrgAICredentialUpdate,
 )
-from app.services import ai_credential_service
+from app.schemas.org_ai_routing import (
+    DefaultRoutingResponse,
+    DefaultRoutingWrite,
+    FeatureRoutingResponse,
+    FeatureRoutingWrite,
+    RoutingBundleResponse,
+)
+from app.services import ai_credential_service, ai_routing_service
+from app.services.ai_routing_service import (
+    CrossOrgRoutingDenied,
+    UnknownFeatureName,
+)
 
 
 logger = structlog.stdlib.get_logger()
@@ -75,6 +86,153 @@ async def create_credential(
         ip_address=get_client_ip(request),
     )
     return OrgAICredentialResponse.model_validate(row)
+
+
+# --------------------------------------------------------------------
+# Routing endpoints (PR1). Declared BEFORE the /{credential_id}
+# endpoints so the literal /routing prefix wins the route match.
+# Service-layer cross-org check + DB composite FK both refuse
+# cross-org credential references (T14). The DB FK is the catch-all;
+# the service check returns a clear message instead of a raw FK
+# violation. See spec §4.
+# --------------------------------------------------------------------
+
+ROUTING_PREFIX = "/routing"
+
+
+def _cross_org_denied() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "cross_org_routing_denied",
+            "message": "credential does not belong to this organization",
+        },
+    )
+
+
+def _unknown_feature(feature_name: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={
+            "code": "unknown_feature",
+            "message": f"feature_name '{feature_name}' is not routable",
+        },
+    )
+
+
+@router.get(ROUTING_PREFIX, response_model=RoutingBundleResponse)
+async def get_routing(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_org_admin),
+) -> RoutingBundleResponse:
+    default = await ai_routing_service.get_default_routing(
+        db, org_id=current_user.org_id
+    )
+    features = await ai_routing_service.get_feature_routings(
+        db, org_id=current_user.org_id
+    )
+    return RoutingBundleResponse(
+        default=(
+            DefaultRoutingResponse.model_validate(default)
+            if default is not None
+            else None
+        ),
+        features=[
+            FeatureRoutingResponse.model_validate(f) for f in features
+        ],
+    )
+
+
+@router.put(
+    f"{ROUTING_PREFIX}/default", response_model=DefaultRoutingResponse
+)
+async def put_default_routing(
+    payload: DefaultRoutingWrite,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+) -> DefaultRoutingResponse:
+    try:
+        row = await ai_routing_service.set_default_routing(
+            db,
+            org_id=current_user.org_id,
+            credential_id=payload.credential_id,
+            model=payload.model,
+            session_factory=session_factory,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+        )
+    except CrossOrgRoutingDenied:
+        raise _cross_org_denied()
+    return DefaultRoutingResponse.model_validate(row)
+
+
+@router.put(
+    f"{ROUTING_PREFIX}/features/{{feature_name}}",
+    response_model=FeatureRoutingResponse,
+)
+async def put_feature_routing(
+    feature_name: str,
+    payload: FeatureRoutingWrite,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+) -> FeatureRoutingResponse:
+    try:
+        row = await ai_routing_service.set_feature_routing(
+            db,
+            org_id=current_user.org_id,
+            feature_name=feature_name,
+            credential_id=payload.credential_id,
+            model=payload.model,
+            session_factory=session_factory,
+            actor_user_id=current_user.id,
+            actor_email=current_user.email,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+        )
+    except UnknownFeatureName:
+        raise _unknown_feature(feature_name)
+    except CrossOrgRoutingDenied:
+        raise _cross_org_denied()
+    return FeatureRoutingResponse.model_validate(row)
+
+
+@router.delete(
+    f"{ROUTING_PREFIX}/features/{{feature_name}}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_feature_routing(
+    feature_name: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
+    current_user: User = Depends(require_org_admin),
+):
+    deleted = await ai_routing_service.delete_feature_routing(
+        db,
+        org_id=current_user.org_id,
+        feature_name=feature_name,
+        session_factory=session_factory,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+    )
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{credential_id}", response_model=OrgAICredentialResponse)

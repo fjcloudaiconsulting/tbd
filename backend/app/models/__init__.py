@@ -44,6 +44,11 @@ from app.models.org_ai_credential import (  # noqa: F401
     AiProvider,
     OrgAICredential,
 )
+from app.models.org_ai_routing import (  # noqa: F401
+    ROUTABLE_FEATURE_NAMES,
+    OrgAIDefaultRouting,
+    OrgAIFeatureRouting,
+)
 
 __all__ = [
     "Base",
@@ -93,6 +98,9 @@ __all__ = [
     "AnnouncementSeverity",
     "AiProvider",
     "OrgAICredential",
+    "OrgAIDefaultRouting",
+    "OrgAIFeatureRouting",
+    "ROUTABLE_FEATURE_NAMES",
     "UserDismissedAnnouncement",
     "Notification",
     "NotificationCategory",
