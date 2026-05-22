@@ -43,6 +43,13 @@ import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
 import KPIWidget from "@/components/reports/widgets/KPIWidget";
 import BarWidget from "@/components/reports/widgets/BarWidget";
+import LineWidget from "@/components/reports/widgets/LineWidget";
+import AreaWidget from "@/components/reports/widgets/AreaWidget";
+import PieWidget from "@/components/reports/widgets/PieWidget";
+import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
+import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
+import TableWidget from "@/components/reports/widgets/TableWidget";
+import type { WidgetType } from "@/lib/reports/types";
 
 interface PageProps {
   // Next 15 makes ``params`` a promise on server-rendered pages; in
@@ -85,6 +92,112 @@ function emptyBar(id: string): Widget {
     grid: { x: 0, y: 0, w: 6, h: 4 },
     config,
   };
+}
+
+function emptyMultiSeries(
+  id: string,
+  type: "line" | "area" | "stacked_bar" | "table",
+): Widget {
+  const baseConfig = {
+    dataset: "transactions" as const,
+    measures: [{ measure: { agg: "sum" as const, field: "amount" as const } }],
+    dimensions: [type === "table" ? ("category" as const) : ("month" as const)],
+    sort: { by: "value" as const, dir: "desc" as const },
+    limit: type === "table" ? 50 : 100,
+    format: "currency" as const,
+  };
+  const baseGrid = type === "table" ? { x: 0, y: 0, w: 12, h: 6 } : { x: 0, y: 0, w: 6, h: 4 };
+  return {
+    id,
+    type,
+    title:
+      type === "line"
+        ? "New line chart"
+        : type === "area"
+          ? "New area chart"
+          : type === "stacked_bar"
+            ? "New stacked bar chart"
+            : "New table",
+    grid: baseGrid,
+    config: baseConfig,
+  } as Widget;
+}
+
+function emptyPie(id: string): Widget {
+  return {
+    id,
+    type: "pie",
+    title: "New pie chart",
+    grid: { x: 0, y: 0, w: 4, h: 4 },
+    config: {
+      dataset: "transactions",
+      measure: { agg: "sum", field: "amount" },
+      dimensions: ["category"],
+      sort: { by: "value", dir: "desc" },
+      limit: 50,
+      format: "currency",
+      top_n: 8,
+    },
+  };
+}
+
+function emptySparkline(id: string): Widget {
+  return {
+    id,
+    type: "sparkline",
+    title: "New sparkline",
+    grid: { x: 0, y: 0, w: 3, h: 2 },
+    config: {
+      dataset: "transactions",
+      measure: { agg: "sum", field: "amount" },
+      dimensions: ["month"],
+      sort: { by: "dimension", dir: "asc" },
+      limit: 50,
+      format: "number",
+    },
+  };
+}
+
+function emptyWidget(type: WidgetType, id: string): Widget {
+  switch (type) {
+    case "kpi":
+      return emptyKPI(id);
+    case "bar":
+      return emptyBar(id);
+    case "line":
+      return emptyMultiSeries(id, "line");
+    case "area":
+      return emptyMultiSeries(id, "area");
+    case "stacked_bar":
+      return emptyMultiSeries(id, "stacked_bar");
+    case "table":
+      return emptyMultiSeries(id, "table");
+    case "pie":
+      return emptyPie(id);
+    case "sparkline":
+      return emptySparkline(id);
+  }
+}
+
+function renderWidgetByType(w: Widget, canvasFilters: CanvasFilters) {
+  switch (w.type) {
+    case "kpi":
+      return <KPIWidget widget={w} canvasFilters={canvasFilters} />;
+    case "bar":
+      return <BarWidget widget={w} canvasFilters={canvasFilters} />;
+    case "line":
+      return <LineWidget widget={w} canvasFilters={canvasFilters} />;
+    case "area":
+      return <AreaWidget widget={w} canvasFilters={canvasFilters} />;
+    case "pie":
+      return <PieWidget widget={w} canvasFilters={canvasFilters} />;
+    case "sparkline":
+      return <SparklineWidget widget={w} canvasFilters={canvasFilters} />;
+    case "stacked_bar":
+      return <StackedBarWidget widget={w} canvasFilters={canvasFilters} />;
+    case "table":
+      return <TableWidget widget={w} canvasFilters={canvasFilters} />;
+  }
 }
 
 function newWidgetId(): string {
@@ -174,9 +287,9 @@ export default function ReportEditorPage({ params }: PageProps) {
     setDirty(true);
   }
 
-  function addWidget(type: "kpi" | "bar") {
+  function addWidget(type: WidgetType) {
     const id = newWidgetId();
-    const widget = type === "kpi" ? emptyKPI(id) : emptyBar(id);
+    const widget = emptyWidget(type, id);
     // Drop the new widget at the bottom of the existing stack.
     const maxY = layout.widgets.reduce(
       (max, w) => Math.max(max, w.grid.y + w.grid.h),
@@ -347,11 +460,7 @@ export default function ReportEditorPage({ params }: PageProps) {
                   onSelect={() => setSelectedWidgetId(w.id)}
                   onRemove={() => removeWidget(w.id)}
                 >
-                  {w.type === "kpi" ? (
-                    <KPIWidget widget={w} canvasFilters={canvasFilters} />
-                  ) : (
-                    <BarWidget widget={w} canvasFilters={canvasFilters} />
-                  )}
+                  {renderWidgetByType(w, canvasFilters)}
                 </WidgetShell>
               )}
             />

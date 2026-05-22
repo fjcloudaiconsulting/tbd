@@ -3,12 +3,23 @@
 /**
  * Canvas-wide filters row — sits above the canvas. Edits flow into
  * the report's ``canvas_filters_json`` blob and cascade to every
- * widget that doesn't override the same field (spec §4).
+ * widget that doesn't override the same field (spec section 4).
  *
- * v1 controls: date range (start + end), account ids (comma-list),
- * category ids (comma-list). PR3 swaps the comma-list inputs for
- * the proper chip pickers + tree picker.
+ * PR3 swaps the comma-list inputs for the proper filter primitives:
+ *  - Date range  -> ``DatePresetChips`` (preset chips + custom
+ *    absolute inputs).
+ *  - Accounts    -> ``AccountFilter`` (chip picker, fetches the org's
+ *    accounts on mount).
+ *  - Categories  -> ``CategoryPicker`` (tree picker with master /
+ *    sub cascade, multi-select).
+ *
+ * Tag-based filters DO NOT appear on the canvas — they're a
+ * per-widget knob per spec section 4 ("the canvas filter shape is
+ * date range + accounts + categories; tag filters are widget-only").
  */
+import AccountFilter from "@/components/reports/filters/AccountFilter";
+import CategoryPicker from "@/components/reports/filters/CategoryPicker";
+import DatePresetChips from "@/components/reports/filters/DatePresetChips";
 import type { CanvasFilters } from "@/lib/reports/types";
 
 interface Props {
@@ -20,100 +31,39 @@ export default function CanvasFiltersBar({ value, onChange }: Props) {
   return (
     <div
       data-testid="canvas-filters-bar"
-      className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-surface px-4 py-3"
+      className="grid grid-cols-1 gap-4 rounded-md border border-border bg-surface px-4 py-3 lg:grid-cols-3"
     >
-      <Field label="Date from">
-        <input
-          type="date"
-          aria-label="Canvas date from"
-          value={value.date_range?.start ?? ""}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              date_range: {
-                ...(value.date_range ?? {}),
-                start: e.target.value || undefined,
-              },
-            })
+      <div>
+        <span className="mb-1 block text-[10px] font-medium uppercase tracking-wider text-text-muted">
+          Date range
+        </span>
+        <DatePresetChips
+          value={value.date_range}
+          ariaPrefix="Canvas"
+          onChange={(next) =>
+            onChange({ ...value, date_range: next || undefined })
           }
-          className="rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
         />
-      </Field>
-      <Field label="Date to">
-        <input
-          type="date"
-          aria-label="Canvas date to"
-          value={value.date_range?.end ?? ""}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              date_range: {
-                ...(value.date_range ?? {}),
-                end: e.target.value || undefined,
-              },
-            })
-          }
-          className="rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-        />
-      </Field>
-      <Field label="Accounts (ids)">
-        <input
-          type="text"
-          inputMode="numeric"
-          aria-label="Canvas accounts"
-          placeholder="e.g. 12, 14"
-          value={(value.account_ids ?? []).join(",")}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              account_ids: parseIdList(e.target.value),
-            })
-          }
-          className="w-32 rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-        />
-      </Field>
-      <Field label="Categories (ids)">
-        <input
-          type="text"
-          inputMode="numeric"
-          aria-label="Canvas categories"
-          placeholder="e.g. 3, 5"
-          value={(value.category_ids ?? []).join(",")}
-          onChange={(e) =>
-            onChange({
-              ...value,
-              category_ids: parseIdList(e.target.value),
-            })
-          }
-          className="w-32 rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-        />
-      </Field>
+      </div>
+      <AccountFilter
+        value={value.account_ids ?? []}
+        ariaPrefix="Canvas account"
+        onChange={(account_ids) =>
+          onChange({
+            ...value,
+            account_ids: account_ids.length > 0 ? account_ids : undefined,
+          })
+        }
+      />
+      <CategoryPicker
+        value={value.category_ids ?? []}
+        onChange={(category_ids) =>
+          onChange({
+            ...value,
+            category_ids: category_ids.length > 0 ? category_ids : undefined,
+          })
+        }
+      />
     </div>
   );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="flex flex-col gap-1">
-      <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-        {label}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-function parseIdList(raw: string): number[] {
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => Number(s))
-    .filter((n) => Number.isInteger(n) && n > 0);
 }
