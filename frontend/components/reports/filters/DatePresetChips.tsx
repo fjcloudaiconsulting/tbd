@@ -42,8 +42,19 @@ export default function DatePresetChips({
   now,
   ariaPrefix = "Date",
 }: Props) {
-  const today = now ?? new Date();
-  const presetRanges = useMemo(() => buildPresetRanges(today), [today.toDateString()]);
+  // ``todayKey`` is a stable YYYY-MM-DD-ish string that only changes
+  // when the calendar day flips (or the test override changes). The
+  // original code passed ``today.toDateString()`` directly as a useMemo
+  // dep, which fails react-hooks/exhaustive-deps because (a) the
+  // linter rejects method calls as stable deps and (b) the expression
+  // is recomputed on every render. Pinning the string in its own
+  // variable and listing both inputs (string + raw ``now`` reference)
+  // keeps the memo stable AND silences the lint rule cleanly.
+  const todayKey = (now ?? new Date()).toDateString();
+  const presetRanges = useMemo(
+    () => buildPresetRanges(now ?? new Date(todayKey)),
+    [now, todayKey],
+  );
 
   // Detect which preset matches the current value (if any). The check
   // is exact ISO equality on start + end; user-typed custom ranges fall

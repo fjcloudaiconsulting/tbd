@@ -291,11 +291,16 @@ export default function ConfigRail({
         </Section>
       )}
 
-      {widget.type !== "kpi" && !isSingleAggLocked(widget) && (
+      {/* Secondary dimension picker — Table-only in v1. Bar / line /
+          area / stacked widgets currently only consume ``dimensions[0]``,
+          so exposing a secondary picker for them would be a no-op UX
+          (architect-locked). Split-series rendering is a follow-up if
+          users ask for it. */}
+      {widget.type === "table" && (
         <Section label="Secondary dimension (optional)">
           <select
             value={
-              ((widget.config as BarConfig).dimensions ?? [])[1] ?? ""
+              ((widget.config as TableConfig).dimensions ?? [])[1] ?? ""
             }
             onChange={(e) =>
               setSecondaryDimension((e.target.value || "") as Dimension | "")
