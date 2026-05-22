@@ -812,7 +812,6 @@ async def mfa_email_nonce_consume(jti: str) -> int | None:
 _AI_VALIDATE_COOLDOWN_KEY = "ai_validate:{org_id}:{credential_id}"
 
 
-@_normalize_transport_errors
 async def ai_validate_cooldown_acquire(
     *, org_id: int, credential_id: int, ttl_seconds: int = 5
 ) -> bool:
@@ -822,6 +821,12 @@ async def ai_validate_cooldown_acquire(
     TTL was set. Returns False when the slot is already held (caller
     should respond 429). Returns True when Redis isn't configured —
     dev-mode skip; admin-gated path so safe enough.
+
+    Fail-open on Redis transport errors. The cooldown is a T10 abuse
+    mitigation, not a security boundary; the org-admin gate is the
+    actual boundary. A Redis outage should not block legitimate
+    credential management. We log a structured warning so ops can
+    notice the degraded state without blocking users.
     """
     client = get_client()
     if client is None:
@@ -829,8 +834,32 @@ async def ai_validate_cooldown_acquire(
     key = _AI_VALIDATE_COOLDOWN_KEY.format(
         org_id=org_id, credential_id=credential_id
     )
-    # SET key value NX EX ttl — atomic claim with TTL in a single round
-    # trip. redis-py exposes this as ``set(..., nx=True, ex=...)``.
-    # Returns truthy on first claim, falsy when the key already exists.
-    acquired = await client.set(key, "1", nx=True, ex=ttl_seconds)
-    return bool(acquired)
+    try:
+        # SET key value NX EX ttl — atomic claim with TTL in a single
+        # round trip. redis-py exposes this as
+        # ``set(..., nx=True, ex=...)``. Returns truthy on first claim,
+        # falsy when the key already exists. The
+        # ``_normalize_transport_errors`` wrapper translates uvloop
+        # closed-transport RuntimeError into RedisConnectionError (a
+        # RedisError subclass) so the broad except below catches it.
+        acquired = await _ai_validate_cooldown_set(client, key, ttl_seconds)
+        return bool(acquired)
+    except RedisError as exc:
+        logger.warning(
+            "ai.validate.cooldown.fail_open",
+            error_class=type(exc).__name__,
+            org_id=org_id,
+            credential_id=credential_id,
+        )
+        return True
+
+
+@_normalize_transport_errors
+async def _ai_validate_cooldown_set(client, key: str, ttl_seconds: int):
+    """Inner SET NX EX call, wrapped by the transport-error decorator.
+
+    Split out so the public helper can catch the normalized
+    ``RedisError`` and fail-open without losing the uvloop /
+    closed-transport translation provided by the decorator.
+    """
+    return await client.set(key, "1", nx=True, ex=ttl_seconds)

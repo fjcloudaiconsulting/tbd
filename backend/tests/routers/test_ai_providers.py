@@ -465,3 +465,70 @@ async def test_validate_different_credentials_independent(session_factory):
     # Confirm the helper was keyed per-credential.
     assert acquire_mock.call_args_list[0].kwargs["credential_id"] == a_id
     assert acquire_mock.call_args_list[1].kwargs["credential_id"] == b_id
+
+
+async def test_validate_falls_open_when_redis_unavailable(
+    session_factory, caplog
+):
+    """When the Redis cooldown helper raises a transport error, the
+    validate endpoint should fail-open (200, not 500). The cooldown is
+    a T10 abuse mitigation, not a security boundary — the org-admin
+    gate is the boundary. A Redis outage must not block legitimate
+    credential management. A structured warning is logged so ops can
+    notice the degraded state.
+    """
+    import logging
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with _patch_adapter(_ok_validate()):
+        post = client.post(
+            "/api/v1/settings/ai-providers",
+            json={"provider": "openai", "api_key": "sk-test-failopen-aaaa"},
+        )
+    cred_id = post.json()["id"]
+
+    # Patch the cooldown helper itself (the public one the router
+    # calls) to behave the way the real helper does on Redis outage:
+    # fail-open and return True. The helper internally catches
+    # RedisError and logs ``ai.validate.cooldown.fail_open``; the unit
+    # test for the helper's catch behavior lives in
+    # ``tests/test_redis_client.py``. Here we pin the router contract:
+    # the validate path returns 200 on a fail-open cooldown decision.
+    acquire_mock = AsyncMock(return_value=True)
+    with caplog.at_level(logging.WARNING):
+        with patch(
+            "app.routers.ai_providers.redis_client.ai_validate_cooldown_acquire",
+            new=acquire_mock,
+        ):
+            with _patch_adapter(_ok_validate()):
+                resp = client.post(
+                    f"/api/v1/settings/ai-providers/{cred_id}/validate"
+                )
+
+    assert resp.status_code == 200, resp.text
+    # Direct unit check of the helper's fail-open behavior — when the
+    # underlying SET raises RedisError, the public helper returns True
+    # (acquired) so callers proceed. We exercise it here so a single
+    # test pins both the helper contract and the router-path 200.
+    from app import redis_client as _redis_client
+
+    with patch.object(
+        _redis_client,
+        "_ai_validate_cooldown_set",
+        new=AsyncMock(side_effect=RedisConnectionError("boom")),
+    ), patch.object(
+        _redis_client,
+        "get_client",
+        return_value=object(),
+    ):
+        ok = await _redis_client.ai_validate_cooldown_acquire(
+            org_id=1, credential_id=1
+        )
+    assert ok is True
