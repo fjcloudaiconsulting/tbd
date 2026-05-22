@@ -769,4 +769,154 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
       screen.queryByText((_, el) => el?.textContent?.trim() === "future"),
     ).toBeNull();
   });
+
+  // ── Inline row edit Cancel button (PR #forecast-plans-cancel) ─────────
+  //
+  // Before this PR the inline-edit Cancel was a tiny `text-xs text-muted`
+  // link nestled next to Save — easy to miss. The user-direct complaint
+  // was "the only way to bail out of an edit session is to MAKE an edit
+  // first, which then offers a Discard." Promoting Cancel to a proper
+  // button (and locking the contract in tests) makes the bail-out path
+  // obvious without forcing the user through a destructive Discard.
+
+  it("inline row edit: Cancel restores the row to view mode without a server PUT", async () => {
+    const plan = makePlan([
+      {
+        category_id: 20,
+        category_name: "Groceries",
+        type: "expense",
+        planned_amount: 250,
+        source: "manual",
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByText("Groceries")).toBeTruthy();
+    });
+
+    // Clear `apiFetch` history captured by the initial mount (ensure-future
+    // POST + billing-periods GET) so the post-Cancel assertion is exact.
+    (apiFetch as unknown as ReturnType<typeof vi.fn>).mockClear();
+    mockApiFetch(plan);
+
+    // Enter edit mode on the Groceries row.
+    const editButtons = screen.getAllByRole("button", { name: /^Edit$/ });
+    fireEvent.click(editButtons[0]);
+
+    // The edit input renders pre-filled with the persisted planned amount.
+    const input = screen.getByDisplayValue("250") as HTMLInputElement;
+    expect(input).toBeTruthy();
+
+    // The Cancel button is rendered as a proper button (not a link-style
+    // span) so it's visually discoverable.
+    const cancel = screen.getByTestId("fp-edit-cancel-1");
+    expect(cancel.tagName).toBe("BUTTON");
+
+    // Click Cancel — no edit was typed yet.
+    fireEvent.click(cancel);
+
+    // The edit input is gone (row is back to view mode) and no PUT
+    // fired against the items endpoint.
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("250")).toBeNull();
+    });
+    const putCalls = (
+      apiFetch as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.filter(
+      (c) =>
+        typeof c[0] === "string" &&
+        c[0].includes("/api/v1/forecast-plans/") &&
+        c[0].includes("/items/") &&
+        (c[1] as RequestInit | undefined)?.method === "PUT",
+    );
+    expect(putCalls).toHaveLength(0);
+  });
+
+  it("inline row edit: Cancel after typing discards the in-flight edit (no PUT)", async () => {
+    const plan = makePlan([
+      {
+        category_id: 20,
+        category_name: "Groceries",
+        type: "expense",
+        planned_amount: 250,
+        source: "manual",
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByText("Groceries")).toBeTruthy();
+    });
+
+    (apiFetch as unknown as ReturnType<typeof vi.fn>).mockClear();
+    mockApiFetch(plan);
+
+    // Enter edit mode.
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit$/ })[0]);
+    const input = screen.getByDisplayValue("250") as HTMLInputElement;
+
+    // Type a different value (in-flight local edit only — no PATCH yet).
+    fireEvent.change(input, { target: { value: "999" } });
+    expect((screen.getByDisplayValue("999") as HTMLInputElement).value).toBe(
+      "999",
+    );
+
+    // Cancel discards.
+    fireEvent.click(screen.getByTestId("fp-edit-cancel-1"));
+
+    // The edit input is gone, the persisted "250" amount is shown again,
+    // and no PUT fired.
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("999")).toBeNull();
+    });
+    expect(screen.getByText("250.00")).toBeTruthy();
+    const putCalls = (
+      apiFetch as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.filter(
+      (c) =>
+        typeof c[0] === "string" &&
+        c[0].includes("/api/v1/forecast-plans/") &&
+        c[0].includes("/items/") &&
+        (c[1] as RequestInit | undefined)?.method === "PUT",
+    );
+    expect(putCalls).toHaveLength(0);
+  });
+
+  it("inline row edit: re-opening edit after Cancel shows the persisted value, not the discarded draft", async () => {
+    const plan = makePlan([
+      {
+        category_id: 20,
+        category_name: "Groceries",
+        type: "expense",
+        planned_amount: 250,
+        source: "manual",
+      },
+    ]);
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByText("Groceries")).toBeTruthy();
+    });
+
+    // Edit → type a draft → Cancel.
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit$/ })[0]);
+    fireEvent.change(screen.getByDisplayValue("250") as HTMLInputElement, {
+      target: { value: "999" },
+    });
+    fireEvent.click(screen.getByTestId("fp-edit-cancel-1"));
+
+    // Re-enter edit on the same row — the input must be seeded from the
+    // persisted plan, not from the discarded "999" draft.
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit$/ })[0]);
+    await waitFor(() => {
+      expect(
+        (screen.getByDisplayValue("250") as HTMLInputElement).value,
+      ).toBe("250");
+    });
+    expect(screen.queryByDisplayValue("999")).toBeNull();
+  });
 });
