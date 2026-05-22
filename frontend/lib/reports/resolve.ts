@@ -22,8 +22,14 @@ import type {
  * Returns true when a widget-level field overrides the canvas-level
  * value. Used by the config rail to show the "Overrides canvas" pill.
  *
- * ``undefined`` / missing widget value = inherit. Empty array = inherit.
- * Any other non-empty value = override.
+ * Locked rule: pill fires ONLY when BOTH the widget and the canvas
+ * have a meaningful value for the field AND those values DIFFER.
+ *
+ * ``undefined`` / missing widget value = inherit (no pill).
+ * Empty array / empty range = inherit (no pill).
+ * Canvas has no value = widget-only, not an override (no pill).
+ * Both set and equal = no override (no pill).
+ * Both set and unequal = override (pill fires).
  */
 export function isFieldOverridden(
   field: keyof WidgetFilters,
@@ -31,26 +37,86 @@ export function isFieldOverridden(
   canvasFilters: CanvasFilters | undefined,
 ): boolean {
   if (!widgetFilters) return false;
-  const v = widgetFilters[field];
+  const widgetVal = widgetFilters[field];
+  if (!hasMeaningfulValue(field, widgetVal)) return false;
+
+  // Tag fields aren't on canvas at all (canvas only has date_range,
+  // account_ids, category_ids), so a widget value there isn't an
+  // override of canvas. Same for txn_type / amount_range.
+  if (
+    field === "tag_names" ||
+    field === "tag_match" ||
+    field === "txn_type" ||
+    field === "amount_range"
+  ) {
+    return false;
+  }
+
+  const canvasVal = canvasFilters?.[field as keyof CanvasFilters];
+  if (!hasMeaningfulValue(field, canvasVal)) return false;
+
+  // Both sides have a value. Pill fires only if they differ.
+  return !valuesEqual(field, widgetVal, canvasVal, widgetFilters);
+}
+
+function hasMeaningfulValue(
+  field: keyof WidgetFilters,
+  v: unknown,
+): boolean {
   if (v === undefined || v === null) return false;
-  if (Array.isArray(v) && v.length === 0) return false;
-  // Date range with neither start nor end is treated as "inherit."
+  if (Array.isArray(v)) return v.length > 0;
   if (field === "date_range") {
     const dr = v as { start?: string; end?: string };
-    if (!dr.start && !dr.end) return false;
+    return Boolean(dr.start || dr.end);
   }
-  // Amount range with neither min nor max is "inherit."
   if (field === "amount_range") {
     const ar = v as { min?: number; max?: number };
-    if (ar.min === undefined && ar.max === undefined) return false;
+    return ar.min !== undefined || ar.max !== undefined;
   }
-  // If the corresponding canvas value is also unset, the widget
-  // value isn't really an override — it's just a widget-only setting.
-  // For pill rendering purposes we still call it "overrides canvas"
-  // when the canvas had a value AND the widget value differs.
-  const c = canvasFilters?.[field as keyof CanvasFilters];
-  if (c === undefined || c === null) return false;
-  if (Array.isArray(c) && c.length === 0) return false;
+  return true;
+}
+
+function valuesEqual(
+  field: keyof WidgetFilters,
+  widgetVal: unknown,
+  canvasVal: unknown,
+  widgetFilters: WidgetFilters,
+): boolean {
+  if (field === "date_range") {
+    const a = widgetVal as { start?: string; end?: string };
+    const b = canvasVal as { start?: string; end?: string };
+    return (a.start ?? null) === (b.start ?? null)
+      && (a.end ?? null) === (b.end ?? null);
+  }
+  if (field === "account_ids" || field === "category_ids") {
+    return sameSet(widgetVal as number[], canvasVal as number[]);
+  }
+  if (field === "amount_range") {
+    const a = widgetVal as { min?: number; max?: number };
+    const b = canvasVal as { min?: number; max?: number };
+    return (a.min ?? null) === (b.min ?? null)
+      && (a.max ?? null) === (b.max ?? null);
+  }
+  if (field === "tag_names") {
+    if (!sameSet(widgetVal as string[], canvasVal as string[])) return false;
+    // tag_match flips "all" vs "any" semantics, so an identical tag
+    // list with a different match mode is still an override. Canvas
+    // doesn't model tag_match, so any widget-side tag_match value
+    // other than the implicit default counts as a difference.
+    const widgetMatch = widgetFilters.tag_match ?? "all";
+    return widgetMatch === "all";
+  }
+  // txn_type / tag_match handled above as widget-only; fall back to
+  // strict equality for safety.
+  return widgetVal === canvasVal;
+}
+
+function sameSet<T extends number | string>(a: T[], b: T[]): boolean {
+  if (a.length !== b.length) return false;
+  const bSet = new Set<T>(b);
+  for (const x of a) {
+    if (!bSet.has(x)) return false;
+  }
   return true;
 }
 
