@@ -24,7 +24,7 @@ A "Plans" page that is a **simulation sandbox**. Users:
 * `subscription.Plan` is the billing-tier table at `/api/v1/plans`. Reinforces the naming-collision rationale.
 * AppShell has 7 frame-menu items today. Adding Plans + Reports + AI as siblings would push to 10. See Navigation.
 
-## Naming, the load-bearing decision
+## Naming, locked
 
 The word "Plan" is overloaded three ways in this repo:
 
@@ -34,11 +34,11 @@ The word "Plan" is overloaded three ways in this repo:
 | Per-period budget editor | `forecast_plans` | `/api/v1/forecast-plans` | "Forecast Plans" sidebar item |
 | **NEW**: life-event sandbox | `scenarios` (this spec) | `/api/v1/scenarios` | **"Plans"** in the UI |
 
-**Resolution.** The new feature uses `scenarios` everywhere internal (model, table, router prefix, service module) and **"Plans"** as the user-facing label only. Rationale:
+**Locked, architect-approved 2026-05-22.** Internal name = `scenarios`. User-facing label = **Plans**. Specifically:
 
-* Users say "I want to plan my trip", not "I want to scenario my trip". The owner's request itself uses the word Plans. The UI label has to be Plans.
-* The DB and code cannot use Plans without colliding with the two existing tables. `scenarios` is unambiguous, accurate (a scenario is one possible future), and standard in financial-planning tooling.
-* Precedent for diverging code-name from UI-label exists in this repo, see `forecast_plans` table backing the "Forecast Plans" label, and `OrgFeatureOverride` rendered as "Feature flags" in admin.
+* Database table: `scenarios`. SQLAlchemy model class: `Scenario`. Pydantic schemas: `ScenarioCreate`, `ScenarioRead`, etc. Service module: `scenario_engine`, `scenario_service`. Router prefix: `/api/v1/scenarios`.
+* Frontend route: `/plans/*`. Page title: "Plans". Frame-menu item label: "Plans".
+* The user-visible word "scenario" appears nowhere in the UI. Internal docs and code comments are free to use "scenario" wherever it reads naturally.
 
 A future cleanup PR may rename the **"Forecast Plans"** sidebar label to **"Period Budget"** to free up the word "Plans" entirely. Out of scope here; flagged.
 
@@ -78,7 +78,7 @@ Notes:
 * `params_json` is the typed params blob, see Plan templates below. Pydantic discriminated-union on `scenario_type` validates it on write.
 * `projection_json` is the cached last-computed projection. NULL until first simulate. Re-written on each `POST /simulate`. Cheap, lets the list view show a sparkline without re-running the engine.
 * `projection_engine` records which engine produced the cached projection (`analytic_v1`, `analytic_v1+ai_assumptions_v1`, etc), so we can invalidate when the engine version bumps.
-* `horizon_months` defaults to 24, max 120. Configurable per scenario, capped backend-side so a user cannot ask for a 50-year horizon by hand-crafting a request.
+* `horizon_months` defaults to 24. The column allows up to 480 (40 years) at the storage layer; the **per-`scenario_type` ceiling is enforced at the request validator**, not the column. Caps: 120 months (10y) for trip / purchase / custom; 480 months (40y) for retirement. See Horizon ceiling below.
 * `is_active` is the soft-delete flag (matches the rest of the codebase). Active=false hides from list, keeps audit.
 
 ### Why a JSON column, not separate tables per type
@@ -175,6 +175,41 @@ Engine derivation: monthly income (sign positive) into `contribution_account_id`
 ```
 
 Custom is the escape valve. It exposes the raw event primitives the engine consumes: `income_off` / `expense_off` (mute a real recurring for a date range), `recurring_on` (add a synthetic recurring), `one_off_income` / `one_off_expense`, `transfer`. Power-user only, surfaces in the UI behind a "Custom scenario" template.
+
+## Horizon ceiling
+
+Horizon caps split by `scenario_type`:
+
+* **trip / purchase / custom**: max **120 months** (10 years).
+* **retirement**: max **480 months** (40 years).
+
+The DB column `horizon_months` allows the full 480 range; the cap is enforced by a Pydantic validator on the simulate-request payload (and the same validator runs on scenario create / patch). Backend cost is linear in horizon, sub-ms per month for the analytic engine.
+
+Validator sketch:
+
+```python
+# backend/app/schemas/scenario.py
+
+from pydantic import BaseModel, model_validator
+
+_HORIZON_CAP_BY_TYPE = {
+    "trip": 120, "purchase": 120, "custom": 120, "retirement": 480,
+}
+
+class SimulateRequest(BaseModel):
+    engine: str = "analytic"
+    options: dict = {}
+
+    @model_validator(mode="after")
+    def _cap_horizon(self, info):
+        scenario_type = info.context["scenario_type"]  # injected by router
+        cap = _HORIZON_CAP_BY_TYPE[scenario_type]
+        if info.context["horizon_months"] > cap:
+            raise ValueError(f"horizon_months exceeds cap for {scenario_type} ({cap})")
+        return self
+```
+
+(Validator binds against the scenario row's stored `horizon_months` and `scenario_type`; the router injects both into the validation context. Same pattern is reused by the `Scenario` create / patch validator so a row cannot be persisted with an over-cap horizon either.)
 
 ## Simulation engine, non-AI baseline
 
@@ -409,7 +444,7 @@ Address explicitly because the two surfaces will look superficially similar.
 | Question | Forecast | Plans |
 |---|---|---|
 | **What does it answer?** | "Where is THIS billing period heading if nothing changes?" | "What if I do X over the next N months?" |
-| **Time horizon** | One billing period | 1 to 120 months |
+| **Time horizon** | One billing period | 1 to 120 months (trip / purchase / custom), 1 to 480 months (retirement) |
 | **User intervention** | Passive, no intervention possible | Active, scenario params are the intervention |
 | **Persistence** | Stateless aggregate query | Named, persistent `scenarios` rows |
 | **Mutates state?** | No | No (sandboxed) |
@@ -431,26 +466,9 @@ When Team E ships the SDK:
 * The UI gets a small "Engine: Analytic / AI-enhanced" picker, gated on `org.has_ai_tier`.
 * No new endpoint, no schema change. The `engine` query param on `POST /simulate` already accommodates it.
 
-## Navigation, tabs vs frame menu
+## Navigation
 
-Owner asked: where do Reports, AI Tier, and Plans live? Three options considered:
-
-**Option A**, all three as new sidebar items. Sidebar grows from 7 to 10 items. Loud, breaks the existing "one feature per icon" rhythm.
-
-**Option B**, group under a new top-level **"Planning"** sidebar item. Tabs inside: Forecast | Plans | Reports | AI. Sidebar stays at 8 items, related surfaces sit together, room to grow.
-
-**Option C**, scatter, Plans tabbed under "Forecast Plans", Reports tabbed under Dashboard, AI as a global overlay. Inconsistent shape per surface; AI as overlay assumes too much about Team E's design.
-
-**Recommendation: Option B.** Single new sidebar item `Planning` (icon: target / crosshair), routes to `/planning`. The page has tabs:
-
-* `Forecast` (current Forecast Plans budget editor, repathed under `/planning/forecast`).
-* `Plans` (new sandbox, this spec).
-* `Reports` (placeholder tab, ships with the Reports spec).
-* `AI` (placeholder tab, ships with Team E's AI Tier spec).
-
-Tabs render only when their underlying surface ships and the user has access. Until Reports/AI exist, only Forecast and Plans tabs show. The `/forecast-plans` URL keeps working via a redirect to `/planning/forecast` (no backcompat shim per pre-launch rules, just a literal `next.config` redirect for muscle-memory on day 1).
-
-If the architect rejects renaming/repathing Forecast Plans, the fallback is to ship **Plans as a standalone sidebar item** and treat the grouping question as a separate UX spec.
+Plans is a new top-level frame-menu item, sibling of Forecast Plans (which stays at its current `/forecast-plans` path). The two surfaces share components (the Recharts forecast renderer used by `AccountMonthEndForecast.tsx`) but live at separate routes and serve different intents (per-period budget editor vs multi-month sandbox). Reports and AI Tier are owned by their own specs and not addressed here.
 
 ## Phased rollout
 
@@ -460,9 +478,8 @@ If the architect rejects renaming/repathing Forecast Plans, the fallback is to s
 | **PR 2** | Add `retirement` template (compound interest, contribution curve), regression-overlay knob (`smooth_with_regression`), affordability-verdict refinement, suggestions for purchase scenarios. | ~600 backend, ~400 frontend |
 | **PR 3** | Comparison view (`POST /compare`, side-by-side UI, max 3 scenarios). | ~400 backend, ~700 frontend |
 | **PR 4** | AI engine wrapper, gated on Team E's SDK landing. SSE upgrade on `POST /simulate`. Engine-picker UI. | ~500 backend, ~300 frontend |
-| **PR 5** (separate spec) | Planning navigation umbrella, tabs container, Forecast Plans repath, redirect. | ~250 frontend |
 
-Total v1-through-MVP (PR 1+2+3): roughly 3300 backend / 2500 frontend LOC. AI path adds 800 LOC. Navigation umbrella is a separate small spec.
+Plans MVP is PRs 1 through 4. Total v1-through-MVP (PR 1+2+3): roughly 3300 backend / 2500 frontend LOC. AI path adds 800 LOC.
 
 ## Tests
 
@@ -479,7 +496,7 @@ Total v1-through-MVP (PR 1+2+3): roughly 3300 backend / 2500 frontend LOC. AI pa
   * `POST /simulate` writes `projection_json` and `projection_computed_at`.
   * Other users in the same org cannot read/edit this user's scenarios (per-user scoping).
   * Other orgs entirely cannot read this scenario.
-  * `horizon_months > 120` → 422.
+  * Horizon-cap validator: `trip` / `purchase` / `custom` with `horizon_months > 120` → 422; `retirement` with `horizon_months > 480` → 422; `retirement` with `horizon_months = 480` → 200.
 * `tests/services/scenario_engine/test_regression.py` (PR 2)
   * OLS fit on a known 12-point linear series returns the expected slope within 1e-6.
 
@@ -494,12 +511,10 @@ Total v1-through-MVP (PR 1+2+3): roughly 3300 backend / 2500 frontend LOC. AI pa
 
 ## Open questions for architect
 
-1. **Naming** — `scenarios` table + "Plans" UI label, or full rename to one or the other. Recommendation in spec: keep both (different audiences).
-2. **Per-user vs per-org default visibility** — spec says private-to-creator. Confirm.
-3. **Navigation umbrella** — Option B (Planning parent with tabs). Confirm, or override to Option A (Plans as its own sidebar item) and defer the umbrella to a separate spec.
-4. **Horizon ceiling** — 120 months feels conservative for retirement scenarios. Lift to 480 (40 years)? Backend cost is linear, ~ms per month.
-5. **`apply this scenario` button** — left as future scope. Confirm out-of-scope for v1.
-6. **Forecast Plans repath** — moving `/forecast-plans` to `/planning/forecast` with a redirect, or leave forecast plans where it is and only group Plans/Reports/AI under Planning?
+1. **Per-user vs per-org default visibility** — spec says private-to-creator. Confirm.
+2. **`apply this scenario` button** — left as future scope. Confirm out-of-scope for v1.
+
+(Resolved 2026-05-22: naming locked to `scenarios` + "Plans"; navigation is a new top-level frame-menu item with no Planning umbrella and no Forecast repath; horizon ceiling split 120 / 480 by `scenario_type`.)
 
 ## Out of scope (explicit)
 
