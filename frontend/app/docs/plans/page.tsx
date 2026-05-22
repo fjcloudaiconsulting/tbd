@@ -210,10 +210,14 @@ export default function PlansDocsPage() {
             <p>
               Both annual return and annual inflation are expressed as
               percentages and converted to monthly factors internally.
-              Long-term stock market average return is around 6 to 8
-              percent; the Eurozone inflation target is 2 percent and
-              the 30-year historical average is around 2.5 to 3
-              percent. Your own assumptions are what matters.
+              Common assumptions for long-term diversified stock
+              portfolios range from 5 to 8 percent annually; check
+              your own risk tolerance and historical returns for your
+              asset mix. The European Central Bank targets 2 percent
+              annual inflation; actual long-run averages vary by
+              decade and by country, so use a value that matches your
+              assumptions for the period you are projecting. Your own
+              assumptions are what matters.
             </p>
 
             <h3>Smooth with regression</h3>
