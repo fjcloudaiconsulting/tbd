@@ -30,7 +30,7 @@ Ship a Reports surface where any authed user (in their org) can:
 * **Filter scope:** canvas-wide cascade with per-widget override. Per widget, an explicit field on the widget filter overrides the canvas filter on that field; absent fields inherit.
 * **Permissions:** any org member can create reports. Owner + org admins can edit; other org members can view if `visibility = 'org'`. No public links in v1.
 * **Aggregation engine:** live SQL queries in v1. Performance budget: widget p95 < 400 ms with 10k transactions. No materialized rollups, no Redis caching yet. Defer until measured. (Index plan below ensures the budget is achievable; revisit only if missed.)
-* **Navigation:** `/reports` lands as a new top-level frame menu item between Forecast Plans and Categories. AI Tier and Plans stay separate when they exist. No tabs.
+* **Navigation:** `/reports` lands as a new top-level frame menu item between Forecast Plans and Categories. No umbrella parent, no tabs. Forecast Plans keeps its existing icon and path; AI Tier and Plans stay separate when they exist.
 
 The rest of this document drills each axis.
 
@@ -150,7 +150,7 @@ Display
 |---|---|---|
 | Date range | absolute (start, end) OR relative (last N days / months / this month / last month / YTD) | preset chips + custom date pickers |
 | Category | multi-select with hierarchy aware (selecting a master selects all subs) | tree picker reusing existing `<CategoryPicker>` |
-| Tag | multi-select with `all` vs `any` semantics (existing transactions filter pattern) | chip picker |
+| Tag | multi-select with `tag_match=all\|any` semantics (default `all`), mirroring the transactions list (`backend/app/routers/transactions.py:90`, service at `backend/app/services/transaction_service.py:1697`) | chip picker |
 | Account | multi-select | chip picker |
 | Amount range | min / max numeric | two number inputs |
 | Transaction type | enum: income, expense, transfer | radio group |
@@ -200,12 +200,12 @@ CREATE TABLE reports (
     PRIMARY KEY (id),
     KEY ix_reports_org (org_id),
     KEY ix_reports_owner (owner_user_id),
-    CONSTRAINT fk_reports_org FOREIGN KEY (org_id) REFERENCES orgs (id) ON DELETE CASCADE,
+    CONSTRAINT fk_reports_org FOREIGN KEY (org_id) REFERENCES organizations (id) ON DELETE CASCADE,
     CONSTRAINT fk_reports_owner FOREIGN KEY (owner_user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 ```
 
-Default reports (preinstalled): we DO NOT seed rows per org. Instead a small set of canonical layouts ship as JSON fixtures and appear in the "Templates" tab of the reports list. User clicks "Use template" → creates a normal `reports` row for that user. This avoids dead seed rows and lets templates evolve in code without data migrations.
+Default reports (preinstalled): we DO NOT seed rows per organization. Instead a small set of canonical layouts ship as JSON fixtures registered in `backend/app/reports/templates/__init__.py` and appear in the "Templates" tab of the reports list. "Use template" creates a new private `reports` row owned by the calling user. This avoids dead seed rows and lets templates evolve in code without data migrations.
 
 Templates v1 (three):
 
@@ -447,20 +447,25 @@ Each widget owns its own SWR key `(report_id, widget_id, hash(resolvedQuery))`. 
 * **Duplicate:** anyone who can view. Duplicate is always created as `private`, owned by the duplicator.
 * **Templates:** read-only fixtures shipped in code. Instantiate creates a normal report.
 
-`reports.owner_user_id` does NOT cascade-delete on `users` delete from the user's perspective — instead, when a user is removed from an org, their `org`-visibility reports transfer ownership to the org owner. Their `private` reports are deleted. This is handled in the existing org-member-removal service. (Mirrors how budgets and forecast plans treat ownership on member removal.)
+### Owner-change, member-removal, user-delete, org-delete semantics
+
+`reports.owner_user_id` does NOT cascade-delete on `users` delete from the user's perspective. Concrete rules:
+
+* **Org-owner change** (org transfers from user A to user B). Org-shared reports (`visibility = 'org'`) authored by the previous owner stay attached to the org and become owned by the new owner. The previous owner's private reports follow the same rule as any other removed member (see below).
+* **Member removal from an org** (member M leaves or is removed). Org-shared reports authored by M transfer ownership to the org owner. Private reports authored by M are hard-deleted. Handled in the existing org-member-removal service; mirrors how budgets and forecast plans treat ownership on member removal.
+* **System-level user delete** (`DELETE /api/v1/admin/users/{user_id}` in `backend/app/routers/admin_users.py`). Private reports authored by the deleted user are hard-deleted. Org-shared reports authored by the deleted user transfer ownership to the org owner.
+* **Org delete.** Out of scope. Organizations are not deleted today, so there is no cascade rule to define.
 
 ## 9. Migration (pre-launch hard cut)
 
 * **No legacy report routes to preserve.** The old fixed-reports surface was scoped but never shipped. Nothing to remove.
 * **Single Alembic migration** in PR 1 creates `reports`, adds composite indexes on `transactions`.
-* **No data backfill.** Existing orgs see "No reports yet. Start from a template."
+* **No data backfill.** Existing organizations see "No reports yet. Start from a template."
 * **`.do/app.yaml`** unchanged; no new env vars.
 
-## 10. Navigation — Reports + AI Tier + Plans
+## 10. Navigation — Reports as a top-level item
 
-### Recommendation
-
-Three **separate top-level frame menu items**, not tabs.
+Reports is a **new top-level frame menu item**. No umbrella parent ("Planning", "Insights", etc.), no tabs. Forecast Plans keeps its existing icon and path; this wave does not repath `/forecast-plans` or swap any other menu icons.
 
 **Order in the frame menu** (`frontend/components/AppShell.tsx:55`):
 
@@ -473,19 +478,13 @@ Budgets
 Forecast Plans
 Reports          <-- new in this spec
 Categories
-[ AI Tier ]      <-- when its spec ships; placed above or below Reports
 ```
 
-Reports gets the `BarChart3` icon that today belongs to Forecast Plans, and Forecast Plans switches to `TrendingUp` to disambiguate. (Two bar-chart icons next to each other reads as duplicate.)
+AI Tier, when its spec ships, lands as its own separate top-level item above Reports (between Forecast Plans and Reports). That decision is locked in the "Decisions locked" section.
 
-### Rejected alternatives
+### Rejected alternative
 
-* **Tabs under one parent.** Hides three first-class surfaces behind a parent click. Each has a distinct mental model (Reports = exploratory data viz; Plans = scenario modeling; AI Tier = ML-generated insights). Forcing them into tabs implies they are facets of one thing; they are not.
-* **"Insights" parent with tabs.** Cute name, same hiding problem. Also conflates surfaces with very different user intents.
-
-### Why not wait to decide
-
-The owner asked. Locking the answer now lets PR 4 add the menu item without re-debating it.
+* **Tabs under one parent.** Hides first-class surfaces behind a parent click. Reports (exploratory data viz), Plans (scenario modeling), and AI Tier (ML-generated insights) have distinct mental models. Forcing them into tabs implies they are facets of one thing; they are not.
 
 ## 11. Phased rollout
 
@@ -504,7 +503,7 @@ Lands first. No frontend changes visible to the user.
   * Compiler: org_id always appended; bound params used (introspect compiled SQL); whitelist enforced.
   * Integration: seed 10k synthetic transactions, run each measure + dimension combination, assert correctness + p95 latency.
   * Security harness: attempt SQL-injection-like values inside filter `value` field; all are rejected by Pydantic or bound-param-escaped (cannot reach SQL parse).
-* Env flag `FEATURE_REPORTS_V2=false` default. Router registered but excluded from OpenAPI when flag is off.
+* Env flag `FEATURE_REPORTS_V2=false` default. When the flag is off, ALL `/api/v1/reports/*` routes return 404 via a router-level dependency that raises `HTTPException(404)`, and the router is excluded from OpenAPI. The frontend additionally hides the nav item and routes when the corresponding `NEXT_PUBLIC_FEATURE_REPORTS_V2` flag is off. Both sides gate together; the backend gate is the load-bearing one.
 * LOC estimate: ~1,200 (split: 600 service + 200 schemas + 100 router + 300 tests).
 
 ### PR 2 — Canvas substrate + 2 widget types (5 to 7 days)
@@ -536,9 +535,9 @@ Lands first. No frontend changes visible to the user.
 * Permission gates wired in CRUD endpoints.
 * Templates fixtures + "Use template" button.
 * Mobile responsive: single-column stack on `<sm`; read-only.
-* Add `Reports` to `AppShell` frame menu, swap Forecast Plans icon.
+* Add `Reports` to `AppShell` frame menu (Forecast Plans keeps its current icon and path).
 * Flip `FEATURE_REPORTS_V2` default to `true` in `.env.example` (still gated in prod via `.do/app.yaml` until owner signs off).
-* CSV export per widget (one button on each widget in view mode; returns the same rows the widget rendered).
+* CSV export per widget (one button on each widget in view mode; returns the same rows the widget rendered). Uses the same Bearer / cookie session auth as the rest of `/api/v1`; no separate one-shot signed-URL or token machinery.
 * LOC estimate: ~800.
 
 ### Total
@@ -554,19 +553,23 @@ Lands first. No frontend changes visible to the user.
 * `[[specs/configurable-dashboard-widgets.md]]` — adjacent concept (configurable Dashboard cards). The two share the philosophy "user-chosen layout" but diverge on substrate: Dashboard widgets are pre-built tiles with fixed queries; Reports widgets are user-composed AST queries. They should NOT share components in v1; revisit in v2 if the Dashboard widget framework lands.
 * `[[reference_do_spec_sync.md]]` — no new env vars in PRs 1 to 3. PR 4 adds `FEATURE_REPORTS_V2` to `.env.example` and (when lit) to `.do/app.yaml`.
 
+## Decisions locked (architect, 2026-05-22)
+
+1. **`FEATURE_REPORTS_V2` flag scope.** Backend route-disable AND frontend hide. ALL `/api/v1/reports/*` routes return 404 when `FEATURE_REPORTS_V2=false` via a router-level dependency that raises `HTTPException(404)`; the frontend hides the nav item and routes too. Route-disable hardens the surface during the feature-flag window so partial-rollout reports can't be queried via dev tools.
+2. **Templates are code fixtures, not DB seed rows.** `backend/app/reports/templates/__init__.py` registers each template; "use template" creates a new private report owned by the calling user. No per-org seed, no data migration.
+3. **CSV export auth.** Normal Bearer / session auth, same as the rest of `/api/v1`. No separate one-shot signed URL or token machinery.
+4. **Tag filter `all` vs `any`.** Mirrors the existing transactions list semantics: query param `tag_match=all|any`, default `all`. Reference implementation: `backend/app/routers/transactions.py:90` (router) and `backend/app/services/transaction_service.py:1697` (service).
+5. **AI Tier nav placement.** AI Tier is a separate top-level frame-menu item, placed above Reports (between Forecast Plans and Reports) when its spec ships. AI Tier is consumption ("here are insights for you"); Reports is authoring.
+
 ## Open questions for architect
 
-1. **`FEATURE_REPORTS_V2` flag scope.** Backend env flag (route-level disable when off) and frontend env var that hides the nav item, or just a frontend hide? Recommendation: both, so a curl to `/api/v1/reports/query` returns 404 when off and a sneaky bookmark to `/reports` 404s too.
-2. **Templates as DB seed or code fixture.** Spec says code fixture (no dead seed rows, no per-org migration). Confirm.
-3. **AI Tier nav placement.** Three top-level items, but where does AI Tier sit when it lands? Recommendation: above Reports, between Forecast Plans and Reports, since AI Tier is more about consumption ("here are insights for you") and Reports is more about authoring.
-4. **CSV export auth.** Same token as the page session, or a one-shot signed URL? Recommendation: token, same as everything else; one-shot URLs are a different security model and unnecessary at v1 volume.
-5. **Tag filter `all` vs `any`.** Reuse the existing transactions list behavior (default `all`, opt-in `any`). Confirm we mirror exactly, including the parameter name `tag_match`.
+(none — all five open questions resolved above.)
 
 ## Out of scope (v1)
 
 * **Public read-only share links.** Adds auth-bypass surface; defer until an org asks.
 * **Real-time refresh** (SSE / websocket). User reloads or revisits.
-* **Cross-org reports** (operator wants to compare across orgs). Superadmin tool, not a v1 user feature.
+* **Cross-org reports** (operator wants to compare across organizations). Superadmin tool, not a v1 user feature.
 * **Drill-down** (clicking a pie slice to filter the rest of the report). Nice-to-have v2.
 * **Saved widget presets** (reusable widget configs across reports). v2.
 * **Forecast / budget / recurring datasets.** v1 dataset is `transactions` only. v2 adds these (the AST already has room via the `dataset` enum).
