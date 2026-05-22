@@ -25,6 +25,10 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.user import User
 from app.rate_limit import get_client_ip
+from app.rate_limit_endpoint_catalogue import (
+    PRE_AUTH_PATTERNS,
+    sorted_patterns,
+)
 from app.schemas.rate_limit_override import (
     RateLimitOverrideCreate,
     RateLimitOverrideResponse,
@@ -67,6 +71,25 @@ def _audit_detail(row) -> dict:
         "max_requests": row.max_requests,
         "period_seconds": row.period_seconds,
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+    }
+
+
+@router.get("/endpoint-catalogue", response_model=dict)
+async def get_endpoint_catalogue(
+    _current_user: User = Depends(require_superadmin),
+):
+    """Return the catalogue of supported endpoint patterns.
+
+    Drives the admin UI's pattern dropdown so an operator can only
+    pick a string the codebase actually has a ``@limiter.limit``
+    decorator for. The response also flags pre-auth patterns; the UI
+    surfaces a warning when one of those is selected (overrides on
+    pre-auth routes are accepted but the resolver short-circuits to
+    the static default).
+    """
+    return {
+        "patterns": sorted_patterns(),
+        "pre_auth_patterns": sorted(PRE_AUTH_PATTERNS),
     }
 
 

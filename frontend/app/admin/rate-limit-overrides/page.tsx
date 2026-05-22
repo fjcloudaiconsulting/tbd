@@ -68,6 +68,11 @@ type FormState = {
   note: string;
 };
 
+type EndpointCatalogue = {
+  patterns: string[];
+  pre_auth_patterns: string[];
+};
+
 const EMPTY_FORM: FormState = {
   scope: "org",
   scopeId: "",
@@ -112,6 +117,8 @@ export default function AdminRateLimitOverridesPage() {
 
   const [deleting, setDeleting] = useState<RateLimitOverride | null>(null);
   const [deleteError, setDeleteError] = useState("");
+
+  const [catalogue, setCatalogue] = useState<EndpointCatalogue | null>(null);
 
   // Gate: superadmin-only. Mirrors the announcements page guard
   // because there is no fine-grained role permission for rate-limit
@@ -164,6 +171,30 @@ export default function AdminRateLimitOverridesPage() {
     }
   }, [authLoading, canView, refresh]);
 
+  // Fetch the endpoint catalogue once. The dropdown in the modal
+  // sources its options from this; failure is non-fatal but the
+  // form will be unusable until it loads (intentional — picking a
+  // free-text pattern would silently no-op).
+  useEffect(() => {
+    if (!canView) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const payload = await apiFetch<EndpointCatalogue>(
+          "/api/v1/admin/rate-limit-overrides/endpoint-catalogue",
+        );
+        if (!cancelled) setCatalogue(payload);
+      } catch {
+        // Non-fatal: the list still loads. The dropdown will fall
+        // back to an empty <option> set and the submit will surface
+        // the schema's 422 with the catalogue in the error body.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [canView]);
+
   if (authLoading || !user || !canView) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -194,6 +225,11 @@ export default function AdminRateLimitOverridesPage() {
     setSubmitting(true);
     setSubmitError("");
     try {
+      if (!form.endpoint_pattern) {
+        setSubmitError("Pick an endpoint from the catalogue.");
+        setSubmitting(false);
+        return;
+      }
       const maxRequests = Number(form.max_requests);
       const periodSeconds = Number(form.period_seconds);
       if (!Number.isInteger(maxRequests) || maxRequests < 1) {
@@ -290,10 +326,20 @@ export default function AdminRateLimitOverridesPage() {
         </button>
       </div>
 
-      <p className="mt-1 mb-4 text-sm text-text-muted">
+      <p className="mt-1 mb-2 text-sm text-text-muted">
         Bump or throttle an org or a user beyond the default per-route
         rate limits. User overrides win over org overrides.
       </p>
+
+      <div
+        role="note"
+        aria-label="Pre-auth limitation"
+        className="mb-4 rounded-md border border-border bg-warning-dim px-4 py-2 text-xs text-text-secondary"
+      >
+        Note: pre-auth endpoints (login, register, password-reset)
+        cannot use per-org or per-user overrides. Adjust their static
+        limits in code instead.
+      </div>
 
       {error && (
         <div className={`${errorCls} mb-4`} role="alert">
@@ -521,22 +567,37 @@ export default function AdminRateLimitOverridesPage() {
               <label className={label} htmlFor="endpoint-pattern">
                 Endpoint pattern
               </label>
-              <input
+              <select
                 id="endpoint-pattern"
-                type="text"
                 value={form.endpoint_pattern}
                 onChange={(e) =>
                   setForm({ ...form, endpoint_pattern: e.target.value })
                 }
-                placeholder="e.g. auth.login"
                 className={input}
                 required
-                maxLength={80}
-              />
-              <p className="mt-1 text-xs text-text-muted">
-                Opaque identifier matched by the limiter. See server
-                catalogue for known patterns.
-              </p>
+              >
+                <option value="" disabled>
+                  Select an endpoint
+                </option>
+                {catalogue?.patterns.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                    {catalogue.pre_auth_patterns.includes(p)
+                      ? " (pre-auth, will no-op)"
+                      : ""}
+                  </option>
+                ))}
+              </select>
+              {form.endpoint_pattern &&
+                catalogue?.pre_auth_patterns.includes(
+                  form.endpoint_pattern,
+                ) && (
+                  <p className="mt-1 text-xs text-text-muted">
+                    This is a pre-auth endpoint. The override will be
+                    saved but the resolver will fall back to the static
+                    default at request time.
+                  </p>
+                )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">

@@ -13,8 +13,12 @@ Architect-locked invariants enforced here:
   practical bucket; periods beyond that should be a policy change,
   not an override.
 - ``endpoint_pattern`` is a short opaque string (max 80 chars,
-  matching the column width). Service-side validates against the
-  registered endpoint catalogue.
+  matching the column width) AND must appear in
+  ``app.rate_limit_endpoint_catalogue.RATE_LIMITED_ENDPOINT_PATTERNS``.
+  Free-form strings that no decorator references silently no-op at
+  request time, so the catalogue check at the schema layer surfaces
+  the typo as a 422 with the full catalogue echoed back in the
+  error body.
 - ``expires_at``, when sent, must be strictly in the future. A row
   with ``expires_at`` in the past is treated as inert by the resolver
   but creating one in the past is rejected here so the admin UI
@@ -25,7 +29,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.rate_limit_endpoint_catalogue import (
+    RATE_LIMITED_ENDPOINT_PATTERNS,
+    sorted_patterns,
+)
 
 
 # Bounds matching the migration column widths. Pydantic surfaces a
@@ -33,6 +42,23 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # bubble back as a generic 500.
 ENDPOINT_PATTERN_MIN = 1
 ENDPOINT_PATTERN_MAX = 80
+
+
+def _validate_endpoint_pattern(value: str) -> str:
+    """Reject patterns the codebase has no decorator for.
+
+    The error message lists the full catalogue so the API caller (and
+    the admin UI) can recover without a separate round-trip. The list
+    is sorted for determinism in tests + UI parity.
+    """
+    if value not in RATE_LIMITED_ENDPOINT_PATTERNS:
+        catalogue = ", ".join(sorted_patterns())
+        raise ValueError(
+            f"unknown endpoint_pattern {value!r}. Valid patterns: {catalogue}"
+        )
+    return value
+
+
 NOTE_MAX = 5000
 
 # Self-lockout guard: max_requests must be >= 1. See module docstring.
@@ -88,6 +114,11 @@ class RateLimitOverrideCreate(_ScopeXorMixin):
     expires_at: Optional[datetime] = None
     note: Optional[str] = Field(default=None, max_length=NOTE_MAX)
 
+    @field_validator("endpoint_pattern")
+    @classmethod
+    def _endpoint_in_catalogue(cls, value: str) -> str:
+        return _validate_endpoint_pattern(value)
+
     @model_validator(mode="after")
     def _expires_in_future(self):
         if self.expires_at is not None:
@@ -126,6 +157,13 @@ class RateLimitOverrideUpdate(BaseModel):
     # request: it clears the note. We accept that by leaving it
     # ``Optional[str]`` without a non-null guard.
     note: Optional[str] = Field(default=None, max_length=NOTE_MAX)
+
+    @field_validator("endpoint_pattern")
+    @classmethod
+    def _endpoint_in_catalogue(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _validate_endpoint_pattern(value)
 
 
 class RateLimitOverrideResponse(BaseModel):

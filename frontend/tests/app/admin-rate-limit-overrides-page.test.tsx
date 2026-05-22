@@ -69,12 +69,38 @@ const LIST_RESPONSE = {
   total: 1,
 };
 
+const CATALOGUE_RESPONSE = {
+  patterns: [
+    "accounts.adjust_balance",
+    "auth.login",
+    "auth.register",
+    "reports.query",
+  ],
+  pre_auth_patterns: ["auth.login", "auth.register"],
+};
+
+// Helper: every URL the page fetches gets the canned response so
+// the order of effects doesn't matter for the test. The page fires
+// both /endpoint-catalogue and the list URL in parallel, and
+// neither orders deterministically against React's effect queue.
+function defaultApiFetchMock(url: string) {
+  if (String(url).includes("/endpoint-catalogue")) {
+    return Promise.resolve(CATALOGUE_RESPONSE);
+  }
+  return Promise.resolve(LIST_RESPONSE);
+}
+
 describe("AdminRateLimitOverridesPage", () => {
   const apiFetchMock = vi.mocked(apiFetch);
   const useAuthMock = vi.mocked(useAuth);
 
   beforeEach(() => {
     apiFetchMock.mockReset();
+    // Default: every URL the page fetches resolves with the canned
+    // response (catalogue or list). Individual tests can still chain
+    // ``mockImplementationOnce`` if they need a specific sequence.
+    apiFetchMock.mockImplementation(((url: string) =>
+      defaultApiFetchMock(url)) as never);
     replaceMock.mockReset();
     useAuthMock.mockReturnValue({
       user: SUPERADMIN as never,
@@ -88,8 +114,6 @@ describe("AdminRateLimitOverridesPage", () => {
   });
 
   it("renders overrides for a superadmin", async () => {
-    apiFetchMock.mockResolvedValueOnce(LIST_RESPONSE as never);
-
     render(<AdminRateLimitOverridesPage />);
 
     await screen.findByText("auth.login");
@@ -118,8 +142,6 @@ describe("AdminRateLimitOverridesPage", () => {
   });
 
   it("opens the add modal when Add override is clicked", async () => {
-    apiFetchMock.mockResolvedValueOnce(LIST_RESPONSE as never);
-
     render(<AdminRateLimitOverridesPage />);
 
     await screen.findByText("auth.login");
@@ -133,8 +155,6 @@ describe("AdminRateLimitOverridesPage", () => {
   });
 
   it("opens the edit modal pre-populated with the row's values", async () => {
-    apiFetchMock.mockResolvedValueOnce(LIST_RESPONSE as never);
-
     render(<AdminRateLimitOverridesPage />);
 
     await screen.findByText("auth.login");
@@ -147,10 +167,6 @@ describe("AdminRateLimitOverridesPage", () => {
   });
 
   it("opens the delete confirm dialog and POSTs DELETE on confirm", async () => {
-    apiFetchMock.mockResolvedValueOnce(LIST_RESPONSE as never); // initial GET
-    apiFetchMock.mockResolvedValueOnce(undefined as never); // DELETE
-    apiFetchMock.mockResolvedValueOnce({ items: [], total: 0 } as never); // refresh
-
     render(<AdminRateLimitOverridesPage />);
 
     await screen.findByText("auth.login");
@@ -173,9 +189,6 @@ describe("AdminRateLimitOverridesPage", () => {
   });
 
   it("filters by endpoint pattern via the search input", async () => {
-    apiFetchMock.mockResolvedValueOnce(LIST_RESPONSE as never);
-    apiFetchMock.mockResolvedValueOnce({ items: [], total: 0 } as never);
-
     render(<AdminRateLimitOverridesPage />);
 
     await screen.findByText("auth.login");
@@ -184,8 +197,84 @@ describe("AdminRateLimitOverridesPage", () => {
       { target: { value: "auth.register" } },
     );
     await waitFor(() => {
-      const lastCall = apiFetchMock.mock.calls.at(-1);
-      expect(String(lastCall![0])).toContain("endpoint_pattern=auth.register");
+      const listCalls = apiFetchMock.mock.calls.filter(
+        (c) =>
+          String(c[0]).startsWith("/api/v1/admin/rate-limit-overrides?") ||
+          String(c[0]).startsWith("/api/v1/admin/rate-limit-overrides?"),
+      );
+      const lastListCall = listCalls.at(-1);
+      expect(lastListCall).toBeTruthy();
+      expect(String(lastListCall![0])).toContain(
+        "endpoint_pattern=auth.register",
+      );
     });
+  });
+
+  it("renders the endpoint catalogue items in the form dropdown", async () => {
+    render(<AdminRateLimitOverridesPage />);
+
+    await screen.findByText("auth.login");
+    fireEvent.click(screen.getByRole("button", { name: /Add override/i }));
+    await screen.findByRole("heading", { name: /New override/i });
+
+    // The dropdown shows every catalogue pattern, and pre-auth ones
+    // are annotated so the operator sees the warning at pick time.
+    const dropdown = screen.getByLabelText(
+      "Endpoint pattern",
+    ) as HTMLSelectElement;
+    const optionValues = Array.from(dropdown.options).map((o) => o.value);
+    expect(optionValues).toContain("auth.login");
+    expect(optionValues).toContain("auth.register");
+    expect(optionValues).toContain("reports.query");
+    expect(optionValues).toContain("accounts.adjust_balance");
+
+    // Pre-auth annotation visible on at least one option.
+    const preAuthOption = Array.from(dropdown.options).find(
+      (o) => o.value === "auth.login",
+    );
+    expect(preAuthOption?.textContent).toMatch(/pre-auth/i);
+  });
+
+  it("validates that an endpoint pattern is selected before submit", async () => {
+    render(<AdminRateLimitOverridesPage />);
+
+    await screen.findByText("auth.login");
+    fireEvent.click(screen.getByRole("button", { name: /Add override/i }));
+    await screen.findByRole("heading", { name: /New override/i });
+
+    // Leave the dropdown at its default empty value and submit. The
+    // page-level guard surfaces the error before any network call.
+    // (The native HTML5 ``required`` on the <select> would also
+    // block submission, but we additionally surface a friendly
+    // message via setSubmitError.)
+    const form = screen.getByRole("heading", {
+      name: /New override/i,
+    }).closest("form");
+    expect(form).not.toBeNull();
+    // Bypass the browser's built-in required-field gate so we can
+    // assert the JS-level validator fires too.
+    form!.setAttribute("novalidate", "true");
+    // Fill the required numeric fields so the only missing one is
+    // the dropdown.
+    fireEvent.change(screen.getByLabelText(/^Org id$/i), {
+      target: { value: "1" },
+    });
+    fireEvent.change(screen.getByLabelText(/Max requests/i), {
+      target: { value: "10" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    expect(
+      await screen.findByText(/Pick an endpoint from the catalogue/i),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the pre-auth limitation callout", async () => {
+    render(<AdminRateLimitOverridesPage />);
+
+    await screen.findByText("auth.login");
+    expect(
+      screen.getByRole("note", { name: /Pre-auth limitation/i }),
+    ).toBeInTheDocument();
   });
 });

@@ -23,6 +23,21 @@ Failure stance. If the resolver raises, or Redis is unavailable, or
 the JWT is unreadable, the helper returns the default. That matches
 the project-wide rate-limit fail-open posture and prevents an
 override-system bug from locking out the platform.
+
+Pre-auth limitation. ``dynamic_limit()`` requires an authenticated
+identity (a ``user_id`` or ``org_id`` extractable from the request)
+to resolve org / user overrides. Pre-auth endpoints (login,
+register, password-reset request, check-username, email
+verification, MFA challenge step, invitation preview / accept, the
+cookie-only refresh ``/verify`` route, etc.) have no Bearer JWT yet
+when the limiter callable runs, so they always fall back to the
+static default regardless of whether an override row exists. This
+is by design; per-identity throttling is meaningless before an
+identity is known. Pre-auth rate limits should be tuned by editing
+the static slowapi decorator default itself, not by creating an
+override. The full list of pre-auth patterns lives in
+``app.rate_limit_endpoint_catalogue.PRE_AUTH_PATTERNS`` and the
+admin UI surfaces a warning when one of those patterns is picked.
 """
 from __future__ import annotations
 
@@ -234,6 +249,30 @@ def dynamic_limit(endpoint_pattern: str, default: str) -> Callable[..., str]:
       async — bridged via ``asyncio.run`` on a fresh loop iff no
       running loop is detected (slowapi 0.1.9's evaluate path is
       currently sync but the bridge tolerates both).
+
+    Pre-auth endpoints WILL NOT honour per-org / per-user overrides.
+    The closure short-circuits to ``default`` whenever neither a
+    ``user_id`` nor an ``org_id`` can be extracted from the request,
+    which is always the case for the following patterns:
+
+    - ``auth.check_username``
+    - ``auth.forgot_password``
+    - ``auth.login``
+    - ``auth.mfa_email_code``
+    - ``auth.mfa_email_verify``
+    - ``auth.mfa_recovery``
+    - ``auth.mfa_verify``
+    - ``auth.register``
+    - ``auth.resend_verification_public``
+    - ``auth.verify`` (cookie-based, no Bearer)
+    - ``auth.verify_email``
+    - ``org_members.accept_invitation``
+    - ``org_members.preview_invitation``
+
+    Tune those routes via the static ``@limiter.limit("N/period")``
+    string at the decorator site. See module docstring above for the
+    full rationale; the catalogue is the authoritative list at
+    ``app.rate_limit_endpoint_catalogue.PRE_AUTH_PATTERNS``.
     """
     # Force-parse the default once. If this raises, the import
     # explodes loudly instead of silently shipping a broken decorator.

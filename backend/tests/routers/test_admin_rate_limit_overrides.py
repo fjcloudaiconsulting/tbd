@@ -429,3 +429,108 @@ async def test_list_filters_by_org(session_factory):
     items = resp.json()["items"]
     assert len(items) == 1
     assert items[0]["org_id"] == seeded["org_id"]
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_unknown_endpoint_pattern(session_factory):
+    """An override referencing a pattern not in the catalogue is 422'd
+    before it ever reaches the DB. The error body includes the full
+    catalogue so the caller can recover without a separate round-trip.
+    """
+    from app.rate_limit_endpoint_catalogue import sorted_patterns
+
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/admin/rate-limit-overrides",
+        json={
+            "org_id": seeded["org_id"],
+            "endpoint_pattern": "fake.endpoint",
+            "max_requests": 100,
+            "period_seconds": 60,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    # The error message lists at least one known pattern, signalling
+    # that the catalogue made it into the 422 body.
+    body = resp.text
+    catalogue = sorted_patterns()
+    assert "auth.login" in body
+    # And the typo'd value is echoed back so the operator sees what
+    # was rejected.
+    assert "fake.endpoint" in body
+    # And every catalogue entry shows up — keeps the response usable
+    # as a recovery hint instead of a guessing game.
+    for pattern in catalogue:
+        assert pattern in body
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_unknown_endpoint_pattern(session_factory):
+    """Same catalogue guard applies on PATCH so an operator can't
+    typo a rename either.
+    """
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/admin/rate-limit-overrides",
+        json={
+            "org_id": seeded["org_id"],
+            "endpoint_pattern": "auth.login",
+            "max_requests": 100,
+            "period_seconds": 60,
+        },
+    )
+    override_id = resp.json()["id"]
+    resp = client.patch(
+        f"/api/v1/admin/rate-limit-overrides/{override_id}",
+        json={"endpoint_pattern": "transactiosn.list"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "transactiosn.list" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_endpoint_catalogue_endpoint_returns_list(session_factory):
+    """The GET catalogue endpoint returns a deterministic sorted list
+    that matches the in-memory frozenset. Pre-auth patterns are
+    flagged in a second key so the admin UI can warn the operator
+    without re-deriving the list client-side.
+    """
+    from app.rate_limit_endpoint_catalogue import (
+        PRE_AUTH_PATTERNS,
+        sorted_patterns,
+    )
+
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    resp = client.get(
+        "/api/v1/admin/rate-limit-overrides/endpoint-catalogue"
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["patterns"] == sorted_patterns()
+    assert set(payload["pre_auth_patterns"]) == PRE_AUTH_PATTERNS
+    # Sorted contract for the UI dropdown.
+    assert payload["pre_auth_patterns"] == sorted(
+        payload["pre_auth_patterns"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_endpoint_catalogue_non_superadmin_403(session_factory):
+    """The catalogue endpoint is superadmin-gated like the rest of
+    the router. A regular member 403s, not 200-with-list (which
+    would leak the route inventory to non-admins).
+    """
+    seeded = await _seed(session_factory)
+    for who in ("org_admin", "member"):
+        app = _make_app(session_factory, _resolver_for(seeded, who))
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/admin/rate-limit-overrides/endpoint-catalogue"
+        )
+        assert resp.status_code == 403, who
