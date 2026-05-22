@@ -176,3 +176,103 @@ async def test_revocation_row_flips_snapshot(session_factory):
     body = client.get("/api/v1/settings/ai-providers/consent").json()
     assert body["has_consent"] is False
     assert body["allow_training"] is False
+
+
+# ----------------------------------------------------------------
+# Consent-version pin (architect round-3 blocker). The server compares
+# the POST body's consent_version against the env-pinned current
+# version (AI_NATIVE_CURRENT_CONSENT_VERSION). Any mismatch -- older
+# OR newer -- is rejected so a stale tab can't replay an old click and
+# a forged-future-version payload can't pre-accept a ToS that hasn't
+# shipped yet. Spec §3.5 (T-ToS).
+# ----------------------------------------------------------------
+
+
+async def test_consent_post_rejects_outdated_version(
+    session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        app_settings, "ai_native_current_consent_version", "ai-tos-2026-05-22"
+    )
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.post(
+        "/api/v1/settings/ai-providers/consent",
+        json={
+            "consent_version": "ai-tos-2025-12-01",
+            "allow_training": True,
+        },
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["code"] == "consent_version_outdated"
+    assert "ai-tos-2026-05-22" in detail["message"]
+    assert detail["current_consent_version"] == "ai-tos-2026-05-22"
+
+
+async def test_consent_post_rejects_future_version(
+    session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        app_settings, "ai_native_current_consent_version", "ai-tos-2026-05-22"
+    )
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.post(
+        "/api/v1/settings/ai-providers/consent",
+        json={
+            "consent_version": "ai-tos-2999-01-01",
+            "allow_training": True,
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "consent_version_outdated"
+
+
+async def test_consent_post_accepts_current_version(
+    session_factory, monkeypatch
+):
+    monkeypatch.setattr(
+        app_settings, "ai_native_current_consent_version", "ai-tos-2026-05-22"
+    )
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    resp = client.post(
+        "/api/v1/settings/ai-providers/consent",
+        json={
+            "consent_version": "ai-tos-2026-05-22",
+            "allow_training": True,
+        },
+    )
+    assert resp.status_code == 201
+
+
+async def test_consent_get_returns_current_pinned_version(
+    session_factory, monkeypatch
+):
+    """GET must expose the pinned version so the FE re-prompts correctly
+    after a ToS bump even if the org has an older row on file.
+    """
+    monkeypatch.setattr(
+        app_settings, "ai_native_current_consent_version", "ai-tos-2026-05-22"
+    )
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    body = client.get("/api/v1/settings/ai-providers/consent").json()
+    assert body["current_consent_version"] == "ai-tos-2026-05-22"

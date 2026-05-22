@@ -146,6 +146,11 @@ services:
       - key: AI_NATIVE_ENABLED
         scope: RUN_AND_BUILD_TIME
         value: "false"
+      # Pinned ToS version. Bump to force every org to re-consent on
+      # the next admin-UI mount. Existing rows are never auto-upgraded.
+      - key: AI_NATIVE_CURRENT_CONSENT_VERSION
+        scope: RUN_AND_BUILD_TIME
+        value: "ai-tos-2026-05-22"
       - key: MAILGUN_API_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET

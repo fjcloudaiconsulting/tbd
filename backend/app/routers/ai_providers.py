@@ -427,6 +427,7 @@ async def get_consent(
         consented_by_user_id=snapshot.consented_by_user_id,
         consented_at=snapshot.consented_at,
         has_consent=snapshot.has_consent,
+        current_consent_version=settings.ai_native_current_consent_version,
     )
 
 

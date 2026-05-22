@@ -14,9 +14,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
+from fastapi import HTTPException, status
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.models.org_ai_consent import OrgAIConsent
 from app.services import audit_service
 
@@ -104,6 +106,23 @@ async def write_consent_row(
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> OrgAIConsent:
+    # Pin the ToS version. POSTs MUST carry the current pinned
+    # consent_version; any mismatch (older or newer) is rejected so a
+    # stale browser tab can't replay an old consent payload after a
+    # ToS bump, and a forged-future-version payload can't pre-accept
+    # a ToS that hasn't shipped yet. Spec §3.5 (T-ToS).
+    current = settings.ai_native_current_consent_version
+    if consent_version != current:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "consent_version_outdated",
+                "message": (
+                    f"Consent version is outdated. Current is {current}."
+                ),
+                "current_consent_version": current,
+            },
+        )
     now = datetime.now(timezone.utc)
     row = OrgAIConsent(
         org_id=org_id,

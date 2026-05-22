@@ -40,7 +40,13 @@ class ConsentResponse(BaseModel):
 
 
 class ConsentSnapshotResponse(BaseModel):
-    """Effective consent state derived from the latest non-revoked row."""
+    """Effective consent state derived from the latest non-revoked row.
+
+    ``current_consent_version`` is the server's pinned ToS version
+    (from ``AI_NATIVE_CURRENT_CONSENT_VERSION``). The frontend reads
+    this BEFORE POSTing — POSTs that don't carry this exact string are
+    rejected with ``consent_version_outdated``.
+    """
 
     allow_training: bool
     allow_rag: bool
@@ -49,3 +55,4 @@ class ConsentSnapshotResponse(BaseModel):
     consented_by_user_id: Optional[int] = None
     consented_at: Optional[datetime] = None
     has_consent: bool
+    current_consent_version: str
