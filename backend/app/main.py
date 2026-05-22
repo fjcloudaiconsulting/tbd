@@ -20,7 +20,7 @@ from app import redis_client
 from app.database import engine
 from app.logging import setup_logging
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_analytics, admin_announcements, admin_audit, admin_orgs, admin_roles, admin_subscriptions, admin_users, announcements, auth, budgets, categories, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, recurring, settings, subscriptions, tags, transactions, users
+from app.routers import account_types, accounts, admin, admin_analytics, admin_announcements, admin_audit, admin_orgs, admin_roles, admin_subscriptions, admin_users, announcements, auth, budgets, categories, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, recurring, reports, settings, subscriptions, tags, transactions, users
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 # Setup JSON logging early so uvicorn's loggers are captured
@@ -424,6 +424,7 @@ app.include_router(feedback.router)
 app.include_router(announcements.router)
 app.include_router(admin_announcements.router)
 app.include_router(notifications.router)
+app.include_router(reports.router)
 
 
 @app.get("/health")
