@@ -27,27 +27,24 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+
+import {
+  DASHBOARD_TOUR_STEPS,
+  EXTENDED_TOUR_STEPS,
+  STEP_COPY,
+  TOUR_FLAG_KEY,
+  TOUR_FLAG_VALUE_DASHBOARD,
+  TOUR_FLAG_VALUE_EXTENDED,
+  pagePrefix,
+  routeForPrefix,
+} from "@/lib/help/tour";
 
 import {
   TourContext,
   useTourEngine,
   type TourApi,
 } from "./useTour";
-
-// Same sessionStorage key the onboarding wizard writes when the user
-// opts into the post-wizard tour. We auto-start the dashboard tour
-// when this is set AND the user lands on /dashboard. The flag is
-// cleared on start so a reload does not re-trigger.
-const TOUR_FLAG_KEY = "tbd-pending-dashboard-tour";
-
-const DASHBOARD_TOUR_STEPS = [
-  "dashboard.header",
-  "dashboard.import-cta",
-  "dashboard.period-nav",
-  "dashboard.on-track-tile",
-  "dashboard.account-forecast",
-];
 
 function DashboardTourAutoStart({ api }: { api: TourApi }) {
   const pathname = usePathname();
@@ -59,19 +56,49 @@ function DashboardTourAutoStart({ api }: { api: TourApi }) {
     } catch {
       return;
     }
-    if (flag !== "1") return;
+    if (
+      flag !== TOUR_FLAG_VALUE_DASHBOARD &&
+      flag !== TOUR_FLAG_VALUE_EXTENDED
+    ) {
+      return;
+    }
     try {
       window.sessionStorage.removeItem(TOUR_FLAG_KEY);
     } catch {
       // best-effort
     }
+    const steps =
+      flag === TOUR_FLAG_VALUE_EXTENDED
+        ? EXTENDED_TOUR_STEPS
+        : DASHBOARD_TOUR_STEPS;
     // Defer one tick so the dashboard's TourAnchor DOM is mounted
     // before the engine measures positions.
     const t = window.setTimeout(() => {
-      api.start(DASHBOARD_TOUR_STEPS);
+      api.start(steps);
     }, 100);
     return () => window.clearTimeout(t);
   }, [pathname, api]);
+  return null;
+}
+
+/**
+ * Watches the active step's page prefix and pushes the router when
+ * the user is on a different surface. The overlay's anchor-missing
+ * fallback would otherwise auto-skip past every off-route step.
+ * Only fires while the tour is active.
+ */
+function TourRouter({ api }: { api: TourApi }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const currentStep = api.currentStep;
+  useEffect(() => {
+    if (!api.isActive) return;
+    if (!currentStep) return;
+    const route = routeForPrefix(pagePrefix(currentStep));
+    if (!route) return;
+    if (pathname === route) return;
+    router.push(route);
+  }, [api.isActive, currentStep, pathname, router]);
   return null;
 }
 
@@ -104,37 +131,6 @@ function usePrefersReducedMotion(): boolean {
   }, []);
   return reduced;
 }
-
-interface TourStepCopy {
-  title: string;
-  body: string;
-}
-
-// Step copy in one place so the wizard team can tweak voice without
-// chasing JSX. Keys match the dot-namespaced anchor ids the dashboard
-// already wired through PR #226.
-const STEP_COPY: Record<string, TourStepCopy> = {
-  "dashboard.header": {
-    title: "Welcome to your dashboard",
-    body: "This is where you will see how the month is going at a glance. Net cashflow, balances, and what is coming up.",
-  },
-  "dashboard.import-cta": {
-    title: "Bring in your transactions",
-    body: "Import a bank export here, or add transactions one by one. The Better Decision works with whatever you have.",
-  },
-  "dashboard.period-nav": {
-    title: "Move through periods",
-    body: "Each month is its own billing period. Use these arrows to look back at history or peek ahead.",
-  },
-  "dashboard.on-track-tile": {
-    title: "How the month is shaping up",
-    body: "On Track tells you if your spending plan and your reality agree. Green means you are on it. Yellow means it is worth a look.",
-  },
-  "dashboard.account-forecast": {
-    title: "Account forecast",
-    body: "We project each account out to the end of the period using your recurring transactions and budgets.",
-  },
-};
 
 function TourOverlay({ api }: { api: TourApi }) {
   const reducedMotion = usePrefersReducedMotion();
@@ -176,13 +172,30 @@ function TourOverlay({ api }: { api: TourApi }) {
     return () => window.clearTimeout(t);
   }, [api, rect]);
 
-  // Escape closes the tour. The overlay is informative
-  // (aria-modal="false") so we do not trap focus, but a keyboard
-  // user should still be able to dismiss it without grabbing a mouse.
+  // Keyboard nav. The overlay is informative (aria-modal="false") so
+  // we don't trap focus, but the tour itself has to be fully usable
+  // from the keyboard:
+  //   - Escape closes
+  //   - ArrowRight advances (matches "Next" button)
+  //   - ArrowLeft goes back (matches "Back" button)
+  // We deliberately leave Tab/Enter/Space to the browser's default
+  // button focus handling so the card's own buttons keep their
+  // standard semantics.
   useEffect(() => {
     if (!api.isActive) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") api.close();
+      if (e.key === "Escape") {
+        api.close();
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        api.next();
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        api.prev();
+        return;
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -313,6 +326,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
     <TourContext.Provider value={api}>
       {children}
       <DashboardTourAutoStart api={api} />
+      <TourRouter api={api} />
       <TourOverlay api={api} />
     </TourContext.Provider>
   );

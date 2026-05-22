@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import HelpTooltip from "@/components/help/HelpTooltip";
 import Tooltip from "@/components/Tooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -309,7 +310,10 @@ export default function AccountsPage() {
 
   return (
     <AppShell>
-      <div className="mb-8 flex items-start gap-1">
+      <div
+        className="mb-8 flex items-start gap-1"
+        data-tour-id="accounts.title"
+      >
         <h1 className={`${pageTitle} mb-0`}>Accounts</h1>
         <HelpAnchor section="accounts" label="Accounts" />
       </div>
@@ -455,7 +459,10 @@ export default function AccountsPage() {
                       simply count from 0. */}
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
                     <div className="w-full sm:flex-1">
-                      <label htmlFor="acct-opening-balance" className={label}>Opening balance</label>
+                      <span className="mb-1.5 flex items-center gap-1">
+                        <label htmlFor="acct-opening-balance" className={`${label} mb-0`}>Opening balance</label>
+                        <HelpTooltip k="account.opening-balance" />
+                      </span>
                       <input
                         id="acct-opening-balance"
                         type="number"

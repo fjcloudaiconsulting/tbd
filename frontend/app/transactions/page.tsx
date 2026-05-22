@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import Tooltip from "@/components/Tooltip";
+import HelpTooltip from "@/components/help/HelpTooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -975,7 +976,7 @@ function TransactionsPageContent() {
         </div>
       )}
       <div className="mb-8 flex items-center justify-between">
-        <div className="flex items-start gap-1">
+        <div className="flex items-start gap-1" data-tour-id="transactions.title">
           <h1 className={`${pageTitle} mb-0`}>Transactions</h1>
           <HelpAnchor section="transactions" label="Transactions" />
         </div>
@@ -1028,7 +1029,10 @@ function TransactionsPageContent() {
           </div>
           <form onSubmit={handleAdd} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div>
-              <label htmlFor="tx-account" className={label}>{formMode === "transfer" ? "From Account" : "Account"}</label>
+              <span className="mb-1.5 flex items-center gap-1">
+                <label htmlFor="tx-account" className={`${label} mb-0`}>{formMode === "transfer" ? "From Account" : "Account"}</label>
+                {formMode === "transaction" ? <HelpTooltip k="tx.account" /> : null}
+              </span>
               <select id="tx-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
                 <option value="">Select account</option>
                 {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -1044,7 +1048,10 @@ function TransactionsPageContent() {
               </div>
             ) : (
               <div>
-                <label htmlFor="tx-type" className={label}>Type</label>
+                <span className="mb-1.5 flex items-center gap-1">
+                  <label htmlFor="tx-type" className={`${label} mb-0`}>Type</label>
+                  <HelpTooltip k="tx.type" />
+                </span>
                 <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
                   <option value="expense">Expense</option>
                   <option value="income">Income</option>
@@ -1059,7 +1066,10 @@ function TransactionsPageContent() {
             )}
             {formMode === "transfer" && (
               <div>
-                <label htmlFor="tx-transfer-cat" className={label}>Transfer category</label>
+                <span className="mb-1.5 flex items-center gap-1">
+                  <label htmlFor="tx-transfer-cat" className={`${label} mb-0`}>Transfer category</label>
+                  <HelpTooltip k="transfer.category" />
+                </span>
                 <CategorySelect id="tx-transfer-cat" categories={categories} value={formTransferCatId} onChange={setFormTransferCatId} typeFilter="BOTH" className={input} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                 <p className="mt-1 text-[10px] text-text-muted">Transfers use one category shared by both legs. Pick Transfer, Credit Card Payment, or another transfer-compatible category you create. Leave empty to use the default Transfer category.</p>
               </div>
@@ -1097,7 +1107,10 @@ function TransactionsPageContent() {
             </div>
             {formMode === "transaction" && (
               <div>
-                <label htmlFor="tx-tags" className={label}>Tags</label>
+                <span className="mb-1.5 flex items-center gap-1">
+                  <label htmlFor="tx-tags" className={`${label} mb-0`}>Tags</label>
+                  <HelpTooltip k="tx.tags" />
+                </span>
                 <TagChipInput
                   id="tx-tags"
                   value={formTags}
@@ -1107,7 +1120,10 @@ function TransactionsPageContent() {
               </div>
             )}
             <div>
-              <label htmlFor="tx-amount" className={label}>Amount</label>
+              <span className="mb-1.5 flex items-center gap-1">
+                <label htmlFor="tx-amount" className={`${label} mb-0`}>Amount</label>
+                <HelpTooltip k="tx.amount" />
+              </span>
               <input id="tx-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
             </div>
             <div>
@@ -1154,7 +1170,7 @@ function TransactionsPageContent() {
                 </label>
                 {formRecurring && (
                   <>
-                    <div>
+                    <div className="flex items-center gap-1">
                       <label htmlFor="tx-freq" className="sr-only">Frequency</label>
                       <select id="tx-freq" value={formFrequency} onChange={(e) => setFormFrequency(e.target.value)} className={input}>
                         <option value="weekly">Weekly</option>
@@ -1163,10 +1179,12 @@ function TransactionsPageContent() {
                         <option value="quarterly">Quarterly</option>
                         <option value="yearly">Yearly</option>
                       </select>
+                      <HelpTooltip k="tx.frequency" />
                     </div>
                     <label className="flex items-center gap-2 text-xs text-text-muted">
                       <input type="checkbox" checked={formAutoSettle} onChange={(e) => setFormAutoSettle(e.target.checked)} className="rounded border-border" />
                       Auto-settle
+                      <HelpTooltip k="tx.auto-settle" />
                     </label>
                   </>
                 )}
