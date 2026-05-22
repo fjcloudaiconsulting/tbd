@@ -168,11 +168,18 @@ async def auth_status(db: AsyncSession = Depends(get_db)):
     ``NEXT_PUBLIC_*``) makes a backend ``CAPTCHA_REQUIRED=false`` flip a
     real rollback — the next page load drops both the verify check and
     the widget render together.
+
+    ``billing_ui_enabled`` gates the customer-facing plan / trial /
+    billing surface (trial banner, settings billing page + tab,
+    landing-page trial copy). Same flip-to-rollback contract as
+    ``captcha_required`` — backend False hides the surface on the next
+    page load, backend True restores it.
     """
     user_count = await db.scalar(select(func.count()).select_from(User))
     return {
         "needs_setup": user_count == 0,
         "captcha_required": app_settings.captcha_required,
+        "billing_ui_enabled": app_settings.billing_ui_enabled,
     }
 
 

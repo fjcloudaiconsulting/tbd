@@ -45,7 +45,9 @@ const jsonLd = {
     price: "0",
     priceCurrency: "EUR",
     availability: "https://schema.org/InStock",
-    description: "14-day free trial",
+    // Trial copy hidden pending payment platform launch. Restore the
+    // "14-day free trial" description when BILLING_UI_ENABLED flips
+    // to true (Option A from specs/2026-05-21-hide-billing-ui-until-payment.md).
   },
 };
 

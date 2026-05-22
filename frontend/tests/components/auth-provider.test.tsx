@@ -48,13 +48,14 @@ const TEST_USER: User = {
 
 
 function Harness() {
-  const { user, loading, needsSetup, login, logout } = useAuth();
+  const { user, loading, needsSetup, billingUiEnabled, login, logout } = useAuth();
   const [error, setError] = useState("none");
 
   return (
     <div>
       <div data-testid="loading">{String(loading)}</div>
       <div data-testid="needs-setup">{String(needsSetup)}</div>
+      <div data-testid="billing-ui-enabled">{String(billingUiEnabled)}</div>
       <div data-testid="user">{user?.email ?? "none"}</div>
       <div data-testid="error">{error}</div>
       <button
@@ -487,6 +488,63 @@ describe("AuthProvider", () => {
     expect(setAccessTokenMock).toHaveBeenCalledTimes(2);
     expect(setAccessTokenMock).toHaveBeenNthCalledWith(1, "restored-token");
     expect(setAccessTokenMock).toHaveBeenNthCalledWith(2, null);
+  });
+
+  // ── BILLING_UI_ENABLED kill switch flows from /auth/status into context ─
+
+  it("defaults billingUiEnabled to false before /auth/status resolves", async () => {
+    // Even before the status fetch settles, gated components must see
+    // billingUiEnabled=false so the trial banner / settings tab stay
+    // hidden on first render. (Pre-payment is the safe default.)
+    apiFetchMock.mockImplementation(
+      () => new Promise(() => {}), // never resolves
+    );
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    expect(screen.getByTestId("billing-ui-enabled")).toHaveTextContent("false");
+  });
+
+  it("flows billing_ui_enabled=true from /auth/status into context", async () => {
+    apiFetchMock
+      .mockResolvedValueOnce({ needs_setup: false, billing_ui_enabled: true })
+      .mockResolvedValueOnce({ access_token: "restored-token" })
+      .mockResolvedValueOnce(TEST_USER);
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+    expect(screen.getByTestId("billing-ui-enabled")).toHaveTextContent("true");
+  });
+
+  it("treats missing billing_ui_enabled in status payload as false", async () => {
+    // Defensive: an older API revision that doesn't include the new
+    // key must keep the customer-facing billing surface hidden.
+    apiFetchMock
+      .mockResolvedValueOnce({ needs_setup: false })
+      .mockResolvedValueOnce({ access_token: "restored-token" })
+      .mockResolvedValueOnce(TEST_USER);
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+    expect(screen.getByTestId("billing-ui-enabled")).toHaveTextContent("false");
   });
 
   it("keeps loading=true on persistent transient /auth/me so AppShell doesn't redirect with a valid token", async () => {

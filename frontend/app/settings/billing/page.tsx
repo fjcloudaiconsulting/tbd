@@ -20,7 +20,7 @@ import {
 import type { Plan, SubscriptionDetail } from "@/lib/types";
 
 export default function BillingPage() {
-  const { user, loading, refreshMe } = useAuth();
+  const { user, loading, refreshMe, billingUiEnabled } = useAuth();
   const router = useRouter();
   const [subscription, setSubscription] = useState<SubscriptionDetail | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
@@ -42,6 +42,13 @@ export default function BillingPage() {
 
   useEffect(() => {
     if (!owner) return;
+    // Customer-facing billing surface kill switch — skip the data
+    // fetch entirely when the flag is off. The page short-circuits
+    // to the empty state below.
+    if (!billingUiEnabled) {
+      setLoadingSub(false);
+      return;
+    }
     Promise.all([
       apiFetch<SubscriptionDetail>("/api/v1/subscriptions"),
       apiFetch<Plan[]>("/api/v1/plans"),
@@ -52,7 +59,7 @@ export default function BillingPage() {
       })
       .catch((err) => setError(extractErrorMessage(err)))
       .finally(() => setLoadingSub(false));
-  }, [owner]);
+  }, [owner, billingUiEnabled]);
 
   async function handleChangePlan(planSlug: string, interval: string) {
     setError("");
@@ -97,6 +104,28 @@ export default function BillingPage() {
       <SettingsLayout activeTab="/settings/billing">
         <div className="flex justify-center py-12">
           <Spinner />
+        </div>
+      </SettingsLayout>
+    );
+  }
+
+  // Customer-facing billing surface kill switch — render the
+  // architect-locked empty state for direct URL hits. Page stays
+  // reachable so existing bookmarks don't 404; we just don't show
+  // any plan / billing data until the payment platform is wired.
+  if (!billingUiEnabled) {
+    return (
+      <SettingsLayout activeTab="/settings/billing">
+        <div className={card}>
+          <div className="p-6 text-center">
+            <h2 className="mb-2 text-lg font-semibold text-text-primary">
+              Billing
+            </h2>
+            <p className="text-sm text-text-muted">
+              Subscriptions are not available yet. We will let you know when
+              paid plans launch.
+            </p>
+          </div>
         </div>
       </SettingsLayout>
     );
