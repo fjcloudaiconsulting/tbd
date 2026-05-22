@@ -11,6 +11,7 @@ import {
   ChevronUp,
   CreditCard,
   FileText,
+  Gauge,
   HelpCircle,
   LayoutDashboard,
   LogOut,
@@ -179,6 +180,19 @@ const systemItems: readonly SystemNavItem[] = [
     label: "Plan Catalog",
     permission: "plans.manage",
     icon: <CreditCard {...NAV_ICON_PROPS} />,
+  },
+  {
+    href: "/admin/rate-limit-overrides",
+    label: "Rate limits",
+    // No DB-role permission key exists for rate-limit overrides
+    // (architect-locked superadmin-only, see L4.10 PR). The
+    // forward-compatible gate in lib/auth.ts short-circuits true on
+    // is_superadmin and false on anything else, so the
+    // ``rate_limit_overrides.manage`` key filters correctly today
+    // and is ready for a future fine-grained permission without
+    // touching this file.
+    permission: "rate_limit_overrides.manage",
+    icon: <Gauge {...NAV_ICON_PROPS} />,
   },
   {
     href: "/system/announcements",

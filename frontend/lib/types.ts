@@ -761,3 +761,24 @@ export interface NotificationListResponse {
 export interface NotificationUnseenCountResponse {
   count: number;
 }
+
+// L4.10 — rate-limit overrides admin shape.
+export interface RateLimitOverride {
+  id: number;
+  org_id: number | null;
+  user_id: number | null;
+  endpoint_pattern: string;
+  max_requests: number;
+  period_seconds: number;
+  expires_at: string | null;
+  created_by_user_id: number | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RateLimitOverrideListResponse {
+  items: RateLimitOverride[];
+  total: number;
+}
+

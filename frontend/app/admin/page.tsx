@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ChevronRight,
   CreditCard,
+  Gauge,
   ScrollText,
   ShieldCheck,
   XCircle,
@@ -86,6 +87,14 @@ const ADMIN_TILES: readonly AdminTile[] = [
       "Every subscription across the platform, filterable by status and plan. Revenue figures are mock until payments go live.",
     permission: "subscriptions.view",
     Icon: CreditCard,
+  },
+  {
+    href: "/admin/rate-limit-overrides",
+    title: "Rate-limit overrides",
+    description:
+      "Per-org and per-user budget adjustments for the default request rate limits.",
+    permission: "rate_limit_overrides.manage",
+    Icon: Gauge,
   },
 ];
 
