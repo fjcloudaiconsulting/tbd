@@ -2,14 +2,15 @@ import re
 import secrets
 from datetime import datetime, timezone
 
+import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.user import User
-from app.rate_limit import limiter
+from app.rate_limit import get_client_ip, limiter
 from app.schemas.auth import (
     USERNAME_MAX_LENGTH,
     USERNAME_MIN_LENGTH,
@@ -18,7 +19,13 @@ from app.schemas.auth import (
 )
 from app.schemas.user import PasswordChange, ProfileUpdate
 from app.security import create_email_verification_token, hash_password, verify_password
+from app.services import audit_service
 from app.services.email_service import send_verification_email
+
+
+def _request_id() -> str | None:
+    """Pull the per-request id bound by RequestContextMiddleware (L4.9)."""
+    return structlog.contextvars.get_contextvars().get("request_id")
 
 _USERNAME_RE = re.compile(USERNAME_PATTERN)
 
@@ -66,6 +73,7 @@ async def update_profile(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     if body.username is not None and body.username != current_user.username:
         # Enforce the stricter /register rules only on actual changes so
@@ -97,6 +105,12 @@ async def update_profile(
     email_changing = (
         body.email is not None and body.email != current_user.email
     )
+    # Snapshot the old email BEFORE the mutation so the post-commit
+    # audit row carries the OLD address. The new address goes into
+    # detail.new_email — there's no `target_user_email` column on
+    # audit_events today, so the user-target identity is carried via
+    # actor_email (self) + detail.
+    old_email_for_audit = current_user.email
     if email_changing:
         # Closes S-P1-2: without re-auth, a session-only compromise could
         # swap the recovery channel to an attacker-controlled inbox and
@@ -182,6 +196,32 @@ async def update_profile(
     await db.commit()
     await db.refresh(current_user, ["organization"])
 
+    if email_changing:
+        # Audit AFTER the business commit succeeds. Independent-session
+        # write — a failure here does not roll back the email change.
+        # PR3 of the notification train uses this row as the trigger
+        # source for the user.email.changed in-app + email notification.
+        # No target_user_id column on audit_events today; the actor
+        # (self) carries the user identity, and the OLD email goes in
+        # actor_email so a future "who was this" lookup after a malicious
+        # email swap can recover the original address. New email lives
+        # in detail.new_email.
+        await audit_service.record_audit_event(
+            session_factory,
+            event_type="user.email.changed",
+            actor_user_id=current_user.id,
+            actor_email=old_email_for_audit,
+            target_org_id=current_user.org_id,
+            target_org_name=current_user.organization.name,
+            request_id=_request_id(),
+            ip_address=get_client_ip(request),
+            outcome="success",
+            detail={
+                "old_email": old_email_for_audit,
+                "new_email": current_user.email,
+            },
+        )
+
     return _user_response(current_user)
 
 
@@ -192,6 +232,7 @@ async def change_password(
     body: PasswordChange,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     # Two paths through this handler:
     #   - `password_set=True` (default for every classic register flow):
@@ -205,6 +246,10 @@ async def change_password(
     #     (Finding 1 from PR #138.) After the write `password_set`
     #     flips True permanently so subsequent rotations land in the
     #     standard branch above.
+    # Snapshot whether this is a first-time password set (SSO user) or
+    # a rotation (classic register flow) BEFORE the mutation flips the
+    # flag — the audit row needs the pre-mutation value.
+    was_initial_password_set = not current_user.password_set
     if current_user.password_set:
         if not body.current_password or not verify_password(
             body.current_password, current_user.password_hash
@@ -240,3 +285,22 @@ async def change_password(
     current_user.password_changed_at = now
     current_user.sessions_invalidated_at = now
     await db.commit()
+
+    # Audit AFTER the business commit succeeds. PR3 of the notification
+    # train uses this row as the trigger source for the
+    # user.password.changed security notification (always-on email).
+    # Failure paths above raise HTTPException before reaching this
+    # point — failure-path auditing is intentionally not added in this
+    # PR (separate scope per the audit-gap-closures task).
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="user.password.changed",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=None,
+        request_id=_request_id(),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail={"password_set_initial": was_initial_password_set},
+    )
