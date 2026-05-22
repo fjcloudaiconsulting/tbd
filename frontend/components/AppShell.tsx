@@ -30,6 +30,7 @@ import AppShellAddTransactionCta, {
   shouldShowAddTransactionCta,
 } from "@/components/AppShellAddTransactionCta";
 import AnnouncementBar from "@/components/announcements/AnnouncementBar";
+import NotificationBell from "@/components/notifications/NotificationBell";
 import AppShellFooter from "@/components/AppShellFooter";
 import { Logo } from "@/components/brand/Logo";
 import ThemeToggle from "@/components/ui/ThemeToggle";
@@ -480,6 +481,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-3">
             <TrialBanner user={user} />
             {shouldShowAddTransactionCta(pathname) && <AppShellAddTransactionCta />}
+            {/* Notification bell — header row beside docs + theme.
+                Architect-locked position (NOT the TrialBanner slot);
+                hidden alongside the rest of the header chrome when
+                the user is unauthenticated (the surrounding
+                ``loading || !user`` early return drops this entire
+                JSX subtree). */}
+            <NotificationBell />
             <Link
               href="/docs"
               className="rounded-md p-2 text-text-muted transition-colors hover:text-text-primary"
