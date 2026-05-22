@@ -82,7 +82,13 @@ export default function AnnouncementBar() {
     const load = async () => {
       try {
         const data = await apiFetch<Announcement[]>("/api/v1/announcements");
-        if (!cancelled) setItems(data);
+        if (cancelled) return;
+        // Runtime guard — the bar is mounted globally in AppShell, so
+        // a non-array payload (mock returning undefined, network blip
+        // surfacing a JSON error envelope, schema drift) MUST NOT
+        // crash the render. Anything that isn't an array drops into
+        // the empty-items path silently.
+        setItems(Array.isArray(data) ? data : []);
       } catch {
         // The bar fails silent — a broken fetch should NEVER hide the
         // app. The next route change re-fetches. We don't toast either,
@@ -98,6 +104,10 @@ export default function AnnouncementBar() {
   }, [pathname]);
 
   const handleDismiss = useCallback(async (id: number) => {
+    // No-op when there's nothing locally to dismiss. Defensive: the
+    // button only renders when items has rows, but a stale closure
+    // (or a future programmatic dismissal) should still be safe.
+    if (items.length === 0) return;
     // Optimistic local removal. On failure, restore.
     const snapshot = items;
     setItems((prev) => prev.filter((a) => a.id !== id));
@@ -113,7 +123,12 @@ export default function AnnouncementBar() {
     }
   }, [items]);
 
-  if (items.length === 0) return null;
+  // Belt-and-braces — the effect's runtime guard above already coerces
+  // non-array payloads to []; this second check means a future bug
+  // upstream (e.g. setItems called with non-array via dev hot reload
+  // or a yet-unwritten code path) still can't crash render with
+  // ``items.map is not a function``.
+  if (!Array.isArray(items) || items.length === 0) return null;
 
   return (
     <div

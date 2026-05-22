@@ -7,6 +7,12 @@ import {
   waitFor,
 } from "@testing-library/react";
 
+// vitest.setup.ts mocks ``@/components/announcements/AnnouncementBar``
+// globally to a no-op so AppShell-mounting page tests don't trip on
+// its hidden ``/api/v1/announcements`` fetch. THIS test file needs
+// the real component, so we explicitly unmock before the import.
+vi.unmock("@/components/announcements/AnnouncementBar");
+
 import AnnouncementBar, {
   Announcement,
 } from "@/components/announcements/AnnouncementBar";
@@ -62,6 +68,35 @@ describe("AnnouncementBar", () => {
     const { container } = render(<AnnouncementBar />);
     await waitFor(() => expect(mockedApiFetch).toHaveBeenCalled());
     expect(container.querySelector("[data-testid='announcement-bar']")).toBeNull();
+  });
+
+  // ── regression: the bar is mounted globally in AppShell. A
+  // foreign test that mocks apiFetch with a non-array shape (e.g.
+  // `undefined` because the path-matcher fell through, or an error
+  // envelope from a future contract) MUST NOT crash render with
+  // `items.map is not a function`. PR #340 first revision crashed
+  // 117 unrelated frontend tests this way. ───────────────────────
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["error envelope", { error: "boom" }],
+    ["empty array", []],
+    ["string", "nope"],
+    ["number", 42],
+  ])("renders nothing without throwing when apiFetch resolves with %s", async (
+    _label,
+    payload,
+  ) => {
+    mockedApiFetch.mockResolvedValueOnce(payload as unknown as never);
+    const { container } = render(<AnnouncementBar />);
+    await waitFor(() => expect(mockedApiFetch).toHaveBeenCalled());
+    expect(
+      container.querySelector("[data-testid='announcement-bar']"),
+    ).toBeNull();
+    // No row was rendered.
+    expect(
+      container.querySelector("[data-testid='announcement-row']"),
+    ).toBeNull();
   });
 
   it("renders multiple rows in the order returned by the API", async () => {

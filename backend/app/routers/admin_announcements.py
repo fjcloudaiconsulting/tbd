@@ -150,6 +150,14 @@ async def update_announcement(
     """Partial update. Re-checks the ``end_at > start_at`` invariant
     against the merged (existing + patch) state — the per-payload
     Pydantic validator only sees what the request carries.
+
+    Null-rejection on non-nullable columns (``title``, ``body``,
+    ``severity``, ``is_active``, ``start_at``) is enforced by the
+    schema's ``mode="before"`` validator — by the time we get here,
+    those values can never be ``None`` AND in the payload at the same
+    time. We only ever ``setattr`` keys the caller actually sent
+    (``exclude_unset=True``), so a missing key is a no-op and a bool
+    field set to ``False`` still applies.
     """
     actor_user_id = current_user.id
     actor_email = current_user.email
@@ -161,6 +169,12 @@ async def update_announcement(
             detail="Announcement not found",
         )
 
+    # exclude_unset=True is load-bearing: it keeps the "key missing"
+    # vs "key present with a value" distinction. PATCH semantics on
+    # this router are partial — fields the client didn't send are
+    # left untouched. Combined with the schema's null-rejection
+    # validator, the only way a key lands in ``patch`` is with a
+    # value that's already been validated for type + bounds.
     patch = body.model_dump(exclude_unset=True)
     merged_start = patch.get("start_at", row.start_at)
     merged_end = patch.get("end_at", row.end_at)

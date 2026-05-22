@@ -65,19 +65,53 @@ class AnnouncementCreate(_ScheduleValidatedMixin):
     end_at: Optional[datetime] = None
 
 
-class AnnouncementUpdate(_ScheduleValidatedMixin):
-    """Partial update payload. Every column is optional, but if both
-    ends of the schedule window are present (either freshly supplied
-    or implied by the existing row plus the patch) the strict
-    ``end_at > start_at`` invariant still has to hold.
+# Columns on ``announcements`` that a PATCH update rejects explicit
+# ``null`` for. Architect-locked PR #340 review (2026-05-22):
+# ``title``, ``severity``, ``start_at``, ``body`` are the four called
+# out by name; ``is_active`` is the bool column (NULL would surface as
+# a generic 500 the same way the four named columns would). Sending
+# any of these as ``null`` returns a deterministic 422 with a
+# field-level error BEFORE any DB write. ``end_at`` is the one
+# legitimately nullable column — clearing a scheduled end via
+# ``PATCH {"end_at": null}`` stays 200.
+_NON_NULLABLE_UPDATE_KEYS = frozenset(
+    {"title", "body", "severity", "is_active", "start_at"}
+)
 
-    NOTE: the validator below only sees what the request carries, so
-    the router service-layer enforcement re-checks against the merged
-    (existing + patch) state to catch the cross-call case.
+
+class AnnouncementUpdate(_ScheduleValidatedMixin):
+    """Partial update payload. Every column is *partial* (key may be
+    missing), but non-nullable columns reject an explicit ``null``.
+
+    Architect-locked contract (PR #340 review, 2026-05-22):
+
+    - ``title``, ``body``, ``severity``, ``start_at`` are non-nullable
+      on the DB row. An update payload that *omits* the key is fine
+      (means "leave this field alone"), but a payload that sends the
+      key with an explicit ``null`` must return a deterministic 422
+      with a field-level error BEFORE any DB write. Pydantic v2's
+      ``model_validator(mode="before")`` enforces this without
+      coupling the type to ``Optional[...]`` (which would silently
+      accept ``null`` and then explode at SQLAlchemy / enum-coerce
+      time as a generic 500).
+    - ``end_at`` is the one legitimately nullable column — sending
+      ``end_at: null`` means "clear the scheduled end", and stays
+      200.
+    - ``is_active`` is a bool; sending ``null`` is rejected with the
+      same field-level 422 as the strings.
+
+    Cross-call schedule invariant (``end_at > start_at`` against the
+    *merged* existing + patch state) is still enforced by the router
+    because the per-payload mixin only sees what the request carries.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    # The fields stay Optional so a missing key is fine, but the
+    # ``mode="before"`` validator below intercepts and rejects any
+    # *explicit* ``null`` on the non-nullable columns. This keeps the
+    # "field key missing" vs "field key present and null" distinction
+    # that the bare ``Optional[X] = None`` shape destroys.
     title: Optional[str] = Field(
         default=None, min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH
     )
@@ -87,7 +121,32 @@ class AnnouncementUpdate(_ScheduleValidatedMixin):
     severity: Optional[AnnouncementSeverity] = None
     is_active: Optional[bool] = None
     start_at: Optional[datetime] = None
-    end_at: Optional[datetime] = None
+    end_at: Optional[datetime] = None  # genuinely nullable on the DB
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_explicit_null_for_non_nullable(cls, data):
+        # Pydantic feeds dicts directly when called from JSON. If the
+        # caller already passed a model instance we don't have to
+        # check — there's no way to construct the model with explicit
+        # nulls on non-nullable fields via the typed API. Only the
+        # raw-payload path needs the gate.
+        if not isinstance(data, dict):
+            return data
+        offending = [
+            key
+            for key in _NON_NULLABLE_UPDATE_KEYS
+            if key in data and data[key] is None
+        ]
+        if offending:
+            # Pydantic v2 surfaces this as a 422 with per-field
+            # location info matching the standard validation envelope
+            # (loc=("title",), msg=..., type="value_error"). The
+            # router does not have to short-circuit anything.
+            raise ValueError(
+                "field cannot be null: " + ", ".join(sorted(offending))
+            )
+        return data
 
 
 class AnnouncementResponse(BaseModel):

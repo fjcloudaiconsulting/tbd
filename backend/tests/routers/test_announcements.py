@@ -478,3 +478,105 @@ async def test_dismiss_unknown_id_returns_404(session_factory):
     with TestClient(app) as client:
         res = client.post("/api/v1/announcements/99999/dismiss")
     assert res.status_code == 404
+
+
+# ── PATCH null-rejection on non-nullable fields ────────────────────────
+#
+# Architect-locked PR #340 review (2026-05-22): explicit ``null`` on a
+# non-nullable column must return a deterministic 422 with a
+# field-level error BEFORE any DB write. The first revision relied on
+# SQLAlchemy / enum-coerce blowing up at flush time, which surfaced as
+# a generic 500 with no actionable diagnostic. End_at remains
+# legitimately nullable — clearing a scheduled end via
+# ``PATCH {"end_at": null}`` still succeeds.
+
+
+@pytest.mark.parametrize("field", ["title", "body", "severity", "start_at", "is_active"])
+@pytest.mark.asyncio
+async def test_update_rejects_explicit_null_for_non_nullable_field(
+    session_factory, field
+):
+    await _seed_users(session_factory)
+    ann_id = await _seed_announcement(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/announcements/{ann_id}",
+            json={field: None},
+        )
+    assert res.status_code == 422, res.text
+    body = res.json()
+    # FastAPI surfaces Pydantic ValueError as a structured 422 — the
+    # error message MUST identify which field failed so the admin UI
+    # can route the message to the right form input.
+    detail = body.get("detail")
+    assert detail is not None
+    detail_blob = str(detail).lower()
+    assert field in detail_blob, detail
+
+
+@pytest.mark.asyncio
+async def test_update_accepts_null_end_at_clearing_schedule(session_factory):
+    """``end_at`` is the one legitimately nullable column on PATCH —
+    operators must be able to clear a previously-set end via
+    ``PATCH {"end_at": null}``.
+    """
+    await _seed_users(session_factory)
+    now = utcnow_naive()
+    ann_id = await _seed_announcement(
+        session_factory,
+        start_at=now - timedelta(hours=1),
+        end_at=now + timedelta(hours=10),
+    )
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/announcements/{ann_id}",
+            json={"end_at": None},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["end_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_with_empty_body_is_noop(session_factory):
+    """An empty PATCH body MUST NOT mutate any field. (Key-missing
+    semantics: the schema sees nothing, the router setattr loop runs
+    zero times.)
+    """
+    await _seed_users(session_factory)
+    ann_id = await _seed_announcement(
+        session_factory, title="Original", body="Original body"
+    )
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(f"/api/v1/admin/announcements/{ann_id}", json={})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["title"] == "Original"
+    assert body["body"] == "Original body"
+
+
+@pytest.mark.asyncio
+async def test_update_null_error_is_returned_before_db_write(session_factory):
+    """A PATCH that sends ``title: null`` MUST 422 without mutating
+    the row (no setattr/commit). This pins the "validation before DB"
+    contract the architect locked in.
+    """
+    await _seed_users(session_factory)
+    ann_id = await _seed_announcement(session_factory, title="Untouched")
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/announcements/{ann_id}",
+            json={"title": None, "body": "would-be-applied"},
+        )
+    assert res.status_code == 422, res.text
+
+    # Re-read the row and confirm nothing changed.
+    async with session_factory() as db:
+        fresh = await db.get(Announcement, ann_id)
+        assert fresh is not None
+        assert fresh.title == "Untouched"
+        assert fresh.body != "would-be-applied"
