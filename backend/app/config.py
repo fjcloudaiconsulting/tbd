@@ -146,6 +146,16 @@ class Settings(BaseSettings):
     # don't call them when the flag is off.
     billing_ui_enabled: bool = False
 
+    # Reports v2 (flexible canvas + AST query engine)
+    # When ``feature_reports_v2`` is False (the pre-launch default), the
+    # ``/api/v1/reports/*`` router-level dependency
+    # ``require_reports_v2_enabled`` raises a hard 404 on every route,
+    # the frontend hides the nav item and routes (gated separately via
+    # ``NEXT_PUBLIC_FEATURE_REPORTS_V2``), and the surface is
+    # effectively invisible. Flip to True once the frontend lands. See
+    # ``specs/2026-05-22-reports-v2-flexible-canvas.md`` §11.
+    feature_reports_v2: bool = False
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:

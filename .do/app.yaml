@@ -212,6 +212,15 @@ services:
       - key: BILLING_UI_ENABLED
         scope: RUN_AND_BUILD_TIME
         value: "false"
+      # Reports v2 substrate. SHIPPING AS "false" through PRs 1 to 3 —
+      # backend AST + canvas + widgets land inert behind this flag. The
+      # router-level dependency raises 404 on every /api/v1/reports/*
+      # route while the flag is false. Flip to "true" in PR 4 once the
+      # frontend nav + templates + sharing land. See
+      # specs/2026-05-22-reports-v2-flexible-canvas.md §11.
+      - key: FEATURE_REPORTS_V2
+        scope: RUN_AND_BUILD_TIME
+        value: "false"
 
   - name: frontend
     github:
@@ -267,6 +276,14 @@ services:
       - key: NEXT_PUBLIC_CAPTCHA_SITE_KEY
         scope: RUN_AND_BUILD_TIME
         value: "0x4AAAAAADTu1HIFconXLShc"
+      # Reports v2 frontend gate. SHIPPING AS "false" through PRs 1 to 3.
+      # Frontend hides the Reports nav item and routes when this is not
+      # exactly "true"; backend FEATURE_REPORTS_V2 above is the
+      # load-bearing 404 gate. Flip both to "true" together in PR 4. See
+      # specs/2026-05-22-reports-v2-flexible-canvas.md §11.
+      - key: NEXT_PUBLIC_FEATURE_REPORTS_V2
+        scope: RUN_AND_BUILD_TIME
+        value: "false"
 
 # Pre-deploy job: run Alembic migrations exactly once before any backend
 # replica starts. This is the canonical "init container" pattern for App
