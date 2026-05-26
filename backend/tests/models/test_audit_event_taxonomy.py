@@ -1,7 +1,7 @@
 """Pins the L4.4 audit-event taxonomy seeded in ``audit_event.__doc__``.
 
 This is the substrate-PR (PR 1 of the L4.4 admin-slices train) safety
-net: the eight new event-type strings are documented in the model's
+net: the nine new event-type strings are documented in the model's
 module docstring. A future careless edit that drops the contract while
 the emitting routers (PRs 2-5) reference these strings would break this
 test and force a conscious update.
@@ -13,7 +13,7 @@ from __future__ import annotations
 import app.models.audit_event as audit_event_module
 
 
-# The eight new event-type strings PR 2-5 will emit. Listed verbatim
+# The nine new event-type strings PR 2-5 will emit. Listed verbatim
 # (no f-strings, no concatenation) so a grep on any one of these lands
 # both here and at the docstring.
 L4_4_NEW_AUDIT_EVENT_TYPES = (
