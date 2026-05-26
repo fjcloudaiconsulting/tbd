@@ -25,6 +25,49 @@ Two design choices worth restating in code:
    org name at the moment of the event, which is the only sane
    thing to display in the UI after the org is gone. Same trick for
    ``actor_user_id`` / ``actor_email``.
+
+L4.4 admin-slices event-type taxonomy (seeded 2026-05-22, spec
+``specs/2026-05-22-l4-4-admin-slices.md`` §8). These strings are
+the durable contract every L4.4 router commits to emit; the
+implementation lives in PRs 2-5 of the train. Listed here so a
+``grep`` for the event-type string lands on a stable definition
+even before the emitting code arrives.
+
+* ``admin.platform_admin.invitation.sent`` — superadmin issues a
+  platform-admin invitation. actor=superadmin, target_org_id=NULL.
+* ``admin.platform_admin.invitation.revoked`` — pending invite
+  cancelled. actor=superadmin, target_org_id=NULL.
+* ``admin.platform_admin.invitation.accepted`` — invitee creates
+  their is_superadmin=True user. actor=new user (self-target),
+  target_org_id=new org's id.
+* ``admin.user.password_reset.triggered`` — admin-triggered
+  out-of-band password reset email. actor=superadmin,
+  target_org_id=target.org_id.
+* ``admin.user.email_change.triggered`` — admin-triggered email
+  change with two-key typed confirmation. actor=superadmin,
+  target_org_id=target.org_id. Note: when the target user later
+  confirms via verification link, an additional ``user.email.changed``
+  row is written (existing user-initiated convention).
+* ``admin.user.mfa_disabled`` — admin clears mfa_enabled +
+  totp_secret + recovery_codes server-side; user re-enrols on next
+  login. actor=superadmin, target_org_id=target.org_id. REQUIRED
+  ``detail.reason`` (free text, max 200).
+* ``admin.impersonation.entered`` — read-only impersonation session
+  starts; 15-min Redis-backed jti. actor=superadmin,
+  target_org_id=target.org_id.
+* ``admin.impersonation.exited`` — read-only impersonation session
+  ends (manual exit or natural expiry). actor=superadmin,
+  target_org_id=target.org_id. ``detail.ended_by`` distinguishes
+  ``manual`` from ``expiry``.
+* ``admin.impersonation.revoked`` — impersonation session force-
+  ended because the actor lost ``is_superadmin`` mid-session (Q6
+  lock, §5.7). actor=ex-superadmin, target_org_id from session
+  blob. ``detail.reason="actor_superadmin_revoked"``.
+
+The existing ``org.invitation.sent`` / ``org.invitation.accepted``
+event types gain a ``detail.via_platform_admin: true`` flag when
+issued by a superadmin acting on an org (no new event_type — the
+flag rides on the existing row). Implementation in PR 2.
 """
 from __future__ import annotations
 
