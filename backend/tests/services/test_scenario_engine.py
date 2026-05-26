@@ -445,10 +445,14 @@ async def test_verdict_red_when_severe_dip(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_ai_engine_raises_not_implemented():
-    """PR4 stub: invoking the AIEngine MUST raise NotImplementedError
-    with the message "PR4" so a misconfigured request surfaces a
-    deliberate error, not a silent analytic fallback.
+async def test_ai_engine_sync_simulate_returns_analytic_baseline():
+    """PR4: the sync ``AIEngine.simulate`` now delegates to the analytic
+    baseline. The real AI orchestration is async and lives in
+    ``scenario_engine_ai.run_ai_simulation``; this sync method is the
+    safe fallback for callers without a DB context (e.g. compare).
+
+    The result must be shape-identical to ``AnalyticEngine.simulate``
+    on the same inputs.
     """
     state = WorldState(accounts=[], recurring=[])
     scenario = Scenario(
@@ -457,13 +461,16 @@ async def test_ai_engine_raises_not_implemented():
         params_json={},
         horizon_months=6,
     )
-    with pytest.raises(NotImplementedError) as exc_info:
-        AIEngine().simulate(
-            SimulationRequest(
-                scenario=scenario, state=state, horizon_months=6, options={}
-            )
-        )
-    assert "PR4" in str(exc_info.value)
+    req = SimulationRequest(
+        scenario=scenario, state=state, horizon_months=6, options={}
+    )
+    ai_result = AIEngine().simulate(req)
+    analytic_result = AnalyticEngine().simulate(req)
+    # Engine names diverge by design (AIEngine's sync fallback still
+    # carries the analytic engine name because that's what actually
+    # ran). Otherwise the shape is identical.
+    assert ai_result["engine_name"] == analytic_result["engine_name"]
+    assert ai_result.get("ai_assumptions") is None
 
 
 def test_get_engine_returns_analytic_by_default():

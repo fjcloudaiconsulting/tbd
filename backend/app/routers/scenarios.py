@@ -15,18 +15,20 @@ Mounted at ``/api/v1/scenarios``. Architect-locked:
   ``WorldState`` snapshot. It writes the projection blob back onto
   the ``Scenario`` row and commits — nothing else.
 - ``compare`` endpoint is PR3 (out of scope for PR1).
-- ``ai_enhanced`` engine raises NotImplementedError (PR4 stub).
+- ``ai_enhanced`` engine routes through ``scenario_engine_ai.run_ai_simulation``
+  which gate-checks ``ai.smart_plan`` + smart_plan routing and falls
+  back to the analytic baseline on any failure (PR4).
 """
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app._time import utcnow_naive
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models.account import Account
 from app.models.category import Category
 from app.models.recurring import RecurringTransaction
@@ -48,6 +50,7 @@ from app.services.scenario_engine import (
     build_world_state,
     get_engine,
 )
+from app.services.scenario_engine_ai import run_ai_simulation
 
 
 logger = structlog.stdlib.get_logger()
@@ -228,9 +231,13 @@ async def delete_scenario(
 )
 async def simulate_scenario(
     scenario_id: int,
+    request: Request,
     body: SimulateRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(
+        get_session_factory
+    ),
 ):
     """Run the configured engine and cache the projection on the row.
 
@@ -243,7 +250,14 @@ async def simulate_scenario(
          against the per-type cap.
       3. Builds a frozen WorldState snapshot via build_world_state
          (READ-ONLY).
-      4. Runs the engine (no DB session inside the engine).
+      4. Runs the engine. For ``engine="analytic"`` the sync analytic
+         engine runs directly; for ``engine="ai_enhanced"`` we
+         delegate to the async ``run_ai_simulation`` orchestrator,
+         which calls the LLM via ``call_llm_structured``, adjusts
+         assumptions, and re-runs the analytic engine. The
+         orchestrator always falls back to the analytic baseline on
+         any failure (gate closed, no routing, dispatch error,
+         schema mismatch) so the frontend never crashes.
       5. Writes the projection back onto the scenario row and commits.
 
     Sandboxing: the engine has no path to mutate accounts /
@@ -260,25 +274,48 @@ async def simulate_scenario(
         db, org_id=current_user.org_id, user_id=current_user.id
     )
 
-    engine = get_engine(payload.engine)
-    sim_request = SimulationRequest(
-        scenario=row,
-        state=state,
-        horizon_months=horizon,
-        options=payload.options,
-    )
-
-    # The regression-overlay flag is a top-level field on
-    # ``SimulateRequest`` (architect-locked spec), passed explicitly as
-    # a kwarg to the engine. The engine never reads it from
-    # ``req.options`` — there is exactly one source of truth.
-    result = engine.simulate(
-        sim_request,
-        smooth_with_regression=payload.smooth_with_regression,
-    )
+    if payload.engine == "ai_enhanced":
+        # AI orchestrator: gate-check, call LLM, adjust assumptions,
+        # re-run analytic, audit. Falls back to analytic baseline on
+        # any failure mode (see scenario_engine_ai.run_ai_simulation).
+        result = await run_ai_simulation(
+            db,
+            session_factory=session_factory,
+            org_id=current_user.org_id,
+            user_id=current_user.id,
+            actor_email=current_user.email,
+            scenario=row,
+            state=state,
+            horizon_months=horizon,
+            options=payload.options,
+            smooth_with_regression=payload.smooth_with_regression,
+            request_id=getattr(request.state, "request_id", None),
+            ip_address=getattr(request.client, "host", None),
+        )
+        engine_name = result.get("engine_name") or "ai_enhanced"
+    else:
+        # Analytic baseline (default). Sync engine; no DB session
+        # passed in — the engine math has no path to the DB.
+        engine = get_engine(payload.engine)
+        sim_request = SimulationRequest(
+            scenario=row,
+            state=state,
+            horizon_months=horizon,
+            options=payload.options,
+        )
+        # The regression-overlay flag is a top-level field on
+        # ``SimulateRequest`` (architect-locked spec), passed
+        # explicitly as a kwarg to the engine. The engine never reads
+        # it from ``req.options`` — there is exactly one source of
+        # truth.
+        result = engine.simulate(
+            sim_request,
+            smooth_with_regression=payload.smooth_with_regression,
+        )
+        engine_name = result.get("engine_name") or engine.name
 
     row.projection_json = result
-    row.projection_engine = result.get("engine_name") or engine.name
+    row.projection_engine = engine_name
     row.projection_computed_at = utcnow_naive()
     await db.commit()
     await db.refresh(row)
