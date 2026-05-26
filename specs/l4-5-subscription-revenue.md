@@ -58,8 +58,8 @@ Every metric is derivable from already-existing tables. Zero schema changes.
 | ARR | derived | — | `MRR * 12`. Single SELECT, no separate query. |
 | Active orgs by tier | `subscriptions`, `plans`, `organizations` | `subscriptions.status`, `subscriptions.plan_id`, `plans.slug`, `organizations.id` | `COUNT(DISTINCT org_id) GROUP BY plan_id` filtered to `status IN ('active','trialing')`. INNER JOIN to `plans` for the label. |
 | Gross churn (count) | `subscriptions` | `subscriptions.status`, `subscriptions.updated_at` | `status=canceled` AND `updated_at` in selected range. v1 uses `updated_at` as a churn-date proxy because `canceled_at` doesn't exist; L2.2 may add a dedicated column, in which case PR 3 swaps the proxy out. |
-| Gross churn (MRR-weighted) | `subscriptions`, `plans` | same + `plans.price_monthly/_yearly` | Same filter as count; sum the plan-derived MRR per cancelled subscription. |
-| AI cost vs revenue | `ai_usage_ledger`, `subscriptions`, `plans` | `ai_usage_ledger.org_id`, `ai_usage_ledger.dispatched_at`, `ai_usage_ledger.est_cost_cents`, `subscriptions.plan_id`, `plans.slug` | `SUM(est_cost_cents) GROUP BY org_id` over selected range, joined to `subscriptions` then `plans`. Ratio per tier is `total_cost_cents / total_mrr_cents`. |
+| Gross churn (MRR-weighted) | `subscriptions`, `plans` | same + `plans.price_monthly/_yearly` | Same filter as count; sum the plan-derived MRR per cancelled subscription. **Exclude trial-only cancellations** (`trial_end IS NULL OR updated_at < trial_end`) so trial walkaways don't inflate churned revenue — consistent with the MRR rule that trial subs contribute 0. |
+| AI cost vs revenue | `ai_usage_ledger`, `subscriptions`, `plans` | `ai_usage_ledger.org_id`, `ai_usage_ledger.dispatched_at`, `ai_usage_ledger.est_cost_cents`, `subscriptions.plan_id`, `plans.slug` | `SUM(est_cost_cents) GROUP BY org_id` over selected range, joined to `subscriptions` then `plans`. Ratio per tier is `total_cost_cents_period / (mrr_cents * months_in_period)` so cost and revenue are over the **same** time window. `/by-tier` always uses 30d (so `months_in_period = 1`); `/ai-cost-vs-revenue` respects the range filter (`months_in_period` = 1 / 3 / 12 for 30d / 90d / 365d). |
 | Trial-to-paid conversion | `subscriptions` | `subscriptions.trial_start`, `subscriptions.trial_end`, `subscriptions.status` | Within the selected range: count subs whose `trial_end` fell in range. Of those, count subs whose `status='active'`. Conversion = active / total. |
 | Time-series (MRR over time) | `subscriptions`, `plans` | `subscriptions.created_at`, `subscriptions.updated_at`, `subscriptions.status` | Daily snapshot is reconstructed from `created_at` + `updated_at` + status; see D5 — this is the metric whose v1 implementation needs an architect lock. |
 
@@ -88,8 +88,9 @@ Response 200:
   "active_orgs": int,                  # COUNT subscriptions WHERE status=active
   "trialing_orgs": int,                # COUNT subscriptions WHERE status=trialing
   "past_due_orgs": int,                # COUNT subscriptions WHERE status=past_due
+  "total_active_orgs": int,            # = active_orgs + trialing_orgs (matches by-tier sum; feeds the pulse-strip tile)
   "cancelled_last_30d": int,           # COUNT subscriptions WHERE status=canceled AND updated_at >= now-30d
-  "mrr_weighted_churn_cents_30d": int, # sum of plan-derived MRR over the cancelled-in-last-30d set
+  "mrr_weighted_churn_cents_30d": int, # sum of plan-derived MRR over cancelled-in-last-30d, EXCLUDING trial-only cancellations (see §2)
   "trial_to_paid_30d_pct": float,      # conversion over the trailing 30d window
   "mock_revenue": bool,                # propagated from aggregator
   "generated_at": iso8601_utc
@@ -208,6 +209,8 @@ New page at `/admin/revenue`. Sibling of `/admin/subscriptions` in the admin nav
 │  ┌─ Pulse strip (4 tiles) ──────────────────────────────────────────────┐   │
 │  │  MRR        ARR        Active orgs    Churn (30d)                    │   │
 │  │  $0.00      $0.00      147            3 orgs  $0.00                  │   │
+│  │  ↑mrr_cents ↑arr_cents ↑total_active  ↑cancelled_last_30d /          │   │
+│  │                         _orgs          mrr_weighted_churn_cents_30d  │   │
 │  └────────────────────────────────────────────────────────────────────────┘   │
 │                                                                               │
 │  ┌─ MRR over time ──────────────────┐  ┌─ Active orgs by tier ──────────┐   │
@@ -300,19 +303,33 @@ The throttle window is keyed `(actor_user_id, endpoint)` so a flurry of clicks a
 * **D5-sketch (so architect can sanity-check the math):**
 ```python
 # Single SELECT scans all subs once. For each sub, generate the list of
-# (date, mrr_cents_delta) events: +mrr at created_at, -mrr at updated_at
-# if status transitioned to canceled. Aggregate by date for the daily
-# series. This is O(N subscriptions) regardless of range length.
+# (date, mrr_cents_delta) events: +mrr at the day the sub started
+# contributing revenue, -mrr at updated_at if cancelled. Aggregate by
+# date for the daily series. O(N subscriptions) regardless of range.
+#
+# Status rules (must match §2):
+#   - status=active or status=canceled (was active at some point) → +mrr at start_date
+#   - status=trialing → never contributed; skip entirely
+#   - status=past_due → not in MRR sum per §2; skip
+#   - start_date = trial_end if the sub converted out of a trial,
+#     else created_at (sub was created directly into `active`)
 events = []
 for sub in subs:
+    if sub.status in (SubscriptionStatus.TRIALING, SubscriptionStatus.PAST_DUE):
+        continue
     mrr_cents = _plan_mrr_cents(sub.plan_id, sub.billing_interval)
+    start_date = (sub.trial_end or sub.created_at).date()
+    events.append((start_date, +mrr_cents))
     if sub.status == SubscriptionStatus.CANCELED:
-        events.append((sub.created_at.date(), +mrr_cents))
         events.append((sub.updated_at.date(), -mrr_cents))
-    else:
-        events.append((sub.created_at.date(), +mrr_cents))
 # Fold events into the daily series for the requested range.
 ```
+* **D5-limitation (forward-looking).** This sketch has no visibility
+  into active → cancel → active reactivation: a re-subscribed org would
+  emit only one +mrr event (or a stale +/- pair) and lose the gap. v1
+  accepts this — same proxy risk D3 calls out for churn date. PR 3 of
+  this train revisits when L2.2's lifecycle columns
+  (`canceled_at`, reactivation events) arrive.
 
 #### D6. Asymmetric range scope on the pulse strip — pulse always 30d, timeseries respects filter?
 
