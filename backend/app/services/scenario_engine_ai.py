@@ -200,9 +200,16 @@ async def run_ai_simulation(
         horizon_months=horizon_months,
         options=options,
     )
-    baseline = analytic.simulate(
-        baseline_request, smooth_with_regression=smooth_with_regression
-    )
+
+    def _baseline() -> dict[str, Any]:
+        """Compute the analytic baseline. Called only on fallback paths;
+        the AI-success path re-runs analytic with adjusted params
+        instead, so computing eagerly would double the simulator work
+        for every AI-engaged request.
+        """
+        return analytic.simulate(
+            baseline_request, smooth_with_regression=smooth_with_regression
+        )
 
     # 1. Gate check. AI Tier off → return the baseline unchanged. No
     #    LLM call, no audit row (audit fires only when the AI path
@@ -218,30 +225,39 @@ async def run_ai_simulation(
             scenario_id=scenario.id,
             error_class=type(exc).__name__,
         )
-        return baseline
+        return _baseline()
     if not gate_open:
         logger.info(
             "plans.ai.gate.closed",
             org_id=org_id,
             scenario_id=scenario.id,
         )
-        return baseline
+        return _baseline()
 
     # 2. Build the prompt and call the dispatcher. The dispatcher
     #    handles routing, cap enforcement, ledger writes, and retries
     #    on schema mismatch — we just consume its result.
+    #
+    # The dispatcher commits the session it's given (the ledger row
+    # write does an `await db.commit()`). To keep that commit
+    # isolated from the request transaction — and from any other
+    # work the wrapper might stage on `db` — we open a dedicated
+    # session for the dispatch call. Same pattern as the audit
+    # pipeline below.
     prompt_messages = _build_prompt_messages(scenario, state, horizon_months)
     fallback_reason: Optional[str] = None
+    validation_errors: Optional[dict[str, Any]] = None
     delta: Optional[AIAssumptionDelta] = None
 
     try:
-        dispatch_result = await call_llm_structured(
-            db,
-            org_id=org_id,
-            feature_key=ROUTING_FEATURE_KEY,
-            messages=prompt_messages,
-            response_schema=AI_ASSUMPTION_SCHEMA,
-        )
+        async with session_factory() as dispatch_db:
+            dispatch_result = await call_llm_structured(
+                dispatch_db,
+                org_id=org_id,
+                feature_key=ROUTING_FEATURE_KEY,
+                messages=prompt_messages,
+                response_schema=AI_ASSUMPTION_SCHEMA,
+            )
     except NoRoutingConfigured:
         fallback_reason = "no_routing"
     except AICapExceeded:
@@ -272,23 +288,42 @@ async def run_ai_simulation(
         # Parse strictly via Pydantic. The dispatcher's structural
         # validator only checks top-level required keys; the Pydantic
         # model rejects malformed adjustment objects (the real
-        # tripwire). On parse failure we fall back to analytic — the
-        # operator sees the schema error in the audit row's detail.
+        # tripwire). On parse failure we fall back to analytic and
+        # surface a compact error summary in the audit row's detail
+        # so an operator can tell at-a-glance why the LLM was
+        # rejected without having to grep logs.
         try:
             delta = AIAssumptionDelta.model_validate(
                 dispatch_result.response.parsed
             )
         except ValidationError as exc:
+            errs = exc.errors()
+            validation_errors = {
+                "count": len(errs),
+                "first_type": errs[0].get("type") if errs else None,
+                "first_loc": (
+                    ".".join(str(p) for p in errs[0].get("loc", ()))
+                    if errs
+                    else None
+                ),
+            }
             logger.warning(
                 "plans.ai.schema.invalid",
                 org_id=org_id,
                 scenario_id=scenario.id,
-                error_count=len(exc.errors()),
+                **validation_errors,
             )
             fallback_reason = "schema_invalid"
 
     # 3. If anything went wrong, return baseline + audit the fallback.
     if delta is None:
+        failure_detail: dict[str, Any] = {
+            "scenario_id": scenario.id,
+            "reason": fallback_reason or "unknown",
+            "applied_adjustments": 0,
+        }
+        if validation_errors is not None:
+            failure_detail["validation_errors"] = validation_errors
         await _record_audit(
             session_factory,
             org_id=org_id,
@@ -296,15 +331,11 @@ async def run_ai_simulation(
             actor_email=actor_email,
             scenario=scenario,
             outcome="failure",
-            detail={
-                "scenario_id": scenario.id,
-                "reason": fallback_reason or "unknown",
-                "applied_adjustments": 0,
-            },
+            detail=failure_detail,
             request_id=request_id,
             ip_address=ip_address,
         )
-        return baseline
+        return _baseline()
 
     # 4. Apply whitelisted adjustments to a deep-copied params blob and
     #    re-run the analytic engine. Track every adjustment in
@@ -349,7 +380,7 @@ async def run_ai_simulation(
             request_id=request_id,
             ip_address=ip_address,
         )
-        return baseline
+        return _baseline()
 
     # 5. Re-run analytic engine with the adjusted params. The scenario
     #    object's params_json is mutated in-place for the duration of

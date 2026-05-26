@@ -22,7 +22,7 @@ from copy import deepcopy
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -181,6 +181,23 @@ async def _count_audit_rows(session_factory, event_type: str) -> int:
                 .where(AuditEvent.event_type == event_type)
             )
         ).scalar_one()
+
+
+async def _first_audit_detail(session_factory, event_type: str) -> dict | None:
+    """Return the `detail` JSON blob of the first audit row for the
+    given event_type, or None if no row exists.
+    """
+    from sqlalchemy import select
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                select(AuditEvent)
+                .where(AuditEvent.event_type == event_type)
+                .order_by(AuditEvent.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return row.detail if row is not None else None
 
 
 # ── tests ───────────────────────────────────────────────────────────────
@@ -570,6 +587,19 @@ async def test_ai_simulation_falls_back_on_schema_mismatch(
     assert result.get("ai_assumptions") is None
     n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
     assert n == 1, "schema-mismatch fallback must emit one audit row"
+
+    # The audit detail must include a compact validation-error summary
+    # so an operator can tell at-a-glance why the LLM was rejected.
+    detail = await _first_audit_detail(
+        session_factory, "plans.scenario.ai_simulate"
+    )
+    assert detail is not None
+    assert detail["reason"] == "schema_invalid"
+    assert "validation_errors" in detail, (
+        "schema_invalid audit row must include a validation_errors summary"
+    )
+    assert detail["validation_errors"]["count"] >= 1
+    assert detail["validation_errors"]["first_type"] is not None
 
 
 @pytest.mark.asyncio
