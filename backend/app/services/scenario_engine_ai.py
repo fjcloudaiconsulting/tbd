@@ -89,6 +89,20 @@ ASSUMPTION_FIELD_WHITELIST: frozenset[str] = frozenset(
     }
 )
 
+# Per-field numeric bounds for LLM-proposed values. The whitelist
+# guards WHICH fields can change; these bounds guard WHAT VALUES are
+# allowed. An LLM hallucinating a 500% annual return or a negative
+# monthly contribution silently distorts the projection — out-of-range
+# values are rejected before the analytic engine sees them. Ranges are
+# intentionally permissive (e.g. allow negative annual return for
+# declining-asset scenarios, allow up to 50% inflation for stress
+# tests) so legitimate edge cases still pass.
+_FIELD_BOUNDS: dict[str, tuple[Decimal, Decimal]] = {
+    "annual_return_pct": (Decimal("-50"), Decimal("50")),
+    "inflation_pct": (Decimal("-10"), Decimal("50")),
+    "monthly_contribution": (Decimal("0"), Decimal("1000000")),
+}
+
 # JSON schema we hand to ``call_llm_structured``. The dispatcher's
 # structural validator only checks ``type``/``required`` (a deeper
 # validator is reserved for a future PR), so this is intentionally
@@ -301,8 +315,7 @@ async def run_ai_simulation(
     applied_count = 0
     for adj in delta.adjustments:
         is_whitelisted = adj.field in ASSUMPTION_FIELD_WHITELIST
-        is_numeric = _is_numeric_decimal(adj.new_value)
-        applied = is_whitelisted and is_numeric
+        applied = is_whitelisted and _is_within_bounds(adj.field, adj.new_value)
         if applied:
             new_params[adj.field] = adj.new_value
             applied_count += 1
@@ -476,16 +489,26 @@ def _build_prompt_messages(
     ]
 
 
-def _is_numeric_decimal(value: str) -> bool:
-    """True if ``value`` parses as a finite Decimal. Used to defensively
-    reject non-numeric LLM outputs (e.g. "high") before they reach
-    Decimal math in ``AnalyticEngine``.
+def _is_within_bounds(field: str, value: str) -> bool:
+    """True if ``value`` parses as a finite Decimal AND lies within
+    the per-field bounds in ``_FIELD_BOUNDS``. Used to reject both
+    non-numeric LLM outputs (e.g. ``"high"``) and out-of-range numeric
+    proposals (e.g. ``"-50.0"`` for an annual return) before they
+    reach Decimal math in ``AnalyticEngine``.
+
+    Fields not in ``_FIELD_BOUNDS`` always return False — callers
+    should pair this with the ``ASSUMPTION_FIELD_WHITELIST`` check.
     """
+    if field not in _FIELD_BOUNDS:
+        return False
     try:
         d = Decimal(value)
     except (InvalidOperation, TypeError, ValueError):
         return False
-    return d.is_finite()
+    if not d.is_finite():
+        return False
+    lo, hi = _FIELD_BOUNDS[field]
+    return lo <= d <= hi
 
 
 async def _record_audit(

@@ -18,6 +18,7 @@ Architect-locked invariants pinned here:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -47,6 +48,7 @@ from app.services.ai_dispatch import (
 from app.services.ai_providers.base import StructuredOutputError, StructuredResponse
 from app.services.scenario_engine import (
     AccountSnapshot,
+    AnalyticEngine,
     SimulationRequest,
     WorldState,
 )
@@ -225,13 +227,16 @@ async def test_ai_simulation_falls_back_when_gate_closed(
 
 @pytest.mark.asyncio
 async def test_ai_simulation_falls_back_when_no_routing(
-    db, session_factory
+    db, session_factory, seed_org_user
 ):
     """When AI gate is open but the org has no routing for smart_plan
     (raises NoRoutingConfigured at dispatch), the wrapper returns the
-    analytic baseline. No exception leaks to the caller.
+    analytic baseline AND emits a failure audit row with
+    reason="no_routing". No exception leaks to the caller.
     """
-    scenario = _make_retirement_scenario()
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
     req = _make_request(scenario)
 
     with patch(
@@ -244,9 +249,9 @@ async def test_ai_simulation_falls_back_when_no_routing(
         result = await run_ai_simulation(
             db,
             session_factory=session_factory,
-            org_id=1,
-            user_id=1,
-            actor_email="test@example.com",
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
             scenario=scenario,
             state=req.state,
             horizon_months=req.horizon_months,
@@ -256,22 +261,40 @@ async def test_ai_simulation_falls_back_when_no_routing(
 
     assert result["engine_name"] == "analytic_v1"
     assert result.get("ai_assumptions") is None
+    n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
+    assert n == 1, "no_routing fallback must emit one audit row"
 
 
 @pytest.mark.asyncio
 async def test_ai_simulation_happy_path_applies_deltas(
-    db, session_factory
+    db, session_factory, seed_org_user
 ):
     """LLM returns valid deltas → wrapper re-runs analytic with adjusted
     assumptions. Output carries ``engine_name = "analytic_v1+ai_assumptions_v1"``
     and an ``ai_assumptions`` provenance block describing what changed.
 
-    The baseline projection (without deltas) and the AI-adjusted
-    projection have measurably different ending balances when the
-    LLM bumps ``annual_return_pct``.
+    Crucially, the baseline projection (without deltas) and the
+    AI-adjusted projection have measurably different projection
+    numbers when the LLM bumps ``annual_return_pct``. The numeric
+    diff is the load-bearing assertion — a wrapper that built the
+    provenance block but forgot to re-run the analytic engine must
+    fail this test.
     """
-    scenario = _make_retirement_scenario()
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
     req = _make_request(scenario)
+
+    # Compute baseline independently so we can prove the AI path
+    # actually moved the projection numbers.
+    baseline_only = AnalyticEngine().simulate(
+        SimulationRequest(
+            scenario=scenario,
+            state=req.state,
+            horizon_months=req.horizon_months,
+            options=req.options,
+        )
+    )
 
     delta_payload = {
         "adjustments": [
@@ -313,9 +336,9 @@ async def test_ai_simulation_happy_path_applies_deltas(
         result = await run_ai_simulation(
             db,
             session_factory=session_factory,
-            org_id=1,
-            user_id=1,
-            actor_email="test@example.com",
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
             scenario=scenario,
             state=req.state,
             horizon_months=req.horizon_months,
@@ -330,6 +353,23 @@ async def test_ai_simulation_happy_path_applies_deltas(
     assert len(provenance["adjustments"]) == 2
     fields_changed = {a["field"] for a in provenance["adjustments"]}
     assert fields_changed == {"annual_return_pct", "inflation_pct"}
+
+    # Load-bearing: the analytic engine actually ran with the new
+    # assumptions. Comparing the projection content (after stripping
+    # provenance / engine-name / timestamps that differ by design)
+    # asserts the numbers changed.
+    def _projection_content(r: dict) -> dict:
+        return {
+            k: v for k, v in r.items()
+            if k not in ("engine_name", "ai_assumptions", "computed_at")
+        }
+    assert _projection_content(result) != _projection_content(baseline_only), (
+        "AI-adjusted projection numbers must differ from baseline when "
+        "annual_return_pct and inflation_pct were applied"
+    )
+
+    n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
+    assert n == 1, "successful AI invocation must emit one audit row"
 
 
 @pytest.mark.asyncio
@@ -433,12 +473,15 @@ async def test_ai_simulation_writes_audit_on_fallback(
 
 @pytest.mark.asyncio
 async def test_ai_simulation_falls_back_on_dispatch_failed(
-    db, session_factory
+    db, session_factory, seed_org_user
 ):
     """Adapter/provider errors surface as ``AIDispatchFailed`` from the
-    dispatcher. The wrapper swallows them and returns analytic.
+    dispatcher. The wrapper swallows them, returns analytic, AND
+    writes a failure audit row.
     """
-    scenario = _make_retirement_scenario()
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
     req = _make_request(scenario)
 
     with patch(
@@ -451,9 +494,9 @@ async def test_ai_simulation_falls_back_on_dispatch_failed(
         result = await run_ai_simulation(
             db,
             session_factory=session_factory,
-            org_id=1,
-            user_id=1,
-            actor_email="actor@example.com",
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
             scenario=scenario,
             state=req.state,
             horizon_months=req.horizon_months,
@@ -463,20 +506,24 @@ async def test_ai_simulation_falls_back_on_dispatch_failed(
 
     assert result["engine_name"] == "analytic_v1"
     assert result.get("ai_assumptions") is None
+    n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
+    assert n == 1, "dispatch-failure fallback must emit one audit row"
 
 
 @pytest.mark.asyncio
 async def test_ai_simulation_falls_back_on_schema_mismatch(
-    db, session_factory
+    db, session_factory, seed_org_user
 ):
     """An LLM that returns a JSON object that DOESN'T match
     ``AIAssumptionDelta`` (e.g. wrong field types, missing required
     keys) is rejected by the wrapper's Pydantic re-validation and the
     analytic baseline is returned. The dispatcher's response_schema
     catches structural mismatch up-front, but the Pydantic re-validate
-    is the strict tripwire.
+    is the strict tripwire. A failure audit row is written.
     """
-    scenario = _make_retirement_scenario()
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
     req = _make_request(scenario)
 
     # Provide a payload that passes the dispatcher's loose schema check
@@ -509,9 +556,9 @@ async def test_ai_simulation_falls_back_on_schema_mismatch(
         result = await run_ai_simulation(
             db,
             session_factory=session_factory,
-            org_id=1,
-            user_id=1,
-            actor_email="actor@example.com",
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
             scenario=scenario,
             state=req.state,
             horizon_months=req.horizon_months,
@@ -521,11 +568,13 @@ async def test_ai_simulation_falls_back_on_schema_mismatch(
 
     assert result["engine_name"] == "analytic_v1"
     assert result.get("ai_assumptions") is None
+    n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
+    assert n == 1, "schema-mismatch fallback must emit one audit row"
 
 
 @pytest.mark.asyncio
 async def test_ai_simulation_unknown_field_is_skipped(
-    db, session_factory
+    db, session_factory, seed_org_user
 ):
     """The Pydantic model accepts the LLM's payload, but the wrapper
     only applies adjustments to a whitelist of known assumption fields
@@ -533,10 +582,22 @@ async def test_ai_simulation_unknown_field_is_skipped(
     adjustment naming a non-whitelisted field is dropped before the
     re-simulate; the result still flags this in provenance so an
     operator can see the LLM tried but the wrapper guarded against
-    arbitrary param mutation.
+    arbitrary param mutation. The whitelisted adjustment that
+    survives must actually change the projection numbers (proves the
+    re-simulate ran with the new value).
     """
-    scenario = _make_retirement_scenario()
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
     req = _make_request(scenario)
+    baseline_only = AnalyticEngine().simulate(
+        SimulationRequest(
+            scenario=scenario,
+            state=req.state,
+            horizon_months=req.horizon_months,
+            options=req.options,
+        )
+    )
 
     delta_payload = {
         "adjustments": [
@@ -577,9 +638,9 @@ async def test_ai_simulation_unknown_field_is_skipped(
         result = await run_ai_simulation(
             db,
             session_factory=session_factory,
-            org_id=1,
-            user_id=1,
-            actor_email="actor@example.com",
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
             scenario=scenario,
             state=req.state,
             horizon_months=req.horizon_months,
@@ -600,6 +661,281 @@ async def test_ai_simulation_unknown_field_is_skipped(
     }
     assert "annual_return_pct" in applied_fields
     assert "evil_field" in skipped_fields
+
+    # The whitelisted adjustment actually changed the projection.
+    def _projection_content(r: dict) -> dict:
+        return {
+            k: v for k, v in r.items()
+            if k not in ("engine_name", "ai_assumptions", "computed_at")
+        }
+    assert _projection_content(result) != _projection_content(baseline_only), (
+        "applied=True on annual_return_pct must move the projection numbers"
+    )
+
+    n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_ai_simulation_falls_back_when_gate_check_raises(
+    db, session_factory, seed_org_user
+):
+    """A transient error while reading the feature gate (e.g. DB blip)
+    must degrade to the analytic baseline WITHOUT writing an audit row
+    — the audit pipeline only fires after the gate check passes
+    (\"audit fires only when the AI path was at least attempted\").
+    Pins the asymmetry so a future refactor of the bare-except can't
+    silently start emitting audits or 500s on gate-check failure.
+    """
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
+    req = _make_request(scenario)
+
+    with patch(
+        "app.services.scenario_engine_ai.feature_service.has_feature",
+        AsyncMock(side_effect=RuntimeError("db blip")),
+    ), patch(
+        "app.services.scenario_engine_ai.call_llm_structured",
+        AsyncMock(),
+    ) as mock_llm:
+        result = await run_ai_simulation(
+            db,
+            session_factory=session_factory,
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
+            scenario=scenario,
+            state=req.state,
+            horizon_months=req.horizon_months,
+            options=req.options,
+            smooth_with_regression=False,
+        )
+
+    assert result["engine_name"] == "analytic_v1"
+    assert result.get("ai_assumptions") is None
+    mock_llm.assert_not_awaited()
+    n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
+    assert n == 0, "gate-check failure must NOT write an audit row"
+
+
+@pytest.mark.asyncio
+async def test_ai_simulation_applied_count_zero_returns_baseline_with_audit(
+    db, session_factory, seed_org_user
+):
+    """If the LLM responds successfully but every proposed adjustment
+    is non-applicable (all non-whitelisted, all out-of-range, etc.),
+    the wrapper returns the analytic baseline AND writes an audit
+    row recording ``reason=\"no_applicable_adjustments\"``. Pins the
+    branch that's otherwise easy to skip past.
+    """
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
+    req = _make_request(scenario)
+
+    # All adjustments target non-whitelisted fields → applied_count == 0.
+    delta_payload = {
+        "adjustments": [
+            {
+                "field": "totally_not_a_real_field",
+                "old_value": "x",
+                "new_value": "y",
+                "reason": "off-list",
+            },
+            {
+                "field": "another_bad_field",
+                "old_value": "x",
+                "new_value": "y",
+                "reason": "off-list",
+            },
+        ],
+        "summary": "the LLM had nothing useful to say",
+    }
+    fake_resp = StructuredDispatchResult(
+        response=StructuredResponse(
+            parsed=delta_payload,
+            raw_text="{}",
+            prompt_tokens=1,
+            completion_tokens=1,
+            model="m",
+            retries_used=0,
+        ),
+        ledger_id=1,
+    )
+
+    with patch(
+        "app.services.scenario_engine_ai.feature_service.has_feature",
+        AsyncMock(return_value=True),
+    ), patch(
+        "app.services.scenario_engine_ai.call_llm_structured",
+        AsyncMock(return_value=fake_resp),
+    ):
+        result = await run_ai_simulation(
+            db,
+            session_factory=session_factory,
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
+            scenario=scenario,
+            state=req.state,
+            horizon_months=req.horizon_months,
+            options=req.options,
+            smooth_with_regression=False,
+        )
+
+    # engine_name reflects baseline (no AI provenance attached).
+    assert result["engine_name"] == "analytic_v1"
+    assert result.get("ai_assumptions") is None
+    n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
+    assert n == 1, "no_applicable_adjustments must still emit one audit row"
+
+
+@pytest.mark.asyncio
+async def test_ai_simulation_does_not_mutate_input_scenario_params(
+    db, session_factory, seed_org_user
+):
+    """The wrapper temporarily swaps ``scenario.params_json`` to feed
+    the adjusted assumptions through the analytic engine, then
+    restores in a ``finally`` block. This test pins that the input
+    Scenario object's ``params_json`` is unchanged after the call —
+    a regression that bypassed the restore would leak LLM
+    mutations back into the caller's session.
+    """
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
+    req = _make_request(scenario)
+    original_params = deepcopy(scenario.params_json)
+
+    delta_payload = {
+        "adjustments": [
+            {
+                "field": "annual_return_pct",
+                "old_value": "6.0",
+                "new_value": "7.5",
+                "reason": "headroom",
+            }
+        ],
+        "summary": "bump return",
+    }
+    fake_resp = StructuredDispatchResult(
+        response=StructuredResponse(
+            parsed=delta_payload,
+            raw_text="{}",
+            prompt_tokens=1,
+            completion_tokens=1,
+            model="m",
+            retries_used=0,
+        ),
+        ledger_id=1,
+    )
+
+    with patch(
+        "app.services.scenario_engine_ai.feature_service.has_feature",
+        AsyncMock(return_value=True),
+    ), patch(
+        "app.services.scenario_engine_ai.call_llm_structured",
+        AsyncMock(return_value=fake_resp),
+    ):
+        result = await run_ai_simulation(
+            db,
+            session_factory=session_factory,
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
+            scenario=scenario,
+            state=req.state,
+            horizon_months=req.horizon_months,
+            options=req.options,
+            smooth_with_regression=False,
+        )
+
+    # Sanity: the adjustment was actually applied (otherwise the
+    # restore test is vacuous — there'd be nothing to restore).
+    assert result["engine_name"] == "analytic_v1+ai_assumptions_v1"
+    # Load-bearing: the caller's scenario object is unmutated.
+    assert scenario.params_json == original_params, (
+        "wrapper must restore scenario.params_json before returning; the "
+        "finally block at scenario_engine_ai.py:362-363 is load-bearing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ai_simulation_out_of_bounds_value_is_skipped(
+    db, session_factory, seed_org_user
+):
+    """Per-field numeric bounds reject out-of-range LLM proposals
+    (e.g. ``annual_return_pct: \"500.0\"``, ``monthly_contribution:
+    \"-1000.0\"``). Whitelisted but out-of-range adjustments land
+    in provenance with ``applied=False`` and never reach the analytic
+    engine.
+    """
+    scenario = _make_retirement_scenario(
+        org_id=seed_org_user["org_id"], user_id=seed_org_user["user_id"]
+    )
+    req = _make_request(scenario)
+
+    delta_payload = {
+        "adjustments": [
+            {
+                "field": "annual_return_pct",
+                "old_value": "6.0",
+                "new_value": "500.0",  # > 50 upper bound
+                "reason": "hallucinated outsized return",
+            },
+            {
+                "field": "monthly_contribution",
+                "old_value": "500.00",
+                "new_value": "-1000.00",  # < 0 lower bound
+                "reason": "negative contribution",
+            },
+            {
+                "field": "inflation_pct",
+                "old_value": "2.5",
+                "new_value": "not_a_number",  # non-numeric
+                "reason": "garbage",
+            },
+        ],
+        "summary": "everything out of range",
+    }
+    fake_resp = StructuredDispatchResult(
+        response=StructuredResponse(
+            parsed=delta_payload,
+            raw_text="{}",
+            prompt_tokens=1,
+            completion_tokens=1,
+            model="m",
+            retries_used=0,
+        ),
+        ledger_id=1,
+    )
+
+    with patch(
+        "app.services.scenario_engine_ai.feature_service.has_feature",
+        AsyncMock(return_value=True),
+    ), patch(
+        "app.services.scenario_engine_ai.call_llm_structured",
+        AsyncMock(return_value=fake_resp),
+    ):
+        result = await run_ai_simulation(
+            db,
+            session_factory=session_factory,
+            org_id=seed_org_user["org_id"],
+            user_id=seed_org_user["user_id"],
+            actor_email=seed_org_user["email"],
+            scenario=scenario,
+            state=req.state,
+            horizon_months=req.horizon_months,
+            options=req.options,
+            smooth_with_regression=False,
+        )
+
+    # All three were rejected → applied_count == 0 → analytic baseline.
+    assert result["engine_name"] == "analytic_v1"
+    assert result.get("ai_assumptions") is None
+    n = await _count_audit_rows(session_factory, "plans.scenario.ai_simulate")
+    assert n == 1, "bounds-rejected-all must emit one audit row"
 
 
 def test_ai_assumption_delta_schema_has_required_keys():
