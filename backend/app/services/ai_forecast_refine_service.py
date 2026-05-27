@@ -43,7 +43,7 @@ from typing import Any, Optional
 import structlog
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.category import Category
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
@@ -54,14 +54,22 @@ from app.schemas.ai_forecast import (
     RefinedForecastResponse,
 )
 from app.services import ai_dispatch, forecast_service
-from app.services.ai_providers.base import StructuredOutputError
+from app.services.ai_providers.base import NativeNotAvailable, StructuredOutputError
 from app.services.transaction_filters import reportable_transaction_filter
 
 logger = structlog.stdlib.get_logger()
 
 
-# LAI.2 feature key, matches the AI tier feature catalog.
-FEATURE_KEY = "ai.forecast"
+# Two distinct keys for the same surface:
+# - GATE_KEY is the entitlement-catalog key the router checks via
+#   require_feature(); the value matches the AI tier flag the org pays for.
+# - ROUTING_KEY is the routable feature name the dispatcher uses to look
+#   up a per-feature routing row in ORG_AI_DEFAULT_ROUTING. It MUST be a
+#   member of ROUTABLE_FEATURE_NAMES in app/models/org_ai_routing.py.
+#   If you pass the gate key here, feature-specific routing rows are
+#   silently missed and the dispatcher falls through to the default.
+GATE_KEY = "ai.forecast"
+ROUTING_KEY = "smart_forecast"
 
 # Pull 6 months of history, enough seasonality signal without flooding
 # the prompt. Categories with zero spend in the window are omitted.
@@ -120,7 +128,7 @@ async def _build_category_history(
     db: AsyncSession,
     *,
     org_id: int,
-    period_end: datetime.date,
+    period_start: datetime.date,
 ) -> list[dict]:
     """Build a 6-month per-category expense history.
 
@@ -129,12 +137,20 @@ async def _build_category_history(
     detail. Settled-only (status=SETTLED) because pending rows are
     speculative and would conflate noise with seasonality.
 
+    The window ends STRICTLY before ``period_start`` — we don't want
+    actuals from the forecast period itself bleeding into the
+    seasonality signal, because the LLM's multiplier is supposed to
+    *modify* the forecast, not learn from it. The window is the 6
+    calendar months ending on the last day before period_start.
+
     Month bucketing is done in Python so the query stays portable
     between SQLite (tests) and MySQL (production), where the
     ``YYYY-MM`` truncation functions diverge (``strftime`` vs.
     ``date_format``).
     """
-    history_start = _month_start_n_back(period_end, HISTORY_MONTHS - 1)
+    # End of the history window = the last full calendar month before
+    # period_start. Start = 6 months back from that, on the 1st.
+    history_start = _month_start_n_back(period_start, HISTORY_MONTHS)
 
     result = await db.execute(
         select(
@@ -147,7 +163,7 @@ async def _build_category_history(
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.SETTLED,
             Transaction.settled_date >= history_start,
-            Transaction.settled_date <= period_end,
+            Transaction.settled_date < period_start,
             reportable_transaction_filter(),
         )
     )
@@ -324,6 +340,7 @@ async def refine_forecast(
     db: AsyncSession,
     *,
     org_id: int,
+    session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
     period_start: Optional[datetime.date] = None,
 ) -> RefinedForecastResponse:
     """Public entry point. Always returns a usable response, falling
@@ -331,16 +348,24 @@ async def refine_forecast(
 
     All LLM/dispatch failures are swallowed and surfaced via
     ``provenance.ai_applied=False``.
+
+    ``session_factory`` is optional only because some existing tests
+    call this without one; the router always passes it. When provided,
+    the LLM dispatch runs in its own session so the dispatcher's
+    ledger commit can't bleed into the request transaction (same
+    pattern as the categorize + budget services).
     """
     baseline = await forecast_service.compute_forecast(
         db, org_id, period_start=period_start
     )
 
-    # Build the history + index for the prompt.
-    p_end = datetime.date.fromisoformat(baseline["period_end"])
+    # Build the history + index for the prompt. The history window
+    # ends STRICTLY before period_start so the forecast period's own
+    # actuals don't leak into the seasonality signal.
+    p_start = datetime.date.fromisoformat(baseline["period_start"])
     try:
         history = await _build_category_history(
-            db, org_id=org_id, period_end=p_end
+            db, org_id=org_id, period_start=p_start
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
@@ -371,14 +396,29 @@ async def refine_forecast(
     # Dispatch through the cap + ledger chokepoint. Any failure here
     # (no routing, hard cap exceeded, adapter network error, retry
     # budget exhausted) becomes a fallback rather than a 5xx.
+    #
+    # The dispatcher commits the session it's given (via
+    # _write_ledger_row); use a dedicated session when one is
+    # available so the commit can't bleed into the request transaction.
+    # Same pattern as categorize + budget services.
     try:
-        result = await ai_dispatch.call_llm_structured(
-            db,
-            org_id=org_id,
-            feature_key=FEATURE_KEY,
-            messages=messages,
-            response_schema=RESPONSE_JSON_SCHEMA,
-        )
+        if session_factory is not None:
+            async with session_factory() as dispatch_db:
+                result = await ai_dispatch.call_llm_structured(
+                    dispatch_db,
+                    org_id=org_id,
+                    feature_key=ROUTING_KEY,
+                    messages=messages,
+                    response_schema=RESPONSE_JSON_SCHEMA,
+                )
+        else:
+            result = await ai_dispatch.call_llm_structured(
+                db,
+                org_id=org_id,
+                feature_key=ROUTING_KEY,
+                messages=messages,
+                response_schema=RESPONSE_JSON_SCHEMA,
+            )
     except ai_dispatch.NoRoutingConfigured:
         return _baseline_response(
             baseline=baseline, fallback_reason="ai_routing_not_configured"
@@ -395,6 +435,19 @@ async def refine_forecast(
         return _baseline_response(
             baseline=baseline,
             fallback_reason="ai_capability_not_supported",
+        )
+    except NativeNotAvailable:
+        # Provider doesn't natively support structured output. Per
+        # ai_dispatch this is re-raised directly (NOT wrapped); the
+        # other LAI services catch it in their fallback tuple, so we
+        # do the same here. Without this the endpoint 5xxs.
+        logger.info(
+            "ai.forecast.refine.native_not_available",
+            org_id=org_id,
+        )
+        return _baseline_response(
+            baseline=baseline,
+            fallback_reason="ai_native_not_available",
         )
     except StructuredOutputError:
         logger.warning(

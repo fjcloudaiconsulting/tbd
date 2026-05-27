@@ -474,3 +474,335 @@ async def test_invalid_period_start_returns_400(session_factory):
     )
     assert resp.status_code == 400
     assert resp.json()["detail"]["code"] == "invalid_period_start"
+
+
+# ---------- audit emission (success + user-state + system failure) ----
+
+
+def _audit_rows(session_factory):
+    """Sync helper that fetches all ai.forecast.refine.invoked rows."""
+    import asyncio
+    from sqlalchemy import select as _select
+
+    async def _read():
+        async with session_factory() as s:
+            from app.models.audit_event import AuditEvent
+            return (
+                await s.execute(
+                    _select(AuditEvent).where(
+                        AuditEvent.event_type == "ai.forecast.refine.invoked"
+                    )
+                )
+            ).scalars().all()
+
+    return asyncio.get_event_loop().run_until_complete(_read())
+
+
+@pytest.mark.asyncio
+async def test_audit_row_written_on_success(session_factory):
+    """Happy path writes one audit row with outcome='success' and the
+    correct provenance detail (no LLM summary leaked into the row)."""
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    from app.services.ai_providers.base import StructuredResponse
+    from app.services.ai_dispatch import StructuredDispatchResult
+
+    fake_response = StructuredDispatchResult(
+        response=StructuredResponse(
+            parsed={
+                "seasonal": [
+                    {
+                        "category_id": seed["category_id"],
+                        "category_name": "Groceries",
+                        "multiplier": 1.1,
+                        "rationale": "ok",
+                    }
+                ],
+                "anomalies": [],
+                "confidence": 0.9,
+                "summary": "this string MUST NOT appear in the audit row",
+            },
+            raw_text="{}",
+            prompt_tokens=1,
+            completion_tokens=1,
+            model="m",
+            retries_used=0,
+        ),
+        ledger_id=1,
+    )
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with patch(
+        "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
+        return_value=fake_response,
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine",
+            json={"period_start": seed["period_start"]},
+        )
+    assert resp.status_code == 200
+
+    rows = _audit_rows(session_factory)
+    assert len(rows) == 1, "exactly one audit row per refine call"
+    row = rows[0]
+    assert row.outcome.value == "success"
+    detail = row.detail or {}
+    assert detail["ai_applied"] is True
+    assert detail["categories_adjusted"] == 1
+    # Summary text must never reach the audit row (PII / category-name
+    # leak surface).
+    assert "MUST NOT appear" not in repr(detail)
+
+
+@pytest.mark.asyncio
+async def test_audit_row_user_state_preconditions_are_success(session_factory):
+    """No-routing / cap-exceeded / insufficient-history are clean
+    preconditions, not system failures. The audit outcome must be
+    'success' for those so ops dashboards aren't polluted with noise."""
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    # No routing configured by default in the seed → service returns
+    # 'ai_routing_not_configured', a precondition.
+    resp = client.post(
+        "/api/v1/ai/forecast/refine",
+        json={"period_start": seed["period_start"]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["provenance"]["fallback_reason"] == "ai_routing_not_configured"
+
+    rows = _audit_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].outcome.value == "success", (
+        "ai_routing_not_configured is a user-state precondition, not a system failure"
+    )
+    assert (rows[0].detail or {}).get("fallback_reason") == "ai_routing_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_audit_row_system_failure_marks_failure(session_factory):
+    """Real system failures (StructuredOutputError, dispatch errors)
+    DO record outcome='failure'."""
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with patch(
+        "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
+        side_effect=StructuredOutputError(),
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine",
+            json={"period_start": seed["period_start"]},
+        )
+    assert resp.status_code == 200
+
+    rows = _audit_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].outcome.value == "failure"
+    assert (rows[0].detail or {}).get("fallback_reason") == "ai_structured_output_failed"
+
+
+# ---------- additional fallback paths --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_native_not_available_falls_back_to_baseline(session_factory):
+    """Provider can't do structured output natively → ai_native_not_available
+    fallback. Previously uncaught, would 5xx the endpoint."""
+    from app.services.ai_providers.base import NativeNotAvailable
+
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with patch(
+        "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
+        side_effect=NativeNotAvailable(),
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine",
+            json={"period_start": seed["period_start"]},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["provenance"]["ai_applied"] is False
+    assert body["provenance"]["fallback_reason"] == "ai_native_not_available"
+
+
+@pytest.mark.asyncio
+async def test_cap_exceeded_falls_back_to_baseline(session_factory):
+    """AICapExceeded → ai_cap_exceeded fallback (user-state)."""
+    from app.services.ai_dispatch import AICapExceeded
+
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with patch(
+        "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
+        side_effect=AICapExceeded(),
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine",
+            json={"period_start": seed["period_start"]},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["provenance"]["fallback_reason"] == "ai_cap_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failed_falls_back_with_code(session_factory):
+    """AIDispatchFailed → ai_dispatch_failed:{code} fallback."""
+    from app.services.ai_dispatch import AIDispatchFailed
+
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with patch(
+        "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
+        side_effect=AIDispatchFailed("connection_error"),
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine",
+            json={"period_start": seed["period_start"]},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["provenance"]["fallback_reason"] == "ai_dispatch_failed:connection_error"
+
+
+@pytest.mark.asyncio
+async def test_capability_not_supported_falls_back(session_factory):
+    """AICapabilityNotSupported → ai_capability_not_supported fallback."""
+    from app.services.ai_dispatch import AICapabilityNotSupported
+
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with patch(
+        "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
+        side_effect=AICapabilityNotSupported(
+            capability="structured_output",
+            feature_key="smart_forecast",
+        ),
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine",
+            json={"period_start": seed["period_start"]},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["provenance"]["fallback_reason"] == "ai_capability_not_supported"
+
+
+# ---------- architectural invariants ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_endpoint_never_mutates_user_data_tables(session_factory):
+    """The /refine endpoint must NEVER write to Transaction, Category,
+    or Budget. Pinning the suggestion-only invariant at the router
+    level — a future regression that auto-applied a multiplier (e.g.
+    by writing a new Transaction adjustment row) would slip past
+    every other test in this file because they all check the response
+    shape, not the DB state.
+    """
+    from sqlalchemy import select as _select
+
+    from app.models.budget import Budget
+    from app.models.category import Category as _Category
+    from app.models.transaction import Transaction as _Transaction
+    from app.services.ai_providers.base import StructuredResponse
+    from app.services.ai_dispatch import StructuredDispatchResult
+
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def _snapshot():
+        async with session_factory() as s:
+            tx = (
+                await s.execute(_select(_Transaction))
+            ).scalars().all()
+            cat = (
+                await s.execute(_select(_Category))
+            ).scalars().all()
+            bud = (
+                await s.execute(_select(Budget))
+            ).scalars().all()
+            return (
+                {(r.id, r.amount, r.category_id) for r in tx},
+                {(r.id, r.name) for r in cat},
+                {(r.id, r.amount, r.category_id) for r in bud},
+            )
+
+    before = await _snapshot()
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    fake_response = StructuredDispatchResult(
+        response=StructuredResponse(
+            parsed={
+                "seasonal": [
+                    {
+                        "category_id": seed["category_id"],
+                        "category_name": "Groceries",
+                        "multiplier": 1.3,
+                        "rationale": "test",
+                    }
+                ],
+                "anomalies": [],
+                "confidence": 0.9,
+                "summary": "test",
+            },
+            raw_text="{}",
+            prompt_tokens=1,
+            completion_tokens=1,
+            model="m",
+            retries_used=0,
+        ),
+        ledger_id=1,
+    )
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with patch(
+        "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
+        return_value=fake_response,
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine",
+            json={"period_start": seed["period_start"]},
+        )
+    assert resp.status_code == 200, resp.text
+    # Sanity: refinement actually fired so we're testing the meaningful path.
+    assert resp.json()["provenance"]["ai_applied"] is True
+
+    after = await _snapshot()
+    assert before == after, (
+        "POST /refine must NOT mutate Transaction / Category / Budget rows; "
+        "this feature is suggestion-only by contract."
+    )

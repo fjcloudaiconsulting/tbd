@@ -120,7 +120,7 @@ export default function AIForecastRefineToggle({
           {loading ? (
             <span className="inline-flex items-center gap-1">
               <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-              Refining,
+              Refining…
             </span>
           ) : (
             "Apply AI refinement"
@@ -243,7 +243,7 @@ export default function AIForecastRefineToggle({
               {refined.provenance.confidence !== null &&
                 refined.provenance.confidence !== undefined && (
                   <>
-                    {" , confidence "}
+                    {", confidence "}
                     {(refined.provenance.confidence * 100).toFixed(0)}%
                   </>
                 )}

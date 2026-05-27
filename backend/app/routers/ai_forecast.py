@@ -22,7 +22,6 @@ the provenance reason. We deliberately do not log the LLM's free-text
 from __future__ import annotations
 
 import datetime
-import uuid
 from typing import Optional
 
 import structlog
@@ -76,14 +75,39 @@ async def refine_forecast_endpoint(
             )
 
     refined = await refine_forecast(
-        db, org_id=current_user.org_id, period_start=period_start_date
+        db,
+        org_id=current_user.org_id,
+        session_factory=session_factory,
+        period_start=period_start_date,
     )
 
     # Audit AFTER the business operation. The audit row carries the
     # outcome (was AI applied? was it a fallback?) but never carries
     # the LLM's summary text, because that could echo user-typed
     # category names back through audit storage.
-    outcome = "success" if refined.provenance.ai_applied else "failure"
+    #
+    # Audit-outcome semantics: only real system failures map to
+    # "failure". User-state preconditions (no routing configured, cap
+    # exceeded, insufficient history, provider lacks structured
+    # output) are clean "success" outcomes — the user got a usable
+    # baseline back. The full fallback_reason is in `detail` for
+    # forensic filtering. Same shape we landed on #370.
+    fallback_reason = refined.provenance.fallback_reason or ""
+    SYSTEM_FAILURE_REASONS = {
+        "history_build_failed",
+        "ai_structured_output_failed",
+        "ai_response_invalid_schema",
+    }
+    if refined.provenance.ai_applied:
+        outcome = "success"
+    elif (
+        fallback_reason in SYSTEM_FAILURE_REASONS
+        or fallback_reason.startswith("ai_dispatch_failed")
+    ):
+        outcome = "failure"
+    else:
+        outcome = "success"
+
     detail = {
         "ai_applied": refined.provenance.ai_applied,
         "fallback_reason": refined.provenance.fallback_reason,
@@ -102,7 +126,10 @@ async def refine_forecast_endpoint(
             actor_email=current_user.email,
             target_org_id=current_user.org_id,
             target_org_name=None,
-            request_id=uuid.uuid4().hex,
+            # Read the request_id from structlog's contextvars so the
+            # audit row correlates with the access log for this HTTP
+            # call. Generating a fresh UUID here would orphan the row.
+            request_id=structlog.contextvars.get_contextvars().get("request_id"),
             ip_address=get_client_ip(request),
             outcome=outcome,
             detail=detail,
