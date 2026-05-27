@@ -38,7 +38,8 @@ from typing import Optional
 import structlog
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
 from app.models.budget import Budget
 from app.models.category import Category
@@ -119,6 +120,9 @@ async def _gather_facts(
     months' total + average + this month's running actual. Aggregates
     only — no transaction-level data leaves this function.
     """
+    # Eager-load the master category so we don't fire N+1 refreshes
+    # row-by-row below. selectinload issues one extra IN-query for all
+    # categories at once.
     budget_rows = (
         await db.execute(
             select(Budget)
@@ -127,15 +131,14 @@ async def _gather_facts(
                 Budget.period_start == period_start,
             )
             .order_by(Budget.category_id)
+            .options(selectinload(Budget.category))
         )
     ).scalars().all()
     if not budget_rows:
         return []
 
-    for b in budget_rows:
-        await db.refresh(b, ["category"])
-
     cat_ids = [b.category_id for b in budget_rows]
+    budgeted_cat_ids = set(cat_ids)
 
     sub_rows = (
         await db.execute(
@@ -147,27 +150,39 @@ async def _gather_facts(
     ).all()
     parent_to_subs: dict[int, list[int]] = {cid: [] for cid in cat_ids}
     for sub_id, parent_id in sub_rows:
+        # Skip children that have their own budget row — otherwise
+        # the child's transactions are counted twice (once via the
+        # parent's rollup, once via the child's own facts row).
+        if sub_id in budgeted_cat_ids:
+            continue
         parent_to_subs.setdefault(parent_id, []).append(sub_id)
 
     today = datetime.date.today()
-    three_months_ago = today - relativedelta(months=3)
     current_month_start = today.replace(day=1)
+
+    # The 3-month window must be (a) exactly 3 calendar months wide so
+    # the divisor of 3 is honest, AND (b) strictly disjoint from the
+    # current-period filter below — otherwise transactions in the
+    # overlap are counted in both totals. Pick whichever cutoff comes
+    # first (current calendar month vs. the period start) as the
+    # upper bound, then take a clean 3-month window ending there.
+    three_mo_upper = min(current_month_start, period_start)
+    three_mo_lower = three_mo_upper - relativedelta(months=3)
 
     facts: list[_CategoryFact] = []
     for b in budget_rows:
         all_cat_ids = [b.category_id] + parent_to_subs.get(b.category_id, [])
 
-        # Last 3 calendar months of settled expenses (rolling, not
-        # period-aligned) — gives a stable rate-of-spend signal even when
-        # billing periods are non-monthly.
+        # Last 3 calendar months of settled expenses, strictly before
+        # the current period and the current calendar month.
         three_mo_sum = await db.scalar(
             select(func.coalesce(func.sum(Transaction.amount), 0)).where(
                 Transaction.org_id == org_id,
                 Transaction.category_id.in_(all_cat_ids),
                 Transaction.type == TransactionType.EXPENSE,
                 Transaction.status == TransactionStatus.SETTLED,
-                Transaction.settled_date >= three_months_ago,
-                Transaction.settled_date < current_month_start,
+                Transaction.settled_date >= three_mo_lower,
+                Transaction.settled_date < three_mo_upper,
                 reportable_transaction_filter(),
             )
         )
@@ -313,7 +328,10 @@ def _validate_and_shape(
 
 
 async def suggest_rebalance(
-    db: AsyncSession, *, org_id: int
+    db: AsyncSession,
+    *,
+    org_id: int,
+    session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
 ) -> BudgetRebalanceResponse:
     """Compute the AI rebalance suggestion for an org's current period.
 
@@ -321,6 +339,11 @@ async def suggest_rebalance(
     maps this to HTTP 200 regardless of internal failure mode. The
     feature gate is enforced at the router layer before this service
     runs.
+
+    ``session_factory`` is optional only because some legacy tests
+    call this without one; the router always passes it. When provided,
+    the LLM dispatch runs in its own session so the dispatcher's
+    ledger commit can't bleed into the request transaction.
     """
     period = await get_current_period(db, org_id)
     facts = await _gather_facts(
@@ -352,14 +375,28 @@ async def suggest_rebalance(
 
     messages = _build_messages(facts, period.start_date)
 
+    # ``call_llm_structured`` commits the session it's given (via
+    # ``_write_ledger_row`` in ai_dispatch.py). Use a dedicated session
+    # when one is available so the dispatcher's commit can't bleed
+    # into the request transaction. Same pattern as #368/#369.
     try:
-        result = await call_llm_structured(
-            db,
-            org_id=org_id,
-            feature_key=FEATURE_KEY,
-            messages=messages,
-            response_schema=LLM_RESPONSE_SCHEMA,
-        )
+        if session_factory is not None:
+            async with session_factory() as dispatch_db:
+                result = await call_llm_structured(
+                    dispatch_db,
+                    org_id=org_id,
+                    feature_key=FEATURE_KEY,
+                    messages=messages,
+                    response_schema=LLM_RESPONSE_SCHEMA,
+                )
+        else:
+            result = await call_llm_structured(
+                db,
+                org_id=org_id,
+                feature_key=FEATURE_KEY,
+                messages=messages,
+                response_schema=LLM_RESPONSE_SCHEMA,
+            )
     except (
         NoRoutingConfigured,
         AICapExceeded,

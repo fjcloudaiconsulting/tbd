@@ -530,3 +530,164 @@ async def test_service_never_mutates_budgets(
     await db.refresh(budgets["dining"])
     assert budgets["groceries"].amount == before_groceries
     assert budgets["dining"].amount == before_dining
+
+
+# ---------- parent/child rollup correctness --------------------------
+
+
+@pytest.mark.asyncio
+async def test_child_with_own_budget_is_not_double_counted_via_parent(
+    db: AsyncSession,
+    org: Organization,
+    user: User,
+    period: BillingPeriod,
+):
+    """When a parent category AND its child BOTH have budgets, the
+    child's transactions must NOT roll up into the parent's facts row
+    (otherwise the same dollars are counted in both rows).
+
+    Seeds: Housing (parent, $2000 budget), Rent (child of Housing,
+    $1500 budget). $1000 of expenses settled on Rent last month.
+
+    Expected: in the prompt, Rent's avg appears in Rent's facts row
+    (~333/mo); Housing's facts row sees $0 (Housing itself has no
+    transactions and Rent's are absorbed into Rent's own row).
+    """
+    today = datetime.date.today()
+    last_month = today.replace(day=1) - datetime.timedelta(days=1)
+
+    housing = Category(
+        org_id=org.id, name="Housing", type=CategoryType.EXPENSE, parent_id=None,
+    )
+    db.add(housing)
+    await db.commit()
+    rent = Category(
+        org_id=org.id, name="Rent", type=CategoryType.EXPENSE, parent_id=housing.id,
+    )
+    db.add(rent)
+    await db.commit()
+
+    db.add_all([
+        Budget(
+            org_id=org.id, category_id=housing.id,
+            amount=Decimal("2000.00"),
+            period_start=period.start_date, period_end=period.end_date,
+        ),
+        Budget(
+            org_id=org.id, category_id=rent.id,
+            amount=Decimal("1500.00"),
+            period_start=period.start_date, period_end=period.end_date,
+        ),
+    ])
+    await db.commit()
+
+    await _seed_history(
+        db, org=org, user=user, category=rent,
+        amount=Decimal("1000.00"), settled=last_month,
+    )
+
+    captured_payloads: list[dict] = []
+
+    async def fake_call(*args, messages, **kw):
+        # The user-content message has the aggregates dict embedded as
+        # its content. Extract by finding the categories list in the
+        # JSON-ish payload.
+        for m in messages:
+            content = m.get("content", "")
+            if "categories" in content and "category_id" in content:
+                # Eval the payload — _build_messages writes it via repr(),
+                # so it's a Python literal, NOT JSON.
+                import ast, re
+                match = re.search(r"\{.*\}", content, re.DOTALL)
+                if match:
+                    captured_payloads.append(ast.literal_eval(match.group()))
+        return _make_structured_result(
+            {"summary": "ok", "suggestions": []}
+        )
+
+    with patch(
+        "app.services.budget_rebalance_service.call_llm_structured",
+        side_effect=fake_call,
+    ):
+        await budget_rebalance_service.suggest_rebalance(db, org_id=org.id)
+
+    assert captured_payloads, "expected the prompt to carry an aggregates payload"
+    cats = captured_payloads[0]["categories"]
+    by_id = {c["category_id"]: c for c in cats}
+    assert housing.id in by_id and rent.id in by_id
+    # Rent's 3mo avg should reflect the $1000 settled last month.
+    assert by_id[rent.id]["last_3mo_avg_actual"] > 0
+    # Housing's 3mo avg must be ZERO — its only would-be source is
+    # Rent's transactions, which now belong to Rent's own row.
+    assert by_id[housing.id]["last_3mo_avg_actual"] == 0.0, (
+        f"Housing row should not double-count Rent's transactions; "
+        f"got {by_id[housing.id]['last_3mo_avg_actual']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unbudgeted_child_still_rolls_up_into_parent(
+    db: AsyncSession,
+    org: Organization,
+    user: User,
+    period: BillingPeriod,
+):
+    """When the child has NO budget of its own, the parent's facts
+    row should include the child's transactions. This pins the
+    rollup-for-unbudgeted-children behavior that the duplicate-skip
+    guard must not break.
+    """
+    today = datetime.date.today()
+    last_month = today.replace(day=1) - datetime.timedelta(days=1)
+
+    housing = Category(
+        org_id=org.id, name="Housing", type=CategoryType.EXPENSE, parent_id=None,
+    )
+    db.add(housing)
+    await db.commit()
+    rent = Category(
+        org_id=org.id, name="Rent", type=CategoryType.EXPENSE, parent_id=housing.id,
+    )
+    db.add(rent)
+    await db.commit()
+
+    # Parent ONLY has a budget; child does not.
+    db.add(Budget(
+        org_id=org.id, category_id=housing.id,
+        amount=Decimal("2000.00"),
+        period_start=period.start_date, period_end=period.end_date,
+    ))
+    await db.commit()
+
+    await _seed_history(
+        db, org=org, user=user, category=rent,
+        amount=Decimal("900.00"), settled=last_month,
+    )
+
+    captured_payloads: list[dict] = []
+
+    async def fake_call(*args, messages, **kw):
+        for m in messages:
+            content = m.get("content", "")
+            if "categories" in content and "category_id" in content:
+                import ast, re
+                match = re.search(r"\{.*\}", content, re.DOTALL)
+                if match:
+                    captured_payloads.append(ast.literal_eval(match.group()))
+        return _make_structured_result(
+            {"summary": "ok", "suggestions": []}
+        )
+
+    with patch(
+        "app.services.budget_rebalance_service.call_llm_structured",
+        side_effect=fake_call,
+    ):
+        await budget_rebalance_service.suggest_rebalance(db, org_id=org.id)
+
+    cats = captured_payloads[0]["categories"]
+    by_id = {c["category_id"]: c for c in cats}
+    assert housing.id in by_id
+    # Rent has no own facts row (no budget on Rent).
+    assert rent.id not in by_id
+    # Housing's facts row picks up Rent's $900 last month.
+    assert by_id[housing.id]["last_3mo_avg_actual"] > 0

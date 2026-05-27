@@ -253,4 +253,202 @@ def test_audit_row_written_with_outcome_and_count(
     detail = rows[0].detail or {}
     assert detail.get("status") == "ok"
     assert detail.get("suggestion_count") == 0
+
+
+def test_audit_row_on_llm_unavailable_is_failure(
+    session_factory, org_and_user
+):
+    """When the service returns ``llm_unavailable``, the audit row
+    must land with ``outcome='failure'`` so ops can count real LLM
+    outages without noise from user-state preconditions."""
+    org, user = org_and_user
+    app = _make_app(
+        session_factory,
+        features={
+            "ai.budget": True,
+            "ai.forecast": False,
+            "ai.smart_plan": False,
+            "ai.autocategorize": False,
+        },
+        user=user,
+    )
+    fake = BudgetRebalanceResponse(
+        status="llm_unavailable",
+        period_start=str(datetime.date.today().replace(day=1)),
+        summary="AI temporarily unavailable.",
+    )
+    with patch(
+        "app.services.budget_rebalance_service.suggest_rebalance",
+        new=AsyncMock(return_value=fake),
+    ):
+        client = TestClient(app)
+        res = client.post("/api/v1/ai/budget/rebalance")
+    assert res.status_code == 200
+
+    import asyncio
+
+    async def _read_audit():
+        async with session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.event_type
+                        == "ai.budget.rebalance.requested"
+                    )
+                )
+            ).scalars().all()
+            return rows
+
+    rows = asyncio.get_event_loop().run_until_complete(_read_audit())
+    assert len(rows) == 1
+    assert rows[0].outcome.value == "failure"
+    detail = rows[0].detail or {}
+    assert detail.get("status") == "llm_unavailable"
+
+
+def test_audit_row_on_empty_no_budgets_is_success(
+    session_factory, org_and_user
+):
+    """``empty_no_budgets`` is a user-state precondition, NOT a system
+    failure — audit outcome must reflect that so ops dashboards don't
+    treat \"user hasn't set up budgets\" as a real outage."""
+    org, user = org_and_user
+    app = _make_app(
+        session_factory,
+        features={
+            "ai.budget": True,
+            "ai.forecast": False,
+            "ai.smart_plan": False,
+            "ai.autocategorize": False,
+        },
+        user=user,
+    )
+    fake = BudgetRebalanceResponse(
+        status="empty_no_budgets",
+        period_start=str(datetime.date.today().replace(day=1)),
+        summary="No budgets are set.",
+    )
+    with patch(
+        "app.services.budget_rebalance_service.suggest_rebalance",
+        new=AsyncMock(return_value=fake),
+    ):
+        client = TestClient(app)
+        res = client.post("/api/v1/ai/budget/rebalance")
+    assert res.status_code == 200
+
+    import asyncio
+
+    async def _read_audit():
+        async with session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.event_type
+                        == "ai.budget.rebalance.requested"
+                    )
+                )
+            ).scalars().all()
+            return rows
+
+    rows = asyncio.get_event_loop().run_until_complete(_read_audit())
+    assert len(rows) == 1
+    assert rows[0].outcome.value == "success"
+    detail = rows[0].detail or {}
+    assert detail.get("status") == "empty_no_budgets"
+
+
+def test_endpoint_never_mutates_budgets_table(
+    session_factory, org_and_user
+):
+    """Architectural invariant: POST /rebalance is suggestion-only.
+    The budgets table must be byte-identical before and after the
+    request, regardless of how the service responded. Pinning at the
+    router level guards against a future regression that auto-applies
+    even one row.
+    """
+    import asyncio
+    from decimal import Decimal
+
+    from app.models.budget import Budget
+    from app.models.category import Category, CategoryType
+
+    org, user = org_and_user
+
+    async def _seed_budgets():
+        async with session_factory() as session:
+            cat = Category(
+                org_id=org.id,
+                name="Groceries",
+                slug="groceries",
+                type=CategoryType.EXPENSE,
+                is_system=False,
+            )
+            session.add(cat)
+            await session.commit()
+            b = Budget(
+                org_id=org.id,
+                category_id=cat.id,
+                amount=Decimal("400.00"),
+                period_start=datetime.date.today().replace(day=1),
+                period_end=None,
+            )
+            session.add(b)
+            await session.commit()
+            return [(b.id, b.category_id, b.amount)]
+
+    before = asyncio.get_event_loop().run_until_complete(_seed_budgets())
+
+    app = _make_app(
+        session_factory,
+        features={
+            "ai.budget": True,
+            "ai.forecast": False,
+            "ai.smart_plan": False,
+            "ai.autocategorize": False,
+        },
+        user=user,
+    )
+
+    # Use the actual ok-status response shape with a non-empty
+    # suggestion list — the regression we want to catch is "service
+    # returned a suggestion AND the router secretly applied it".
+    from app.schemas.budget_rebalance import BudgetDeltaSuggestion
+
+    fake = BudgetRebalanceResponse(
+        status="ok",
+        period_start=str(datetime.date.today().replace(day=1)),
+        summary="trim a little",
+        suggestions=[
+            BudgetDeltaSuggestion(
+                category_id=before[0][1],
+                category_name="Groceries",
+                current_amount=Decimal("400.00"),
+                suggested_amount=Decimal("450.00"),
+                delta_amount=Decimal("50.00"),
+                reasoning="bump",
+            )
+        ],
+    )
+    with patch(
+        "app.services.budget_rebalance_service.suggest_rebalance",
+        new=AsyncMock(return_value=fake),
+    ):
+        client = TestClient(app)
+        res = client.post("/api/v1/ai/budget/rebalance")
+    assert res.status_code == 200, res.text
+
+    async def _read_budgets():
+        async with session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(Budget).where(Budget.org_id == org.id)
+                )
+            ).scalars().all()
+            return [(b.id, b.category_id, b.amount) for b in rows]
+
+    after = asyncio.get_event_loop().run_until_complete(_read_budgets())
+    assert before == after, (
+        "POST /rebalance must NEVER mutate the budgets table; "
+        f"before={before}, after={after}"
+    )
     assert rows[0].outcome.value == "success"

@@ -61,7 +61,18 @@ async def rebalance(
     no prompt / completion content, no category names.
     """
     response = await budget_rebalance_service.suggest_rebalance(
-        db, org_id=current_user.org_id
+        db,
+        org_id=current_user.org_id,
+        session_factory=session_factory,
+    )
+
+    # Audit outcome distinguishes system failures from user-state
+    # preconditions. ``empty_no_budgets`` and ``empty_no_history`` are
+    # clean preconditions (the user just hasn't set up budgets / has
+    # no recent expenses) — they shouldn't show up as failures in the
+    # ops dashboard. Only ``llm_unavailable`` is a real failure.
+    audit_outcome = (
+        "failure" if response.status == "llm_unavailable" else "success"
     )
 
     await audit_service.record_audit_event(
@@ -72,8 +83,8 @@ async def rebalance(
         target_org_id=current_user.org_id,
         target_org_name=None,
         request_id=structlog.contextvars.get_contextvars().get("request_id"),
-        ip_address=get_client_ip(request) if request is not None else None,
-        outcome="success" if response.status == "ok" else "failure",
+        ip_address=get_client_ip(request),
+        outcome=audit_outcome,
         detail={
             "status": response.status,
             "suggestion_count": len(response.suggestions),

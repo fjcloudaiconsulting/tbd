@@ -60,6 +60,12 @@ export default function BudgetRebalanceModal({
   const [fetchError, setFetchError] = useState<string>("");
   const [applyError, setApplyError] = useState<string>("");
   const [applying, setApplying] = useState(false);
+  // Per-row apply state: which suggestions have been written successfully
+  // this apply attempt, and which (if any) failed. Lets the user see
+  // exactly what landed when a mid-loop failure cuts the loop short.
+  const [appliedIds, setAppliedIds] = useState<Set<number>>(new Set());
+  const [failedIds, setFailedIds] = useState<Set<number>>(new Set());
+  const [skippedIds, setSkippedIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (!open) return;
@@ -69,6 +75,9 @@ export default function BudgetRebalanceModal({
     setFetchError("");
     setApplyError("");
     setAcceptedIds(new Set());
+    setAppliedIds(new Set());
+    setFailedIds(new Set());
+    setSkippedIds(new Set());
     apiFetch<RebalanceResponse>("/api/v1/ai/budget/rebalance", {
       method: "POST",
     })
@@ -116,24 +125,60 @@ export default function BudgetRebalanceModal({
     if (!response) return;
     setApplyError("");
     setApplying(true);
-    try {
-      const accepted = response.suggestions.filter((s) =>
-        acceptedIds.has(s.category_id),
-      );
-      for (const s of accepted) {
-        const budgetId = budgetIdByCategory.get(s.category_id);
-        if (!budgetId) continue;
+    // Reset per-row state for this apply attempt.
+    const justApplied = new Set<number>();
+    const justFailed = new Set<number>();
+    const justSkipped = new Set<number>();
+    const accepted = response.suggestions.filter((s) =>
+      acceptedIds.has(s.category_id),
+    );
+    let firstError: unknown = null;
+    for (const s of accepted) {
+      const budgetId = budgetIdByCategory.get(s.category_id);
+      if (!budgetId) {
+        // The user's budgets prop drifted (a budget was deleted between
+        // open and apply). Surface it instead of silently dropping.
+        justSkipped.add(s.category_id);
+        continue;
+      }
+      try {
         await apiFetch(`/api/v1/budgets/${budgetId}`, {
           method: "PUT",
           body: JSON.stringify({ amount: toNumber(s.suggested_amount) }),
         });
+        justApplied.add(s.category_id);
+      } catch (err) {
+        justFailed.add(s.category_id);
+        if (firstError === null) firstError = err;
+        // Stop on first failure — applying further rows after a
+        // server-side rejection would mask the failure and make it
+        // harder for the user to recover.
+        break;
       }
+    }
+    setAppliedIds(justApplied);
+    setFailedIds(justFailed);
+    setSkippedIds(justSkipped);
+    if (firstError !== null) {
+      setApplyError(extractErrorMessage(firstError));
+    } else if (justSkipped.size > 0 && justApplied.size === 0) {
+      setApplyError(
+        "No budget rows could be applied. Refresh and try again.",
+      );
+    }
+    setApplying(false);
+    // Notify the parent so it reloads budgets only if anything landed.
+    if (justApplied.size > 0) {
       onApplied();
+    }
+    // Auto-close only when everything succeeded — otherwise leave the
+    // modal open so the user can see per-row status.
+    if (
+      justFailed.size === 0 &&
+      justSkipped.size === 0 &&
+      justApplied.size === accepted.length
+    ) {
       onClose();
-    } catch (err) {
-      setApplyError(extractErrorMessage(err));
-    } finally {
-      setApplying(false);
     }
   }
 
@@ -243,11 +288,22 @@ export default function BudgetRebalanceModal({
                     {response.suggestions.map((s) => {
                       const delta = toNumber(s.delta_amount);
                       const accepted = acceptedIds.has(s.category_id);
+                      const wasApplied = appliedIds.has(s.category_id);
+                      const wasFailed = failedIds.has(s.category_id);
+                      const wasSkipped = skippedIds.has(s.category_id);
+                      const rowStatus = wasApplied
+                        ? "applied"
+                        : wasFailed
+                          ? "failed"
+                          : wasSkipped
+                            ? "skipped"
+                            : null;
                       return (
                         <tr
                           key={s.category_id}
                           className="border-b border-border-subtle/60 align-top"
                           data-testid={`rebalance-row-${s.category_id}`}
+                          data-row-status={rowStatus ?? "pending"}
                         >
                           <td className="py-2 pr-3">
                             <input
@@ -255,11 +311,26 @@ export default function BudgetRebalanceModal({
                               aria-label={`Apply suggestion for ${s.category_name}`}
                               checked={accepted}
                               onChange={() => toggleRow(s.category_id)}
+                              disabled={wasApplied}
                               className="h-4 w-4 accent-accent"
                             />
                           </td>
                           <td className="py-2 pr-3 text-text-primary">
                             {s.category_name}
+                            {rowStatus && (
+                              <span
+                                className={`ml-2 text-[10px] uppercase tracking-wide ${
+                                  wasApplied
+                                    ? "text-success"
+                                    : wasFailed
+                                      ? "text-danger"
+                                      : "text-text-muted"
+                                }`}
+                                data-testid={`rebalance-row-${s.category_id}-status`}
+                              >
+                                {rowStatus}
+                              </span>
+                            )}
                           </td>
                           <td className="py-2 pr-3 text-right tabular-nums text-text-secondary">
                             {formatAmount(toNumber(s.current_amount))}
