@@ -31,6 +31,7 @@ Hard rules baked into this layer:
 from __future__ import annotations
 
 import datetime
+import json
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
@@ -169,39 +170,65 @@ async def _gather_facts(
     three_mo_upper = min(current_month_start, period_start)
     three_mo_lower = three_mo_upper - relativedelta(months=3)
 
+    # Collect every category_id we need to sum over (budgets + their
+    # rolled-up children) so we can do TWO grouped queries instead of
+    # 2N round-trips inside the loop.
+    all_rollup_ids: set[int] = set()
+    for b in budget_rows:
+        all_rollup_ids.add(b.category_id)
+        for sub_id in parent_to_subs.get(b.category_id, []):
+            all_rollup_ids.add(sub_id)
+
+    base_filter = [
+        Transaction.org_id == org_id,
+        Transaction.category_id.in_(all_rollup_ids),
+        Transaction.type == TransactionType.EXPENSE,
+        Transaction.status == TransactionStatus.SETTLED,
+        reportable_transaction_filter(),
+    ]
+
+    # One query for the 3-month rollup, GROUP BY category_id.
+    three_mo_rows = (
+        await db.execute(
+            select(Transaction.category_id, func.sum(Transaction.amount))
+            .where(
+                *base_filter,
+                Transaction.settled_date >= three_mo_lower,
+                Transaction.settled_date < three_mo_upper,
+            )
+            .group_by(Transaction.category_id)
+        )
+    ).all()
+    three_mo_by_cat: dict[int, Decimal] = {
+        cid: Decimal(str(total or 0)) for cid, total in three_mo_rows
+    }
+
+    # One query for the current-period rollup, GROUP BY category_id.
+    current_q = (
+        select(Transaction.category_id, func.sum(Transaction.amount))
+        .where(*base_filter, Transaction.settled_date >= period_start)
+    )
+    if period_end is not None:
+        current_q = current_q.where(Transaction.settled_date <= period_end)
+    current_rows = (
+        await db.execute(current_q.group_by(Transaction.category_id))
+    ).all()
+    current_by_cat: dict[int, Decimal] = {
+        cid: Decimal(str(total or 0)) for cid, total in current_rows
+    }
+
     facts: list[_CategoryFact] = []
     for b in budget_rows:
         all_cat_ids = [b.category_id] + parent_to_subs.get(b.category_id, [])
-
-        # Last 3 calendar months of settled expenses, strictly before
-        # the current period and the current calendar month.
-        three_mo_sum = await db.scalar(
-            select(func.coalesce(func.sum(Transaction.amount), 0)).where(
-                Transaction.org_id == org_id,
-                Transaction.category_id.in_(all_cat_ids),
-                Transaction.type == TransactionType.EXPENSE,
-                Transaction.status == TransactionStatus.SETTLED,
-                Transaction.settled_date >= three_mo_lower,
-                Transaction.settled_date < three_mo_upper,
-                reportable_transaction_filter(),
-            )
+        three_mo_total = sum(
+            (three_mo_by_cat.get(c, Decimal(0)) for c in all_cat_ids),
+            Decimal(0),
         )
-        three_mo_total = Decimal(str(three_mo_sum or 0))
         three_mo_avg = (three_mo_total / Decimal(3)).quantize(Decimal("0.01"))
-
-        # Current period's running spend.
-        q = select(func.coalesce(func.sum(Transaction.amount), 0)).where(
-            Transaction.org_id == org_id,
-            Transaction.category_id.in_(all_cat_ids),
-            Transaction.type == TransactionType.EXPENSE,
-            Transaction.status == TransactionStatus.SETTLED,
-            Transaction.settled_date >= period_start,
-            reportable_transaction_filter(),
+        current_actual = sum(
+            (current_by_cat.get(c, Decimal(0)) for c in all_cat_ids),
+            Decimal(0),
         )
-        if period_end is not None:
-            q = q.where(Transaction.settled_date <= period_end)
-        current_sum = await db.scalar(q)
-        current_actual = Decimal(str(current_sum or 0))
 
         facts.append(
             _CategoryFact(
@@ -261,9 +288,13 @@ def _build_messages(
         "period_start": period_start.isoformat(),
         "categories": aggregates,
     }
+    # Serialize the aggregates as strict JSON (not Python repr) so the
+    # system prompt's "output JSON" instruction is paired with valid
+    # JSON input — sort_keys keeps the payload stable across runs and
+    # makes it easy for tests to parse with json.loads.
     user = (
         "Given the per-category aggregates below, suggest budget shifts.\n\n"
-        f"AGGREGATES:\n{user_payload}"
+        f"AGGREGATES:\n{json.dumps(user_payload, sort_keys=True)}"
     )
     return [
         {"role": "system", "content": system},
@@ -416,6 +447,24 @@ async def suggest_rebalance(
             summary=(
                 "AI rebalance is temporarily unavailable. Set up an AI "
                 "provider in Settings or try again later."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - defensive
+        # Anything unexpected (engine errors from session_factory(),
+        # transient DB blips, etc.) maps to the same friendly empty
+        # state instead of a 500. The dispatcher's typed errors are
+        # caught above; this is the last-resort containment.
+        logger.warning(
+            "ai.budget.rebalance.unexpected_error",
+            org_id=org_id,
+            error_class=type(exc).__name__,
+        )
+        return BudgetRebalanceResponse(
+            status="llm_unavailable",
+            period_start=period.start_date.isoformat(),
+            summary=(
+                "AI rebalance is temporarily unavailable. Try again "
+                "in a moment."
             ),
         )
 

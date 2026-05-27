@@ -125,20 +125,27 @@ export default function BudgetRebalanceModal({
     if (!response) return;
     setApplyError("");
     setApplying(true);
-    // Reset per-row state for this apply attempt.
-    const justApplied = new Set<number>();
-    const justFailed = new Set<number>();
-    const justSkipped = new Set<number>();
-    const accepted = response.suggestions.filter((s) =>
-      acceptedIds.has(s.category_id),
+    // Carry forward prior-attempt results so a retry only targets
+    // rows that still need to land — without this, re-clicking Apply
+    // after a partial failure would re-PUT the rows that ALREADY
+    // applied (charging the user's budget twice in spirit, even
+    // though the API call is idempotent).
+    const cumulativeApplied = new Set<number>(appliedIds);
+    const cumulativeFailed = new Set<number>();
+    const cumulativeSkipped = new Set<number>();
+    const pending = response.suggestions.filter(
+      (s) =>
+        acceptedIds.has(s.category_id) && !cumulativeApplied.has(s.category_id),
     );
     let firstError: unknown = null;
-    for (const s of accepted) {
+    let abortedAtIndex = -1;
+    for (let i = 0; i < pending.length; i++) {
+      const s = pending[i];
       const budgetId = budgetIdByCategory.get(s.category_id);
       if (!budgetId) {
         // The user's budgets prop drifted (a budget was deleted between
         // open and apply). Surface it instead of silently dropping.
-        justSkipped.add(s.category_id);
+        cumulativeSkipped.add(s.category_id);
         continue;
       }
       try {
@@ -146,37 +153,59 @@ export default function BudgetRebalanceModal({
           method: "PUT",
           body: JSON.stringify({ amount: toNumber(s.suggested_amount) }),
         });
-        justApplied.add(s.category_id);
+        cumulativeApplied.add(s.category_id);
       } catch (err) {
-        justFailed.add(s.category_id);
+        cumulativeFailed.add(s.category_id);
         if (firstError === null) firstError = err;
+        abortedAtIndex = i;
         // Stop on first failure — applying further rows after a
         // server-side rejection would mask the failure and make it
         // harder for the user to recover.
         break;
       }
     }
-    setAppliedIds(justApplied);
-    setFailedIds(justFailed);
-    setSkippedIds(justSkipped);
+    // Anything we didn't even attempt because of the break above
+    // shouldn't keep its checkbox checked — otherwise the next Apply
+    // would happily retry them all. Mark them as 'skipped' so the
+    // user can re-check explicitly if they want to try again.
+    if (abortedAtIndex >= 0) {
+      for (let i = abortedAtIndex + 1; i < pending.length; i++) {
+        cumulativeSkipped.add(pending[i].category_id);
+      }
+    }
+    setAppliedIds(cumulativeApplied);
+    setFailedIds(cumulativeFailed);
+    setSkippedIds(cumulativeSkipped);
+    // Uncheck rows that already applied so the count + sum line and
+    // the Apply-button label reflect only the work still to do.
+    setAcceptedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of cumulativeApplied) next.delete(id);
+      return next;
+    });
     if (firstError !== null) {
       setApplyError(extractErrorMessage(firstError));
-    } else if (justSkipped.size > 0 && justApplied.size === 0) {
+    } else if (
+      cumulativeSkipped.size > 0 &&
+      cumulativeApplied.size === appliedIds.size
+    ) {
       setApplyError(
         "No budget rows could be applied. Refresh and try again.",
       );
     }
     setApplying(false);
-    // Notify the parent so it reloads budgets only if anything landed.
-    if (justApplied.size > 0) {
+    // Notify the parent if anything landed THIS attempt.
+    const landedThisAttempt =
+      cumulativeApplied.size > appliedIds.size;
+    if (landedThisAttempt) {
       onApplied();
     }
-    // Auto-close only when everything succeeded — otherwise leave the
-    // modal open so the user can see per-row status.
+    // Auto-close only when every accepted row has now landed and
+    // nothing failed/was skipped this attempt.
     if (
-      justFailed.size === 0 &&
-      justSkipped.size === 0 &&
-      justApplied.size === accepted.length
+      cumulativeFailed.size === 0 &&
+      cumulativeSkipped.size === 0 &&
+      pending.every((s) => cumulativeApplied.has(s.category_id))
     ) {
       onClose();
     }

@@ -11,9 +11,12 @@ Architect-locked invariants:
   ``tests/services/test_scenario_engine.py`` pins this with a
   row-count delta assertion.
 - ``ScenarioEngine`` is the ABC. ``AnalyticEngine`` is the
-  deterministic baseline. ``AIEngine`` is the PR4 stub that raises
-  ``NotImplementedError("PR4")`` on simulate; ``analytic`` is the
-  default everywhere.
+  deterministic baseline. ``AIEngine`` is the registry stub whose
+  sync ``simulate`` returns the analytic baseline (safe fallback);
+  the real AI orchestration is async and lives in
+  ``scenario_engine_ai.run_ai_simulation``, called by the router
+  when ``engine="ai_enhanced"``. ``analytic`` is the default
+  everywhere.
 - Output shape is engine-agnostic so the UI doesn't care which engine
   ran. Mirrors ``schemas/scenario.py::ProjectionResult``.
 - Math reuses ``app/services/date_utils.py::advance_date`` for
@@ -557,20 +560,24 @@ class AnalyticEngine(ScenarioEngine):
         return result
 
 
-# ── AI engine (stub for PR4) ────────────────────────────────────────────
+# ── AI engine ───────────────────────────────────────────────────────────
 
 
 class AIEngine(ScenarioEngine):
-    """AI-enhanced engine — STUB for PR1.
+    """AI-enhanced engine.
 
-    Real implementation lands in PR4 when Team E's AI Tier SDK is
-    available. Until then, calling ``simulate`` raises
-    ``NotImplementedError("PR4")`` so the engine selector in the
-    router stays honest (a misconfigured request gets a hard error,
-    not a silent analytic fallback).
+    The real AI orchestration lives in ``scenario_engine_ai.py`` and is
+    async (it needs a DB session to read feature gates, talk to the
+    LLM dispatcher, and write audit rows). The router calls that
+    orchestrator directly when ``engine="ai_enhanced"``.
 
-    The signature is identical to ``AnalyticEngine.simulate`` so the
-    router can swap engines without any other change.
+    This class stays in the engine registry so ``get_engine`` keeps
+    returning a typed instance for callers that need the engine
+    contract (e.g. tests, future synchronous code paths). The
+    sync ``simulate`` method here delegates to the analytic baseline
+    — it is the "safe fallback" when an AI invocation cannot run for
+    any reason. The wrapper's full output shape (with provenance) is
+    only produced by the async orchestrator, NOT by this sync path.
     """
 
     name = "ai_enhanced"
@@ -580,8 +587,13 @@ class AIEngine(ScenarioEngine):
         req: SimulationRequest,
         *,
         smooth_with_regression: bool = False,
-    ) -> dict[str, Any]:  # pragma: no cover
-        raise NotImplementedError("PR4")
+    ) -> dict[str, Any]:
+        # Sync fallback. Returns the analytic baseline so callers that
+        # cannot orchestrate the async AI path (e.g. compare endpoint,
+        # tests) still get a sensible projection.
+        return AnalyticEngine().simulate(
+            req, smooth_with_regression=smooth_with_regression
+        )
 
 
 # ── World-state assembler (DB → engine boundary) ────────────────────────

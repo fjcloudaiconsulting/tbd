@@ -589,18 +589,15 @@ async def test_child_with_own_budget_is_not_double_counted_via_parent(
     captured_payloads: list[dict] = []
 
     async def fake_call(*args, messages, **kw):
-        # The user-content message has the aggregates dict embedded as
-        # its content. Extract by finding the categories list in the
-        # JSON-ish payload.
+        # The user-content message carries the aggregates as JSON after
+        # an "AGGREGATES:\n" marker. Parse with json.loads — strict.
         for m in messages:
             content = m.get("content", "")
-            if "categories" in content and "category_id" in content:
-                # Eval the payload — _build_messages writes it via repr(),
-                # so it's a Python literal, NOT JSON.
-                import ast, re
-                match = re.search(r"\{.*\}", content, re.DOTALL)
-                if match:
-                    captured_payloads.append(ast.literal_eval(match.group()))
+            marker = "AGGREGATES:\n"
+            if marker in content:
+                json_blob = content.split(marker, 1)[1].strip()
+                import json as _json
+                captured_payloads.append(_json.loads(json_blob))
         return _make_structured_result(
             {"summary": "ok", "suggestions": []}
         )
