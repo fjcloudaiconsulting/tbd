@@ -56,7 +56,39 @@ def test_all_permissions_contains_known_platform_permissions() -> None:
         "users.view",
         "users.delete",
         "subscriptions.view",
+        # L4.4 admin slices — see specs/2026-05-22-l4-4-admin-slices.md §1.
+        "users.invite",
+        "users.reset_credentials",
+        "users.impersonate",
     })
+
+
+def test_l4_4_permissions_grant_to_superadmin_via_short_circuit() -> None:
+    superadmin = make_user(is_superadmin=True)
+
+    assert has_permission(superadmin, "users.invite") is True
+    assert has_permission(superadmin, "users.reset_credentials") is True
+    assert has_permission(superadmin, "users.impersonate") is True
+
+
+def test_l4_4_permissions_denied_to_non_superadmin_by_default() -> None:
+    user = make_user()
+
+    assert has_permission(user, "users.invite") is False
+    assert has_permission(user, "users.reset_credentials") is False
+    assert has_permission(user, "users.impersonate") is False
+
+
+def test_require_permission_factory_accepts_l4_4_permission_strings() -> None:
+    # All three new permissions can be passed to require_permission()
+    # and produce stable dependency names. This pins the Literal-typed
+    # Permission contract so a future rename surfaces here, not at
+    # the call site.
+    for perm in ("users.invite", "users.reset_credentials", "users.impersonate"):
+        dependency = require_permission(perm)  # type: ignore[arg-type]
+        assert dependency.__name__ == (
+            f"require_permission_{perm.replace('.', '_')}"
+        )
 
 
 def test_has_permission_grants_everything_to_superadmins() -> None:
