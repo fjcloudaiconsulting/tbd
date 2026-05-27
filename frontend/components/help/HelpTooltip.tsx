@@ -18,6 +18,8 @@
  * Callers that need to override the trigger label can pass it
  * directly; everything else comes from the content map.
  */
+import { useId } from "react";
+
 import Tooltip from "@/components/Tooltip";
 import {
   getHelpTooltip,
@@ -39,13 +41,19 @@ export default function HelpTooltip({
   className,
 }: HelpTooltipProps) {
   const entry = getHelpTooltip(k);
+  // Per-instance suffix so the same key can be rendered multiple
+  // times on the same page (e.g. the inline transactions edit row
+  // AND the floating quick-add form both render `tx.amount`) without
+  // generating duplicate DOM ids — which would break aria-describedby.
+  // The stable key prefix keeps the id greppable in dev tools.
+  const instanceId = useId().replace(/:/g, "");
   return (
     <Tooltip
       content={entry.content}
       learnMoreSection={entry.learnMoreSection}
       triggerLabel={triggerLabel ?? entry.triggerLabel ?? "More info"}
       className={className}
-      id={`help-${k.replace(/\./g, "-")}`}
+      id={`help-${k.replace(/\./g, "-")}-${instanceId}`}
     />
   );
 }

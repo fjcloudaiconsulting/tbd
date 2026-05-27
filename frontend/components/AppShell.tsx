@@ -501,9 +501,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                       TOUR_FLAG_VALUE_EXTENDED,
                     );
                   } catch {
-                    // Storage disabled. The button remains functional
-                    // through Settings → Profile → Replay tour as a
-                    // fallback (audit-logged path).
+                    // sessionStorage unavailable (Safari private mode,
+                    // disabled storage). The replay-tour flow depends
+                    // on this flag — `DashboardTourAutoStart` and
+                    // `RestartTourCard` both read it on mount, so the
+                    // tour won't auto-start in this branch. We still
+                    // navigate to /dashboard so the user sees their
+                    // home; restart-tour from the Settings card has
+                    // the same limitation. TODO: lift the start path
+                    // onto the TourContext so it's storage-independent.
                   }
                   setUserExpanded(false);
                   setSidebarOpen(false);

@@ -95,7 +95,19 @@ function TourRouter({ api }: { api: TourApi }) {
     if (!api.isActive) return;
     if (!currentStep) return;
     const route = routeForPrefix(pagePrefix(currentStep));
-    if (!route) return;
+    if (!route) {
+      // Unknown prefix means the tour authoring drifted from the
+      // route map. The overlay will auto-skip when the anchor isn't
+      // found, but surfacing it as a console warning makes the
+      // missing entry visible in CI smoke runs / E2E logs instead of
+      // silently no-opping.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[tour] no route mapped for step prefix "${pagePrefix(currentStep)}" ` +
+          `(step="${currentStep}"). Add an entry to routeForPrefix() in lib/help/tour.ts.`,
+      );
+      return;
+    }
     if (pathname === route) return;
     router.push(route);
   }, [api.isActive, currentStep, pathname, router]);
@@ -134,6 +146,7 @@ function usePrefersReducedMotion(): boolean {
 
 function TourOverlay({ api }: { api: TourApi }) {
   const reducedMotion = usePrefersReducedMotion();
+  const pathname = usePathname();
   const [rect, setRect] = useState<AnchorRect | null>(null);
   const [mounted, setMounted] = useState(false);
 
@@ -161,16 +174,30 @@ function TourOverlay({ api }: { api: TourApi }) {
 
   // If the active step has no anchor in the DOM (route changed,
   // element removed), advance after a short grace so flicker does
-  // not stall the user. 200ms is enough for a Next.js client nav.
+  // not stall the user.
+  //
+  // BUT: when a cross-page step is in flight, TourRouter has just
+  // pushed the new route and we're waiting for the destination page
+  // to mount its `data-tour-id` anchors. Auto-skipping during that
+  // window would silently advance past every step on a slow page.
+  // Suspend auto-skip until the pathname matches the step's expected
+  // route, then poll on a longer grace (800ms) to absorb the
+  // hydration + data-fetch tail.
   useEffect(() => {
     if (!api.isActive) return;
     if (rect) return;
+    if (!api.currentStep) return;
+    const expectedRoute = routeForPrefix(pagePrefix(api.currentStep));
+    // If we know the step belongs to a different route than we're on,
+    // don't auto-skip — TourRouter will move us there and the anchor
+    // will appear shortly.
+    if (expectedRoute && pathname !== expectedRoute) return;
     const t = window.setTimeout(() => {
       const fresh = getAnchorRect(api.currentStep);
       if (!fresh) api.next();
-    }, 200);
+    }, 800);
     return () => window.clearTimeout(t);
-  }, [api, rect]);
+  }, [api, rect, pathname]);
 
   // Keyboard nav. The overlay is informative (aria-modal="false") so
   // we don't trap focus, but the tour itself has to be fully usable
@@ -183,11 +210,23 @@ function TourOverlay({ api }: { api: TourApi }) {
   // standard semantics.
   useEffect(() => {
     if (!api.isActive) return;
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      // Arrow keys belong to inputs, textareas, selects, contenteditables
+      // — for cursor movement, radio/listbox navigation, etc. Hijacking
+      // them while the user is mid-keystroke breaks the underlying page.
+      // Escape stays global; arrow advance/back only fires when focus is
+      // outside an editable element.
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         api.close();
         return;
       }
+      if (isEditableTarget(e.target)) return;
       if (e.key === "ArrowRight") {
         api.next();
         return;

@@ -54,4 +54,33 @@ describe("HelpTooltip", () => {
       HELP_TOOLTIPS["cat.subcategory"].learnMoreSection!,
     );
   });
+
+  it("generates unique DOM ids when the same key is rendered twice on the page", async () => {
+    // The transactions page (edit row) and the floating quick-add
+    // form both render <HelpTooltip k="tx.amount" />. If HelpTooltip
+    // hashed the id from the key alone, the second mount would
+    // collide with the first and break aria-describedby wiring.
+    render(
+      <div>
+        <HelpTooltip k="tx.amount" />
+        <HelpTooltip k="tx.amount" />
+      </div>,
+    );
+    const triggers = screen.getAllByTestId("tooltip-trigger");
+    expect(triggers).toHaveLength(2);
+    // Open the first tooltip and capture its id, then the second.
+    // The base Tooltip wires aria-describedby imperatively on focus.
+    act(() => fireEvent.focus(triggers[0]));
+    const id0 = triggers[0].getAttribute("aria-describedby");
+    act(() => fireEvent.blur(triggers[0]));
+    act(() => fireEvent.focus(triggers[1]));
+    const id1 = triggers[1].getAttribute("aria-describedby");
+    expect(id0).toBeTruthy();
+    expect(id1).toBeTruthy();
+    expect(id0).not.toBe(id1);
+    // The stable key prefix still appears in both ids so dev tools
+    // and audits can grep for the field name.
+    expect(id0).toContain("help-tx-amount");
+    expect(id1).toContain("help-tx-amount");
+  });
 });

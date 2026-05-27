@@ -14,7 +14,8 @@
  * the full manual in a new tab.
  *
  * Keys are dot-namespaced "<feature>.<field>" so a future tooltip
- * audit can grep for every site that uses ``HelpTooltip key="tx.X"``.
+ * audit can grep for every site that uses ``HelpTooltip k="tx.X"``
+ * (the prop is `k`, not `key` — `key` is React-reserved).
  */
 
 export interface HelpTooltipEntry {
