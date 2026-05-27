@@ -479,23 +479,22 @@ async def test_invalid_period_start_returns_400(session_factory):
 # ---------- audit emission (success + user-state + system failure) ----
 
 
-def _audit_rows(session_factory):
-    """Sync helper that fetches all ai.forecast.refine.invoked rows."""
-    import asyncio
+async def _audit_rows(session_factory):
+    """Fetch all ai.forecast.refine.invoked rows. Must be awaited from
+    within the pytest-asyncio event loop — the prior sync wrapper that
+    called run_until_complete raised 'event loop already running'.
+    """
     from sqlalchemy import select as _select
 
-    async def _read():
-        async with session_factory() as s:
-            from app.models.audit_event import AuditEvent
-            return (
-                await s.execute(
-                    _select(AuditEvent).where(
-                        AuditEvent.event_type == "ai.forecast.refine.invoked"
-                    )
+    async with session_factory() as s:
+        from app.models.audit_event import AuditEvent
+        return (
+            await s.execute(
+                _select(AuditEvent).where(
+                    AuditEvent.event_type == "ai.forecast.refine.invoked"
                 )
-            ).scalars().all()
-
-    return asyncio.get_event_loop().run_until_complete(_read())
+            )
+        ).scalars().all()
 
 
 @pytest.mark.asyncio
@@ -546,7 +545,7 @@ async def test_audit_row_written_on_success(session_factory):
         )
     assert resp.status_code == 200
 
-    rows = _audit_rows(session_factory)
+    rows = await _audit_rows(session_factory)
     assert len(rows) == 1, "exactly one audit row per refine call"
     row = rows[0]
     assert row.outcome.value == "success"
@@ -579,7 +578,7 @@ async def test_audit_row_user_state_preconditions_are_success(session_factory):
     assert resp.status_code == 200
     assert resp.json()["provenance"]["fallback_reason"] == "ai_routing_not_configured"
 
-    rows = _audit_rows(session_factory)
+    rows = await _audit_rows(session_factory)
     assert len(rows) == 1
     assert rows[0].outcome.value == "success", (
         "ai_routing_not_configured is a user-state precondition, not a system failure"
@@ -608,7 +607,7 @@ async def test_audit_row_system_failure_marks_failure(session_factory):
         )
     assert resp.status_code == 200
 
-    rows = _audit_rows(session_factory)
+    rows = await _audit_rows(session_factory)
     assert len(rows) == 1
     assert rows[0].outcome.value == "failure"
     assert (rows[0].detail or {}).get("fallback_reason") == "ai_structured_output_failed"
