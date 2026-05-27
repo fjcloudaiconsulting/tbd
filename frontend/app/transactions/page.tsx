@@ -242,25 +242,24 @@ function TransactionsPageContent() {
     setPeriods(pers ?? []);
     setPeriodsLoaded(true);
 
-    // LAI.1 visibility probe. Both the feature flag and at least one
-    // credential must exist for the affordance to render. Any failure
-    // (no subscription, no AI tier, network blip) falls through to
-    // "button hidden" — the backend re-checks on every call so an
-    // adversary cannot escalate by hiding the button.
+    // LAI.1 visibility probe. We only check the org-level feature
+    // flag here — the credentials-list endpoint
+    // (/api/v1/settings/ai-providers) is admin-gated, so probing it
+    // would 403 for regular org members and hide the affordance from
+    // users who SHOULD see it. The categorize endpoint itself is
+    // gated by the feature flag only; if the org has the feature on
+    // but no credentials configured, the click surfaces a friendly
+    // 412 error (and the button is already soft-fail).
+    //
+    // The backend re-checks the feature gate on every request, so an
+    // adversary cannot escalate by tampering with this probe.
     try {
       const sub = await apiFetch<{ plan?: { features?: Record<string, boolean> } }>(
         "/api/v1/subscriptions",
       );
-      const featureOn =
-        sub?.plan?.features?.["ai.autocategorize"] === true;
-      if (!featureOn) {
-        setAiSuggestAvailable(false);
-        return;
-      }
-      const creds = await apiFetch<unknown[]>(
-        "/api/v1/settings/ai-providers",
+      setAiSuggestAvailable(
+        sub?.plan?.features?.["ai.autocategorize"] === true,
       );
-      setAiSuggestAvailable(Array.isArray(creds) && creds.length > 0);
     } catch {
       setAiSuggestAvailable(false);
     }

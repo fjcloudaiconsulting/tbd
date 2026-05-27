@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 
@@ -19,9 +19,11 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
  * errors.
  *
  * Visibility: the parent decides whether to render this component at
- * all. The current convention is "show only when the org has the
- * ``ai.autocategorize`` feature AND at least one valid AI credential".
- * The backend re-checks both invariants on every request.
+ * all. The current convention is "show when the org has the
+ * ``ai.autocategorize`` feature flag enabled" — the credentials check
+ * is admin-only, so we don't probe it from the frontend; the click
+ * surfaces a friendly 412 if credentials are missing. The backend
+ * re-checks the feature gate on every request.
  */
 interface Suggestion {
   category_id: number;
@@ -50,8 +52,17 @@ export default function SuggestCategoryButton({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSuggestion, setLastSuggestion] = useState<Suggestion | null>(null);
+  // Re-entry guard for double-click protection. `setBusy(true)` is
+  // React-async; the `disabled={busy}` attribute on the button only
+  // takes effect after the next render commits, leaving a tiny window
+  // where a second click can fire. A useRef flips synchronously and
+  // closes that window — important because each click spends a real
+  // LLM dispatch + audit row server-side.
+  const busyRef = useRef(false);
 
   const handleClick = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -66,6 +77,7 @@ export default function SuggestCategoryButton({
         extractErrorMessage(caught, "Couldn't fetch a suggestion right now."),
       );
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };

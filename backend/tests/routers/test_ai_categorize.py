@@ -5,9 +5,16 @@ Pins:
 - 403 when ``ai.autocategorize`` feature gate is closed.
 - 404 when the transaction is in a different org.
 - 409 when the org has no type-compatible categories.
-- 412 when no routing is configured.
-- 502 when the structured-output retry budget is exhausted.
-- Audit event ``ai.categorize.suggested`` written on success.
+- 402 when the AI hard cap is exhausted (``AICapExceeded``).
+- 412 when no routing is configured, native capability is missing,
+  or the routed credential lacks a required capability.
+- 502 when the structured-output retry budget is exhausted
+  (``StructuredOutputError``) or any other dispatch failure
+  (``AIDispatchFailed``).
+- Audit event ``ai.categorize.suggested`` written ONLY on success;
+  zero audit rows on every failure path.
+- Defensive guard: duplicate slugs in the catalog are deduped to the
+  lowest-id row.
 """
 from __future__ import annotations
 
@@ -492,3 +499,207 @@ async def test_no_compatible_categories_returns_409(session_factory):
     )
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "category_catalog_empty"
+
+
+# --- dispatch-error path coverage ----------------------------------------
+#
+# These tests patch ``ai_categorize_service.call_llm_structured`` directly
+# so each typed dispatch failure can be exercised without driving a full
+# adapter mock. Each one ALSO asserts the audit table is empty after the
+# failure — the "audit on success only" policy is otherwise unpinned on
+# the failure side and easy to regress.
+
+
+async def _assert_no_audit_rows(session_factory) -> None:
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "ai.categorize.suggested"
+                )
+            )
+        ).scalars().all()
+    assert rows == [], (
+        f"failure path must NOT emit an ai.categorize.suggested audit row; "
+        f"found {len(rows)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cap_exceeded_returns_402(session_factory):
+    """Hard-cap exhaustion → 402 ``ai_hard_cap_exceeded``, no audit row."""
+    from app.services.ai_dispatch import AICapExceeded
+
+    seeded = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seeded["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    with patch(
+        "app.services.ai_categorize_service.call_llm_structured",
+        new=AsyncMock(side_effect=AICapExceeded()),
+    ):
+        resp = client.post(
+            "/api/v1/ai/categorize",
+            json={"transaction_id": seeded["tx_id"]},
+        )
+    assert resp.status_code == 402
+    assert resp.json()["detail"]["code"] == "ai_hard_cap_exceeded"
+    await _assert_no_audit_rows(session_factory)
+
+
+@pytest.mark.asyncio
+async def test_native_not_available_returns_412(session_factory):
+    """Provider lacks structured-output capability → 412
+    ``ai_native_not_available``, no audit row."""
+    from app.services.ai_providers.base import NativeNotAvailable
+
+    seeded = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seeded["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    with patch(
+        "app.services.ai_categorize_service.call_llm_structured",
+        new=AsyncMock(side_effect=NativeNotAvailable()),
+    ):
+        resp = client.post(
+            "/api/v1/ai/categorize",
+            json={"transaction_id": seeded["tx_id"]},
+        )
+    assert resp.status_code == 412
+    assert resp.json()["detail"]["code"] == "ai_native_not_available"
+    await _assert_no_audit_rows(session_factory)
+
+
+@pytest.mark.asyncio
+async def test_capability_not_supported_returns_412(session_factory):
+    """Routed credential lacks a required capability → 412 with
+    structured detail (code + capability + feature_key)."""
+    from app.services.ai_dispatch import AICapabilityNotSupported
+
+    seeded = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seeded["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    with patch(
+        "app.services.ai_categorize_service.call_llm_structured",
+        new=AsyncMock(
+            side_effect=AICapabilityNotSupported(
+                capability="structured_output",
+                feature_key="categorize_transactions",
+            )
+        ),
+    ):
+        resp = client.post(
+            "/api/v1/ai/categorize",
+            json={"transaction_id": seeded["tx_id"]},
+        )
+    assert resp.status_code == 412
+    detail = resp.json()["detail"]
+    assert detail["code"] == "ai_capability_not_supported"
+    assert detail["capability"] == "structured_output"
+    assert detail["feature_key"] == "categorize_transactions"
+    await _assert_no_audit_rows(session_factory)
+
+
+@pytest.mark.asyncio
+async def test_structured_output_exhausted_returns_502(session_factory):
+    """Structured-output retry budget exhausted → 502
+    ``ai_structured_output_failed``, no audit row. Pins the
+    StructuredOutputError → 502 mapping the router promises."""
+    from app.services.ai_providers.base import StructuredOutputError
+
+    seeded = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seeded["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    with patch(
+        "app.services.ai_categorize_service.call_llm_structured",
+        new=AsyncMock(side_effect=StructuredOutputError("retries_exhausted")),
+    ):
+        resp = client.post(
+            "/api/v1/ai/categorize",
+            json={"transaction_id": seeded["tx_id"]},
+        )
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "ai_structured_output_failed"
+    await _assert_no_audit_rows(session_factory)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failed_returns_502(session_factory):
+    """Adapter/provider transport error → 502 with the dispatcher's
+    own error code propagated to the response body."""
+    from app.services.ai_dispatch import AIDispatchFailed
+
+    seeded = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seeded["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    with patch(
+        "app.services.ai_categorize_service.call_llm_structured",
+        new=AsyncMock(side_effect=AIDispatchFailed("connection_error")),
+    ):
+        resp = client.post(
+            "/api/v1/ai/categorize",
+            json={"transaction_id": seeded["tx_id"]},
+        )
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "connection_error"
+    await _assert_no_audit_rows(session_factory)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_slug_is_deduped_lowest_id_wins(session_factory):
+    """If two categories in the same org share a slug, the service
+    deterministically keeps the lowest-id row. The dropped row is
+    invisible to the LLM (not in the enum) — pin this so the
+    defensive guard doesn't silently regress to a non-deterministic
+    dict insert order.
+    """
+    seeded = await _seed(session_factory)
+
+    # Add a second expense category with the same slug as Groceries.
+    # Higher id wins on insert order; the defensive guard should drop
+    # this one in favor of the original Groceries row.
+    async with session_factory() as db:
+        dup = Category(
+            org_id=seeded["org_id"],
+            name="Groceries Duplicate",
+            slug="groceries",
+            type=CategoryType.EXPENSE,
+            is_system=False,
+        )
+        db.add(dup)
+        await db.commit()
+        dup_id = dup.id
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seeded["owner_id"])
+
+    client = TestClient(_make_app(session_factory, resolver))
+    adapter = _adapter_returning(
+        '{"category_slug": "groceries", "confidence": 0.9, '
+        '"reasoning": "Match the lowest-id row."}'
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        resp = client.post(
+            "/api/v1/ai/categorize",
+            json={"transaction_id": seeded["tx_id"]},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # The original Groceries row (lower id) must win, never the dup.
+    assert body["category_id"] == seeded["groceries_id"]
+    assert body["category_id"] != dup_id

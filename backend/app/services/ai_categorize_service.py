@@ -9,14 +9,18 @@ for category suggestions. The boundary contract:
    adversarial caller cannot bypass the catalog by feeding us a
    spoofed description.
 2. We build a structured prompt that enumerates only this org's
-   categories as the allowed slugs. The LLM cannot return a value
-   outside the enum without failing schema validation.
+   categories as the allowed slugs. The JSON schema declares the
+   ``enum`` constraint; whether the *provider* honors that constraint
+   server-side is provider-dependent, and our dispatcher's own
+   structural validator only checks the required keys. Hence the
+   defense-in-depth slug check on the way out (step 4).
 3. ``call_llm_structured`` handles routing, caps, the ledger row, and
    the retry budget. Adapter selection, BYOK decryption, and feature
    gating happen there.
 4. We translate ``slug -> category_id`` on the way out. If the LLM
-   returns a slug we don't recognise (defense in depth — the schema
-   already enforces enum membership) we refuse with a typed error.
+   returns a slug we don't recognise (because the provider didn't
+   honor the enum, or our schema check didn't catch it) we refuse
+   with a typed error.
 5. Each successful suggestion writes an ``ai.categorize.suggested``
    audit row. The frontend has not applied anything yet; this is the
    "we offered a suggestion" trail.
@@ -229,7 +233,24 @@ async def suggest_category(
     if not catalog:
         raise CategoryCatalogEmpty()
 
-    slug_to_category = {c.slug: c for c in catalog}
+    # Defensive guard: Category.slug has no unique-per-org constraint
+    # in the schema today, so two categories within the same org *can*
+    # share a slug if the DB drifts. A naive dict comprehension would
+    # silently drop one — the user would see a quietly narrower menu.
+    # Detect the collision, log it, and keep the lowest-id row
+    # deterministically so the LLM enum is stable across reruns.
+    slug_to_category: dict[str, Category] = {}
+    for c in sorted(catalog, key=lambda x: x.id):
+        if c.slug in slug_to_category:
+            logger.warning(
+                "ai.categorize.duplicate_slug",
+                org_id=org_id,
+                slug=c.slug,
+                kept_category_id=slug_to_category[c.slug].id,
+                dropped_category_id=c.id,
+            )
+            continue
+        slug_to_category[c.slug] = c
     allowed_slugs = list(slug_to_category.keys())
 
     messages = _build_messages(
@@ -240,15 +261,21 @@ async def suggest_category(
     )
     schema = _build_schema(allowed_slugs)
 
+    # ``call_llm_structured`` commits the session it's given (the
+    # ledger row write does ``await db.commit()``). Use a dedicated
+    # session so the dispatcher's commit can't bleed into the request
+    # transaction or mix with anything the wrapper might stage on
+    # ``db`` in the future. Same pattern as the audit pipeline below.
     try:
-        result = await call_llm_structured(
-            db,
-            org_id=org_id,
-            feature_key=FEATURE_KEY,
-            messages=messages,
-            response_schema=schema,
-            max_tokens=300,
-        )
+        async with session_factory() as dispatch_db:
+            result = await call_llm_structured(
+                dispatch_db,
+                org_id=org_id,
+                feature_key=FEATURE_KEY,
+                messages=messages,
+                response_schema=schema,
+                max_tokens=300,
+            )
     except (
         NoRoutingConfigured,
         AICapExceeded,
