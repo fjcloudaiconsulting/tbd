@@ -30,6 +30,13 @@ Permission = Literal[
     "users.view",
     "users.delete",
     "subscriptions.view",
+    # L4.4 admin slices (2026-05-22). Superadmin-only via the
+    # is_superadmin short-circuit for v1; ROLE_PERMISSIONS stays
+    # empty for non-superadmin platform roles until L4.8 introduces
+    # the role editor. See specs/2026-05-22-l4-4-admin-slices.md §1.
+    "users.invite",            # platform-admin invite (mint new is_superadmin user)
+    "users.reset_credentials", # admin-triggered password / email / MFA reset
+    "users.impersonate",       # mint + exit a read-only impersonation session
 ]
 
 
@@ -42,6 +49,12 @@ Permission = Literal[
 # (search/detail) surface is widely useful for support work while
 # the destructive surface should remain superadmin-only even if a
 # future support role inherits users.view via ROLE_PERMISSIONS.
+#
+# users.invite / users.reset_credentials / users.impersonate (added
+# 2026-05-22) gate the three L4.4 admin slices. Kept distinct from
+# users.view + users.delete so a future support role can read users
+# without inheriting the ability to invite platform admins, reset
+# credentials out-of-band, or impersonate.
 ALL_PERMISSIONS: frozenset[Permission] = frozenset({
     "admin.view",
     "plans.manage",
@@ -53,6 +66,9 @@ ALL_PERMISSIONS: frozenset[Permission] = frozenset({
     "users.view",
     "users.delete",
     "subscriptions.view",
+    "users.invite",
+    "users.reset_credentials",
+    "users.impersonate",
 })
 
 
