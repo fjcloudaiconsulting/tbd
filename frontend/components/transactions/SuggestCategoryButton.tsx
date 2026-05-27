@@ -62,10 +62,15 @@ export default function SuggestCategoryButton({
 
   const handleClick = async () => {
     if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
     setError(null);
+    // Set the ref + state INSIDE the try so the finally always runs
+    // even if a synchronous throw (e.g. JSON.stringify on a BigInt
+    // or circular reference) happens before the first await. Without
+    // this, the ref would stay stuck true and the button would be
+    // dead until remount.
     try {
+      busyRef.current = true;
+      setBusy(true);
       const result = await apiFetch<Suggestion>("/api/v1/ai/categorize", {
         method: "POST",
         body: JSON.stringify({ transaction_id: transactionId }),

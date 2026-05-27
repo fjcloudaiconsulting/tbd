@@ -251,13 +251,20 @@ async def suggest_category(
             )
             continue
         slug_to_category[c.slug] = c
+    # Use the deduped values for BOTH the prompt and the schema enum,
+    # so what the LLM sees in the catalog block matches the slugs it's
+    # allowed to return. Passing the raw `catalog` would list dropped
+    # duplicates in the prompt, confusing the model with two prompt
+    # rows that resolve to the same enum value (and to the kept row,
+    # not the dropped one, on the way out).
+    deduped_categories = list(slug_to_category.values())
     allowed_slugs = list(slug_to_category.keys())
 
     messages = _build_messages(
         description=tx.description,
         amount=tx.amount,
         tx_type=tx.type,
-        categories=catalog,
+        categories=deduped_categories,
     )
     schema = _build_schema(allowed_slugs)
 

@@ -703,3 +703,16 @@ async def test_duplicate_slug_is_deduped_lowest_id_wins(session_factory):
     # The original Groceries row (lower id) must win, never the dup.
     assert body["category_id"] == seeded["groceries_id"]
     assert body["category_id"] != dup_id
+
+    # And — equally important — the dropped duplicate's NAME must not
+    # appear in the prompt the LLM saw. If _build_messages received
+    # the raw catalog, the prompt would list "groceries: Groceries
+    # Duplicate" alongside "groceries: Groceries", confusing the
+    # model with two rows mapping to one enum value.
+    call_args = adapter.chat_structured.await_args
+    prompt_text = "\n".join(m["content"] for m in call_args.kwargs["messages"])
+    assert "Groceries Duplicate" not in prompt_text, (
+        "deduped duplicate must not leak into the LLM prompt — "
+        "_build_messages should receive the deduped catalog, not the raw one"
+    )
+    assert "Groceries" in prompt_text  # sanity: the kept row IS in the prompt
