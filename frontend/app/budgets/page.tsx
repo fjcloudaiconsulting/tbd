@@ -16,6 +16,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
+import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
@@ -44,6 +45,11 @@ export default function BudgetsPage() {
   const [transferCategoryId, setTransferCategoryId] = useState<number | "">("");
   const [transferAmount, setTransferAmount] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+
+  // LAI.3 — Smart Budget Rebalance. The modal lazy-fetches when opened
+  // and never auto-applies; user accept/skip per row, then Apply
+  // writes via existing PUT /budgets/{id}.
+  const [rebalanceOpen, setRebalanceOpen] = useState(false);
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
@@ -217,6 +223,15 @@ export default function BudgetsPage() {
               className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
             >
               From Forecast
+            </button>
+          )}
+          {isCurrentPeriod && budgets.length > 0 && (
+            <button
+              onClick={() => setRebalanceOpen(true)}
+              className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
+              data-testid="suggest-rebalance-btn"
+            >
+              Suggest rebalance
             </button>
           )}
           {isCurrentPeriod && availableCategories.length > 0 && (
@@ -482,6 +497,18 @@ export default function BudgetsPage() {
         variant="danger"
         onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
         onCancel={() => setConfirmDeleteId(null)}
+      />
+      <BudgetRebalanceModal
+        open={rebalanceOpen}
+        budgets={budgets.map((b) => ({
+          id: b.id,
+          category_id: b.category_id,
+          amount: b.amount,
+        }))}
+        onApplied={() => {
+          void loadBudgets();
+        }}
+        onClose={() => setRebalanceOpen(false)}
       />
     </AppShell>
   );
