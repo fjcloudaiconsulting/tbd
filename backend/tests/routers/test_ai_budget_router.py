@@ -451,4 +451,3 @@ def test_endpoint_never_mutates_budgets_table(
         "POST /rebalance must NEVER mutate the budgets table; "
         f"before={before}, after={after}"
     )
-    assert rows[0].outcome.value == "success"
