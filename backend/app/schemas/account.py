@@ -34,6 +34,8 @@ class AccountCreate(BaseModel):
     account_type_id: int
     currency: str = "EUR"
     close_day: Optional[int] = Field(default=None, ge=1, le=28)
+    payment_day: Optional[int] = Field(default=None, ge=1, le=31)
+    payment_day_relative_month: Optional[int] = Field(default=None, ge=0, le=12)
     # Opening balance (L3.2 Wave 2A). User-stated starting amount and
     # the sole entry point for a non-zero starting balance: the live
     # ``Account.balance`` field is initialised from this value server-
@@ -55,6 +57,8 @@ class AccountUpdate(BaseModel):
     account_type_id: Optional[int] = None
     is_active: Optional[bool] = None
     close_day: Optional[int] = Field(default=None, ge=1, le=28)
+    payment_day: Optional[int] = Field(default=None, ge=1, le=31)
+    payment_day_relative_month: Optional[int] = Field(default=None, ge=0, le=12)
     is_default: Optional[bool] = None
     # Both opening fields are editable post-create. Audit-logged on
     # change (see ``accounts.update_account``).
@@ -78,6 +82,8 @@ class AccountResponse(BaseModel):
     currency: str
     is_active: bool
     close_day: Optional[int] = None
+    payment_day: Optional[int] = None
+    payment_day_relative_month: Optional[int] = None
     is_default: bool = False
     opening_balance: Decimal = Decimal("0.00")
     opening_balance_date: Optional[date] = None

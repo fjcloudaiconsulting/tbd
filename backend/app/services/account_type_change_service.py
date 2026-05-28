@@ -21,8 +21,19 @@ Cascade rules (§ 3.1):
    this also covers the "no type change, only close_day on non-CC" hole the
    PUT path silently accepted before this spec.
 
+CC payment day columns (spec 2026-05-28-cc-billing-cycle.md, Slice 1):
+
+- ``payment_day`` and ``payment_day_relative_month`` mirror the close_day
+  invariant: NULL on non-CC accounts, optional on CC accounts (NULL means
+  "use resolver default"). Cascade is independent of close_day:
+  - (not CC -> CC): payload MAY carry either or both; both are optional.
+  - (CC -> not CC): server clears both to NULL regardless of payload.
+  - (CC -> CC): payload MAY update either or both; explicit NULL on a CC
+    account is permitted (unlike close_day) because NULL means "use default".
+  - (not CC -> not CC): payload MUST NOT carry non-null values (400).
+
 Cross-org target type ID resolves to 422 (entity-not-for-you semantics)
-to leave 400 reserved for cascade violations. Out-of-range close_day is
+to leave 400 reserved for cascade violations. Out-of-range values are
 caught by Pydantic before this service runs (422).
 """
 from __future__ import annotations
@@ -56,6 +67,10 @@ class TypeChangeResult:
         "new_type_slug",
         "old_close_day",
         "new_close_day",
+        "old_payment_day",
+        "new_payment_day",
+        "old_payment_day_relative_month",
+        "new_payment_day_relative_month",
         "type_changed",
     )
 
@@ -69,6 +84,10 @@ class TypeChangeResult:
         new_type_slug: Optional[str],
         old_close_day: Optional[int],
         new_close_day: Optional[int],
+        old_payment_day: Optional[int],
+        new_payment_day: Optional[int],
+        old_payment_day_relative_month: Optional[int],
+        new_payment_day_relative_month: Optional[int],
         type_changed: bool,
     ) -> None:
         self.account_id = account_id
@@ -78,6 +97,10 @@ class TypeChangeResult:
         self.new_type_slug = new_type_slug
         self.old_close_day = old_close_day
         self.new_close_day = new_close_day
+        self.old_payment_day = old_payment_day
+        self.new_payment_day = new_payment_day
+        self.old_payment_day_relative_month = old_payment_day_relative_month
+        self.new_payment_day_relative_month = new_payment_day_relative_month
         self.type_changed = type_changed
 
 
@@ -162,6 +185,78 @@ def validate_create_close_day(
         )
 
 
+def validate_payment_day_cascade(
+    *,
+    source_slug: Optional[str],
+    target_slug: Optional[str],
+    payment_day_in_payload: bool,
+    payment_day_value: Optional[int],
+    payment_day_relative_month_in_payload: bool,
+    payment_day_relative_month_value: Optional[int],
+) -> None:
+    """Validate payment_day / payment_day_relative_month cascade rules.
+
+    Mirrors the shape of ``validate_close_day_cascade`` but with relaxed
+    CC-target rules: on CC accounts both new columns are OPTIONAL (NULL
+    is valid — it means "use resolver default"). Only non-CC payloads
+    carrying non-null values are rejected.
+
+    Cascade matrix (spec D3 / Slice 1):
+    - (not CC -> CC): payload MAY carry either column; NULL/omitted is fine.
+    - (CC -> not CC): server clears both to NULL; payload carrying non-null
+      value(s) is rejected (400).
+    - (CC -> CC): payload MAY update either column; NULL is allowed.
+    - (not CC -> not CC): payload MUST NOT carry non-null values (400).
+    """
+    target_is_cc = target_slug == _CC
+
+    if target_is_cc:
+        # CC target: any value (including NULL) is fine. The range check
+        # is Pydantic's job (ge/le constraints on the schema field). Nothing
+        # to reject here.
+        return
+
+    # Target != CC. Non-null values are forbidden on non-CC accounts.
+    if payment_day_in_payload and payment_day_value is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="payment_day is only allowed on credit_card accounts",
+        )
+    if (
+        payment_day_relative_month_in_payload
+        and payment_day_relative_month_value is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="payment_day_relative_month is only allowed on credit_card accounts",
+        )
+
+
+def validate_create_payment_day(
+    *,
+    target_slug: Optional[str],
+    payment_day_value: Optional[int],
+    payment_day_relative_month_value: Optional[int],
+) -> None:
+    """Create-path validation for payment_day / payment_day_relative_month.
+
+    Mirrors ``validate_create_close_day`` but with relaxed CC rules:
+    both new columns are optional on CC accounts (NULL = resolver default).
+    Non-CC accounts must not carry non-null values.
+    """
+    if target_slug != _CC:
+        if payment_day_value is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="payment_day is only allowed on credit_card accounts",
+            )
+        if payment_day_relative_month_value is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="payment_day_relative_month is only allowed on credit_card accounts",
+            )
+
+
 async def apply_type_change_in_session(
     svc_db: AsyncSession,
     *,
@@ -170,6 +265,10 @@ async def apply_type_change_in_session(
     target_type_id: int,
     close_day_in_payload: bool,
     close_day_value: Optional[int],
+    payment_day_in_payload: bool = False,
+    payment_day_value: Optional[int] = None,
+    payment_day_relative_month_in_payload: bool = False,
+    payment_day_relative_month_value: Optional[int] = None,
 ) -> tuple[Account, TypeChangeResult]:
     """Lock the row, validate the cascade, stage the type change.
 
@@ -206,6 +305,8 @@ async def apply_type_change_in_session(
         account.account_type.slug if account.account_type else None
     )
     old_close_day = account.close_day
+    old_payment_day = account.payment_day
+    old_payment_day_relative_month = account.payment_day_relative_month
 
     # Target-type existence + cross-org check. 422 (entity-not-for-you)
     # rather than 400, to leave 400 reserved for cascade violations
@@ -230,6 +331,14 @@ async def apply_type_change_in_session(
         close_day_in_payload=close_day_in_payload,
         close_day_value=close_day_value,
     )
+    validate_payment_day_cascade(
+        source_slug=old_type_slug,
+        target_slug=target_slug,
+        payment_day_in_payload=payment_day_in_payload,
+        payment_day_value=payment_day_value,
+        payment_day_relative_month_in_payload=payment_day_relative_month_in_payload,
+        payment_day_relative_month_value=payment_day_relative_month_value,
+    )
 
     # Apply: type first, then cascade the close_day column.
     account.account_type_id = target_type_id
@@ -243,10 +352,19 @@ async def apply_type_change_in_session(
         #     untouched (spec § 3.1 row 3, PR #246 second-review P1 fix).
         if close_day_in_payload:
             account.close_day = close_day_value
+        # Payment columns: write only when the payload carried them.
+        # NULL is a valid value (means "use resolver default") so we use
+        # the ``_in_payload`` sentinel rather than null-checking.
+        if payment_day_in_payload:
+            account.payment_day = payment_day_value
+        if payment_day_relative_month_in_payload:
+            account.payment_day_relative_month = payment_day_relative_month_value
     else:
         # Server-side clear when leaving CC, regardless of whether the
-        # payload carried close_day. Idempotent for non-CC -> non-CC.
+        # payload carried these columns. Idempotent for non-CC -> non-CC.
         account.close_day = None
+        account.payment_day = None
+        account.payment_day_relative_month = None
 
     result = TypeChangeResult(
         account_id=account_id,
@@ -256,6 +374,10 @@ async def apply_type_change_in_session(
         new_type_slug=target_slug,
         old_close_day=old_close_day,
         new_close_day=account.close_day,
+        old_payment_day=old_payment_day,
+        new_payment_day=account.payment_day,
+        old_payment_day_relative_month=old_payment_day_relative_month,
+        new_payment_day_relative_month=account.payment_day_relative_month,
         type_changed=type_changed,
     )
     return account, result
@@ -269,6 +391,10 @@ async def change_account_type(
     target_type_id: int,
     close_day_in_payload: bool,
     close_day_value: Optional[int],
+    payment_day_in_payload: bool = False,
+    payment_day_value: Optional[int] = None,
+    payment_day_relative_month_in_payload: bool = False,
+    payment_day_relative_month_value: Optional[int] = None,
 ) -> TypeChangeResult:
     """Thin owning-transaction wrapper for callers that only want to
     flip the type and have no other fields to mutate.
@@ -291,6 +417,10 @@ async def change_account_type(
                 target_type_id=target_type_id,
                 close_day_in_payload=close_day_in_payload,
                 close_day_value=close_day_value,
+                payment_day_in_payload=payment_day_in_payload,
+                payment_day_value=payment_day_value,
+                payment_day_relative_month_in_payload=payment_day_relative_month_in_payload,
+                payment_day_relative_month_value=payment_day_relative_month_value,
             )
             # Context manager commits on clean exit. Do NOT call
             # await svc_db.commit() here -- spec § 4.3 warning.
