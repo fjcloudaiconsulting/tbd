@@ -86,7 +86,7 @@ export default function ReportsListPage() {
   return (
     <AppShell>
       <header className="mb-6 flex items-center justify-between">
-        <div>
+        <div data-tour-id="reports.title">
           <h1 className="text-2xl font-semibold text-text-primary">Reports</h1>
           <p className="text-sm text-text-muted">
             Build a layout of KPIs and charts over your transactions.

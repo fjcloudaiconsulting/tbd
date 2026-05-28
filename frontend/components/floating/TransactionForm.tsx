@@ -5,6 +5,7 @@ import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import DescriptionAutocomplete from "@/components/transactions/DescriptionAutocomplete";
 import TagChipInput from "@/components/transactions/TagChipInput";
 import CategorySelect from "@/components/ui/CategorySelect";
+import HelpTooltip from "@/components/help/HelpTooltip";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { todayISO } from "@/lib/format";
 import {
@@ -286,9 +287,12 @@ export default function TransactionForm({
       {errMsg && <div className={errorCls}>{errMsg}</div>}
 
       <div>
-        <label htmlFor="fab-tx-account" className={label}>
-          Account
-        </label>
+        <span className="mb-1.5 flex items-center gap-1">
+          <label htmlFor="fab-tx-account" className={`${label} mb-0`}>
+            Account
+          </label>
+          <HelpTooltip k="tx.account" />
+        </span>
         <select
           id="fab-tx-account"
           required
@@ -308,9 +312,12 @@ export default function TransactionForm({
       </div>
 
       <div>
-        <label htmlFor="fab-tx-type" className={label}>
-          Type
-        </label>
+        <span className="mb-1.5 flex items-center gap-1">
+          <label htmlFor="fab-tx-type" className={`${label} mb-0`}>
+            Type
+          </label>
+          <HelpTooltip k="tx.type" />
+        </span>
         <select
           id="fab-tx-type"
           value={type}
@@ -376,9 +383,12 @@ export default function TransactionForm({
       </div>
 
       <div>
-        <label htmlFor="fab-tx-amount" className={label}>
-          Amount
-        </label>
+        <span className="mb-1.5 flex items-center gap-1">
+          <label htmlFor="fab-tx-amount" className={`${label} mb-0`}>
+            Amount
+          </label>
+          <HelpTooltip k="tx.amount" />
+        </span>
         <input
           id="fab-tx-amount"
           type="number"

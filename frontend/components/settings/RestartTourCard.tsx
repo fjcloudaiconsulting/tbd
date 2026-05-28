@@ -22,10 +22,10 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { btnSecondary, card, cardHeader, cardTitle } from "@/lib/styles";
 
-// Mirrors the constant in OnboardingPageBody. Duplicated rather than
-// imported so the wizard module is not pulled into the Settings page
-// bundle just for one string.
-const TOUR_FLAG_KEY = "tbd-pending-dashboard-tour";
+import {
+  TOUR_FLAG_KEY,
+  TOUR_FLAG_VALUE_DASHBOARD,
+} from "@/lib/help/tour";
 
 export default function RestartTourCard() {
   const router = useRouter();
@@ -46,7 +46,7 @@ export default function RestartTourCard() {
       // so AppShell will NOT redirect us to /onboarding after this call.
       await refreshMe();
       try {
-        window.sessionStorage.setItem(TOUR_FLAG_KEY, "1");
+        window.sessionStorage.setItem(TOUR_FLAG_KEY, TOUR_FLAG_VALUE_DASHBOARD);
       } catch {
         // Private mode or storage disabled. The dashboard tour will
         // not auto-start; the user can re-click the button from

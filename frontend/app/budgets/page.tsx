@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import HelpTooltip from "@/components/help/HelpTooltip";
 import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -212,7 +213,7 @@ export default function BudgetsPage() {
   return (
     <AppShell>
       <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-1">
+        <div className="flex items-start gap-1" data-tour-id="budgets.title">
           <h1 className={`${pageTitle} mb-0`}>Budgets</h1>
           <HelpAnchor section="budgets" label="Budgets" />
         </div>
@@ -313,7 +314,10 @@ export default function BudgetsPage() {
               </select>
             </div>
             <div className="w-full sm:w-40">
-              <label htmlFor="b-amount" className={label}>Monthly limit</label>
+              <span className="mb-1.5 flex items-center gap-1">
+                <label htmlFor="b-amount" className={`${label} mb-0`}>Monthly limit</label>
+                <HelpTooltip k="budget.monthly-limit" />
+              </span>
               <input id="b-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
             </div>
             <button type="submit" className={`${btnPrimary} sm:min-h-0`}>Add</button>

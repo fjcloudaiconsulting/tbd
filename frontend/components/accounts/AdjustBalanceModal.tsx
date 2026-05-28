@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
+import HelpTooltip from "@/components/help/HelpTooltip";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import {
   btnPrimary,
@@ -137,9 +138,12 @@ export default function AdjustBalanceModal({ account, onClose, onAdjusted }: Pro
           </div>
 
           <div>
-            <label className={label} htmlFor="adjust-balance-target">
-              Target balance
-            </label>
+            <span className="mb-1.5 flex items-center gap-1">
+              <label className={`${label} mb-0`} htmlFor="adjust-balance-target">
+                Target balance
+              </label>
+              <HelpTooltip k="account.adjust-balance" />
+            </span>
             <input
               id="adjust-balance-target"
               ref={inputRef}

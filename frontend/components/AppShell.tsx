@@ -9,6 +9,7 @@ import {
   Building2,
   CalendarClock,
   ChevronUp,
+  Compass,
   CreditCard,
   FileText,
   Gauge,
@@ -27,6 +28,10 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthProvider";
+import {
+  TOUR_FLAG_KEY,
+  TOUR_FLAG_VALUE_EXTENDED,
+} from "@/lib/help/tour";
 import AppShellAddTransactionCta, {
   shouldShowAddTransactionCta,
 } from "@/components/AppShellAddTransactionCta";
@@ -488,6 +493,34 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
           {userExpanded && (
             <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg border border-sidebar-border bg-sidebar-bg py-1 shadow-xl">
+              <button
+                onClick={() => {
+                  try {
+                    window.sessionStorage.setItem(
+                      TOUR_FLAG_KEY,
+                      TOUR_FLAG_VALUE_EXTENDED,
+                    );
+                  } catch {
+                    // sessionStorage unavailable (Safari private mode,
+                    // disabled storage). The replay-tour flow depends
+                    // on this flag — `DashboardTourAutoStart` and
+                    // `RestartTourCard` both read it on mount, so the
+                    // tour won't auto-start in this branch. We still
+                    // navigate to /dashboard so the user sees their
+                    // home; restart-tour from the Settings card has
+                    // the same limitation. TODO: lift the start path
+                    // onto the TourContext so it's storage-independent.
+                  }
+                  setUserExpanded(false);
+                  setSidebarOpen(false);
+                  router.push("/dashboard");
+                }}
+                data-testid="user-menu-replay-tour"
+                className="flex w-full items-center gap-2.5 px-3.5 py-2 text-[13px] text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-bright"
+              >
+                <Compass aria-hidden="true" className="h-4 w-4" strokeWidth={1.5} />
+                Replay product tour
+              </button>
               <Link
                 href="/settings"
                 onClick={() => setSidebarOpen(false)}

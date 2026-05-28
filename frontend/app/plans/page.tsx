@@ -286,7 +286,7 @@ export default function PlansPage() {
   return (
     <AppShell>
       <header className="mb-4 flex items-center justify-between gap-3">
-        <div>
+        <div data-tour-id="plans.title">
           <h1 className={`${pageTitle} mb-0`}>Plans</h1>
           <p className="mt-1 text-sm text-text-muted">
             Plan one-off life events. Nothing here touches your real transactions.{" "}
