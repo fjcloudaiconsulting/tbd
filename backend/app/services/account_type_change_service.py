@@ -187,7 +187,6 @@ def validate_create_close_day(
 
 def validate_payment_day_cascade(
     *,
-    source_slug: Optional[str],
     target_slug: Optional[str],
     payment_day_in_payload: bool,
     payment_day_value: Optional[int],
@@ -332,7 +331,6 @@ async def apply_type_change_in_session(
         close_day_value=close_day_value,
     )
     validate_payment_day_cascade(
-        source_slug=old_type_slug,
         target_slug=target_slug,
         payment_day_in_payload=payment_day_in_payload,
         payment_day_value=payment_day_value,

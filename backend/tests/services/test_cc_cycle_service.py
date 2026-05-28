@@ -141,6 +141,7 @@ def test_close_day_31_in_february_leap_year():
     )
     assert cycle.period_end_inclusive == date(2028, 2, 29)
     assert cycle.period_start == date(2028, 2, 1)
+    assert cycle.payment_date == date(2028, 3, 1)
 
 
 # ─── (d) Same-month payment ───────────────────────────────────────────────────

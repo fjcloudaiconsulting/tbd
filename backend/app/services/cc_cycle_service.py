@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import calendar
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal, Optional
 
 # Sentinel defaults applied when the stored columns are NULL.
@@ -153,7 +153,6 @@ def resolve_cycle(
 
         # period_start = the day after the previous month's close.
         # Use date arithmetic to avoid month-boundary edge cases.
-        from datetime import timedelta
         period_start = prev_close + timedelta(days=1)
     else:
         # Target is after the close date of this calendar month →
@@ -165,7 +164,6 @@ def resolve_cycle(
         close_date = _clamp_day(next_year, next_month, close_day)
 
         # period_start = day after this month's close.
-        from datetime import timedelta
         period_start = this_month_close + timedelta(days=1)
 
     payment_date = _resolve_payment_date(close_date, eff_payment_day, eff_relative_month)
