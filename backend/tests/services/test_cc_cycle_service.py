@@ -185,7 +185,7 @@ def test_close_day_29_in_leap_year_feb():
     """Explicitly close on Feb 29 in a leap year (2028).
 
     Target = Feb 15, 2028.
-    period_start = Feb 1 (day after Jan 29 close, which is Jan 29).
+    period_start = Jan 30 (day after Jan 29 close).
     period_end_inclusive = Feb 29.
     """
     # Feb 29 is valid in 2028 (leap). close_day=29 in Feb → Feb 29.
@@ -214,19 +214,36 @@ def test_close_day_29_in_non_leap_year_feb():
 # ─── Payment date clamping ────────────────────────────────────────────────────
 
 
-def test_payment_day_31_in_february_clamps():
-    """payment_day=31, relative_month=1 (next month after close).
+def test_payment_day_31_clamps_in_february_non_leap():
+    """payment_day=31 landing in February (non-leap) clamps to Feb 28.
 
-    Close day 25, target Feb 10 → close month Feb, payment month Mar.
-    Mar has 31 days → payment_date = Mar 31.
+    close_day=25, target=Jan 10, 2026 → close = Jan 25, 2026.
+    payment_day_relative_month=1 → payment month = Feb 2026 (28 days, non-leap).
+    min(31, 28) = 28 → payment_date = Feb 28, 2026.
     """
     cycle = resolve_cycle(
         close_day=25,
         payment_day=31,
         payment_day_relative_month=1,
-        target_date=date(2026, 2, 10),
+        target_date=date(2026, 1, 10),
     )
-    assert cycle.payment_date == date(2026, 3, 31)
+    assert cycle.payment_date == date(2026, 2, 28)
+
+
+def test_payment_day_31_clamps_in_february_leap():
+    """payment_day=31 landing in February of a leap year clamps to Feb 29.
+
+    close_day=25, target=Jan 10, 2024 → close = Jan 25, 2024.
+    payment_day_relative_month=1 → payment month = Feb 2024 (29 days, leap).
+    min(31, 29) = 29 → payment_date = Feb 29, 2024.
+    """
+    cycle = resolve_cycle(
+        close_day=25,
+        payment_day=31,
+        payment_day_relative_month=1,
+        target_date=date(2024, 1, 10),
+    )
+    assert cycle.payment_date == date(2024, 2, 29)
 
 
 def test_payment_day_31_in_april_clamps_to_30():

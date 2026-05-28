@@ -203,14 +203,14 @@ async def update_account(
     req_id = _request_id()
     ip = get_client_ip(request)
 
-    touches_type_or_close_day = (
+    touches_type_or_cc_columns = (
         body.account_type_id is not None
         or "close_day" in body.model_fields_set
         or "payment_day" in body.model_fields_set
         or "payment_day_relative_month" in body.model_fields_set
     )
 
-    if touches_type_or_close_day:
+    if touches_type_or_cc_columns:
         return await _update_account_atomic(
             account_id=account_id,
             body=body,
@@ -222,7 +222,7 @@ async def update_account(
             session_factory=session_factory,
         )
 
-    # ── Fast path: no type/close_day touch, stay on the request session.
+    # ── Fast path: no type/cc-column touch, stay on the request session.
     result = await db.execute(
         select(Account)
         .options(selectinload(Account.account_type))

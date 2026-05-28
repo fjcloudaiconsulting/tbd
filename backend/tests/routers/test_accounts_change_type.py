@@ -1085,3 +1085,40 @@ def test_update_payment_day_out_of_range_pydantic_422(session_factory, seeded):
             },
         )
     assert res.status_code == 422
+
+
+# ── C1: close_day=31 accepted on create and update (schema cap widened to 31) ─
+
+
+def test_create_cc_with_close_day_31_accepted(session_factory, seeded):
+    """close_day=31 must pass Pydantic validation (le=31 cap). The resolver
+    handles short-month clamping at compute time, so the schema must allow
+    the full [1, 31] range to reach the service layer."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "CC Close Day 31",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 31,
+            },
+        )
+    assert res.status_code == 201, res.text
+    assert res.json()["close_day"] == 31
+
+
+def test_update_cc_with_close_day_31_accepted(session_factory, seeded):
+    """PUT close_day=31 on an existing CC account must be accepted (le=31)."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "close_day": 31,
+            },
+        )
+    assert res.status_code == 200, res.text
+    assert res.json()["close_day"] == 31

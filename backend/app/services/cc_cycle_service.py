@@ -46,7 +46,8 @@ def _clamp_day(year: int, month: int, day: int) -> date:
     """Return ``date(year, month, min(day, last_day_of_month))``.
 
     Mirrors the clamp PFV already uses for ``Organization.billing_cycle_day``
-    in ``lib/date_utils.py``. Prevents ValueError on Feb 29/30/31, Apr 31, etc.
+    in ``billing_service.py:130`` (``calendar.monthrange(d.year, d.month)[1]``).
+    Prevents ValueError on Feb 29/30/31, Apr 31, etc.
     """
     last_day = calendar.monthrange(year, month)[1]
     return date(year, month, min(day, last_day))

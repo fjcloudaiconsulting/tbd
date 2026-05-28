@@ -9,11 +9,11 @@ D3 / D7).
 
 Two new columns on ``accounts``:
 
-- ``payment_day TINYINT NULL``          — the day-of-month the payment
+- ``payment_day INTEGER NULL``          — the day-of-month the payment
   is due. NULL means "use resolver default" (day 1). User-settable;
   the resolver clamps 31 → Feb 28/29, Apr 30, etc. at compute time.
 
-- ``payment_day_relative_month TINYINT NULL``  — how many calendar
+- ``payment_day_relative_month INTEGER NULL``  — how many calendar
   months after the close month the payment falls. NULL means "use
   resolver default" (1 = next calendar month after close). 0 = same
   month as close; 1 = one month later, etc.

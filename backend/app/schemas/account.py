@@ -33,7 +33,7 @@ class AccountCreate(BaseModel):
     name: str
     account_type_id: int
     currency: str = "EUR"
-    close_day: Optional[int] = Field(default=None, ge=1, le=28)
+    close_day: Optional[int] = Field(default=None, ge=1, le=31)
     payment_day: Optional[int] = Field(default=None, ge=1, le=31)
     payment_day_relative_month: Optional[int] = Field(default=None, ge=0, le=12)
     # Opening balance (L3.2 Wave 2A). User-stated starting amount and
@@ -56,7 +56,7 @@ class AccountUpdate(BaseModel):
     name: Optional[str] = None
     account_type_id: Optional[int] = None
     is_active: Optional[bool] = None
-    close_day: Optional[int] = Field(default=None, ge=1, le=28)
+    close_day: Optional[int] = Field(default=None, ge=1, le=31)
     payment_day: Optional[int] = Field(default=None, ge=1, le=31)
     payment_day_relative_month: Optional[int] = Field(default=None, ge=0, le=12)
     is_default: Optional[bool] = None
