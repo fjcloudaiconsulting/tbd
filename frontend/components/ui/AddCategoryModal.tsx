@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import HelpTooltip from "@/components/help/HelpTooltip";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import {
   btnPrimary,
@@ -206,7 +207,10 @@ export default function AddCategoryModal({
             </div>
           ) : (
             <fieldset>
-              <legend className={labelCls}>Type</legend>
+              <legend className="mb-1.5 flex items-center gap-1">
+                <span className={`${labelCls} mb-0`}>Type</span>
+                <HelpTooltip k="cat.type" />
+              </legend>
               <div className="flex gap-4 text-sm text-text-primary">
                 {(["expense", "income", "both"] as const).map((t) => (
                   <label key={t} className="flex items-center gap-1.5">
@@ -235,6 +239,7 @@ export default function AddCategoryModal({
               }}
             />
             <label htmlFor="add-cat-issub">Subcategory</label>
+            <HelpTooltip k="cat.subcategory" />
           </div>
 
           {isSub && (

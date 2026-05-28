@@ -40,15 +40,11 @@ import { apiFetch } from "@/lib/api";
 import { btnPrimary, btnSecondary, card, input, label } from "@/lib/styles";
 import type { AccountType } from "@/lib/types";
 
-const DASHBOARD_TOUR_STEPS = [
-  "dashboard.header",
-  "dashboard.import-cta",
-  "dashboard.period-nav",
-  "dashboard.on-track-tile",
-  "dashboard.account-forecast",
-];
-
-const TOUR_FLAG_KEY = "tbd-pending-dashboard-tour";
+import {
+  DASHBOARD_TOUR_STEPS,
+  TOUR_FLAG_KEY,
+  TOUR_FLAG_VALUE_DASHBOARD,
+} from "@/lib/help/tour";
 
 // sessionStorage flag the Google SSO callback page sets when a new
 // local user has just been created. Reading it here inserts a
@@ -167,7 +163,7 @@ export default function OnboardingPageBody() {
         // tour.start() from here directly. Stash a flag in
         // sessionStorage and the dashboard reads it on mount.
         try {
-          window.sessionStorage.setItem(TOUR_FLAG_KEY, "1");
+          window.sessionStorage.setItem(TOUR_FLAG_KEY, TOUR_FLAG_VALUE_DASHBOARD);
         } catch {
           // sessionStorage may be unavailable in private mode. The
           // tour just will not start automatically — non-fatal.
@@ -562,4 +558,3 @@ export default function OnboardingPageBody() {
   );
 }
 
-export { TOUR_FLAG_KEY, DASHBOARD_TOUR_STEPS };

@@ -27,27 +27,24 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+
+import {
+  DASHBOARD_TOUR_STEPS,
+  EXTENDED_TOUR_STEPS,
+  STEP_COPY,
+  TOUR_FLAG_KEY,
+  TOUR_FLAG_VALUE_DASHBOARD,
+  TOUR_FLAG_VALUE_EXTENDED,
+  pagePrefix,
+  routeForPrefix,
+} from "@/lib/help/tour";
 
 import {
   TourContext,
   useTourEngine,
   type TourApi,
 } from "./useTour";
-
-// Same sessionStorage key the onboarding wizard writes when the user
-// opts into the post-wizard tour. We auto-start the dashboard tour
-// when this is set AND the user lands on /dashboard. The flag is
-// cleared on start so a reload does not re-trigger.
-const TOUR_FLAG_KEY = "tbd-pending-dashboard-tour";
-
-const DASHBOARD_TOUR_STEPS = [
-  "dashboard.header",
-  "dashboard.import-cta",
-  "dashboard.period-nav",
-  "dashboard.on-track-tile",
-  "dashboard.account-forecast",
-];
 
 function DashboardTourAutoStart({ api }: { api: TourApi }) {
   const pathname = usePathname();
@@ -59,19 +56,61 @@ function DashboardTourAutoStart({ api }: { api: TourApi }) {
     } catch {
       return;
     }
-    if (flag !== "1") return;
+    if (
+      flag !== TOUR_FLAG_VALUE_DASHBOARD &&
+      flag !== TOUR_FLAG_VALUE_EXTENDED
+    ) {
+      return;
+    }
     try {
       window.sessionStorage.removeItem(TOUR_FLAG_KEY);
     } catch {
       // best-effort
     }
+    const steps =
+      flag === TOUR_FLAG_VALUE_EXTENDED
+        ? EXTENDED_TOUR_STEPS
+        : DASHBOARD_TOUR_STEPS;
     // Defer one tick so the dashboard's TourAnchor DOM is mounted
     // before the engine measures positions.
     const t = window.setTimeout(() => {
-      api.start(DASHBOARD_TOUR_STEPS);
+      api.start(steps);
     }, 100);
     return () => window.clearTimeout(t);
   }, [pathname, api]);
+  return null;
+}
+
+/**
+ * Watches the active step's page prefix and pushes the router when
+ * the user is on a different surface. The overlay's anchor-missing
+ * fallback would otherwise auto-skip past every off-route step.
+ * Only fires while the tour is active.
+ */
+function TourRouter({ api }: { api: TourApi }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const currentStep = api.currentStep;
+  useEffect(() => {
+    if (!api.isActive) return;
+    if (!currentStep) return;
+    const route = routeForPrefix(pagePrefix(currentStep));
+    if (!route) {
+      // Unknown prefix means the tour authoring drifted from the
+      // route map. The overlay will auto-skip when the anchor isn't
+      // found, but surfacing it as a console warning makes the
+      // missing entry visible in CI smoke runs / E2E logs instead of
+      // silently no-opping.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[tour] no route mapped for step prefix "${pagePrefix(currentStep)}" ` +
+          `(step="${currentStep}"). Add an entry to routeForPrefix() in lib/help/tour.ts.`,
+      );
+      return;
+    }
+    if (pathname === route) return;
+    router.push(route);
+  }, [api.isActive, currentStep, pathname, router]);
   return null;
 }
 
@@ -105,39 +144,9 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-interface TourStepCopy {
-  title: string;
-  body: string;
-}
-
-// Step copy in one place so the wizard team can tweak voice without
-// chasing JSX. Keys match the dot-namespaced anchor ids the dashboard
-// already wired through PR #226.
-const STEP_COPY: Record<string, TourStepCopy> = {
-  "dashboard.header": {
-    title: "Welcome to your dashboard",
-    body: "This is where you will see how the month is going at a glance. Net cashflow, balances, and what is coming up.",
-  },
-  "dashboard.import-cta": {
-    title: "Bring in your transactions",
-    body: "Import a bank export here, or add transactions one by one. The Better Decision works with whatever you have.",
-  },
-  "dashboard.period-nav": {
-    title: "Move through periods",
-    body: "Each month is its own billing period. Use these arrows to look back at history or peek ahead.",
-  },
-  "dashboard.on-track-tile": {
-    title: "How the month is shaping up",
-    body: "On Track tells you if your spending plan and your reality agree. Green means you are on it. Yellow means it is worth a look.",
-  },
-  "dashboard.account-forecast": {
-    title: "Account forecast",
-    body: "We project each account out to the end of the period using your recurring transactions and budgets.",
-  },
-};
-
 function TourOverlay({ api }: { api: TourApi }) {
   const reducedMotion = usePrefersReducedMotion();
+  const pathname = usePathname();
   const [rect, setRect] = useState<AnchorRect | null>(null);
   const [mounted, setMounted] = useState(false);
 
@@ -165,24 +174,72 @@ function TourOverlay({ api }: { api: TourApi }) {
 
   // If the active step has no anchor in the DOM (route changed,
   // element removed), advance after a short grace so flicker does
-  // not stall the user. 200ms is enough for a Next.js client nav.
+  // not stall the user.
+  //
+  // BUT: when a cross-page step is in flight, TourRouter has just
+  // pushed the new route and we're waiting for the destination page
+  // to mount its `data-tour-id` anchors. Auto-skipping during that
+  // window would silently advance past every step on a slow page.
+  // Suspend auto-skip until the pathname matches the step's expected
+  // route, then poll on a longer grace (800ms) to absorb the
+  // hydration + data-fetch tail.
   useEffect(() => {
     if (!api.isActive) return;
     if (rect) return;
+    if (!api.currentStep) return;
+    const expectedRoute = routeForPrefix(pagePrefix(api.currentStep));
+    // If we know the step belongs to a different route than we're on,
+    // don't auto-skip — TourRouter will move us there and the anchor
+    // will appear shortly.
+    if (expectedRoute && pathname !== expectedRoute) return;
     const t = window.setTimeout(() => {
       const fresh = getAnchorRect(api.currentStep);
       if (!fresh) api.next();
-    }, 200);
+    }, 800);
     return () => window.clearTimeout(t);
-  }, [api, rect]);
+  }, [api, rect, pathname]);
 
-  // Escape closes the tour. The overlay is informative
-  // (aria-modal="false") so we do not trap focus, but a keyboard
-  // user should still be able to dismiss it without grabbing a mouse.
+  // Keyboard nav. The overlay is informative (aria-modal="false") so
+  // we don't trap focus, but the tour itself has to be fully usable
+  // from the keyboard:
+  //   - Escape closes
+  //   - ArrowRight advances (matches "Next" button)
+  //   - ArrowLeft goes back (matches "Back" button)
+  // We deliberately leave Tab/Enter/Space to the browser's default
+  // button focus handling so the card's own buttons keep their
+  // standard semantics.
   useEffect(() => {
     if (!api.isActive) return;
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      // Arrow keys belong to inputs, textareas, selects, contenteditables
+      // — for cursor movement, radio/listbox navigation, etc. Hijacking
+      // them while the user is mid-keystroke breaks the underlying page.
+      // Escape stays global; arrow advance/back only fires when focus is
+      // outside an editable element.
+      if (!(target instanceof HTMLElement)) return false;
+      // Real browsers compute isContentEditable from the attribute, but
+      // jsdom does not — so also check the raw attribute as a fallback
+      // so tests stay honest.
+      if (target.isContentEditable) return true;
+      const ce = target.getAttribute("contenteditable");
+      if (ce === "" || ce === "true" || ce === "plaintext-only") return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") api.close();
+      if (e.key === "Escape") {
+        api.close();
+        return;
+      }
+      if (isEditableTarget(e.target)) return;
+      if (e.key === "ArrowRight") {
+        api.next();
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        api.prev();
+        return;
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -313,6 +370,7 @@ export function TourProvider({ children }: { children: React.ReactNode }) {
     <TourContext.Provider value={api}>
       {children}
       <DashboardTourAutoStart api={api} />
+      <TourRouter api={api} />
       <TourOverlay api={api} />
     </TourContext.Provider>
   );
