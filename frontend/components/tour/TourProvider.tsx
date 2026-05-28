@@ -217,7 +217,12 @@ function TourOverlay({ api }: { api: TourApi }) {
       // Escape stays global; arrow advance/back only fires when focus is
       // outside an editable element.
       if (!(target instanceof HTMLElement)) return false;
+      // Real browsers compute isContentEditable from the attribute, but
+      // jsdom does not — so also check the raw attribute as a fallback
+      // so tests stay honest.
       if (target.isContentEditable) return true;
+      const ce = target.getAttribute("contenteditable");
+      if (ce === "" || ce === "true" || ce === "plaintext-only") return true;
       const tag = target.tagName;
       return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
     };
