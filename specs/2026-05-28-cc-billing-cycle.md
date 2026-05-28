@@ -35,7 +35,7 @@ The broader 2026-05-15 CC model upgrade scope (`credit_limit`, `apr`, `payment_s
 |---|---|---|---|
 | Per-CC close day | Drives that CC's billing cycle | Stored but unused | `backend/app/models/account.py:62`; `backend/app/services/billing_service.py:47,124` ignores it |
 | Cycle assignment for transactions | Each tx lands in a CC cycle until close, then rolls over | No tx ↔ cycle link at all; date-range query at read time | `backend/app/models/transaction.py` (no FK), `backend/app/services/forecast_service.py` |
-| "1st of next month" payment date | Implicit but real | Does not exist anywhere | grep of `replace(day=1)`/`relativedelta` returns no hits on accounts |
+| "1st of next month" payment date | Implicit but real | No payment-date computation tied to account close/payment fields | `replace(day=1)`/`relativedelta(months=1)` hits exist in `forecast_service.py`, `scenario_engine.py`, `date_utils.py`, `budget_rebalance_service.py`, etc., but none of them compute a payment date from a CC account's close/payment fields |
 | Inclusive vs exclusive close day | Decision pending | Moot — no per-CC cycle logic exists | n/a |
 | Cycle granularity | Per-account | Org-wide; one `BillingPeriod` row per org per period, shared across all accounts | `backend/app/models/billing.py`, `backend/app/models/user.py:28` |
 | Frontend | Just exposes close day | Same; the form is honest about the field | `frontend/app/accounts/page.tsx:37,171,225,362-407` |
@@ -84,7 +84,28 @@ Prior 2026-05-13 claude-mem observation (ID 13533) "Account.close_day Is Informa
 
 **Why:** matches the owner backlog's framing of "implicit 1st of next month" — that becomes the default, not a hardcode. Same-month payment is allowed (e.g. close 1st of month, pay 25th of same month), which covers issuers whose cycle and due-date are both in the same calendar month.
 
-**How to apply:** when a credit-card account is created, `payment_day` defaults to `1` and `payment_day_relative_month` defaults to `1` (next month). User can change both. The cycle resolver computes the actual payment date as `date(close.year + (close.month + payment_day_relative_month - 1) // 12, ((close.month + payment_day_relative_month - 1) % 12) + 1, payment_day)`, clamped to last-day-of-month for short months.
+**How to apply:** when a credit-card account is created, both `payment_day` and `payment_day_relative_month` are left NULL; the resolver treats NULL as "default" (`payment_day = 1`, `payment_day_relative_month = 1`, i.e. 1st of next month). User can write either or both to override the defaults. The cycle resolver computes the actual payment date in two steps so the clamp is explicit and the spec is internally consistent:
+
+```python
+import calendar
+from datetime import date
+
+def _resolve_payment_date(close: date, payment_day: int, payment_day_relative_month: int) -> date:
+    # Step 1 — target year/month: walk `payment_day_relative_month` months
+    # forward from the close month (relative_month=0 means same month as
+    # close, 1 means the following calendar month, etc.).
+    months_offset = close.month - 1 + payment_day_relative_month
+    target_year = close.year + months_offset // 12
+    target_month = months_offset % 12 + 1
+    # Step 2 — clamp the day-of-month to the target month's length so
+    # `payment_day=31` lands on Feb 28/29, Apr 30, etc., instead of
+    # raising ValueError. Same clamp pattern PFV already uses for
+    # `Organization.billing_cycle_day` (see `lib/date_utils.py`).
+    last_day = calendar.monthrange(target_year, target_month)[1]
+    return date(target_year, target_month, min(payment_day, last_day))
+```
+
+The clamp belongs in the resolver, never in stored data — overrides record the user's stated intent (`payment_day = 31`), and the resolver decides what that means in February.
 
 ### D4 — Override cascade: independent or linked?
 
@@ -113,7 +134,7 @@ Prior 2026-05-13 claude-mem observation (ID 13533) "Account.close_day Is Informa
 - No transaction-level FK; transactions remain unaware of cycles.
 - No persistent `cc_billing_periods` table; the cycle is fully derivable.
 
-**Migration:** single alembic file, ~30 lines, adds the table + adds `accounts.payment_day TINYINT NULL` + `accounts.payment_day_relative_month TINYINT NULL DEFAULT 1`. Both columns NULL on non-CC accounts (mirrors the existing `close_day` invariant).
+**Migration:** single alembic file, ~30 lines, adds the table + adds `accounts.payment_day TINYINT NULL` + `accounts.payment_day_relative_month TINYINT NULL`. **No DB-level default on either column** — the resolver owns the "NULL means default" semantic (see D3). A server default would silently fill `1` on insert and break the "NULL = use resolver default" invariant the moment any other code path opted out of explicit assignment. Both columns are NULL on non-CC accounts (mirrors the existing `close_day` invariant) and NULL-by-default on CC accounts until the user explicitly sets them. Defaults are wired in (a) the validation layer on create and (b) `cc_cycle_service` at resolve time.
 
 ### D8 — Where the cycle math lives
 
