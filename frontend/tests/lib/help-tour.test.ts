@@ -83,4 +83,48 @@ describe("tour constants", () => {
   it("routeForPrefix returns null for unknown prefixes", () => {
     expect(routeForPrefix("nonsense")).toBeNull();
   });
+
+  it("every tour step has at least one matching anchor in the source tree", async () => {
+    // The whole tour silently no-ops at the overlay layer if a step's
+    // anchor element isn't in the DOM. Scan the frontend source for
+    // each step id appearing either as `data-tour-id="X"` or
+    // `<TourAnchor id="X">`. Catches authoring drift (renamed step,
+    // missing wiring) before it ships.
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const ROOT = path.resolve(__dirname, "../..");
+
+    // Walk app/ and components/ collecting every .tsx file. Skip
+    // node_modules and the tests directory itself.
+    function walk(dir: string, acc: string[]): string[] {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === "node_modules") continue;
+        if (entry.name === "tests") continue;
+        if (entry.name.startsWith(".")) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full, acc);
+        else if (entry.name.endsWith(".tsx")) acc.push(full);
+      }
+      return acc;
+    }
+    const files = walk(path.join(ROOT, "app"), []);
+    walk(path.join(ROOT, "components"), files);
+    const haystack = files
+      .map((f) => fs.readFileSync(f, "utf8"))
+      .join("\n");
+
+    const allSteps = new Set<string>([
+      ...DASHBOARD_TOUR_STEPS,
+      ...EXTENDED_TOUR_STEPS,
+    ]);
+    for (const id of allSteps) {
+      // Either pattern is acceptable. The first is the direct
+      // attribute; the second is the TourAnchor wrapper that
+      // synthesizes it.
+      const direct = `data-tour-id="${id}"`;
+      const anchor = `<TourAnchor id="${id}"`;
+      const found = haystack.includes(direct) || haystack.includes(anchor);
+      expect(found, `step "${id}" has no matching data-tour-id or <TourAnchor id="${id}"> in frontend/app or frontend/components`).toBe(true);
+    }
+  });
 });
