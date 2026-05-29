@@ -246,6 +246,11 @@ describe("AppShell — system nav gating", () => {
       register: vi.fn(),
       logout: vi.fn(),
       refreshMe: vi.fn(),
+      // Gate this test out of the billingUiEnabled hide (PR B 2026-05-29).
+      // The test's intent is "plans.manage permission → Plan Catalog visible",
+      // not "billing UI hidden by flag" — that's covered separately in
+      // tests/appshell-admin-nav-billing-gate.test.tsx.
+      billingUiEnabled: true,
     });
 
     await renderShell();

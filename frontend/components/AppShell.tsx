@@ -214,7 +214,7 @@ const systemItems: readonly SystemNavItem[] = [
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, loading, logout, featureReportsV2 } = useAuth();
+  const { user, loading, logout, featureReportsV2, billingUiEnabled } = useAuth();
   const navItems = buildNavItems(Boolean(featureReportsV2));
   const router = useRouter();
   const pathname = usePathname();
@@ -373,9 +373,18 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // `orgs.view` should see Audit log without seeing Organizations — and
   // a user with no platform permissions should not see the System
   // section at all (visibleSystemItems is empty, header hidden).
-  const visibleSystemItems = systemItems.filter((item) =>
-    hasPlatformPermission(user, item.permission),
-  );
+  // Billing-gated entries (Subscriptions, Plan Catalog) are additionally
+  // hidden when billingUiEnabled is false, mirroring SettingsLayout's
+  // Billing tab gate.
+  const visibleSystemItems = systemItems.filter((item) => {
+    if (
+      !billingUiEnabled &&
+      (item.href === "/admin/subscriptions" || item.href === "/system/plans")
+    ) {
+      return false;
+    }
+    return hasPlatformPermission(user, item.permission);
+  });
   const showSystemSection = visibleSystemItems.length > 0;
 
   // All hrefs that could potentially match the current pathname.
