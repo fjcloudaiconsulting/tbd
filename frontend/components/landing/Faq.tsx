@@ -6,33 +6,11 @@
 //
 // No em-dashes in any copy (locked policy `feedback_no_em_dashes`).
 // Answers are short, honest, and grounded in current product reality.
+//
+// FAQ entry data lives in faqData.ts so the landing page's JSON-LD
+// structured data block can share the same source without drifting.
 
-const items = [
-  {
-    q: "Is my data secure?",
-    a: "Yes. All data lives in an EU data center, encrypted at rest. Account credentials are stored as bcrypt hashes. We use HTTPS everywhere and never store your bank login credentials.",
-  },
-  {
-    q: "Can I export my data?",
-    a: "Yes. Every list view exports to CSV, and a one-click full org export is in the works. Your data is always yours.",
-  },
-  {
-    q: "Do you use my data to train AI?",
-    a: "No. Personal financial data is never used to train models. The optional AI assistant runs against a provider you choose, and you can disable it at any time.",
-  },
-  {
-    q: "Can I delete my account?",
-    a: "Yes. Account deletion is one click in Settings. It hard-deletes your data within seven days, and you receive a confirmation email when the deletion completes.",
-  },
-  {
-    q: "Do I need to connect my bank?",
-    a: "No. You can import a CSV from your bank, or add transactions manually. Direct bank connections are on the roadmap but not required to get the full value out of the app.",
-  },
-  {
-    q: "Is it built for one person or a couple?",
-    a: "Both. The data model is org-scoped, so you start as a one-person org and can invite a partner or housemate later. Each org has its own categories, accounts, and reports.",
-  },
-];
+import { faqEntries } from "./faqData";
 
 export default function Faq() {
   return (
@@ -53,7 +31,7 @@ export default function Faq() {
         </h2>
       </div>
       <ul className="space-y-3">
-        {items.map((item) => (
+        {faqEntries.map((item) => (
           <li
             key={item.q}
             className="rounded-xl border border-border bg-surface motion-safe:animate-fade-in-up"

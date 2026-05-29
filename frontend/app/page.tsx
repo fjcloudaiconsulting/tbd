@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Faq from "@/components/landing/Faq";
+import { faqEntries } from "@/components/landing/faqData";
 import FeatureTiles from "@/components/landing/FeatureTiles";
 import Hero from "@/components/landing/Hero";
 import HowItWorks from "@/components/landing/HowItWorks";
@@ -43,6 +44,8 @@ const jsonLd = {
   applicationCategory: "FinanceApplication",
   operatingSystem: "Web",
   url: siteUrl,
+  author: { "@type": "Organization", name: siteName, url: siteUrl },
+  publisher: { "@type": "Organization", name: siteName, url: siteUrl },
   offers: {
     "@type": "Offer",
     price: "0",
@@ -73,6 +76,24 @@ export default async function LandingPage() {
         type="application/ld+json"
         {...nonceProp}
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
+      <script
+        type="application/ld+json"
+        {...nonceProp}
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            mainEntity: faqEntries.map((entry) => ({
+              "@type": "Question",
+              name: entry.q,
+              acceptedAnswer: {
+                "@type": "Answer",
+                text: entry.a,
+              },
+            })),
+          }),
+        }}
       />
       <LandingAuthRedirect />
       <div className="min-h-screen bg-bg text-text-primary">
