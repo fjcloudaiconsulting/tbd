@@ -127,8 +127,8 @@ async def create_credential(
             encrypt(payload.bearer_token) if payload.bearer_token else None
         ),
         base_url=payload.base_url,
-        key_fingerprint=fingerprint(payload.api_key) if payload.api_key else "",
-        last_four=last_four(payload.api_key) if payload.api_key else "",
+        key_fingerprint=fingerprint(payload.api_key) if payload.api_key else None,
+        last_four=last_four(payload.api_key) if payload.api_key else None,
         discovered_capabilities=result.discovered_capabilities,
         discovered_models=result.discovered_models,
         label=payload.label,

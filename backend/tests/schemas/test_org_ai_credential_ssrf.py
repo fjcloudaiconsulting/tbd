@@ -123,13 +123,20 @@ def test_ollama_credential_accepts_null_api_key() -> None:
 
 def test_non_ollama_credential_still_rejects_missing_api_key() -> None:
     """Non-Ollama providers require api_key; omitting it must raise."""
-    for provider in (AiProvider.OPENAI, AiProvider.ANTHROPIC):
+    for provider in (AiProvider.OPENAI, AiProvider.ANTHROPIC, AiProvider.OPENAI_COMPATIBLE):
         with pytest.raises(ValidationError):
-            OrgAICredentialCreate(provider=provider)
+            OrgAICredentialCreate(
+                provider=provider,
+                **({"base_url": "https://localhost:11434/v1"} if provider == AiProvider.OPENAI_COMPATIBLE else {}),
+            )
 
 
 def test_non_ollama_credential_still_rejects_short_api_key() -> None:
     """Non-Ollama providers reject api_key shorter than API_KEY_MIN_LENGTH."""
-    for provider in (AiProvider.OPENAI, AiProvider.ANTHROPIC):
+    for provider in (AiProvider.OPENAI, AiProvider.ANTHROPIC, AiProvider.OPENAI_COMPATIBLE):
         with pytest.raises(ValidationError):
-            OrgAICredentialCreate(provider=provider, api_key="abc")
+            OrgAICredentialCreate(
+                provider=provider,
+                api_key="abc",
+                **({"base_url": "https://localhost:11434/v1"} if provider == AiProvider.OPENAI_COMPATIBLE else {}),
+            )

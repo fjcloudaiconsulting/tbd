@@ -141,6 +141,9 @@ class OrgAICredentialUpdate(BaseModel):
 class OrgAICredentialRotate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Rotate is symmetric with Create EXCEPT that api_key is non-optional and
+    # min_length=4: rotation is "swap to a new key", never "remove the key".
+    # Users who want to clear an Ollama credential's key delete + recreate.
     api_key: str = Field(
         min_length=API_KEY_MIN_LENGTH, max_length=API_KEY_MAX_LENGTH
     )
@@ -162,8 +165,8 @@ class OrgAICredentialResponse(BaseModel):
     id: int
     org_id: int
     provider: AiProvider
-    last_four: str
-    key_fingerprint: str
+    last_four: Optional[str]
+    key_fingerprint: Optional[str]
     base_url: Optional[str]
     label: Optional[str]
     discovered_capabilities: Optional[list[str]] = None

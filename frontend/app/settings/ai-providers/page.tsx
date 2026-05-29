@@ -28,8 +28,8 @@ interface Credential {
   id: number;
   org_id: number;
   provider: Provider;
-  last_four: string;
-  key_fingerprint: string;
+  last_four: string | null;
+  key_fingerprint: string | null;
   base_url: string | null;
   label: string | null;
   discovered_capabilities: string[] | null;
@@ -284,7 +284,7 @@ export default function AiProvidersPage() {
                     <td className="px-4 py-2">{PROVIDER_LABELS[c.provider]}</td>
                     <td className="px-4 py-2">{c.label ?? "-"}</td>
                     <td className="px-4 py-2 font-mono text-xs">
-                      ***{c.last_four}
+                      {c.last_four ? `***${c.last_four}` : "-"}
                     </td>
                     <td className="px-4 py-2">
                       {c.validation_error ? (
@@ -631,7 +631,7 @@ function RoutingSection({
                 <option value="">(choose)</option>
                 {credentials.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {PROVIDER_LABELS[c.provider]} ***{c.last_four}
+                    {PROVIDER_LABELS[c.provider]}{c.last_four ? ` ***${c.last_four}` : ""}
                     {c.label ? ` (${c.label})` : ""}
                   </option>
                 ))}
@@ -802,7 +802,7 @@ function FeatureRoutingTable({
                       <option value="">(use default)</option>
                       {credentials.map((c) => (
                         <option key={c.id} value={c.id}>
-                          {PROVIDER_LABELS[c.provider]} ***{c.last_four}
+                          {PROVIDER_LABELS[c.provider]}{c.last_four ? ` ***${c.last_four}` : ""}
                           {c.label ? ` (${c.label})` : ""}
                         </option>
                       ))}
