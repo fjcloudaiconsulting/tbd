@@ -14,23 +14,15 @@ const items = [
   },
   {
     q: "Can I export my data?",
-    a: "Yes. Every list view exports to CSV, and a one-click full org export is in the works for the Team tier. Your data is always yours.",
+    a: "Yes. Every list view exports to CSV, and a one-click full org export is in the works. Your data is always yours.",
   },
   {
     q: "Do you use my data to train AI?",
-    a: "No. Personal financial data is never used to train models. The optional AI assistant (Pro tier) runs against a provider you choose, and you can disable it at any time.",
+    a: "No. Personal financial data is never used to train models. The optional AI assistant runs against a provider you choose, and you can disable it at any time.",
   },
   {
     q: "Can I delete my account?",
     a: "Yes. Account deletion is one click in Settings. It hard-deletes your data within seven days, and you receive a confirmation email when the deletion completes.",
-  },
-  {
-    q: "What payment methods will you accept?",
-    a: "Credit card, debit card, and SEPA direct debit at launch. The Free tier does not require any payment method, and there is no card on file until you choose a paid plan.",
-  },
-  {
-    q: "Is there a free plan?",
-    a: "Yes. The Free tier covers personal use forever, with no time limit. Most of the app works on Free, and you only need Pro or Team if you want advanced planning, AI assistance, or multi-member shared finances.",
   },
   {
     q: "Do I need to connect my bank?",
@@ -38,7 +30,7 @@ const items = [
   },
   {
     q: "Is it built for one person or a couple?",
-    a: "Both. The data model is org-scoped, so you start as a one-person org and can invite a partner or housemate later (Team tier). Each org has its own categories, accounts, and reports.",
+    a: "Both. The data model is org-scoped, so you start as a one-person org and can invite a partner or housemate later. Each org has its own categories, accounts, and reports.",
   },
 ];
 
