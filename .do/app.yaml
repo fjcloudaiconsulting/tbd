@@ -138,11 +138,11 @@ services:
       - key: AI_CREDENTIAL_ENCRYPTION_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:sn7ynZMy38Z7o0sDzFldMwA6Q7yxB8S3:RoTRbtfu3PKUZLCKBqqr/w==]
+        value: EV[1:Nysd1FwUmJSXbnetxU9r4N3A/2g8UsUj:d+gKpNSU/amIC1dHSEigq5D3jMkXQDmwT+uAqAs+S9khODsKnVZZ94AsUKtE+QX64s7qNkySZhfrHfyq]
       - key: AI_CREDENTIAL_ENCRYPTION_KEY_PREV
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: EV[1:Hlvi5JFq2Bydn2BCirJVEv+CbGSOz/aF:nKZqg6GmYwhaCNeJvp5ubg==]
+        value: EV[1:fXl3Y39U5+b7Z+W/1sgSyN+Upqp5aNbr:sDEMJveK356wpnloAbmK3e+OMKCIW/Lo3Wo4JcWLQHHzxR4YFpQzKEcfiVcWS8L23cik0TT1MnoeAkEZ]
       - key: AI_NATIVE_ENABLED
         scope: RUN_AND_BUILD_TIME
         value: "false"
