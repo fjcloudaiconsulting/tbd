@@ -5,7 +5,7 @@
 # Auth is via GitHub OIDC -> AWS IAM role (no long-lived AWS keys).
 #
 # The IAM role's trust policy (provisioned by PR #240) only accepts
-# tokens whose `sub` claim matches `repo:flamarion/pfv:ref:refs/heads/main`.
+# tokens whose `sub` claim matches `repo:fjcloudaiconsulting/tbd:ref:refs/heads/main`.
 # That is the load-bearing security boundary; this workflow's
 # `branches: [main]` trigger is belt-and-suspenders.
 #
