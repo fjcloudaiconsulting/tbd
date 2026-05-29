@@ -42,6 +42,9 @@ export default function Hero() {
               Sign in
             </Link>
           </div>
+          {/* Spec called for "Free while in beta. No credit card required." but
+              the trust line below already says "No card required" — trimmed
+              here to avoid the duplication. */}
           <p className="mt-3 text-sm text-text-muted">
             Free while in beta.
           </p>
