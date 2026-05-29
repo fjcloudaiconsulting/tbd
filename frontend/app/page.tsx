@@ -75,7 +75,9 @@ export default async function LandingPage() {
       <script
         type="application/ld+json"
         {...nonceProp}
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(jsonLd).replace(/<\/script>/gi, '<\\/script>'),
+        }}
       />
       <script
         type="application/ld+json"
@@ -92,7 +94,7 @@ export default async function LandingPage() {
                 text: entry.a,
               },
             })),
-          }),
+          }).replace(/<\/script>/gi, '<\\/script>'),
         }}
       />
       <LandingAuthRedirect />

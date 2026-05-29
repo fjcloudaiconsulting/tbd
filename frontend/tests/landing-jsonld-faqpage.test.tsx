@@ -50,7 +50,7 @@ describe("landing JSON-LD", () => {
       .find((p) => p["@type"] === "FAQPage");
     expect(faq).toBeDefined();
     expect(Array.isArray(faq.mainEntity)).toBe(true);
-    expect(faq.mainEntity.length).toBeGreaterThan(0);
+    expect(faq.mainEntity.length).toBe(8);  // matches faqData.ts entries
     // Each entry has the canonical Question/Answer shape.
     for (const q of faq.mainEntity) {
       expect(q["@type"]).toBe("Question");

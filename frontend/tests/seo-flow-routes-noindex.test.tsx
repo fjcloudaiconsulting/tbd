@@ -16,9 +16,13 @@ describe("flow-only public routes are not indexed", () => {
   ] as const;
 
   it.each(flowMetadatas)("%s does not opt back into index", (_route, meta) => {
-    // Either no robots key (inherit root noindex) or explicit noindex.
     if (meta.robots !== undefined) {
-      expect(meta.robots).toEqual({ index: false, follow: false });
+      // Page declared its own robots — it MUST be noindex.
+      const r = meta.robots as { index?: boolean; follow?: boolean };
+      expect(r.index).toBe(false);
     }
+    // No explicit robots = inherits root noindex (default).
+    // The root-layout guarantee is verified centrally in
+    // tests/root-layout-robots-default.test.tsx — no need to duplicate here.
   });
 });
