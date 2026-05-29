@@ -60,6 +60,8 @@ class Account(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="EUR")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     close_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    payment_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    payment_day_relative_month: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # User-stated opening balance for the account. Migration 041 sets
     # this to 0 for every existing account (canonical backfill, see

@@ -23,6 +23,7 @@ from app.services import audit_service
 from app.services.account_type_change_service import (
     apply_type_change_in_session,
     validate_create_close_day,
+    validate_create_payment_day,
 )
 from app.services.exceptions import ConflictError, ValidationError
 from app.services.transaction_service import (
@@ -56,6 +57,8 @@ def _to_response(account: Account) -> AccountResponse:
         currency=account.currency,
         is_active=account.is_active,
         close_day=account.close_day,
+        payment_day=account.payment_day,
+        payment_day_relative_month=account.payment_day_relative_month,
         is_default=account.is_default,
         opening_balance=account.opening_balance,
         opening_balance_date=account.opening_balance_date,
@@ -99,6 +102,13 @@ async def create_account(
     validate_create_close_day(
         target_slug=target_type.slug, close_day_value=body.close_day
     )
+    # CC billing cycle Slice 1: payment_day / payment_day_relative_month
+    # are CC-only optional columns. Both must be NULL on non-CC accounts.
+    validate_create_payment_day(
+        target_slug=target_type.slug,
+        payment_day_value=body.payment_day,
+        payment_day_relative_month_value=body.payment_day_relative_month,
+    )
 
     # opening_balance_date: caller may omit (and ride the DB default of
     # CURRENT_DATE) or supply an explicit date. We pass it through only
@@ -117,6 +127,8 @@ async def create_account(
         balance=body.opening_balance,
         currency=body.currency,
         close_day=body.close_day,
+        payment_day=body.payment_day,
+        payment_day_relative_month=body.payment_day_relative_month,
         opening_balance=body.opening_balance,
     )
     if body.opening_balance_date is not None:
@@ -191,11 +203,14 @@ async def update_account(
     req_id = _request_id()
     ip = get_client_ip(request)
 
-    touches_type_or_close_day = (
-        body.account_type_id is not None or "close_day" in body.model_fields_set
+    touches_type_or_cc_columns = (
+        body.account_type_id is not None
+        or "close_day" in body.model_fields_set
+        or "payment_day" in body.model_fields_set
+        or "payment_day_relative_month" in body.model_fields_set
     )
 
-    if touches_type_or_close_day:
+    if touches_type_or_cc_columns:
         return await _update_account_atomic(
             account_id=account_id,
             body=body,
@@ -207,7 +222,7 @@ async def update_account(
             session_factory=session_factory,
         )
 
-    # ── Fast path: no type/close_day touch, stay on the request session.
+    # ── Fast path: no type/cc-column touch, stay on the request session.
     result = await db.execute(
         select(Account)
         .options(selectinload(Account.account_type))
@@ -380,6 +395,10 @@ async def _update_account_atomic(
                 target_type_id=target_type_id,
                 close_day_in_payload="close_day" in body.model_fields_set,
                 close_day_value=body.close_day,
+                payment_day_in_payload="payment_day" in body.model_fields_set,
+                payment_day_value=body.payment_day,
+                payment_day_relative_month_in_payload="payment_day_relative_month" in body.model_fields_set,
+                payment_day_relative_month_value=body.payment_day_relative_month,
             )
 
             old_opening_balance = account.opening_balance
