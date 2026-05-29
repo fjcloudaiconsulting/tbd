@@ -9,7 +9,7 @@
 # Optional overrides (defaults live in variables.tf):
 # aws_region                         = "eu-central-1"
 # domain                             = "thebetterdecision.com"
-# github_repo                        = "flamarion/pfv"
+# github_repo                        = "fjcloudaiconsulting/tbd"
 # github_main_branch                 = "main"
 # tfc_organization                   = "FlamaCorp"
 # tfc_workspace_pattern              = "pfv-apex*"

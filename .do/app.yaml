@@ -72,7 +72,7 @@ ingress:
 services:
   - name: backend
     github:
-      repo: flamarion/pfv
+      repo: fjcloudaiconsulting/tbd
       branch: main
       deploy_on_push: false
     source_dir: backend
@@ -138,11 +138,11 @@ services:
       - key: AI_CREDENTIAL_ENCRYPTION_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: ""
+        value: EV[1:sn7ynZMy38Z7o0sDzFldMwA6Q7yxB8S3:RoTRbtfu3PKUZLCKBqqr/w==]
       - key: AI_CREDENTIAL_ENCRYPTION_KEY_PREV
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: ""
+        value: EV[1:Hlvi5JFq2Bydn2BCirJVEv+CbGSOz/aF:nKZqg6GmYwhaCNeJvp5ubg==]
       - key: AI_NATIVE_ENABLED
         scope: RUN_AND_BUILD_TIME
         value: "false"
@@ -245,7 +245,7 @@ services:
 
   - name: frontend
     github:
-      repo: flamarion/pfv
+      repo: fjcloudaiconsulting/tbd
       branch: main
       deploy_on_push: false
     source_dir: frontend
@@ -319,7 +319,7 @@ jobs:
   - name: migrate
     kind: PRE_DEPLOY
     github:
-      repo: flamarion/pfv
+      repo: fjcloudaiconsulting/tbd
       branch: main
       deploy_on_push: false
     source_dir: backend

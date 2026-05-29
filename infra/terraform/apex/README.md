@@ -99,7 +99,7 @@ flip to OIDC immediately.
    - `AWS_SECRET_ACCESS_KEY` (Environment, sensitive) = the secret
    - `aws_account_id` (Terraform) = your 12-digit account id
 3. Configure the workspace's VCS settings:
-   - Repo: `flamarion/pfv`
+   - Repo: `fjcloudaiconsulting/tbd`
    - Working directory: `infra/terraform/apex`
    - Trigger pattern: `infra/terraform/apex/**`
    - Auto-apply: **off**
@@ -160,7 +160,7 @@ targets; apex has no such reuse story.
   `ListBucket` on the apex bucket only, and `CreateInvalidation` on the
   apex distribution only. No other bucket, no other distribution. The
   trust policy uses `StringEquals` on the OIDC `sub` claim, pinned to
-  exactly `repo:flamarion/pfv:ref:refs/heads/main`. PR-context tokens
+  exactly `repo:fjcloudaiconsulting/tbd:ref:refs/heads/main`. PR-context tokens
   have a different `sub` and are rejected at the trust level. Workflow
   `if:` guards alone would be insufficient because PR authors can edit
   the workflow file; this restriction is IAM-enforced.
