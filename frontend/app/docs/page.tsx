@@ -18,6 +18,7 @@ export const metadata: Metadata = {
     description,
     path: "/docs",
   }),
+  robots: { index: true, follow: true },
 };
 
 const sections = [

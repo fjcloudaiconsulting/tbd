@@ -21,6 +21,7 @@ export const metadata: Metadata = {
     description,
     path: "/register",
   }),
+  robots: { index: true, follow: true },
 };
 
 export default async function RegisterPage() {
