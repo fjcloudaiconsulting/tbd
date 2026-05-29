@@ -29,6 +29,7 @@ from app.models.budget import Budget
 from app.models.category import Category
 from app.models.category_rule import CategoryRule
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem
+from app.models.import_batch import ImportBatch
 from app.models.recurring import RecurringTransaction
 from app.models.tag import Tag, TagDictionary, TagDictionaryContributor, TransactionTag
 from app.models.transaction import Transaction
@@ -140,6 +141,12 @@ async def wipe_org_data(
 
     counts["billing_periods"] = (
         await db.execute(delete(BillingPeriod).where(BillingPeriod.org_id == org_id))
+    ).rowcount or 0
+
+    # import_batches.account_id FKs to accounts.id with no ON DELETE
+    # CASCADE. Must be wiped before accounts to avoid IntegrityError 1451.
+    counts["import_batches"] = (
+        await db.execute(delete(ImportBatch).where(ImportBatch.org_id == org_id))
     ).rowcount or 0
 
     counts["accounts"] = (
@@ -283,6 +290,11 @@ async def reset_org_data(
     )
     counts["billing_periods"] = await _batch_delete_by_pk(
         db, BillingPeriod, org_id, "billing_periods", batch_size
+    )
+    # import_batches.account_id FKs to accounts.id with no ON DELETE
+    # CASCADE. Must be wiped before accounts to avoid IntegrityError 1451.
+    counts["import_batches"] = await _batch_delete_by_pk(
+        db, ImportBatch, org_id, "import_batches", batch_size
     )
     counts["accounts"] = await _batch_delete_by_pk(
         db, Account, org_id, "accounts", batch_size
