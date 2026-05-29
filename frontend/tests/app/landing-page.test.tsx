@@ -13,11 +13,10 @@
 // named customers. See components/landing/Testimonials.tsx.
 
 import React from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import Faq from "@/components/landing/Faq";
-import PricingPreview from "@/components/landing/PricingPreview";
 import ScreenshotShowcase from "@/components/landing/ScreenshotShowcase";
 
 const EM_DASH = "—";
@@ -26,64 +25,11 @@ function allText(container: HTMLElement): string {
   return container.textContent ?? "";
 }
 
-describe("L5.1 landing — PricingPreview", () => {
-  it("renders three tiers (Free, Pro, Team) each with a price", () => {
-    render(<PricingPreview />);
-    expect(
-      screen.getByRole("heading", { level: 3, name: /^Free$/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { level: 3, name: /^Pro$/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { level: 3, name: /^Team$/ }),
-    ).toBeInTheDocument();
-    // The Free price is €0; paid tiers are placeholder values flagged
-    // to architect in the PR body.
-    expect(screen.getByText(/€0/)).toBeInTheDocument();
-  });
-
-  it("marks paid tiers as 'Coming soon' (BILLING_UI_ENABLED honored)", () => {
-    render(<PricingPreview />);
-    // The Coming-soon badge must appear exactly twice: Pro + Team.
-    const comingSoonBadges = screen.getAllByText(/Coming soon/i);
-    expect(comingSoonBadges).toHaveLength(2);
-  });
-
-  it("paid tier CTAs read 'Join the waitlist', not 'Upgrade'", () => {
-    render(<PricingPreview />);
-    expect(
-      screen.queryByRole("link", { name: /upgrade/i }),
-    ).not.toBeInTheDocument();
-    const waitlistLinks = screen.getAllByRole("link", {
-      name: /join the waitlist/i,
-    });
-    // Two paid tiers, one CTA each.
-    expect(waitlistLinks).toHaveLength(2);
-  });
-
-  it("Free tier CTA links to /register", () => {
-    render(<PricingPreview />);
-    const freeCta = screen.getByRole("link", { name: /get started free/i });
-    expect(freeCta).toHaveAttribute("href", "/register");
-  });
-
-  it("anchor target #pricing is on the section element", () => {
-    const { container } = render(<PricingPreview />);
-    expect(container.querySelector("section#pricing")).not.toBeNull();
-  });
-
-  it("contains zero em-dashes (locked policy)", () => {
-    const { container } = render(<PricingPreview />);
-    expect(allText(container)).not.toContain(EM_DASH);
-  });
-});
-
 describe("L5.1 landing — Faq", () => {
-  it("renders 8 FAQ items inside <details>", () => {
+  it("renders 6 FAQ items inside <details>", () => {
     const { container } = render(<Faq />);
     const detailsEls = container.querySelectorAll("details");
-    expect(detailsEls.length).toBe(8);
+    expect(detailsEls.length).toBe(6);
   });
 
   it("each FAQ item is collapsed by default (no `open` attr)", () => {
@@ -168,23 +114,10 @@ describe("L5.1 landing — em-dash discipline across all new sections", () => {
   it("all new sections together contain zero em-dashes", () => {
     const { container } = render(
       <div>
-        <PricingPreview />
         <ScreenshotShowcase />
         <Faq />
       </div>,
     );
     expect(allText(container)).not.toContain(EM_DASH);
-  });
-
-  it("PricingPreview pricing region announces itself via aria-labelledby", () => {
-    render(<PricingPreview />);
-    const region = screen.getByRole("region", {
-      name: /Simple pricing\. No surprises\./,
-    });
-    expect(region).not.toBeNull();
-    // Sanity: the heading inside the region is the same element the
-    // section is labelled by.
-    const heading = within(region).getByRole("heading", { level: 2 });
-    expect(heading.id).toBe("pricing-heading");
   });
 });

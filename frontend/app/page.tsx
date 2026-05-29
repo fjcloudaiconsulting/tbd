@@ -5,7 +5,6 @@ import Hero from "@/components/landing/Hero";
 import HowItWorks from "@/components/landing/HowItWorks";
 import LandingAuthRedirect from "@/components/landing/LandingAuthRedirect";
 import LandingFooter from "@/components/landing/LandingFooter";
-import PricingPreview from "@/components/landing/PricingPreview";
 import ScreenshotShowcase from "@/components/landing/ScreenshotShowcase";
 import SecondCta from "@/components/landing/SecondCta";
 import TopNav from "@/components/landing/TopNav";
@@ -82,7 +81,6 @@ export default async function LandingPage() {
           <FeatureTiles />
           <ScreenshotShowcase />
           <HowItWorks />
-          <PricingPreview />
           <Faq />
           <SecondCta />
         </main>

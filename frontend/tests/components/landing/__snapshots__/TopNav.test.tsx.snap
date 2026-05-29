@@ -94,12 +94,6 @@ exports[`<TopNav /> > snapshot stays stable across theme runs > topnav-dark 1`] 
   >
     <a
       class="hidden whitespace-nowrap px-2 text-sm text-text-muted transition-colors hover:text-text-primary md:inline"
-      href="#pricing"
-    >
-      Pricing
-    </a>
-    <a
-      class="hidden whitespace-nowrap px-2 text-sm text-text-muted transition-colors hover:text-text-primary md:inline"
       href="#faq"
     >
       FAQ
@@ -230,12 +224,6 @@ exports[`<TopNav /> > snapshot stays stable across theme runs > topnav-light 1`]
   <div
     class="flex items-center gap-2 sm:gap-4"
   >
-    <a
-      class="hidden whitespace-nowrap px-2 text-sm text-text-muted transition-colors hover:text-text-primary md:inline"
-      href="#pricing"
-    >
-      Pricing
-    </a>
     <a
       class="hidden whitespace-nowrap px-2 text-sm text-text-muted transition-colors hover:text-text-primary md:inline"
       href="#faq"

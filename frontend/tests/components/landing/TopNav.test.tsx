@@ -33,15 +33,16 @@ describe("<TopNav />", () => {
     expect(screen.queryByRole("link", { name: /docs/i })).toBeNull();
   });
 
-  it("exposes the L5.1 in-page jump links to Pricing and FAQ", () => {
+  it("exposes the in-page FAQ jump link", () => {
     render(<TopNav />);
-    // Jump links target stable anchors on the long-form sections. They
-    // are <a> tags (not Next <Link>) so the URL stays as a hash ref
-    // even after client-side navigation.
-    const pricing = screen.getByRole("link", { name: /^pricing$/i });
-    expect(pricing).toHaveAttribute("href", "#pricing");
+    // FAQ jump link targets a stable anchor on the long-form section. It is
+    // an <a> tag (not Next <Link>) so the URL stays as a hash ref even
+    // after client-side navigation. The Pricing jump link was removed
+    // 2026-05-29 with the rest of the customer-facing payment surface;
+    // see specs/2026-05-29-hide-payments-seo-baseline-ollama-lan.md §1.
     const faq = screen.getByRole("link", { name: /^faq$/i });
     expect(faq).toHaveAttribute("href", "#faq");
+    expect(screen.queryByRole("link", { name: /^pricing$/i })).toBeNull();
   });
 
   it("exposes the theme toggle button", () => {
