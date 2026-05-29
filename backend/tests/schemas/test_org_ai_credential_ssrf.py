@@ -140,3 +140,67 @@ def test_non_ollama_credential_still_rejects_short_api_key() -> None:
                 api_key="abc",
                 **({"base_url": "https://localhost:11434/v1"} if provider == AiProvider.OPENAI_COMPATIBLE else {}),
             )
+
+
+# --- 2026-05-29: Ollama LAN/loopback policy ---
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://192.168.1.163:11434/",   # RFC1918 192.168/16
+        "http://10.0.0.5:11434/",        # RFC1918 10/8
+        "http://172.16.5.5:11434/",      # RFC1918 172.16/12
+        "http://127.0.0.1:11434/",       # loopback IPv4
+        "http://[::1]:11434/",           # loopback IPv6
+        "http://[::ffff:192.168.1.1]/",  # IPv4-mapped IPv6 LAN
+    ],
+)
+def test_ollama_accepts_lan_and_loopback_ip(base_url: str) -> None:
+    cred = OrgAICredentialCreate(
+        provider=AiProvider.OLLAMA,
+        base_url=base_url,
+    )
+    assert cred.base_url == base_url
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://169.254.169.254/",                   # AWS/GCP/DO IMDS
+        "http://[fd00:ec2::254]/",                   # AWS IPv6 IMDS
+        "http://[::ffff:169.254.169.254]/",          # mapped IPv6 metadata
+        "http://169.254.1.1/",                       # link-local non-metadata
+        "http://224.0.0.1/",                         # multicast
+    ],
+)
+def test_ollama_still_rejects_metadata_and_unsafe(base_url: str) -> None:
+    with pytest.raises(ValidationError):
+        OrgAICredentialCreate(
+            provider=AiProvider.OLLAMA,
+            base_url=base_url,
+        )
+
+
+def test_openai_compatible_still_rejects_lan_ip() -> None:
+    """Strict SSRF block unchanged for non-Ollama providers."""
+    with pytest.raises(ValidationError):
+        OrgAICredentialCreate(
+            provider=AiProvider.OPENAI_COMPATIBLE,
+            api_key="sk-test-key-1234",
+            base_url="http://192.168.1.163/",
+        )
+
+
+def test_public_ip_still_accepted_for_any_provider() -> None:
+    cred_ollama = OrgAICredentialCreate(
+        provider=AiProvider.OLLAMA,
+        base_url="https://ollama.example.com/",
+    )
+    cred_openai = OrgAICredentialCreate(
+        provider=AiProvider.OPENAI_COMPATIBLE,
+        api_key="sk-test-key-1234",
+        base_url="https://api.example.com/",
+    )
+    assert cred_ollama.base_url.endswith(".example.com/")
+    assert cred_openai.base_url.endswith(".example.com/")
