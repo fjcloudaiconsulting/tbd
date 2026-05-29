@@ -146,8 +146,9 @@ def validate_close_day_cascade(
                 status_code=400,
                 detail="close_day is required when changing to credit_card",
             )
-        # Range check is enforced by Pydantic (Field(ge=1, le=28)) so
-        # by the time we reach this branch close_day is in [1, 28].
+        # Range check is enforced by Pydantic (Field(ge=1, le=31)) so
+        # by the time we reach this branch close_day is in [1, 31]. The
+        # cc_cycle_service resolver clamps 29-31 in short months.
         return
 
     # Target != credit_card. Payload must NOT carry a non-null close_day.
@@ -270,6 +271,14 @@ async def apply_type_change_in_session(
     payment_day_relative_month_value: Optional[int] = None,
 ) -> tuple[Account, TypeChangeResult]:
     """Lock the row, validate the cascade, stage the type change.
+
+    The four payment_day_* params default to "omitted" so existing call
+    sites that only flip the account type (no payment-day touch) keep
+    working unchanged. PR #374 review noted this is a silent gap if a
+    future caller forgets to thread payment-day through — guarded today
+    by the router's ``touches_type_or_cc_columns`` gate, which routes
+    any payment-day-touching PUT through this function with the params
+    set.
 
     Caller owns the transaction and the commit. This is the form the
     PUT route uses (PR #246 review feedback) so it can chain other

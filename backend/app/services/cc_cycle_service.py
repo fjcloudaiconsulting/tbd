@@ -111,8 +111,11 @@ def resolve_cycle(
     """
     if close_day is None:
         raise ValueError(
-            "resolve_cycle called on a non-credit-card account (close_day is None). "
-            "Callers should check account type before calling the CC cycle resolver."
+            "resolve_cycle requires a non-null close_day. "
+            "On this codebase that invariant only holds for credit_card accounts "
+            "(non-CC rows always carry close_day=NULL per the schema), so the "
+            "typical caller bug is invoking the resolver on a non-CC account. "
+            "Callers should branch on account_type.slug before calling."
         )
 
     # Apply defaults for NULL stored values (D3).

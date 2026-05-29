@@ -1073,6 +1073,52 @@ def test_update_cc_omitted_payment_columns_preserves_existing(
     assert body["payment_day_relative_month"] == 2
 
 
+def test_update_cc_explicit_null_resets_payment_columns(session_factory, seeded):
+    """PUT CC -> CC with payment_day: null wipes the stored value.
+
+    Pins the documented invariant that NULL means "use resolver default":
+    a user with a non-default payment_day stored can reset back to the
+    default by explicitly sending null. The cc_cycle_service resolver
+    then returns the D3 defaults (day 1, next month) for that account.
+    """
+
+    async def _set_payment_cols():
+        async with session_factory() as db:
+            acct = (
+                await db.execute(
+                    select(Account).where(Account.id == seeded["cc_acct_id"])
+                )
+            ).scalar_one()
+            acct.payment_day = 15
+            acct.payment_day_relative_month = 2
+            await db.commit()
+
+    _run(_set_payment_cols())
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={"payment_day": None, "payment_day_relative_month": None},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["payment_day"] is None
+    assert body["payment_day_relative_month"] is None
+
+    async def _verify_db():
+        async with session_factory() as db:
+            acct = (
+                await db.execute(
+                    select(Account).where(Account.id == seeded["cc_acct_id"])
+                )
+            ).scalar_one()
+            assert acct.payment_day is None
+            assert acct.payment_day_relative_month is None
+
+    _run(_verify_db())
+
+
 def test_update_payment_day_out_of_range_pydantic_422(session_factory, seeded):
     """PUT with payment_day=32 → Pydantic 422."""
     app = _make_app(session_factory)
