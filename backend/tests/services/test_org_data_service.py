@@ -23,6 +23,7 @@ from app.models.budget import Budget
 from app.models.category import Category, CategoryType
 from app.models.category_rule import CategoryRule, RuleSource
 from app.models.feature_override import OrgFeatureOverride
+from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.merchant_dictionary import MerchantDictionaryEntry
 from app.models.forecast_plan import (
     ForecastItemType, ForecastPlan, ForecastPlanItem, ItemSource, PlanStatus,
@@ -122,6 +123,19 @@ async def _seed_full_org(factory, *, name: str = "Acme") -> dict:
             type=CategoryType.EXPENSE,
         )
         db.add_all([account, master])
+        await db.commit()
+
+        # import_batches: account_id → accounts.id with no ON DELETE CASCADE.
+        # Must be wiped before accounts; seeded here so tests cover the path.
+        batch = ImportBatch(
+            org_id=org.id,
+            account_id=account.id,
+            source_format=ImportSourceFormat.CSV,
+            file_name="seed.csv",
+            created_by_user_id=owner.id,
+            status=ImportBatchStatus.CLOSED,
+        )
+        db.add(batch)
         await db.commit()
 
         sub_cat = Category(
@@ -258,8 +272,8 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
     expected_keys = {
         "transactions", "forecast_plan_items", "budgets",
         "recurring_transactions", "forecast_plans", "billing_periods",
-        "accounts", "account_types", "category_rules", "categories",
-        "tags", "transaction_tags", "tag_dictionary_contributors",
+        "import_batches", "accounts", "account_types", "category_rules",
+        "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
     }
     assert set(counts.keys()) == expected_keys
     for key, n in counts.items():
@@ -274,7 +288,7 @@ async def test_wipe_clears_all_org_scoped_data(session_factory):
 
     async with session_factory() as db:
         for model in (Transaction, ForecastPlanItem, Budget, RecurringTransaction,
-                      ForecastPlan, BillingPeriod, Account, AccountType,
+                      ForecastPlan, BillingPeriod, ImportBatch, Account, AccountType,
                       CategoryRule, Category, Tag):
             assert await _count(db, model, org_id=seeded["org_id"]) == 0, (
                 f"{model.__name__} not wiped"
@@ -392,8 +406,8 @@ async def test_reset_returns_counts_and_wipes_data(session_factory):
     expected_keys = {
         "transactions", "forecast_plan_items", "budgets",
         "recurring_transactions", "forecast_plans", "billing_periods",
-        "accounts", "account_types", "category_rules", "categories",
-        "tags", "transaction_tags", "tag_dictionary_contributors",
+        "import_batches", "accounts", "account_types", "category_rules",
+        "categories", "tags", "transaction_tags", "tag_dictionary_contributors",
         "seeded_account_types", "seeded_categories",
     }
     assert set(counts.keys()) == expected_keys

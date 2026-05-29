@@ -240,6 +240,13 @@ async def delete_org(
             detail="confirm_name does not match organization name",
         )
 
+    # Snapshot plain Python scalars from current_user BEFORE the try
+    # block. After db.rollback() in the except branch the ORM session
+    # expires all loaded objects; accessing current_user.id on a dead
+    # async session raises MissingGreenlet and swallows the audit write.
+    actor_id: int = current_user.id
+    actor_email: str = current_user.email
+
     # Snapshot the org's identifying fields BEFORE the delete so the
     # durable audit row carries answers to "what was deleted" even
     # after the FK ON DELETE SET NULL cascade nulls target_org_id.
@@ -252,8 +259,8 @@ async def delete_org(
         "billing_cycle_day": detail.get("billing_cycle_day"),
         "member_count_at_delete": len(detail.get("members") or []),
         "subscription": detail.get("subscription"),
-        "deleted_by_user_id": current_user.id,
-        "deleted_by_email": current_user.email,
+        "deleted_by_user_id": actor_id,
+        "deleted_by_email": actor_email,
     }
 
     try:
@@ -272,8 +279,8 @@ async def delete_org(
         audit_row = audit_service.add_audit_event_to_session(
             db,
             event_type="admin.org.delete",
-            actor_user_id=current_user.id,
-            actor_email=current_user.email,
+            actor_user_id=actor_id,
+            actor_email=actor_email,
             target_org_id=org_id,
             target_org_name=detail["name"],
             request_id=_request_id(),
@@ -295,10 +302,13 @@ async def delete_org(
         await db.commit()
     except Exception as e:  # noqa: BLE001 — translate to generic 500 + log.
         await db.rollback()
+        # Use pre-snapshotted scalars — current_user is expired after
+        # rollback on an async session and accessing .id would raise
+        # MissingGreenlet, swallowing the audit write below.
         await logger.aerror(
             "admin.org.delete.failed",
-            actor_user_id=current_user.id,
-            actor_email=current_user.email,
+            actor_user_id=actor_id,
+            actor_email=actor_email,
             target_org_id=org_id,
             target_org_name=detail["name"],
             error=str(e),
@@ -311,8 +321,8 @@ async def delete_org(
         await audit_service.record_audit_event(
             session_factory,
             event_type="admin.org.delete.failed",
-            actor_user_id=current_user.id,
-            actor_email=current_user.email,
+            actor_user_id=actor_id,
+            actor_email=actor_email,
             target_org_id=org_id,
             target_org_name=detail["name"],
             request_id=_request_id(),
@@ -331,8 +341,8 @@ async def delete_org(
 
     await logger.ainfo(
         "admin.org.delete",
-        actor_user_id=current_user.id,
-        actor_email=current_user.email,
+        actor_user_id=actor_id,
+        actor_email=actor_email,
         target_org_id=org_id,
         target_org_name=detail["name"],
         deleted_rows_by_table=counts,
