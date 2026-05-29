@@ -19,6 +19,7 @@ export const metadata: Metadata = {
     description,
     path: "/privacy",
   }),
+  robots: { index: true, follow: true },
 };
 
 const EFFECTIVE_DATE = "April 21, 2026";

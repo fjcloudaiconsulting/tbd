@@ -1,0 +1,26 @@
+import { describe, it, expect } from "vitest";
+import type { Metadata } from "next";
+
+import { metadata as rootMetadata } from "@/app/page";
+import { metadata as loginMetadata } from "@/app/login/page";
+import { metadata as registerMetadata } from "@/app/register/page";
+import { metadata as privacyMetadata } from "@/app/privacy/page";
+import { metadata as termsMetadata } from "@/app/terms/page";
+import { metadata as docsMetadata } from "@/app/docs/page";
+import { metadata as docsPlansMetadata } from "@/app/docs/plans/page";
+
+const indexableMetadatas: ReadonlyArray<[string, Metadata]> = [
+  ["/", rootMetadata],
+  ["/login", loginMetadata],
+  ["/register", registerMetadata],
+  ["/privacy", privacyMetadata],
+  ["/terms", termsMetadata],
+  ["/docs", docsMetadata],
+  ["/docs/plans", docsPlansMetadata],
+] as const;
+
+describe("indexable public routes opt back into index", () => {
+  it.each(indexableMetadatas)("%s sets robots index/follow true", (_route, meta) => {
+    expect(meta.robots).toEqual({ index: true, follow: true });
+  });
+});

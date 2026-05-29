@@ -15,6 +15,7 @@ export const metadata: Metadata = {
     description,
     path: "/login",
   }),
+  robots: { index: true, follow: true },
 };
 
 export default function LoginPage() {

@@ -25,9 +25,12 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
   },
+  // Safer default for an auth-walled SaaS: noindex by default.
+  // The 7 indexable public pages (/, /login, /register, /privacy,
+  // /terms, /docs, /docs/plans) opt back in via their own metadata.
   robots: {
-    index: true,
-    follow: true,
+    index: false,
+    follow: false,
   },
 };
 
