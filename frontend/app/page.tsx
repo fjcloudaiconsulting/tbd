@@ -32,6 +32,7 @@ export const metadata: Metadata = {
     description: siteDescription,
     path: "/",
   }),
+  robots: { index: true, follow: true },
 };
 
 const jsonLd = {
