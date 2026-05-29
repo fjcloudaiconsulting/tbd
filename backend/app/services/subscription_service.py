@@ -81,7 +81,14 @@ async def get_subscription_with_plan(
 
 
 async def _send_trial_email_safe(email: str, days_left: int, org_name: str) -> None:
-    """Send trial reminder in background; swallow errors to avoid unhandled task exceptions."""
+    """Send trial reminder in background; swallow errors to avoid unhandled task exceptions.
+
+    No-op when billing UI is disabled (the user never sees a way to act
+    on the email; sending it would be confusing during the pre-payment
+    beta window — PR B 2026-05-29 spec section 1).
+    """
+    if not settings.billing_ui_enabled:
+        return
     try:
         await send_trial_expiring_email(email, days_left, org_name)
     except Exception:
