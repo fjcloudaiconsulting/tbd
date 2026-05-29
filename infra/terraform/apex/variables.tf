@@ -23,7 +23,7 @@ variable "domain" {
 variable "github_repo" {
   description = "GitHub repo (owner/name) allowed to assume the GitHub Actions deploy role via OIDC."
   type        = string
-  default     = "flamarion/pfv"
+  default     = "fjcloudaiconsulting/tbd"
 }
 
 variable "github_main_branch" {
