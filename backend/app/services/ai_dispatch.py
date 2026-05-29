@@ -627,7 +627,9 @@ async def call_llm(
     )
 
     # 4. Build adapter.
-    api_key = decrypt(cred.encrypted_api_key)
+    api_key = (
+        decrypt(cred.encrypted_api_key) if cred.encrypted_api_key else None
+    )
     bearer = (
         decrypt(cred.encrypted_bearer_token)
         if cred.encrypted_bearer_token
@@ -908,7 +910,9 @@ async def _prepare_dispatch(
         period=_current_period(),
     )
 
-    api_key = decrypt(cred.encrypted_api_key)
+    api_key = (
+        decrypt(cred.encrypted_api_key) if cred.encrypted_api_key else None
+    )
     bearer = (
         decrypt(cred.encrypted_bearer_token)
         if cred.encrypted_bearer_token

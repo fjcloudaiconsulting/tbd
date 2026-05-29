@@ -28,8 +28,8 @@ interface Credential {
   id: number;
   org_id: number;
   provider: Provider;
-  last_four: string;
-  key_fingerprint: string;
+  last_four: string | null;
+  key_fingerprint: string | null;
   base_url: string | null;
   label: string | null;
   discovered_capabilities: string[] | null;
@@ -284,7 +284,7 @@ export default function AiProvidersPage() {
                     <td className="px-4 py-2">{PROVIDER_LABELS[c.provider]}</td>
                     <td className="px-4 py-2">{c.label ?? "-"}</td>
                     <td className="px-4 py-2 font-mono text-xs">
-                      ***{c.last_four}
+                      {c.last_four ? `***${c.last_four}` : "-"}
                     </td>
                     <td className="px-4 py-2">
                       {c.validation_error ? (
@@ -376,17 +376,16 @@ function AddCredentialModal({
 
   const needsBaseUrl = NEEDS_BASE_URL.includes(provider);
   const allowsBearer = ALLOWS_BEARER.includes(provider);
+  const apiKeyOptional = provider === "ollama";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!apiKey.trim()) return;
+    if (!apiKeyOptional && !apiKey.trim()) return;
     setSubmitting(true);
     setErrorText(null);
     try {
-      const body: Record<string, unknown> = {
-        provider,
-        api_key: apiKey,
-      };
+      const body: Record<string, unknown> = { provider };
+      if (apiKey.trim()) body.api_key = apiKey.trim();
       if (labelText.trim()) body.label = labelText.trim();
       if (needsBaseUrl) body.base_url = baseUrl.trim();
       if (allowsBearer && bearerToken.trim()) body.bearer_token = bearerToken.trim();
@@ -477,7 +476,7 @@ function AddCredentialModal({
           </div>
           <div>
             <label className={labelCls} htmlFor="ai-api-key">
-              API key
+              API key{apiKeyOptional ? " (optional)" : ""}
             </label>
             <input
               id="ai-api-key"
@@ -487,8 +486,13 @@ function AddCredentialModal({
               onChange={(e) => setApiKey(e.target.value)}
               disabled={submitting}
               autoComplete="off"
-              required
+              required={!apiKeyOptional}
             />
+            {apiKeyOptional && (
+              <p className="mt-1 text-xs text-text-muted">
+                Optional for self-hosted Ollama (LAN-only).
+              </p>
+            )}
           </div>
           {allowsBearer && (
             <div>
@@ -538,7 +542,7 @@ function AddCredentialModal({
               className={btnPrimary}
               disabled={
                 submitting ||
-                !apiKey.trim() ||
+                (!apiKeyOptional && !apiKey.trim()) ||
                 (needsBaseUrl && !baseUrl.trim()) ||
                 provider === "native"
               }
@@ -627,7 +631,7 @@ function RoutingSection({
                 <option value="">(choose)</option>
                 {credentials.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {PROVIDER_LABELS[c.provider]} ***{c.last_four}
+                    {PROVIDER_LABELS[c.provider]}{c.last_four ? ` ***${c.last_four}` : ""}
                     {c.label ? ` (${c.label})` : ""}
                   </option>
                 ))}
@@ -798,7 +802,7 @@ function FeatureRoutingTable({
                       <option value="">(use default)</option>
                       {credentials.map((c) => (
                         <option key={c.id} value={c.id}>
-                          {PROVIDER_LABELS[c.provider]} ***{c.last_four}
+                          {PROVIDER_LABELS[c.provider]}{c.last_four ? ` ***${c.last_four}` : ""}
                           {c.label ? ` (${c.label})` : ""}
                         </option>
                       ))}
