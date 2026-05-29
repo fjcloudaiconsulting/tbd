@@ -44,7 +44,7 @@ def _credential_validation_failure(error: str) -> HTTPException:
 async def _run_validate(
     *,
     provider: AiProvider,
-    api_key: str,
+    api_key: Optional[str],
     bearer_token: Optional[str],
     base_url: Optional[str],
 ) -> ValidateResult:
@@ -122,13 +122,13 @@ async def create_credential(
     row = OrgAICredential(
         org_id=org_id,
         provider=payload.provider,
-        encrypted_api_key=encrypt(payload.api_key),
+        encrypted_api_key=encrypt(payload.api_key) if payload.api_key else None,
         encrypted_bearer_token=(
             encrypt(payload.bearer_token) if payload.bearer_token else None
         ),
         base_url=payload.base_url,
-        key_fingerprint=fingerprint(payload.api_key),
-        last_four=last_four(payload.api_key),
+        key_fingerprint=fingerprint(payload.api_key) if payload.api_key else "",
+        last_four=last_four(payload.api_key) if payload.api_key else "",
         discovered_capabilities=result.discovered_capabilities,
         discovered_models=result.discovered_models,
         label=payload.label,
@@ -237,7 +237,11 @@ async def validate_credential(
     request_id: Optional[str],
     ip_address: Optional[str],
 ) -> OrgAICredential:
-    api_key = decrypt(credential.encrypted_api_key)
+    api_key = (
+        decrypt(credential.encrypted_api_key)
+        if credential.encrypted_api_key
+        else None
+    )
     bearer_token = (
         decrypt(credential.encrypted_bearer_token)
         if credential.encrypted_bearer_token

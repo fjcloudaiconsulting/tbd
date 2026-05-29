@@ -91,8 +91,8 @@ class OrgAICredentialCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: AiProvider
-    api_key: str = Field(
-        min_length=API_KEY_MIN_LENGTH, max_length=API_KEY_MAX_LENGTH
+    api_key: Optional[str] = Field(
+        default=None, max_length=API_KEY_MAX_LENGTH
     )
     bearer_token: Optional[str] = Field(
         default=None, max_length=API_KEY_MAX_LENGTH
@@ -118,6 +118,15 @@ class OrgAICredentialCreate(BaseModel):
             raise ValueError(
                 "bearer_token is only valid for the ollama provider"
             )
+        # Ollama: api_key is optional (LAN-only homelab mode, spec line 37).
+        # All other providers: api_key is required and must meet min length.
+        if self.provider != AiProvider.OLLAMA:
+            stripped = (self.api_key or "").strip()
+            if len(stripped) < API_KEY_MIN_LENGTH:
+                raise ValueError(
+                    f"api_key is required (min {API_KEY_MIN_LENGTH} characters)"
+                    f" for provider '{self.provider.value}'"
+                )
         return self
 
 

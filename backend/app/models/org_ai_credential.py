@@ -59,7 +59,7 @@ class OrgAICredential(Base):
         ),
         nullable=False,
     )
-    encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     encrypted_bearer_token: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
     )

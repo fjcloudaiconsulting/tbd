@@ -95,3 +95,41 @@ def test_base_url_required_for_ollama_and_compatible() -> None:
             api_key="sk-test-1234",
             base_url=None,
         )
+
+
+# ---------------------------------------------------------------------------
+# Ollama no-key (LAN-only homelab mode) — spec line 37 + ~L219
+# ---------------------------------------------------------------------------
+
+
+def test_ollama_credential_accepts_missing_api_key() -> None:
+    """Ollama POST without api_key must validate successfully."""
+    cred = OrgAICredentialCreate(
+        provider=AiProvider.OLLAMA,
+        base_url="http://ollama.internal:11434",
+    )
+    assert cred.api_key is None
+
+
+def test_ollama_credential_accepts_null_api_key() -> None:
+    """Ollama POST with api_key=None must validate successfully."""
+    cred = OrgAICredentialCreate(
+        provider=AiProvider.OLLAMA,
+        api_key=None,
+        base_url="http://ollama.internal:11434",
+    )
+    assert cred.api_key is None
+
+
+def test_non_ollama_credential_still_rejects_missing_api_key() -> None:
+    """Non-Ollama providers require api_key; omitting it must raise."""
+    for provider in (AiProvider.OPENAI, AiProvider.ANTHROPIC):
+        with pytest.raises(ValidationError):
+            OrgAICredentialCreate(provider=provider)
+
+
+def test_non_ollama_credential_still_rejects_short_api_key() -> None:
+    """Non-Ollama providers reject api_key shorter than API_KEY_MIN_LENGTH."""
+    for provider in (AiProvider.OPENAI, AiProvider.ANTHROPIC):
+        with pytest.raises(ValidationError):
+            OrgAICredentialCreate(provider=provider, api_key="abc")
