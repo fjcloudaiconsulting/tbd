@@ -59,15 +59,15 @@ class OrgAICredential(Base):
         ),
         nullable=False,
     )
-    encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    encrypted_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     encrypted_bearer_token: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
     )
     base_url: Mapped[Optional[str]] = mapped_column(
         String(512), nullable=True
     )
-    key_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    last_four: Mapped[str] = mapped_column(String(8), nullable=False)
+    key_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_four: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     discovered_capabilities: Mapped[Optional[list[str]]] = mapped_column(
         JSON, nullable=True
     )

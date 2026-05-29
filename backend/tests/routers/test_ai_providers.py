@@ -467,6 +467,45 @@ async def test_validate_different_credentials_independent(session_factory):
     assert acquire_mock.call_args_list[1].kwargs["credential_id"] == b_id
 
 
+async def test_ollama_no_key_creates_credential_with_null_encrypted_api_key(
+    session_factory,
+):
+    """POST Ollama credential without api_key must return 201 and store
+    encrypted_api_key as NULL (spec line 37: LAN-only homelab mode)."""
+    from sqlalchemy import select
+    from app.models.org_ai_credential import OrgAICredential
+
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+
+    with _patch_adapter(_ok_validate(["llama3"])):
+        resp = client.post(
+            "/api/v1/settings/ai-providers",
+            json={
+                "provider": "ollama",
+                "base_url": "http://ollama.internal:11434",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["provider"] == "ollama"
+    assert "encrypted_api_key" not in body
+
+    # Confirm the DB row has encrypted_api_key IS NULL.
+    cred_id = body["id"]
+    async with session_factory() as db:
+        result = await db.execute(
+            select(OrgAICredential).where(OrgAICredential.id == cred_id)
+        )
+        row = result.scalar_one()
+    assert row.encrypted_api_key is None
+
+
 async def test_validate_falls_open_when_redis_unavailable(
     session_factory, caplog
 ):
