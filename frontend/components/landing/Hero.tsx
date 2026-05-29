@@ -42,6 +42,9 @@ export default function Hero() {
               Sign in
             </Link>
           </div>
+          <p className="mt-3 text-sm text-text-muted">
+            Free while in beta.
+          </p>
           {/* Trust line under the CTAs. Three honest, verifiable claims;
               the dot separators match the footer convention. No fake
               urgency, no "limited time" framing (BRAND.md voice rules). */}
