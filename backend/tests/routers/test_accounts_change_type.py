@@ -797,3 +797,374 @@ def test_create_account_non_credit_card_without_close_day_succeeds(
 )
 def test_concurrent_type_changes_serialize_on_row_lock(session_factory, seeded):
     pass
+
+
+# ── payment_day / payment_day_relative_month — create-path (Slice 1) ─────────
+
+
+def test_create_cc_with_payment_day_and_relative_month_persisted(
+    session_factory, seeded
+):
+    """Create CC with payment_day=15, payment_day_relative_month=1 → 201,
+    both values persisted in the response."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "CC Pay Day",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 20,
+                "payment_day": 15,
+                "payment_day_relative_month": 1,
+            },
+        )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["payment_day"] == 15
+    assert body["payment_day_relative_month"] == 1
+
+
+def test_create_cc_with_null_payment_columns_persisted_as_null(
+    session_factory, seeded
+):
+    """Create CC without payment_day / payment_day_relative_month → 201,
+    both columns stored as NULL (resolver default)."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "CC No Pay Day",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 20,
+            },
+        )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["payment_day"] is None
+    assert body["payment_day_relative_month"] is None
+
+
+def test_create_non_cc_with_payment_day_rejected(session_factory, seeded):
+    """POST Checking with payment_day set → 400."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "Bad Checking",
+                "account_type_id": seeded["checking_type_id"],
+                "currency": "EUR",
+                "payment_day": 10,
+            },
+        )
+    assert res.status_code == 400
+    assert "payment_day is only allowed on credit_card accounts" in res.json()["detail"]
+
+
+def test_create_non_cc_with_payment_day_relative_month_rejected(
+    session_factory, seeded
+):
+    """POST Checking with payment_day_relative_month set → 400."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "Bad Checking 2",
+                "account_type_id": seeded["checking_type_id"],
+                "currency": "EUR",
+                "payment_day_relative_month": 1,
+            },
+        )
+    assert res.status_code == 400
+    assert (
+        "payment_day_relative_month is only allowed on credit_card accounts"
+        in res.json()["detail"]
+    )
+
+
+def test_create_cc_with_payment_day_out_of_range_pydantic_422(
+    session_factory, seeded
+):
+    """payment_day=0 (below ge=1) → Pydantic 422 before service runs."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "CC Bad Range",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 20,
+                "payment_day": 0,
+            },
+        )
+    assert res.status_code == 422
+
+
+def test_create_cc_with_payment_day_too_high_pydantic_422(session_factory, seeded):
+    """payment_day=32 (above le=31) → Pydantic 422."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "CC Bad Range High",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 20,
+                "payment_day": 32,
+            },
+        )
+    assert res.status_code == 422
+
+
+def test_create_cc_with_relative_month_out_of_range_pydantic_422(
+    session_factory, seeded
+):
+    """payment_day_relative_month=13 (above le=12) → Pydantic 422."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "CC Bad Relative",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 20,
+                "payment_day_relative_month": 13,
+            },
+        )
+    assert res.status_code == 422
+
+
+# ── payment_day / payment_day_relative_month — PUT cascade (Slice 1) ─────────
+
+
+def test_update_cc_to_non_cc_clears_payment_columns(session_factory, seeded):
+    """PUT CC → Checking: server clears payment_day + payment_day_relative_month
+    to NULL alongside close_day."""
+
+    # First give the CC account some payment columns.
+    async def _set_payment_cols():
+        async with session_factory() as db:
+            acct = (
+                await db.execute(
+                    select(Account).where(Account.id == seeded["cc_acct_id"])
+                )
+            ).scalar_one()
+            acct.payment_day = 10
+            acct.payment_day_relative_month = 1
+            await db.commit()
+
+    _run(_set_payment_cols())
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={"account_type_id": seeded["checking_type_id"]},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["payment_day"] is None
+    assert body["payment_day_relative_month"] is None
+
+
+def test_update_non_cc_to_cc_accepts_payment_columns(session_factory, seeded):
+    """PUT Checking → CC with payment_day + relative_month → 200, values
+    persisted."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['checking_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "close_day": 20,
+                "payment_day": 5,
+                "payment_day_relative_month": 1,
+            },
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["payment_day"] == 5
+    assert body["payment_day_relative_month"] == 1
+
+
+def test_update_non_cc_with_payment_day_rejected(session_factory, seeded):
+    """PUT Checking (stays Checking) with payment_day set → 400."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['checking_acct_id']}",
+            json={"payment_day": 10},
+        )
+    assert res.status_code == 400
+    assert "payment_day is only allowed on credit_card accounts" in res.json()["detail"]
+
+
+def test_update_non_cc_with_payment_day_relative_month_rejected(
+    session_factory, seeded
+):
+    """PUT Checking with payment_day_relative_month set → 400."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['checking_acct_id']}",
+            json={"payment_day_relative_month": 1},
+        )
+    assert res.status_code == 400
+    assert (
+        "payment_day_relative_month is only allowed on credit_card accounts"
+        in res.json()["detail"]
+    )
+
+
+def test_update_cc_payment_columns_updated_in_place(session_factory, seeded):
+    """PUT CC → CC with new payment_day + relative_month → values updated."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "payment_day": 28,
+                "payment_day_relative_month": 0,
+            },
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["payment_day"] == 28
+    assert body["payment_day_relative_month"] == 0
+
+
+def test_update_cc_omitted_payment_columns_preserves_existing(
+    session_factory, seeded
+):
+    """PUT CC → CC with payment columns omitted: existing values are unchanged."""
+
+    async def _set_payment_cols():
+        async with session_factory() as db:
+            acct = (
+                await db.execute(
+                    select(Account).where(Account.id == seeded["cc_acct_id"])
+                )
+            ).scalar_one()
+            acct.payment_day = 7
+            acct.payment_day_relative_month = 2
+            await db.commit()
+
+    _run(_set_payment_cols())
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        # Only updating the name — payment columns omitted.
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={"name": "Visa Renamed"},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["payment_day"] == 7
+    assert body["payment_day_relative_month"] == 2
+
+
+def test_update_cc_explicit_null_resets_payment_columns(session_factory, seeded):
+    """PUT CC -> CC with payment_day: null wipes the stored value.
+
+    Pins the documented invariant that NULL means "use resolver default":
+    a user with a non-default payment_day stored can reset back to the
+    default by explicitly sending null. The cc_cycle_service resolver
+    then returns the D3 defaults (day 1, next month) for that account.
+    """
+
+    async def _set_payment_cols():
+        async with session_factory() as db:
+            acct = (
+                await db.execute(
+                    select(Account).where(Account.id == seeded["cc_acct_id"])
+                )
+            ).scalar_one()
+            acct.payment_day = 15
+            acct.payment_day_relative_month = 2
+            await db.commit()
+
+    _run(_set_payment_cols())
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={"payment_day": None, "payment_day_relative_month": None},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["payment_day"] is None
+    assert body["payment_day_relative_month"] is None
+
+    async def _verify_db():
+        async with session_factory() as db:
+            acct = (
+                await db.execute(
+                    select(Account).where(Account.id == seeded["cc_acct_id"])
+                )
+            ).scalar_one()
+            assert acct.payment_day is None
+            assert acct.payment_day_relative_month is None
+
+    _run(_verify_db())
+
+
+def test_update_payment_day_out_of_range_pydantic_422(session_factory, seeded):
+    """PUT with payment_day=32 → Pydantic 422."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "payment_day": 32,
+            },
+        )
+    assert res.status_code == 422
+
+
+# ── C1: close_day=31 accepted on create and update (schema cap widened to 31) ─
+
+
+def test_create_cc_with_close_day_31_accepted(session_factory, seeded):
+    """close_day=31 must pass Pydantic validation (le=31 cap). The resolver
+    handles short-month clamping at compute time, so the schema must allow
+    the full [1, 31] range to reach the service layer."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/accounts",
+            json={
+                "name": "CC Close Day 31",
+                "account_type_id": seeded["cc_type_id"],
+                "currency": "EUR",
+                "close_day": 31,
+            },
+        )
+    assert res.status_code == 201, res.text
+    assert res.json()["close_day"] == 31
+
+
+def test_update_cc_with_close_day_31_accepted(session_factory, seeded):
+    """PUT close_day=31 on an existing CC account must be accepted (le=31)."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['cc_acct_id']}",
+            json={
+                "account_type_id": seeded["cc_type_id"],
+                "close_day": 31,
+            },
+        )
+    assert res.status_code == 200, res.text
+    assert res.json()["close_day"] == 31
