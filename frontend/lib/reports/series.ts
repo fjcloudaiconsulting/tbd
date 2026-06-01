@@ -148,10 +148,15 @@ export function mergeSeriesRowsForTable(
  * single total bar is sliced into one colored segment per secondary
  * value (e.g. per account).
  *
- * Returns both the pivoted rows and the ordered list of distinct
- * secondary values (first-seen order) so callers can map a stable color
- * + legend entry to each. Missing combinations are backfilled with 0 so
- * Recharts renders flat segments instead of gaps.
+ * Returns the pivoted rows, the ordered list of distinct secondary
+ * values (first-seen order, for legend labels), and a matching list of
+ * STABLE generated keys (``s0``, ``s1``, …). Numeric fields are keyed by
+ * the generated key, NOT the raw secondary value: a raw value used as a
+ * Recharts ``dataKey`` is fragile (a "." is parsed as a nested path, and
+ * special chars / collisions can stop bars from rendering). Callers pair
+ * ``seriesKeys[i]`` (the dataKey) with ``secondaryValues[i]`` (the
+ * display label). Missing combinations are backfilled with 0 so Recharts
+ * renders flat segments instead of gaps.
  */
 export function pivotBySecondaryDimension(
   rows: QueryRow[],
@@ -160,37 +165,51 @@ export function pivotBySecondaryDimension(
 ): {
   rows: Array<{ label: string } & Record<string, number | string>>;
   secondaryValues: string[];
+  seriesKeys: string[];
 } {
   const byLabel = new Map<string, Record<string, number | string>>();
   const order: string[] = [];
   const secondaryValues: string[] = [];
-  const seenSecondary = new Set<string>();
+  // Map each distinct secondary value to a stable generated key. Using a
+  // null-prototype Map key set + generated keys avoids prototype
+  // pollution from user-controlled values like ``__proto__``.
+  const keyForSecondary = new Map<string, string>();
 
   for (const row of rows) {
     const label = readLabel(row, primaryKey);
     const secondary = readLabel(row, secondaryKey);
-    if (!seenSecondary.has(secondary)) {
-      seenSecondary.add(secondary);
+    let seriesKey = keyForSecondary.get(secondary);
+    if (seriesKey === undefined) {
+      seriesKey = `s${secondaryValues.length}`;
+      keyForSecondary.set(secondary, seriesKey);
       secondaryValues.push(secondary);
     }
     let existing = byLabel.get(label);
     if (!existing) {
-      existing = { label };
+      // Null-prototype record: user-controlled secondary values become
+      // generated keys on a prototype-less object, so values like
+      // ``__proto__`` are plain data and can't pollute Object.prototype.
+      existing = Object.assign(
+        Object.create(null) as Record<string, number | string>,
+        { label },
+      );
       byLabel.set(label, existing);
       order.push(label);
     }
     // Same (primary, secondary) pair shouldn't repeat after GROUP BY,
     // but sum defensively in case it does.
-    const prior = typeof existing[secondary] === "number"
-      ? (existing[secondary] as number)
+    const prior = typeof existing[seriesKey] === "number"
+      ? (existing[seriesKey] as number)
       : 0;
-    existing[secondary] = prior + readNumber(row.value);
+    existing[seriesKey] = prior + readNumber(row.value);
   }
+
+  const seriesKeys = secondaryValues.map((sv) => keyForSecondary.get(sv)!);
 
   for (const label of order) {
     const r = byLabel.get(label)!;
-    for (const sv of secondaryValues) {
-      if (typeof r[sv] !== "number") r[sv] = 0;
+    for (const sk of seriesKeys) {
+      if (typeof r[sk] !== "number") r[sk] = 0;
     }
   }
 
@@ -199,6 +218,7 @@ export function pivotBySecondaryDimension(
       { label: string } & Record<string, number | string>
     >,
     secondaryValues,
+    seriesKeys,
   };
 }
 

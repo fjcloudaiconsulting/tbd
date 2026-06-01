@@ -390,12 +390,15 @@ export default function ReportEditorPage({ params }: PageProps) {
     [layout.widgets, selectedWidgetId],
   );
 
-  // Editing is desktop-only. On small screens (< sm) we force VIEW mode
-  // regardless of the user's ``editMode`` toggle: the report renders as a
-  // read-only single-column stack with no drag/resize and no edit
-  // toolbar. ``editMode`` is preserved in state so resizing back up to
-  // desktop restores whatever the user had open.
-  const editModeActive = editMode && !isSmallScreen;
+  // Editing is desktop-only AND owner-only. On small screens (< sm) we
+  // force VIEW mode regardless of the user's ``editMode`` toggle: the
+  // report renders as a read-only single-column stack with no drag/resize
+  // and no edit toolbar. Non-owners (e.g. viewers of an org-shared
+  // report) never enter edit mode either — the backend 403s their
+  // PATCH/DELETE/restore, so surfacing edit chrome would only let them
+  // build unsavable local changes. ``editMode`` is preserved in state so
+  // resizing back up to desktop (as an owner) restores what they had open.
+  const editModeActive = editMode && !isSmallScreen && canEdit;
 
   function updateLayout(next: LayoutJson) {
     setLayout(next);
@@ -695,8 +698,10 @@ export default function ReportEditorPage({ params }: PageProps) {
           )}
 
           {/* Mode toggle: View mode shows "Edit", edit mode shows "Done".
-              Hidden on small screens, where editing is unavailable. */}
-          {!isSmallScreen && (
+              Hidden on small screens (editing is desktop-only) and for
+              non-owners (editing is owner-only; the backend 403s their
+              writes, so an "edit" state would only mislead). */}
+          {!isSmallScreen && canEdit && (
             <button
               type="button"
               onClick={() => setEditMode((v) => !v)}
@@ -752,14 +757,19 @@ export default function ReportEditorPage({ params }: PageProps) {
                 with no widgets shows nothing.
               </p>
               <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setPickerOpen(true)}
-                  className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
-                  data-testid="report-editor-empty-add-widget"
-                >
-                  Add widget
-                </button>
+                {/* "Add widget" is owner-only: a non-owner viewing a shared
+                    report can't save, so the picker would only let them
+                    build unsavable local changes (backend 403s the PATCH). */}
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => setPickerOpen(true)}
+                    className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
+                    data-testid="report-editor-empty-add-widget"
+                  >
+                    Add widget
+                  </button>
+                )}
                 <Link
                   href="/reports"
                   className="rounded-md border border-border px-4 py-2 text-sm text-text-primary hover:bg-bg-elevated"

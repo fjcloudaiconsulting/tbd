@@ -62,9 +62,9 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
 
   // Sliced shape: pivot [primary, secondary] into one numeric field per
   // distinct secondary value so each becomes a stacked Recharts series.
-  const { rows: stackedRows, secondaryValues } = sliced
+  const { rows: stackedRows, secondaryValues, seriesKeys } = sliced
     ? pivotBySecondaryDimension(queryRows, primaryKey, secondaryKey!)
-    : { rows: [], secondaryValues: [] as string[] };
+    : { rows: [], secondaryValues: [] as string[], seriesKeys: [] as string[] };
 
   const rows = sliced ? stackedRows : simpleRows;
   const hasRows = rows.length > 0;
@@ -78,8 +78,8 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
         headers: [dimensionHeader(primaryKey), ...secondaryValues],
         rows: stackedRows.map((r) => [
           String(r.label),
-          ...secondaryValues.map((sv) =>
-            typeof r[sv] === "number" ? (r[sv] as number) : 0,
+          ...seriesKeys.map((sk) =>
+            typeof r[sk] === "number" ? (r[sk] as number) : 0,
           ),
         ]) as CsvCell[][],
       }
@@ -139,8 +139,8 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
               {sliced ? (
                 secondaryValues.map((sv, i) => (
                   <Bar
-                    key={sv}
-                    dataKey={sv}
+                    key={seriesKeys[i]}
+                    dataKey={seriesKeys[i]}
                     name={sv}
                     stackId="stack"
                     fill={categoricalColor(i)}

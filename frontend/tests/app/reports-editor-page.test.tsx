@@ -710,6 +710,52 @@ describe("ReportEditorPage", () => {
     ).toBeNull();
   });
 
+  it("hides edit affordances for a non-owner viewing a shared report", async () => {
+    mockUser(true);
+    // Report owned by someone else; viewer (user id 1) is not the owner.
+    getReportMock.mockResolvedValue({
+      ...REPORT_WITH_WIDGET,
+      owner_user_id: 999,
+      visibility: "org",
+    } as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+    // The Edit/Done toggle is owner-only.
+    expect(screen.queryByTestId("report-editor-toggle-edit")).toBeNull();
+  });
+
+  it("hides the empty-state 'Add widget' CTA for a non-owner", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 999, // viewer (id 1) is not the owner
+      org_id: 1,
+      visibility: "org",
+      name: "Shared empty report",
+      description: null,
+      layout_json: { version: 1, widgets: [] },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:00",
+    } as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("report-editor-empty");
+    // Owner-only CTA must not render for a view-only user; the backend
+    // 403s their PATCH, so the picker would only build unsavable changes.
+    expect(
+      screen.queryByTestId("report-editor-empty-add-widget"),
+    ).toBeNull();
+    // The "Start from a template" link still shows (it only navigates).
+    expect(
+      screen.getByTestId("report-editor-empty-templates"),
+    ).toBeInTheDocument();
+  });
+
   it("duplicates the report and navigates to the new copy", async () => {
     mockUser(true);
     getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
