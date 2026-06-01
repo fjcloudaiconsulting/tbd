@@ -6,7 +6,9 @@ import { useAuth } from "@/components/auth/AuthProvider";
 
 vi.mock("@/lib/reports/api", () => ({
   listReports: vi.fn(),
+  listTemplates: vi.fn(),
   createReport: vi.fn(),
+  createFromTemplate: vi.fn(),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -72,13 +74,18 @@ function mockUser(featureReportsV2 = true) {
 
 describe("ReportsListPage", () => {
   const listMock = vi.mocked(reportsApi.listReports);
+  const listTemplatesMock = vi.mocked(reportsApi.listTemplates);
   const createMock = vi.mocked(reportsApi.createReport);
 
   beforeEach(() => {
     listMock.mockReset();
+    listTemplatesMock.mockReset();
     createMock.mockReset();
     pushMock.mockReset();
     replaceMock.mockReset();
+    // Templates load independently of the reports list; default to an
+    // empty set so these list-focused tests don't trip on undefined.
+    listTemplatesMock.mockResolvedValue([]);
   });
 
   it("renders inside AppShell so users see the sidebar/nav frame", async () => {

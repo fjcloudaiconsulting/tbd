@@ -14,6 +14,7 @@ import type {
   LayoutJson,
   ReportCreatePayload,
   ReportSummary,
+  ReportTemplate,
   ReportUpdatePayload,
   ReportsQuery,
   ReportsQueryResponse,
@@ -21,6 +22,10 @@ import type {
 
 export async function listReports(): Promise<ReportSummary[]> {
   return apiFetch<ReportSummary[]>("/api/v1/reports");
+}
+
+export async function listTemplates(): Promise<ReportTemplate[]> {
+  return apiFetch<ReportTemplate[]>("/api/v1/reports/templates");
 }
 
 export async function getReport(id: number): Promise<ReportSummary> {
@@ -34,6 +39,17 @@ export async function createReport(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+}
+
+export async function createFromTemplate(
+  t: ReportTemplate,
+): Promise<ReportSummary> {
+  return createReport({
+    name: t.name,
+    visibility: "private",
+    layout_json: t.layout_json,
+    canvas_filters_json: t.canvas_filters_json,
   });
 }
 

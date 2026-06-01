@@ -18,15 +18,22 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { createReport, listReports } from "@/lib/reports/api";
-import type { ReportSummary } from "@/lib/reports/types";
+import {
+  createFromTemplate,
+  createReport,
+  listReports,
+  listTemplates,
+} from "@/lib/reports/api";
+import type { ReportSummary, ReportTemplate } from "@/lib/reports/types";
 
 export default function ReportsListPage() {
   const router = useRouter();
   const { user, loading: authLoading, featureReportsV2 } = useAuth();
   const [reports, setReports] = useState<ReportSummary[] | null>(null);
+  const [templates, setTemplates] = useState<ReportTemplate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [usingTemplate, setUsingTemplate] = useState<string | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -45,6 +52,15 @@ export default function ReportsListPage() {
       })
       .catch((err: Error) => {
         if (!cancelled) setError(err.message || "Couldn't load reports");
+      });
+    // Templates load independently — a failure here must not block the
+    // reports list, so it swallows its own error (falls back to []).
+    listTemplates()
+      .then((data) => {
+        if (!cancelled) setTemplates(data);
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
       });
     return () => {
       cancelled = true;
@@ -70,6 +86,19 @@ export default function ReportsListPage() {
       const e = err as Error;
       setError(e.message || "Couldn't create report");
       setCreating(false);
+    }
+  }
+
+  async function handleUseTemplate(t: ReportTemplate) {
+    if (usingTemplate) return;
+    setUsingTemplate(t.key);
+    try {
+      const created = await createFromTemplate(t);
+      router.push(`/reports/${created.id}`);
+    } catch (err) {
+      const e = err as Error;
+      setError(e.message || "Couldn't create report from template");
+      setUsingTemplate(null);
     }
   }
 
@@ -111,6 +140,36 @@ export default function ReportsListPage() {
         </div>
       )}
 
+      {templates && templates.length > 0 && (
+        <section className="mb-8" data-testid="reports-templates">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-text-muted">
+            Start from a template
+          </h2>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {templates.map((t) => (
+              <div
+                key={t.key}
+                data-testid={`report-template-${t.key}`}
+                className="flex flex-col rounded-md border border-border bg-surface p-4"
+              >
+                <div className="font-medium text-text-primary">{t.name}</div>
+                <p className="mt-1 flex-1 text-sm text-text-muted">
+                  {t.description}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleUseTemplate(t)}
+                  disabled={usingTemplate !== null}
+                  className="mt-3 inline-flex items-center justify-center gap-2 self-start rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {usingTemplate === t.key ? "Creating..." : "Use template"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {reports === null && !error ? (
         <div className="rounded-md border border-border bg-surface px-4 py-6 text-sm text-text-muted">
           Loading...
@@ -124,7 +183,7 @@ export default function ReportsListPage() {
             No reports yet
           </p>
           <p className="mt-1 text-sm text-text-muted">
-            Start a blank canvas to build your first one.
+            Start from a template above, or create a blank report.
           </p>
         </div>
       ) : (
