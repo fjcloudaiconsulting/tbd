@@ -1131,4 +1131,69 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     });
     expect(screen.queryByDisplayValue("999")).toBeNull();
   });
+
+  it("blocks add-item submission while the build-granularity save is in flight", async () => {
+    // While the mode save is pending, `mode` has flipped optimistically but
+    // the backend is still in the prior mode. Submitting an item now could
+    // send the wrong category_id, so the form must block. Hold the settings
+    // PUT open so savingMode stays true across the Add click.
+    const plan = makePlan([], "master");
+    let resolveSettings: () => void = () => {};
+    (apiFetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (path: string) => {
+        if (path === "/api/v1/settings") {
+          return new Promise<ForecastPlan>((res) => {
+            resolveSettings = () => res(plan);
+          });
+        }
+        if (path.startsWith("/api/v1/settings/billing-periods/ensure-future")) {
+          return Promise.resolve([]);
+        }
+        if (path === "/api/v1/settings/billing-periods") {
+          return Promise.resolve([PERIOD]);
+        }
+        return Promise.resolve(plan);
+      },
+    );
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("radiogroup", { name: /build granularity/i }),
+      ).toBeTruthy();
+    });
+
+    // Open the add form and pick a category + amount BEFORE flipping mode.
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    });
+    fireEvent.focus(combobox);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(within(listbox).getByText("Supermarket"));
+    fireEvent.change(screen.getByLabelText("Planned Amount"), {
+      target: { value: "200" },
+    });
+
+    // Flip granularity — the settings PUT stays pending (never resolved yet).
+    fireEvent.click(screen.getByRole("radio", { name: /Subcategories/ }));
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith(
+        "/api/v1/settings",
+        expect.anything(),
+      );
+    });
+
+    // The Add button is disabled and clicking it must NOT POST an item.
+    const addBtn = screen.getByRole("button", { name: /^Add$/ });
+    expect((addBtn as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(addBtn);
+    expect(apiFetch).not.toHaveBeenCalledWith(
+      expect.stringContaining("/items"),
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    // Settle the save so the test cleanly resolves.
+    resolveSettings();
+  });
 });

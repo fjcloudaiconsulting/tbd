@@ -614,6 +614,14 @@ export default function ForecastPlansClient({
   async function handleAddItem(e: FormEvent) {
     e.preventDefault();
     if (!plan) return;
+    // While the build-granularity setting is mid-save, `mode` has flipped
+    // optimistically but the backend may still be in the previous mode.
+    // Submitting now could send the wrong category_id (rolled-up vs verbatim)
+    // and trip a confusing validation error, so block until the save settles.
+    if (savingMode) {
+      setError("Saving build granularity, please wait.");
+      return;
+    }
     setError("");
     const submitId = resolveSubmitCategoryId(formCategoryId);
     if (submitId === "") {
@@ -1111,7 +1119,8 @@ export default function ForecastPlansClient({
             </div>
             <button
               type="submit"
-              className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}
+              disabled={savingMode}
+              className={`${btnPrimary} w-full sm:w-auto sm:min-h-0 disabled:opacity-50`}
             >
               Add
             </button>

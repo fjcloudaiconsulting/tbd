@@ -521,3 +521,132 @@ async def test_populate_skips_master_with_existing_manual_subs(session_factory):
     # Manual sub stays; the master must NOT have been added (would conflict).
     assert seed["supermarket_id"] in cat_ids
     assert seed["groceries_id"] not in cat_ids
+
+
+# ── R2/R3 on copy_from_period: XOR guard skips conflicting source items ─────
+
+
+async def _seed_second_period(factory, seed: dict) -> int:
+    """Add a second (June) billing period to the existing org and return its
+    start date marker via a created draft plan's period start."""
+    org_id = seed["org_id"]
+    jun_start = datetime.date(2026, 6, 1)
+    jun_end = datetime.date(2026, 6, 30)
+    async with factory() as db:
+        period = BillingPeriod(org_id=org_id, start_date=jun_start, end_date=jun_end)
+        db.add(period)
+        await db.commit()
+    return jun_start
+
+
+@pytest.mark.asyncio
+async def test_copy_skips_master_when_target_has_subs(session_factory):
+    """Source (May) has a master-level Groceries item; target (June) already
+    has a manual Supermarket sub. Copying must SKIP the master item so the
+    target never mixes master+sub for Groceries/expense."""
+    # May plan built in master mode with a master Groceries item.
+    seed = await _seed(session_factory, granularity="master")
+    org_id = seed["org_id"]
+    async with session_factory() as db:
+        await forecast_plan_service.upsert_item(
+            db, org_id, seed["plan_id"],
+            ForecastPlanItemCreate(
+                category_id=seed["groceries_id"], type="expense",
+                planned_amount=Decimal("500"),
+            ),
+        )
+
+    jun_start = await _seed_second_period(session_factory, seed)
+
+    # Flip to subcategory mode and seed the June target with a manual sub.
+    async with session_factory() as db:
+        setting = (await db.execute(
+            select(OrgSetting).where(OrgSetting.org_id == org_id)
+        )).scalar_one()
+        setting.value = "subcategory"
+        await db.commit()
+    async with session_factory() as db:
+        # get_or_create the June plan, then add a sub.
+        await forecast_plan_service.get_or_create_plan(
+            db, org_id, period_start=jun_start
+        )
+    async with session_factory() as db:
+        jun_plan = (await db.execute(
+            select(ForecastPlan).join(BillingPeriod).where(
+                ForecastPlan.org_id == org_id,
+                BillingPeriod.start_date == jun_start,
+            )
+        )).scalar_one()
+        await forecast_plan_service.upsert_item(
+            db, org_id, jun_plan.id,
+            ForecastPlanItemCreate(
+                category_id=seed["supermarket_id"], type="expense",
+                planned_amount=Decimal("200"),
+            ),
+        )
+
+    # Copy May → June. The master Groceries item must be skipped.
+    async with session_factory() as db:
+        resp = await forecast_plan_service.copy_from_period(
+            db, org_id,
+            target_period_start=jun_start,
+            source_period_start=seed["may_start"],
+        )
+    cat_ids = {i.category_id for i in resp.items}
+    assert seed["supermarket_id"] in cat_ids  # manual sub stays
+    assert seed["groceries_id"] not in cat_ids  # conflicting master skipped
+
+
+@pytest.mark.asyncio
+async def test_copy_skips_sub_when_target_has_master(session_factory):
+    """Source (May) has subcategory items for Groceries; target (June)
+    already has a master-level Groceries item. Copying must SKIP the subs."""
+    # May plan built in subcategory mode with two subs.
+    seed = await _seed(session_factory, granularity="subcategory")
+    org_id = seed["org_id"]
+    async with session_factory() as db:
+        await forecast_plan_service.upsert_item(
+            db, org_id, seed["plan_id"],
+            ForecastPlanItemCreate(
+                category_id=seed["supermarket_id"], type="expense",
+                planned_amount=Decimal("200"),
+            ),
+        )
+
+    jun_start = await _seed_second_period(session_factory, seed)
+
+    # Flip to master mode and seed June target with a master item.
+    async with session_factory() as db:
+        setting = (await db.execute(
+            select(OrgSetting).where(OrgSetting.org_id == org_id)
+        )).scalar_one()
+        setting.value = "master"
+        await db.commit()
+    async with session_factory() as db:
+        await forecast_plan_service.get_or_create_plan(
+            db, org_id, period_start=jun_start
+        )
+    async with session_factory() as db:
+        jun_plan = (await db.execute(
+            select(ForecastPlan).join(BillingPeriod).where(
+                ForecastPlan.org_id == org_id,
+                BillingPeriod.start_date == jun_start,
+            )
+        )).scalar_one()
+        await forecast_plan_service.upsert_item(
+            db, org_id, jun_plan.id,
+            ForecastPlanItemCreate(
+                category_id=seed["groceries_id"], type="expense",
+                planned_amount=Decimal("500"),
+            ),
+        )
+
+    async with session_factory() as db:
+        resp = await forecast_plan_service.copy_from_period(
+            db, org_id,
+            target_period_start=jun_start,
+            source_period_start=seed["may_start"],
+        )
+    cat_ids = {i.category_id for i in resp.items}
+    assert seed["groceries_id"] in cat_ids  # target master stays
+    assert seed["supermarket_id"] not in cat_ids  # conflicting sub skipped
