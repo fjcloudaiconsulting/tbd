@@ -4,10 +4,16 @@ import { SWRConfig } from "swr";
 import TableWidget from "@/components/reports/widgets/TableWidget";
 import type { TableWidget as TableWidgetType } from "@/lib/reports/types";
 import { runQuery } from "@/lib/reports/api";
+import { downloadCsv } from "@/lib/reports/csv";
 
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
 }));
+
+vi.mock("@/lib/reports/csv", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/reports/csv")>();
+  return { ...actual, downloadCsv: vi.fn() };
+});
 
 function renderIsolated(ui: React.ReactElement) {
   return render(
@@ -37,9 +43,11 @@ function makeWidget(overrides: Partial<TableWidgetType["config"]> = {}): TableWi
 
 describe("TableWidget", () => {
   const runQueryMock = vi.mocked(runQuery);
+  const downloadMock = vi.mocked(downloadCsv);
 
   beforeEach(() => {
     runQueryMock.mockReset();
+    downloadMock.mockReset();
   });
 
   it("renders rows with dimension + measure columns when data arrives", async () => {
@@ -128,6 +136,115 @@ describe("TableWidget", () => {
     expect(screen.getByTestId("table-widget-next-page")).toBeInTheDocument();
   });
 
+  it("renders a Total row that sums all rows of a sum measure", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [
+        { category: "Food", value: 200 },
+        { category: "Transport", value: 80 },
+        { category: "Books", value: 20 },
+      ],
+      meta: { row_count: 3, truncated: false, query_ms: 1 },
+    });
+
+    renderIsolated(<TableWidget widget={makeWidget()} />);
+
+    const totalRow = await screen.findByTestId("table-widget-total-row");
+    // Dimension cell reads "Total".
+    expect(totalRow).toHaveTextContent("Total");
+    // 200 + 80 + 20 = 300, formatted as currency.
+    expect(totalRow).toHaveTextContent("$300.00");
+  });
+
+  it("sums ALL rows in the total even across multiple pages", async () => {
+    // 75 rows, value = 1 each => grand total 75, even though only 50
+    // are visible on the first page.
+    const rows = Array.from({ length: 75 }, (_, i) => ({
+      category: `Cat ${i}`,
+      value: 1,
+    }));
+    runQueryMock.mockResolvedValueOnce({
+      rows,
+      meta: { row_count: 75, truncated: false, query_ms: 1 },
+    });
+
+    renderIsolated(<TableWidget widget={makeWidget({ format: "number" })} />);
+
+    const totalRow = await screen.findByTestId("table-widget-total-row");
+    expect(totalRow).toHaveTextContent("Total");
+    expect(totalRow).toHaveTextContent("75");
+  });
+
+  it("shows a placeholder (no fabricated number) for an avg measure column", async () => {
+    runQueryMock.mockResolvedValue({
+      rows: [
+        { category: "Food", value: 50 },
+        { category: "Transport", value: 30 },
+      ],
+      meta: { row_count: 2, truncated: false, query_ms: 1 },
+    });
+
+    renderIsolated(
+      <TableWidget
+        widget={makeWidget({
+          format: "number",
+          measures: [
+            { measure: { agg: "sum", field: "amount" }, label: "Total" },
+            { measure: { agg: "avg", field: "amount" }, label: "Avg" },
+          ],
+        })}
+      />,
+    );
+
+    const totalRow = await screen.findByTestId("table-widget-total-row");
+    const cells = Array.from(totalRow.querySelectorAll("td")).map(
+      (td) => td.textContent ?? "",
+    );
+    // cells: [dimension "Total", sum column "80", avg column placeholder]
+    expect(cells[0]).toBe("Total");
+    expect(cells[1]).toBe("80");
+    // avg column must NOT be a number; it's the placeholder.
+    expect(cells[2]).toBe("—");
+  });
+
+  it("totals each measure column independently (multi-measure)", async () => {
+    // Two series queries: sum-of-amount and count-of-id.
+    runQueryMock
+      .mockResolvedValueOnce({
+        rows: [
+          { category: "Food", value: 200 },
+          { category: "Transport", value: 100 },
+        ],
+        meta: { row_count: 2, truncated: false, query_ms: 1 },
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          { category: "Food", value: 4 },
+          { category: "Transport", value: 6 },
+        ],
+        meta: { row_count: 2, truncated: false, query_ms: 1 },
+      });
+
+    renderIsolated(
+      <TableWidget
+        widget={makeWidget({
+          format: "number",
+          measures: [
+            { measure: { agg: "sum", field: "amount" }, label: "Amount" },
+            { measure: { agg: "count", field: "id" }, label: "Count" },
+          ],
+        })}
+      />,
+    );
+
+    const totalRow = await screen.findByTestId("table-widget-total-row");
+    const cells = Array.from(totalRow.querySelectorAll("td")).map(
+      (td) => td.textContent ?? "",
+    );
+    expect(cells[0]).toBe("Total");
+    expect(cells[1]).toBe("300"); // 200 + 100
+    expect(cells[2]).toBe("10"); // 4 + 6 (count is additive)
+  });
+
   it("fires one query per column when multiple measures are configured", async () => {
     runQueryMock.mockResolvedValue({
       rows: [{ category: "Food", value: 50 }],
@@ -147,5 +264,80 @@ describe("TableWidget", () => {
     );
 
     await waitFor(() => expect(runQueryMock).toHaveBeenCalledTimes(3));
+  });
+
+  it("exports CSV with dimension + measure headers, every row, and a Total row", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [
+        { category: "Food", value: 200 },
+        { category: "Transport", value: 80 },
+      ],
+      meta: { row_count: 2, truncated: false, query_ms: 1 },
+    });
+
+    renderIsolated(<TableWidget widget={makeWidget()} />);
+
+    const exportBtn = await screen.findByTestId("widget-csv-export");
+    await waitFor(() => expect(exportBtn).not.toBeDisabled());
+    fireEvent.click(exportBtn);
+
+    expect(downloadMock).toHaveBeenCalledTimes(1);
+    const [filename, csv] = downloadMock.mock.calls[0];
+    expect(filename).toBe("top-categories.csv");
+    // Header uses the human dimension label "Category" + the measure
+    // field "amount"; the Total row sums the additive column (280).
+    expect(csv).toBe(
+      "Category,amount\r\nFood,200\r\nTransport,80\r\nTotal,280",
+    );
+  });
+
+  it("exports one column per measure for a multi-measure table", async () => {
+    runQueryMock
+      .mockResolvedValueOnce({
+        rows: [
+          { category: "Food", value: 200 },
+          { category: "Transport", value: 100 },
+        ],
+        meta: { row_count: 2, truncated: false, query_ms: 1 },
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          { category: "Food", value: 4 },
+          { category: "Transport", value: 6 },
+        ],
+        meta: { row_count: 2, truncated: false, query_ms: 1 },
+      });
+
+    renderIsolated(
+      <TableWidget
+        widget={makeWidget({
+          measures: [
+            { measure: { agg: "sum", field: "amount" }, label: "Amount" },
+            { measure: { agg: "count", field: "id" }, label: "Count" },
+          ],
+        })}
+      />,
+    );
+
+    const exportBtn = await screen.findByTestId("widget-csv-export");
+    await waitFor(() => expect(exportBtn).not.toBeDisabled());
+    fireEvent.click(exportBtn);
+
+    const [, csv] = downloadMock.mock.calls[0];
+    expect(csv).toBe(
+      "Category,Amount,Count\r\nFood,200,4\r\nTransport,100,6\r\nTotal,300,10",
+    );
+  });
+
+  it("hides the Export CSV button in edit mode", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [{ category: "Food", value: 200 }],
+      meta: { row_count: 1, truncated: false, query_ms: 1 },
+    });
+
+    renderIsolated(<TableWidget widget={makeWidget()} editMode />);
+
+    await screen.findByText("Food");
+    expect(screen.queryByTestId("widget-csv-export")).toBeNull();
   });
 });
