@@ -26,7 +26,8 @@ vi.mock("@/lib/reports/api", () => ({
   saveLayout: vi.fn(),
   runQuery: vi.fn(),
   deleteReport: vi.fn(),
-  resetReport: vi.fn(),
+  listVersions: vi.fn(),
+  restoreVersion: vi.fn(),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -117,14 +118,16 @@ describe("ReportEditorPage", () => {
   const saveLayoutMock = vi.mocked(reportsApi.saveLayout);
   const runQueryMock = vi.mocked(reportsApi.runQuery);
   const deleteReportMock = vi.mocked(reportsApi.deleteReport);
-  const resetReportMock = vi.mocked(reportsApi.resetReport);
+  const listVersionsMock = vi.mocked(reportsApi.listVersions);
+  const restoreVersionMock = vi.mocked(reportsApi.restoreVersion);
 
   beforeEach(() => {
     getReportMock.mockReset();
     saveLayoutMock.mockReset();
     runQueryMock.mockReset();
     deleteReportMock.mockReset();
-    resetReportMock.mockReset();
+    listVersionsMock.mockReset();
+    restoreVersionMock.mockReset();
     runQueryMock.mockResolvedValue({
       rows: [],
       meta: { row_count: 0, truncated: false, query_ms: 1 },
@@ -341,8 +344,13 @@ describe("ReportEditorPage", () => {
 
     renderIsolated(<ReportEditorPage params={makeParams()} />);
 
+    // Report has widgets → opens in view mode. Enter edit mode so the
+    // config rail can mount on widget selection.
+    await screen.findByTestId("kpi-widget");
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+
     // Click the widget shell to select it; config rail mounts.
-    const shell = await screen.findByTestId("kpi-widget");
+    const shell = screen.getByTestId("kpi-widget");
     fireEvent.click(shell);
 
     await waitFor(() =>
@@ -416,45 +424,156 @@ describe("ReportEditorPage", () => {
       expect(screen.queryByTestId("bar-widget")).toBeNull(),
     );
     expect(screen.queryByTestId("report-editor-dirty")).toBeNull();
-    // Exited edit mode: the toggle now reads "Edit", Add widget is gone.
+    // Exited edit mode: the toggle now reads "Edit", Add widget + Cancel
+    // are gone.
+    expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
+      "Edit",
+    );
     expect(screen.queryByTestId("report-editor-add-widget")).toBeNull();
+    expect(screen.queryByTestId("report-editor-cancel")).toBeNull();
     // No server save was issued by Cancel.
     expect(saveLayoutMock).not.toHaveBeenCalled();
   });
 
-  it("reverts to original: calls resetReport and re-hydrates from the response", async () => {
+  // A report carrying at least one widget. Used by the view-mode /
+  // toggle / history tests below.
+  const REPORT_WITH_WIDGET = {
+    id: 10,
+    owner_user_id: 1,
+    org_id: 1,
+    visibility: "private" as const,
+    name: "My report",
+    description: null,
+    layout_json: {
+      version: 1 as const,
+      widgets: [
+        {
+          id: "w_kpi",
+          type: "kpi" as const,
+          title: "Total",
+          grid: { x: 0, y: 0, w: 3, h: 2 },
+          config: {
+            dataset: "transactions" as const,
+            measure: { agg: "sum" as const, field: "amount" as const },
+            format: "currency" as const,
+          },
+        },
+      ],
+    },
+    canvas_filters_json: {},
+    schema_version: 1,
+    created_at: "2026-05-22T10:00:00",
+    updated_at: "2026-05-22T10:00:00",
+  };
+
+  it("opens a report with widgets in view mode (Edit/History/Delete, no edit affordances)", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+    // View-mode toolbar.
+    expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
+      "Edit",
+    );
+    expect(screen.getByTestId("report-editor-history")).toBeInTheDocument();
+    expect(screen.getByTestId("report-editor-delete")).toBeInTheDocument();
+    // No edit-only affordances.
+    expect(screen.queryByTestId("report-editor-add-widget")).toBeNull();
+    expect(screen.queryByTestId("report-editor-save")).toBeNull();
+    expect(screen.queryByTestId("report-editor-cancel")).toBeNull();
+  });
+
+  it("Edit enters edit mode; Save is disabled until a change, which also reveals Cancel", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+
+    // Edit-mode toolbar: Add widget + Save + History + Delete + Done.
+    expect(screen.getByTestId("report-editor-add-widget")).toBeInTheDocument();
+    expect(screen.getByTestId("report-editor-history")).toBeInTheDocument();
+    expect(screen.getByTestId("report-editor-delete")).toBeInTheDocument();
+    expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
+      "Done",
+    );
+    // Save disabled initially (not dirty); Cancel hidden (not dirty).
+    expect(screen.getByTestId("report-editor-save")).toBeDisabled();
+    expect(screen.queryByTestId("report-editor-cancel")).toBeNull();
+
+    // Make a change → Save enables, Cancel appears.
+    fireEvent.click(screen.getByTestId("report-editor-add-widget"));
+    fireEvent.click(screen.getByTestId("widget-picker-option-bar"));
+    await waitFor(() =>
+      expect(screen.getByTestId("bar-widget")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("report-editor-save")).not.toBeDisabled();
+    expect(screen.getByTestId("report-editor-cancel")).toBeInTheDocument();
+  });
+
+  it("Done returns to view mode and Edit re-enters edit mode (toggle works)", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+    // Enter edit.
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+    expect(screen.getByTestId("report-editor-add-widget")).toBeInTheDocument();
+    expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
+      "Done",
+    );
+    // Done → view mode.
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+    expect(screen.queryByTestId("report-editor-add-widget")).toBeNull();
+    expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
+      "Edit",
+    );
+    // Edit → back to edit mode.
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+    expect(screen.getByTestId("report-editor-add-widget")).toBeInTheDocument();
+  });
+
+  it("opens a 0-widget (blank) report in edit mode", async () => {
     mockUser(true);
     getReportMock.mockResolvedValue({
       id: 10,
       owner_user_id: 1,
       org_id: 1,
       visibility: "private",
-      name: "My report",
+      name: "Blank",
       description: null,
-      layout_json: {
-        version: 1,
-        widgets: [
-          {
-            id: "w_kpi",
-            type: "kpi",
-            title: "Total",
-            grid: { x: 0, y: 0, w: 3, h: 2 },
-            config: {
-              dataset: "transactions",
-              measure: { agg: "sum", field: "amount" },
-              format: "currency",
-            },
-          },
-        ],
-      },
+      layout_json: { version: 1, widgets: [] },
       canvas_filters_json: {},
       schema_version: 1,
       created_at: "2026-05-22T10:00:00",
       updated_at: "2026-05-22T10:00:00",
     });
-    // Reverted server snapshot returns an empty layout (the as-created
-    // state had no widgets).
-    resetReportMock.mockResolvedValue({
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("report-editor");
+    // Edit mode: Add widget present, toggle reads "Done".
+    expect(screen.getByTestId("report-editor-add-widget")).toBeInTheDocument();
+    expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
+      "Done",
+    );
+  });
+
+  it("History lists versions and Restore re-hydrates from the restored report", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+    listVersionsMock.mockResolvedValue([
+      { id: 99, is_original: false, created_at: "2026-05-23T09:30:00" },
+      { id: 1, is_original: true, created_at: "2026-05-22T10:00:00" },
+    ]);
+    // Restoring the original returns an empty layout.
+    restoreVersionMock.mockResolvedValue({
       id: 10,
       owner_user_id: 1,
       org_id: 1,
@@ -465,25 +584,43 @@ describe("ReportEditorPage", () => {
       canvas_filters_json: {},
       schema_version: 1,
       created_at: "2026-05-22T10:00:00",
-      updated_at: "2026-05-22T10:00:02",
+      updated_at: "2026-05-22T10:00:05",
     });
 
     renderIsolated(<ReportEditorPage params={makeParams()} />);
 
-    // Widget from the loaded report is present.
     await screen.findByTestId("kpi-widget");
+    fireEvent.click(screen.getByTestId("report-editor-history"));
 
-    fireEvent.click(screen.getByTestId("report-editor-revert"));
-    // Confirm modal → Revert (scope to the dialog).
-    const dialog = screen.getByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Revert" }));
+    // Panel opens and lists both versions; original badged.
+    await screen.findByTestId("report-history-panel");
+    await waitFor(() =>
+      expect(listVersionsMock).toHaveBeenCalledWith(10),
+    );
+    await screen.findByTestId("report-history-row-1");
+    expect(screen.getByTestId("report-history-row-99")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("report-history-original-badge"),
+    ).toBeInTheDocument();
 
-    await waitFor(() => expect(resetReportMock).toHaveBeenCalledWith(10));
-    // Page re-hydrates from the returned (empty) layout.
+    // Restore the original → confirm. Scope to the confirm dialog
+    // (the history panel is also a dialog).
+    fireEvent.click(screen.getByTestId("report-history-restore-1"));
+    const dialog = screen.getByRole("dialog", { name: "Restore version" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Restore" }));
+
+    await waitFor(() =>
+      expect(restoreVersionMock).toHaveBeenCalledWith(10, 1),
+    );
+    // Re-hydrated from the restored (empty) layout; panel closed; view mode.
     await waitFor(() =>
       expect(screen.queryByTestId("kpi-widget")).toBeNull(),
     );
+    expect(screen.queryByTestId("report-history-panel")).toBeNull();
     expect(screen.getByTestId("report-editor-empty")).toBeInTheDocument();
+    expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
+      "Edit",
+    );
   });
 
   it("redirects to /dashboard when feature_reports_v2 is false", async () => {

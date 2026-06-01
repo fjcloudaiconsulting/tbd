@@ -27,17 +27,24 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { deleteReport, getReport, resetReport, saveLayout } from "@/lib/reports/api";
+import {
+  deleteReport,
+  getReport,
+  restoreVersion,
+  saveLayout,
+} from "@/lib/reports/api";
 import type {
   BarConfig,
   CanvasFilters,
   KPIConfig,
   LayoutJson,
   ReportSummary,
+  ReportVersionSummary,
   Widget,
 } from "@/lib/reports/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import Canvas from "@/components/reports/Canvas";
+import HistoryPanel from "@/components/reports/HistoryPanel";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import ConfigRail from "@/components/reports/ConfigRail";
 import WidgetPicker from "@/components/reports/WidgetPicker";
@@ -225,7 +232,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState(true);
+  const [editMode, setEditMode] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -233,9 +240,11 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [reverting, setReverting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmRevert, setConfirmRevert] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [pendingRestore, setPendingRestore] =
+    useState<ReportVersionSummary | null>(null);
 
   // Hydrate the canvas state (report snapshot + layout + filters) from
   // a server ``ReportSummary``. Reused by the initial load, Cancel
@@ -274,6 +283,12 @@ export default function ReportEditorPage({ params }: PageProps) {
       .then((r) => {
         if (cancelled) return;
         hydrateFromReport(r);
+        // Default to view mode for reports that already have content; a
+        // blank (0-widget) report opens in edit mode so the user has an
+        // obvious starting point.
+        const lj = (r.layout_json ?? {}) as Partial<LayoutJson>;
+        const widgetCount = Array.isArray(lj.widgets) ? lj.widgets.length : 0;
+        setEditMode(widgetCount === 0);
       })
       .catch((err: Error) => {
         if (!cancelled) setLoadError(err.message || "Couldn't load report");
@@ -378,20 +393,26 @@ export default function ReportEditorPage({ params }: PageProps) {
     }
   }
 
-  async function handleRevert() {
-    if (!report || reverting) return;
-    setConfirmRevert(false);
-    setReverting(true);
+  // Restore a chosen version into the live report. Confirmed via the
+  // ConfirmModal before this fires. Re-hydrates the canvas from the
+  // server's restored snapshot, closes the History panel, and drops
+  // back to view mode.
+  async function handleRestore() {
+    if (!report || !pendingRestore || restoring) return;
+    const versionId = pendingRestore.id;
+    setRestoring(true);
     setSaveError(null);
     try {
-      const reverted = await resetReport(report.id);
-      hydrateFromReport(reverted);
+      const restored = await restoreVersion(report.id, versionId);
+      hydrateFromReport(restored);
       setEditMode(false);
+      setHistoryOpen(false);
+      setPendingRestore(null);
     } catch (err) {
       const e = err as Error;
-      setSaveError(e.message || "Couldn't revert report");
+      setSaveError(e.message || "Couldn't restore version");
     } finally {
-      setReverting(false);
+      setRestoring(false);
     }
   }
 
@@ -457,14 +478,7 @@ export default function ReportEditorPage({ params }: PageProps) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setEditMode((v) => !v)}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
-            data-testid="report-editor-toggle-edit"
-          >
-            {editMode ? "View" : "Edit"}
-          </button>
+          {/* Edit-mode-only: Add widget + Save (+ Cancel when dirty). */}
           {editMode && (
             <button
               type="button"
@@ -478,6 +492,17 @@ export default function ReportEditorPage({ params }: PageProps) {
           {editMode && (
             <button
               type="button"
+              onClick={handleSave}
+              disabled={saving || !dirty}
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="report-editor-save"
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+          )}
+          {editMode && dirty && (
+            <button
+              type="button"
               onClick={handleCancelEdit}
               className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
               data-testid="report-editor-cancel"
@@ -485,17 +510,16 @@ export default function ReportEditorPage({ params }: PageProps) {
               Cancel
             </button>
           )}
-          {canEdit && (
-            <button
-              type="button"
-              onClick={() => setConfirmRevert(true)}
-              disabled={reverting}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
-              data-testid="report-editor-revert"
-            >
-              {reverting ? "Reverting..." : "Revert to original"}
-            </button>
-          )}
+
+          {/* Both modes: History + Delete. */}
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+            data-testid="report-editor-history"
+          >
+            History
+          </button>
           {canEdit && (
             <button
               type="button"
@@ -507,14 +531,15 @@ export default function ReportEditorPage({ params }: PageProps) {
               {deleting ? "Deleting..." : "Delete"}
             </button>
           )}
+
+          {/* Mode toggle: View mode shows "Edit", edit mode shows "Done". */}
           <button
             type="button"
-            onClick={handleSave}
-            disabled={saving || !dirty}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
-            data-testid="report-editor-save"
+            onClick={() => setEditMode((v) => !v)}
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+            data-testid="report-editor-toggle-edit"
           >
-            {saving ? "Saving..." : "Save"}
+            {editMode ? "Done" : "Edit"}
           </button>
         </div>
       </header>
@@ -586,14 +611,20 @@ export default function ReportEditorPage({ params }: PageProps) {
         onConfirm={handleDelete}
         onCancel={() => setConfirmDelete(false)}
       />
+      <HistoryPanel
+        open={historyOpen}
+        reportId={report.id}
+        onClose={() => setHistoryOpen(false)}
+        onRestore={(v) => setPendingRestore(v)}
+      />
       <ConfirmModal
-        open={confirmRevert}
-        title="Revert to original"
-        message="Revert to the original version? Your changes since creation will be lost."
-        confirmLabel="Revert"
+        open={pendingRestore !== null}
+        title="Restore version"
+        message="Restore this version? Current unsaved changes will be lost."
+        confirmLabel="Restore"
         variant="warning"
-        onConfirm={handleRevert}
-        onCancel={() => setConfirmRevert(false)}
+        onConfirm={handleRestore}
+        onCancel={() => setPendingRestore(null)}
       />
     </AppShell>
   );

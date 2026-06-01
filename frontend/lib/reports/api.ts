@@ -16,6 +16,7 @@ import type {
   ReportSummary,
   ReportTemplate,
   ReportUpdatePayload,
+  ReportVersionSummary,
   ReportsQuery,
   ReportsQueryResponse,
 } from "./types";
@@ -78,6 +79,32 @@ export async function resetReport(id: number): Promise<ReportSummary> {
   return apiFetch<ReportSummary>(`/api/v1/reports/${id}/reset`, {
     method: "POST",
   });
+}
+
+/**
+ * List the saved versions of a report, newest-first. The original
+ * snapshot carries ``is_original: true``; the editor's History panel
+ * badges it and offers a Restore action per row.
+ */
+export async function listVersions(
+  id: number,
+): Promise<ReportVersionSummary[]> {
+  return apiFetch<ReportVersionSummary[]>(`/api/v1/reports/${id}/versions`);
+}
+
+/**
+ * Restore a saved version into the report's live layout + canvas
+ * filters. Returns the updated ``ReportSummary`` so the editor can
+ * re-hydrate its canvas from the restored server state.
+ */
+export async function restoreVersion(
+  id: number,
+  versionId: number,
+): Promise<ReportSummary> {
+  return apiFetch<ReportSummary>(
+    `/api/v1/reports/${id}/versions/${versionId}/restore`,
+    { method: "POST" },
+  );
 }
 
 export async function runQuery(
