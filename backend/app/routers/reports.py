@@ -234,6 +234,46 @@ async def update_report(
     return row
 
 
+@router.post("/{report_id}/reset", response_model=ReportResponse)
+async def reset_report(
+    report_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revert a report's live state to its as-created snapshot.
+
+    Copies ``original_layout_json`` / ``original_canvas_filters_json``
+    back into the live ``layout_json`` / ``canvas_filters_json`` columns.
+    The snapshot columns are set once at create and never touched by
+    edits, so this is a pure restore.
+
+    Visibility / edit gating mirrors PATCH + DELETE: 404 when the row is
+    missing or invisible, 403 when the caller lacks edit rights.
+
+    Task-1 backfilled existing rows, so ``original_*`` should never be
+    NULL; the coalesce-to-current guard keeps a legacy NULL row from
+    blanking its live state.
+    """
+    row = await db.get(Report, report_id)
+    if row is None or not _can_view(current_user, row):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report not found",
+        )
+    if not _can_edit(current_user, row):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden",
+        )
+    if row.original_layout_json is not None:
+        row.layout_json = row.original_layout_json
+    if row.original_canvas_filters_json is not None:
+        row.canvas_filters_json = row.original_canvas_filters_json
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
 @router.delete(
     "/{report_id}",
     status_code=status.HTTP_204_NO_CONTENT,
