@@ -11,6 +11,7 @@ import {
   ChevronUp,
   Compass,
   CreditCard,
+  FileBarChart,
   FileText,
   Gauge,
   HelpCircle,
@@ -114,7 +115,7 @@ const baseNavItems = [
 const REPORTS_NAV_ITEM = {
   href: "/reports",
   label: "Reports",
-  icon: <BarChart3 {...NAV_ICON_PROPS} />,
+  icon: <FileBarChart {...NAV_ICON_PROPS} />,
 } as const;
 
 function buildNavItems(featureReportsV2: boolean) {
