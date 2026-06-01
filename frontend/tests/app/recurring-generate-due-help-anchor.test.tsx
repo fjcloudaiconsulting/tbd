@@ -75,7 +75,7 @@ describe("RecurringPage — header layout + Generate Due HelpAnchor", () => {
     render(<RecurringPage />);
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /Generate Due/ }),
+        screen.getByRole("button", { name: /Generate this period/ }),
       ).toBeInTheDocument(),
     );
 
@@ -92,7 +92,7 @@ describe("RecurringPage — header layout + Generate Due HelpAnchor", () => {
     render(<RecurringPage />);
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /Generate Due/ }),
+        screen.getByRole("button", { name: /Generate this period/ }),
       ).toBeInTheDocument(),
     );
 
@@ -119,7 +119,7 @@ describe("RecurringPage — header layout + Generate Due HelpAnchor", () => {
     render(<RecurringPage />);
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: /Generate Due/ }),
+        screen.getByRole("button", { name: /Generate this period/ }),
       ).toBeInTheDocument(),
     );
 
@@ -137,7 +137,7 @@ describe("RecurringPage — header layout + Generate Due HelpAnchor", () => {
 
   it("keeps the Generate Due button clickable as a sibling of the title", async () => {
     render(<RecurringPage />);
-    const button = await screen.findByRole("button", { name: /Generate Due/ });
+    const button = await screen.findByRole("button", { name: /Generate this period/ });
 
     // Button stays a real <button> (not wrapped by the HelpAnchor
     // link), so the click handler still fires.
