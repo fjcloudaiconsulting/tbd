@@ -18,9 +18,11 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import {
   createFromTemplate,
   createReport,
+  deleteReport,
   listReports,
   listTemplates,
 } from "@/lib/reports/api";
@@ -34,6 +36,8 @@ export default function ReportsListPage() {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [usingTemplate, setUsingTemplate] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ReportSummary | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -99,6 +103,24 @@ export default function ReportsListPage() {
       const e = err as Error;
       setError(e.message || "Couldn't create report from template");
       setUsingTemplate(null);
+    }
+  }
+
+  async function handleDelete() {
+    const target = pendingDelete;
+    if (!target || deletingId !== null) return;
+    setPendingDelete(null);
+    setDeletingId(target.id);
+    try {
+      await deleteReport(target.id);
+      setReports((prev) =>
+        (prev ?? []).filter((r) => r.id !== target.id),
+      );
+    } catch (err) {
+      const e = err as Error;
+      setError(e.message || "Couldn't delete report");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -189,32 +211,49 @@ export default function ReportsListPage() {
       ) : (
         <ul className="divide-y divide-border rounded-md border border-border bg-surface">
           {(reports ?? []).map((r) => (
-            <li key={r.id}>
+            <li key={r.id} className="flex items-center hover:bg-bg-elevated">
               <Link
                 href={`/reports/${r.id}`}
-                className="block px-4 py-3 hover:bg-bg-elevated"
+                className="flex flex-1 items-center justify-between px-4 py-3"
                 data-testid={`report-row-${r.id}`}
               >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-text-primary">
-                      {r.name}
+                <div>
+                  <div className="font-medium text-text-primary">{r.name}</div>
+                  {r.description && (
+                    <div className="text-sm text-text-muted">
+                      {r.description}
                     </div>
-                    {r.description && (
-                      <div className="text-sm text-text-muted">
-                        {r.description}
-                      </div>
-                    )}
-                  </div>
-                  <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                    {r.visibility}
-                  </span>
+                  )}
                 </div>
+                <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+                  {r.visibility}
+                </span>
               </Link>
+              {r.owner_user_id === user?.id && (
+                <button
+                  type="button"
+                  onClick={() => setPendingDelete(r)}
+                  disabled={deletingId === r.id}
+                  className="mr-3 rounded-md border border-danger px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid={`report-delete-${r.id}`}
+                >
+                  {deletingId === r.id ? "Deleting..." : "Delete"}
+                </button>
+              )}
             </li>
           ))}
         </ul>
       )}
+
+      <ConfirmModal
+        open={pendingDelete !== null}
+        title="Delete report"
+        message="Delete this report? This can't be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </AppShell>
   );
 }

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { SWRConfig } from "swr";
 
 // Stub the canvas (react-grid-layout) — jsdom can't measure container
@@ -25,6 +25,8 @@ vi.mock("@/lib/reports/api", () => ({
   getReport: vi.fn(),
   saveLayout: vi.fn(),
   runQuery: vi.fn(),
+  deleteReport: vi.fn(),
+  resetReport: vi.fn(),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -114,11 +116,15 @@ describe("ReportEditorPage", () => {
   const getReportMock = vi.mocked(reportsApi.getReport);
   const saveLayoutMock = vi.mocked(reportsApi.saveLayout);
   const runQueryMock = vi.mocked(reportsApi.runQuery);
+  const deleteReportMock = vi.mocked(reportsApi.deleteReport);
+  const resetReportMock = vi.mocked(reportsApi.resetReport);
 
   beforeEach(() => {
     getReportMock.mockReset();
     saveLayoutMock.mockReset();
     runQueryMock.mockReset();
+    deleteReportMock.mockReset();
+    resetReportMock.mockReset();
     runQueryMock.mockResolvedValue({
       rows: [],
       meta: { row_count: 0, truncated: false, query_ms: 1 },
@@ -344,6 +350,140 @@ describe("ReportEditorPage", () => {
     );
     // Override pill appears on the overridden date field.
     expect(screen.getByTestId("override-pill")).toBeInTheDocument();
+  });
+
+  it("deletes the report via confirm and navigates back to /reports", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "My report",
+      description: null,
+      layout_json: { version: 1, widgets: [] },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:00",
+    });
+    deleteReportMock.mockResolvedValue(undefined);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("report-editor");
+    fireEvent.click(screen.getByTestId("report-editor-delete"));
+    // Confirm modal appears; clicking its Confirm button fires the
+    // delete. Scope to the dialog so we don't match the header trigger.
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteReportMock).toHaveBeenCalledWith(10));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports"));
+  });
+
+  it("cancels editing: discards unsaved changes and exits edit mode", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "My report",
+      description: null,
+      layout_json: { version: 1, widgets: [] },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:00",
+    });
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("report-editor");
+    // Make a dirty change.
+    fireEvent.click(screen.getByTestId("report-editor-add-widget"));
+    fireEvent.click(screen.getByTestId("widget-picker-option-bar"));
+    await waitFor(() =>
+      expect(screen.getByTestId("bar-widget")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("report-editor-dirty")).toBeInTheDocument();
+
+    // Cancel discards the unsaved widget and exits edit mode.
+    fireEvent.click(screen.getByTestId("report-editor-cancel"));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("bar-widget")).toBeNull(),
+    );
+    expect(screen.queryByTestId("report-editor-dirty")).toBeNull();
+    // Exited edit mode: the toggle now reads "Edit", Add widget is gone.
+    expect(screen.queryByTestId("report-editor-add-widget")).toBeNull();
+    // No server save was issued by Cancel.
+    expect(saveLayoutMock).not.toHaveBeenCalled();
+  });
+
+  it("reverts to original: calls resetReport and re-hydrates from the response", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "My report",
+      description: null,
+      layout_json: {
+        version: 1,
+        widgets: [
+          {
+            id: "w_kpi",
+            type: "kpi",
+            title: "Total",
+            grid: { x: 0, y: 0, w: 3, h: 2 },
+            config: {
+              dataset: "transactions",
+              measure: { agg: "sum", field: "amount" },
+              format: "currency",
+            },
+          },
+        ],
+      },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:00",
+    });
+    // Reverted server snapshot returns an empty layout (the as-created
+    // state had no widgets).
+    resetReportMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "My report",
+      description: null,
+      layout_json: { version: 1, widgets: [] },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:02",
+    });
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    // Widget from the loaded report is present.
+    await screen.findByTestId("kpi-widget");
+
+    fireEvent.click(screen.getByTestId("report-editor-revert"));
+    // Confirm modal → Revert (scope to the dialog).
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Revert" }));
+
+    await waitFor(() => expect(resetReportMock).toHaveBeenCalledWith(10));
+    // Page re-hydrates from the returned (empty) layout.
+    await waitFor(() =>
+      expect(screen.queryByTestId("kpi-widget")).toBeNull(),
+    );
+    expect(screen.getByTestId("report-editor-empty")).toBeInTheDocument();
   });
 
   it("redirects to /dashboard when feature_reports_v2 is false", async () => {

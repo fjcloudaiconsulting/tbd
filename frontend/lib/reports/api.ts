@@ -68,6 +68,18 @@ export async function deleteReport(id: number): Promise<void> {
   await apiFetch<void>(`/api/v1/reports/${id}`, { method: "DELETE" });
 }
 
+/**
+ * Revert a report's live layout + canvas filters back to the
+ * as-created snapshot the backend captured at creation time. Returns
+ * the updated ``ReportSummary`` so the editor can re-hydrate its
+ * canvas from the rolled-back server state.
+ */
+export async function resetReport(id: number): Promise<ReportSummary> {
+  return apiFetch<ReportSummary>(`/api/v1/reports/${id}/reset`, {
+    method: "POST",
+  });
+}
+
 export async function runQuery(
   body: ReportsQuery,
 ): Promise<ReportsQueryResponse> {

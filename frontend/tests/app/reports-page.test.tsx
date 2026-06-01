@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import ReportsListPage from "@/app/reports/page";
 import * as reportsApi from "@/lib/reports/api";
@@ -9,6 +9,7 @@ vi.mock("@/lib/reports/api", () => ({
   listTemplates: vi.fn(),
   createReport: vi.fn(),
   createFromTemplate: vi.fn(),
+  deleteReport: vi.fn(),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -76,11 +77,13 @@ describe("ReportsListPage", () => {
   const listMock = vi.mocked(reportsApi.listReports);
   const listTemplatesMock = vi.mocked(reportsApi.listTemplates);
   const createMock = vi.mocked(reportsApi.createReport);
+  const deleteMock = vi.mocked(reportsApi.deleteReport);
 
   beforeEach(() => {
     listMock.mockReset();
     listTemplatesMock.mockReset();
     createMock.mockReset();
+    deleteMock.mockReset();
     pushMock.mockReset();
     replaceMock.mockReset();
     // Templates load independently of the reports list; default to an
@@ -159,6 +162,39 @@ describe("ReportsListPage", () => {
 
     await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports/42"));
+  });
+
+  it("deletes a report card via confirm and removes it from the list", async () => {
+    mockUser(true);
+    listMock.mockResolvedValue([
+      {
+        id: 10,
+        owner_user_id: 1,
+        org_id: 1,
+        visibility: "private",
+        name: "Monthly review",
+        description: null,
+        layout_json: {},
+        canvas_filters_json: {},
+        schema_version: 1,
+        created_at: "2026-05-21T10:00:00",
+        updated_at: "2026-05-22T10:00:00",
+      },
+    ]);
+    deleteMock.mockResolvedValue(undefined);
+
+    render(<ReportsListPage />);
+
+    await screen.findByText("Monthly review");
+    fireEvent.click(screen.getByTestId("report-delete-10"));
+    // Confirm modal → Delete.
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(10));
+    await waitFor(() =>
+      expect(screen.queryByText("Monthly review")).toBeNull(),
+    );
   });
 
   it("redirects to /dashboard when feature_reports_v2 is false", async () => {

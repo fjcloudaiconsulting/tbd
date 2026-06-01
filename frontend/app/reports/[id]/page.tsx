@@ -27,7 +27,7 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { getReport, saveLayout } from "@/lib/reports/api";
+import { deleteReport, getReport, resetReport, saveLayout } from "@/lib/reports/api";
 import type {
   BarConfig,
   CanvasFilters,
@@ -36,6 +36,7 @@ import type {
   ReportSummary,
   Widget,
 } from "@/lib/reports/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import Canvas from "@/components/reports/Canvas";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import ConfigRail from "@/components/reports/ConfigRail";
@@ -231,6 +232,32 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmRevert, setConfirmRevert] = useState(false);
+
+  // Hydrate the canvas state (report snapshot + layout + filters) from
+  // a server ``ReportSummary``. Reused by the initial load, Cancel
+  // (restore the last-saved snapshot), and Revert (rolled-back
+  // snapshot).
+  function hydrateFromReport(r: ReportSummary) {
+    setReport(r);
+    const lj = (r.layout_json ?? {}) as Partial<LayoutJson>;
+    setLayout(
+      lj && Array.isArray(lj.widgets)
+        ? { version: 1, widgets: lj.widgets as Widget[] }
+        : DEFAULT_LAYOUT,
+    );
+    setCanvasFilters((r.canvas_filters_json as CanvasFilters) ?? {});
+    setSelectedWidgetId(null);
+    setDirty(false);
+  }
+
+  // Owner-only affordances. The backend enforces this regardless, but
+  // hiding Delete/Revert for non-owners keeps the header honest when
+  // the page already knows the viewer isn't the owner.
+  const canEdit = !!user && !!report && report.owner_user_id === user.id;
 
   useEffect(() => {
     if (authLoading) return;
@@ -246,14 +273,7 @@ export default function ReportEditorPage({ params }: PageProps) {
     getReport(Number(id))
       .then((r) => {
         if (cancelled) return;
-        setReport(r);
-        const lj = (r.layout_json ?? {}) as Partial<LayoutJson>;
-        setLayout(
-          lj && Array.isArray(lj.widgets)
-            ? { version: 1, widgets: lj.widgets as Widget[] }
-            : DEFAULT_LAYOUT,
-        );
-        setCanvasFilters((r.canvas_filters_json as CanvasFilters) ?? {});
+        hydrateFromReport(r);
       })
       .catch((err: Error) => {
         if (!cancelled) setLoadError(err.message || "Couldn't load report");
@@ -330,6 +350,48 @@ export default function ReportEditorPage({ params }: PageProps) {
       setSaveError(e.message || "Couldn't save layout");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Cancel editing — discard unsaved local changes by restoring the
+  // last-saved server snapshot the page already holds in ``report``,
+  // then drop back to view mode. No network call: ``report`` always
+  // reflects the most recent successful load/save.
+  function handleCancelEdit() {
+    if (report) hydrateFromReport(report);
+    setEditMode(false);
+    setSaveError(null);
+  }
+
+  async function handleDelete() {
+    if (!report || deleting) return;
+    setConfirmDelete(false);
+    setDeleting(true);
+    setSaveError(null);
+    try {
+      await deleteReport(report.id);
+      router.push("/reports");
+    } catch (err) {
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't delete report");
+      setDeleting(false);
+    }
+  }
+
+  async function handleRevert() {
+    if (!report || reverting) return;
+    setConfirmRevert(false);
+    setReverting(true);
+    setSaveError(null);
+    try {
+      const reverted = await resetReport(report.id);
+      hydrateFromReport(reverted);
+      setEditMode(false);
+    } catch (err) {
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't revert report");
+    } finally {
+      setReverting(false);
     }
   }
 
@@ -413,6 +475,38 @@ export default function ReportEditorPage({ params }: PageProps) {
               Add widget
             </button>
           )}
+          {editMode && (
+            <button
+              type="button"
+              onClick={handleCancelEdit}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+              data-testid="report-editor-cancel"
+            >
+              Cancel
+            </button>
+          )}
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => setConfirmRevert(true)}
+              disabled={reverting}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="report-editor-revert"
+            >
+              {reverting ? "Reverting..." : "Revert to original"}
+            </button>
+          )}
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              disabled={deleting}
+              className="rounded-md border border-danger px-3 py-1.5 text-sm text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="report-editor-delete"
+            >
+              {deleting ? "Deleting..." : "Delete"}
+            </button>
+          )}
           <button
             type="button"
             onClick={handleSave}
@@ -482,6 +576,25 @@ export default function ReportEditorPage({ params }: PageProps) {
           onPick={addWidget}
         />
       </div>
+
+      <ConfirmModal
+        open={confirmDelete}
+        title="Delete report"
+        message="Delete this report? This can't be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(false)}
+      />
+      <ConfirmModal
+        open={confirmRevert}
+        title="Revert to original"
+        message="Revert to the original version? Your changes since creation will be lost."
+        confirmLabel="Revert"
+        variant="warning"
+        onConfirm={handleRevert}
+        onCancel={() => setConfirmRevert(false)}
+      />
     </AppShell>
   );
 }
