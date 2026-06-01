@@ -374,11 +374,13 @@ export default function AccountsPage() {
     () => sortAccounts(accounts, sortField, sortDir),
     [accounts, sortField, sortDir],
   );
+  const totalAccountPages = pageCount(sortedAccounts.length, pageSize);
+  const safePage = Math.min(page, totalAccountPages);
   const pagedAccounts = useMemo(
-    () => paginate(sortedAccounts, page, pageSize),
-    [sortedAccounts, page, pageSize],
+    () => paginate(sortedAccounts, safePage, pageSize),
+    [sortedAccounts, safePage, pageSize],
   );
-  const showPagination = pageCount(accounts.length, pageSize) > 1;
+  const showPagination = totalAccountPages > 1;
 
   // Click a header: toggle direction if it is already the active column,
   // else switch to that column starting ascending.
@@ -808,7 +810,7 @@ export default function AccountsPage() {
               {showPagination && (
                 <div className="mt-2 border-t border-border-subtle">
                   <Pagination
-                    page={page}
+                    page={safePage}
                     pageSize={pageSize}
                     total={accounts.length}
                     onPageChange={setPage}

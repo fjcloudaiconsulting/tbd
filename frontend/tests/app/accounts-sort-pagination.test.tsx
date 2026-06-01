@@ -168,6 +168,77 @@ describe("AccountsPage — sortable columns", () => {
   });
 });
 
+describe("AccountsPage — page clamping when row count shrinks", () => {
+  function manyAccounts(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: 100 + i,
+      name: `Acct ${String(i).padStart(3, "0")}`,
+      account_type_id: 2,
+      account_type_name: "Checking",
+      account_type_slug: "checking",
+      balance: String(i),
+      currency: "EUR",
+      is_active: true,
+      is_default: false,
+      close_day: null,
+    }));
+  }
+
+  it("shows remaining rows (not blank) after a delete shrinks below page-2 threshold", async () => {
+    // Start: 30 accounts => page 1 of 2. Navigate to page 2 (5 rows).
+    // Delete one account; reload returns 24 accounts (all fit on page 1).
+    // The table must render 24 rows, not blank.
+    const initialAccounts = manyAccounts(30);
+    const afterDeleteAccounts = manyAccounts(24);
+
+    // First round: return 30 accounts.
+    vi.mocked(apiFetch).mockImplementation(((url: string, opts?: RequestInit) => {
+      const method = opts?.method?.toUpperCase() ?? "GET";
+      if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
+      if (url === "/api/v1/accounts" && method === "GET") return Promise.resolve(initialAccounts);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+      return Promise.resolve({});
+    }) as never);
+
+    render(<AccountsPage />);
+
+    // Wait for first 25 rows.
+    await waitFor(() => expect(screen.getByText("Acct 024")).toBeInTheDocument());
+    expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
+
+    // Navigate to page 2.
+    fireEvent.click(screen.getByRole("button", { name: /Next page/ }));
+    await waitFor(() => expect(screen.getByText("Acct 025")).toBeInTheDocument());
+    expect(screen.queryByText("Acct 000")).toBeNull();
+
+    // Reconfigure mock: next accounts GET returns 24, DELETE succeeds.
+    vi.mocked(apiFetch).mockImplementation(((url: string, opts?: RequestInit) => {
+      const method = opts?.method?.toUpperCase() ?? "GET";
+      if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
+      if (url === "/api/v1/accounts" && method === "GET") return Promise.resolve(afterDeleteAccounts);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+      if (url.match(/\/api\/v1\/accounts\/\d+/) && method === "DELETE") return Promise.resolve({});
+      return Promise.resolve({});
+    }) as never);
+
+    // Delete the first row visible on page 2 (Acct 025, id=125).
+    // The row's delete button has aria-label "Delete Acct 025".
+    const deleteBtn = screen.getByRole("button", { name: /Delete Acct 025/ });
+    fireEvent.click(deleteBtn);
+
+    // ConfirmModal appears — click its Delete confirmation button (last "Delete").
+    await screen.findByText(/Delete this account/);
+    const allDeleteBtns = screen.getAllByRole("button", { name: /^Delete$/ });
+    fireEvent.click(allDeleteBtns[allDeleteBtns.length - 1]);
+
+    // After reload with 24 accounts, page clamped to 1 — all 24 should be visible.
+    await waitFor(() => expect(screen.getByText("Acct 000")).toBeInTheDocument());
+    // Ensure it's not blank: row count should be 24 (all on one page).
+    const rows = screen.getAllByTestId(/^account-row-\d+$/);
+    expect(rows.length).toBe(24);
+  });
+});
+
 describe("AccountsPage — pagination", () => {
   function manyAccounts(n: number) {
     return Array.from({ length: n }, (_, i) => ({

@@ -207,6 +207,77 @@ describe("RecurringPage — pagination", () => {
   });
 });
 
+describe("RecurringPage — page clamping when row count shrinks", () => {
+  function manyItems(n: number): RecurringTransaction[] {
+    return Array.from({ length: n }, (_, i) =>
+      rec({
+        id: i + 1,
+        description: `Item ${String(i + 1).padStart(3, "0")}`,
+        next_due_date: `2026-01-${String((i % 28) + 1).padStart(2, "0")}`,
+      }),
+    );
+  }
+
+  it("shows remaining rows (not blank) after a delete shrinks below page-2 threshold", async () => {
+    // Start: 30 active items => page 1 of 2 (25 visible). Navigate to page 2.
+    // Then simulate Delete of the item on page 2, which reloads with 24 items
+    // (all fit on page 1). The table must not go blank.
+    const initialItems = manyItems(30);
+
+    // First API call returns 30 items; the DELETE call returns {}; the
+    // subsequent reload (GET /api/v1/recurring) returns 24 items (the 30
+    // minus the 6 that were on page 2 — we just drop id=25..30 for simplicity).
+    const afterDeleteItems = manyItems(24);
+    vi.mocked(apiFetch).mockImplementation(((url: string, opts?: RequestInit) => {
+      if (url === "/api/v1/recurring" && (!opts || !opts.method || opts.method === "GET")) {
+        // Second call (after delete) will re-enter here; we'll swap in the short list below.
+        return Promise.resolve(initialItems);
+      }
+      return Promise.resolve({});
+    }) as never);
+
+    render(<RecurringPage />);
+
+    // Wait for initial 25 rows (page 1 of 2).
+    await waitFor(() => expect(activeRowOrder().length).toBe(25));
+
+    const table = screen.getByTestId("recurring-active-table");
+
+    // Navigate to page 2 (5 rows).
+    const next = within(table).getByRole("button", { name: /Next page/ });
+    fireEvent.click(next);
+    await waitFor(() => expect(activeRowOrder().length).toBe(5));
+
+    // Now re-configure the mock: next GET returns 24 items; DELETE succeeds.
+    // The ConfirmModal needs "recurring/1" to match the first item on page 2
+    // (id=26), but for simplicity we delete id=1 which triggers the same
+    // reload path. We target the first Delete button visible in the table.
+    vi.mocked(apiFetch).mockImplementation(((url: string, opts?: RequestInit) => {
+      const method = opts?.method?.toUpperCase() ?? "GET";
+      if (url === "/api/v1/recurring" && method === "GET") {
+        return Promise.resolve(afterDeleteItems);
+      }
+      if (url.startsWith("/api/v1/recurring/") && method === "DELETE") {
+        return Promise.resolve({ pending_removed: 0 });
+      }
+      return Promise.resolve({});
+    }) as never);
+
+    // Click Delete on the first row visible on page 2.
+    const deleteButtons = within(table).getAllByRole("button", { name: /^Delete$/ });
+    fireEvent.click(deleteButtons[0]);
+
+    // ConfirmModal appears — find the dialog and click its Delete button.
+    const dialog = await screen.findByRole("dialog");
+    const confirmDeleteBtn = within(dialog).getByRole("button", { name: /^Delete$/ });
+    fireEvent.click(confirmDeleteBtn);
+
+    // After reload with 24 items, page 2 no longer exists. The clamp should
+    // bring page back to 1, showing all 24 rows (default pageSize=25).
+    await waitFor(() => expect(activeRowOrder().length).toBe(24));
+  });
+});
+
 describe("RecurringPage — existing behavior preserved", () => {
   it("keeps Generate, Stop and Delete actions", async () => {
     mockApiWith([rec({ id: 1, description: "Rent" })]);

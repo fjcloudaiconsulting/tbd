@@ -134,11 +134,13 @@ function RecurringTable({
     () => sortRecurring(items, sortField, sortDir),
     [items, sortField, sortDir],
   );
+  const totalPages = pageCount(sorted.length, pageSize);
+  const safePage = Math.min(page, totalPages);
   const pageRows = useMemo(
-    () => paginate(sorted, page, pageSize),
-    [sorted, page, pageSize],
+    () => paginate(sorted, safePage, pageSize),
+    [sorted, safePage, pageSize],
   );
-  const showPagination = pageCount(items.length, pageSize) > 1;
+  const showPagination = totalPages > 1;
 
   // Click a header: toggle direction if already the active column, else
   // switch to that column starting ascending.
@@ -349,7 +351,7 @@ function RecurringTable({
       {showPagination && (
         <div className="border-t border-border-subtle px-3">
           <Pagination
-            page={page}
+            page={safePage}
             pageSize={pageSize}
             total={items.length}
             onPageChange={setPage}
