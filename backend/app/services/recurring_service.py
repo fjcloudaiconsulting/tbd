@@ -219,11 +219,15 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
         .with_for_update(of=Transaction)
     )
     rows = list(result.scalars().all())
+    # Lock order: transaction rows first (the SELECT ... FOR UPDATE above),
+    # then the account row per item — matching generate_due_transactions'
+    # template-then-account order so concurrent /generate calls don't deadlock.
     for tx in rows:
-        tx.status = TransactionStatus.SETTLED
-        tx.settled_date = tx.date
-        acct = await get_account_for_update(db, tx.account_id, org_id)
-        apply_balance(acct, tx.amount, tx.type)
+        async with db.begin_nested():
+            tx.status = TransactionStatus.SETTLED
+            tx.settled_date = tx.date
+            acct = await get_account_for_update(db, tx.account_id, org_id)
+            apply_balance(acct, tx.amount, tx.type)
     return len(rows)
 
 
