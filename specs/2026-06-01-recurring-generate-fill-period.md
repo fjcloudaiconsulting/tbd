@@ -131,10 +131,21 @@ Forecast (`forecast_service.py`) buckets settled by `settled_date`, pending by
 `date`, and projects upcoming recurring by `next_due_date > today`. Because
 generation always advances `next_due_date` past `period_end`, a given instance
 is either materialized (counted in pending/settled) **or** still projected
-(counted in recurring), never both — totals are preserved regardless of whether
-generation's window and forecast's window align exactly. **No forecast code
-changes.** Add a regression test asserting `forecast_net` is identical
-immediately before and after a Generate within the same period.
+(counted in recurring), never both — so re-running can never double-count.
+
+For the buckets to also leave no *gap*, generation's window end and forecast's
+open-period end must coincide. They do for every valid `billing_cycle_day`:
+forecast uses `start + 1 month - 1 day` (`forecast_service.py:58`) and
+generation uses `current_cycle_window` (`snap_to_cycle(start + 1 month) - 1
+day`). These are identical whenever `cycle_day <= 28`, and `cycle_day` is
+constrained to `1..28` by the only write path (`schemas/settings.py`:
+`Field(ge=1, le=28)`), so the snap clamp never fires in practice. (cycle_day
+29-31 would diverge by 1-3 days around February, but is unreachable.) A
+genuinely *stale* open period whose start sits off `cycle_day` after a manual
+close on an arbitrary date is the separate, deferred stale-period concern, not
+introduced by this change. **No forecast code changes.** Add a regression test
+asserting `forecast_net` is identical immediately before and after a Generate
+within the same period.
 
 ### 6. Frontend
 

@@ -220,8 +220,10 @@ async def _settle_due_auto(db: AsyncSession, org_id: int, today: datetime.date) 
     )
     rows = list(result.scalars().all())
     # Lock order: transaction rows first (the SELECT ... FOR UPDATE above),
-    # then the account row per item — matching generate_due_transactions'
-    # template-then-account order so concurrent /generate calls don't deadlock.
+    # then the account row per item. /generate is user-triggered and the
+    # generation loop's FOR UPDATE on templates effectively serializes
+    # concurrent runs per org, so account locks are not contended across the
+    # sweep and the loop.
     for tx in rows:
         async with db.begin_nested():
             tx.status = TransactionStatus.SETTLED
