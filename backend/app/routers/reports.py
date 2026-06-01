@@ -162,6 +162,8 @@ async def create_report(
         description=body.description,
         layout_json=body.layout_json,
         canvas_filters_json=body.canvas_filters_json,
+        original_layout_json=body.layout_json,
+        original_canvas_filters_json=body.canvas_filters_json,
     )
     db.add(row)
     await db.commit()
