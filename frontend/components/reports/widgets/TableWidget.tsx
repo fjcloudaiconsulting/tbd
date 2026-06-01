@@ -99,6 +99,31 @@ export default function TableWidget({ widget, canvasFilters }: Props) {
 
   const format = widget.config.format ?? "number";
 
+  // Total row: sum each measure column across the FULL result set
+  // (every row the widget holds in memory), not just the visible page.
+  // Only additive aggregations (sum/count) get a real total; for
+  // avg/distinct/min/max a column sum is meaningless, so we render a
+  // placeholder rather than fabricate a wrong number.
+  //
+  // Caveat: this totals the rows the query returned, which are subject
+  // to the widget's ``limit``. It is NOT a separate server-side grand
+  // total. Fine for v1.
+  const columnTotals = useMemo(() => {
+    return widget.config.measures.map((m, i) => {
+      const agg = m.measure.agg;
+      const additive = agg === "sum" || agg === "count";
+      if (!additive) return null;
+      const key = seriesKeys[i];
+      let sum = 0;
+      for (const row of rows) {
+        const v = row[key];
+        const n = typeof v === "number" ? v : Number(v);
+        if (Number.isFinite(n)) sum += n;
+      }
+      return sum;
+    });
+  }, [widget.config.measures, rows, seriesKeys]);
+
   return (
     <div
       data-testid="table-widget"
@@ -183,6 +208,25 @@ export default function TableWidget({ widget, canvasFilters }: Props) {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr
+                data-testid="table-widget-total-row"
+                className="border-t-2 border-border font-semibold text-text-primary"
+              >
+                {dimensions.map((d, di) => (
+                  <td key={d} className="py-1.5 pr-3">
+                    {di === 0 ? "Total" : ""}
+                  </td>
+                ))}
+                {seriesKeys.map((key, i) => (
+                  <td key={key} className="py-1.5 pr-3 text-right font-mono">
+                    {columnTotals[i] === null
+                      ? "—"
+                      : formatCell(columnTotals[i], format)}
+                  </td>
+                ))}
+              </tr>
+            </tfoot>
           </table>
         )}
       </div>
