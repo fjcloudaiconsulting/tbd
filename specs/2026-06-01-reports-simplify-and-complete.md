@@ -1,0 +1,51 @@
+# Reports — make it usable (templates + builder simplification), then complete PR4
+
+**Status:** draft for review, 2026-06-01.
+**Builds on:** `specs/2026-05-22-reports-v2-flexible-canvas.md` (architect-locked). PR1-PR3 of that train shipped (#343, #350, #352): backend AST query engine, canvas, all 8 widgets, filter primitives. The surface is now enabled locally (`FEATURE_REPORTS_V2=true`).
+
+## Motivation
+
+The owner could not generate a single report. A read-only investigation found **no blocking bugs** — the problem is **UX friction**:
+
+- "New report" drops the user on a blank canvas. Editor empty state (`app/reports/[id]/page.tsx:448`) just says "No widgets yet. Click Add widget to start." The list-page empty state is separate (`app/reports/page.tsx:118-129`).
+- Adding a widget interposes a picker modal with 8 jargon-labeled types, no default/preview/recommendation (`components/reports/WidgetPicker.tsx:46-115`). **Note:** once a type is chosen, the inserted widget is already fully configured and renders immediately (`emptyBar()` etc., `app/reports/[id]/page.tsx:63-180`) — so the friction is the picker step, NOT an empty/unconfigured widget.
+- The config rail shows 15+ controls at once — aggregation, measure, dimension, and 6 filter sub-sections (`components/reports/ConfigRail.tsx:218-374`) — using terms like "distinct count" and "master category" with no explanation.
+- "No data" and "Saved" give no actionable feedback.
+
+The single highest-impact fix is the one PR4 piece never built: **templates** (one click -> a working report). Estimated to remove ~80% of the pain.
+
+## Plan (priority-ordered; lowest effort / highest impact first)
+
+### Slice 1 — Templates (the core fix)
+
+- **Backend:** `backend/app/reports/templates/__init__.py` registers 3 code fixtures (architect lock #2 — code fixtures, NOT DB seed rows): **Monthly review**, **Cash flow trend**, **Category deep-dive**. **Author the fixtures against the implemented frontend `lib/reports/types.ts` shape** (`config.measure` for single-measure widgets, `config.measures[]` for line/area/stacked_bar/table, dimensions from the `Dimension` union, filters as `WidgetFilters` like `{txn_type:"expense", date_range:{...}}`) — **NOT** the raw AST `{field,op,value}` sketch in the parent spec §5, which predates the `WidgetFilters` indirection and would not render. `GET /api/v1/reports/templates` returns them (correctly gated by the existing `require_reports_v2_enabled` 404 dependency since it mounts on the same router).
+- **Instantiate:** "Use template" reuses the **existing** `createReport` endpoint (`api.ts:30-38` accepts `layout_json`+`canvas_filters_json`+`visibility`) to create a new **private** report from the template. No new instantiate endpoint needed — only `GET /reports/templates` is new.
+- **Frontend:** a **Templates** section on `/reports`; cards show name + description; "Use template" -> instantiate -> open canvas with charts already rendering against the user's data. Empty state becomes "Start from a template" + "Build from scratch".
+
+### Slice 2 — Builder simplification
+
+- **Streamline the add flow:** the inserted widget is already pre-configured and renders (see Motivation), so the work is to **skip/streamline the picker modal** — e.g. a one-click "Add chart" that inserts the default Bar immediately, with type-switching available in the rail afterward. (Re-scoped from "add defaults" — defaults already exist.)
+- **Empty-state CTA:** hero copy explaining what you can build + buttons to templates / add-first-widget. Editor empty state at `app/reports/[id]/page.tsx:448`; list-page empty state at `app/reports/page.tsx:118-129`.
+- **ConfigRail tiering:** group **Basic** (chart type, measure, dimension) always visible; collapse **Filters** + **Advanced** (sort, limit, format) into a disclosure, closed by default (`ConfigRail.tsx:218-374`).
+- **Tooltips on jargon:** reuse `HelpTooltip` / `lib/help/tooltips.ts` (has a master-category entry already; **add new keys for aggregation types** `sum`/`count`/`avg`/`distinct`) for aggregation, master category, dimensions.
+- **Actionable empty/no-data + save feedback:** "No data" widget message suggests adjusting filters / dimension / period (`BarWidget.tsx:66` and siblings); a 2-second success toast on save.
+
+### Slice 3 — Complete PR4 (per locked spec §11)
+
+- **Duplicate:** `POST /api/v1/reports/{id}/duplicate` -> clone as private; button on report cards.
+- **Sharing/visibility:** private <-> org toggle in the report header, gated by edit rights (owner always; org owner/admin for org-shared).
+- **CSV export per widget:** view-mode button. **Default: client-side** (each widget already holds its rows; single-measure widgets via `data.rows`, multi-series via the `series[]` from `useSeriesQueries` — the export helper needs per-widget-type extraction). No new endpoint, no extra auth surface. Architect lock #3 applies only if a server route is later chosen.
+- **Mobile:** single-column read-only stack on `<sm` (editing stays desktop-only).
+- **Ownership transfer — CORRECTNESS FIX, not polish (do this first in Slice 3).** `backend/app/services/admin_users_service.py:delete_user` (~line 93-171) cleans up `invitations` + `import_batches` then `DELETE FROM users`, but **never touches `reports`**. Because `reports.owner_user_id` is `ON DELETE RESTRICT` (migration `051`), deleting any user who owns a report **already raises an FK violation today**. Fix: before deleting the user, transfer their org-shared reports to the org owner and hard-delete their private reports. Scope is **only this path** — member "removal" is just `is_active=False` (no delete, no RESTRICT hit; `admin_org_members_service.update_member:167-173`), and **org-owner transfer doesn't exist yet** as a service. Drop those two from scope; they don't apply. (See [[reference_org_delete_cascade_fk_audit]] — same FK-cascade discipline.)
+
+## Phasing
+
+Subagent-driven, sequential with review gates; **branch + PR per slice**. Slice 1 first (unblocks "can I make a report at all"), then Slice 2, then Slice 3. Production flag stays gated in `.do/app.yaml` until owner sign-off; `FEATURE_REPORTS_V2` default flip in `.env.example` lands with Slice 3.
+
+## Minor / noted
+
+- Query `meta` quirk: `truncated:true` and `query_ms:0` fire whenever `row_count == limit` even at small limits. Optional polish, not in critical path.
+
+## Out of scope (unchanged from parent spec)
+
+Public share links, real-time refresh, cross-org reports, drill-down, saved widget presets, non-`transactions` datasets, Sankey/treemap/gauge/scatter, materialized rollups, in-canvas text blocks, i18n, audit logging of report CRUD.
