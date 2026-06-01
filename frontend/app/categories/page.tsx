@@ -15,6 +15,7 @@ import AddMasterWithSubsModal from "@/components/ui/AddMasterWithSubsModal";
 import BatchActionBar from "@/components/categories/BatchActionBar";
 import BatchMoveModal from "@/components/categories/BatchMoveModal";
 import BatchDeleteModal from "@/components/categories/BatchDeleteModal";
+import SingleDeleteModal from "@/components/categories/SingleDeleteModal";
 import DraggableSubcategoryRow from "@/components/categories/DraggableSubcategoryRow";
 import MasterDropZone from "@/components/categories/MasterDropZone";
 import DragMoveConfirmModal from "@/components/categories/DragMoveConfirmModal";
@@ -274,15 +275,6 @@ export default function CategoriesPage() {
         }),
       });
       setEditingCatId(null);
-      await reload();
-    } catch (err) { setError(extractErrorMessage(err)); }
-  }
-
-  async function handleDelete(id: number) {
-    setConfirmDeleteId(null);
-    setError("");
-    try {
-      await apiFetch(`/api/v1/categories/${id}`, { method: "DELETE" });
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -679,14 +671,20 @@ export default function CategoriesPage() {
         </DragOverlay>
         </DndContext>
       )}
-      <ConfirmModal
-        open={confirmDeleteId !== null}
-        title="Delete Category"
-        message="Delete this category?"
-        confirmLabel="Delete"
-        variant="danger"
-        onConfirm={() => confirmDeleteId !== null && handleDelete(confirmDeleteId)}
+      <SingleDeleteModal
+        category={
+          confirmDeleteId !== null
+            ? categories.find((c) => c.id === confirmDeleteId) ?? null
+            : null
+        }
+        categories={categories}
         onCancel={() => setConfirmDeleteId(null)}
+        onSuccess={async () => {
+          // Reload FIRST so a refresh failure surfaces inside the modal's
+          // refresh-error banner before the modal closes.
+          await reload();
+          setConfirmDeleteId(null);
+        }}
       />
 
       {/* C2c: batch select infrastructure. Owned by Team Categories C2 UI. */}

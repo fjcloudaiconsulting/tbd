@@ -125,6 +125,32 @@ export const HELP_TOOLTIPS = {
     learnMoreSection: "reports",
     triggerLabel: "What can I put in a report?",
   },
+  "reports.agg.sum": {
+    content: "Adds up the field's values across every matching row.",
+    learnMoreSection: "reports",
+    triggerLabel: "What does Sum do?",
+  },
+  "reports.agg.count": {
+    content: "Counts how many rows match, ignoring the field's value.",
+    learnMoreSection: "reports",
+    triggerLabel: "What does Count do?",
+  },
+  "reports.agg.avg": {
+    content: "Averages the field's values across every matching row.",
+    learnMoreSection: "reports",
+    triggerLabel: "What does Average do?",
+  },
+  "reports.agg.distinct": {
+    content: "Counts unique values, so repeats are only counted once.",
+    learnMoreSection: "reports",
+    triggerLabel: "What does Distinct count do?",
+  },
+  "reports.master-category": {
+    content:
+      "Groups by the master (parent) category instead of each subcategory, so Food rolls up Groceries, Dining, and Coffee into one total.",
+    learnMoreSection: "reports",
+    triggerLabel: "What is a master category here?",
+  },
 
   // Dashboard
   "dashboard.on-track": {

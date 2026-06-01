@@ -6,6 +6,7 @@
  * shared dimension key.
  */
 import type {
+  Dimension,
   Measure,
   QueryRow,
   ReportsQueryResponse,
@@ -18,6 +19,28 @@ const HUMAN_AGG: Record<Measure["agg"], string> = {
   avg: "Average",
   distinct: "Distinct",
 };
+
+/**
+ * Human-readable column header per dimension. Shared by the table
+ * widget's header row and the CSV export of every dimension-bearing
+ * widget so the exported header matches what the user sees.
+ */
+export const DIMENSION_HEADERS: Record<Dimension, string> = {
+  category: "Category",
+  category_master: "Master category",
+  account: "Account",
+  tag: "Tag",
+  txn_type: "Type",
+  status: "Status",
+  month: "Month",
+  week: "Week",
+  day: "Day",
+};
+
+/** Header label for a dimension key, falling back to the raw key. */
+export function dimensionHeader(key: string): string {
+  return DIMENSION_HEADERS[key as Dimension] ?? key;
+}
 
 /**
  * Stable human label for a series. Uses the optional ``label`` if
@@ -113,6 +136,90 @@ export function mergeSeriesRowsForTable(
     }
   }
   return order.map((k) => byKey.get(k)!);
+}
+
+/**
+ * Pivot a single two-dimension query result into stacked-bar rows.
+ *
+ * Given rows grouped by ``[primaryKey, secondaryKey]`` (e.g. category ×
+ * account), produce one row per primary value whose numeric fields are
+ * keyed by each distinct secondary value. Recharts then renders one
+ * ``<Bar dataKey={secondaryValue} stackId>`` per secondary value, so a
+ * single total bar is sliced into one colored segment per secondary
+ * value (e.g. per account).
+ *
+ * Returns the pivoted rows, the ordered list of distinct secondary
+ * values (first-seen order, for legend labels), and a matching list of
+ * STABLE generated keys (``s0``, ``s1``, …). Numeric fields are keyed by
+ * the generated key, NOT the raw secondary value: a raw value used as a
+ * Recharts ``dataKey`` is fragile (a "." is parsed as a nested path, and
+ * special chars / collisions can stop bars from rendering). Callers pair
+ * ``seriesKeys[i]`` (the dataKey) with ``secondaryValues[i]`` (the
+ * display label). Missing combinations are backfilled with 0 so Recharts
+ * renders flat segments instead of gaps.
+ */
+export function pivotBySecondaryDimension(
+  rows: QueryRow[],
+  primaryKey: string,
+  secondaryKey: string,
+): {
+  rows: Array<{ label: string } & Record<string, number | string>>;
+  secondaryValues: string[];
+  seriesKeys: string[];
+} {
+  const byLabel = new Map<string, Record<string, number | string>>();
+  const order: string[] = [];
+  const secondaryValues: string[] = [];
+  // Map each distinct secondary value to a stable generated key. Using a
+  // null-prototype Map key set + generated keys avoids prototype
+  // pollution from user-controlled values like ``__proto__``.
+  const keyForSecondary = new Map<string, string>();
+
+  for (const row of rows) {
+    const label = readLabel(row, primaryKey);
+    const secondary = readLabel(row, secondaryKey);
+    let seriesKey = keyForSecondary.get(secondary);
+    if (seriesKey === undefined) {
+      seriesKey = `s${secondaryValues.length}`;
+      keyForSecondary.set(secondary, seriesKey);
+      secondaryValues.push(secondary);
+    }
+    let existing = byLabel.get(label);
+    if (!existing) {
+      // Null-prototype record: user-controlled secondary values become
+      // generated keys on a prototype-less object, so values like
+      // ``__proto__`` are plain data and can't pollute Object.prototype.
+      existing = Object.assign(
+        Object.create(null) as Record<string, number | string>,
+        { label },
+      );
+      byLabel.set(label, existing);
+      order.push(label);
+    }
+    // Same (primary, secondary) pair shouldn't repeat after GROUP BY,
+    // but sum defensively in case it does.
+    const prior = typeof existing[seriesKey] === "number"
+      ? (existing[seriesKey] as number)
+      : 0;
+    existing[seriesKey] = prior + readNumber(row.value);
+  }
+
+  const seriesKeys = secondaryValues.map((sv) => keyForSecondary.get(sv)!);
+
+  for (const label of order) {
+    const r = byLabel.get(label)!;
+    for (const sk of seriesKeys) {
+      if (typeof r[sk] !== "number") r[sk] = 0;
+    }
+  }
+
+  return {
+    rows: order.map((l) => byLabel.get(l)!) as Array<
+      { label: string } & Record<string, number | string>
+    >,
+    secondaryValues,
+    seriesKeys,
+  };
 }
 
 function readLabel(
