@@ -1,26 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { apiFetch, ApiResponseError, extractErrorMessage } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import { btnDangerSolid, btnSecondary, input } from "@/lib/styles";
 import type { Category } from "@/lib/types";
-
-interface CategoryDeleteResult {
-  deleted_category_id: number;
-  migration_target_id: number | null;
-  migrated_transaction_count: number;
-  migrated_recurring_count: number;
-  migrated_forecast_item_count: number;
-  deleted_rule_count: number;
-}
-
-interface FailureRow {
-  category_id: number;
-  category_name: string;
-  reason: string;
-  reason_code?: string;
-}
+import {
+  buildFailure,
+  compatibleTargets as compatibleTargetsFor,
+  type CategoryDeleteResult,
+  type FailureRow,
+} from "@/components/categories/categoryDeleteHelpers";
 
 interface Props {
   open: boolean;
@@ -147,14 +137,7 @@ export default function BatchDeleteModal({
   // about to be deleted as the migration target).
   function compatibleTargets(sub: Category): Category[] {
     const otherSelected = new Set(rowsToShow.map((s) => s.id));
-    return categories.filter((c) => {
-      if (c.id === sub.id) return false;
-      if (c.parent_id !== null) return false;
-      if (otherSelected.has(c.id)) return false;
-      if (sub.type === "income") return c.type === "income" || c.type === "both";
-      if (sub.type === "expense") return c.type === "expense" || c.type === "both";
-      return c.type === "both";
-    });
+    return compatibleTargetsFor(sub, categories, otherSelected);
   }
 
   // Submit is gated on every row having a migration target picked.
@@ -392,75 +375,3 @@ export default function BatchDeleteModal({
   );
 }
 
-interface CategoryErrorDetail {
-  detail?: string;
-  conflicting_child_name?: string;
-  scope?: string;
-  type?: string;
-  child_names?: string[];
-  source_type?: string;
-  target_type?: string;
-  dependent_breakdown?: { income: number; expense: number };
-}
-
-function buildFailure(sub: Category, err: unknown): FailureRow {
-  if (err instanceof ApiResponseError) {
-    const detail = err.detail as CategoryErrorDetail | string | undefined;
-    if (typeof detail === "object" && detail !== null) {
-      if (detail.detail === "last_in_type") {
-        return {
-          category_id: sub.id,
-          category_name: sub.name,
-          reason: `Cannot delete the only ${detail.type ?? ""} ${detail.scope ?? "subcategory"}.`,
-          reason_code: "last_in_type",
-        };
-      }
-      if (detail.detail === "has_children") {
-        const sample = detail.child_names?.[0] ?? "subcategory";
-        const more = (detail.child_names?.length ?? 0) - 1;
-        return {
-          category_id: sub.id,
-          category_name: sub.name,
-          reason: `Has subcategories. Move or delete "${sample}"${
-            more > 0 ? ` and ${more} other${more === 1 ? "" : "s"}` : ""
-          } first.`,
-          reason_code: "has_children",
-        };
-      }
-      if (detail.detail === "type_mismatch") {
-        return {
-          category_id: sub.id,
-          category_name: sub.name,
-          reason: `Migration target type ${detail.target_type ?? ""} is not compatible with ${detail.source_type ?? "source"}.`,
-          reason_code: "type_mismatch",
-        };
-      }
-      if (detail.detail === "name_collision") {
-        return {
-          category_id: sub.id,
-          category_name: sub.name,
-          reason: `Name collision: "${detail.conflicting_child_name ?? sub.name}" already exists on the target.`,
-          reason_code: "name_collision",
-        };
-      }
-      if (detail.detail === "migration_target_required") {
-        return {
-          category_id: sub.id,
-          category_name: sub.name,
-          reason: `Migration target required.`,
-          reason_code: "migration_target_required",
-        };
-      }
-    }
-    return {
-      category_id: sub.id,
-      category_name: sub.name,
-      reason: err.message || "Delete failed",
-    };
-  }
-  return {
-    category_id: sub.id,
-    category_name: sub.name,
-    reason: extractErrorMessage(err, "Delete failed"),
-  };
-}

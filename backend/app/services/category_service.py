@@ -1123,6 +1123,31 @@ def _check_target_compatibility_for_delete(
         )
 
 
+def _partition_rules_for_migration(
+    source_rules: list[CategoryRule], *, target_tokens: set[str],
+) -> tuple[list[CategoryRule], list[CategoryRule]]:
+    """Partition a source category's rules for delete-with-migration.
+
+    ``category_rules`` is unique per org on ``normalized_token``. When a
+    source rule's token is already owned by the target, the target is the
+    surviving category: its rule wins and the source's is dropped. All other
+    source rules re-point to the target.
+
+    Returns ``(to_migrate, to_drop)``. ``target_tokens`` is the set of
+    tokens the target already owns; it is treated as authoritative.
+    """
+    to_migrate: list[CategoryRule] = []
+    to_drop: list[CategoryRule] = []
+    seen = set(target_tokens)
+    for rule in source_rules:
+        if rule.normalized_token in seen:
+            to_drop.append(rule)
+        else:
+            to_migrate.append(rule)
+            seen.add(rule.normalized_token)
+    return to_migrate, to_drop
+
+
 async def delete_category_with_migration(
     db: AsyncSession,
     *,
@@ -1254,14 +1279,38 @@ async def delete_category_with_migration(
         .values(category_id=target.id)
     )
 
-    # Delete category_rules pointing at the source (mirrors the existing
-    # router behavior).
-    rule_deleted = await db.execute(
-        delete(CategoryRule).where(CategoryRule.category_id == cat.id)
+    # Re-point the source's learned auto-categorization rules to the target
+    # so removing a category does not silently drop its learning state.
+    # ``category_rules`` is unique per org on ``normalized_token`` (see
+    # uq_category_rules_org_token). For any source rule whose token the
+    # target already owns, the target is the surviving category: keep its
+    # rule and drop the source's. Re-point the rest. This runs in the same
+    # transaction as the transaction/recurring/forecast migration above.
+    source_rules = (await db.scalars(
+        select(CategoryRule).where(CategoryRule.category_id == cat.id)
+    )).all()
+    target_tokens = set((await db.scalars(
+        select(CategoryRule.normalized_token).where(
+            CategoryRule.category_id == target.id,
+        )
+    )).all())
+    to_migrate, to_drop = _partition_rules_for_migration(
+        source_rules, target_tokens=target_tokens,
     )
+    for rule in to_migrate:
+        rule.category_id = target.id
+    for rule in to_drop:
+        # Collision: target already has a rule for this token; keep it,
+        # drop the source's duplicate.
+        await db.delete(rule)
+    migrated_rules = len(to_migrate)
+    dropped_rules = len(to_drop)
+    await db.flush()
 
     # Delete the source's Budget row, if any (section 5: both delete paths
-    # delete the source's Budget row to avoid orphans).
+    # delete the source's Budget row to avoid orphans). Budgets are NOT
+    # migrated to the target; this is intentional, pending a separate
+    # decision on how to merge per-period budget rows across categories.
     await db.execute(
         delete(Budget).where(
             Budget.org_id == org_id,
@@ -1275,7 +1324,6 @@ async def delete_category_with_migration(
     migrated_tx = tx_updated.rowcount or 0
     migrated_rec = rec_updated.rowcount or 0
     migrated_fpi = fpi_updated.rowcount or 0
-    deleted_rules = rule_deleted.rowcount or 0
 
     audit_service.add_audit_event_to_session(
         db,
@@ -1297,7 +1345,8 @@ async def delete_category_with_migration(
             "migrated_transaction_count": migrated_tx,
             "migrated_recurring_count": migrated_rec,
             "migrated_forecast_item_count": migrated_fpi,
-            "deleted_rule_count": deleted_rules,
+            "migrated_rule_count": migrated_rules,
+            "deleted_rule_count": dropped_rules,
         },
     )
 
@@ -1308,6 +1357,8 @@ async def delete_category_with_migration(
         migrated_transaction_count=migrated_tx,
         migrated_recurring_count=migrated_rec,
         migrated_forecast_item_count=migrated_fpi,
+        migrated_rule_count=migrated_rules,
+        deleted_rule_count=dropped_rules,
     )
 
     return CategoryDeleteResult(
@@ -1316,7 +1367,8 @@ async def delete_category_with_migration(
         migrated_transaction_count=migrated_tx,
         migrated_recurring_count=migrated_rec,
         migrated_forecast_item_count=migrated_fpi,
-        deleted_rule_count=deleted_rules,
+        migrated_rule_count=migrated_rules,
+        deleted_rule_count=dropped_rules,
     ), True
 
 

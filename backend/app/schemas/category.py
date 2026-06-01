@@ -66,6 +66,8 @@ class CategoryDeleteResult(BaseModel):
     migrated_transaction_count: int = 0
     migrated_recurring_count: int = 0
     migrated_forecast_item_count: int = 0
+    migrated_rule_count: int = 0
+    # Source rules dropped as duplicates of a rule the target already owned.
     deleted_rule_count: int = 0
 
 
