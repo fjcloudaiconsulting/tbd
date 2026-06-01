@@ -26,6 +26,7 @@ import {
   listReports,
   listTemplates,
 } from "@/lib/reports/api";
+import { buildPresetRanges } from "@/components/reports/filters/DatePresetChips";
 import type { ReportSummary, ReportTemplate } from "@/lib/reports/types";
 
 export default function ReportsListPage() {
@@ -79,11 +80,37 @@ export default function ReportsListPage() {
     if (creating) return;
     setCreating(true);
     try {
+      // A truly blank report renders nothing (canvas filters cascade
+      // INTO widgets, and there are no widgets), so seed one sensible
+      // starter widget plus a this-month canvas date so the new report
+      // opens in view mode already showing data. The widget shape must
+      // match what the editor's ``addWidget`` factory mints for a bar
+      // (single-measure ``config.measure``) so it renders identically.
+      const ranges = buildPresetRanges(new Date());
       const created = await createReport({
         name: "Untitled report",
         visibility: "private",
-        layout_json: { version: 1, widgets: [] },
-        canvas_filters_json: {},
+        canvas_filters_json: { date_range: ranges.this_month },
+        layout_json: {
+          version: 1,
+          widgets: [
+            {
+              id: "w_start",
+              type: "bar",
+              title: "Spend by category",
+              grid: { x: 0, y: 0, w: 6, h: 4 },
+              config: {
+                dataset: "transactions",
+                measure: { agg: "sum", field: "amount" },
+                dimensions: ["category"],
+                filters: { txn_type: "expense" },
+                sort: { by: "value", dir: "desc" },
+                limit: 10,
+                format: "currency",
+              },
+            },
+          ],
+        },
       });
       router.push(`/reports/${created.id}`);
     } catch (err) {

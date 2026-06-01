@@ -164,6 +164,51 @@ describe("ReportsListPage", () => {
     await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports/42"));
   });
 
+  it("seeds a starter bar widget and a date range on 'New report'", async () => {
+    mockUser(true);
+    listMock.mockResolvedValue([]);
+    createMock.mockResolvedValue({
+      id: 42,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "Untitled report",
+      description: null,
+      layout_json: { version: 1, widgets: [] },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:00",
+    });
+
+    render(<ReportsListPage />);
+
+    await screen.findByTestId("reports-empty-state");
+    fireEvent.click(screen.getByRole("button", { name: /new report/i }));
+
+    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
+    const payload = createMock.mock.calls[0][0];
+
+    // Exactly one bar widget seeded so the new report renders data
+    // immediately instead of a blank void.
+    expect(payload.layout_json).toBeTruthy();
+    const layout = payload.layout_json as { version: number; widgets: unknown[] };
+    expect(layout.widgets).toHaveLength(1);
+    const widget = layout.widgets[0] as { type: string; config: { measure: unknown } };
+    expect(widget.type).toBe("bar");
+    // Single-measure bar uses config.measure (not measures[]).
+    expect(widget.config.measure).toEqual({ agg: "sum", field: "amount" });
+
+    // Canvas date range is set (this-month window) so the widget shows
+    // current data the moment the report opens.
+    const filters = payload.canvas_filters_json as {
+      date_range?: { start?: string; end?: string };
+    };
+    expect(filters.date_range).toBeTruthy();
+    expect(filters.date_range?.start).toBeTruthy();
+    expect(filters.date_range?.end).toBeTruthy();
+  });
+
   it("deletes a report card via confirm and removes it from the list", async () => {
     mockUser(true);
     listMock.mockResolvedValue([

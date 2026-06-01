@@ -159,6 +159,14 @@ describe("ReportEditorPage", () => {
     // sidebar/nav frame + shell-level surfaces.
     expect(screen.getByTestId("app-shell")).toBeInTheDocument();
     expect(screen.getByTestId("report-editor-empty")).toBeInTheDocument();
+    // Empty-state guidance explains that canvas filters cascade into
+    // every widget, so a 0-widget report shows nothing.
+    expect(
+      screen.getByText(/Add a widget to see your data/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/apply to every widget/i),
+    ).toBeInTheDocument();
 
     // Add widget opens the picker dialog.
     fireEvent.click(screen.getByTestId("report-editor-add-widget"));

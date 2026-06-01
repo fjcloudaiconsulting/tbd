@@ -562,9 +562,33 @@ export default function ReportEditorPage({ params }: PageProps) {
           {layout.widgets.length === 0 ? (
             <div
               data-testid="report-editor-empty"
-              className="rounded-md border border-dashed border-border bg-surface px-6 py-10 text-center text-sm text-text-muted"
+              className="rounded-md border border-dashed border-border bg-surface px-6 py-10 text-center"
             >
-              No widgets yet. Click &quot;Add widget&quot; to start.
+              <p className="text-sm font-medium text-text-primary">
+                This report has no widgets yet
+              </p>
+              <p className="mx-auto mt-1 max-w-md text-sm text-text-muted">
+                Add a widget to see your data. Canvas filters (date,
+                accounts, categories) apply to every widget, so a report
+                with no widgets shows nothing.
+              </p>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(true)}
+                  className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
+                  data-testid="report-editor-empty-add-widget"
+                >
+                  Add widget
+                </button>
+                <Link
+                  href="/reports"
+                  className="rounded-md border border-border px-4 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                  data-testid="report-editor-empty-templates"
+                >
+                  Start from a template
+                </Link>
+              </div>
             </div>
           ) : (
             <Canvas
