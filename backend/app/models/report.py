@@ -77,6 +77,8 @@ class Report(Base):
     description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     layout_json: Mapped[Any] = mapped_column(JSON, nullable=False)
     canvas_filters_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    original_layout_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    original_canvas_filters_json: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
     schema_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
