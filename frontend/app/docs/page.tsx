@@ -517,18 +517,19 @@ export default function DocsPage() {
               Transactions page and use "Promote to recurring"); they
               are not authored directly here.
             </p>
-            <h3>Generate Due</h3>
+            <h3>Generate this period</h3>
             <p>
-              "Generate Due" materializes the next occurrence for every
-              active recurring template whose next due date has already
-              passed. Run it when you want pending rows to appear ahead
-              of their settled date, for example to forecast a credit
-              card statement that has not closed yet. The app also
-              generates rows on its own at the appropriate time, so
-              this is a convenience action rather than a required step.
-              Stopping a template removes its remaining pending future
-              rows; settled past rows are kept because they are real
-              money movements.
+              "Generate this period" fills the current billing cycle
+              with this period's recurring transactions, materializing
+              an occurrence for every active recurring template that
+              falls within the cycle. Items due later in the period
+              appear as pending until their date arrives, so you can
+              forecast a credit card statement that has not closed yet.
+              The app also generates rows on its own at the appropriate
+              time, so this is a convenience action rather than a
+              required step. Stopping a template removes its remaining
+              pending future rows; settled past rows are kept because
+              they are real money movements.
             </p>
           </section>
 
