@@ -8,8 +8,10 @@ The org's billing_cycle_day is used as a hint to auto-create the first
 period, but the user has full control over when to close.
 """
 
+import calendar
 import datetime
 
+from dateutil.relativedelta import relativedelta
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.billing import BillingPeriod
 from app.models.user import Organization
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+
+
+def _snap_to_cycle(d: datetime.date, cycle_day: int) -> datetime.date:
+    """Pin date d to cycle_day within its month, clamping to month length."""
+    last = calendar.monthrange(d.year, d.month)[1]
+    return d.replace(day=min(cycle_day, last))
+
+
+def current_cycle_window(
+    cycle_day: int, today: datetime.date
+) -> tuple[datetime.date, datetime.date]:
+    """Billing cycle window [start, end_inclusive] containing `today`.
+
+    Derived purely from billing_cycle_day — no DB I/O, no BillingPeriod row.
+    start = most recent occurrence of cycle_day on/before today.
+    end   = day before the next cycle start.
+    """
+    start = _snap_to_cycle(today, cycle_day)
+    if start > today:
+        start = _snap_to_cycle(today - relativedelta(months=1), cycle_day)
+    next_start = _snap_to_cycle(start + relativedelta(months=1), cycle_day)
+    return start, next_start - datetime.timedelta(days=1)
 
 
 async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
@@ -47,13 +71,7 @@ async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
         cycle_day = org.billing_cycle_day if org else 1
 
         today = datetime.date.today()
-        y, m, d = today.year, today.month, today.day
-        if d >= cycle_day:
-            start = datetime.date(y, m, cycle_day)
-        else:
-            start = datetime.date(y, m - 1 if m > 1 else 12, cycle_day)
-            if m == 1:
-                start = datetime.date(y - 1, 12, cycle_day)
+        start, _ = current_cycle_window(cycle_day, today)
 
         period = BillingPeriod(org_id=org_id, start_date=start)
         db.add(period)
@@ -115,26 +133,15 @@ async def ensure_future_periods(
     Always anchored to today — calling this multiple times is idempotent
     and will never create stubs beyond `count` months in the future.
     """
-    import calendar
-
-    from dateutil.relativedelta import relativedelta
-
     current = await get_current_period(db, org_id)
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     cycle_day = org.billing_cycle_day if org else 1
-
-    def _snap_to_cycle(d: datetime.date) -> datetime.date:
-        try:
-            return d.replace(day=cycle_day)
-        except ValueError:
-            last = calendar.monthrange(d.year, d.month)[1]
-            return d.replace(day=min(cycle_day, last))
 
     # Build the target months: 1, 2, ... count months from current period
     base = current.start_date
     created = []
     for i in range(1, count + 1):
-        next_start = _snap_to_cycle(base + relativedelta(months=i))
+        next_start = _snap_to_cycle(base + relativedelta(months=i), cycle_day)
 
         # Skip if already exists
         existing = await db.scalar(
@@ -146,7 +153,7 @@ async def ensure_future_periods(
         if existing:
             continue
 
-        end_date = _snap_to_cycle(next_start + relativedelta(months=1)) - datetime.timedelta(days=1)
+        end_date = _snap_to_cycle(next_start + relativedelta(months=1), cycle_day) - datetime.timedelta(days=1)
 
         stub = BillingPeriod(org_id=org_id, start_date=next_start, end_date=end_date)
         db.add(stub)
