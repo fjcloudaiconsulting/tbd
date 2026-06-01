@@ -4,9 +4,10 @@
  * Reports v2 — list page.
  *
  * Shows reports visible to the caller (own + org-shared) and a
- * "New report" button that creates an empty private report and
- * navigates to the editor. Templates tab + visibility toggle are
- * PR4 work; this page keeps the substrate ready for them.
+ * "New report" button that opens an unsaved draft at /reports/new.
+ * Neither "New report" nor "Use template" persists a row here: a
+ * report exists in the DB only after the user explicitly Saves the
+ * draft. Templates seed the draft via /reports/new?template=<key>.
  *
  * The page guards the ``feature_reports_v2`` signal client-side; if
  * the operator hasn't flipped the flag, the user shouldn't be here.
@@ -20,14 +21,11 @@ import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import {
-  createFromTemplate,
-  createReport,
   deleteReport,
   duplicateReport,
   listReports,
   listTemplates,
 } from "@/lib/reports/api";
-import { buildPresetRanges } from "@/components/reports/filters/DatePresetChips";
 import type { ReportSummary, ReportTemplate } from "@/lib/reports/types";
 
 export default function ReportsListPage() {
@@ -36,8 +34,6 @@ export default function ReportsListPage() {
   const [reports, setReports] = useState<ReportSummary[] | null>(null);
   const [templates, setTemplates] = useState<ReportTemplate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [usingTemplate, setUsingTemplate] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ReportSummary | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [duplicatingId, setDuplicatingId] = useState<number | null>(null);
@@ -78,61 +74,17 @@ export default function ReportsListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, authLoading, featureReportsV2]);
 
-  async function handleNewReport() {
-    if (creating) return;
-    setCreating(true);
-    try {
-      // A truly blank report renders nothing (canvas filters cascade
-      // INTO widgets, and there are no widgets), so seed one sensible
-      // starter widget plus a this-month canvas date so the new report
-      // opens in view mode already showing data. The widget shape must
-      // match what the editor's ``addWidget`` factory mints for a bar
-      // (single-measure ``config.measure``) so it renders identically.
-      const ranges = buildPresetRanges(new Date());
-      const created = await createReport({
-        name: "Untitled report",
-        visibility: "private",
-        canvas_filters_json: { date_range: ranges.this_month },
-        layout_json: {
-          version: 1,
-          widgets: [
-            {
-              id: "w_start",
-              type: "bar",
-              title: "Spend by category",
-              grid: { x: 0, y: 0, w: 6, h: 4 },
-              config: {
-                dataset: "transactions",
-                measure: { agg: "sum", field: "amount" },
-                dimensions: ["category"],
-                filters: { txn_type: "expense" },
-                sort: { by: "value", dir: "desc" },
-                limit: 10,
-                format: "currency",
-              },
-            },
-          ],
-        },
-      });
-      router.push(`/reports/${created.id}`);
-    } catch (err) {
-      const e = err as Error;
-      setError(e.message || "Couldn't create report");
-      setCreating(false);
-    }
+  // "New report" no longer persists anything. It opens the unsaved
+  // draft editor at /reports/new; the row is created only when the user
+  // explicitly Saves there.
+  function handleNewReport() {
+    router.push("/reports/new");
   }
 
-  async function handleUseTemplate(t: ReportTemplate) {
-    if (usingTemplate) return;
-    setUsingTemplate(t.key);
-    try {
-      const created = await createFromTemplate(t);
-      router.push(`/reports/${created.id}`);
-    } catch (err) {
-      const e = err as Error;
-      setError(e.message || "Couldn't create report from template");
-      setUsingTemplate(null);
-    }
+  // "Use template" likewise opens an unsaved draft, seeded from the
+  // template, via /reports/new?template=<key>. No DB write until Save.
+  function handleUseTemplate(t: ReportTemplate) {
+    router.push(`/reports/new?template=${encodeURIComponent(t.key)}`);
   }
 
   // Duplicate a report into a fresh private copy owned by the caller,
@@ -192,10 +144,9 @@ export default function ReportsListPage() {
         <button
           type="button"
           onClick={handleNewReport}
-          disabled={creating}
-          className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
         >
-          {creating ? "Creating..." : "New report"}
+          New report
         </button>
       </header>
 
@@ -227,10 +178,9 @@ export default function ReportsListPage() {
                 <button
                   type="button"
                   onClick={() => handleUseTemplate(t)}
-                  disabled={usingTemplate !== null}
-                  className="mt-3 inline-flex items-center justify-center gap-2 self-start rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+                  className="mt-3 inline-flex items-center justify-center gap-2 self-start rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
                 >
-                  {usingTemplate === t.key ? "Creating..." : "Use template"}
+                  Use template
                 </button>
               </div>
             ))}

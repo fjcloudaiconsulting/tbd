@@ -83,21 +83,23 @@ describe("ReportsListPage — templates", () => {
     expect(screen.getByText("x")).toBeInTheDocument();
   });
 
-  it("instantiates a template and navigates to its editor on 'Use template'", async () => {
+  it("navigates to the draft editor with the template key on 'Use template'", async () => {
     mockUser(true);
     listMock.mockResolvedValue([]);
     listTemplatesMock.mockResolvedValue([TEMPLATE]);
-    createFromTemplateMock.mockResolvedValue({ id: 42 } as never);
 
     render(<ReportsListPage />);
 
     await screen.findByText("Monthly review");
     fireEvent.click(screen.getByRole("button", { name: /use template/i }));
 
+    // Starting from a template no longer persists a row — it opens an
+    // unsaved draft seeded from the template.
     await waitFor(() =>
-      expect(createFromTemplateMock).toHaveBeenCalledTimes(1),
+      expect(pushMock).toHaveBeenCalledWith(
+        "/reports/new?template=monthly_review",
+      ),
     );
-    expect(createFromTemplateMock).toHaveBeenCalledWith(TEMPLATE);
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports/42"));
+    expect(createFromTemplateMock).not.toHaveBeenCalled();
   });
 });
