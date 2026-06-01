@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user
-from app.models.report import Report, ReportVisibility
+from app.models.report import Report, ReportVersion, ReportVisibility
 from app.models.user import Role, User
 from app.rate_limit import limiter
 from app.reports.templates import get_report_templates
@@ -54,6 +54,7 @@ from app.schemas.report import (
     ReportResponse,
     ReportTemplate,
     ReportUpdate,
+    ReportVersionSummary,
 )
 from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse
 from app.services.reports_query_service import execute_query
@@ -107,6 +108,48 @@ def _can_edit(user: User, report: Report) -> bool:
     ):
         return True
     return False
+
+
+# Retention: keep the original (never evicted) + this many most-recent
+# non-original versions. Max 5 total per report.
+MAX_NON_ORIGINAL_VERSIONS = 4
+
+
+async def _snapshot_version(
+    db: AsyncSession, report: Report, *, is_original: bool
+) -> None:
+    """Append a version row capturing the report's current live state.
+
+    For non-original snapshots, enforces retention afterwards: the
+    ``is_original`` row is never evicted; only the oldest non-original
+    rows beyond ``MAX_NON_ORIGINAL_VERSIONS`` are deleted (ordered by
+    ``created_at, id`` ascending). The caller is responsible for the
+    surrounding ``commit``.
+    """
+    db.add(
+        ReportVersion(
+            report_id=report.id,
+            is_original=is_original,
+            layout_json=report.layout_json,
+            canvas_filters_json=report.canvas_filters_json,
+        )
+    )
+    if is_original:
+        return
+
+    await db.flush()
+    stmt = (
+        select(ReportVersion)
+        .where(
+            ReportVersion.report_id == report.id,
+            ReportVersion.is_original.is_(False),
+        )
+        .order_by(ReportVersion.created_at.asc(), ReportVersion.id.asc())
+    )
+    non_original = list((await db.execute(stmt)).scalars().all())
+    excess = len(non_original) - MAX_NON_ORIGINAL_VERSIONS
+    for stale in non_original[:max(excess, 0)]:
+        await db.delete(stale)
 
 
 @router.post(
@@ -168,10 +211,10 @@ async def create_report(
         description=body.description,
         layout_json=body.layout_json,
         canvas_filters_json=body.canvas_filters_json,
-        original_layout_json=body.layout_json,
-        original_canvas_filters_json=body.canvas_filters_json,
     )
     db.add(row)
+    await db.flush()
+    await _snapshot_version(db, row, is_original=True)
     await db.commit()
     await db.refresh(row)
     return row
@@ -227,32 +270,81 @@ async def update_report(
             detail="Forbidden",
         )
     patch = body.model_dump(exclude_unset=True)
+    versioned_keys = {"layout_json", "canvas_filters_json"}
+    layout_changed = any(k in patch for k in versioned_keys)
     for k, v in patch.items():
         setattr(row, k, v)
+    if layout_changed:
+        # Capture the NEW live state as a non-original version (with
+        # retention) only when the canvas itself changed. A rename /
+        # visibility-only edit does not add to the history.
+        await _snapshot_version(db, row, is_original=False)
     await db.commit()
     await db.refresh(row)
     return row
 
 
-@router.post("/{report_id}/reset", response_model=ReportResponse)
-async def reset_report(
+@router.get(
+    "/{report_id}/versions",
+    response_model=list[ReportVersionSummary],
+)
+async def list_report_versions(
     report_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Revert a report's live state to its as-created snapshot.
+    """List a report's version history, newest-first.
 
-    Copies ``original_layout_json`` / ``original_canvas_filters_json``
-    back into the live ``layout_json`` / ``canvas_filters_json`` columns.
-    The snapshot columns are set once at create and never touched by
-    edits, so this is a pure restore.
+    Each entry is a lightweight summary (``id`` / ``is_original`` /
+    ``created_at``); the full layout payload is not returned in the list.
+    404 when the report is missing or invisible (mirrors GET).
+    """
+    row = await db.get(Report, report_id)
+    if row is None or not _can_view(current_user, row):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report not found",
+        )
+    stmt = (
+        select(ReportVersion)
+        .where(ReportVersion.report_id == report_id)
+        .order_by(ReportVersion.created_at.desc(), ReportVersion.id.desc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
 
-    Visibility / edit gating mirrors PATCH + DELETE: 404 when the row is
-    missing or invisible, 403 when the caller lacks edit rights.
 
-    Task-1 backfilled existing rows, so ``original_*`` should never be
-    NULL; the coalesce-to-current guard keeps a legacy NULL row from
-    blanking its live state.
+async def _restore_version(
+    db: AsyncSession,
+    report: Report,
+    version: ReportVersion,
+) -> Report:
+    """Copy a version's layout/filters into the live report and commit.
+
+    Restoring does NOT itself create a new version; the next Save does.
+    """
+    report.layout_json = version.layout_json
+    report.canvas_filters_json = version.canvas_filters_json
+    await db.commit()
+    await db.refresh(report)
+    return report
+
+
+@router.post(
+    "/{report_id}/versions/{version_id}/restore",
+    response_model=ReportResponse,
+)
+async def restore_report_version(
+    report_id: int,
+    version_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore a specific version into the report's live state.
+
+    404 when the report is missing/invisible, 403 when the caller lacks
+    edit rights, 404 when the version does not belong to this report.
+    Does NOT create a new version.
     """
     row = await db.get(Report, report_id)
     if row is None or not _can_view(current_user, row):
@@ -265,13 +357,55 @@ async def reset_report(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden",
         )
-    if row.original_layout_json is not None:
-        row.layout_json = row.original_layout_json
-    if row.original_canvas_filters_json is not None:
-        row.canvas_filters_json = row.original_canvas_filters_json
-    await db.commit()
-    await db.refresh(row)
-    return row
+    version = await db.get(ReportVersion, version_id)
+    if version is None or version.report_id != report_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Version not found",
+        )
+    return await _restore_version(db, row, version)
+
+
+@router.post("/{report_id}/reset", response_model=ReportResponse)
+async def reset_report(
+    report_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revert a report's live state to its as-created (original) version.
+
+    Sugar over the version-restore path: finds this report's
+    ``is_original=True`` version and restores it, so the existing
+    "Revert to original" button keeps working.
+
+    Visibility / edit gating mirrors PATCH + DELETE: 404 when the row is
+    missing or invisible, 403 when the caller lacks edit rights.
+    """
+    row = await db.get(Report, report_id)
+    if row is None or not _can_view(current_user, row):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report not found",
+        )
+    if not _can_edit(current_user, row):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden",
+        )
+    stmt = (
+        select(ReportVersion)
+        .where(
+            ReportVersion.report_id == report_id,
+            ReportVersion.is_original.is_(True),
+        )
+        .order_by(ReportVersion.id.asc())
+    )
+    original = (await db.execute(stmt)).scalars().first()
+    if original is None:
+        # No original version recorded (legacy / seeded row without
+        # backfill). Nothing to restore; return the live state unchanged.
+        return row
+    return await _restore_version(db, row, original)
 
 
 @router.delete(

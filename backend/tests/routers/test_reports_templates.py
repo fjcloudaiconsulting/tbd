@@ -1,12 +1,13 @@
-"""Router tests for Reports v2 "Revert to original" snapshot columns.
+"""Router tests for Reports v2 version history + "Revert to original".
 
-create_report must populate ``original_layout_json`` +
-``original_canvas_filters_json`` from the create-time layout/filters so a
-future "Revert to original" can restore them. PATCH must NOT touch the
-snapshot.
+create_report records one ``is_original=True`` ``report_versions`` row
+from the create-time layout/filters. Save (PATCH) records a new
+non-original version ONLY when ``layout_json`` / ``canvas_filters_json``
+change, capped at 5 total (original pinned + 4 most-recent). Restore /
+reset copy a version back into the live report without adding a version.
 
-The snapshot columns are not exposed in the API response, so assertions
-read the ``Report`` row back from the DB via the test ``session_factory``.
+The version rows are read back from the DB via the test
+``session_factory``.
 
 Fixtures (``session_factory``, ``_make_app``, ``_seed``, ``_resolver``,
 ``_enable_flag``) are reused from ``test_reports.py``.
@@ -20,7 +21,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.config import settings as app_settings
-from app.models.report import Report, ReportVisibility
+from app.models.report import Report, ReportVersion, ReportVisibility
 
 from tests.routers.test_reports import (  # noqa: F401 — reuse fixtures
     _enable_flag,
@@ -33,6 +34,18 @@ from tests.routers.test_reports import (  # noqa: F401 — reuse fixtures
 
 _LAYOUT = {"version": 1, "widgets": [{"id": "w1", "type": "kpi"}]}
 _FILTERS = {"date_range": {"kind": "relative", "preset": "last_30_days"}}
+
+
+async def _versions_for(session_factory, report_id):
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(ReportVersion)
+                .where(ReportVersion.report_id == report_id)
+                .order_by(ReportVersion.created_at.asc(), ReportVersion.id.asc())
+            )
+        ).scalars().all()
+        return list(rows)
 
 
 @pytest.mark.asyncio
@@ -49,21 +62,57 @@ async def test_create_snapshots_original_layout_and_filters(session_factory):
         assert res.status_code == 201, res.text
         report_id = res.json()["id"]
 
-    async with session_factory() as db:
-        row = (
-            await db.execute(select(Report).where(Report.id == report_id))
-        ).scalar_one()
-        assert row.original_layout_json == _LAYOUT
-        assert row.original_canvas_filters_json == _FILTERS
+    versions = await _versions_for(session_factory, report_id)
+    assert len(versions) == 1
+    original = versions[0]
+    assert original.is_original is True
+    assert original.layout_json == _LAYOUT
+    assert original.canvas_filters_json == _FILTERS
 
 
 @pytest.mark.asyncio
-async def test_patch_does_not_touch_original_snapshot(session_factory):
+async def test_save_creates_version_and_caps_at_five(session_factory):
     await _seed(session_factory)
     app = _make_app(session_factory, _resolver("user_a"))
     with TestClient(app) as client:
         res = client.post("/api/v1/reports", json={
-            "name": "Snapshot Report",
+            "name": "Capped Report",
+            "visibility": "private",
+            "layout_json": _LAYOUT,
+            "canvas_filters_json": _FILTERS,
+        })
+        assert res.status_code == 201, res.text
+        report_id = res.json()["id"]
+
+        # 6 distinct saves; only the 4 most recent non-originals survive.
+        saved_layouts = []
+        for i in range(6):
+            layout = {"version": 1, "widgets": [{"id": f"w{i}", "type": "kpi"}]}
+            saved_layouts.append(layout)
+            patched = client.patch(f"/api/v1/reports/{report_id}", json={
+                "layout_json": layout,
+            })
+            assert patched.status_code == 200, patched.text
+
+    versions = await _versions_for(session_factory, report_id)
+    assert len(versions) == 5
+    originals = [v for v in versions if v.is_original]
+    non_originals = [v for v in versions if not v.is_original]
+    assert len(originals) == 1
+    assert originals[0].layout_json == _LAYOUT  # creation layout pinned
+    assert len(non_originals) == 4
+    # The 4 most recent saves (saves 2..5, zero-indexed) survive in order.
+    survived = [v.layout_json for v in non_originals]
+    assert survived == saved_layouts[2:]
+
+
+@pytest.mark.asyncio
+async def test_patch_without_layout_change_does_not_version(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post("/api/v1/reports", json={
+            "name": "Meta Report",
             "visibility": "private",
             "layout_json": _LAYOUT,
             "canvas_filters_json": _FILTERS,
@@ -72,18 +121,176 @@ async def test_patch_does_not_touch_original_snapshot(session_factory):
         report_id = res.json()["id"]
 
         patched = client.patch(f"/api/v1/reports/{report_id}", json={
-            "layout_json": {"version": 1, "widgets": []},
+            "name": "Renamed",
+            "visibility": "org",
         })
         assert patched.status_code == 200, patched.text
+
+    versions = await _versions_for(session_factory, report_id)
+    # Only the create-time original; the metadata-only PATCH added nothing.
+    assert len(versions) == 1
+    assert versions[0].is_original is True
+
+
+@pytest.mark.asyncio
+async def test_list_versions(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post("/api/v1/reports", json={
+            "name": "List Report",
+            "visibility": "private",
+            "layout_json": _LAYOUT,
+            "canvas_filters_json": _FILTERS,
+        })
+        assert res.status_code == 201, res.text
+        report_id = res.json()["id"]
+
+        for i in range(2):
+            patched = client.patch(f"/api/v1/reports/{report_id}", json={
+                "layout_json": {"version": 1, "widgets": [{"id": f"s{i}"}]},
+            })
+            assert patched.status_code == 200, patched.text
+
+        listed = client.get(f"/api/v1/reports/{report_id}/versions")
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+
+    assert len(body) == 3
+    # Newest-first ordering.
+    ids = [v["id"] for v in body]
+    assert ids == sorted(ids, reverse=True)
+    # The original is the oldest entry (last in newest-first list).
+    assert body[-1]["is_original"] is True
+    assert [v["is_original"] for v in body[:-1]] == [False, False]
+    # Summary shape only.
+    assert set(body[0].keys()) == {"id", "is_original", "created_at"}
+
+
+@pytest.mark.asyncio
+async def test_restore_version_sets_live_and_does_not_add_version(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    layout_v2 = {"version": 1, "widgets": [{"id": "v2"}]}
+    layout_v3 = {"version": 1, "widgets": [{"id": "v3"}]}
+    with TestClient(app) as client:
+        res = client.post("/api/v1/reports", json={
+            "name": "Restore Report",
+            "visibility": "private",
+            "layout_json": _LAYOUT,
+            "canvas_filters_json": _FILTERS,
+        })
+        report_id = res.json()["id"]
+
+        client.patch(f"/api/v1/reports/{report_id}", json={"layout_json": layout_v2})
+        client.patch(f"/api/v1/reports/{report_id}", json={"layout_json": layout_v3})
+
+        listed = client.get(f"/api/v1/reports/{report_id}/versions").json()
+        count_before = len(listed)
+        # Pick the v2 (older non-original) entry to restore.
+        target = None
+        async with session_factory() as db:
+            rows = (
+                await db.execute(
+                    select(ReportVersion).where(
+                        ReportVersion.report_id == report_id,
+                        ReportVersion.layout_json == layout_v2,
+                    )
+                )
+            ).scalars().all()
+            target = rows[0].id
+
+        restored = client.post(
+            f"/api/v1/reports/{report_id}/versions/{target}/restore"
+        )
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["layout_json"] == layout_v2
+
+        listed_after = client.get(f"/api/v1/reports/{report_id}/versions").json()
+
+    assert len(listed_after) == count_before  # restore added no version
 
     async with session_factory() as db:
         row = (
             await db.execute(select(Report).where(Report.id == report_id))
         ).scalar_one()
-        # live layout changed, snapshot must be untouched
-        assert row.layout_json == {"version": 1, "widgets": []}
-        assert row.original_layout_json == _LAYOUT
-        assert row.original_canvas_filters_json == _FILTERS
+        assert row.layout_json == layout_v2
+
+
+@pytest.mark.asyncio
+async def test_restore_404_for_version_of_other_report(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        a = client.post("/api/v1/reports", json={
+            "name": "A", "visibility": "private",
+            "layout_json": _LAYOUT, "canvas_filters_json": _FILTERS,
+        }).json()
+        b = client.post("/api/v1/reports", json={
+            "name": "B", "visibility": "private",
+            "layout_json": _LAYOUT, "canvas_filters_json": _FILTERS,
+        }).json()
+
+        b_versions = client.get(f"/api/v1/reports/{b['id']}/versions").json()
+        b_version_id = b_versions[0]["id"]
+
+        # Try to restore B's version onto report A → 404 (wrong report).
+        res = client.post(
+            f"/api/v1/reports/{a['id']}/versions/{b_version_id}/restore"
+        )
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_restore_forbidden_for_non_editor(session_factory):
+    seeds = await _seed(session_factory)
+    async with session_factory() as db:
+        report = Report(
+            owner_user_id=seeds["user_a_id"],
+            org_id=seeds["org_a_id"],
+            visibility=ReportVisibility.ORG,
+            name="org-shared",
+            layout_json=_LAYOUT,
+            canvas_filters_json=_FILTERS,
+        )
+        db.add(report)
+        await db.commit()
+        await db.refresh(report)
+        rid = report.id
+        ver = ReportVersion(
+            report_id=rid,
+            is_original=True,
+            layout_json=_LAYOUT,
+            canvas_filters_json=_FILTERS,
+        )
+        db.add(ver)
+        await db.commit()
+        await db.refresh(ver)
+        vid = ver.id
+
+    app = _make_app(session_factory, _resolver("member_a"))
+    with TestClient(app) as client:
+        res = client.post(f"/api/v1/reports/{rid}/versions/{vid}/restore")
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_list_versions_404_when_not_found(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports/999999/versions")
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_versions_404_when_flag_off(session_factory, monkeypatch):
+    monkeypatch.setattr(app_settings, "feature_reports_v2", False)
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports/1/versions")
+    assert res.status_code == 404
 
 
 # ─── GET /api/v1/reports/templates ──────────────────────────────────
@@ -179,7 +386,7 @@ async def test_reset_restores_original(session_factory):
         assert patched.json()["layout_json"] == _LAYOUT_B
         assert patched.json()["canvas_filters_json"] == _FILTERS_Y
 
-        # Reset back to the as-created snapshot.
+        # Reset back to the as-created (original) version.
         reset = client.post(f"/api/v1/reports/{report_id}/reset")
         assert reset.status_code == 200, reset.text
         body = reset.json()
@@ -193,9 +400,11 @@ async def test_reset_restores_original(session_factory):
         ).scalar_one()
         assert row.layout_json == _LAYOUT_A
         assert row.canvas_filters_json == _FILTERS_X
-        # snapshot untouched
-        assert row.original_layout_json == _LAYOUT_A
-        assert row.original_canvas_filters_json == _FILTERS_X
+
+    # Reset (a restore) does not itself add a version: original + 1 save.
+    versions = await _versions_for(session_factory, report_id)
+    assert len(versions) == 2
+    assert sum(1 for v in versions if v.is_original) == 1
 
 
 @pytest.mark.asyncio
@@ -212,8 +421,6 @@ async def test_reset_forbidden_for_non_editor(session_factory):
             name="org-shared",
             layout_json=_LAYOUT_B,
             canvas_filters_json=_FILTERS_Y,
-            original_layout_json=_LAYOUT_A,
-            original_canvas_filters_json=_FILTERS_X,
         )
         db.add(report)
         await db.commit()

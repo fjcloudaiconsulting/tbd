@@ -84,3 +84,17 @@ class ReportResponse(BaseModel):
     schema_version: int
     created_at: datetime
     updated_at: datetime
+
+
+class ReportVersionSummary(BaseModel):
+    """Lightweight version-history row for the version list endpoint.
+
+    Intentionally omits the full ``layout_json`` / ``canvas_filters_json``
+    payload; the list only needs to render selectable history entries.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    is_original: bool
+    created_at: datetime
