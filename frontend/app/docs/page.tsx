@@ -525,11 +525,10 @@ export default function DocsPage() {
               falls within the cycle. Items due later in the period
               appear as pending until their date arrives, so you can
               forecast a credit card statement that has not closed yet.
-              The app also generates rows on its own at the appropriate
-              time, so this is a convenience action rather than a
-              required step. Stopping a template removes its remaining
-              pending future rows; settled past rows are kept because
-              they are real money movements.
+              Run it whenever you want this period's recurring rows to
+              appear; they are not created automatically. Stopping a
+              template removes its remaining pending future rows; settled
+              past rows are kept because they are real money movements.
             </p>
           </section>
 
