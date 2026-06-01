@@ -72,4 +72,9 @@ async def test_forecast_net_unchanged_across_generate(db_session):
     await recurring_service.generate_due_transactions(db_session, org.id)
     after = await forecast_service.compute_forecast(db_session, org.id)
 
+    # Guard against a vacuous pass: the 500 must actually be PROJECTED before
+    # (recurring bucket) and MATERIALIZED after (pending bucket) — that bucket
+    # move is exactly the double-count invariant under test.
+    assert float(before["recurring_expense"]) > 0
+    assert float(after["pending_expense"]) > 0
     assert after["forecast_net"] == before["forecast_net"]
