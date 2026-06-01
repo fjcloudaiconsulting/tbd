@@ -1277,29 +1277,32 @@ async def delete_category_with_migration(
     # source items that don't collide; for those that do, sum the source's
     # planned_amount into the target's existing item and drop the source
     # item. Both source and target items are unique per (plan, type), so the
-    # mapping is 1:1.
-    source_items = (await db.scalars(
-        select(ForecastPlanItem).where(
-            ForecastPlanItem.org_id == org_id,
-            ForecastPlanItem.category_id == cat.id,
-        )
-    )).all()
-    target_items_by_key = {
-        (it.plan_id, it.type): it
-        for it in (await db.scalars(
+    # mapping is 1:1. Skip the queries entirely when the source has no
+    # forecast items (the common transaction/recurring-only delete).
+    source_items: list[ForecastPlanItem] = []
+    if breakdown.forecast_item_count:
+        source_items = list(await db.scalars(
             select(ForecastPlanItem).where(
                 ForecastPlanItem.org_id == org_id,
-                ForecastPlanItem.category_id == target.id,
+                ForecastPlanItem.category_id == cat.id,
             )
-        )).all()
-    }
-    for item in source_items:
-        existing = target_items_by_key.get((item.plan_id, item.type))
-        if existing is None:
-            item.category_id = target.id
-        else:
-            existing.planned_amount += item.planned_amount
-            await db.delete(item)
+        ))
+        target_items_by_key = {
+            (it.plan_id, it.type): it
+            for it in (await db.scalars(
+                select(ForecastPlanItem).where(
+                    ForecastPlanItem.org_id == org_id,
+                    ForecastPlanItem.category_id == target.id,
+                )
+            )).all()
+        }
+        for item in source_items:
+            existing = target_items_by_key.get((item.plan_id, item.type))
+            if existing is None:
+                item.category_id = target.id
+            else:
+                existing.planned_amount += item.planned_amount
+                await db.delete(item)
 
     # Re-point the source's learned auto-categorization rules to the target
     # so removing a category does not silently drop its learning state.
