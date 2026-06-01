@@ -8,7 +8,7 @@
 // Changing sort or page size resets the page to 1 automatically — you don't
 // want to be stuck on page 5 after re-sorting a different column.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   clearPersisted,
@@ -96,8 +96,10 @@ export function useTableState<F extends string>(
     defaultPageSize = 25,
   } = opts;
 
-  const [sortField, setSortFieldState] = useState<F>(() => {
-    const stored = readPersisted<StoredState>(
+  // All three persisted fields live in a single state object so they can be
+  // updated atomically and the persist effect has a stable dependency list.
+  const [stored, setStored] = useState<StoredState>(() => {
+    const persisted = readPersisted<StoredState>(
       key,
       {
         sortField: defaultSortField,
@@ -106,115 +108,65 @@ export function useTableState<F extends string>(
       },
       isStoredState,
     );
+    // Discard a stored sortField that is no longer in the allowed set.
     if (
       allowedSortFields &&
-      !allowedSortFields.includes(stored.sortField as F)
+      !allowedSortFields.includes(persisted.sortField as F)
     ) {
-      return defaultSortField;
-    }
-    return stored.sortField as F;
-  });
-
-  const [sortDir, setSortDirState] = useState<SortDir>(() => {
-    const stored = readPersisted<StoredState>(
-      key,
-      {
+      return {
         sortField: defaultSortField,
         sortDir: defaultSortDir,
-        pageSize: defaultPageSize,
-      },
-      isStoredState,
-    );
-    // If sortField was invalid, also reset dir to default
-    if (
-      allowedSortFields &&
-      !allowedSortFields.includes(stored.sortField as F)
-    ) {
-      return defaultSortDir;
+        pageSize: persisted.pageSize,
+      };
     }
-    return stored.sortDir;
-  });
-
-  const [pageSize, setPageSizeState] = useState<number>(() => {
-    const stored = readPersisted<StoredState>(
-      key,
-      {
-        sortField: defaultSortField,
-        sortDir: defaultSortDir,
-        pageSize: defaultPageSize,
-      },
-      isStoredState,
-    );
-    return stored.pageSize;
+    return persisted;
   });
 
   // page is never persisted — always starts at 1
   const [page, setPageState] = useState<number>(1);
 
-  const persist = useCallback(
-    (field: F, dir: SortDir, size: number) => {
-      writePersisted<StoredState>(key, {
-        sortField: field,
-        sortDir: dir,
-        pageSize: size,
-      });
-    },
-    [key],
-  );
+  // Persist sortField, sortDir, and pageSize whenever any of them change.
+  // Using an effect keeps updater functions pure (no side effects inside them).
+  // Persisting the defaults on mount is harmless and means localStorage always
+  // reflects the current state after the first render.
+  useEffect(() => {
+    writePersisted<StoredState>(key, stored);
+  }, [key, stored]);
 
   const setSort = useCallback(
     (field: F, dir: SortDir) => {
-      setSortFieldState(field);
-      setSortDirState(dir);
+      setStored((prev) => ({ ...prev, sortField: field, sortDir: dir }));
       setPageState(1);
-      // Read current pageSize from state lazily — pass it as a closure via
-      // functional state update pattern to keep the persist call accurate.
-      setPageSizeState((currentSize) => {
-        persist(field, dir, currentSize);
-        return currentSize;
-      });
     },
-    [persist],
+    [],
   );
 
   const setPage = useCallback((n: number) => {
     setPageState(n);
   }, []);
 
-  const setPageSize = useCallback(
-    (n: number) => {
-      setPageSizeState(n);
-      setPageState(1);
-      // Access current sort state via closure — values captured are the
-      // latest render values since setPageSize is recreated on each render
-      // when sortField/sortDir change... but since we use useCallback with
-      // stable deps, we need to read from state. Use functional updaters:
-      setSortFieldState((currentField) => {
-        setSortDirState((currentDir) => {
-          persist(currentField, currentDir, n);
-          return currentDir;
-        });
-        return currentField;
-      });
-    },
-    [persist],
-  );
+  const setPageSize = useCallback((n: number) => {
+    setStored((prev) => ({ ...prev, pageSize: n }));
+    setPageState(1);
+  }, []);
 
   const reset = useCallback(() => {
-    setSortFieldState(defaultSortField);
-    setSortDirState(defaultSortDir);
-    setPageSizeState(defaultPageSize);
+    setStored({
+      sortField: defaultSortField,
+      sortDir: defaultSortDir,
+      pageSize: defaultPageSize,
+    });
     setPageState(1);
     clearPersisted(key);
   }, [key, defaultSortField, defaultSortDir, defaultPageSize]);
 
   return {
-    sortField,
-    sortDir,
+    sortField: stored.sortField as F,
+    sortDir: stored.sortDir,
     setSort,
     page,
     setPage,
-    pageSize,
+    pageSize: stored.pageSize,
     setPageSize,
     reset,
   };
