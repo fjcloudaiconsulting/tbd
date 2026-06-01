@@ -10,6 +10,7 @@ vi.mock("@/lib/reports/api", () => ({
   createReport: vi.fn(),
   createFromTemplate: vi.fn(),
   deleteReport: vi.fn(),
+  duplicateReport: vi.fn(),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -78,12 +79,14 @@ describe("ReportsListPage", () => {
   const listTemplatesMock = vi.mocked(reportsApi.listTemplates);
   const createMock = vi.mocked(reportsApi.createReport);
   const deleteMock = vi.mocked(reportsApi.deleteReport);
+  const duplicateMock = vi.mocked(reportsApi.duplicateReport);
 
   beforeEach(() => {
     listMock.mockReset();
     listTemplatesMock.mockReset();
     createMock.mockReset();
     deleteMock.mockReset();
+    duplicateMock.mockReset();
     pushMock.mockReset();
     replaceMock.mockReset();
     // Templates load independently of the reports list; default to an
@@ -240,6 +243,46 @@ describe("ReportsListPage", () => {
     await waitFor(() =>
       expect(screen.queryByText("Monthly review")).toBeNull(),
     );
+  });
+
+  it("duplicates a report card and navigates to the new copy", async () => {
+    mockUser(true);
+    listMock.mockResolvedValue([
+      {
+        id: 10,
+        owner_user_id: 1,
+        org_id: 1,
+        visibility: "private",
+        name: "Monthly review",
+        description: null,
+        layout_json: {},
+        canvas_filters_json: {},
+        schema_version: 1,
+        created_at: "2026-05-21T10:00:00",
+        updated_at: "2026-05-22T10:00:00",
+      },
+    ]);
+    duplicateMock.mockResolvedValue({
+      id: 88,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "Monthly review (copy)",
+      description: null,
+      layout_json: {},
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-23T10:00:00",
+      updated_at: "2026-05-23T10:00:00",
+    });
+
+    render(<ReportsListPage />);
+
+    await screen.findByText("Monthly review");
+    fireEvent.click(screen.getByTestId("report-duplicate-10"));
+
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledWith(10));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports/88"));
   });
 
   it("redirects to /dashboard when feature_reports_v2 is false", async () => {

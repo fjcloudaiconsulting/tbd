@@ -28,6 +28,8 @@ vi.mock("@/lib/reports/api", () => ({
   deleteReport: vi.fn(),
   listVersions: vi.fn(),
   restoreVersion: vi.fn(),
+  updateReport: vi.fn(),
+  duplicateReport: vi.fn(),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -120,6 +122,8 @@ describe("ReportEditorPage", () => {
   const deleteReportMock = vi.mocked(reportsApi.deleteReport);
   const listVersionsMock = vi.mocked(reportsApi.listVersions);
   const restoreVersionMock = vi.mocked(reportsApi.restoreVersion);
+  const updateReportMock = vi.mocked(reportsApi.updateReport);
+  const duplicateReportMock = vi.mocked(reportsApi.duplicateReport);
 
   beforeEach(() => {
     getReportMock.mockReset();
@@ -128,6 +132,8 @@ describe("ReportEditorPage", () => {
     deleteReportMock.mockReset();
     listVersionsMock.mockReset();
     restoreVersionMock.mockReset();
+    updateReportMock.mockReset();
+    duplicateReportMock.mockReset();
     runQueryMock.mockResolvedValue({
       rows: [],
       meta: { row_count: 0, truncated: false, query_ms: 1 },
@@ -628,6 +634,77 @@ describe("ReportEditorPage", () => {
     expect(screen.getByTestId("report-editor-empty")).toBeInTheDocument();
     expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
       "Edit",
+    );
+  });
+
+  it("toggles visibility to org as an editor and reflects the new state", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+    updateReportMock.mockResolvedValue({
+      ...REPORT_WITH_WIDGET,
+      visibility: "org",
+      updated_at: "2026-05-22T11:00:00",
+    } as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+    const toggle = screen.getByTestId("report-editor-visibility-toggle");
+    expect(toggle).not.toBeDisabled();
+    // Starts private.
+    expect(screen.getByTestId("report-editor-visibility")).toHaveTextContent(
+      /private/i,
+    );
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(updateReportMock).toHaveBeenCalledWith(10, { visibility: "org" }),
+    );
+    // Local state reflects the shared visibility.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("report-editor-visibility"),
+      ).toHaveTextContent(/org/i),
+    );
+  });
+
+  it("does not enable the visibility toggle for a non-editor (non-owner)", async () => {
+    mockUser(true);
+    // Report owned by someone else; viewer (user id 1) is not the owner.
+    getReportMock.mockResolvedValue({
+      ...REPORT_WITH_WIDGET,
+      owner_user_id: 999,
+      visibility: "org",
+    } as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+    // No enabled toggle for a non-editor.
+    expect(
+      screen.queryByTestId("report-editor-visibility-toggle"),
+    ).toBeNull();
+  });
+
+  it("duplicates the report and navigates to the new copy", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+    duplicateReportMock.mockResolvedValue({
+      ...REPORT_WITH_WIDGET,
+      id: 77,
+    } as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+    fireEvent.click(screen.getByTestId("report-editor-duplicate"));
+
+    await waitFor(() =>
+      expect(duplicateReportMock).toHaveBeenCalledWith(10),
+    );
+    await waitFor(() =>
+      expect(pushMock).toHaveBeenCalledWith("/reports/77"),
     );
   });
 

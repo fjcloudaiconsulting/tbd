@@ -70,6 +70,18 @@ export async function deleteReport(id: number): Promise<void> {
 }
 
 /**
+ * Duplicate a report. The backend creates a fresh private copy owned
+ * by the caller (regardless of who owns the source) and returns its
+ * ``ReportSummary`` with a 201. Anyone who can view a report can
+ * duplicate it.
+ */
+export async function duplicateReport(id: number): Promise<ReportSummary> {
+  return apiFetch<ReportSummary>(`/api/v1/reports/${id}/duplicate`, {
+    method: "POST",
+  });
+}
+
+/**
  * Revert a report's live layout + canvas filters back to the
  * as-created snapshot the backend captured at creation time. Returns
  * the updated ``ReportSummary`` so the editor can re-hydrate its

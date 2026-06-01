@@ -29,9 +29,11 @@ import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import {
   deleteReport,
+  duplicateReport,
   getReport,
   restoreVersion,
   saveLayout,
+  updateReport,
 } from "@/lib/reports/api";
 import type {
   BarConfig,
@@ -241,6 +243,8 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
+  const [togglingVisibility, setTogglingVisibility] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [pendingRestore, setPendingRestore] =
@@ -393,6 +397,42 @@ export default function ReportEditorPage({ params }: PageProps) {
     }
   }
 
+  // Duplicate the report into a fresh private copy owned by the
+  // viewer, then navigate to the copy's editor. Anyone who can view
+  // the report (i.e. is on this page) can duplicate it.
+  async function handleDuplicate() {
+    if (!report || duplicating) return;
+    setDuplicating(true);
+    setSaveError(null);
+    try {
+      const copy = await duplicateReport(report.id);
+      router.push(`/reports/${copy.id}`);
+    } catch (err) {
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't duplicate report");
+      setDuplicating(false);
+    }
+  }
+
+  // Flip the report between private and org-shared visibility. Gated
+  // on edit rights (``canEdit``); the backend enforces this regardless.
+  async function handleToggleVisibility() {
+    if (!report || togglingVisibility) return;
+    const next: ReportSummary["visibility"] =
+      report.visibility === "org" ? "private" : "org";
+    setTogglingVisibility(true);
+    setSaveError(null);
+    try {
+      const updated = await updateReport(report.id, { visibility: next });
+      setReport(updated);
+    } catch (err) {
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't update sharing");
+    } finally {
+      setTogglingVisibility(false);
+    }
+  }
+
   // Restore a chosen version into the live report. Confirmed via the
   // ConfirmModal before this fires. Re-hydrates the canvas from the
   // server's restored snapshot, closes the History panel, and drops
@@ -511,7 +551,40 @@ export default function ReportEditorPage({ params }: PageProps) {
             </button>
           )}
 
-          {/* Both modes: History + Delete. */}
+          {/* Both modes: Sharing state, Duplicate, History + Delete. */}
+          {/* Visibility: editors get a toggle; non-editors see it read-only. */}
+          {canEdit ? (
+            <button
+              type="button"
+              onClick={handleToggleVisibility}
+              disabled={togglingVisibility}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="report-editor-visibility-toggle"
+              aria-label="Toggle report sharing"
+            >
+              <span data-testid="report-editor-visibility">
+                {report.visibility === "org" ? "Shared with org" : "Private"}
+              </span>
+            </button>
+          ) : (
+            <span
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-muted"
+              data-testid="report-editor-visibility"
+            >
+              {report.visibility === "org" ? "Shared with org" : "Private"}
+            </span>
+          )}
+
+          <button
+            type="button"
+            onClick={handleDuplicate}
+            disabled={duplicating}
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="report-editor-duplicate"
+          >
+            {duplicating ? "Duplicating..." : "Duplicate"}
+          </button>
+
           <button
             type="button"
             onClick={() => setHistoryOpen(true)}

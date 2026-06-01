@@ -23,6 +23,7 @@ import {
   createFromTemplate,
   createReport,
   deleteReport,
+  duplicateReport,
   listReports,
   listTemplates,
 } from "@/lib/reports/api";
@@ -39,6 +40,7 @@ export default function ReportsListPage() {
   const [usingTemplate, setUsingTemplate] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ReportSummary | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -130,6 +132,23 @@ export default function ReportsListPage() {
       const e = err as Error;
       setError(e.message || "Couldn't create report from template");
       setUsingTemplate(null);
+    }
+  }
+
+  // Duplicate a report into a fresh private copy owned by the caller,
+  // then navigate to the copy's editor. Anyone who can view a report
+  // (own or org-shared) can duplicate it.
+  async function handleDuplicate(target: ReportSummary) {
+    if (duplicatingId !== null) return;
+    setDuplicatingId(target.id);
+    setError(null);
+    try {
+      const copy = await duplicateReport(target.id);
+      router.push(`/reports/${copy.id}`);
+    } catch (err) {
+      const e = err as Error;
+      setError(e.message || "Couldn't duplicate report");
+      setDuplicatingId(null);
     }
   }
 
@@ -256,6 +275,15 @@ export default function ReportsListPage() {
                   {r.visibility}
                 </span>
               </Link>
+              <button
+                type="button"
+                onClick={() => handleDuplicate(r)}
+                disabled={duplicatingId === r.id}
+                className="mr-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid={`report-duplicate-${r.id}`}
+              >
+                {duplicatingId === r.id ? "Duplicating..." : "Duplicate"}
+              </button>
               {r.owner_user_id === user?.id && (
                 <button
                   type="button"
