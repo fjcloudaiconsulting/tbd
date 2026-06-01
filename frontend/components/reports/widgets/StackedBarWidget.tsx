@@ -28,10 +28,13 @@ import type {
   CanvasFilters,
   StackedBarWidget as StackedBarWidgetType,
 } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import { buildSeriesCsvDataset } from "./seriesCsv";
 
 interface Props {
   widget: StackedBarWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
 }
 
 const BAR_COLORS = [
@@ -42,7 +45,11 @@ const BAR_COLORS = [
   "var(--color-danger)",
 ];
 
-export default function StackedBarWidget({ widget, canvasFilters }: Props) {
+export default function StackedBarWidget({
+  widget,
+  canvasFilters,
+  editMode,
+}: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
   const { series, isLoading, error } = useSeriesQueries(
     widget,
@@ -61,6 +68,12 @@ export default function StackedBarWidget({ widget, canvasFilters }: Props) {
     widget.config.stacked === false || seriesKeys.length < 2
       ? undefined
       : "stack";
+  const csvDataset = buildSeriesCsvDataset(
+    dimensionKey,
+    rows,
+    seriesKeys,
+    labels,
+  );
 
   return (
     <div
@@ -68,11 +81,18 @@ export default function StackedBarWidget({ widget, canvasFilters }: Props) {
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div
-        className="mb-2 text-sm font-semibold text-text-primary"
-        aria-label={widget.title || "Stacked bar chart"}
-      >
-        {widget.title || "Stacked bar chart"}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div
+          className="text-sm font-semibold text-text-primary"
+          aria-label={widget.title || "Stacked bar chart"}
+        >
+          {widget.title || "Stacked bar chart"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "Stacked bar chart"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1">
         {isLoading ? (

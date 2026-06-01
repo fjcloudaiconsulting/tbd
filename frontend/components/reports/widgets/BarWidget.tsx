@@ -31,18 +31,21 @@ import {
 
 import { categoricalColor, chartColor } from "@/lib/chart-colors";
 import { useReportQuery } from "@/lib/reports/useReportQuery";
-import { pivotBySecondaryDimension } from "@/lib/reports/series";
+import { dimensionHeader, pivotBySecondaryDimension } from "@/lib/reports/series";
 import type {
   BarWidget as BarWidgetType,
   CanvasFilters,
 } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import type { CsvCell } from "@/lib/reports/csv";
 
 interface Props {
   widget: BarWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
 }
 
-export default function BarWidget({ widget, canvasFilters }: Props) {
+export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
   const primaryKey = widget.config.dimensions[0] ?? "dimension";
@@ -66,14 +69,40 @@ export default function BarWidget({ widget, canvasFilters }: Props) {
   const rows = sliced ? stackedRows : simpleRows;
   const hasRows = rows.length > 0;
 
+  // CSV export. Single-series: [dimension, measure]. Sliced (break-down
+  // by a secondary dimension): [primary dimension, ...one column per
+  // secondary value], mirroring the stacked segments.
+  const measureLabel = widget.config.measure.field;
+  const csvDataset = sliced
+    ? {
+        headers: [dimensionHeader(primaryKey), ...secondaryValues],
+        rows: stackedRows.map((r) => [
+          String(r.label),
+          ...secondaryValues.map((sv) =>
+            typeof r[sv] === "number" ? (r[sv] as number) : 0,
+          ),
+        ]) as CsvCell[][],
+      }
+    : {
+        headers: [dimensionHeader(primaryKey), measureLabel],
+        rows: simpleRows.map((r) => [r.label, r.value]) as CsvCell[][],
+      };
+
   return (
     <div
       data-testid="bar-widget"
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div className="mb-2 text-sm font-semibold text-text-primary">
-        {widget.title || "Bar chart"}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-text-primary">
+          {widget.title || "Bar chart"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "Bar chart"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1">
         {isLoading ? (

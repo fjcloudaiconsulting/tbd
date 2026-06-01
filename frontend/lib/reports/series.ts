@@ -6,6 +6,7 @@
  * shared dimension key.
  */
 import type {
+  Dimension,
   Measure,
   QueryRow,
   ReportsQueryResponse,
@@ -18,6 +19,28 @@ const HUMAN_AGG: Record<Measure["agg"], string> = {
   avg: "Average",
   distinct: "Distinct",
 };
+
+/**
+ * Human-readable column header per dimension. Shared by the table
+ * widget's header row and the CSV export of every dimension-bearing
+ * widget so the exported header matches what the user sees.
+ */
+export const DIMENSION_HEADERS: Record<Dimension, string> = {
+  category: "Category",
+  category_master: "Master category",
+  account: "Account",
+  tag: "Tag",
+  txn_type: "Type",
+  status: "Status",
+  month: "Month",
+  week: "Week",
+  day: "Day",
+};
+
+/** Header label for a dimension key, falling back to the raw key. */
+export function dimensionHeader(key: string): string {
+  return DIMENSION_HEADERS[key as Dimension] ?? key;
+}
 
 /**
  * Stable human label for a series. Uses the optional ``label`` if

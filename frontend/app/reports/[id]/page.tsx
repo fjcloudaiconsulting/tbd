@@ -189,24 +189,56 @@ function emptyWidget(type: WidgetType, id: string): Widget {
   }
 }
 
-function renderWidgetByType(w: Widget, canvasFilters: CanvasFilters) {
+function renderWidgetByType(
+  w: Widget,
+  canvasFilters: CanvasFilters,
+  editMode: boolean,
+) {
   switch (w.type) {
     case "kpi":
-      return <KPIWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <KPIWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "bar":
-      return <BarWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <BarWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "line":
-      return <LineWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <LineWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "area":
-      return <AreaWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <AreaWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "pie":
-      return <PieWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <PieWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "sparkline":
-      return <SparklineWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <SparklineWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+        />
+      );
     case "stacked_bar":
-      return <StackedBarWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <StackedBarWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+        />
+      );
     case "table":
-      return <TableWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <TableWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+        />
+      );
   }
 }
 
@@ -676,7 +708,7 @@ export default function ReportEditorPage({ params }: PageProps) {
                   onSelect={() => setSelectedWidgetId(w.id)}
                   onRemove={() => removeWidget(w.id)}
                 >
-                  {renderWidgetByType(w, canvasFilters)}
+                  {renderWidgetByType(w, canvasFilters, editMode)}
                 </WidgetShell>
               )}
             />

@@ -12,10 +12,13 @@
  */
 import { useReportQuery } from "@/lib/reports/useReportQuery";
 import type { CanvasFilters, KPIWidget as KPIWidgetType } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import type { CsvCell } from "@/lib/reports/csv";
 
 interface Props {
   widget: KPIWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
   /**
    * Optional injected prior-period value. Computed by the editor
    * page (which can resolve the prior-period date range from the
@@ -28,6 +31,7 @@ interface Props {
 export default function KPIWidget({
   widget,
   canvasFilters,
+  editMode,
   priorValue,
 }: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
@@ -44,14 +48,31 @@ export default function KPIWidget({
       ? ((value - priorValue) / Math.abs(priorValue)) * 100
       : null;
 
+  // CSV export: a single label/value row (the KPI is one number).
+  const measureLabel = widget.config.measure.field;
+  const csvDataset = {
+    headers: [widget.title || "KPI", measureLabel],
+    rows:
+      value === null
+        ? ([] as CsvCell[][])
+        : ([[widget.title || "KPI", value]] as CsvCell[][]),
+  };
+
   return (
     <div
       data-testid="kpi-widget"
       data-widget-id={widget.id}
       className="flex h-full flex-col justify-center gap-1 rounded-lg border border-border bg-surface p-4"
     >
-      <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-        {widget.title || "KPI"}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+          {widget.title || "KPI"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "KPI"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       {isLoading ? (
         <div
