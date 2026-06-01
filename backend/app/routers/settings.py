@@ -20,6 +20,10 @@ from app.schemas.settings import (
     OrgSettingUpdate,
 )
 from app.services import audit_service, billing_service
+from app.services.settings_service import (
+    FORECAST_GRANULARITY_VALUES,
+    FORECAST_INPUT_GRANULARITY_KEY,
+)
 
 logger = structlog.stdlib.get_logger()
 
@@ -79,6 +83,19 @@ async def upsert_setting(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="session_lifetime_days must be between 1 and 365",
+            )
+
+    # Forecast build granularity is a closed enum (master|subcategory). The
+    # service defends by falling back to master on garbage, but rejecting a
+    # bad write here avoids a silently-ignored setting that confuses admins.
+    if body.key == FORECAST_INPUT_GRANULARITY_KEY:
+        if body.value not in FORECAST_GRANULARITY_VALUES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "forecast_input_granularity must be one of: "
+                    f"{', '.join(FORECAST_GRANULARITY_VALUES)}"
+                ),
             )
 
     result = await db.execute(
