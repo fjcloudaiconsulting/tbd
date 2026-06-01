@@ -408,6 +408,47 @@ async def reset_report(
     return await _restore_version(db, row, original)
 
 
+@router.post(
+    "/{report_id}/duplicate",
+    response_model=ReportResponse,
+    status_code=201,
+)
+async def duplicate_report(
+    report_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a private copy of a visible report, owned by the caller.
+
+    404 when the source is missing or invisible (mirrors GET). The copy
+    is always ``private`` regardless of the source's visibility, carries
+    the source name with a " (copy)" suffix, and reuses the same
+    creation path as ``create_report`` so it gets its own
+    ``is_original`` version snapshot.
+    """
+    source = await db.get(Report, report_id)
+    if source is None or not _can_view(current_user, source):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report not found",
+        )
+    row = Report(
+        owner_user_id=current_user.id,
+        org_id=current_user.org_id,
+        visibility=ReportVisibility.PRIVATE,
+        name=f"{source.name} (copy)",
+        description=source.description,
+        layout_json=source.layout_json,
+        canvas_filters_json=source.canvas_filters_json,
+    )
+    db.add(row)
+    await db.flush()
+    await _snapshot_version(db, row, is_original=True)
+    await db.commit()
+    await db.refresh(row)
+    return row
+
+
 @router.delete(
     "/{report_id}",
     status_code=status.HTTP_204_NO_CONTENT,

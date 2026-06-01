@@ -451,3 +451,115 @@ async def test_reset_404_when_flag_off(session_factory, monkeypatch):
     with TestClient(app) as client:
         res = client.post("/api/v1/reports/1/reset")
     assert res.status_code == 404
+
+
+# ─── POST /api/v1/reports/{id}/duplicate ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_duplicate_creates_private_copy_for_caller(session_factory):
+    seeds = await _seed(session_factory)
+    # An ORG-shared report owned by user_a; user_a duplicates it.
+    async with session_factory() as db:
+        report = Report(
+            owner_user_id=seeds["user_a_id"],
+            org_id=seeds["org_a_id"],
+            visibility=ReportVisibility.ORG,
+            name="Quarterly",
+            layout_json=_LAYOUT,
+            canvas_filters_json=_FILTERS,
+        )
+        db.add(report)
+        await db.commit()
+        await db.refresh(report)
+        rid = report.id
+
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post(f"/api/v1/reports/{rid}/duplicate")
+        assert res.status_code == 201, res.text
+        body = res.json()
+
+    assert body["id"] != rid
+    assert body["owner_user_id"] == seeds["user_a_id"]
+    assert body["org_id"] == seeds["org_a_id"]
+    assert body["visibility"] == "private"
+    assert body["name"] == "Quarterly (copy)"
+    assert body["layout_json"] == _LAYOUT
+    assert body["canvas_filters_json"] == _FILTERS
+
+    # The copy gets exactly one is_original version snapshot.
+    versions = await _versions_for(session_factory, body["id"])
+    assert len(versions) == 1
+    assert versions[0].is_original is True
+    assert versions[0].layout_json == _LAYOUT
+    assert versions[0].canvas_filters_json == _FILTERS
+
+
+@pytest.mark.asyncio
+async def test_duplicate_by_org_member_owns_the_copy(session_factory):
+    """A same-org member who can VIEW an org-shared report can duplicate
+    it; the copy is private and owned by that member, not the original
+    author.
+    """
+    seeds = await _seed(session_factory)
+    async with session_factory() as db:
+        report = Report(
+            owner_user_id=seeds["user_a_id"],
+            org_id=seeds["org_a_id"],
+            visibility=ReportVisibility.ORG,
+            name="Shared",
+            layout_json=_LAYOUT,
+            canvas_filters_json=_FILTERS,
+        )
+        db.add(report)
+        await db.commit()
+        await db.refresh(report)
+        rid = report.id
+
+    app = _make_app(session_factory, _resolver("member_a"))
+    with TestClient(app) as client:
+        res = client.post(f"/api/v1/reports/{rid}/duplicate")
+        assert res.status_code == 201, res.text
+        body = res.json()
+
+    assert body["owner_user_id"] == seeds["member_a_id"]
+    assert body["visibility"] == "private"
+    assert body["name"] == "Shared (copy)"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_404_for_non_viewer(session_factory):
+    """A user in a different org cannot see (and thus cannot duplicate)
+    a private report — 404, never leaking existence.
+    """
+    seeds = await _seed(session_factory)
+    async with session_factory() as db:
+        report = Report(
+            owner_user_id=seeds["user_a_id"],
+            org_id=seeds["org_a_id"],
+            visibility=ReportVisibility.PRIVATE,
+            name="Private A",
+            layout_json=_LAYOUT,
+            canvas_filters_json=_FILTERS,
+        )
+        db.add(report)
+        await db.commit()
+        await db.refresh(report)
+        rid = report.id
+
+    # user_b is in org B.
+    app = _make_app(session_factory, _resolver("user_b"))
+    with TestClient(app) as client:
+        res = client.post(f"/api/v1/reports/{rid}/duplicate")
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_duplicate_404_when_flag_off(session_factory, monkeypatch):
+    monkeypatch.setattr(app_settings, "feature_reports_v2", False)
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post("/api/v1/reports/1/duplicate")
+    assert res.status_code == 404
