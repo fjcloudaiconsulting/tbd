@@ -199,6 +199,9 @@ export interface ForecastPlan {
   total_planned_expense: number;
   total_actual_income: number;
   total_actual_expense: number;
+  // Per-org build granularity (master | subcategory). Drives the add-item
+  // picker mode and the master/subcategory disable predicate.
+  forecast_input_granularity: "master" | "subcategory";
   items: ForecastPlanItem[];
 }
 

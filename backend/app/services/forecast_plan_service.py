@@ -34,6 +34,10 @@ from app.schemas.forecast_plan import (
 from app.services.billing_service import resolve_period
 from app.services.date_utils import advance_date
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.settings_service import (
+    FORECAST_GRANULARITY_SUBCATEGORY,
+    get_forecast_input_granularity,
+)
 from app.services.transaction_filters import reportable_transaction_filter
 
 
@@ -81,12 +85,21 @@ def _require_draft(plan: ForecastPlan) -> None:
         raise ValidationError("Cannot modify an active plan. Revert to draft first.")
 
 
-async def _validate_master_category(
+async def _validate_category_granularity(
     db: AsyncSession, org_id: int, category_id: int,
     item_type: ForecastItemType | None = None,
+    *, subcategory_mode: bool = False,
 ) -> None:
-    """Validate that the category exists, belongs to the org, is a master,
-    and (when ``item_type`` is supplied) has a compatible CategoryType.
+    """Validate that the category exists, belongs to the org, has the right
+    granularity for the org's build mode, and (when ``item_type`` is
+    supplied) has a compatible CategoryType.
+
+    Granularity rule (spec R1, mode-aware):
+      - master mode (default): item category must be a MASTER (parent_id is
+        None). Subcategories are rejected — legacy behavior.
+      - subcategory mode: item category must be a SUBCATEGORY (parent_id is
+        not None). Masters are rejected; the master's forecast is built from
+        its subs (the per-master XOR guard governs coexistence).
 
     Compatibility rule (PR #144 review fix):
       - INCOME item  → category.type ∈ {INCOME, BOTH}
@@ -99,8 +112,16 @@ async def _validate_master_category(
     cat = result.scalar_one_or_none()
     if cat is None:
         raise ValidationError("Invalid category")
-    if cat.parent_id is not None:
-        raise ValidationError("Forecast plan items must use master categories, not subcategories")
+    if subcategory_mode:
+        if cat.parent_id is None:
+            raise ValidationError(
+                "In subcategory mode, forecast plan items must use "
+                "subcategories, not master categories"
+            )
+    elif cat.parent_id is not None:
+        raise ValidationError(
+            "Forecast plan items must use master categories, not subcategories"
+        )
     if item_type is not None and not _category_type_matches(cat.type, item_type):
         raise ValidationError(
             f"Category type ({cat.type.value}) does not match "
@@ -122,6 +143,77 @@ def _category_type_matches(
     if item_type == ForecastItemType.EXPENSE:
         return cat_type == CategoryType.EXPENSE
     return False
+
+
+async def _master_of(
+    db: AsyncSession, org_id: int, category_ids: set[int],
+) -> dict[int, int]:
+    """Map each category id to its master id (itself if already a master)."""
+    if not category_ids:
+        return {}
+    result = await db.execute(
+        select(Category.id, Category.parent_id).where(
+            Category.id.in_(category_ids), Category.org_id == org_id
+        )
+    )
+    out: dict[int, int] = {}
+    for cid, pid in result.all():
+        out[cid] = pid if pid is not None else cid
+    # Any id not found (shouldn't happen post-validation) maps to itself.
+    for cid in category_ids:
+        out.setdefault(cid, cid)
+    return out
+
+
+async def _assert_no_mixed_granularity(
+    db: AsyncSession, org_id: int, plan: ForecastPlan,
+    new_pairs: list[tuple[int, str]],
+) -> None:
+    """Per-master XOR guard (spec R3, ALWAYS on, both modes).
+
+    For a given (master, type), the forecast is built EITHER by one
+    master-level item OR by one-or-more subcategory items of that master,
+    NEVER both. ``new_pairs`` are the (category_id, type_value) being added or
+    updated in this write. Considers both already-persisted plan items and
+    the pairs in this same write so a single bulk request can't slip a
+    master+sub mix through.
+
+    Raises ConflictError(code="mixed_granularity") on violation.
+    """
+    # Collect every category id involved so one query resolves all masters.
+    all_ids: set[int] = {cid for cid, _ in new_pairs}
+    all_ids |= {i.category_id for i in plan.items}
+    masters = await _master_of(db, org_id, all_ids)
+
+    # Build, per (master, type): does a master-level item exist, and does a
+    # subcategory item exist? Start from persisted items, layer the new write
+    # on top (the new write's pairs may also already be persisted — that's
+    # fine, an update doesn't change granularity).
+    has_master: set[tuple[int, str]] = set()
+    has_sub: set[tuple[int, str]] = set()
+
+    def _record(cat_id: int, type_value: str) -> None:
+        master_id = masters.get(cat_id, cat_id)
+        key = (master_id, type_value)
+        if cat_id == master_id:
+            has_master.add(key)
+        else:
+            has_sub.add(key)
+
+    for item in plan.items:
+        _record(item.category_id, item.type.value)
+    for cid, tv in new_pairs:
+        _record(cid, tv)
+
+    conflicting = has_master & has_sub
+    if conflicting:
+        master_id, type_value = sorted(conflicting)[0]
+        raise ConflictError(
+            "A forecast master is built either by one master-level item or "
+            "by its subcategory items, never both. "
+            f"Conflict on master category {master_id} ({type_value}).",
+            code="mixed_granularity",
+        )
 
 
 async def _compute_actuals_batch(
@@ -194,6 +286,7 @@ async def _compute_actuals_batch(
 async def _build_response(
     db: AsyncSession, org_id: int, plan: ForecastPlan,
 ) -> ForecastPlanResponse:
+    granularity = await get_forecast_input_granularity(db, org_id)
     period = plan.billing_period
     p_start = period.start_date
     p_end = period.end_date
@@ -253,6 +346,7 @@ async def _build_response(
         total_planned_expense=total_planned_expense,
         total_actual_income=total_actual_income,
         total_actual_expense=total_actual_expense,
+        forecast_input_granularity=granularity,
         items=item_responses,
     )
 
@@ -320,6 +414,50 @@ async def populate_from_sources(
     for cid, pid in cat_result.all():
         cat_to_master[cid] = pid if pid else cid
 
+    # ── Granularity-aware grouping (spec R2) ──
+    # master mode (default): roll every transaction/recurring up to its
+    #   master, producing master-level items (legacy behavior).
+    # subcategory mode: group by the transaction's OWN subcategory, so a
+    #   master's forecast is built from per-sub items. Transactions tagged
+    #   directly to a master stay at the master id (they have no sub to fall
+    #   into); the per-master XOR guard below skips any that would conflict.
+    granularity = await get_forecast_input_granularity(db, org_id)
+    sub_mode = granularity == FORECAST_GRANULARITY_SUBCATEGORY
+
+    def group_key(cat_id: int) -> int:
+        if sub_mode:
+            return cat_id
+        return cat_to_master.get(cat_id, cat_id)
+
+    # Per-master XOR guard state for populate: a master is "claimed" by
+    # master-level items OR by subcategory items, never both (per type).
+    # Seed from the persisted plan so populate never creates a conflicting
+    # item, then keep it updated as we add candidates.
+    claimed_master: set[tuple[int, str]] = set()
+    claimed_sub: set[tuple[int, str]] = set()
+    for i in plan.items:
+        m = cat_to_master.get(i.category_id, i.category_id)
+        if i.category_id == m:
+            claimed_master.add((m, i.type.value))
+        else:
+            claimed_sub.add((m, i.type.value))
+
+    def would_conflict(cat_id: int, type_value: str) -> bool:
+        """True if adding (cat_id, type) would mix master+sub for its master."""
+        m = cat_to_master.get(cat_id, cat_id)
+        key = (m, type_value)
+        if cat_id == m:
+            return key in claimed_sub
+        return key in claimed_master
+
+    def claim(cat_id: int, type_value: str) -> None:
+        m = cat_to_master.get(cat_id, cat_id)
+        key = (m, type_value)
+        if cat_id == m:
+            claimed_master.add(key)
+        else:
+            claimed_sub.add(key)
+
     # ── From active recurring templates (with date filter) ──
     # Aggregate by master category before inserting
     rec_result = await db.execute(
@@ -331,8 +469,8 @@ async def populate_from_sources(
     )
     recurring_totals: dict[tuple[int, str], Decimal] = {}
     for r in rec_result.scalars().all():
-        master_id = cat_to_master.get(r.category_id, r.category_id)
-        key = (master_id, r.type)
+        grp_id = group_key(r.category_id)
+        key = (grp_id, r.type)
         if key in existing_keys:
             continue
 
@@ -353,17 +491,21 @@ async def populate_from_sources(
     for key, total in recurring_totals.items():
         if key in existing_keys:
             continue
-        master_id, r_type = key
+        grp_id, r_type = key
+        # Skip groups that would mix master+sub for their master (spec R2/R3).
+        if would_conflict(grp_id, r_type):
+            continue
         item = ForecastPlanItem(
             plan_id=plan.id,
             org_id=org_id,
-            category_id=master_id,
+            category_id=grp_id,
             type=ForecastItemType(r_type),
             planned_amount=total,
             source=ItemSource.RECURRING,
         )
         db.add(item)
         existing_keys.add(key)
+        claim(grp_id, r_type)
 
     # ── From 3-month historical monthly averages + current-period activity ──
     # Two scopes:
@@ -400,13 +542,14 @@ async def populate_from_sources(
     )
     hist_result = await db.execute(hist_q)
 
-    # Roll up to master category, then compute monthly averages
-    # Structure: {(master_id, type): {month: total}}
+    # Group by the granularity key (master in master mode, sub in sub mode),
+    # then compute monthly averages.
+    # Structure: {(group_id, type): {month: total}}
     master_monthly: dict[tuple[int, str], dict[str, Decimal]] = {}
     for cat_id, tx_type_raw, tx_date, amount in hist_result.all():
         tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
-        master_id = cat_to_master.get(cat_id, cat_id)
-        key = (master_id, tx_type)
+        grp_id = group_key(cat_id)
+        key = (grp_id, tx_type)
         month = f"{tx_date.year:04d}-{tx_date.month:02d}"
         if key not in master_monthly:
             master_monthly[key] = {}
@@ -437,8 +580,8 @@ async def populate_from_sources(
     current_period_label = "__current__"
     for cat_id, tx_type_raw, total in current_result.all():
         tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
-        master_id = cat_to_master.get(cat_id, cat_id)
-        key = (master_id, tx_type)
+        grp_id = group_key(cat_id)
+        key = (grp_id, tx_type)
         amt = Decimal(str(total))
         if amt <= 0:
             continue
@@ -458,19 +601,23 @@ async def populate_from_sources(
         has_current = current_period_label in months
         if not has_current and len(months) < 2:
             continue
-        master_id, tx_type = key
+        grp_id, tx_type = key
+        # Skip groups that would mix master+sub for their master (spec R2/R3).
+        if would_conflict(grp_id, tx_type):
+            continue
         avg_amount = sum(months.values()) / len(months)
 
         item = ForecastPlanItem(
             plan_id=plan.id,
             org_id=org_id,
-            category_id=master_id,
+            category_id=grp_id,
             type=ForecastItemType(tx_type),
             planned_amount=Decimal(str(round(float(avg_amount), 2))),
             source=ItemSource.HISTORY,
         )
         db.add(item)
         existing_keys.add(key)
+        claim(grp_id, tx_type)
 
     await db.commit()
     await db.refresh(plan, ["billing_period", "items"])
@@ -511,9 +658,17 @@ async def upsert_item(
     """Add or update a single plan item."""
     plan = await _get_plan(db, org_id, plan_id)
     _require_draft(plan)
+    await db.refresh(plan, ["items"])
 
-    await _validate_master_category(
-        db, org_id, body.category_id, ForecastItemType(body.type)
+    granularity = await get_forecast_input_granularity(db, org_id)
+    sub_mode = granularity == FORECAST_GRANULARITY_SUBCATEGORY
+    await _validate_category_granularity(
+        db, org_id, body.category_id, ForecastItemType(body.type),
+        subcategory_mode=sub_mode,
+    )
+    # Per-master XOR guard: reject a master+sub mix for the same (master, type).
+    await _assert_no_mixed_granularity(
+        db, org_id, plan, [(body.category_id, body.type)]
     )
 
     # Find existing item
@@ -551,11 +706,15 @@ async def bulk_upsert(
     """Bulk add/update multiple plan items at once."""
     plan = await _get_plan(db, org_id, plan_id)
     _require_draft(plan)
+    await db.refresh(plan, ["items"])
 
-    # Validate all category IDs belong to the org and are master categories.
-    # Atomic: any invalid or type-mismatched row rejects the whole batch
-    # before any insert, matching the existing convention where an invalid
-    # ID raises ValidationError before any commit.
+    granularity = await get_forecast_input_granularity(db, org_id)
+    sub_mode = granularity == FORECAST_GRANULARITY_SUBCATEGORY
+
+    # Validate all category IDs belong to the org and match the org's build
+    # granularity. Atomic: any invalid or wrong-granularity row rejects the
+    # whole batch before any insert, matching the existing convention where
+    # an invalid ID raises ValidationError before any commit.
     requested_ids = {item.category_id for item in body.items}
     cat_by_id: dict[int, Category] = {}
     if requested_ids:
@@ -567,12 +726,21 @@ async def bulk_upsert(
         )
         for cat in valid_result.scalars().all():
             cat_by_id[cat.id] = cat
-        non_master = {
-            cid for cid, cat in cat_by_id.items() if cat.parent_id is not None
-        }
-        invalid = (requested_ids - cat_by_id.keys()) | non_master
+        if sub_mode:
+            # subcategory mode: reject masters (parent_id is None).
+            wrong_granularity = {
+                cid for cid, cat in cat_by_id.items() if cat.parent_id is None
+            }
+        else:
+            # master mode: reject subcategories (parent_id is not None).
+            wrong_granularity = {
+                cid for cid, cat in cat_by_id.items() if cat.parent_id is not None
+            }
+        invalid = (requested_ids - cat_by_id.keys()) | wrong_granularity
         if invalid:
-            raise ValidationError(f"Invalid or non-master category IDs: {sorted(invalid)}")
+            raise ValidationError(
+                f"Invalid or wrong-granularity category IDs: {sorted(invalid)}"
+            )
 
     # Per-row type compatibility (PR #144 review fix). Reject the whole
     # batch on first mismatch so partial inserts can't leave the plan in a
@@ -585,6 +753,13 @@ async def bulk_upsert(
                 f"forecast item type ({item_data.type}) for category_id="
                 f"{item_data.category_id}"
             )
+
+    # Per-master XOR guard (spec R3): no master+sub mix for any (master, type),
+    # considering both the persisted plan and the pairs in this batch.
+    await _assert_no_mixed_granularity(
+        db, org_id, plan,
+        [(item.category_id, item.type) for item in body.items],
+    )
 
     existing_map = {
         (i.category_id, i.type.value): i for i in plan.items
@@ -735,9 +910,30 @@ async def copy_from_period(
     if target_plan.items:
         existing_keys = {(i.category_id, i.type.value) for i in target_plan.items}
 
+    # Per-master XOR guard for copy (spec R2/R3): copying carries the source
+    # item's category verbatim, so a copy could pull a master item into a
+    # target that already has manual subs for that master (or vice versa).
+    # Track claims as we go, seeded from the target's existing items, and
+    # skip any source item that would mix master+sub for its master/type.
+    copy_ids = {i.category_id for i in source_plan.items}
+    copy_ids |= {i.category_id for i in target_plan.items}
+    copy_masters = await _master_of(db, org_id, copy_ids)
+    claimed_master: set[tuple[int, str]] = set()
+    claimed_sub: set[tuple[int, str]] = set()
+    for i in target_plan.items:
+        m = copy_masters.get(i.category_id, i.category_id)
+        (claimed_master if i.category_id == m else claimed_sub).add((m, i.type.value))
+
     for src_item in source_plan.items:
         key = (src_item.category_id, src_item.type.value)
         if key in existing_keys:
+            continue
+        m = copy_masters.get(src_item.category_id, src_item.category_id)
+        gkey = (m, src_item.type.value)
+        if src_item.category_id == m:
+            if gkey in claimed_sub:
+                continue
+        elif gkey in claimed_master:
             continue
         # L3.11 residual cleanup (PR #294, 2026-05-16): copied items
         # are always MANUAL on the target plan, regardless of the
@@ -758,6 +954,8 @@ async def copy_from_period(
             source=ItemSource.MANUAL,
         )
         db.add(new_item)
+        existing_keys.add(key)
+        (claimed_master if src_item.category_id == m else claimed_sub).add(gkey)
 
     await db.commit()
     await db.refresh(target_plan, ["billing_period", "items"])

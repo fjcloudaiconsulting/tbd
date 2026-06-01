@@ -348,7 +348,13 @@ async def validation_handler(request, exc: ValidationError):
 
 @app.exception_handler(ConflictError)
 async def conflict_handler(request, exc: ConflictError):
-    return JSONResponse(status_code=409, content={"detail": exc.detail})
+    content = {"detail": exc.detail}
+    # Surface the optional machine-readable code so clients can branch on
+    # the failure reason (e.g. forecast "mixed_granularity") without
+    # parsing English.
+    if getattr(exc, "code", None):
+        content["code"] = exc.code
+    return JSONResponse(status_code=409, content=content)
 
 
 # Field names whose VALUES must never be echoed back in 422 validation
