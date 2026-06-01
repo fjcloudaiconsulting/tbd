@@ -21,14 +21,21 @@ The single highest-impact fix is the one PR4 piece never built: **templates** (o
 - **Backend:** `backend/app/reports/templates/__init__.py` registers 3 code fixtures (architect lock #2 — code fixtures, NOT DB seed rows): **Monthly review**, **Cash flow trend**, **Category deep-dive**. **Author the fixtures against the implemented frontend `lib/reports/types.ts` shape** (`config.measure` for single-measure widgets, `config.measures[]` for line/area/stacked_bar/table, dimensions from the `Dimension` union, filters as `WidgetFilters` like `{txn_type:"expense", date_range:{...}}`) — **NOT** the raw AST `{field,op,value}` sketch in the parent spec §5, which predates the `WidgetFilters` indirection and would not render. `GET /api/v1/reports/templates` returns them (correctly gated by the existing `require_reports_v2_enabled` 404 dependency since it mounts on the same router).
 - **Instantiate:** "Use template" reuses the **existing** `createReport` endpoint (`api.ts:30-38` accepts `layout_json`+`canvas_filters_json`+`visibility`) to create a new **private** report from the template. No new instantiate endpoint needed — only `GET /reports/templates` is new.
 - **Frontend:** a **Templates** section on `/reports`; cards show name + description; "Use template" -> instantiate -> open canvas with charts already rendering against the user's data. Empty state becomes "Start from a template" + "Build from scratch".
+- **Capture the creation snapshot (enables "Revert to original" in Slice 2).** Migration: add nullable `original_layout_json` + `original_canvas_filters_json` to `reports`, set **once at create** and never overwritten on edit. Blank create snapshots the empty canvas; template instantiation snapshots the template's layout. Backfill existing rows with their current values (feature gated off in prod, so the table is effectively empty). Captured here in Slice 1 because this is the create path we're already touching.
 
-### Slice 2 — Builder simplification
+### Slice 2 — Builder simplification + editing-lifecycle controls
 
 - **Streamline the add flow:** the inserted widget is already pre-configured and renders (see Motivation), so the work is to **skip/streamline the picker modal** — e.g. a one-click "Add chart" that inserts the default Bar immediately, with type-switching available in the rail afterward. (Re-scoped from "add defaults" — defaults already exist.)
 - **Empty-state CTA:** hero copy explaining what you can build + buttons to templates / add-first-widget. Editor empty state at `app/reports/[id]/page.tsx:448`; list-page empty state at `app/reports/page.tsx:118-129`.
 - **ConfigRail tiering:** group **Basic** (chart type, measure, dimension) always visible; collapse **Filters** + **Advanced** (sort, limit, format) into a disclosure, closed by default (`ConfigRail.tsx:218-374`).
 - **Tooltips on jargon:** reuse `HelpTooltip` / `lib/help/tooltips.ts` (has a master-category entry already; **add new keys for aggregation types** `sum`/`count`/`avg`/`distinct`) for aggregation, master category, dimensions.
 - **Actionable empty/no-data + save feedback:** "No data" widget message suggests adjusting filters / dimension / period (`BarWidget.tsx:66` and siblings); a 2-second success toast on save.
+
+**Editing-lifecycle controls (requested 2026-06-01):**
+
+- **Edit** — a clear, explicit "Edit" affordance to enter edit mode on a saved report. The view/edit toggle already exists in `app/reports/[id]/page.tsx`; surface it prominently (today it's easy to miss).
+- **Cancel editing** — a "Cancel" / "Discard changes" control in edit mode that drops the current unsaved session and re-loads the **last-saved** report state from the server. Frontend-only (re-fetch + reset local layout/filter state); no backend change. Should no-op or be hidden when there are no unsaved changes.
+- **Revert to original** — reset the report to its **as-created** state (undo every edit since creation), using the Slice-1 snapshot. Backend: `POST /api/v1/reports/{id}/reset` copies `original_layout_json`/`original_canvas_filters_json` -> live `layout_json`/`canvas_filters_json`; gated by edit rights (owner always; org owner/admin for org-shared). Frontend: a "Revert to original" button behind a **typed/confirm modal** (it permanently discards customizations). Distinct from "Cancel editing": Cancel drops one unsaved session; Revert rolls a *saved* report back to creation state.
 
 ### Slice 3 — Complete PR4 (per locked spec §11)
 
