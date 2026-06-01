@@ -12,7 +12,8 @@ vi.mock("@/lib/reports/api", () => ({
 // Recharts renders SVG via ResponsiveContainer; jsdom doesn't compute
 // layout, so the ResponsiveContainer collapses to 0×0 and skips the
 // chart body. We assert on the data-binding path (chart container
-// present, no error / empty state) rather than the rendered bars.
+// present, no error / empty state) and on the DOM legend the widget
+// renders itself (outside the SVG) when a break-down dimension is set.
 function renderIsolated(ui: React.ReactElement) {
   return render(
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
@@ -21,7 +22,9 @@ function renderIsolated(ui: React.ReactElement) {
   );
 }
 
-function makeWidget(): BarWidgetType {
+function makeWidget(
+  overrides: Partial<BarWidgetType["config"]> = {},
+): BarWidgetType {
   return {
     id: `w_bar_${Math.random().toString(36).slice(2, 10)}`,
     type: "bar",
@@ -34,6 +37,7 @@ function makeWidget(): BarWidgetType {
       sort: { by: "value", dir: "desc" },
       limit: 10,
       format: "currency",
+      ...overrides,
     },
   };
 }
@@ -88,5 +92,62 @@ describe("BarWidget", () => {
     await waitFor(() =>
       expect(screen.getByTestId("bar-widget-error")).toBeInTheDocument(),
     );
+  });
+
+  it("renders single-series bars with no per-account legend when no break-down dimension is set", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [
+        { category: "Food", value: 200 },
+        { category: "Transport", value: 80 },
+      ],
+      meta: { row_count: 2, truncated: false, query_ms: 4 },
+    });
+
+    renderIsolated(<BarWidget widget={makeWidget()} />);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("bar-widget-loading")).toBeNull(),
+    );
+    // No break-down → the per-series legend must be absent.
+    expect(screen.queryByTestId("bar-widget-legend")).toBeNull();
+  });
+
+  it("queries grouped by both dimensions and renders a per-account legend when broken down by account", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [
+        { category: "Food", account: "Checking", value: 120 },
+        { category: "Food", account: "Savings", value: 40 },
+        { category: "Transport", account: "Checking", value: 60 },
+        { category: "Transport", account: "Credit Card", value: 25 },
+      ],
+      meta: { row_count: 4, truncated: false, query_ms: 6 },
+    });
+
+    renderIsolated(
+      <BarWidget widget={makeWidget({ dimensions: ["category", "account"] })} />,
+    );
+
+    // One query, grouped by both dimensions.
+    await waitFor(() => expect(runQueryMock).toHaveBeenCalledTimes(1));
+    expect(runQueryMock.mock.calls[0][0].dimensions).toEqual([
+      "category",
+      "account",
+    ]);
+
+    // Legend lists every distinct account, each with its own swatch color.
+    const legend = await screen.findByTestId("bar-widget-legend");
+    expect(legend).toBeInTheDocument();
+
+    const items = screen.getAllByTestId("bar-widget-legend-item");
+    expect(items).toHaveLength(3);
+    expect(legend).toHaveTextContent("Checking");
+    expect(legend).toHaveTextContent("Savings");
+    expect(legend).toHaveTextContent("Credit Card");
+
+    // Each legend swatch carries a distinct color.
+    const swatches = screen
+      .getAllByTestId("bar-widget-legend-swatch")
+      .map((el) => el.getAttribute("data-color"));
+    expect(new Set(swatches).size).toBe(swatches.length);
   });
 });

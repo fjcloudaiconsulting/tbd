@@ -115,6 +115,70 @@ export function mergeSeriesRowsForTable(
   return order.map((k) => byKey.get(k)!);
 }
 
+/**
+ * Pivot a single two-dimension query result into stacked-bar rows.
+ *
+ * Given rows grouped by ``[primaryKey, secondaryKey]`` (e.g. category ×
+ * account), produce one row per primary value whose numeric fields are
+ * keyed by each distinct secondary value. Recharts then renders one
+ * ``<Bar dataKey={secondaryValue} stackId>`` per secondary value, so a
+ * single total bar is sliced into one colored segment per secondary
+ * value (e.g. per account).
+ *
+ * Returns both the pivoted rows and the ordered list of distinct
+ * secondary values (first-seen order) so callers can map a stable color
+ * + legend entry to each. Missing combinations are backfilled with 0 so
+ * Recharts renders flat segments instead of gaps.
+ */
+export function pivotBySecondaryDimension(
+  rows: QueryRow[],
+  primaryKey: string,
+  secondaryKey: string,
+): {
+  rows: Array<{ label: string } & Record<string, number | string>>;
+  secondaryValues: string[];
+} {
+  const byLabel = new Map<string, Record<string, number | string>>();
+  const order: string[] = [];
+  const secondaryValues: string[] = [];
+  const seenSecondary = new Set<string>();
+
+  for (const row of rows) {
+    const label = readLabel(row, primaryKey);
+    const secondary = readLabel(row, secondaryKey);
+    if (!seenSecondary.has(secondary)) {
+      seenSecondary.add(secondary);
+      secondaryValues.push(secondary);
+    }
+    let existing = byLabel.get(label);
+    if (!existing) {
+      existing = { label };
+      byLabel.set(label, existing);
+      order.push(label);
+    }
+    // Same (primary, secondary) pair shouldn't repeat after GROUP BY,
+    // but sum defensively in case it does.
+    const prior = typeof existing[secondary] === "number"
+      ? (existing[secondary] as number)
+      : 0;
+    existing[secondary] = prior + readNumber(row.value);
+  }
+
+  for (const label of order) {
+    const r = byLabel.get(label)!;
+    for (const sv of secondaryValues) {
+      if (typeof r[sv] !== "number") r[sv] = 0;
+    }
+  }
+
+  return {
+    rows: order.map((l) => byLabel.get(l)!) as Array<
+      { label: string } & Record<string, number | string>
+    >,
+    secondaryValues,
+  };
+}
+
 function readLabel(
   row: QueryRow,
   key: string,

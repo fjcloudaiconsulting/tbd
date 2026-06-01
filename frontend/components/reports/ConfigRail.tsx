@@ -291,21 +291,31 @@ export default function ConfigRail({
         </Section>
       )}
 
-      {/* Secondary dimension picker — Table-only in v1. Bar / line /
-          area / stacked widgets currently only consume ``dimensions[0]``,
-          so exposing a secondary picker for them would be a no-op UX
-          (architect-locked). Split-series rendering is a follow-up if
-          users ask for it. */}
-      {widget.type === "table" && (
-        <Section label="Secondary dimension (optional)">
+      {/* Secondary dimension picker. For a bar widget this "Break down
+          by" slices each total bar into stacked segments (one color per
+          secondary value, e.g. per account) with a legend. For a table
+          it adds a second grouping column. Both consume
+          ``dimensions[1]`` and the backend AST already supports two
+          dimensions, so no query-layer change is needed. */}
+      {(widget.type === "bar" || widget.type === "table") && (
+        <Section
+          label={
+            widget.type === "bar"
+              ? "Break down by (optional)"
+              : "Secondary dimension (optional)"
+          }
+        >
           <select
             value={
-              ((widget.config as TableConfig).dimensions ?? [])[1] ?? ""
+              ((widget.config as BarConfig | TableConfig).dimensions ?? [])[1] ??
+              ""
             }
             onChange={(e) =>
               setSecondaryDimension((e.target.value || "") as Dimension | "")
             }
-            aria-label="Secondary dimension"
+            aria-label={
+              widget.type === "bar" ? "Break down by" : "Secondary dimension"
+            }
             className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
           >
             <option value="">None</option>
