@@ -65,10 +65,13 @@ export function buildFailure(sub: Category, err: unknown): FailureRow {
     const detail = err.detail as CategoryErrorDetail | string | undefined;
     if (typeof detail === "object" && detail !== null) {
       if (detail.detail === "last_in_type") {
+        const what = [detail.type, detail.scope].filter(Boolean).join(" ");
         return {
           category_id: sub.id,
           category_name: sub.name,
-          reason: `Cannot delete the only ${detail.type ?? ""} ${detail.scope ?? "subcategory"}.`,
+          reason: what
+            ? `Cannot delete the only ${what}.`
+            : `Cannot delete the only category of its type.`,
           reason_code: "last_in_type",
         };
       }
@@ -85,10 +88,13 @@ export function buildFailure(sub: Category, err: unknown): FailureRow {
         };
       }
       if (detail.detail === "type_mismatch") {
+        const haveTypes = detail.target_type && detail.source_type;
         return {
           category_id: sub.id,
           category_name: sub.name,
-          reason: `Migration target type ${detail.target_type ?? ""} is not compatible with ${detail.source_type ?? "source"}.`,
+          reason: haveTypes
+            ? `Migration target type ${detail.target_type} is not compatible with ${detail.source_type}.`
+            : `Migration target type is not compatible with this category.`,
           reason_code: "type_mismatch",
         };
       }

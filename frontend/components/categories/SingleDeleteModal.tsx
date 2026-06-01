@@ -102,6 +102,7 @@ export default function SingleDeleteModal({
   );
 
   const targetPicked = target !== "" && target !== 0;
+  const noTargetAvailable = needsTarget && targets.length === 0;
 
   async function runRefresh() {
     setRefreshError("");
@@ -188,30 +189,40 @@ export default function SingleDeleteModal({
               This category has transactions, recurring templates, or forecast
               plan items. Pick a category to reassign them to.
             </p>
-            <div className="mt-4">
-              <label
-                htmlFor="single-delete-target"
-                className="mb-1 block text-xs text-text-muted"
+            {noTargetAvailable ? (
+              <p
+                data-testid="single-delete-no-target"
+                className="mt-4 rounded-md bg-danger-dim px-4 py-3 text-sm text-danger"
               >
-                Reassign to
-              </label>
-              <select
-                id="single-delete-target"
-                data-testid="single-delete-target"
-                value={target}
-                onChange={(e) =>
-                  setTarget(e.target.value === "" ? "" : Number(e.target.value))
-                }
-                className={input}
-              >
-                <option value="">Select a master...</option>
-                {targets.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name} ({t.type})
-                  </option>
-                ))}
-              </select>
-            </div>
+                No compatible category is available to reassign to. Create a
+                same-type master category first, then delete this one.
+              </p>
+            ) : (
+              <div className="mt-4">
+                <label
+                  htmlFor="single-delete-target"
+                  className="mb-1 block text-xs text-text-muted"
+                >
+                  Reassign to
+                </label>
+                <select
+                  id="single-delete-target"
+                  data-testid="single-delete-target"
+                  value={target}
+                  onChange={(e) =>
+                    setTarget(e.target.value === "" ? "" : Number(e.target.value))
+                  }
+                  className={input}
+                >
+                  <option value="">Select a master...</option>
+                  {targets.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({t.type})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </>
         ) : (
           <p className="mt-1 text-sm text-text-secondary">

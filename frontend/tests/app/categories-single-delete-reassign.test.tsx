@@ -293,6 +293,51 @@ describe("CategoriesPage - single delete with reassign", () => {
     expect(screen.getByTestId("single-delete-modal")).toBeInTheDocument();
   });
 
+  it("shows a no-target-available message when a tx-bearing category has no compatible master", async () => {
+    // Only an income master exists; the expense sub (101) with transactions
+    // has no compatible target, so the picker must explain the dead-end
+    // instead of leaving Delete silently disabled.
+    const incomeOnly = [
+      {
+        id: 300,
+        name: "Income",
+        slug: "income",
+        parent_id: null,
+        parent_name: null,
+        type: "income" as const,
+        is_system: true,
+        description: null,
+        transaction_count: 0,
+      },
+      {
+        id: 301,
+        name: "Salary",
+        slug: null,
+        parent_id: 300,
+        parent_name: "Income",
+        type: "expense" as const,
+        is_system: false,
+        description: null,
+        transaction_count: 4, // has transactions -> picker upfront
+      },
+    ];
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/categories") return Promise.resolve(incomeOnly);
+      return Promise.resolve({});
+    }) as never);
+
+    render(<CategoriesPage />);
+    await waitFor(() => expect(screen.getByText("Salary")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Delete Salary"));
+    expect(await screen.findByTestId("single-delete-modal")).toBeInTheDocument();
+    // No compatible master -> explanatory message, confirm stays disabled.
+    expect(
+      await screen.findByTestId("single-delete-no-target"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("single-delete-confirm")).toBeDisabled();
+  });
+
   it("a last_in_type 409 shows the floor-invariant message", async () => {
     setupApi({
       "/api/v1/categories/102": () =>
