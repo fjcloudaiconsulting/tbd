@@ -65,5 +65,4 @@ async def generate_transactions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    count = await svc.generate_due_transactions(db, current_user.org_id)
-    return {"generated": count}
+    return await svc.generate_due_transactions(db, current_user.org_id)

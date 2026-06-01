@@ -78,8 +78,20 @@ export default function RecurringPage() {
   async function handleGenerate() {
     setError(""); setSuccessMsg("");
     try {
-      const res = await apiFetch<{ generated: number }>("/api/v1/recurring/generate", { method: "POST" });
-      setSuccessMsg(`Generated ${res?.generated ?? 0} transaction(s)`);
+      const res = await apiFetch<{
+        generated: number; settled: number; pending: number; period_end: string;
+      }>("/api/v1/recurring/generate", { method: "POST" });
+      const through = res?.period_end
+        ? new Date(`${res.period_end}T00:00:00`).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+          })
+        : "";
+      setSuccessMsg(
+        `Generated ${res?.generated ?? 0} transaction(s) ` +
+          `(${res?.settled ?? 0} settled, ${res?.pending ?? 0} pending)` +
+          (through ? ` through ${through}.` : ".")
+      );
       await reload();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
@@ -116,7 +128,7 @@ export default function RecurringPage() {
           onClick={handleGenerate}
           className={`${btnSecondary} self-start sm:self-auto`}
         >
-          Generate Due
+          Generate this period
         </button>
       </header>
 
@@ -124,7 +136,10 @@ export default function RecurringPage() {
       {successMsg && <div className={`mb-6 ${successCls}`}>{successMsg}</div>}
 
       <p className="mb-6 text-sm text-text-muted">
-        To create a recurring transaction, add a regular transaction from the{" "}
+        Generating fills the current billing cycle with this period&apos;s
+        recurring transactions. Items due later in the period appear as pending
+        until their date arrives. To create a recurring transaction, add a
+        regular transaction from the{" "}
         <Link href="/transactions" className="text-accent hover:text-accent-hover">Transactions</Link>{" "}
         page or the Dashboard and check the &quot;Repeats&quot; option.
       </p>
