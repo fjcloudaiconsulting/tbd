@@ -13,6 +13,8 @@ Fixtures (``session_factory``, ``_make_app``, ``_seed``, ``_resolver``,
 """
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -100,6 +102,37 @@ async def test_templates_endpoint_returns_three(session_factory):
     assert keys == {"monthly_review", "cash_flow_trend", "category_deep_dive"}
     for t in body:
         assert t["layout_json"]["widgets"], t["key"]
+
+
+@pytest.mark.asyncio
+async def test_templates_date_windows_reflect_current_month(session_factory):
+    # The date windows must be computed per request from date.today(),
+    # not frozen at module import. Assert the monthly_review window starts
+    # on the first day of the current month and ends on the last day.
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports/templates")
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    today = date.today()
+    first_of_month = today.replace(day=1)
+
+    by_key = {t["key"]: t for t in body}
+    monthly = by_key["monthly_review"]
+    date_range = monthly["canvas_filters_json"]["date_range"]
+    assert date_range["start"] == first_of_month.isoformat()
+    # end is the last day of the current month (>= today, same month)
+    end = date.fromisoformat(date_range["end"])
+    assert end >= today
+    assert end.year == today.year and end.month == today.month
+
+    # trailing-12-months template ends at today
+    cash_flow = by_key["cash_flow_trend"]
+    cf_range = cash_flow["canvas_filters_json"]["date_range"]
+    assert cf_range["end"] == today.isoformat()
+    assert cf_range["start"] == date(today.year - 1, today.month, 1).isoformat()
 
 
 @pytest.mark.asyncio

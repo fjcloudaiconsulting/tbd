@@ -74,12 +74,21 @@ def _last_12_months_range(today: date) -> dict:
     return {"start": _iso(start), "end": _iso(today)}
 
 
-_TODAY = date.today()
-_THIS_MONTH = _this_month_range(_TODAY)
-_LAST_12_MONTHS = _last_12_months_range(_TODAY)
+def get_report_templates() -> list[dict]:
+    """Build the starter report templates with fresh date windows.
 
+    The ``canvas_filters_json.date_range`` windows are computed from
+    ``date.today()`` at CALL TIME (not module import) so a long-running
+    backend always serves a window relative to the current date. The
+    endpoint calls this per request; "this month" / "trailing 12 months"
+    therefore roll over with the calendar instead of staying frozen to
+    the date the process booted.
+    """
+    today = date.today()
+    this_month = _this_month_range(today)
+    last_12_months = _last_12_months_range(today)
 
-REPORT_TEMPLATES: list[dict] = [
+    return [
     {
         "key": "monthly_review",
         "name": "Monthly review",
@@ -87,7 +96,7 @@ REPORT_TEMPLATES: list[dict] = [
             "Net, income, and expense at a glance for the current month, "
             "plus spend by category and a daily income-vs-expense trend."
         ),
-        "canvas_filters_json": {"date_range": _THIS_MONTH},
+        "canvas_filters_json": {"date_range": this_month},
         "layout_json": {
             "version": 1,
             "widgets": [
@@ -162,7 +171,7 @@ REPORT_TEMPLATES: list[dict] = [
         "description": (
             "Average monthly net over the trailing year and net by month."
         ),
-        "canvas_filters_json": {"date_range": _LAST_12_MONTHS},
+        "canvas_filters_json": {"date_range": last_12_months},
         "layout_json": {
             "version": 1,
             "widgets": [
@@ -199,7 +208,7 @@ REPORT_TEMPLATES: list[dict] = [
             "Category share of spend, the top transactions table, and a "
             "stacked category-by-month breakdown."
         ),
-        "canvas_filters_json": {"date_range": _THIS_MONTH},
+        "canvas_filters_json": {"date_range": this_month},
         "layout_json": {
             "version": 1,
             "widgets": [

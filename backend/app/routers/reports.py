@@ -48,7 +48,7 @@ from app.deps import get_current_user
 from app.models.report import Report, ReportVisibility
 from app.models.user import Role, User
 from app.rate_limit import limiter
-from app.reports.templates import REPORT_TEMPLATES
+from app.reports.templates import get_report_templates
 from app.schemas.report import (
     ReportCreate,
     ReportResponse,
@@ -183,8 +183,12 @@ async def list_templates(current_user: User = Depends(get_current_user)):
 
     Registered ABOVE ``GET /{report_id}`` so the literal ``/templates``
     path is not captured by the ``{report_id}`` integer matcher.
+
+    Calls ``get_report_templates()`` per request so the date windows are
+    recomputed from ``date.today()`` and never go stale on a long-running
+    backend.
     """
-    return [ReportTemplate(**t) for t in REPORT_TEMPLATES]
+    return [ReportTemplate(**t) for t in get_report_templates()]
 
 
 @router.get("/{report_id}", response_model=ReportResponse)
