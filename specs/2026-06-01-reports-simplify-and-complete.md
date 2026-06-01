@@ -37,6 +37,24 @@ The single highest-impact fix is the one PR4 piece never built: **templates** (o
 - **Cancel editing** — a "Cancel" / "Discard changes" control in edit mode that drops the current unsaved session and re-loads the **last-saved** report state from the server. Frontend-only (re-fetch + reset local layout/filter state); no backend change. Should no-op or be hidden when there are no unsaved changes.
 - **Revert to original** — reset the report to its **as-created** state (undo every edit since creation), using the Slice-1 snapshot. Backend: `POST /api/v1/reports/{id}/reset` copies `original_layout_json`/`original_canvas_filters_json` -> live `layout_json`/`canvas_filters_json`; gated by edit rights (owner always; org owner/admin for org-shared). Frontend: a "Revert to original" button behind a **typed/confirm modal** (it permanently discards customizations). Distinct from "Cancel editing": Cancel drops one unsaved session; Revert rolls a *saved* report back to creation state.
 
+### Slice 2b — View-mode toolbar + report versioning (decided 2026-06-01, supersedes the `original_*`/`/reset` design)
+
+User feedback after using Slices 1-2: the editor toolbar is incoherent (lands in edit mode with Save disabled but everything else enabled), the View button is broken, and "Revert to original" is ambiguous. Decisions:
+
+**Toolbar (frontend):**
+- Existing reports **open in View mode** (charts only). View toolbar = **Edit**, **History**, **Delete**. A report with zero widgets (blank) may open in edit mode so the user can start.
+- **Edit** enters edit mode: **Add widget**, **Save** (enabled only when there are unsaved changes), **Cancel** (shown/enabled only when there are unsaved changes), **History**, **Delete**, **Done** (back to View).
+- **Fix the View/Done toggle** (currently a no-op bug). `editMode` + a `dirty` flag already exist (Slice 2) — drive button enablement off `dirty`, default `editMode=false` for non-empty reports.
+
+**Versioning (replaces `original_layout_json`/`original_canvas_filters_json` + `POST /{id}/reset`):**
+- New `report_versions` table: `id, report_id FK (ON DELETE CASCADE), is_original BOOL, layout_json JSON, canvas_filters_json JSON, created_at`. Migration also **drops** the `original_*` columns from migration 063 (pre-launch, no backcompat); backfill one `is_original=True` version per existing report from `original_layout_json` (fallback to live `layout_json`).
+- On report **create**: insert the `is_original=True` version.
+- On each **Save** (layout/filters change): insert a new `is_original=False` version. Retention = **pin the original + keep the 4 most recent non-original** (evict oldest non-original when the count exceeds 4). Max 5 total.
+- Endpoints (inherit `require_reports_v2_enabled`): `GET /api/v1/reports/{id}/versions` (newest-first, original flagged), `POST /api/v1/reports/{id}/versions/{version_id}/restore` (copies that version's layout/filters into the live report; edit-rights gated; does NOT itself create a version — the next Save does). Reimplement `POST /{id}/reset` as sugar that restores the pinned original version so the existing "Revert to original" button keeps working.
+- **History panel (frontend):** lists versions (Original pinned + recent, with timestamps), each with **Restore**. "Revert to original" becomes the Restore action on the Original entry.
+
+This slice replaces the Slice-1 snapshot columns and the Slice-2 `/reset` internals. Update/replace their tests accordingly.
+
 ### Slice 3 — Complete PR4 (per locked spec §11)
 
 - **Duplicate:** `POST /api/v1/reports/{id}/duplicate` -> clone as private; button on report cards.
