@@ -10,6 +10,8 @@ import Spinner from "@/components/ui/Spinner";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import CategorySelect from "@/components/ui/CategorySelect";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { isAdmin } from "@/lib/auth";
 import { formatAmount } from "@/lib/format";
 import {
   input,
@@ -82,12 +84,28 @@ type Props = {
   initialPlan: ForecastPlan | null;
 };
 
+// A master and the rows that build its forecast. For a master-level item
+// the group is a single self-named row (subItems empty). For subcategory
+// items the group rolls them up: planned/actual/variance are the master
+// totals and `subItems` carries the individual sub rows.
+type MasterGroup = {
+  masterId: number;
+  masterName: string;
+  planned: number;
+  actual: number;
+  variance: number;
+  subItems: ForecastPlanItem[];
+  isMasterLevel: boolean;
+};
+
 export default function ForecastPlansClient({
   initialPeriods,
   initialCategories,
   initialPlan,
 }: Props) {
   const router = useRouter();
+  const { user } = useAuth();
+  const admin = user ? isAdmin(user) : false;
 
   // Categories and periods are stable per session — seed once from the
   // server, then evolve locally as the user creates categories via the
@@ -202,6 +220,21 @@ export default function ForecastPlansClient({
   const isActive = plan?.status === "active";
   const isDraft = plan?.status === "draft";
   const hasItems = (plan?.items?.length ?? 0) > 0;
+
+  // Per-org forecast build granularity (master | subcategory). The plan
+  // response carries the org setting so every member knows the mode without
+  // an admin-only GET /settings call. Local state mirrors it and flips
+  // optimistically when an admin uses the granularity control; it re-syncs
+  // whenever a fresh plan lands.
+  const [mode, setMode] = useState<"master" | "subcategory">(
+    initialPlan?.forecast_input_granularity ?? "master",
+  );
+  const [savingMode, setSavingMode] = useState(false);
+  useEffect(() => {
+    if (plan?.forecast_input_granularity) {
+      setMode(plan.forecast_input_granularity);
+    }
+  }, [plan?.forecast_input_granularity]);
 
   // Determine period context label
   const today = new Date().toISOString().slice(0, 10);
@@ -328,34 +361,52 @@ export default function ForecastPlansClient({
     void refreshAfterTransactionAdded();
   });
 
-  // Categories already used in the plan for the currently-selected
-  // type. Plan items always reference master categories, but the
-  // dropdown lets the user pick subcategories too (we roll up to master
-  // on submit), so a master being "already added" must also disable
-  // all of its children. Greying out keeps the option visible so the
-  // user sees why a previously available choice can no longer be
-  // picked, instead of having the row silently vanish.
+  // Build a category-id → master-id lookup so the disable predicate can
+  // reason about masters and their subs regardless of build mode.
+  const masterOf = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const c of categories) m.set(c.id, c.parent_id ?? c.id);
+    return m;
+  }, [categories]);
+
+  // Disable predicate (spec R6 — replaces the old "disable the whole
+  // master tree once any one is used" rule that caused the core bug).
+  // For the currently-selected type:
+  //   - disable the EXACT category already added (any item),
+  //   - disable a master if it has subcategory items (mixing not allowed),
+  //   - disable a subcategory whose master has a master-level item.
+  // After adding one subcategory, OTHER subs of the same master stay
+  // enabled — only the exact added one and the master are disabled.
   const disabledForType = useMemo(() => {
-    const usedMasters = new Set<number>();
+    const ids = new Set<number>();
+    const mastersWithMasterItem = new Set<number>();
+    const mastersWithSubItem = new Set<number>();
     for (const i of plan?.items ?? []) {
-      if (i.type === formType) usedMasters.add(i.category_id);
+      if (i.type !== formType) continue;
+      ids.add(i.category_id); // exact category already added
+      const m = masterOf.get(i.category_id) ?? i.category_id;
+      if (i.category_id === m) mastersWithMasterItem.add(m);
+      else mastersWithSubItem.add(m);
     }
-    const ids = new Set<number>(usedMasters);
     for (const c of categories) {
-      if (c.parent_id !== null && usedMasters.has(c.parent_id)) {
+      const isMaster = c.parent_id === null;
+      if (isMaster && mastersWithSubItem.has(c.id)) ids.add(c.id);
+      if (!isMaster && c.parent_id !== null && mastersWithMasterItem.has(c.parent_id)) {
         ids.add(c.id);
       }
     }
     return ids;
-  }, [plan?.items, formType, categories]);
+  }, [plan?.items, formType, categories, masterOf]);
 
-  // Resolve a selected category to its master (parent if it's a sub,
-  // itself if it's already a master). Forecast plans store master ids,
-  // but the dropdown lets the user pick subs for ergonomics.
-  const resolveMasterId = (catId: number | ""): number | "" => {
+  // Resolve the category id to store, depending on build mode.
+  //   - master mode: roll a selected subcategory up to its master (legacy).
+  //   - subcategory mode: store the selected category id verbatim (the
+  //     backend rejects masters in this mode).
+  const resolveSubmitCategoryId = (catId: number | ""): number | "" => {
     if (catId === "") return "";
     const cat = categories.find((c) => c.id === catId);
     if (!cat) return "";
+    if (mode === "subcategory") return cat.id;
     return cat.parent_id ?? cat.id;
   };
 
@@ -380,6 +431,72 @@ export default function ForecastPlansClient({
     [items],
   );
 
+  // Master-name lookup for grouping. Sub items carry their master id in
+  // `parent_id`; resolve the display name from the categories list, falling
+  // back to a generic label if the master isn't in the (session-cached)
+  // list.
+  const masterName = useCallback(
+    (masterId: number): string => {
+      const c = categories.find((cat) => cat.id === masterId);
+      return c?.name ?? "Master category";
+    },
+    [categories],
+  );
+
+  // Group items under their master so the forecast list and chart always
+  // present "the forecast is for the master" (product decision). A master's
+  // total is the sum of its rows (one master-level item, OR its subs).
+  // Master-level items form a single-row group named after themselves; sub
+  // items group under their parent master.
+  const groupByMaster = useCallback(
+    (list: ForecastPlanItem[]): MasterGroup[] => {
+      const byMaster = new Map<number, ForecastPlanItem[]>();
+      const order: number[] = [];
+      for (const it of list) {
+        const m = it.parent_id ?? it.category_id;
+        if (!byMaster.has(m)) {
+          byMaster.set(m, []);
+          order.push(m);
+        }
+        byMaster.get(m)!.push(it);
+      }
+      return order.map((m) => {
+        const groupItems = byMaster.get(m)!;
+        const isMasterLevel =
+          groupItems.length === 1 && groupItems[0].category_id === m;
+        const planned = groupItems.reduce(
+          (s, i) => s + Number(i.planned_amount),
+          0,
+        );
+        const actual = groupItems.reduce(
+          (s, i) => s + Number(i.actual_amount),
+          0,
+        );
+        return {
+          masterId: m,
+          masterName: isMasterLevel ? groupItems[0].category_name : masterName(m),
+          planned,
+          actual,
+          variance: actual - planned,
+          // All rows in the group. A master-level group has exactly one
+          // (the master item itself); a sub group has its sub items.
+          subItems: groupItems,
+          isMasterLevel,
+        };
+      });
+    },
+    [masterName],
+  );
+
+  const incomeGroups = useMemo(
+    () => groupByMaster(incomeItems),
+    [incomeItems, groupByMaster],
+  );
+  const expenseGroups = useMemo(
+    () => groupByMaster(expenseItems),
+    [expenseItems, groupByMaster],
+  );
+
   // Reset transient form/edit state when the visible period changes so a
   // half-completed Add/Edit on one period doesn't bleed into another.
   useEffect(() => {
@@ -399,6 +516,35 @@ export default function ForecastPlansClient({
       await mutatePlan(p, { revalidate: false });
     } catch (err) {
       setError(extractErrorMessage(err));
+    }
+  }
+
+  // Persist the org's forecast build granularity. Admin-only (the PUT
+  // /settings endpoint is admin-gated; the control is hidden for members).
+  // Optimistic: flip local state immediately, roll back on failure. The
+  // setting is org-scoped, so all members build consistently afterward.
+  async function handleSetMode(next: "master" | "subcategory") {
+    if (next === mode || savingMode) return;
+    const prev = mode;
+    setMode(next);
+    setSavingMode(true);
+    setError("");
+    try {
+      await apiFetch("/api/v1/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          key: "forecast_input_granularity",
+          value: next,
+        }),
+      });
+      // Re-read the plan so its forecast_input_granularity (and any
+      // mode-dependent rendering) reflects the persisted setting.
+      await mutatePlan();
+    } catch (err) {
+      setMode(prev);
+      setError(extractErrorMessage(err));
+    } finally {
+      setSavingMode(false);
     }
   }
 
@@ -469,8 +615,8 @@ export default function ForecastPlansClient({
     e.preventDefault();
     if (!plan) return;
     setError("");
-    const masterId = resolveMasterId(formCategoryId);
-    if (masterId === "") {
+    const submitId = resolveSubmitCategoryId(formCategoryId);
+    if (submitId === "") {
       setError("Please pick a category");
       return;
     }
@@ -480,7 +626,7 @@ export default function ForecastPlansClient({
         {
           method: "POST",
           body: JSON.stringify({
-            category_id: masterId,
+            category_id: submitId,
             type: formType,
             planned_amount: formAmount,
           }),
@@ -596,13 +742,13 @@ export default function ForecastPlansClient({
   // below can use a stable key instead of the array index.
   const chartData = useMemo(
     () =>
-      expenseItems.map((i) => ({
-        categoryId: i.category_id,
-        name: i.category_name,
-        planned: Number(i.planned_amount),
-        actual: Number(i.actual_amount),
+      expenseGroups.map((g) => ({
+        categoryId: g.masterId,
+        name: g.masterName,
+        planned: g.planned,
+        actual: g.actual,
       })),
-    [expenseItems],
+    [expenseGroups],
   );
 
   const plannedNet =
@@ -751,6 +897,44 @@ export default function ForecastPlansClient({
           </span>
         )}
       </p>
+
+      {/* Build granularity control (admin-only, org-scoped). Lets the
+          owner choose whether forecasts are built from master categories
+          or from subcategories that sum into their master. */}
+      {admin && (
+        <div className="mb-5 flex flex-wrap items-center gap-2">
+          <span className="text-xs font-medium text-text-secondary">
+            Build forecasts by:
+          </span>
+          <div
+            role="radiogroup"
+            aria-label="Forecast build granularity"
+            className="inline-flex overflow-hidden rounded-md border border-border"
+          >
+            {(["master", "subcategory"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                role="radio"
+                aria-checked={mode === m}
+                disabled={savingMode}
+                onClick={() => handleSetMode(m)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+                  mode === m
+                    ? "bg-accent text-accent-text"
+                    : "text-text-muted hover:bg-surface-raised"
+                }`}
+              >
+                {m === "master" ? "Master categories" : "Subcategories"}
+              </button>
+            ))}
+          </div>
+          <HelpIcon
+            label="Build granularity"
+            text="Master builds one forecast row per master category. Subcategories let a master's forecast be built from multiple subcategory rows that sum into the master. Applies to everyone in your organization."
+          />
+        </div>
+      )}
 
       {/* Period navigation */}
       {periods.length > 0 && (
@@ -1069,7 +1253,7 @@ export default function ForecastPlansClient({
             incomeItems.length > 0 && (
               <ItemSection
                 title="Income"
-                items={incomeItems}
+                groups={incomeGroups}
                 readOnly={isActive}
                 showDetails={showDetails}
                 editingId={editingId}
@@ -1089,7 +1273,7 @@ export default function ForecastPlansClient({
             expenseItems.length > 0 && (
               <ItemSection
                 title="Expenses"
-                items={expenseItems}
+                groups={expenseGroups}
                 readOnly={isActive}
                 showDetails={showDetails}
                 editingId={editingId}
@@ -1144,7 +1328,7 @@ export default function ForecastPlansClient({
 
 function ItemSection({
   title,
-  items,
+  groups,
   readOnly,
   showDetails,
   editingId,
@@ -1156,7 +1340,7 @@ function ItemSection({
   setEditAmount,
 }: {
   title: string;
-  items: ForecastPlanItem[];
+  groups: MasterGroup[];
   readOnly: boolean;
   showDetails: boolean;
   editingId: number | null;
@@ -1178,41 +1362,18 @@ function ItemSection({
       ? "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px_80px_100px]"
       : "grid-cols-[1fr_100px_100px] md:grid-cols-[1fr_100px_100px_100px]";
 
-  return (
-    <div className={card}>
-      <div className={cardHeader}>
-        <h2 className={cardTitle}>{title}</h2>
-      </div>
-      <div className="overflow-x-auto">
-        <div className="min-w-[320px]">
-          {/* Header row */}
-          <div
-            className={`grid ${colTemplate} gap-2 px-6 py-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted`}
-          >
-            <span>Category</span>
-            <span className="text-right">Planned</span>
-            <span className="hidden text-right md:block">Actual</span>
-            {showDetails && (
-              <>
-                <span className="hidden text-right md:block">
-                  Variance
-                  <HelpIcon label="Variance" text={HELP_VARIANCE} />
-                </span>
-                <span className="hidden text-center md:block">Source</span>
-              </>
-            )}
-            {!readOnly && <span className="text-right">Actions</span>}
-          </div>
-          <div className="divide-y divide-border-subtle">
-            {items.map((item) => {
-              const variance = Number(item.variance);
-              const isOver =
-                item.type === "expense" ? variance > 0 : variance < 0;
-              return (
-                <div
-                  key={item.id}
-                  className={`grid ${colTemplate} items-center gap-2 px-6 py-2.5`}
-                >
+  // Renders one editable/display row for a single plan item. Subcategory
+  // rows pass `indented` so they sit visually under their master header.
+  function renderItemRow(item: ForecastPlanItem, indented: boolean) {
+    const variance = Number(item.variance);
+    const isOver = item.type === "expense" ? variance > 0 : variance < 0;
+    return (
+      <div
+        key={item.id}
+        className={`grid ${colTemplate} items-center gap-2 ${
+          indented ? "pl-10 pr-6" : "px-6"
+        } py-2.5`}
+      >
                   {!readOnly && editingId === item.id ? (
                     <>
                       <div className="text-sm text-text-primary">
@@ -1334,9 +1495,88 @@ function ItemSection({
                       )}
                     </>
                   )}
+      </div>
+    );
+  }
+
+  // Renders a master-level roll-up header for a group built from
+  // subcategory items: name + summed planned/actual/variance, no actions
+  // (the master is edited via its subs). The forecast is always reported
+  // at the master level (product decision).
+  function renderMasterHeader(group: MasterGroup) {
+    const isOver =
+      title === "Expenses" ? group.variance > 0 : group.variance < 0;
+    return (
+      <div
+        className={`grid ${colTemplate} items-center gap-2 bg-surface-raised/40 px-6 py-2.5`}
+        data-testid={`fp-master-${group.masterId}`}
+      >
+        <div className="text-sm font-semibold text-text-primary">
+          {group.masterName}
+          <div className="md:hidden mt-1 text-xs font-normal text-text-muted">
+            Actual {formatAmount(group.actual)}
+          </div>
+        </div>
+        <span className="text-right text-sm font-semibold tabular-nums text-text-primary">
+          {formatAmount(group.planned)}
+        </span>
+        <span className="hidden text-right text-sm font-semibold tabular-nums text-text-secondary md:block">
+          {formatAmount(group.actual)}
+        </span>
+        {showDetails && (
+          <>
+            <span
+              className={`hidden text-right text-sm font-semibold tabular-nums md:block ${
+                isOver ? "text-danger" : "text-success"
+              }`}
+            >
+              {group.variance > 0 ? "+" : ""}
+              {formatAmount(group.variance)}
+            </span>
+            <span className="hidden md:block" />
+          </>
+        )}
+        {!readOnly && <span />}
+      </div>
+    );
+  }
+
+  return (
+    <div className={card}>
+      <div className={cardHeader}>
+        <h2 className={cardTitle}>{title}</h2>
+      </div>
+      <div className="overflow-x-auto">
+        <div className="min-w-[320px]">
+          {/* Header row */}
+          <div
+            className={`grid ${colTemplate} gap-2 px-6 py-2 text-[11px] font-semibold uppercase tracking-wider text-text-muted`}
+          >
+            <span>Category</span>
+            <span className="text-right">Planned</span>
+            <span className="hidden text-right md:block">Actual</span>
+            {showDetails && (
+              <>
+                <span className="hidden text-right md:block">
+                  Variance
+                  <HelpIcon label="Variance" text={HELP_VARIANCE} />
+                </span>
+                <span className="hidden text-center md:block">Source</span>
+              </>
+            )}
+            {!readOnly && <span className="text-right">Actions</span>}
+          </div>
+          <div className="divide-y divide-border-subtle">
+            {groups.map((group) =>
+              group.isMasterLevel ? (
+                renderItemRow(group.subItems[0], false)
+              ) : (
+                <div key={`group-${group.masterId}`}>
+                  {renderMasterHeader(group)}
+                  {group.subItems.map((sub) => renderItemRow(sub, true))}
                 </div>
-              );
-            })}
+              ),
+            )}
           </div>
         </div>
       </div>

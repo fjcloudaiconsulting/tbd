@@ -286,6 +286,7 @@ async def _compute_actuals_batch(
 async def _build_response(
     db: AsyncSession, org_id: int, plan: ForecastPlan,
 ) -> ForecastPlanResponse:
+    granularity = await get_forecast_input_granularity(db, org_id)
     period = plan.billing_period
     p_start = period.start_date
     p_end = period.end_date
@@ -345,6 +346,7 @@ async def _build_response(
         total_planned_expense=total_planned_expense,
         total_actual_income=total_actual_income,
         total_actual_expense=total_actual_expense,
+        forecast_input_granularity=granularity,
         items=item_responses,
     )
 
