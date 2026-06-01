@@ -517,6 +517,126 @@ async def test_delete_subcategory_also_deletes_source_budget_row(session_factory
         assert gone is None
 
 
+# --- Delete-with-migration re-points category_rules ------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_with_target_migrates_category_rules(session_factory):
+    """A source category's learned rules re-point to the target on
+    delete-with-migration instead of being dropped."""
+    seed = await _seed_basic(session_factory)
+    # Force dependents so a target is required.
+    await _add_transaction(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["account_id"],
+        category_id=seed["groceries_id"], tx_type=TransactionType.EXPENSE,
+    )
+    async with session_factory() as db:
+        db.add_all([
+            CategoryRule(
+                org_id=seed["org_id"], normalized_token="LIDL",
+                raw_description_seen="LIDL STORE",
+                category_id=seed["groceries_id"], match_count=3,
+                source=RuleSource.USER_PICK,
+            ),
+            CategoryRule(
+                org_id=seed["org_id"], normalized_token="ALDI",
+                raw_description_seen="ALDI MARKT",
+                category_id=seed["groceries_id"], match_count=2,
+                source=RuleSource.USER_EDIT,
+            ),
+        ])
+        await db.commit()
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.delete(
+            f"/api/v1/categories/{seed['groceries_id']}"
+            f"?target_category_id={seed['restaurants_id']}"
+        )
+    assert resp.status_code == 200, resp.text
+
+    async with session_factory() as db:
+        rules = (await db.scalars(
+            select(CategoryRule).where(CategoryRule.org_id == seed["org_id"])
+        )).all()
+        # Both rules survived and now point at the target.
+        assert len(rules) == 2
+        assert {r.normalized_token for r in rules} == {"LIDL", "ALDI"}
+        assert all(r.category_id == seed["restaurants_id"] for r in rules)
+
+
+@pytest.mark.asyncio
+async def test_delete_migrates_rules_alongside_targets_existing_rules(
+    session_factory,
+):
+    """A source rule re-points cleanly even when the target already owns its
+    own (distinct-token) rules; nothing the target had is disturbed."""
+    seed = await _seed_basic(session_factory)
+    await _add_transaction(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["account_id"],
+        category_id=seed["groceries_id"], tx_type=TransactionType.EXPENSE,
+    )
+    async with session_factory() as db:
+        db.add_all([
+            CategoryRule(
+                org_id=seed["org_id"], normalized_token="DINER",
+                raw_description_seen="DINER X",
+                category_id=seed["restaurants_id"], match_count=4,
+                source=RuleSource.USER_EDIT,
+            ),
+            CategoryRule(
+                org_id=seed["org_id"], normalized_token="ALDI",
+                raw_description_seen="ALDI MARKT",
+                category_id=seed["groceries_id"], match_count=2,
+                source=RuleSource.USER_PICK,
+            ),
+        ])
+        await db.commit()
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.delete(
+            f"/api/v1/categories/{seed['groceries_id']}"
+            f"?target_category_id={seed['restaurants_id']}"
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["migrated_rule_count"] == 1
+
+    async with session_factory() as db:
+        rules = (await db.scalars(
+            select(CategoryRule).where(CategoryRule.org_id == seed["org_id"])
+        )).all()
+        assert {r.normalized_token for r in rules} == {"DINER", "ALDI"}
+        assert all(r.category_id == seed["restaurants_id"] for r in rules)
+
+
+def test_partition_rules_for_migration_dedupes_colliding_token():
+    """Unit-test of the dedupe decision: a source rule whose token the
+    target already owns is dropped (the target is the survivor); the rest
+    re-point.
+
+    ``category_rules`` is unique on ``(org_id, normalized_token)`` org-wide,
+    so this collision cannot be persisted in the DB, but the partition guards
+    against it defensively. Verified here as a pure unit."""
+    from app.services.category_service import _partition_rules_for_migration
+
+    colliding = CategoryRule(
+        org_id=1, normalized_token="LIDL", raw_description_seen="LIDL SRC",
+        category_id=10, match_count=9, source=RuleSource.USER_PICK,
+    )
+    distinct = CategoryRule(
+        org_id=1, normalized_token="ALDI", raw_description_seen="ALDI",
+        category_id=10, match_count=2, source=RuleSource.USER_PICK,
+    )
+    to_migrate, to_drop = _partition_rules_for_migration(
+        [colliding, distinct], target_tokens={"LIDL"},
+    )
+    assert to_migrate == [distinct]
+    assert to_drop == [colliding]
+
+
 # --- Section 4.6 BOTH-source migration target compatibility ---------------
 
 

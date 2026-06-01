@@ -46,6 +46,10 @@ class ForecastPlanResponse(BaseModel):
     total_planned_expense: Decimal = Decimal("0.00")
     total_actual_income: Decimal = Decimal("0.00")
     total_actual_expense: Decimal = Decimal("0.00")
+    # Per-org build granularity (master|subcategory). Surfaced on every plan
+    # read so the forecast page knows which mode to render the picker in,
+    # without an extra admin-only GET /settings call (members can't read it).
+    forecast_input_granularity: Literal["master", "subcategory"] = "master"
     items: list[ForecastPlanItemResponse] = []
 
     model_config = {"from_attributes": True}

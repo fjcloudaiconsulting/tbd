@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { SWRConfig } from "swr";
 
 import ForecastPlansClient from "@/app/forecast-plans/ForecastPlansClient";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import type { BillingPeriod, Category, ForecastPlan } from "@/lib/types";
 
@@ -26,6 +27,14 @@ vi.mock("@/components/AppShell", () => ({
   default: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="app-shell">{children}</div>
   ),
+}));
+
+// The client now reads useAuth() to gate the admin-only build-granularity
+// control. Default to an admin user; individual tests can override.
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: vi.fn(() => ({
+    user: { id: 1, role: "owner", is_superadmin: false },
+  })),
 }));
 
 vi.mock("@/lib/api", async () => {
@@ -79,18 +88,26 @@ const CATEGORIES: Category[] = [
     parent_name: "Groceries", description: null, slug: "supermarket",
     is_system: false, transaction_count: 0,
   },
+  {
+    id: 22, name: "Restaurant", type: "expense", parent_id: 20,
+    parent_name: "Groceries", description: null, slug: "restaurant",
+    is_system: false, transaction_count: 0,
+  },
 ];
 
 const PERIOD: BillingPeriod = {
   id: 1, start_date: "2026-05-01", end_date: null,
 };
 
-function makePlan(items: Array<{
-  id?: number; category_id: number; category_name?: string;
-  type: "income" | "expense"; planned_amount: number;
-  source?: "manual" | "recurring" | "history";
-  parent_id?: number | null; actual_amount?: number; variance?: number;
-}> = []): ForecastPlan {
+function makePlan(
+  items: Array<{
+    id?: number; category_id: number; category_name?: string;
+    type: "income" | "expense"; planned_amount: number;
+    source?: "manual" | "recurring" | "history";
+    parent_id?: number | null; actual_amount?: number; variance?: number;
+  }> = [],
+  granularity: "master" | "subcategory" = "master",
+): ForecastPlan {
   return {
     id: 100,
     billing_period_id: PERIOD.id,
@@ -101,6 +118,7 @@ function makePlan(items: Array<{
     total_planned_expense: 0,
     total_actual_income: 0,
     total_actual_expense: 0,
+    forecast_input_granularity: granularity,
     items: items.map((it, idx) => ({
       id: it.id ?? idx + 1,
       plan_id: 100,
@@ -164,6 +182,11 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    // Default to an admin user; the non-admin test overrides per-case.
+    vi.mocked(useAuth).mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      user: { id: 1, role: "owner", is_superadmin: false } as any,
+    } as never);
   });
 
   it("Bug 1: income type shows master AND sub categories in the dropdown", async () => {
@@ -285,6 +308,195 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     expect(bonusButton).toBeTruthy();
     expect(bonusButton!.disabled).toBe(true);
     expect(bonusButton!.textContent).toContain("(already added)");
+  });
+
+  it("subcategory mode: after adding one sub, OTHER subs of the same master stay enabled", async () => {
+    // Subcategory mode. Supermarket (21, sub of Groceries 20) is already
+    // added. The core regression: Restaurant (22, the OTHER sub of
+    // Groceries) MUST remain enabled — only the exact added sub and the
+    // master are disabled.
+    const plan = makePlan(
+      [
+        {
+          category_id: 21,
+          category_name: "Supermarket",
+          type: "expense",
+          planned_amount: 200,
+          parent_id: 20,
+          source: "manual",
+        },
+      ],
+      "subcategory",
+    );
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /\+ Add Item/ })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+    // formType defaults to expense — no change needed.
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    });
+    fireEvent.focus(combobox);
+
+    const listbox = await screen.findByRole("listbox");
+    const options = within(listbox).getAllByRole("option");
+
+    const restaurant = options.find((b) =>
+      (b.textContent ?? "").includes("Restaurant"),
+    ) as HTMLButtonElement | undefined;
+    const supermarket = options.find((b) =>
+      (b.textContent ?? "").includes("Supermarket"),
+    ) as HTMLButtonElement | undefined;
+
+    // The other sub stays enabled (the bug being fixed) — previously the
+    // whole master tree locked after one sub was added.
+    expect(restaurant).toBeTruthy();
+    expect(restaurant!.disabled).toBe(false);
+    // The exact added sub is disabled.
+    expect(supermarket!.disabled).toBe(true);
+    // (Groceries master is not a pickable option because CategorySelect
+    // hides masters that have children, so only its subs are selectable.)
+  });
+
+  it("subcategory mode: adding a sub posts the SUB category id (no roll-up to master)", async () => {
+    const plan = makePlan([], "subcategory");
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /\+ Add Item/ })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    });
+    fireEvent.focus(combobox);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(within(listbox).getByText("Supermarket"));
+
+    fireEvent.change(screen.getByLabelText("Planned Amount"), {
+      target: { value: "200" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/v1/forecast-plans/100/items"),
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"category_id":21'),
+        }),
+      );
+    });
+  });
+
+  it("master mode: adding a sub rolls up to the master id (legacy behavior preserved)", async () => {
+    const plan = makePlan([], "master");
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /\+ Add Item/ })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    });
+    fireEvent.focus(combobox);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(within(listbox).getByText("Supermarket"));
+
+    fireEvent.change(screen.getByLabelText("Planned Amount"), {
+      target: { value: "200" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Add$/ }));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/v1/forecast-plans/100/items"),
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"category_id":20'),
+        }),
+      );
+    });
+  });
+
+  it("subcategory mode: list groups subs under their master with the master total", async () => {
+    const plan = makePlan(
+      [
+        {
+          category_id: 21, category_name: "Supermarket", type: "expense",
+          planned_amount: 200, parent_id: 20, source: "manual",
+          actual_amount: 0, variance: -200,
+        },
+        {
+          category_id: 22, category_name: "Restaurant", type: "expense",
+          planned_amount: 150, parent_id: 20, source: "manual",
+          actual_amount: 0, variance: -150,
+        },
+      ],
+      "subcategory",
+    );
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("fp-master-20")).toBeTruthy();
+    });
+    const masterRow = screen.getByTestId("fp-master-20");
+    // Master header shows the master name and the summed planned total.
+    expect(masterRow.textContent).toContain("Groceries");
+    expect(masterRow.textContent).toContain("350");
+    // Both subs render as their own rows.
+    expect(screen.getByText("Supermarket")).toBeTruthy();
+    expect(screen.getByText("Restaurant")).toBeTruthy();
+  });
+
+  it("the build-granularity control persists the org setting and is hidden for non-admins", async () => {
+    const plan = makePlan([], "master");
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("radiogroup", { name: /build granularity/i }),
+      ).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("radio", { name: /Subcategories/ }));
+
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith(
+        "/api/v1/settings",
+        expect.objectContaining({
+          method: "PUT",
+          body: expect.stringContaining("forecast_input_granularity"),
+        }),
+      );
+    });
+  });
+
+  it("the build-granularity control is hidden for non-admin members", async () => {
+    vi.mocked(useAuth).mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      user: { id: 2, role: "member", is_superadmin: false } as any,
+    } as never);
+    const plan = makePlan([], "master");
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Auto-populate" })).toBeTruthy();
+    });
+    expect(
+      screen.queryByRole("radiogroup", { name: /build granularity/i }),
+    ).toBeNull();
   });
 
   it("Bug 5: Refresh from sources renders a confirm modal with the locked copy", async () => {
@@ -918,5 +1130,70 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
       ).toBe("250");
     });
     expect(screen.queryByDisplayValue("999")).toBeNull();
+  });
+
+  it("blocks add-item submission while the build-granularity save is in flight", async () => {
+    // While the mode save is pending, `mode` has flipped optimistically but
+    // the backend is still in the prior mode. Submitting an item now could
+    // send the wrong category_id, so the form must block. Hold the settings
+    // PUT open so savingMode stays true across the Add click.
+    const plan = makePlan([], "master");
+    let resolveSettings: () => void = () => {};
+    (apiFetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (path: string) => {
+        if (path === "/api/v1/settings") {
+          return new Promise<ForecastPlan>((res) => {
+            resolveSettings = () => res(plan);
+          });
+        }
+        if (path.startsWith("/api/v1/settings/billing-periods/ensure-future")) {
+          return Promise.resolve([]);
+        }
+        if (path === "/api/v1/settings/billing-periods") {
+          return Promise.resolve([PERIOD]);
+        }
+        return Promise.resolve(plan);
+      },
+    );
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("radiogroup", { name: /build granularity/i }),
+      ).toBeTruthy();
+    });
+
+    // Open the add form and pick a category + amount BEFORE flipping mode.
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    });
+    fireEvent.focus(combobox);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(within(listbox).getByText("Supermarket"));
+    fireEvent.change(screen.getByLabelText("Planned Amount"), {
+      target: { value: "200" },
+    });
+
+    // Flip granularity — the settings PUT stays pending (never resolved yet).
+    fireEvent.click(screen.getByRole("radio", { name: /Subcategories/ }));
+    await waitFor(() => {
+      expect(apiFetch).toHaveBeenCalledWith(
+        "/api/v1/settings",
+        expect.anything(),
+      );
+    });
+
+    // The Add button is disabled and clicking it must NOT POST an item.
+    const addBtn = screen.getByRole("button", { name: /^Add$/ });
+    expect((addBtn as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(addBtn);
+    expect(apiFetch).not.toHaveBeenCalledWith(
+      expect.stringContaining("/items"),
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    // Settle the save so the test cleanly resolves.
+    resolveSettings();
   });
 });
