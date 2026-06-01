@@ -82,6 +82,42 @@ describe("AccountFilter", () => {
     expect(onChange).toHaveBeenCalledWith([2]);
   });
 
+  it("excludes deactivated accounts from the chip list", async () => {
+    apiFetchMock.mockResolvedValueOnce([
+      {
+        id: 10,
+        name: "Checking",
+        account_type_id: 1,
+        account_type_name: "Bank",
+        account_type_slug: "bank",
+        balance: 0,
+        currency: "USD",
+        is_active: true,
+        close_day: null,
+        is_default: true,
+      },
+      {
+        id: 11,
+        name: "Old Savings",
+        account_type_id: 1,
+        account_type_name: "Bank",
+        account_type_slug: "bank",
+        balance: 0,
+        currency: "USD",
+        is_active: false,
+        close_day: null,
+        is_default: false,
+      },
+    ]);
+
+    renderIsolated(<AccountFilter value={[]} onChange={() => {}} />);
+
+    expect(await screen.findByTestId("account-filter-chip-10")).toBeInTheDocument();
+    expect(screen.getByText("Checking")).toBeInTheDocument();
+    expect(screen.queryByTestId("account-filter-chip-11")).not.toBeInTheDocument();
+    expect(screen.queryByText("Old Savings")).not.toBeInTheDocument();
+  });
+
   it("renders an error state when the fetch fails", async () => {
     apiFetchMock.mockRejectedValueOnce(new Error("boom"));
 

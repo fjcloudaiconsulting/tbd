@@ -27,16 +27,26 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { getReport, saveLayout } from "@/lib/reports/api";
+import {
+  deleteReport,
+  duplicateReport,
+  getReport,
+  restoreVersion,
+  saveLayout,
+  updateReport,
+} from "@/lib/reports/api";
 import type {
   BarConfig,
   CanvasFilters,
   KPIConfig,
   LayoutJson,
   ReportSummary,
+  ReportVersionSummary,
   Widget,
 } from "@/lib/reports/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
 import Canvas from "@/components/reports/Canvas";
+import HistoryPanel from "@/components/reports/HistoryPanel";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import ConfigRail from "@/components/reports/ConfigRail";
 import WidgetPicker from "@/components/reports/WidgetPicker";
@@ -179,24 +189,56 @@ function emptyWidget(type: WidgetType, id: string): Widget {
   }
 }
 
-function renderWidgetByType(w: Widget, canvasFilters: CanvasFilters) {
+function renderWidgetByType(
+  w: Widget,
+  canvasFilters: CanvasFilters,
+  editMode: boolean,
+) {
   switch (w.type) {
     case "kpi":
-      return <KPIWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <KPIWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "bar":
-      return <BarWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <BarWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "line":
-      return <LineWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <LineWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "area":
-      return <AreaWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <AreaWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "pie":
-      return <PieWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <PieWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+      );
     case "sparkline":
-      return <SparklineWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <SparklineWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+        />
+      );
     case "stacked_bar":
-      return <StackedBarWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <StackedBarWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+        />
+      );
     case "table":
-      return <TableWidget widget={w} canvasFilters={canvasFilters} />;
+      return (
+        <TableWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+        />
+      );
   }
 }
 
@@ -205,6 +247,44 @@ function newWidgetId(): string {
     return `w_${crypto.randomUUID().slice(0, 8)}`;
   }
   return `w_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Tailwind's ``sm`` breakpoint. Below this we render the report as a
+// read-only single-column stack and force VIEW mode (no drag/resize, no
+// edit toolbar) — editing stays a desktop affordance.
+const SMALL_SCREEN_QUERY = "(max-width: 639px)";
+
+/**
+ * Order widgets for the mobile single-column stack: top-to-bottom by
+ * grid ``y``, then left-to-right by grid ``x`` so the vertical reading
+ * order matches what the desktop grid shows. Exported for unit testing
+ * the ordering independently of viewport mocking.
+ */
+export function orderWidgetsForStack(widgets: Widget[]): Widget[] {
+  return [...widgets].sort((a, b) => {
+    if (a.grid.y !== b.grid.y) return a.grid.y - b.grid.y;
+    return a.grid.x - b.grid.x;
+  });
+}
+
+/**
+ * True when the viewport is below Tailwind's ``sm`` breakpoint. SSR-safe
+ * (returns false until mounted) and listens for breakpoint crossings so
+ * rotating a phone or resizing a window flips the read-only stack on/off.
+ */
+function useIsSmallScreen(): boolean {
+  const [small, setSmall] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const mq = window.matchMedia(SMALL_SCREEN_QUERY);
+    const update = () => setSmall(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return small;
 }
 
 export default function ReportEditorPage({ params }: PageProps) {
@@ -219,18 +299,50 @@ export default function ReportEditorPage({ params }: PageProps) {
   const { id } = resolvedParams;
   const router = useRouter();
   const { user, loading: authLoading, featureReportsV2 } = useAuth();
+  const isSmallScreen = useIsSmallScreen();
 
   const [report, setReport] = useState<ReportSummary | null>(null);
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState(true);
+  const [editMode, setEditMode] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [showSavedToast, setShowSavedToast] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
+  const [togglingVisibility, setTogglingVisibility] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [pendingRestore, setPendingRestore] =
+    useState<ReportVersionSummary | null>(null);
+
+  // Hydrate the canvas state (report snapshot + layout + filters) from
+  // a server ``ReportSummary``. Reused by the initial load, Cancel
+  // (restore the last-saved snapshot), and Revert (rolled-back
+  // snapshot).
+  function hydrateFromReport(r: ReportSummary) {
+    setReport(r);
+    const lj = (r.layout_json ?? {}) as Partial<LayoutJson>;
+    setLayout(
+      lj && Array.isArray(lj.widgets)
+        ? { version: 1, widgets: lj.widgets as Widget[] }
+        : DEFAULT_LAYOUT,
+    );
+    setCanvasFilters((r.canvas_filters_json as CanvasFilters) ?? {});
+    setSelectedWidgetId(null);
+    setDirty(false);
+  }
+
+  // Owner-only affordances. The backend enforces this regardless, but
+  // hiding Delete/Revert for non-owners keeps the header honest when
+  // the page already knows the viewer isn't the owner.
+  const canEdit = !!user && !!report && report.owner_user_id === user.id;
 
   useEffect(() => {
     if (authLoading) return;
@@ -246,14 +358,13 @@ export default function ReportEditorPage({ params }: PageProps) {
     getReport(Number(id))
       .then((r) => {
         if (cancelled) return;
-        setReport(r);
+        hydrateFromReport(r);
+        // Default to view mode for reports that already have content; a
+        // blank (0-widget) report opens in edit mode so the user has an
+        // obvious starting point.
         const lj = (r.layout_json ?? {}) as Partial<LayoutJson>;
-        setLayout(
-          lj && Array.isArray(lj.widgets)
-            ? { version: 1, widgets: lj.widgets as Widget[] }
-            : DEFAULT_LAYOUT,
-        );
-        setCanvasFilters((r.canvas_filters_json as CanvasFilters) ?? {});
+        const widgetCount = Array.isArray(lj.widgets) ? lj.widgets.length : 0;
+        setEditMode(widgetCount === 0);
       })
       .catch((err: Error) => {
         if (!cancelled) setLoadError(err.message || "Couldn't load report");
@@ -267,10 +378,27 @@ export default function ReportEditorPage({ params }: PageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, user, authLoading, featureReportsV2]);
 
+  // Auto-dismiss the "Report saved" toast ~2s after it appears.
+  useEffect(() => {
+    if (!showSavedToast) return;
+    const t = setTimeout(() => setShowSavedToast(false), 2000);
+    return () => clearTimeout(t);
+  }, [showSavedToast]);
+
   const selectedWidget = useMemo(
     () => layout.widgets.find((w) => w.id === selectedWidgetId) ?? null,
     [layout.widgets, selectedWidgetId],
   );
+
+  // Editing is desktop-only AND owner-only. On small screens (< sm) we
+  // force VIEW mode regardless of the user's ``editMode`` toggle: the
+  // report renders as a read-only single-column stack with no drag/resize
+  // and no edit toolbar. Non-owners (e.g. viewers of an org-shared
+  // report) never enter edit mode either — the backend 403s their
+  // PATCH/DELETE/restore, so surfacing edit chrome would only let them
+  // build unsavable local changes. ``editMode`` is preserved in state so
+  // resizing back up to desktop (as an owner) restores what they had open.
+  const editModeActive = editMode && !isSmallScreen && canEdit;
 
   function updateLayout(next: LayoutJson) {
     setLayout(next);
@@ -325,11 +453,96 @@ export default function ReportEditorPage({ params }: PageProps) {
       setReport(saved);
       setDirty(false);
       setLastSavedAt(new Date());
+      setShowSavedToast(true);
     } catch (err) {
       const e = err as Error;
       setSaveError(e.message || "Couldn't save layout");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Cancel editing — discard unsaved local changes by restoring the
+  // last-saved server snapshot the page already holds in ``report``,
+  // then drop back to view mode. No network call: ``report`` always
+  // reflects the most recent successful load/save.
+  function handleCancelEdit() {
+    if (report) hydrateFromReport(report);
+    setEditMode(false);
+    setSaveError(null);
+  }
+
+  async function handleDelete() {
+    if (!report || deleting) return;
+    setConfirmDelete(false);
+    setDeleting(true);
+    setSaveError(null);
+    try {
+      await deleteReport(report.id);
+      router.push("/reports");
+    } catch (err) {
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't delete report");
+      setDeleting(false);
+    }
+  }
+
+  // Duplicate the report into a fresh private copy owned by the
+  // viewer, then navigate to the copy's editor. Anyone who can view
+  // the report (i.e. is on this page) can duplicate it.
+  async function handleDuplicate() {
+    if (!report || duplicating) return;
+    setDuplicating(true);
+    setSaveError(null);
+    try {
+      const copy = await duplicateReport(report.id);
+      router.push(`/reports/${copy.id}`);
+    } catch (err) {
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't duplicate report");
+      setDuplicating(false);
+    }
+  }
+
+  // Flip the report between private and org-shared visibility. Gated
+  // on edit rights (``canEdit``); the backend enforces this regardless.
+  async function handleToggleVisibility() {
+    if (!report || togglingVisibility) return;
+    const next: ReportSummary["visibility"] =
+      report.visibility === "org" ? "private" : "org";
+    setTogglingVisibility(true);
+    setSaveError(null);
+    try {
+      const updated = await updateReport(report.id, { visibility: next });
+      setReport(updated);
+    } catch (err) {
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't update sharing");
+    } finally {
+      setTogglingVisibility(false);
+    }
+  }
+
+  // Restore a chosen version into the live report. Confirmed via the
+  // ConfirmModal before this fires. Re-hydrates the canvas from the
+  // server's restored snapshot, closes the History panel, and drops
+  // back to view mode.
+  async function handleRestore() {
+    if (!report || !pendingRestore || restoring) return;
+    const versionId = pendingRestore.id;
+    setRestoring(true);
+    setSaveError(null);
+    try {
+      const restored = await restoreVersion(report.id, versionId);
+      hydrateFromReport(restored);
+      setEditMode(false);
+      setHistoryOpen(false);
+      setPendingRestore(null);
+    } catch (err) {
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't restore version");
+    } finally {
+      setRestoring(false);
     }
   }
 
@@ -395,15 +608,10 @@ export default function ReportEditorPage({ params }: PageProps) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setEditMode((v) => !v)}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
-            data-testid="report-editor-toggle-edit"
-          >
-            {editMode ? "View" : "Edit"}
-          </button>
-          {editMode && (
+          {/* Edit-mode-only: Add widget + Save (+ Cancel when dirty).
+              All gated on ``editModeActive`` so small screens (< sm)
+              never show edit affordances. */}
+          {editModeActive && (
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
@@ -413,17 +621,112 @@ export default function ReportEditorPage({ params }: PageProps) {
               Add widget
             </button>
           )}
+          {editModeActive && (
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving || !dirty}
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="report-editor-save"
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+          )}
+          {editModeActive && dirty && (
+            <button
+              type="button"
+              onClick={handleCancelEdit}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+              data-testid="report-editor-cancel"
+            >
+              Cancel
+            </button>
+          )}
+
+          {/* Both modes: Sharing state, Duplicate, History + Delete. */}
+          {/* Visibility: editors get a toggle; non-editors see it read-only. */}
+          {canEdit ? (
+            <button
+              type="button"
+              onClick={handleToggleVisibility}
+              disabled={togglingVisibility}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="report-editor-visibility-toggle"
+              aria-label="Toggle report sharing"
+            >
+              <span data-testid="report-editor-visibility">
+                {report.visibility === "org" ? "Shared with org" : "Private"}
+              </span>
+            </button>
+          ) : (
+            <span
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-muted"
+              data-testid="report-editor-visibility"
+            >
+              {report.visibility === "org" ? "Shared with org" : "Private"}
+            </span>
+          )}
+
           <button
             type="button"
-            onClick={handleSave}
-            disabled={saving || !dirty}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
-            data-testid="report-editor-save"
+            onClick={handleDuplicate}
+            disabled={duplicating}
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="report-editor-duplicate"
           >
-            {saving ? "Saving..." : "Save"}
+            {duplicating ? "Duplicating..." : "Duplicate"}
           </button>
+
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+            data-testid="report-editor-history"
+          >
+            History
+          </button>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              disabled={deleting}
+              className="rounded-md border border-danger px-3 py-1.5 text-sm text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
+              data-testid="report-editor-delete"
+            >
+              {deleting ? "Deleting..." : "Delete"}
+            </button>
+          )}
+
+          {/* Mode toggle: View mode shows "Edit", edit mode shows "Done".
+              Hidden on small screens (editing is desktop-only) and for
+              non-owners (editing is owner-only; the backend 403s their
+              writes, so an "edit" state would only mislead). */}
+          {!isSmallScreen && canEdit && (
+            <button
+              type="button"
+              onClick={() => setEditMode((v) => !v)}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+              data-testid="report-editor-toggle-edit"
+            >
+              {editMode ? "Done" : "Edit"}
+            </button>
+          )}
         </div>
       </header>
+
+      {/* Transient success toast. ``role="status"`` (polite live region)
+          announces the save to assistive tech; auto-dismisses after ~2s
+          via the effect above. Pointer-events-none so it never blocks
+          the UI underneath. */}
+      {showSavedToast && (
+        <div
+          role="status"
+          data-testid="report-editor-saved-toast"
+          className="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-md bg-text-primary px-4 py-2 text-sm font-medium text-surface shadow-lg"
+        >
+          Report saved
+        </div>
+      )}
 
       {saveError && (
         <div
@@ -443,30 +746,73 @@ export default function ReportEditorPage({ params }: PageProps) {
           {layout.widgets.length === 0 ? (
             <div
               data-testid="report-editor-empty"
-              className="rounded-md border border-dashed border-border bg-surface px-6 py-10 text-center text-sm text-text-muted"
+              className="rounded-md border border-dashed border-border bg-surface px-6 py-10 text-center"
             >
-              No widgets yet. Click &quot;Add widget&quot; to start.
+              <p className="text-sm font-medium text-text-primary">
+                This report has no widgets yet
+              </p>
+              <p className="mx-auto mt-1 max-w-md text-sm text-text-muted">
+                Add a widget to see your data. Canvas filters (date,
+                accounts, categories) apply to every widget, so a report
+                with no widgets shows nothing.
+              </p>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                {/* "Add widget" is owner-only: a non-owner viewing a shared
+                    report can't save, so the picker would only let them
+                    build unsavable local changes (backend 403s the PATCH). */}
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => setPickerOpen(true)}
+                    className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
+                    data-testid="report-editor-empty-add-widget"
+                  >
+                    Add widget
+                  </button>
+                )}
+                <Link
+                  href="/reports"
+                  className="rounded-md border border-border px-4 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                  data-testid="report-editor-empty-templates"
+                >
+                  Start from a template
+                </Link>
+              </div>
+            </div>
+          ) : isSmallScreen ? (
+            // Mobile (< sm): read-only single-column stack ordered by
+            // grid (y, then x). No grid, no drag/resize, no select/edit
+            // chrome — editing is desktop-only.
+            <div
+              data-testid="reports-canvas-stack"
+              className="flex flex-col gap-3"
+            >
+              {orderWidgetsForStack(layout.widgets).map((w) => (
+                <div key={w.id}>
+                  {renderWidgetByType(w, canvasFilters, false)}
+                </div>
+              ))}
             </div>
           ) : (
             <Canvas
               layout={layout}
-              editMode={editMode}
+              editMode={editModeActive}
               onLayoutChange={updateLayout}
               renderWidget={(w) => (
                 <WidgetShell
                   widgetId={w.id}
                   selected={selectedWidgetId === w.id}
-                  editMode={editMode}
+                  editMode={editModeActive}
                   onSelect={() => setSelectedWidgetId(w.id)}
                   onRemove={() => removeWidget(w.id)}
                 >
-                  {renderWidgetByType(w, canvasFilters)}
+                  {renderWidgetByType(w, canvasFilters, editModeActive)}
                 </WidgetShell>
               )}
             />
           )}
         </div>
-        {editMode && selectedWidget && (
+        {editModeActive && selectedWidget && (
           <ConfigRail
             widget={selectedWidget}
             canvasFilters={canvasFilters}
@@ -482,6 +828,31 @@ export default function ReportEditorPage({ params }: PageProps) {
           onPick={addWidget}
         />
       </div>
+
+      <ConfirmModal
+        open={confirmDelete}
+        title="Delete report"
+        message="Delete this report? This can't be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(false)}
+      />
+      <HistoryPanel
+        open={historyOpen}
+        reportId={report.id}
+        onClose={() => setHistoryOpen(false)}
+        onRestore={(v) => setPendingRestore(v)}
+      />
+      <ConfirmModal
+        open={pendingRestore !== null}
+        title="Restore version"
+        message="Restore this version? Current unsaved changes will be lost."
+        confirmLabel="Restore"
+        variant="warning"
+        onConfirm={handleRestore}
+        onCancel={() => setPendingRestore(null)}
+      />
     </AppShell>
   );
 }

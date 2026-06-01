@@ -4,9 +4,10 @@
  * Reports v2 — list page.
  *
  * Shows reports visible to the caller (own + org-shared) and a
- * "New report" button that creates an empty private report and
- * navigates to the editor. Templates tab + visibility toggle are
- * PR4 work; this page keeps the substrate ready for them.
+ * "New report" button that opens an unsaved draft at /reports/new.
+ * Neither "New report" nor "Use template" persists a row here: a
+ * report exists in the DB only after the user explicitly Saves the
+ * draft. Templates seed the draft via /reports/new?template=<key>.
  *
  * The page guards the ``feature_reports_v2`` signal client-side; if
  * the operator hasn't flipped the flag, the user shouldn't be here.
@@ -18,15 +19,24 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { createReport, listReports } from "@/lib/reports/api";
-import type { ReportSummary } from "@/lib/reports/types";
+import ConfirmModal from "@/components/ui/ConfirmModal";
+import {
+  deleteReport,
+  duplicateReport,
+  listReports,
+  listTemplates,
+} from "@/lib/reports/api";
+import type { ReportSummary, ReportTemplate } from "@/lib/reports/types";
 
 export default function ReportsListPage() {
   const router = useRouter();
   const { user, loading: authLoading, featureReportsV2 } = useAuth();
   const [reports, setReports] = useState<ReportSummary[] | null>(null);
+  const [templates, setTemplates] = useState<ReportTemplate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<ReportSummary | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [duplicatingId, setDuplicatingId] = useState<number | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -46,6 +56,15 @@ export default function ReportsListPage() {
       .catch((err: Error) => {
         if (!cancelled) setError(err.message || "Couldn't load reports");
       });
+    // Templates load independently — a failure here must not block the
+    // reports list, so it swallows its own error (falls back to []).
+    listTemplates()
+      .then((data) => {
+        if (!cancelled) setTemplates(data);
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
+      });
     return () => {
       cancelled = true;
     };
@@ -55,21 +74,51 @@ export default function ReportsListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, authLoading, featureReportsV2]);
 
-  async function handleNewReport() {
-    if (creating) return;
-    setCreating(true);
+  // "New report" no longer persists anything. It opens the unsaved
+  // draft editor at /reports/new; the row is created only when the user
+  // explicitly Saves there.
+  function handleNewReport() {
+    router.push("/reports/new");
+  }
+
+  // "Use template" likewise opens an unsaved draft, seeded from the
+  // template, via /reports/new?template=<key>. No DB write until Save.
+  function handleUseTemplate(t: ReportTemplate) {
+    router.push(`/reports/new?template=${encodeURIComponent(t.key)}`);
+  }
+
+  // Duplicate a report into a fresh private copy owned by the caller,
+  // then navigate to the copy's editor. Anyone who can view a report
+  // (own or org-shared) can duplicate it.
+  async function handleDuplicate(target: ReportSummary) {
+    if (duplicatingId !== null) return;
+    setDuplicatingId(target.id);
+    setError(null);
     try {
-      const created = await createReport({
-        name: "Untitled report",
-        visibility: "private",
-        layout_json: { version: 1, widgets: [] },
-        canvas_filters_json: {},
-      });
-      router.push(`/reports/${created.id}`);
+      const copy = await duplicateReport(target.id);
+      router.push(`/reports/${copy.id}`);
     } catch (err) {
       const e = err as Error;
-      setError(e.message || "Couldn't create report");
-      setCreating(false);
+      setError(e.message || "Couldn't duplicate report");
+      setDuplicatingId(null);
+    }
+  }
+
+  async function handleDelete() {
+    const target = pendingDelete;
+    if (!target || deletingId !== null) return;
+    setPendingDelete(null);
+    setDeletingId(target.id);
+    try {
+      await deleteReport(target.id);
+      setReports((prev) =>
+        (prev ?? []).filter((r) => r.id !== target.id),
+      );
+    } catch (err) {
+      const e = err as Error;
+      setError(e.message || "Couldn't delete report");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -95,10 +144,9 @@ export default function ReportsListPage() {
         <button
           type="button"
           onClick={handleNewReport}
-          disabled={creating}
-          className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
         >
-          {creating ? "Creating..." : "New report"}
+          New report
         </button>
       </header>
 
@@ -109,6 +157,35 @@ export default function ReportsListPage() {
         >
           {error}
         </div>
+      )}
+
+      {templates && templates.length > 0 && (
+        <section className="mb-8" data-testid="reports-templates">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-text-muted">
+            Start from a template
+          </h2>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {templates.map((t) => (
+              <div
+                key={t.key}
+                data-testid={`report-template-${t.key}`}
+                className="flex flex-col rounded-md border border-border bg-surface p-4"
+              >
+                <div className="font-medium text-text-primary">{t.name}</div>
+                <p className="mt-1 flex-1 text-sm text-text-muted">
+                  {t.description}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => handleUseTemplate(t)}
+                  className="mt-3 inline-flex items-center justify-center gap-2 self-start rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
+                >
+                  Use template
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {reports === null && !error ? (
@@ -124,38 +201,64 @@ export default function ReportsListPage() {
             No reports yet
           </p>
           <p className="mt-1 text-sm text-text-muted">
-            Start a blank canvas to build your first one.
+            Start from a template above, or create a blank report.
           </p>
         </div>
       ) : (
         <ul className="divide-y divide-border rounded-md border border-border bg-surface">
           {(reports ?? []).map((r) => (
-            <li key={r.id}>
+            <li key={r.id} className="flex items-center hover:bg-bg-elevated">
               <Link
                 href={`/reports/${r.id}`}
-                className="block px-4 py-3 hover:bg-bg-elevated"
+                className="flex flex-1 items-center justify-between px-4 py-3"
                 data-testid={`report-row-${r.id}`}
               >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-text-primary">
-                      {r.name}
+                <div>
+                  <div className="font-medium text-text-primary">{r.name}</div>
+                  {r.description && (
+                    <div className="text-sm text-text-muted">
+                      {r.description}
                     </div>
-                    {r.description && (
-                      <div className="text-sm text-text-muted">
-                        {r.description}
-                      </div>
-                    )}
-                  </div>
-                  <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-                    {r.visibility}
-                  </span>
+                  )}
                 </div>
+                <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+                  {r.visibility}
+                </span>
               </Link>
+              <button
+                type="button"
+                onClick={() => handleDuplicate(r)}
+                disabled={duplicatingId === r.id}
+                className="mr-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+                data-testid={`report-duplicate-${r.id}`}
+              >
+                {duplicatingId === r.id ? "Duplicating..." : "Duplicate"}
+              </button>
+              {r.owner_user_id === user?.id && (
+                <button
+                  type="button"
+                  onClick={() => setPendingDelete(r)}
+                  disabled={deletingId === r.id}
+                  className="mr-3 rounded-md border border-danger px-2.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
+                  data-testid={`report-delete-${r.id}`}
+                >
+                  {deletingId === r.id ? "Deleting..." : "Delete"}
+                </button>
+              )}
             </li>
           ))}
         </ul>
       )}
+
+      <ConfirmModal
+        open={pendingDelete !== null}
+        title="Delete report"
+        message="Delete this report? This can't be undone."
+        confirmLabel="Delete"
+        variant="danger"
+        onConfirm={handleDelete}
+        onCancel={() => setPendingDelete(null)}
+      />
     </AppShell>
   );
 }

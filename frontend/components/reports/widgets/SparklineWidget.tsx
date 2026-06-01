@@ -18,17 +18,25 @@ import {
 } from "recharts";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
+import { dimensionHeader } from "@/lib/reports/series";
 import type {
   CanvasFilters,
   SparklineWidget as SparklineWidgetType,
 } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import type { CsvCell } from "@/lib/reports/csv";
 
 interface Props {
   widget: SparklineWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
 }
 
-export default function SparklineWidget({ widget, canvasFilters }: Props) {
+export default function SparklineWidget({
+  widget,
+  canvasFilters,
+  editMode,
+}: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
   const dimensionKey = widget.config.dimensions[0] ?? "dimension";
@@ -39,6 +47,13 @@ export default function SparklineWidget({ widget, canvasFilters }: Props) {
   const lastValue = rows.length > 0 ? rows[rows.length - 1].value : null;
   const format = widget.config.format ?? "number";
 
+  // CSV export mirrors the underlying trend series: [dimension, measure].
+  const measureLabel = widget.config.measure.field;
+  const csvDataset = {
+    headers: [dimensionHeader(dimensionKey), measureLabel],
+    rows: rows.map((r) => [r.label, r.value]) as CsvCell[][],
+  };
+
   return (
     <div
       data-testid="sparkline-widget"
@@ -46,8 +61,15 @@ export default function SparklineWidget({ widget, canvasFilters }: Props) {
       className="flex h-full flex-col justify-center gap-1 rounded-lg border border-border bg-surface p-3"
       aria-label={widget.title || "Sparkline"}
     >
-      <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-        {widget.title || "Sparkline"}
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+          {widget.title || "Sparkline"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "Sparkline"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       {isLoading ? (
         <div

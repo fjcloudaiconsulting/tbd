@@ -28,10 +28,13 @@ import type {
   CanvasFilters,
   LineWidget as LineWidgetType,
 } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import { buildSeriesCsvDataset } from "./seriesCsv";
 
 interface Props {
   widget: LineWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
 }
 
 const LINE_COLORS = [
@@ -42,7 +45,7 @@ const LINE_COLORS = [
   "var(--color-danger)",
 ];
 
-export default function LineWidget({ widget, canvasFilters }: Props) {
+export default function LineWidget({ widget, canvasFilters, editMode }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
   const { series, isLoading, error } = useSeriesQueries(
     widget,
@@ -56,6 +59,12 @@ export default function LineWidget({ widget, canvasFilters }: Props) {
   const labels = widget.config.measures.map((m, i) =>
     seriesLabel(m, i, widget.config.measures.length),
   );
+  const csvDataset = buildSeriesCsvDataset(
+    dimensionKey,
+    rows,
+    seriesKeys,
+    labels,
+  );
 
   return (
     <div
@@ -63,11 +72,18 @@ export default function LineWidget({ widget, canvasFilters }: Props) {
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div
-        className="mb-2 text-sm font-semibold text-text-primary"
-        aria-label={widget.title || "Line chart"}
-      >
-        {widget.title || "Line chart"}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div
+          className="text-sm font-semibold text-text-primary"
+          aria-label={widget.title || "Line chart"}
+        >
+          {widget.title || "Line chart"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "Line chart"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1">
         {isLoading ? (

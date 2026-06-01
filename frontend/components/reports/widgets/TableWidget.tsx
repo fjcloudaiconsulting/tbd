@@ -19,33 +19,27 @@
 import { useMemo, useState } from "react";
 
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
-import { mergeSeriesRowsForTable, seriesLabel } from "@/lib/reports/series";
+import {
+  DIMENSION_HEADERS,
+  mergeSeriesRowsForTable,
+  seriesLabel,
+} from "@/lib/reports/series";
 import type {
   CanvasFilters,
-  Dimension,
   TableWidget as TableWidgetType,
 } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import type { CsvCell } from "@/lib/reports/csv";
 
 interface Props {
   widget: TableWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
 }
 
 const PAGE_SIZE = 50;
 
-const DIMENSION_HEADERS: Record<Dimension, string> = {
-  category: "Category",
-  category_master: "Master category",
-  account: "Account",
-  tag: "Tag",
-  txn_type: "Type",
-  status: "Status",
-  month: "Month",
-  week: "Week",
-  day: "Day",
-};
-
-export default function TableWidget({ widget, canvasFilters }: Props) {
+export default function TableWidget({ widget, canvasFilters, editMode }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
   const { series, isLoading, error } = useSeriesQueries(
     widget,
@@ -99,17 +93,73 @@ export default function TableWidget({ widget, canvasFilters }: Props) {
 
   const format = widget.config.format ?? "number";
 
+  // Total row: sum each measure column across the FULL result set
+  // (every row the widget holds in memory), not just the visible page.
+  // Only additive aggregations (sum/count) get a real total; for
+  // avg/distinct/min/max a column sum is meaningless, so we render a
+  // placeholder rather than fabricate a wrong number.
+  //
+  // Caveat: this totals the rows the query returned, which are subject
+  // to the widget's ``limit``. It is NOT a separate server-side grand
+  // total. Fine for v1.
+  const columnTotals = useMemo(() => {
+    return widget.config.measures.map((m, i) => {
+      const agg = m.measure.agg;
+      const additive = agg === "sum" || agg === "count";
+      if (!additive) return null;
+      const key = seriesKeys[i];
+      let sum = 0;
+      for (const row of rows) {
+        const v = row[key];
+        const n = typeof v === "number" ? v : Number(v);
+        if (Number.isFinite(n)) sum += n;
+      }
+      return sum;
+    });
+  }, [widget.config.measures, rows, seriesKeys]);
+
+  // CSV export mirrors the rendered table: dimension columns followed by
+  // one column per measure, every row the widget holds (in the current
+  // sort order), then a Total row matching the footer.
+  const csvDataset = useMemo(() => {
+    const headers = [
+      ...dimensions.map((d) => DIMENSION_HEADERS[d] ?? d),
+      ...seriesLabels,
+    ];
+    const dataRows: CsvCell[][] = sortedRows.map((row) => [
+      ...dimensions.map((d) => String(row[d] ?? "—")),
+      ...seriesKeys.map((key) =>
+        typeof row[key] === "number" ? (row[key] as number) : null,
+      ),
+    ]);
+    if (dataRows.length > 0) {
+      const totalRow: CsvCell[] = [
+        ...dimensions.map((_, di) => (di === 0 ? "Total" : "")),
+        ...columnTotals.map((t) => (t === null ? "" : t)),
+      ];
+      dataRows.push(totalRow);
+    }
+    return { headers, rows: dataRows };
+  }, [dimensions, seriesLabels, sortedRows, seriesKeys, columnTotals]);
+
   return (
     <div
       data-testid="table-widget"
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div
-        className="mb-2 text-sm font-semibold text-text-primary"
-        aria-label={widget.title || "Table"}
-      >
-        {widget.title || "Table"}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div
+          className="text-sm font-semibold text-text-primary"
+          aria-label={widget.title || "Table"}
+        >
+          {widget.title || "Table"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "Table"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1 overflow-auto">
         {isLoading ? (
@@ -183,6 +233,25 @@ export default function TableWidget({ widget, canvasFilters }: Props) {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr
+                data-testid="table-widget-total-row"
+                className="border-t-2 border-border font-semibold text-text-primary"
+              >
+                {dimensions.map((d, di) => (
+                  <td key={d} className="py-1.5 pr-3">
+                    {di === 0 ? "Total" : ""}
+                  </td>
+                ))}
+                {seriesKeys.map((key, i) => (
+                  <td key={key} className="py-1.5 pr-3 text-right font-mono">
+                    {columnTotals[i] === null
+                      ? "—"
+                      : formatCell(columnTotals[i], format)}
+                  </td>
+                ))}
+              </tr>
+            </tfoot>
           </table>
         )}
       </div>

@@ -67,6 +67,22 @@ describe("HELP_TOOLTIPS", () => {
     );
   });
 
+  it("covers the Reports aggregation jargon (Reports v2 polish)", () => {
+    const aggKeys: HelpTooltipKey[] = [
+      "reports.agg.sum",
+      "reports.agg.count",
+      "reports.agg.avg",
+      "reports.agg.distinct",
+    ];
+    for (const k of aggKeys) {
+      expect(HELP_TOOLTIPS[k], `key=${k}`).toBeTruthy();
+    }
+    // Distinct copy mentions counting unique values (spec example).
+    expect(HELP_TOOLTIPS["reports.agg.distinct"].content).toMatch(/unique/i);
+    // Master-category explainer is present for the dimension labels.
+    expect(HELP_TOOLTIPS["reports.master-category"]).toBeTruthy();
+  });
+
   it("covers the surfaces the L5.3 spec calls out", () => {
     // Per the L5.3 ticket: transactions (sign convention, frequency),
     // categories (type), budgets (recurrence). Lock those keys here

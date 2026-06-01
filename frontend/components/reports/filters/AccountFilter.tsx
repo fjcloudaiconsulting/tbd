@@ -41,7 +41,10 @@ export default function AccountFilter({
     { revalidateOnFocus: false },
   );
 
-  const accounts = data ?? [];
+  // Deactivated accounts must not be selectable as report filters; the
+  // shared /api/v1/accounts endpoint returns active + inactive (the
+  // accounts management page needs the inactive ones to reactivate them).
+  const accounts = (data ?? []).filter((a) => a.is_active);
   const selectedSet = new Set(value);
 
   function toggle(id: number) {

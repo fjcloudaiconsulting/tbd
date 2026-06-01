@@ -38,7 +38,7 @@ from app.models.notification import (  # noqa: F401
     NotificationCategory,
     UserNotificationPreferences,
 )
-from app.models.report import Report, ReportVisibility  # noqa: F401
+from app.models.report import Report, ReportVersion, ReportVisibility  # noqa: F401
 from app.models.scenario import Scenario, ScenarioType  # noqa: F401
 from app.models.org_ai_credential import (  # noqa: F401
     AiProvider,
@@ -117,6 +117,7 @@ __all__ = [
     "NotificationCategory",
     "UserNotificationPreferences",
     "Report",
+    "ReportVersion",
     "ReportVisibility",
     "Scenario",
     "ScenarioType",

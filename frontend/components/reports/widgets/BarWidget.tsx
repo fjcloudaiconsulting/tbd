@@ -1,9 +1,19 @@
 "use client";
 
 /**
- * Bar widget — vertical bars over a single dimension. Pulls rows
- * through ``useReportQuery``; takes the first dimension key from
- * the widget config and treats ``value`` as the measure axis.
+ * Bar widget — vertical bars over a primary dimension. Pulls rows
+ * through ``useReportQuery``; treats the first dimension as the x-axis
+ * label and ``value`` as the measure axis.
+ *
+ * When a SECONDARY dimension is set (``config.dimensions[1]``, e.g.
+ * "account"), each total bar is sliced into stacked segments — one per
+ * distinct secondary value, each a distinct color from the categorical
+ * palette — with a legend mapping color → secondary value. The backend
+ * AST supports up to two dimensions, so this is a single query grouped
+ * by ``[primary, secondary]`` that we pivot client-side via
+ * ``pivotBySecondaryDimension`` (reusing the same merge/backfill idiom
+ * the multi-series widgets use). With no secondary dimension the widget
+ * keeps its original single-color behavior.
  *
  * Recharts is the canvas chart engine across the app (Dashboard,
  * Budgets, Forecast Plans); reusing it here keeps visual register
@@ -19,26 +29,64 @@ import {
   YAxis,
 } from "recharts";
 
-import { chartColor } from "@/lib/chart-colors";
+import { categoricalColor, chartColor } from "@/lib/chart-colors";
 import { useReportQuery } from "@/lib/reports/useReportQuery";
+import { dimensionHeader, pivotBySecondaryDimension } from "@/lib/reports/series";
 import type {
   BarWidget as BarWidgetType,
   CanvasFilters,
 } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import type { CsvCell } from "@/lib/reports/csv";
 
 interface Props {
   widget: BarWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
 }
 
-export default function BarWidget({ widget, canvasFilters }: Props) {
+export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
-  const dimensionKey = widget.config.dimensions[0] ?? "dimension";
-  const rows = (data?.rows ?? []).map((r) => ({
-    label: String(r[dimensionKey] ?? "—"),
+  const primaryKey = widget.config.dimensions[0] ?? "dimension";
+  const secondaryKey = widget.config.dimensions[1];
+  const sliced = Boolean(secondaryKey);
+
+  const queryRows = data?.rows ?? [];
+
+  // Single-series shape (no break-down): one ``value`` per label.
+  const simpleRows = queryRows.map((r) => ({
+    label: String(r[primaryKey] ?? "—"),
     value: typeof r.value === "number" ? r.value : Number(r.value ?? 0),
   }));
+
+  // Sliced shape: pivot [primary, secondary] into one numeric field per
+  // distinct secondary value so each becomes a stacked Recharts series.
+  const { rows: stackedRows, secondaryValues, seriesKeys } = sliced
+    ? pivotBySecondaryDimension(queryRows, primaryKey, secondaryKey!)
+    : { rows: [], secondaryValues: [] as string[], seriesKeys: [] as string[] };
+
+  const rows = sliced ? stackedRows : simpleRows;
+  const hasRows = rows.length > 0;
+
+  // CSV export. Single-series: [dimension, measure]. Sliced (break-down
+  // by a secondary dimension): [primary dimension, ...one column per
+  // secondary value], mirroring the stacked segments.
+  const measureLabel = widget.config.measure.field;
+  const csvDataset = sliced
+    ? {
+        headers: [dimensionHeader(primaryKey), ...secondaryValues],
+        rows: stackedRows.map((r) => [
+          String(r.label),
+          ...seriesKeys.map((sk) =>
+            typeof r[sk] === "number" ? (r[sk] as number) : 0,
+          ),
+        ]) as CsvCell[][],
+      }
+    : {
+        headers: [dimensionHeader(primaryKey), measureLabel],
+        rows: simpleRows.map((r) => [r.label, r.value]) as CsvCell[][],
+      };
 
   return (
     <div
@@ -46,8 +94,15 @@ export default function BarWidget({ widget, canvasFilters }: Props) {
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div className="mb-2 text-sm font-semibold text-text-primary">
-        {widget.title || "Bar chart"}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-text-primary">
+          {widget.title || "Bar chart"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "Bar chart"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1">
         {isLoading ? (
@@ -63,7 +118,7 @@ export default function BarWidget({ widget, canvasFilters }: Props) {
           >
             Couldn&apos;t load
           </div>
-        ) : rows.length === 0 ? (
+        ) : !hasRows ? (
           <div
             data-testid="bar-widget-empty"
             className="flex h-full items-center justify-center text-sm text-text-muted"
@@ -81,16 +136,60 @@ export default function BarWidget({ widget, canvasFilters }: Props) {
               />
               <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
               <Tooltip cursor={{ fill: "var(--color-border)", opacity: 0.3 }} />
-              <Bar
-                dataKey="value"
-                fill={chartColor.spent}
-                radius={[4, 4, 0, 0]}
-                animationDuration={400}
-              />
+              {sliced ? (
+                secondaryValues.map((sv, i) => (
+                  <Bar
+                    key={seriesKeys[i]}
+                    dataKey={seriesKeys[i]}
+                    name={sv}
+                    stackId="stack"
+                    fill={categoricalColor(i)}
+                    radius={
+                      i === secondaryValues.length - 1 ? [4, 4, 0, 0] : 0
+                    }
+                    animationDuration={400}
+                  />
+                ))
+              ) : (
+                <Bar
+                  dataKey="value"
+                  fill={chartColor.spent}
+                  radius={[4, 4, 0, 0]}
+                  animationDuration={400}
+                />
+              )}
             </BarChart>
           </ResponsiveContainer>
         )}
       </div>
+
+      {/* DOM legend (outside the SVG) maps each color → secondary value.
+          Rendered ourselves rather than via Recharts ``<Legend>`` so it
+          stays visible in headless layouts (jsdom collapses the chart)
+          and so swatch colors stay theme-token driven. */}
+      {sliced && !isLoading && !error && hasRows && (
+        <ul
+          data-testid="bar-widget-legend"
+          className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-text-secondary"
+        >
+          {secondaryValues.map((sv, i) => (
+            <li
+              key={sv}
+              data-testid="bar-widget-legend-item"
+              className="flex items-center gap-1"
+            >
+              <span
+                data-testid="bar-widget-legend-swatch"
+                data-color={categoricalColor(i)}
+                aria-hidden="true"
+                className="inline-block h-2.5 w-2.5 rounded-sm"
+                style={{ backgroundColor: categoricalColor(i) }}
+              />
+              <span>{sv}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

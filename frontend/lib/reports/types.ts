@@ -287,6 +287,20 @@ export interface ReportSummary {
   updated_at: string;
 }
 
+export interface ReportVersionSummary {
+  id: number;
+  is_original: boolean;
+  created_at: string;
+}
+
+export interface ReportTemplate {
+  key: string;
+  name: string;
+  description: string;
+  layout_json: LayoutJson;
+  canvas_filters_json: CanvasFilters;
+}
+
 export interface ReportCreatePayload {
   name: string;
   description?: string;

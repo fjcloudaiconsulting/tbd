@@ -1,11 +1,13 @@
 /**
- * Regression: the "Secondary dimension" picker is Table-only in v1.
- * Bar / line / area / stacked-bar / kpi / pie / sparkline widgets
- * only consume ``dimensions[0]``, so exposing the picker for them
- * would be a no-op UX. Architect-locked Option A — split-series
- * rendering is a follow-up if users ask for it.
+ * Secondary dimension picker visibility.
+ *
+ * The "Secondary dimension" picker is Table-only. The bar widget now
+ * exposes a "Break down by" picker that slices each total bar into
+ * stacked, per-secondary-value colored segments (e.g. per account).
+ * line / area / stacked-bar / kpi / pie / sparkline still only consume
+ * ``dimensions[0]``, so they expose no secondary picker.
  */
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { SWRConfig } from "swr";
 
 import ConfigRail from "@/components/reports/ConfigRail";
@@ -153,7 +155,6 @@ function makeTable(): TableWidget {
 }
 
 const HIDDEN_CASES: Array<{ name: string; widget: Widget }> = [
-  { name: "bar", widget: makeBar() },
   { name: "line", widget: makeLine() },
   { name: "area", widget: makeArea() },
   { name: "stacked_bar", widget: makeStacked() },
@@ -191,5 +192,57 @@ describe("ConfigRail — secondary dimension picker visibility", () => {
     expect(
       screen.getByLabelText("Secondary dimension"),
     ).toBeInTheDocument();
+  });
+
+  it("DOES render the 'Break down by' picker for bar", () => {
+    renderIsolated(
+      <ConfigRail
+        widget={makeBar()}
+        canvasFilters={{}}
+        onUpdate={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("Break down by")).toBeInTheDocument();
+    // The bar picker is NOT labeled "Secondary dimension" (table-only).
+    expect(
+      screen.queryByLabelText("Secondary dimension"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sets dimensions[1] when a bar break-down is chosen, and clears it on None", () => {
+    const updates: Widget[] = [];
+    const bar = makeBar();
+    const { rerender } = renderIsolated(
+      <ConfigRail
+        widget={bar}
+        canvasFilters={{}}
+        onUpdate={(w) => updates.push(w)}
+        onClose={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Break down by"), {
+      target: { value: "account" },
+    });
+    const afterSet = updates.at(-1) as BarWidget;
+    expect(afterSet.config.dimensions).toEqual(["category", "account"]);
+
+    rerender(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <ConfigRail
+          widget={afterSet}
+          canvasFilters={{}}
+          onUpdate={(w) => updates.push(w)}
+          onClose={() => {}}
+        />
+      </SWRConfig>,
+    );
+
+    fireEvent.change(screen.getByLabelText("Break down by"), {
+      target: { value: "" },
+    });
+    const afterClear = updates.at(-1) as BarWidget;
+    expect(afterClear.config.dimensions).toEqual(["category"]);
   });
 });

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import ReportsListPage from "@/app/reports/page";
 import * as reportsApi from "@/lib/reports/api";
@@ -6,7 +6,11 @@ import { useAuth } from "@/components/auth/AuthProvider";
 
 vi.mock("@/lib/reports/api", () => ({
   listReports: vi.fn(),
+  listTemplates: vi.fn(),
   createReport: vi.fn(),
+  createFromTemplate: vi.fn(),
+  deleteReport: vi.fn(),
+  duplicateReport: vi.fn(),
 }));
 
 vi.mock("@/components/AppShell", () => ({
@@ -72,13 +76,22 @@ function mockUser(featureReportsV2 = true) {
 
 describe("ReportsListPage", () => {
   const listMock = vi.mocked(reportsApi.listReports);
+  const listTemplatesMock = vi.mocked(reportsApi.listTemplates);
   const createMock = vi.mocked(reportsApi.createReport);
+  const deleteMock = vi.mocked(reportsApi.deleteReport);
+  const duplicateMock = vi.mocked(reportsApi.duplicateReport);
 
   beforeEach(() => {
     listMock.mockReset();
+    listTemplatesMock.mockReset();
     createMock.mockReset();
+    deleteMock.mockReset();
+    duplicateMock.mockReset();
     pushMock.mockReset();
     replaceMock.mockReset();
+    // Templates load independently of the reports list; default to an
+    // empty set so these list-focused tests don't trip on undefined.
+    listTemplatesMock.mockResolvedValue([]);
   });
 
   it("renders inside AppShell so users see the sidebar/nav frame", async () => {
@@ -128,30 +141,92 @@ describe("ReportsListPage", () => {
     expect(screen.getByText(/No reports yet/i)).toBeInTheDocument();
   });
 
-  it("creates a new report and navigates to its editor on 'New report'", async () => {
+  it("navigates to the draft editor on 'New report' without persisting", async () => {
     mockUser(true);
     listMock.mockResolvedValue([]);
-    createMock.mockResolvedValue({
-      id: 42,
-      owner_user_id: 1,
-      org_id: 1,
-      visibility: "private",
-      name: "Untitled report",
-      description: null,
-      layout_json: { version: 1, widgets: [] },
-      canvas_filters_json: {},
-      schema_version: 1,
-      created_at: "2026-05-22T10:00:00",
-      updated_at: "2026-05-22T10:00:00",
-    });
 
     render(<ReportsListPage />);
 
     await screen.findByTestId("reports-empty-state");
     fireEvent.click(screen.getByRole("button", { name: /new report/i }));
 
-    await waitFor(() => expect(createMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports/42"));
+    // No DB write happens on the list page anymore — the draft is
+    // created only when the user Saves it on /reports/new.
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports/new"));
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("deletes a report card via confirm and removes it from the list", async () => {
+    mockUser(true);
+    listMock.mockResolvedValue([
+      {
+        id: 10,
+        owner_user_id: 1,
+        org_id: 1,
+        visibility: "private",
+        name: "Monthly review",
+        description: null,
+        layout_json: {},
+        canvas_filters_json: {},
+        schema_version: 1,
+        created_at: "2026-05-21T10:00:00",
+        updated_at: "2026-05-22T10:00:00",
+      },
+    ]);
+    deleteMock.mockResolvedValue(undefined);
+
+    render(<ReportsListPage />);
+
+    await screen.findByText("Monthly review");
+    fireEvent.click(screen.getByTestId("report-delete-10"));
+    // Confirm modal → Delete.
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(10));
+    await waitFor(() =>
+      expect(screen.queryByText("Monthly review")).toBeNull(),
+    );
+  });
+
+  it("duplicates a report card and navigates to the new copy", async () => {
+    mockUser(true);
+    listMock.mockResolvedValue([
+      {
+        id: 10,
+        owner_user_id: 1,
+        org_id: 1,
+        visibility: "private",
+        name: "Monthly review",
+        description: null,
+        layout_json: {},
+        canvas_filters_json: {},
+        schema_version: 1,
+        created_at: "2026-05-21T10:00:00",
+        updated_at: "2026-05-22T10:00:00",
+      },
+    ]);
+    duplicateMock.mockResolvedValue({
+      id: 88,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "Monthly review (copy)",
+      description: null,
+      layout_json: {},
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-23T10:00:00",
+      updated_at: "2026-05-23T10:00:00",
+    });
+
+    render(<ReportsListPage />);
+
+    await screen.findByText("Monthly review");
+    fireEvent.click(screen.getByTestId("report-duplicate-10"));
+
+    await waitFor(() => expect(duplicateMock).toHaveBeenCalledWith(10));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports/88"));
   });
 
   it("redirects to /dashboard when feature_reports_v2 is false", async () => {

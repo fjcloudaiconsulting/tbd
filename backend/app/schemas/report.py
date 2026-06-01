@@ -57,6 +57,19 @@ class ReportUpdate(BaseModel):
     canvas_filters_json: Optional[dict[str, Any]] = None
 
 
+class ReportTemplate(BaseModel):
+    """A starter report template returned by
+    ``GET /api/v1/reports/templates``. The frontend "Use template" action
+    POSTs ``layout_json`` / ``canvas_filters_json`` to the create endpoint.
+    """
+
+    key: str
+    name: str
+    description: str
+    layout_json: dict[str, Any]
+    canvas_filters_json: dict[str, Any]
+
+
 class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -71,3 +84,17 @@ class ReportResponse(BaseModel):
     schema_version: int
     created_at: datetime
     updated_at: datetime
+
+
+class ReportVersionSummary(BaseModel):
+    """Lightweight version-history row for the version list endpoint.
+
+    Intentionally omits the full ``layout_json`` / ``canvas_filters_json``
+    payload; the list only needs to render selectable history entries.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    is_original: bool
+    created_at: datetime

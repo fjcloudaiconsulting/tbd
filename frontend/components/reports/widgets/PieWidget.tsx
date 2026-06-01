@@ -18,15 +18,18 @@ import {
 } from "recharts";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
-import { topNWithOther } from "@/lib/reports/series";
+import { dimensionHeader, topNWithOther } from "@/lib/reports/series";
 import type {
   CanvasFilters,
   PieWidget as PieWidgetType,
 } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import type { CsvCell } from "@/lib/reports/csv";
 
 interface Props {
   widget: PieWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
 }
 
 const PIE_COLORS = [
@@ -41,7 +44,7 @@ const PIE_COLORS = [
   "var(--color-bg-elevated, var(--color-border))",
 ];
 
-export default function PieWidget({ widget, canvasFilters }: Props) {
+export default function PieWidget({ widget, canvasFilters, editMode }: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
   const dimensionKey = widget.config.dimensions[0] ?? "dimension";
@@ -52,17 +55,32 @@ export default function PieWidget({ widget, canvasFilters }: Props) {
   }));
   const rows = topNWithOther(rawRows, topN);
 
+  // CSV export mirrors the displayed slices (after the top-N "Other"
+  // roll-up): [dimension, measure].
+  const measureLabel = widget.config.measure.field;
+  const csvDataset = {
+    headers: [dimensionHeader(dimensionKey), measureLabel],
+    rows: rows.map((r) => [r.label, r.value]) as CsvCell[][],
+  };
+
   return (
     <div
       data-testid="pie-widget"
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div
-        className="mb-2 text-sm font-semibold text-text-primary"
-        aria-label={widget.title || "Pie chart"}
-      >
-        {widget.title || "Pie chart"}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div
+          className="text-sm font-semibold text-text-primary"
+          aria-label={widget.title || "Pie chart"}
+        >
+          {widget.title || "Pie chart"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "Pie chart"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1">
         {isLoading ? (

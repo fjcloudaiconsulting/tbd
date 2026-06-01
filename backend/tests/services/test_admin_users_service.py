@@ -28,6 +28,7 @@ from app.models.audit_event import AuditEvent, AuditOutcome
 from app.models.category import Category, CategoryType
 from app.models.import_batch import ImportBatch, ImportBatchStatus, ImportSourceFormat
 from app.models.invitation import Invitation
+from app.models.report import Report, ReportVersion, ReportVisibility
 from app.models.tag import Tag
 from app.models.transaction import Transaction, TransactionType
 from app.models.user import Organization, Role, User
@@ -272,6 +273,89 @@ async def test_delete_user_cleans_import_batches_and_nulls_transactions(
         # The other transaction columns are untouched.
         assert txn_after.amount == Decimal("12.34")
         assert txn_after.description == "Imported row"
+
+
+@pytest.mark.asyncio
+async def test_delete_user_handles_owned_reports(session_factory):
+    """Deleting a user who owns reports must not trip the
+    ``reports.owner_user_id`` ON DELETE RESTRICT FK.
+
+    - A PRIVATE report authored by the deleted user (with its
+      ``report_versions``) is hard-deleted (the version rows cascade).
+    - An ORG-shared report authored by the deleted user is transferred
+      to the org's active OWNER (the actor here).
+    """
+    seed = await _seed(session_factory)
+
+    _LAYOUT = {"version": 1, "widgets": [{"id": "w1"}]}
+    _FILTERS = {"date_range": {"kind": "relative", "preset": "last_30_days"}}
+
+    async with session_factory() as db:
+        private = Report(
+            owner_user_id=seed["inactive_id"],
+            org_id=seed["org_id"],
+            visibility=ReportVisibility.PRIVATE,
+            name="my private",
+            layout_json=_LAYOUT,
+            canvas_filters_json=_FILTERS,
+        )
+        shared = Report(
+            owner_user_id=seed["inactive_id"],
+            org_id=seed["org_id"],
+            visibility=ReportVisibility.ORG,
+            name="team shared",
+            layout_json=_LAYOUT,
+            canvas_filters_json=_FILTERS,
+        )
+        db.add_all([private, shared])
+        await db.flush()
+        # Each gets an is_original version + a non-original to prove the
+        # cascade reaches the version rows for the deleted private report.
+        db.add_all([
+            ReportVersion(
+                report_id=private.id, is_original=True,
+                layout_json=_LAYOUT, canvas_filters_json=_FILTERS,
+            ),
+            ReportVersion(
+                report_id=private.id, is_original=False,
+                layout_json=_LAYOUT, canvas_filters_json=_FILTERS,
+            ),
+            ReportVersion(
+                report_id=shared.id, is_original=True,
+                layout_json=_LAYOUT, canvas_filters_json=_FILTERS,
+            ),
+        ])
+        await db.commit()
+        private_id = private.id
+        shared_id = shared.id
+
+    async with session_factory() as db:
+        await admin_users_service.delete_user(
+            db,
+            target_user_id=seed["inactive_id"],
+            actor_user_id=seed["actor_id"],
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        # The user delete succeeded — no RESTRICT FK error.
+        assert await db.get(User, seed["inactive_id"]) is None
+
+        # Private report and ALL its versions are gone.
+        assert await db.get(Report, private_id) is None
+        private_versions = (
+            await db.execute(
+                select(ReportVersion).where(
+                    ReportVersion.report_id == private_id
+                )
+            )
+        ).scalars().all()
+        assert private_versions == []
+
+        # Org-shared report survives, reassigned to the org's active owner.
+        shared_after = await db.get(Report, shared_id)
+        assert shared_after is not None
+        assert shared_after.owner_user_id == seed["actor_id"]
 
 
 @pytest.mark.asyncio
