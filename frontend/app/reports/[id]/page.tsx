@@ -249,6 +249,44 @@ function newWidgetId(): string {
   return `w_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// Tailwind's ``sm`` breakpoint. Below this we render the report as a
+// read-only single-column stack and force VIEW mode (no drag/resize, no
+// edit toolbar) — editing stays a desktop affordance.
+const SMALL_SCREEN_QUERY = "(max-width: 639px)";
+
+/**
+ * Order widgets for the mobile single-column stack: top-to-bottom by
+ * grid ``y``, then left-to-right by grid ``x`` so the vertical reading
+ * order matches what the desktop grid shows. Exported for unit testing
+ * the ordering independently of viewport mocking.
+ */
+export function orderWidgetsForStack(widgets: Widget[]): Widget[] {
+  return [...widgets].sort((a, b) => {
+    if (a.grid.y !== b.grid.y) return a.grid.y - b.grid.y;
+    return a.grid.x - b.grid.x;
+  });
+}
+
+/**
+ * True when the viewport is below Tailwind's ``sm`` breakpoint. SSR-safe
+ * (returns false until mounted) and listens for breakpoint crossings so
+ * rotating a phone or resizing a window flips the read-only stack on/off.
+ */
+function useIsSmallScreen(): boolean {
+  const [small, setSmall] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const mq = window.matchMedia(SMALL_SCREEN_QUERY);
+    const update = () => setSmall(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return small;
+}
+
 export default function ReportEditorPage({ params }: PageProps) {
   // Next 15 makes ``params`` a promise; ``use()`` unwraps it on the
   // client without awaiting at the top level. In test harnesses we
@@ -261,6 +299,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   const { id } = resolvedParams;
   const router = useRouter();
   const { user, loading: authLoading, featureReportsV2 } = useAuth();
+  const isSmallScreen = useIsSmallScreen();
 
   const [report, setReport] = useState<ReportSummary | null>(null);
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
@@ -273,6 +312,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [showSavedToast, setShowSavedToast] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
@@ -338,10 +378,24 @@ export default function ReportEditorPage({ params }: PageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, user, authLoading, featureReportsV2]);
 
+  // Auto-dismiss the "Report saved" toast ~2s after it appears.
+  useEffect(() => {
+    if (!showSavedToast) return;
+    const t = setTimeout(() => setShowSavedToast(false), 2000);
+    return () => clearTimeout(t);
+  }, [showSavedToast]);
+
   const selectedWidget = useMemo(
     () => layout.widgets.find((w) => w.id === selectedWidgetId) ?? null,
     [layout.widgets, selectedWidgetId],
   );
+
+  // Editing is desktop-only. On small screens (< sm) we force VIEW mode
+  // regardless of the user's ``editMode`` toggle: the report renders as a
+  // read-only single-column stack with no drag/resize and no edit
+  // toolbar. ``editMode`` is preserved in state so resizing back up to
+  // desktop restores whatever the user had open.
+  const editModeActive = editMode && !isSmallScreen;
 
   function updateLayout(next: LayoutJson) {
     setLayout(next);
@@ -396,6 +450,7 @@ export default function ReportEditorPage({ params }: PageProps) {
       setReport(saved);
       setDirty(false);
       setLastSavedAt(new Date());
+      setShowSavedToast(true);
     } catch (err) {
       const e = err as Error;
       setSaveError(e.message || "Couldn't save layout");
@@ -550,8 +605,10 @@ export default function ReportEditorPage({ params }: PageProps) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* Edit-mode-only: Add widget + Save (+ Cancel when dirty). */}
-          {editMode && (
+          {/* Edit-mode-only: Add widget + Save (+ Cancel when dirty).
+              All gated on ``editModeActive`` so small screens (< sm)
+              never show edit affordances. */}
+          {editModeActive && (
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
@@ -561,7 +618,7 @@ export default function ReportEditorPage({ params }: PageProps) {
               Add widget
             </button>
           )}
-          {editMode && (
+          {editModeActive && (
             <button
               type="button"
               onClick={handleSave}
@@ -572,7 +629,7 @@ export default function ReportEditorPage({ params }: PageProps) {
               {saving ? "Saving..." : "Save"}
             </button>
           )}
-          {editMode && dirty && (
+          {editModeActive && dirty && (
             <button
               type="button"
               onClick={handleCancelEdit}
@@ -637,17 +694,34 @@ export default function ReportEditorPage({ params }: PageProps) {
             </button>
           )}
 
-          {/* Mode toggle: View mode shows "Edit", edit mode shows "Done". */}
-          <button
-            type="button"
-            onClick={() => setEditMode((v) => !v)}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
-            data-testid="report-editor-toggle-edit"
-          >
-            {editMode ? "Done" : "Edit"}
-          </button>
+          {/* Mode toggle: View mode shows "Edit", edit mode shows "Done".
+              Hidden on small screens, where editing is unavailable. */}
+          {!isSmallScreen && (
+            <button
+              type="button"
+              onClick={() => setEditMode((v) => !v)}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+              data-testid="report-editor-toggle-edit"
+            >
+              {editMode ? "Done" : "Edit"}
+            </button>
+          )}
         </div>
       </header>
+
+      {/* Transient success toast. ``role="status"`` (polite live region)
+          announces the save to assistive tech; auto-dismisses after ~2s
+          via the effect above. Pointer-events-none so it never blocks
+          the UI underneath. */}
+      {showSavedToast && (
+        <div
+          role="status"
+          data-testid="report-editor-saved-toast"
+          className="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-md bg-text-primary px-4 py-2 text-sm font-medium text-surface shadow-lg"
+        >
+          Report saved
+        </div>
+      )}
 
       {saveError && (
         <div
@@ -695,26 +769,40 @@ export default function ReportEditorPage({ params }: PageProps) {
                 </Link>
               </div>
             </div>
+          ) : isSmallScreen ? (
+            // Mobile (< sm): read-only single-column stack ordered by
+            // grid (y, then x). No grid, no drag/resize, no select/edit
+            // chrome — editing is desktop-only.
+            <div
+              data-testid="reports-canvas-stack"
+              className="flex flex-col gap-3"
+            >
+              {orderWidgetsForStack(layout.widgets).map((w) => (
+                <div key={w.id}>
+                  {renderWidgetByType(w, canvasFilters, false)}
+                </div>
+              ))}
+            </div>
           ) : (
             <Canvas
               layout={layout}
-              editMode={editMode}
+              editMode={editModeActive}
               onLayoutChange={updateLayout}
               renderWidget={(w) => (
                 <WidgetShell
                   widgetId={w.id}
                   selected={selectedWidgetId === w.id}
-                  editMode={editMode}
+                  editMode={editModeActive}
                   onSelect={() => setSelectedWidgetId(w.id)}
                   onRemove={() => removeWidget(w.id)}
                 >
-                  {renderWidgetByType(w, canvasFilters, editMode)}
+                  {renderWidgetByType(w, canvasFilters, editModeActive)}
                 </WidgetShell>
               )}
             />
           )}
         </div>
-        {editMode && selectedWidget && (
+        {editModeActive && selectedWidget && (
           <ConfigRail
             widget={selectedWidget}
             canvasFilters={canvasFilters}

@@ -62,9 +62,28 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/reports/10",
 }));
 
-import ReportEditorPage from "@/app/reports/[id]/page";
+import ReportEditorPage, {
+  orderWidgetsForStack,
+} from "@/app/reports/[id]/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import * as reportsApi from "@/lib/reports/api";
+import type { Widget } from "@/lib/reports/types";
+
+// Install a ``matchMedia`` stub that reports the given small-screen
+// state for the ``max-width`` query the page uses. jsdom ships no
+// matchMedia, so absent this the page treats every test as desktop.
+function mockMatchMedia(isSmall: boolean) {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: /max-width/.test(query) ? isSmall : false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
 
 const BASE_USER = {
   id: 1,
@@ -140,6 +159,10 @@ describe("ReportEditorPage", () => {
     });
     pushMock.mockReset();
     replaceMock.mockReset();
+    // Default every test to desktop (no matchMedia → page treats as
+    // desktop). Individual mobile tests opt into the small-screen stub.
+    // @ts-expect-error -- clear any stub a prior test installed
+    delete window.matchMedia;
   });
 
   it("renders the canvas for an empty report and opens the widget picker", async () => {
@@ -706,6 +729,137 @@ describe("ReportEditorPage", () => {
     await waitFor(() =>
       expect(pushMock).toHaveBeenCalledWith("/reports/77"),
     );
+  });
+
+  it("shows a 'Report saved' toast after a successful save", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "My report",
+      description: null,
+      layout_json: { version: 1, widgets: [] },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:00",
+    });
+    saveLayoutMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "My report",
+      description: null,
+      layout_json: { version: 1, widgets: [] },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:01",
+    });
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("report-editor");
+    fireEvent.click(screen.getByTestId("report-editor-add-widget"));
+    fireEvent.click(screen.getByTestId("widget-picker-option-bar"));
+    await waitFor(() =>
+      expect(screen.getByTestId("bar-widget")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId("report-editor-save"));
+
+    const toast = await screen.findByTestId("report-editor-saved-toast");
+    expect(toast).toHaveTextContent("Report saved");
+    // Accessible polite live region.
+    expect(toast).toHaveAttribute("role", "status");
+  });
+
+  it("on small screens renders a read-only widget stack with no edit affordances", async () => {
+    mockMatchMedia(true);
+    mockUser(true);
+    getReportMock.mockResolvedValue({
+      ...REPORT_WITH_WIDGET,
+      // Two widgets out of grid order to exercise the (y, x) sort.
+      layout_json: {
+        version: 1 as const,
+        widgets: [
+          {
+            id: "w_lower",
+            type: "kpi" as const,
+            title: "Lower",
+            grid: { x: 0, y: 4, w: 3, h: 2 },
+            config: {
+              dataset: "transactions" as const,
+              measure: { agg: "sum" as const, field: "amount" as const },
+              format: "currency" as const,
+            },
+          },
+          {
+            id: "w_upper",
+            type: "kpi" as const,
+            title: "Upper",
+            grid: { x: 0, y: 0, w: 3, h: 2 },
+            config: {
+              dataset: "transactions" as const,
+              measure: { agg: "sum" as const, field: "amount" as const },
+              format: "currency" as const,
+            },
+          },
+        ],
+      },
+    } as never);
+
+    renderIsolated(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("report-editor");
+    // Read-only stack renders (NOT the grid Canvas).
+    const stack = await screen.findByTestId("reports-canvas-stack");
+    expect(stack).toBeInTheDocument();
+    expect(screen.queryByTestId("reports-canvas")).toBeNull();
+    // Both widgets render their data.
+    expect(stack.querySelectorAll("[data-widget-id]").length).toBe(2);
+    expect(screen.getAllByTestId("kpi-widget").length).toBe(2);
+    // No edit affordances at all: no Edit toggle, Add, Save, Cancel.
+    expect(screen.queryByTestId("report-editor-toggle-edit")).toBeNull();
+    expect(screen.queryByTestId("report-editor-add-widget")).toBeNull();
+    expect(screen.queryByTestId("report-editor-save")).toBeNull();
+    expect(screen.queryByTestId("report-editor-cancel")).toBeNull();
+  });
+
+  it("orders widgets for the mobile stack by grid (y, then x)", () => {
+    const widgets: Widget[] = [
+      {
+        id: "c",
+        type: "kpi",
+        title: "c",
+        grid: { x: 6, y: 2, w: 3, h: 2 },
+        config: { dataset: "transactions", measure: { agg: "sum", field: "amount" } },
+      },
+      {
+        id: "a",
+        type: "kpi",
+        title: "a",
+        grid: { x: 6, y: 0, w: 3, h: 2 },
+        config: { dataset: "transactions", measure: { agg: "sum", field: "amount" } },
+      },
+      {
+        id: "b",
+        type: "kpi",
+        title: "b",
+        grid: { x: 0, y: 0, w: 3, h: 2 },
+        config: { dataset: "transactions", measure: { agg: "sum", field: "amount" } },
+      },
+    ];
+    expect(orderWidgetsForStack(widgets).map((w) => w.id)).toEqual([
+      "b",
+      "a",
+      "c",
+    ]);
+    // Pure function: does not mutate the input order.
+    expect(widgets.map((w) => w.id)).toEqual(["c", "a", "b"]);
   });
 
   it("redirects to /dashboard when feature_reports_v2 is false", async () => {
