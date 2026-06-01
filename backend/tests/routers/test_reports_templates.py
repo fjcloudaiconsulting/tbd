@@ -133,6 +133,65 @@ async def test_patch_without_layout_change_does_not_version(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_patch_identical_layout_does_not_version(session_factory):
+    """Re-sending the current layout/filters verbatim must not snapshot.
+
+    A no-op save would otherwise burn one of the 4 non-original slots and
+    prematurely evict meaningful history under the bounded cap.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post("/api/v1/reports", json={
+            "name": "Idempotent Report",
+            "visibility": "private",
+            "layout_json": _LAYOUT,
+            "canvas_filters_json": _FILTERS,
+        })
+        assert res.status_code == 201, res.text
+        report_id = res.json()["id"]
+
+        # PATCH with values identical to the live state.
+        patched = client.patch(f"/api/v1/reports/{report_id}", json={
+            "layout_json": _LAYOUT,
+            "canvas_filters_json": _FILTERS,
+        })
+        assert patched.status_code == 200, patched.text
+
+    versions = await _versions_for(session_factory, report_id)
+    # Still just the create-time original; the no-op save added nothing.
+    assert len(versions) == 1
+    assert versions[0].is_original is True
+
+
+@pytest.mark.asyncio
+async def test_patch_null_layout_rejected_with_422(session_factory):
+    """Explicit null for the NOT-NULL JSON columns must 422, not 500."""
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post("/api/v1/reports", json={
+            "name": "Null Report",
+            "visibility": "private",
+            "layout_json": _LAYOUT,
+            "canvas_filters_json": _FILTERS,
+        })
+        assert res.status_code == 201, res.text
+        report_id = res.json()["id"]
+
+        for field in ("layout_json", "canvas_filters_json"):
+            patched = client.patch(
+                f"/api/v1/reports/{report_id}", json={field: None}
+            )
+            assert patched.status_code == 422, patched.text
+
+    # No version churn from the rejected writes; only the original remains.
+    versions = await _versions_for(session_factory, report_id)
+    assert len(versions) == 1
+    assert versions[0].is_original is True
+
+
+@pytest.mark.asyncio
 async def test_list_versions(session_factory):
     await _seed(session_factory)
     app = _make_app(session_factory, _resolver("user_a"))

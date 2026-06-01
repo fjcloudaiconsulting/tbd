@@ -271,7 +271,23 @@ async def update_report(
         )
     patch = body.model_dump(exclude_unset=True)
     versioned_keys = {"layout_json", "canvas_filters_json"}
-    layout_changed = any(k in patch for k in versioned_keys)
+    # ``layout_json`` / ``canvas_filters_json`` are NOT-NULL columns.
+    # ``exclude_unset`` keeps an absent key out of the patch, but an
+    # explicit ``{"layout_json": null}`` lands here and would assign None,
+    # tripping an IntegrityError (500). Reject it up-front with a 422.
+    for k in versioned_keys:
+        if k in patch and patch[k] is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{k} may not be null",
+            )
+    # Only snapshot when the canvas content actually changes. An explicit
+    # value identical to the current live state (or a rename / visibility-
+    # only edit) must NOT add a no-op version that prematurely evicts
+    # meaningful history under the bounded-retention cap.
+    layout_changed = any(
+        k in patch and patch[k] != getattr(row, k) for k in versioned_keys
+    )
     for k, v in patch.items():
         setattr(row, k, v)
     if layout_changed:

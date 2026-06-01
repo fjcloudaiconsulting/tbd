@@ -94,7 +94,7 @@ def get_report_templates() -> list[dict]:
         "name": "Monthly review",
         "description": (
             "Net, income, and expense at a glance for the current month, "
-            "plus spend by category and a daily income-vs-expense trend."
+            "plus spend by category and a daily net trend."
         ),
         "canvas_filters_json": {"date_range": this_month},
         "layout_json": {
@@ -151,9 +151,9 @@ def get_report_templates() -> list[dict]:
                     },
                 },
                 {
-                    "id": "mr-line-income-expense",
+                    "id": "mr-line-net-trend",
                     "type": "line",
-                    "title": "Income vs expense",
+                    "title": "Net trend (daily)",
                     "grid": {"x": 6, "y": 2, "w": 6, "h": 4},
                     "config": {
                         "dataset": "transactions",
@@ -205,7 +205,7 @@ def get_report_templates() -> list[dict]:
         "key": "category_deep_dive",
         "name": "Category deep-dive",
         "description": (
-            "Category share of spend, the top transactions table, and a "
+            "Category share of spend, a top-categories table, and a "
             "stacked category-by-month breakdown."
         ),
         "canvas_filters_json": {"date_range": this_month},
@@ -227,7 +227,7 @@ def get_report_templates() -> list[dict]:
                 {
                     "id": "cdd-table-top",
                     "type": "table",
-                    "title": "Top transactions",
+                    "title": "Top categories",
                     "grid": {"x": 6, "y": 0, "w": 6, "h": 4},
                     "config": {
                         "dataset": "transactions",
