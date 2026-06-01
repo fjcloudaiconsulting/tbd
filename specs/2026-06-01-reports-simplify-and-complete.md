@@ -74,3 +74,5 @@ Subagent-driven, sequential with review gates; **branch + PR per slice**. Slice 
 ## Out of scope (unchanged from parent spec)
 
 Public share links, real-time refresh, cross-org reports, drill-down, saved widget presets, non-`transactions` datasets, Sankey/treemap/gauge/scatter, materialized rollups, in-canvas text blocks, i18n, audit logging of report CRUD.
+
+Backlog (post-save presentation): after Save/Done the report stays on the same canvas in view mode; users expect Done to feel like leaving the editor (navigate to a read-only view or back to the list). Deferred per owner 2026-06-01.
