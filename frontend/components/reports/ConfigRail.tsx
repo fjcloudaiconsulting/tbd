@@ -27,6 +27,8 @@ import AccountFilter from "@/components/reports/filters/AccountFilter";
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
 import DatePresetChips from "@/components/reports/filters/DatePresetChips";
 import TagFilter from "@/components/reports/filters/TagFilter";
+import HelpTooltip from "@/components/help/HelpTooltip";
+import type { HelpTooltipKey } from "@/lib/help/tooltips";
 import type {
   AreaConfig,
   Aggregation,
@@ -61,6 +63,14 @@ const AGG_OPTIONS: Array<{ value: Aggregation; label: string }> = [
   { value: "avg", label: "Average" },
   { value: "distinct", label: "Distinct count" },
 ];
+
+/** Tooltip key for each aggregation type (plain-language explainer). */
+const AGG_HELP_KEY: Record<Aggregation, HelpTooltipKey> = {
+  sum: "reports.agg.sum",
+  count: "reports.agg.count",
+  avg: "reports.agg.avg",
+  distinct: "reports.agg.distinct",
+};
 
 const FIELD_OPTIONS: Array<{ value: MeasureField; label: string }> = [
   { value: "amount", label: "Amount" },
@@ -273,7 +283,7 @@ export default function ConfigRail({
       )}
 
       {widget.type !== "kpi" && (
-        <Section label="Primary dimension">
+        <Section label="Primary dimension" help="reports.master-category">
           <select
             value={
               ((widget.config as BarConfig).dimensions ?? [])[0] ?? "category"
@@ -291,21 +301,32 @@ export default function ConfigRail({
         </Section>
       )}
 
-      {/* Secondary dimension picker — Table-only in v1. Bar / line /
-          area / stacked widgets currently only consume ``dimensions[0]``,
-          so exposing a secondary picker for them would be a no-op UX
-          (architect-locked). Split-series rendering is a follow-up if
-          users ask for it. */}
-      {widget.type === "table" && (
-        <Section label="Secondary dimension (optional)">
+      {/* Secondary dimension picker. For a bar widget this "Break down
+          by" slices each total bar into stacked segments (one color per
+          secondary value, e.g. per account) with a legend. For a table
+          it adds a second grouping column. Both consume
+          ``dimensions[1]`` and the backend AST already supports two
+          dimensions, so no query-layer change is needed. */}
+      {(widget.type === "bar" || widget.type === "table") && (
+        <Section
+          label={
+            widget.type === "bar"
+              ? "Break down by (optional)"
+              : "Secondary dimension (optional)"
+          }
+          help="reports.master-category"
+        >
           <select
             value={
-              ((widget.config as TableConfig).dimensions ?? [])[1] ?? ""
+              ((widget.config as BarConfig | TableConfig).dimensions ?? [])[1] ??
+              ""
             }
             onChange={(e) =>
               setSecondaryDimension((e.target.value || "") as Dimension | "")
             }
-            aria-label="Secondary dimension"
+            aria-label={
+              widget.type === "bar" ? "Break down by" : "Secondary dimension"
+            }
             className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
           >
             <option value="">None</option>
@@ -377,15 +398,19 @@ export default function ConfigRail({
 
 function Section({
   label,
+  help,
   children,
 }: {
   label: string;
+  /** Optional help-tooltip key rendered as an info icon next to the label. */
+  help?: HelpTooltipKey;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-        {label}
+      <div className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+        <span>{label}</span>
+        {help && <HelpTooltip k={help} />}
       </div>
       {children}
     </div>
@@ -412,7 +437,7 @@ function SingleMeasureEditor({
 }) {
   return (
     <>
-      <Section label="Aggregation">
+      <Section label="Aggregation" help={AGG_HELP_KEY[measure.agg]}>
         <select
           value={measure.agg}
           onChange={(e) =>
@@ -516,7 +541,7 @@ function MeasuresEditor({
             aria-label={`Series ${idx + 1} label`}
             className="rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
           />
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1">
             <select
               value={s.measure.agg}
               onChange={(e) =>
@@ -534,6 +559,7 @@ function MeasuresEditor({
                 </option>
               ))}
             </select>
+            <HelpTooltip k={AGG_HELP_KEY[s.measure.agg]} />
             <select
               value={s.measure.field}
               onChange={(e) =>

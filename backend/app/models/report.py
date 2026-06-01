@@ -31,6 +31,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -39,7 +40,7 @@ from sqlalchemy import (
     String,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 
@@ -92,6 +93,13 @@ class Report(Base):
         nullable=False,
     )
 
+    versions: Mapped[list["ReportVersion"]] = relationship(
+        "ReportVersion",
+        back_populates="report",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     __table_args__ = (
         # "Shared by your org" + "Yours" reads.
         Index(
@@ -100,4 +108,37 @@ class Report(Base):
             "visibility",
         ),
         Index("ix_reports_owner", "owner_user_id"),
+    )
+
+
+class ReportVersion(Base):
+    """A point-in-time snapshot of a report's layout + canvas filters.
+
+    Replaces the single ``reports.original_*`` snapshot columns with a
+    small bounded history (max 5 per report). Exactly one row per report
+    has ``is_original=True`` (captured at create, never evicted); the
+    remaining up to 4 rows are the most recent saves.
+    """
+
+    __tablename__ = "report_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("reports.id", name="fk_report_versions_report", ondelete="CASCADE"),
+        nullable=False,
+    )
+    is_original: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    layout_json: Mapped[Any] = mapped_column(JSON, nullable=True)
+    canvas_filters_json: Mapped[Any] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    report: Mapped["Report"] = relationship("Report", back_populates="versions")
+
+    __table_args__ = (
+        Index("ix_report_versions_report", "report_id"),
     )

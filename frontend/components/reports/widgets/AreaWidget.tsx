@@ -24,10 +24,13 @@ import type {
   AreaWidget as AreaWidgetType,
   CanvasFilters,
 } from "@/lib/reports/types";
+import WidgetCsvButton from "./WidgetCsvButton";
+import { buildSeriesCsvDataset } from "./seriesCsv";
 
 interface Props {
   widget: AreaWidgetType;
   canvasFilters?: CanvasFilters;
+  editMode?: boolean;
 }
 
 const AREA_COLORS = [
@@ -38,7 +41,7 @@ const AREA_COLORS = [
   "var(--color-danger)",
 ];
 
-export default function AreaWidget({ widget, canvasFilters }: Props) {
+export default function AreaWidget({ widget, canvasFilters, editMode }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
   const { series, isLoading, error } = useSeriesQueries(
     widget,
@@ -53,6 +56,12 @@ export default function AreaWidget({ widget, canvasFilters }: Props) {
     seriesLabel(m, i, widget.config.measures.length),
   );
   const stackId = widget.config.stacked && seriesKeys.length > 1 ? "stack" : undefined;
+  const csvDataset = buildSeriesCsvDataset(
+    dimensionKey,
+    rows,
+    seriesKeys,
+    labels,
+  );
 
   return (
     <div
@@ -60,11 +69,18 @@ export default function AreaWidget({ widget, canvasFilters }: Props) {
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div
-        className="mb-2 text-sm font-semibold text-text-primary"
-        aria-label={widget.title || "Area chart"}
-      >
-        {widget.title || "Area chart"}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div
+          className="text-sm font-semibold text-text-primary"
+          aria-label={widget.title || "Area chart"}
+        >
+          {widget.title || "Area chart"}
+        </div>
+        <WidgetCsvButton
+          title={widget.title || "Area chart"}
+          dataset={csvDataset}
+          editMode={editMode}
+        />
       </div>
       <div className="flex-1">
         {isLoading ? (

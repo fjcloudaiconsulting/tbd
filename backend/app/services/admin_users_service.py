@@ -55,7 +55,13 @@ delete handler walks them explicitly so we never rely on implicit
      remain on the org (the FK from transactions.import_batch_id
      to import_batches.id has ON DELETE SET NULL).
 
-The 6 + 7 explicit deletes mirror the FK-ordered delete pattern
+  8. ``reports.owner_user_id`` — ``ON DELETE RESTRICT``. Reports are
+     handled in-band before the user delete: org-shared reports are
+     transferred to the org's active OWNER, private reports are
+     hard-deleted (their ``report_versions`` cascade). A bare delete
+     would otherwise trip the RESTRICT FK for any report author.
+
+The 6 + 7 + 8 explicit handlers mirror the FK-ordered delete pattern
 ``org_data_service.wipe_org_data`` established for the org-wipe
 path. See ``reference_truncate_org_scoped.md`` for the broader
 "don't leave orphaned rows" rule.
@@ -70,12 +76,13 @@ the audit row is self-explanatory.
 from __future__ import annotations
 
 import structlog
-from sqlalchemy import delete
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.import_batch import ImportBatch
 from app.models.invitation import Invitation
-from app.models.user import User
+from app.models.report import Report, ReportVisibility
+from app.models.user import Role, User
 from app.services.exceptions import ConflictError, NotFoundError
 
 
@@ -160,9 +167,72 @@ async def delete_user(
         )
     )
 
+    # ── reports.owner_user_id (ON DELETE RESTRICT) ───────────────────
+    #
+    # The FK is RESTRICT, so a bare DELETE FROM users raises if the
+    # target authored any report. Handle their reports in the same
+    # transaction:
+    #
+    #   - ORG-shared reports → transfer to the org's active OWNER so the
+    #     team keeps its shared report.
+    #   - PRIVATE reports → hard-delete (report_versions cascade via the
+    #     ON DELETE CASCADE FK on report_versions.report_id).
+    #
+    # Edge case: ``delete_user`` requires ``is_active=False``, so a
+    # *deactivated* org owner is reachable here. The last-active-owner
+    # guard lives on the deactivate path, not this endpoint, so there is
+    # no in-process owner to transfer to when the only owner is the
+    # (now inactive) target. If no other active OWNER exists, fall back
+    # to deleting the org-shared reports too rather than leaving an
+    # un-transferable RESTRICT FK.
+    new_owner_id = (
+        await db.execute(
+            select(User.id)
+            .where(
+                User.org_id == snapshot["org_id"],
+                User.role == Role.OWNER,
+                User.is_active.is_(True),
+                User.id != target_user_id,
+            )
+            .order_by(User.id.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    private_delete = await db.execute(
+        delete(Report).where(
+            Report.owner_user_id == target_user_id,
+            Report.visibility == ReportVisibility.PRIVATE,
+        )
+    )
+
+    if new_owner_id is not None:
+        shared_result = await db.execute(
+            update(Report)
+            .where(
+                Report.owner_user_id == target_user_id,
+                Report.visibility == ReportVisibility.ORG,
+            )
+            .values(owner_user_id=new_owner_id)
+        )
+        reports_transferred = shared_result.rowcount or 0
+        reports_deleted_shared = 0
+    else:
+        shared_result = await db.execute(
+            delete(Report).where(
+                Report.owner_user_id == target_user_id,
+                Report.visibility == ReportVisibility.ORG,
+            )
+        )
+        reports_transferred = 0
+        reports_deleted_shared = shared_result.rowcount or 0
+
     fk_cleanup_counts = {
         "invitations": inv_result.rowcount or 0,
         "import_batches": batches_result.rowcount or 0,
+        "reports_deleted_private": private_delete.rowcount or 0,
+        "reports_deleted_shared": reports_deleted_shared,
+        "reports_transferred": reports_transferred,
     }
 
     # Finally, the user row itself. SET NULL FKs (audit_events,

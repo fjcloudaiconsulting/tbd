@@ -21,3 +21,25 @@ export const chartColor = {
   remaining: "var(--color-border)",
   axisTick: "var(--color-text-secondary)",
 } as const;
+
+// Categorical palette for multi-series charts (e.g. a bar chart split
+// into one stacked segment per account). Each entry is a theme-aware CSS
+// variable so light/dark switches cascade; series index modulo the
+// length picks a color so we never run out. Ordered for adjacent-segment
+// contrast. The trailing fallbacks keep the list usable even if a theme
+// hasn't defined every optional token.
+export const categoricalColors: readonly string[] = [
+  "var(--color-accent)",
+  "var(--color-success)",
+  "var(--color-info, var(--color-accent))",
+  "var(--color-warning, var(--color-text-secondary))",
+  "var(--color-danger)",
+  "var(--color-text-secondary)",
+  "var(--color-accent-2, var(--color-success))",
+  "var(--color-text-muted)",
+] as const;
+
+/** Pick a distinct categorical color by series index (wraps around). */
+export function categoricalColor(index: number): string {
+  return categoricalColors[index % categoricalColors.length];
+}
