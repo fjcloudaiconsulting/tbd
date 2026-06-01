@@ -57,6 +57,19 @@ class ReportUpdate(BaseModel):
     canvas_filters_json: Optional[dict[str, Any]] = None
 
 
+class ReportTemplate(BaseModel):
+    """A starter report template returned by
+    ``GET /api/v1/reports/templates``. The frontend "Use template" action
+    POSTs ``layout_json`` / ``canvas_filters_json`` to the create endpoint.
+    """
+
+    key: str
+    name: str
+    description: str
+    layout_json: dict[str, Any]
+    canvas_filters_json: dict[str, Any]
+
+
 class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

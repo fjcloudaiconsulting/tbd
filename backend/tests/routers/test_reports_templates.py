@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.config import settings as app_settings
 from app.models.report import Report
 
 from tests.routers.test_reports import (  # noqa: F401 — reuse fixtures
@@ -81,3 +82,33 @@ async def test_patch_does_not_touch_original_snapshot(session_factory):
         assert row.layout_json == {"version": 1, "widgets": []}
         assert row.original_layout_json == _LAYOUT
         assert row.original_canvas_filters_json == _FILTERS
+
+
+# ─── GET /api/v1/reports/templates ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_templates_endpoint_returns_three(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports/templates")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert len(body) == 3
+    keys = {t["key"] for t in body}
+    assert keys == {"monthly_review", "cash_flow_trend", "category_deep_dive"}
+    for t in body:
+        assert t["layout_json"]["widgets"], t["key"]
+
+
+@pytest.mark.asyncio
+async def test_templates_endpoint_404_when_flag_off(session_factory, monkeypatch):
+    # The autouse ``_enable_flag`` fixture force-enables the flag; flip
+    # it back off here so the router-level dep fires its 404.
+    monkeypatch.setattr(app_settings, "feature_reports_v2", False)
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports/templates")
+    assert res.status_code == 404

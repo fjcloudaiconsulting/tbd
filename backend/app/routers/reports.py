@@ -48,7 +48,13 @@ from app.deps import get_current_user
 from app.models.report import Report, ReportVisibility
 from app.models.user import Role, User
 from app.rate_limit import limiter
-from app.schemas.report import ReportCreate, ReportResponse, ReportUpdate
+from app.reports.templates import REPORT_TEMPLATES
+from app.schemas.report import (
+    ReportCreate,
+    ReportResponse,
+    ReportTemplate,
+    ReportUpdate,
+)
 from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse
 from app.services.reports_query_service import execute_query
 
@@ -169,6 +175,16 @@ async def create_report(
     await db.commit()
     await db.refresh(row)
     return row
+
+
+@router.get("/templates", response_model=list[ReportTemplate])
+async def list_templates(current_user: User = Depends(get_current_user)):
+    """Return the starter report templates (code fixtures).
+
+    Registered ABOVE ``GET /{report_id}`` so the literal ``/templates``
+    path is not captured by the ``{report_id}`` integer matcher.
+    """
+    return [ReportTemplate(**t) for t in REPORT_TEMPLATES]
 
 
 @router.get("/{report_id}", response_model=ReportResponse)
