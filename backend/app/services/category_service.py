@@ -1270,14 +1270,36 @@ async def delete_category_with_migration(
         )
         .values(category_id=target.id)
     )
-    fpi_updated = await db.execute(
-        update(ForecastPlanItem)
-        .where(
+    # Forecast plan items carry a unique constraint on
+    # (plan_id, category_id, type) (uq_forecast_item_plan_cat_type), so a
+    # blind FK rewrite collides whenever the target already owns an item for
+    # the same plan+type. Mirror the category_rules merge below: re-point
+    # source items that don't collide; for those that do, sum the source's
+    # planned_amount into the target's existing item and drop the source
+    # item. Both source and target items are unique per (plan, type), so the
+    # mapping is 1:1.
+    source_items = (await db.scalars(
+        select(ForecastPlanItem).where(
             ForecastPlanItem.org_id == org_id,
             ForecastPlanItem.category_id == cat.id,
         )
-        .values(category_id=target.id)
-    )
+    )).all()
+    target_items_by_key = {
+        (it.plan_id, it.type): it
+        for it in (await db.scalars(
+            select(ForecastPlanItem).where(
+                ForecastPlanItem.org_id == org_id,
+                ForecastPlanItem.category_id == target.id,
+            )
+        )).all()
+    }
+    for item in source_items:
+        existing = target_items_by_key.get((item.plan_id, item.type))
+        if existing is None:
+            item.category_id = target.id
+        else:
+            existing.planned_amount += item.planned_amount
+            await db.delete(item)
 
     # Re-point the source's learned auto-categorization rules to the target
     # so removing a category does not silently drop its learning state.
@@ -1323,7 +1345,7 @@ async def delete_category_with_migration(
 
     migrated_tx = tx_updated.rowcount or 0
     migrated_rec = rec_updated.rowcount or 0
-    migrated_fpi = fpi_updated.rowcount or 0
+    migrated_fpi = len(source_items)
 
     audit_service.add_audit_event_to_session(
         db,

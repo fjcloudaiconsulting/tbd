@@ -221,6 +221,7 @@ async def _add_recurring(
 
 async def _add_forecast_item(
     factory, *, org_id: int, category_id: int, item_type: ForecastItemType,
+    planned_amount: str = "100.00",
 ) -> int:
     async with factory() as db:
         # Need a billing period and plan first.
@@ -247,7 +248,7 @@ async def _add_forecast_item(
             await db.flush()
         item = ForecastPlanItem(
             plan_id=plan.id, org_id=org_id, category_id=category_id,
-            type=item_type, planned_amount=Decimal("100.00"),
+            type=item_type, planned_amount=Decimal(planned_amount),
             source=ItemSource.HISTORY,
         )
         db.add(item)
@@ -407,6 +408,65 @@ async def test_delete_subcategory_with_target_migrates_dependents(session_factor
         )
         assert fpi.category_id == seed["restaurants_id"]
         # Source category gone.
+        gone = await db.scalar(
+            select(Category).where(Category.id == seed["groceries_id"])
+        )
+        assert gone is None
+
+
+@pytest.mark.asyncio
+async def test_delete_sums_forecast_item_colliding_with_targets_existing_item(
+    session_factory,
+):
+    """When source and target both have a forecast item for the same
+    (plan, type), migrating the source FK would violate
+    uq_forecast_item_plan_cat_type. The service must merge: sum the
+    source's planned_amount into the target's existing item and drop the
+    source item, instead of 500ing on a 1062 duplicate-key error.
+    """
+    seed = await _seed_basic(session_factory)
+    # Source (groceries) forecast item: EXPENSE, 100.
+    await _add_forecast_item(
+        session_factory,
+        org_id=seed["org_id"], category_id=seed["groceries_id"],
+        item_type=ForecastItemType.EXPENSE, planned_amount="100.00",
+    )
+    # Target (restaurants) forecast item in the SAME plan, SAME type: 25.
+    target_fpi_id = await _add_forecast_item(
+        session_factory,
+        org_id=seed["org_id"], category_id=seed["restaurants_id"],
+        item_type=ForecastItemType.EXPENSE, planned_amount="25.00",
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.delete(
+            f"/api/v1/categories/{seed['groceries_id']}"
+            f"?target_category_id={seed['restaurants_id']}"
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["migrated_forecast_item_count"] == 1
+
+    async with session_factory() as db:
+        # Target keeps a single item for the (plan, type), amounts summed.
+        items = (await db.scalars(
+            select(ForecastPlanItem).where(
+                ForecastPlanItem.org_id == seed["org_id"],
+                ForecastPlanItem.category_id == seed["restaurants_id"],
+                ForecastPlanItem.type == ForecastItemType.EXPENSE,
+            )
+        )).all()
+        assert len(items) == 1
+        assert items[0].id == target_fpi_id
+        assert items[0].planned_amount == Decimal("125.00")
+        # No forecast item left dangling on the deleted source.
+        orphans = (await db.scalars(
+            select(ForecastPlanItem).where(
+                ForecastPlanItem.category_id == seed["groceries_id"],
+            )
+        )).all()
+        assert orphans == []
         gone = await db.scalar(
             select(Category).where(Category.id == seed["groceries_id"])
         )
