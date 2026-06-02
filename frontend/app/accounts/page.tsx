@@ -1,21 +1,77 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import HelpTooltip from "@/components/help/HelpTooltip";
 import Tooltip from "@/components/Tooltip";
 import Spinner from "@/components/ui/Spinner";
+import Pagination from "@/components/ui/Pagination";
+import SortableHeader from "@/components/ui/SortableHeader";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount } from "@/lib/format";
+import {
+  useTableState,
+  paginate,
+  pageCount,
+  type SortDir,
+} from "@/lib/hooks/use-table-state";
+import { SORT_KEY_ACCOUNTS } from "@/lib/hooks/persisted-keys";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import type { Account, AccountType, Transaction } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
+
+// Sortable column identifiers for the accounts list.
+type AccountSortField = "name" | "type" | "balance";
+
+const ALLOWED_ACCOUNT_SORT_FIELDS: readonly AccountSortField[] = [
+  "name",
+  "type",
+  "balance",
+];
+
+// Case-insensitive string compare; null/empty always sort last regardless of
+// direction. `factor` (+1 asc, -1 desc) applies only to the value comparison
+// so the empty-last sentinel is never flipped by descending direction.
+function cmpString(
+  a: string | null | undefined,
+  b: string | null | undefined,
+  factor: 1 | -1,
+): number {
+  const aEmpty = a == null || a === "";
+  const bEmpty = b == null || b === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;  // empty always after non-empty, direction-independent
+  if (bEmpty) return -1;
+  return factor * a!.localeCompare(b!, undefined, { sensitivity: "base" });
+}
+
+function sortAccounts(
+  rows: Account[],
+  field: AccountSortField,
+  dir: SortDir,
+): Account[] {
+  const factor: 1 | -1 = dir === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    switch (field) {
+      case "name":
+        return cmpString(a.name, b.name, factor);
+      case "type":
+        return cmpString(a.account_type_name, b.account_type_name, factor);
+      case "balance":
+        // balance is typed number but the API/fixtures may serialize it as a
+        // decimal string; coerce so the compare is always numeric.
+        return factor * (Number(a.balance) - Number(b.balance));
+      default:
+        return 0;
+    }
+  });
+}
 
 export default function AccountsPage() {
   const { user, loading } = useAuth();
@@ -308,6 +364,44 @@ export default function AccountsPage() {
     return acc;
   }, {});
 
+  // Sort + pagination state, persisted under the existing accounts key.
+  // Default sort is name ascending. A differing stored shape (e.g. from the
+  // old usePersistedSort schema) simply falls back to defaults — this is a
+  // pre-launch app with no back-compat requirement.
+  const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
+    useTableState<AccountSortField>({
+      key: SORT_KEY_ACCOUNTS,
+      defaultSortField: "name",
+      defaultSortDir: "asc",
+      allowedSortFields: ALLOWED_ACCOUNT_SORT_FIELDS,
+    });
+
+  const sortedAccounts = useMemo(
+    () => sortAccounts(accounts, sortField, sortDir),
+    [accounts, sortField, sortDir],
+  );
+  const totalAccountPages = pageCount(sortedAccounts.length, pageSize);
+  const safePage = Math.min(page, totalAccountPages);
+  const pagedAccounts = useMemo(
+    () => paginate(sortedAccounts, safePage, pageSize),
+    [sortedAccounts, safePage, pageSize],
+  );
+  const showPagination = totalAccountPages > 1;
+
+  // Click a header: toggle direction if it is already the active column,
+  // else switch to that column starting ascending.
+  const handleSort = useCallback(
+    (field: string) => {
+      const f = field as AccountSortField;
+      if (f === sortField) {
+        setSort(f, sortDir === "asc" ? "desc" : "asc");
+      } else {
+        setSort(f, "asc");
+      }
+    },
+    [sortField, sortDir, setSort],
+  );
+
   return (
     <AppShell>
       <div
@@ -493,24 +587,53 @@ export default function AccountsPage() {
                   <button type="submit" className={`w-full sm:w-auto sm:min-h-0 ${btnPrimary}`}>Create Account</button>
                 </form>
               )}
-              {/* Column header — visible only on md+ where the row uses
-                  the same outer grid template. Mirrors the Account
-                  Types card's header pattern but at md: because the
-                  account row's mobile-to-desktop break is md:, not sm:.
-                  Action header is sr-only since the column is button
+              {/* Sortable column header — visible only on md+ where the
+                  row uses the same outer grid template. The header is a
+                  one-row <table> so it can host the shared SortableHeader
+                  <th> cells (name, type, balance) with proper aria-sort,
+                  while the rows below stay as the responsive grid articles
+                  that the layout tests rely on. A CSS grid on the <tr>
+                  pins each header cell over its matching row column. The
+                  Actions header is sr-only since that column is button
                   links rather than tabular data. */}
               {accounts.length > 0 && (
-                <div
+                <table
                   data-testid="accounts-list-header"
-                  className="hidden border-b border-border-subtle px-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted md:grid md:grid-cols-[minmax(0,1fr)_8rem_auto] md:items-center md:gap-4"
+                  className="hidden w-full border-b border-border-subtle md:table"
                 >
-                  <span>Account</span>
-                  <span className="text-right">Balance</span>
-                  <span className="sr-only">Actions</span>
-                </div>
+                  <thead>
+                    <tr className="grid grid-cols-[minmax(0,1fr)_8rem_8rem_auto] items-center gap-4 px-3">
+                      <SortableHeader
+                        label="Account"
+                        field="name"
+                        activeField={sortField}
+                        dir={sortDir}
+                        onSort={handleSort}
+                      />
+                      <SortableHeader
+                        label="Type"
+                        field="type"
+                        activeField={sortField}
+                        dir={sortDir}
+                        onSort={handleSort}
+                      />
+                      <SortableHeader
+                        label="Balance"
+                        field="balance"
+                        activeField={sortField}
+                        dir={sortDir}
+                        onSort={handleSort}
+                        align="right"
+                      />
+                      <th className="px-3 py-2 text-right">
+                        <span className="sr-only">Actions</span>
+                      </th>
+                    </tr>
+                  </thead>
+                </table>
               )}
               <div className="space-y-1">
-                {accounts.map((a) => editAcctId === a.id ? (
+                {pagedAccounts.map((a) => editAcctId === a.id ? (
                   <div key={a.id} className="flex flex-col gap-3 rounded-md bg-surface-raised px-3 py-3">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                       <input aria-label="Account name" type="text" value={editAcctName} onChange={(e) => setEditAcctName(e.target.value)} className={`w-full text-sm sm:flex-1 ${input}`}
@@ -579,12 +702,16 @@ export default function AccountsPage() {
                   <article
                     key={a.id}
                     data-testid={`account-row-${a.id}`}
-                    className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:grid md:grid-cols-[minmax(0,1fr)_8rem_auto] md:items-center md:gap-4 ${!a.is_active ? "opacity-40" : ""}`}
+                    data-account-name={a.name}
+                    className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:grid md:grid-cols-[minmax(0,1fr)_8rem_8rem_auto] md:items-center md:gap-4 ${!a.is_active ? "opacity-40" : ""}`}
                   >
                     {/* Description column: name + meta. The "DEFAULT"
                         badge is a fixed-width inline pill (NOT trailing
                         "· default" text), so toggling default never
-                        changes how much room neighbouring text gets. */}
+                        changes how much room neighbouring text gets. The
+                        account type moved to its own sortable column at
+                        md+; on mobile it is repeated inline here so the
+                        stacked card still reads "name · type". */}
                     <div className="min-w-0 flex-1 md:flex-none">
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                         <span className="truncate text-sm font-medium text-text-primary">{a.name}</span>
@@ -593,10 +720,16 @@ export default function AccountsPage() {
                             Default
                           </span>
                         )}
-                        <span className="text-xs text-text-muted">{a.account_type_name}</span>
+                        <span className="text-xs text-text-muted md:hidden">{a.account_type_name}</span>
                         {a.close_day && <span className="text-xs text-text-muted">· closes day {a.close_day}</span>}
                         {!a.is_active && <span className="text-xs text-danger">inactive</span>}
                       </div>
+                    </div>
+                    {/* Type column — visible at md+ as its own sortable
+                        column. Hidden on mobile where it is shown inline
+                        next to the name above. */}
+                    <div className="hidden min-w-0 md:block">
+                      <span className="truncate text-xs text-text-muted">{a.account_type_name}</span>
                     </div>
                     {/* Fixed-width balance column — the outer grid
                         reserves an 8rem slot at md:, so toggling
@@ -680,6 +813,17 @@ export default function AccountsPage() {
                   </p>
                 )}
               </div>
+              {showPagination && (
+                <div className="mt-2 border-t border-border-subtle">
+                  <Pagination
+                    page={safePage}
+                    pageSize={pageSize}
+                    total={accounts.length}
+                    onPageChange={setPage}
+                    onPageSizeChange={setPageSize}
+                  />
+                </div>
+              )}
             </div>
           </div>
         </div>

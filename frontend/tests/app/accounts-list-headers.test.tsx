@@ -109,20 +109,29 @@ describe("AccountsPage — list header row and fixed action column", () => {
     mockApi();
   });
 
-  it("renders an Account / Balance header above the accounts list", async () => {
+  it("renders sortable Account / Type / Balance headers above the accounts list", async () => {
     render(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
 
     const header = screen.getByTestId("accounts-list-header");
     expect(header).toBeInTheDocument();
-    // Hidden on mobile, grid on md+. Mirrors the Account Types card pattern.
+    // Hidden on mobile, table on md+ so it can host the shared
+    // SortableHeader <th> cells (post-migration to the shared
+    // sort+pagination building blocks). It was a plain md:grid label
+    // strip before; now each label is a sort button.
     expect(header.className).toContain("hidden");
-    expect(header.className).toContain("md:grid");
+    expect(header.className).toContain("md:table");
 
-    // Column labels — test exact column text, in order.
-    const columns = within(header).getAllByText(/Account|Balance|Actions/);
-    expect(columns[0]).toHaveTextContent(/^Account$/);
-    expect(columns[1]).toHaveTextContent(/^Balance$/);
+    // Each sortable column renders an accessible button with the label.
+    expect(
+      within(header).getByRole("button", { name: /^Account$/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(header).getByRole("button", { name: /^Type$/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(header).getByRole("button", { name: /^Balance$/ }),
+    ).toBeInTheDocument();
     // "Actions" is sr-only but still present in the accessible tree.
     expect(within(header).getByText(/^Actions$/)).toBeInTheDocument();
   });
