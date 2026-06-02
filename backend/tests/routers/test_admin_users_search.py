@@ -192,6 +192,104 @@ async def test_get_user_detail_404(session_factory) -> None:
     assert resp.status_code == 404
 
 
+# ── sort contract (PR: shared list contract) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_users_sort_email_asc(session_factory) -> None:
+    ids = await _seed(session_factory)
+    app = _make_app(session_factory, actor_user_id=ids["sa_id"])
+    client = TestClient(app)
+    resp = client.get(
+        "/api/v1/admin/users", params={"sort_by": "email", "sort_dir": "asc"}
+    )
+    assert resp.status_code == 200
+    emails = [item["email"] for item in resp.json()["items"]]
+    assert emails == sorted(emails)
+
+
+@pytest.mark.asyncio
+async def test_list_users_sort_email_desc_reverses(session_factory) -> None:
+    ids = await _seed(session_factory)
+    app = _make_app(session_factory, actor_user_id=ids["sa_id"])
+    client = TestClient(app)
+    resp = client.get(
+        "/api/v1/admin/users", params={"sort_by": "email", "sort_dir": "desc"}
+    )
+    assert resp.status_code == 200
+    emails = [item["email"] for item in resp.json()["items"]]
+    assert emails == sorted(emails, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_list_users_default_sort_is_created_at_desc(session_factory) -> None:
+    ids = await _seed(session_factory)
+    app = _make_app(session_factory, actor_user_id=ids["sa_id"])
+    client = TestClient(app)
+    resp = client.get("/api/v1/admin/users")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    created = [item["created_at"] for item in items]
+    # Default ordering is created_at desc; with equal timestamps the id
+    # desc tiebreaker keeps it deterministic. Either way it is sorted
+    # descending (non-increasing) on created_at.
+    assert created == sorted(created, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_list_users_invalid_sort_by_returns_400(session_factory) -> None:
+    ids = await _seed(session_factory)
+    app = _make_app(session_factory, actor_user_id=ids["sa_id"])
+    client = TestClient(app)
+    resp = client.get("/api/v1/admin/users", params={"sort_by": "not_a_column"})
+    assert resp.status_code == 400
+    assert "invalid_sort_by" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_users_total_unaffected_by_limit_offset(session_factory) -> None:
+    ids = await _seed(session_factory)
+    app = _make_app(session_factory, actor_user_id=ids["sa_id"])
+    client = TestClient(app)
+    resp = client.get("/api/v1/admin/users", params={"limit": 1, "offset": 1})
+    assert resp.status_code == 200
+    body = resp.json()
+    # Three seeded users: total reflects the full filtered set, the page
+    # is bounded by limit.
+    assert body["total"] == 3
+    assert len(body["items"]) == 1
+    assert body["limit"] == 1
+    assert body["offset"] == 1
+
+
+# ── envelope conformance (PR: shared list contract) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_users_response_conforms_to_list_envelope(session_factory) -> None:
+    """The list response must validate against ``ListEnvelope`` and expose
+    exactly the envelope keys.
+
+    The service returns a plain dict (not a per-row Pydantic model), so this
+    is the guardrail that catches shape drift before the other four admin
+    tables copy the pattern.
+    """
+    from app.schemas.common import ListEnvelope
+
+    ids = await _seed(session_factory)
+    app = _make_app(session_factory, actor_user_id=ids["sa_id"])
+    client = TestClient(app)
+    resp = client.get("/api/v1/admin/users")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # Exactly the envelope keys — no more, no less.
+    assert set(body.keys()) == {"items", "total", "limit", "offset"}
+
+    # Validates against the generic envelope (rows kept as opaque dicts).
+    ListEnvelope[dict].model_validate(body)
+
+
 # ── audit throttle ───────────────────────────────────────────────────
 
 

@@ -252,6 +252,8 @@ async def list_users(
     org_id: Optional[int] = Query(default=None, ge=1),
     role: Optional[_ROLE_FILTER] = Query(default=None),
     status_filter: Optional[_STATUS_FILTER] = Query(default=None, alias="status"),
+    sort_by: Optional[str] = Query(default=None),
+    sort_dir: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     actor: User = Depends(require_permission("users.view")),
@@ -267,15 +269,20 @@ async def list_users(
     Audit: one ``admin.user.list.viewed`` row per actor per minute
     (process-local throttle). The first hit always records.
     """
-    payload = await admin_users_search_service.list_users(
-        db,
-        q=q,
-        org_filter=org_id,
-        role_filter=role,
-        status_filter=status_filter,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        payload = await admin_users_search_service.list_users(
+            db,
+            q=q,
+            org_filter=org_id,
+            role_filter=role,
+            status_filter=status_filter,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
 
     await logger.ainfo(
         "admin.user.list.viewed",
