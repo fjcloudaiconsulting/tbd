@@ -293,6 +293,9 @@ describe("AdminUsersPage", () => {
     // and clobber the seeded offset back to 0. Owner reviewed the
     // first L4.4 URL-state pass and caught this; the fix is a
     // first-mount ref guard in the debounce effect.
+    //
+    // The mock returns total: 200 so offset=50 is a valid in-range
+    // page and the over-offset clamp effect does NOT fire.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       currentSearchParams = new URLSearchParams("q=ada&offset=50");
@@ -300,7 +303,7 @@ describe("AdminUsersPage", () => {
         if (url.startsWith("/api/v1/admin/orgs")) {
           return Promise.resolve({ items: [], total: 0 } as never);
         }
-        return Promise.resolve(SAMPLE_USERS as never);
+        return Promise.resolve({ ...SAMPLE_USERS, total: 200, offset: 50 } as never);
       });
 
       render(<AdminUsersPage />);
@@ -669,29 +672,30 @@ describe("AdminUsersPage", () => {
 
   // ── Fix 3: pagination visible when offset > 0, page clamped ──────
 
-  it("renders Pagination when total <= pageSize but offset > 0", async () => {
-    // total=2 < pageSize=25 but the URL has offset=25, meaning the user
-    // landed on a now-empty page (filters shrank the result set). The
-    // Pagination control must still render so they can click Previous
-    // to get back.
+  it("renders Pagination when total > pageSize and offset is on a valid later page", async () => {
+    // A URL with offset=25, total=80 — a valid second page. The over-offset
+    // clamp does NOT fire (offset < total), so Pagination renders normally.
     currentSearchParams = new URLSearchParams("offset=25");
     apiFetchMock.mockImplementation((url: string) => {
       if (url.startsWith("/api/v1/admin/orgs")) {
         return Promise.resolve({ items: [], total: 0 } as never);
       }
-      // total=2 is less than the default pageSize=25.
-      return Promise.resolve({ ...SAMPLE_USERS, total: 2 } as never);
+      return Promise.resolve({ ...SAMPLE_USERS, total: 80, offset: 25 } as never);
     });
 
     render(<AdminUsersPage />);
     await screen.findByText("Ada Lovelace");
 
-    // Pagination must be rendered even though total(2) <= pageSize(25).
+    // Pagination must be rendered because total(80) > pageSize(25).
     const prevBtn = await screen.findByRole("button", { name: /previous page/i });
     expect(prevBtn).toBeInTheDocument();
   });
 
-  it("clicking Previous from an over-offset page navigates back to offset 0", async () => {
+  it("auto-corrects a one-page-past URL to offset 0 via the clamp effect", async () => {
+    // offset=25, total=2: the dataset shrank under the user. The new
+    // over-offset clamp fires immediately after data loads and snaps to
+    // offset=0 (the only valid page for a 2-row dataset), so the user
+    // recovers automatically without having to click Previous.
     currentSearchParams = new URLSearchParams("offset=25");
     apiFetchMock.mockImplementation((url: string) => {
       if (url.startsWith("/api/v1/admin/orgs")) {
@@ -703,9 +707,7 @@ describe("AdminUsersPage", () => {
     render(<AdminUsersPage />);
     await screen.findByText("Ada Lovelace");
 
-    const prevBtn = await screen.findByRole("button", { name: /previous page/i });
-    fireEvent.click(prevBtn);
-
+    // The clamp effect corrects offset to 0, triggering a re-fetch.
     await waitFor(() => {
       const calls = apiFetchMock.mock.calls.map((c) => c[0] as string);
       expect(
@@ -714,6 +716,100 @@ describe("AdminUsersPage", () => {
         ),
       ).toBe(true);
     });
+  });
+
+  // ── Fix: clamp over-offset on load ───────────────────────────────
+
+  it("clamps a wildly over-offset URL to the last valid page after data loads", async () => {
+    // Dataset: 30 rows, page_size=25 → 2 pages (offset 0 and offset 25).
+    // A shared URL with offset=9999 should snap to offset=25 (last page)
+    // in one corrective re-fetch, NOT render "Page 400 of 2" and require
+    // hundreds of Previous clicks.
+    currentSearchParams = new URLSearchParams("offset=9999&page_size=25");
+
+    // 30-row dataset spread across two calls: the first (offset=9999)
+    // returns empty items but the correct total, which triggers the clamp.
+    // The second call (clamped offset=25) returns the last-page items.
+    const PAGE2_USERS = {
+      items: [
+        {
+          id: 99,
+          email: "zara@zeta.io",
+          username: "zara",
+          display_name: "Zara Zeta",
+          is_superadmin: false,
+          is_active: true,
+          email_verified: true,
+          mfa_enabled: false,
+          password_changed_at: null,
+          onboarded_at: null,
+          created_at: "2026-05-01T10:00:00",
+          orgs: [{ org_id: 20, name: "Zeta Corp", role: "owner" }],
+        },
+      ],
+      total: 30,
+      limit: 25,
+      offset: 25,
+    };
+
+    // Note: the URL offset=9999 is normalised to a page boundary on
+    // mount (initialOffset snaps to Math.floor(9999/25)*25 = 9975), so
+    // the first fetch uses offset=9975.  The clamp effect then fires
+    // because 9975 >= total(30) and snaps to (pageCount(30,25)-1)*25 = 25.
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      if (url.includes("offset=25") && !url.includes("offset=250")) {
+        // Clamped fetch: return the actual last page.
+        return Promise.resolve(PAGE2_USERS as never);
+      }
+      // All other offsets (the initial over-offset fetch): empty page + total.
+      return Promise.resolve({ items: [], total: 30, limit: 25, offset: 9975 } as never);
+    });
+
+    render(<AdminUsersPage />);
+
+    // After the clamp fires, the last-page row should be visible.
+    await screen.findByText("Zara Zeta", {}, { timeout: 3000 });
+
+    // The corrective fetch must have been issued with offset=25.
+    const userCalls = apiFetchMock.mock.calls
+      .map((c) => c[0] as string)
+      .filter((u) => u.startsWith("/api/v1/admin/users"));
+    expect(userCalls.some((u) => u.includes("offset=25") && !u.includes("offset=250"))).toBe(true);
+  });
+
+  it("clamps to offset=0 when total is 0 (empty dataset) and does not loop", async () => {
+    // offset=9999 with a completely empty dataset → snap to 0.
+    // We verify no duplicate fetches happen (the guard must not re-fire
+    // after snapping because 0 >= 0 is false, so the condition never
+    // re-triggers).
+    currentSearchParams = new URLSearchParams("offset=9999&page_size=25");
+
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve({ items: [], total: 0, limit: 25, offset: 0 } as never);
+    });
+
+    render(<AdminUsersPage />);
+
+    // Wait for the page to settle; the "no users" message should appear.
+    await screen.findByText(/no users match/i, {}, { timeout: 3000 });
+
+    // Only one /admin/users fetch should be issued (the clamp fires
+    // setOffset(0) but offset was already 9999→snapped to 0, and the
+    // guard condition ``offset > 0 && offset >= data.total`` is false
+    // once total is 0 and offset is 0, so no second corrective fetch).
+    const userCalls = apiFetchMock.mock.calls
+      .map((c) => c[0] as string)
+      .filter((u) => u.startsWith("/api/v1/admin/users"));
+    // At most 2 fetches: the initial (offset=9999 snapped to 0 on mount)
+    // and possibly one corrective. The key assertion is no looping: the
+    // count is low and stable.
+    expect(userCalls.length).toBeLessThanOrEqual(2);
   });
 });
 

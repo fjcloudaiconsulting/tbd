@@ -247,6 +247,22 @@ async def test_list_users_invalid_sort_by_returns_400(session_factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_users_invalid_sort_dir_returns_400(session_factory) -> None:
+    """``sort_dir`` must be one of {"asc", "desc"}; anything else is a 400.
+
+    ``invalid_sort_by`` is tested above at the router layer; this test
+    adds symmetry for ``invalid_sort_dir`` which was previously only
+    pinned by a unit test on ``resolve_order_by`` itself.
+    """
+    ids = await _seed(session_factory)
+    app = _make_app(session_factory, actor_user_id=ids["sa_id"])
+    client = TestClient(app)
+    resp = client.get("/api/v1/admin/users", params={"sort_dir": "sideways"})
+    assert resp.status_code == 400
+    assert "invalid_sort_dir" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_list_users_total_unaffected_by_limit_offset(session_factory) -> None:
     ids = await _seed(session_factory)
     app = _make_app(session_factory, actor_user_id=ids["sa_id"])

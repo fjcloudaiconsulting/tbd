@@ -8,6 +8,7 @@ import HelpAnchor from "@/components/HelpAnchor";
 import Pagination from "@/components/ui/Pagination";
 import SortableHeader from "@/components/ui/SortableHeader";
 import Spinner from "@/components/ui/Spinner";
+import { pageCount } from "@/lib/hooks/use-table-state";
 import type { SortDir } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -255,6 +256,21 @@ function AdminUsersPageContent() {
       .catch((err) => setError(extractErrorMessage(err, "Failed to load")))
       .finally(() => setFetching(false));
   }, [loading, user, q, orgId, role, status, offset, sortBy, sortDir, pageSize]);
+
+  // Clamp an over-offset URL back to the last valid page once the data
+  // lands. A shared URL like ?offset=9999&page_size=25 would render
+  // "Page 400 of 1" and require ~399 Previous clicks to reach data.
+  // This effect fires once per data load: if offset is past the end,
+  // snap it down to the last page boundary. After snapping,
+  // offset < data.total (or 0 when total is 0), so the guard won't
+  // re-fire and the effect doesn't loop.
+  useEffect(() => {
+    if (!data) return;
+    if (offset > 0 && offset >= data.total) {
+      const lastOffset = Math.max(0, (pageCount(data.total, pageSize) - 1) * pageSize);
+      if (lastOffset !== offset) setOffset(lastOffset);
+    }
+  }, [data, offset, pageSize]);
 
   // Mirror filter state back to the URL. Uses ``router.replace`` so
   // filter changes do not pile up as back-button stops (see the

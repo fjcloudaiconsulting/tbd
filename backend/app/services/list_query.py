@@ -72,6 +72,11 @@ def resolve_order_by(
     - ``sort_dir`` present but not in {"asc","desc"} → raise
       ``ValidationError("invalid_sort_dir")``.
 
+    ``tiebreaker``, when provided, must be a fully-formed ordering
+    expression (e.g. ``Model.id.desc()``), unlike ``allowed`` values
+    which are bare columns that this function wraps with ``.asc()``/
+    ``.desc()``.
+
     Returns ``[resolved_column.asc()/.desc(), *([tiebreaker] if given)]``
     so callers can splat directly into ``.order_by(*exprs)``.
     """

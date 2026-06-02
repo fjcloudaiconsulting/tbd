@@ -52,6 +52,10 @@ _SORTABLE = {
     # role sorts lexically by the stored enum value (admin/member/owner),
     # NOT by privilege hierarchy — intentional, not a bug.
     "role": User.role,
+    # NULL ordering for org_name follows the DB default (NULLs last on
+    # MySQL, NULLs first on PostgreSQL/SQLite). Acceptable today because
+    # org_id is always set (non-nullable FK); add nullslast() here if a
+    # nullable org column is ever added to this sort surface.
     "org_name": Organization.name,
 }
 
