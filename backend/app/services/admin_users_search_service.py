@@ -35,10 +35,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit_event import AuditEvent
 from app.models.user import Organization, Role, User
 from app.services.exceptions import NotFoundError
+from app.services.list_query import resolve_order_by
 
 
 # Status options the router exposes. Matches the User flags we cut on.
 _STATUS_VALUES = frozenset({"active", "inactive", "unverified", "superadmin"})
+
+# Closed whitelist of sortable columns for the admin users list. Keys are
+# the public sort tokens the frontend sends; values are the column to order
+# by. ``org_name`` sorts on the joined Organization.name. Anything not here
+# is a 400 (see ``list_query.resolve_order_by``).
+_SORTABLE = {
+    "created_at": User.created_at,
+    "email": User.email,
+    "username": User.username,
+    # role sorts lexically by the stored enum value (admin/member/owner),
+    # NOT by privilege hierarchy — intentional, not a bug.
+    "role": User.role,
+    # NULL ordering for org_name follows the DB default (NULLs last on
+    # MySQL, NULLs first on PostgreSQL/SQLite). Acceptable today because
+    # org_id is always set (non-nullable FK); add nullslast() here if a
+    # nullable org column is ever added to this sort surface.
+    "org_name": Organization.name,
+}
 
 
 def _normalize_like(q: str) -> str:
@@ -94,6 +113,8 @@ async def list_users(
     org_filter: Optional[int] = None,
     role_filter: Optional[str] = None,
     status_filter: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
@@ -105,6 +126,11 @@ async def list_users(
     ``org_filter`` narrows to a single org id (drives the "user in org X"
     drill-in from the orgs page once it lands). ``role_filter`` and
     ``status_filter`` cut against the user's role/active/verified flags.
+
+    ``sort_by`` is resolved against a closed whitelist (see ``_SORTABLE``);
+    an unknown key raises ``ValidationError`` (router → 400). When omitted,
+    defaults to ``created_at`` desc. ``id`` desc is always appended as a
+    stable tiebreaker so pagination is deterministic.
 
     Returns ``{items, total, limit, offset}`` for direct JSON dump.
     """
@@ -165,11 +191,18 @@ async def list_users(
 
     total = (await db.scalar(count_base)) or 0
 
+    order_by = resolve_order_by(
+        sort_by,
+        sort_dir,
+        allowed=_SORTABLE,
+        default_key="created_at",
+        default_dir="desc",
+        tiebreaker=User.id.desc(),
+    )
+
     rows = (
         await db.execute(
-            base.order_by(User.created_at.desc(), User.id.desc())
-            .limit(limit)
-            .offset(offset)
+            base.order_by(*order_by).limit(limit).offset(offset)
         )
     ).all()
 

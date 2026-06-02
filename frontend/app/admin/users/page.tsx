@@ -1,11 +1,15 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import Pagination from "@/components/ui/Pagination";
+import SortableHeader from "@/components/ui/SortableHeader";
 import Spinner from "@/components/ui/Spinner";
+import { pageCount } from "@/lib/hooks/use-table-state";
+import type { SortDir } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -82,10 +86,19 @@ type OrgsListResponse = {
   total: number;
 };
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 25;
+const DEFAULT_SORT_BY = "created_at";
+const DEFAULT_SORT_DIR: SortDir = "desc";
 const SEARCH_DEBOUNCE_MS = 300;
 const ROLE_OPTIONS = ["owner", "admin", "member"] as const;
 const STATUS_OPTIONS = ["active", "inactive", "unverified", "superadmin"] as const;
+
+// Backend-whitelisted sort keys. Unknown keys 400, so we clamp the
+// seeded URL value back to the default rather than send garbage.
+const SORT_FIELDS = ["created_at", "email", "username", "role", "org_name"] as const;
+type SortField = (typeof SORT_FIELDS)[number];
+
+const PAGE_SIZE_VALUES = [10, 25, 50, 100] as const;
 
 function chipClass(active: boolean): string {
   return [
@@ -129,11 +142,35 @@ function AdminUsersPageContent() {
   })();
   const initialRole = searchParams.get("role") ?? "";
   const initialStatus = searchParams.get("status") ?? "";
+  // Parse page_size FIRST so the offset normalization can snap to a
+  // multiple of the resolved page boundary. This ensures a shared URL
+  // like ?page_size=25&offset=5 lands on a consistent page (offset→0)
+  // rather than sending an off-boundary offset to the backend.
+  const initialPageSize = (() => {
+    const raw = searchParams.get("page_size");
+    if (raw === null || raw === "") return DEFAULT_PAGE_SIZE;
+    const n = Number(raw);
+    return (PAGE_SIZE_VALUES as readonly number[]).includes(n)
+      ? n
+      : DEFAULT_PAGE_SIZE;
+  })();
   const initialOffset = (() => {
     const raw = searchParams.get("offset");
     if (raw === null || raw === "") return 0;
     const n = Number(raw);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    if (!Number.isFinite(n) || n < 0) return 0;
+    // Snap to the nearest lower page boundary for the resolved pageSize.
+    return Math.floor(n / initialPageSize) * initialPageSize;
+  })();
+  const initialSortBy: SortField = (() => {
+    const raw = searchParams.get("sort_by");
+    return raw && (SORT_FIELDS as readonly string[]).includes(raw)
+      ? (raw as SortField)
+      : DEFAULT_SORT_BY;
+  })();
+  const initialSortDir: SortDir = (() => {
+    const raw = searchParams.get("sort_dir");
+    return raw === "asc" || raw === "desc" ? raw : DEFAULT_SORT_DIR;
   })();
 
   // Filter state.
@@ -143,6 +180,9 @@ function AdminUsersPageContent() {
   const [role, setRole] = useState<string>(initialRole);
   const [status, setStatus] = useState<string>(initialStatus);
   const [offset, setOffset] = useState(initialOffset);
+  const [sortBy, setSortBy] = useState<SortField>(initialSortBy);
+  const [sortDir, setSortDir] = useState<SortDir>(initialSortDir);
+  const [pageSize, setPageSize] = useState(initialPageSize);
 
   const [data, setData] = useState<UsersListResponse | null>(null);
   const [orgOptions, setOrgOptions] = useState<OrgPickerOption[]>([]);
@@ -202,8 +242,10 @@ function AdminUsersPageContent() {
     setFetching(true);
     setError("");
     const params = new URLSearchParams({
-      limit: String(PAGE_SIZE),
+      limit: String(pageSize),
       offset: String(offset),
+      sort_by: sortBy,
+      sort_dir: sortDir,
     });
     if (q) params.set("q", q);
     if (orgId !== "") params.set("org_id", String(orgId));
@@ -213,7 +255,22 @@ function AdminUsersPageContent() {
       .then((d) => setData(d))
       .catch((err) => setError(extractErrorMessage(err, "Failed to load")))
       .finally(() => setFetching(false));
-  }, [loading, user, q, orgId, role, status, offset]);
+  }, [loading, user, q, orgId, role, status, offset, sortBy, sortDir, pageSize]);
+
+  // Clamp an over-offset URL back to the last valid page once the data
+  // lands. A shared URL like ?offset=9999&page_size=25 would render
+  // "Page 400 of 1" and require ~399 Previous clicks to reach data.
+  // This effect fires once per data load: if offset is past the end,
+  // snap it down to the last page boundary. After snapping,
+  // offset < data.total (or 0 when total is 0), so the guard won't
+  // re-fire and the effect doesn't loop.
+  useEffect(() => {
+    if (!data) return;
+    if (offset > 0 && offset >= data.total) {
+      const lastOffset = Math.max(0, (pageCount(data.total, pageSize) - 1) * pageSize);
+      if (lastOffset !== offset) setOffset(lastOffset);
+    }
+  }, [data, offset, pageSize]);
 
   // Mirror filter state back to the URL. Uses ``router.replace`` so
   // filter changes do not pile up as back-button stops (see the
@@ -233,6 +290,9 @@ function AdminUsersPageContent() {
     if (role) params.set("role", role);
     if (status) params.set("status", status);
     if (offset > 0) params.set("offset", String(offset));
+    if (sortBy !== DEFAULT_SORT_BY) params.set("sort_by", sortBy);
+    if (sortDir !== DEFAULT_SORT_DIR) params.set("sort_dir", sortDir);
+    if (pageSize !== DEFAULT_PAGE_SIZE) params.set("page_size", String(pageSize));
     const query = params.toString();
     // Skip the write when the URL already matches. Cheap string
     // compare; avoids a needless ``router.replace`` (and the React
@@ -242,7 +302,40 @@ function AdminUsersPageContent() {
     if (query === current) return;
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, user, q, orgId, role, status, offset, pathname, router]);
+  }, [
+    loading,
+    user,
+    q,
+    orgId,
+    role,
+    status,
+    offset,
+    sortBy,
+    sortDir,
+    pageSize,
+    pathname,
+    router,
+  ]);
+
+  // Header click: switch to the clicked column ascending, or toggle the
+  // direction if it is already the active column. Either way reset to
+  // the first page (offset 0) so the user isn't stranded on a deep page.
+  //
+  // Guard: ``SortableHeader`` passes its ``field`` prop as a plain
+  // string. Unknown values would reach the backend as an invalid
+  // ``sort_by`` and cause a 400. We no-op early for anything not in the
+  // whitelisted set so a mis-wired column silently does nothing rather
+  // than erroring the table.
+  const handleSort = useCallback(
+    (field: string) => {
+      if (!(SORT_FIELDS as readonly string[]).includes(field)) return;
+      const f = field as SortField;
+      setSortBy(f);
+      setSortDir(f === sortBy ? (sortDir === "asc" ? "desc" : "asc") : "asc");
+      setOffset(0);
+    },
+    [sortBy, sortDir],
+  );
 
   const filtersActive = useMemo(
     () => Boolean(q || orgId !== "" || role || status),
@@ -385,12 +478,42 @@ function AdminUsersPageContent() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-y border-border text-left text-xs uppercase tracking-wider text-text-muted">
-                <th className="px-6 py-3">Name / email</th>
-                <th className="px-6 py-3">Username</th>
-                <th className="px-6 py-3">Org</th>
-                <th className="px-6 py-3">Role</th>
-                <th className="px-6 py-3">Status</th>
-                <th className="px-6 py-3">Created</th>
+                <SortableHeader
+                  label="Name / email"
+                  field="email"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Username"
+                  field="username"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Org"
+                  field="org_name"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Role"
+                  field="role"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <th className="px-3 py-2 text-xs font-medium text-text-secondary">Status</th>
+                <SortableHeader
+                  label="Created"
+                  field="created_at"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
               </tr>
             </thead>
             <tbody>
@@ -458,29 +581,18 @@ function AdminUsersPageContent() {
           </table>
         </div>
 
-        {data && data.total > PAGE_SIZE && (
-          <div className="flex items-center justify-between px-6 py-3 text-xs text-text-muted">
-            <span>
-              {offset + 1}–{Math.min(offset + PAGE_SIZE, data.total)} of {data.total}
-            </span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={offset === 0}
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                className="rounded-md border border-border px-3 py-1 disabled:opacity-50"
-              >
-                Prev
-              </button>
-              <button
-                type="button"
-                disabled={offset + PAGE_SIZE >= data.total}
-                onClick={() => setOffset(offset + PAGE_SIZE)}
-                className="rounded-md border border-border px-3 py-1 disabled:opacity-50"
-              >
-                Next
-              </button>
-            </div>
+        {data && (data.total > pageSize || offset > 0) && (
+          <div className="px-6">
+            <Pagination
+              page={Math.max(1, Math.floor(offset / pageSize) + 1)}
+              pageSize={pageSize}
+              total={data.total}
+              onPageChange={(n) => setOffset((n - 1) * pageSize)}
+              onPageSizeChange={(n) => {
+                setPageSize(n);
+                setOffset(0);
+              }}
+            />
           </div>
         )}
       </div>
