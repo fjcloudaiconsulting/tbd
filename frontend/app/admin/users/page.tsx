@@ -141,11 +141,25 @@ function AdminUsersPageContent() {
   })();
   const initialRole = searchParams.get("role") ?? "";
   const initialStatus = searchParams.get("status") ?? "";
+  // Parse page_size FIRST so the offset normalization can snap to a
+  // multiple of the resolved page boundary. This ensures a shared URL
+  // like ?page_size=25&offset=5 lands on a consistent page (offset→0)
+  // rather than sending an off-boundary offset to the backend.
+  const initialPageSize = (() => {
+    const raw = searchParams.get("page_size");
+    if (raw === null || raw === "") return DEFAULT_PAGE_SIZE;
+    const n = Number(raw);
+    return (PAGE_SIZE_VALUES as readonly number[]).includes(n)
+      ? n
+      : DEFAULT_PAGE_SIZE;
+  })();
   const initialOffset = (() => {
     const raw = searchParams.get("offset");
     if (raw === null || raw === "") return 0;
     const n = Number(raw);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+    if (!Number.isFinite(n) || n < 0) return 0;
+    // Snap to the nearest lower page boundary for the resolved pageSize.
+    return Math.floor(n / initialPageSize) * initialPageSize;
   })();
   const initialSortBy: SortField = (() => {
     const raw = searchParams.get("sort_by");
@@ -156,14 +170,6 @@ function AdminUsersPageContent() {
   const initialSortDir: SortDir = (() => {
     const raw = searchParams.get("sort_dir");
     return raw === "asc" || raw === "desc" ? raw : DEFAULT_SORT_DIR;
-  })();
-  const initialPageSize = (() => {
-    const raw = searchParams.get("page_size");
-    if (raw === null || raw === "") return DEFAULT_PAGE_SIZE;
-    const n = Number(raw);
-    return (PAGE_SIZE_VALUES as readonly number[]).includes(n)
-      ? n
-      : DEFAULT_PAGE_SIZE;
   })();
 
   // Filter state.
@@ -298,8 +304,15 @@ function AdminUsersPageContent() {
   // Header click: switch to the clicked column ascending, or toggle the
   // direction if it is already the active column. Either way reset to
   // the first page (offset 0) so the user isn't stranded on a deep page.
+  //
+  // Guard: ``SortableHeader`` passes its ``field`` prop as a plain
+  // string. Unknown values would reach the backend as an invalid
+  // ``sort_by`` and cause a 400. We no-op early for anything not in the
+  // whitelisted set so a mis-wired column silently does nothing rather
+  // than erroring the table.
   const handleSort = useCallback(
     (field: string) => {
+      if (!(SORT_FIELDS as readonly string[]).includes(field)) return;
       const f = field as SortField;
       setSortBy(f);
       setSortDir(f === sortBy ? (sortDir === "asc" ? "desc" : "asc") : "asc");
@@ -552,10 +565,10 @@ function AdminUsersPageContent() {
           </table>
         </div>
 
-        {data && data.total > pageSize && (
+        {data && (data.total > pageSize || offset > 0) && (
           <div className="px-6">
             <Pagination
-              page={Math.floor(offset / pageSize) + 1}
+              page={Math.max(1, Math.floor(offset / pageSize) + 1)}
               pageSize={pageSize}
               total={data.total}
               onPageChange={(n) => setOffset((n - 1) * pageSize)}
