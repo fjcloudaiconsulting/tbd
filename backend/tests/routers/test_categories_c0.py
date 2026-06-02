@@ -221,17 +221,22 @@ async def _add_recurring(
 
 async def _add_forecast_item(
     factory, *, org_id: int, category_id: int, item_type: ForecastItemType,
+    planned_amount: str = "100.00", period_start: datetime.date | None = None,
 ) -> int:
     async with factory() as db:
-        # Need a billing period and plan first.
+        # Need a billing period and plan first. ``period_start`` lets a test
+        # target a specific period (hence a distinct plan); when omitted we
+        # reuse/create the org's current-month period.
         from app.models.billing import BillingPeriod
+        start = period_start or datetime.date.today().replace(day=1)
         period = await db.scalar(
-            select(BillingPeriod).where(BillingPeriod.org_id == org_id)
+            select(BillingPeriod).where(
+                BillingPeriod.org_id == org_id,
+                BillingPeriod.start_date == start,
+            )
         )
         if period is None:
-            period = BillingPeriod(
-                org_id=org_id, start_date=datetime.date.today().replace(day=1),
-            )
+            period = BillingPeriod(org_id=org_id, start_date=start)
             db.add(period)
             await db.flush()
         plan = await db.scalar(
@@ -247,7 +252,7 @@ async def _add_forecast_item(
             await db.flush()
         item = ForecastPlanItem(
             plan_id=plan.id, org_id=org_id, category_id=category_id,
-            type=item_type, planned_amount=Decimal("100.00"),
+            type=item_type, planned_amount=Decimal(planned_amount),
             source=ItemSource.HISTORY,
         )
         db.add(item)
@@ -411,6 +416,127 @@ async def test_delete_subcategory_with_target_migrates_dependents(session_factor
             select(Category).where(Category.id == seed["groceries_id"])
         )
         assert gone is None
+
+
+@pytest.mark.asyncio
+async def test_delete_sums_forecast_item_colliding_with_targets_existing_item(
+    session_factory,
+):
+    """When source and target both have a forecast item for the same
+    (plan, type), migrating the source FK would violate
+    uq_forecast_item_plan_cat_type. The service must merge: sum the
+    source's planned_amount into the target's existing item and drop the
+    source item, instead of 500ing on a 1062 duplicate-key error.
+    """
+    seed = await _seed_basic(session_factory)
+    # Source (groceries) forecast item: EXPENSE, 100.
+    await _add_forecast_item(
+        session_factory,
+        org_id=seed["org_id"], category_id=seed["groceries_id"],
+        item_type=ForecastItemType.EXPENSE, planned_amount="100.00",
+    )
+    # Target (restaurants) forecast item in the SAME plan, SAME type: 25.
+    target_fpi_id = await _add_forecast_item(
+        session_factory,
+        org_id=seed["org_id"], category_id=seed["restaurants_id"],
+        item_type=ForecastItemType.EXPENSE, planned_amount="25.00",
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.delete(
+            f"/api/v1/categories/{seed['groceries_id']}"
+            f"?target_category_id={seed['restaurants_id']}"
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["migrated_forecast_item_count"] == 1
+
+    async with session_factory() as db:
+        # Target keeps a single item for the (plan, type), amounts summed.
+        items = (await db.scalars(
+            select(ForecastPlanItem).where(
+                ForecastPlanItem.org_id == seed["org_id"],
+                ForecastPlanItem.category_id == seed["restaurants_id"],
+                ForecastPlanItem.type == ForecastItemType.EXPENSE,
+            )
+        )).all()
+        assert len(items) == 1
+        assert items[0].id == target_fpi_id
+        assert items[0].planned_amount == Decimal("125.00")
+        # No forecast item left dangling on the deleted source.
+        orphans = (await db.scalars(
+            select(ForecastPlanItem).where(
+                ForecastPlanItem.category_id == seed["groceries_id"],
+            )
+        )).all()
+        assert orphans == []
+        gone = await db.scalar(
+            select(Category).where(Category.id == seed["groceries_id"])
+        )
+        assert gone is None
+
+
+@pytest.mark.asyncio
+async def test_delete_mixes_repoint_and_merge_across_plans(session_factory):
+    """Across two plans, the source has one item the target collides with
+    (merge) and one the target does not (re-point). Both source items are
+    handled in a single operation and counted; the target ends up with the
+    summed item in plan A and the re-pointed item in plan B.
+    """
+    seed = await _seed_basic(session_factory)
+    plan_a = datetime.date(2020, 1, 1)
+    plan_b = datetime.date(2020, 2, 1)
+    # Plan A: both source and target have an EXPENSE item -> collision/merge.
+    await _add_forecast_item(
+        session_factory,
+        org_id=seed["org_id"], category_id=seed["groceries_id"],
+        item_type=ForecastItemType.EXPENSE, planned_amount="100.00",
+        period_start=plan_a,
+    )
+    target_a_id = await _add_forecast_item(
+        session_factory,
+        org_id=seed["org_id"], category_id=seed["restaurants_id"],
+        item_type=ForecastItemType.EXPENSE, planned_amount="25.00",
+        period_start=plan_a,
+    )
+    # Plan B: only the source has an item -> re-point.
+    source_b_id = await _add_forecast_item(
+        session_factory,
+        org_id=seed["org_id"], category_id=seed["groceries_id"],
+        item_type=ForecastItemType.EXPENSE, planned_amount="50.00",
+        period_start=plan_b,
+    )
+
+    app = make_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.delete(
+            f"/api/v1/categories/{seed['groceries_id']}"
+            f"?target_category_id={seed['restaurants_id']}"
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["migrated_forecast_item_count"] == 2
+
+    async with session_factory() as db:
+        # Plan A: merged into the target's existing item, summed.
+        merged = await db.scalar(
+            select(ForecastPlanItem).where(ForecastPlanItem.id == target_a_id)
+        )
+        assert merged.category_id == seed["restaurants_id"]
+        assert merged.planned_amount == Decimal("125.00")
+        # Plan B: source item re-pointed to the target, amount unchanged.
+        repointed = await db.scalar(
+            select(ForecastPlanItem).where(ForecastPlanItem.id == source_b_id)
+        )
+        assert repointed.category_id == seed["restaurants_id"]
+        assert repointed.planned_amount == Decimal("50.00")
+        # Nothing left on the deleted source.
+        orphans = (await db.scalars(
+            select(ForecastPlanItem).where(
+                ForecastPlanItem.category_id == seed["groceries_id"],
+            )
+        )).all()
+        assert orphans == []
 
 
 @pytest.mark.asyncio
