@@ -350,6 +350,230 @@ describe("AdminUsersPage", () => {
       vi.useRealTimers();
     }
   });
+
+  // ── Server-side sort ──────────────────────────────────────────────
+
+  it("default fetch uses created_at/desc (no sort params in URL)", async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve(SAMPLE_USERS as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    const userCalls = apiFetchMock.mock.calls
+      .map((c) => c[0] as string)
+      .filter((u) => u.startsWith("/api/v1/admin/users"));
+    expect(userCalls[0]).toContain("sort_by=created_at");
+    expect(userCalls[0]).toContain("sort_dir=desc");
+
+    // Defaults are NOT written to the URL.
+    for (const call of replaceMock.mock.calls) {
+      const url = call[0] as string;
+      expect(url).not.toContain("sort_by");
+      expect(url).not.toContain("sort_dir");
+    }
+  });
+
+  it("clicking a sortable header sorts ascending, then toggles on second click", async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve(SAMPLE_USERS as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    // Click the Username header button -> sort_by=username&sort_dir=asc.
+    fireEvent.click(screen.getByRole("button", { name: /^Username/ }));
+    await waitFor(() => {
+      const calls = apiFetchMock.mock.calls.map((c) => c[0] as string);
+      expect(
+        calls.some(
+          (u) =>
+            u.includes("/api/v1/admin/users") &&
+            u.includes("sort_by=username") &&
+            u.includes("sort_dir=asc"),
+        ),
+      ).toBe(true);
+    });
+
+    // Second click on the same column toggles to desc.
+    fireEvent.click(screen.getByRole("button", { name: /^Username/ }));
+    await waitFor(() => {
+      const calls = apiFetchMock.mock.calls.map((c) => c[0] as string);
+      expect(
+        calls.some(
+          (u) =>
+            u.includes("/api/v1/admin/users") &&
+            u.includes("sort_by=username") &&
+            u.includes("sort_dir=desc"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("maps the Name / email header to the email sort key", async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve(SAMPLE_USERS as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Name \/ email/ }));
+    await waitFor(() => {
+      const calls = apiFetchMock.mock.calls.map((c) => c[0] as string);
+      expect(
+        calls.some(
+          (u) =>
+            u.includes("/api/v1/admin/users") && u.includes("sort_by=email"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("does not render the Status header as a sort button", async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve(SAMPLE_USERS as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    // The other column headers are buttons; Status must be a plain th.
+    expect(screen.getByRole("button", { name: /^Username/ })).toBeInTheDocument();
+    const columnHeaders = screen.getAllByRole("columnheader");
+    const statusHeader = columnHeaders.find((h) => h.textContent === "Status");
+    expect(statusHeader).toBeDefined();
+    expect(statusHeader?.querySelector("button")).toBeNull();
+  });
+
+  it("changing sort resets offset to 0", async () => {
+    currentSearchParams = new URLSearchParams("offset=25");
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve({ ...SAMPLE_USERS, total: 80, offset: 25 } as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Role/ }));
+    await waitFor(() => {
+      const calls = apiFetchMock.mock.calls.map((c) => c[0] as string);
+      expect(
+        calls.some(
+          (u) =>
+            u.includes("/api/v1/admin/users") &&
+            u.includes("sort_by=role") &&
+            u.includes("offset=0"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("seeds sort_by/sort_dir from the URL on mount", async () => {
+    currentSearchParams = new URLSearchParams("sort_by=email&sort_dir=asc");
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve(SAMPLE_USERS as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    const userCalls = apiFetchMock.mock.calls
+      .map((c) => c[0] as string)
+      .filter((u) => u.startsWith("/api/v1/admin/users"));
+    expect(userCalls[0]).toContain("sort_by=email");
+    expect(userCalls[0]).toContain("sort_dir=asc");
+  });
+
+  // ── Pagination ────────────────────────────────────────────────────
+
+  it("uses pageSize=25 as the default limit in the fetch", async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve(SAMPLE_USERS as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    const userCalls = apiFetchMock.mock.calls
+      .map((c) => c[0] as string)
+      .filter((u) => u.startsWith("/api/v1/admin/users"));
+    expect(userCalls[0]).toContain("limit=25");
+  });
+
+  it("changing the per-page selector changes limit and resets offset", async () => {
+    currentSearchParams = new URLSearchParams("offset=25");
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve({ ...SAMPLE_USERS, total: 200, offset: 25 } as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    const select = screen.getByLabelText(/per page/i) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "50" } });
+
+    await waitFor(() => {
+      const calls = apiFetchMock.mock.calls.map((c) => c[0] as string);
+      expect(
+        calls.some(
+          (u) =>
+            u.includes("/api/v1/admin/users") &&
+            u.includes("limit=50") &&
+            u.includes("offset=0"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("clicking Next advances the offset by pageSize", async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith("/api/v1/admin/orgs")) {
+        return Promise.resolve({ items: [], total: 0 } as never);
+      }
+      return Promise.resolve({ ...SAMPLE_USERS, total: 80 } as never);
+    });
+
+    render(<AdminUsersPage />);
+    await screen.findByText("Ada Lovelace");
+
+    fireEvent.click(screen.getByRole("button", { name: /next page/i }));
+
+    await waitFor(() => {
+      const calls = apiFetchMock.mock.calls.map((c) => c[0] as string);
+      expect(
+        calls.some(
+          (u) => u.includes("/api/v1/admin/users") && u.includes("offset=25"),
+        ),
+      ).toBe(true);
+    });
+  });
 });
 
 // Constant duplicated from the page module so the test can advance
