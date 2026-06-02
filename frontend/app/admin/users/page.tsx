@@ -301,17 +301,11 @@ function AdminUsersPageContent() {
   const handleSort = useCallback(
     (field: string) => {
       const f = field as SortField;
-      setSortBy((prev) => {
-        if (prev === f) {
-          setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-        } else {
-          setSortDir("asc");
-        }
-        return f;
-      });
+      setSortBy(f);
+      setSortDir(f === sortBy ? (sortDir === "asc" ? "desc" : "asc") : "asc");
       setOffset(0);
     },
-    [],
+    [sortBy, sortDir],
   );
 
   const filtersActive = useMemo(
@@ -483,7 +477,7 @@ function AdminUsersPageContent() {
                   dir={sortDir}
                   onSort={handleSort}
                 />
-                <th className="px-6 py-3">Status</th>
+                <th className="px-3 py-2 text-xs font-medium text-text-secondary">Status</th>
                 <SortableHeader
                   label="Created"
                   field="created_at"
