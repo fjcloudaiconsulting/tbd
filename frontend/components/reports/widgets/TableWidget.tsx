@@ -259,7 +259,7 @@ export default function TableWidget({ widget, canvasFilters, editMode }: Props) 
           </table>
         )}
       </div>
-      {pageCount(sortedRows.length, pageSize) > 1 && (
+      {totalPages > 1 && (
         <div data-testid="table-widget-pagination" className="mt-2">
           <Pagination
             page={safePage + 1}

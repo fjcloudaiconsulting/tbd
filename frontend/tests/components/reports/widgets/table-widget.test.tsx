@@ -369,7 +369,10 @@ describe("TableWidget", () => {
     );
 
     // Change per-page to 10.
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "10" } });
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Per page" }),
+      { target: { value: "10" } },
+    );
 
     // Should snap back to page 1 — Cat 0 visible again.
     await waitFor(() =>
