@@ -117,7 +117,10 @@ describe("TableWidget", () => {
     });
   });
 
-  it("renders pagination when rows exceed PAGE_SIZE (50)", async () => {
+  it("renders pagination when rows exceed the page size", async () => {
+    // 75 rows with the default page size of 25 => 3 pages, so pagination is shown.
+    // The shared Pagination component uses accessible button names ("Next page" /
+    // "Previous page") rather than data-testid attributes, so we query by role.
     const rows = Array.from({ length: 75 }, (_, i) => ({
       category: `Cat ${i}`,
       value: i,
@@ -133,7 +136,9 @@ describe("TableWidget", () => {
     expect(
       screen.getByTestId("table-widget-pagination"),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("table-widget-next-page")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Next page" }),
+    ).toBeInTheDocument();
   });
 
   it("renders a Total row that sums all rows of a sum measure", async () => {
@@ -156,8 +161,8 @@ describe("TableWidget", () => {
   });
 
   it("sums ALL rows in the total even across multiple pages", async () => {
-    // 75 rows, value = 1 each => grand total 75, even though only 50
-    // are visible on the first page.
+    // 75 rows, value = 1 each => grand total 75, even though only 25
+    // (the default page size) are visible on the first page.
     const rows = Array.from({ length: 75 }, (_, i) => ({
       category: `Cat ${i}`,
       value: 1,
@@ -339,5 +344,73 @@ describe("TableWidget", () => {
 
     await screen.findByText("Food");
     expect(screen.queryByTestId("widget-csv-export")).toBeNull();
+  });
+
+  it("per-page selector limits visible rows and resets to the first page", async () => {
+    // 30 rows; default page size 25 shows the first 25 on page 1.
+    // Switching to 10 per page should show only 10 rows and reset to page 1.
+    const rows = Array.from({ length: 30 }, (_, i) => ({
+      category: `Cat ${i}`,
+      value: i,
+    }));
+    runQueryMock.mockResolvedValueOnce({
+      rows,
+      meta: { row_count: 30, truncated: false, query_ms: 1 },
+    });
+
+    renderIsolated(<TableWidget widget={makeWidget()} />);
+
+    // Wait for data and confirm 25 rows visible on the first page.
+    await screen.findByText("Cat 0");
+    // Advance to page 2 before changing page size so we can confirm reset.
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Cat 0")).not.toBeInTheDocument(),
+    );
+
+    // Change per-page to 10.
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "10" } });
+
+    // Should snap back to page 1 — Cat 0 visible again.
+    await waitFor(() =>
+      expect(screen.getByText("Cat 0")).toBeInTheDocument(),
+    );
+    // Cat 10 should NOT be visible (only rows 0–9 on first page of 10).
+    expect(screen.queryByText("Cat 10")).not.toBeInTheDocument();
+  });
+
+  it("Next and Previous buttons navigate in-memory rows", async () => {
+    // 30 rows with default page size 25: page 1 shows Cat 0..24, page 2 shows Cat 25..29.
+    const rows = Array.from({ length: 30 }, (_, i) => ({
+      category: `Cat ${i}`,
+      value: i,
+    }));
+    runQueryMock.mockResolvedValueOnce({
+      rows,
+      meta: { row_count: 30, truncated: false, query_ms: 1 },
+    });
+
+    renderIsolated(<TableWidget widget={makeWidget()} />);
+
+    await screen.findByText("Cat 0");
+    // Previous should be disabled on page 1.
+    expect(screen.getByRole("button", { name: "Previous page" })).toBeDisabled();
+
+    // Navigate to page 2.
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    await waitFor(() =>
+      expect(screen.getByText("Cat 25")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Cat 0")).not.toBeInTheDocument();
+
+    // Next should now be disabled (last page).
+    expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
+
+    // Navigate back.
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    await waitFor(() =>
+      expect(screen.getByText("Cat 0")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Cat 25")).not.toBeInTheDocument();
   });
 });

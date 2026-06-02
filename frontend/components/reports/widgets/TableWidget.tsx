@@ -4,8 +4,9 @@
  * Table widget — sortable, paginated rows. Columns are
  * ``dimensions`` (categorical) followed by one column per entry in
  * ``config.measures`` (numeric). Click a header to sort ascending /
- * descending; click again to flip. Pagination kicks in past 50 rows
- * with a fixed 50-rows-per-page chunk.
+ * descending; click again to flip. Pagination kicks in when more than
+ * one page of rows exists (default page size: 25, matching the shared
+ * system default; user-selectable via the per-page dropdown).
  *
  * **Spec ambiguity resolved (PR3, 2026-05-22):** each ``measures``
  * entry is its own column with its OWN aggregation. A report can mix
@@ -28,6 +29,8 @@ import type {
   CanvasFilters,
   TableWidget as TableWidgetType,
 } from "@/lib/reports/types";
+import Pagination from "@/components/ui/Pagination";
+import { pageCount } from "@/lib/hooks/use-table-state";
 import WidgetCsvButton from "./WidgetCsvButton";
 import type { CsvCell } from "@/lib/reports/csv";
 
@@ -37,7 +40,7 @@ interface Props {
   editMode?: boolean;
 }
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 25;
 
 export default function TableWidget({ widget, canvasFilters, editMode }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
@@ -57,6 +60,7 @@ export default function TableWidget({ widget, canvasFilters, editMode }: Props) 
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   const sortedRows = useMemo(() => {
     if (!sortKey) return rows;
@@ -74,11 +78,11 @@ export default function TableWidget({ widget, canvasFilters, editMode }: Props) 
     return copy;
   }, [rows, sortKey, sortDir]);
 
-  const totalPages = Math.max(1, Math.ceil(sortedRows.length / PAGE_SIZE));
+  const totalPages = pageCount(sortedRows.length, pageSize);
   const safePage = Math.min(page, totalPages - 1);
   const pagedRows = sortedRows.slice(
-    safePage * PAGE_SIZE,
-    safePage * PAGE_SIZE + PAGE_SIZE,
+    safePage * pageSize,
+    safePage * pageSize + pageSize,
   );
 
   function toggleSort(key: string) {
@@ -255,34 +259,18 @@ export default function TableWidget({ widget, canvasFilters, editMode }: Props) 
           </table>
         )}
       </div>
-      {sortedRows.length > PAGE_SIZE && (
-        <div
-          data-testid="table-widget-pagination"
-          className="mt-2 flex items-center justify-between text-xs text-text-muted"
-        >
-          <span>
-            Page {safePage + 1} of {totalPages} · {sortedRows.length} rows
-          </span>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              data-testid="table-widget-prev-page"
-              disabled={safePage === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-              className="rounded border border-border px-2 py-0.5 hover:bg-bg-elevated disabled:opacity-40"
-            >
-              Prev
-            </button>
-            <button
-              type="button"
-              data-testid="table-widget-next-page"
-              disabled={safePage >= totalPages - 1}
-              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-              className="rounded border border-border px-2 py-0.5 hover:bg-bg-elevated disabled:opacity-40"
-            >
-              Next
-            </button>
-          </div>
+      {pageCount(sortedRows.length, pageSize) > 1 && (
+        <div data-testid="table-widget-pagination" className="mt-2">
+          <Pagination
+            page={safePage + 1}
+            pageSize={pageSize}
+            total={sortedRows.length}
+            onPageChange={(n) => setPage(n - 1)}
+            onPageSizeChange={(n) => {
+              setPageSize(n);
+              setPage(0);
+            }}
+          />
         </div>
       )}
     </div>
