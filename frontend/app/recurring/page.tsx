@@ -48,17 +48,24 @@ const ALLOWED_SORT_FIELDS: readonly SortField[] = [
 ];
 
 // Comparator helpers. Nulls/empties always sort last regardless of direction.
-function cmpString(a: string | null | undefined, b: string | null | undefined): number {
-  const av = a ?? "";
-  const bv = b ?? "";
-  if (!av && !bv) return 0;
-  if (!av) return 1; // null/empty last
-  if (!bv) return -1;
-  return av.localeCompare(bv, undefined, { sensitivity: "base" });
+// `factor` is +1 for ascending, -1 for descending. It is applied ONLY to the
+// value-vs-value comparison so that the null/empty sentinel (always last) is
+// never flipped by the direction multiplier.
+function cmpString(
+  a: string | null | undefined,
+  b: string | null | undefined,
+  factor: 1 | -1,
+): number {
+  const aEmpty = a == null || a === "";
+  const bEmpty = b == null || b === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;  // empty always after non-empty, direction-independent
+  if (bEmpty) return -1;
+  return factor * a!.localeCompare(b!, undefined, { sensitivity: "base" });
 }
 
-function cmpNumber(a: number, b: number): number {
-  return a - b;
+function cmpNumber(a: number, b: number, factor: 1 | -1): number {
+  return factor * (a - b);
 }
 
 function sortRecurring(
@@ -66,32 +73,26 @@ function sortRecurring(
   field: SortField,
   dir: SortDir,
 ): RecurringTransaction[] {
-  const factor = dir === "asc" ? 1 : -1;
+  const factor: 1 | -1 = dir === "asc" ? 1 : -1;
   const sorted = [...rows].sort((a, b) => {
     switch (field) {
       case "description":
-        return factor * cmpString(a.description, b.description);
+        return cmpString(a.description, b.description, factor);
       case "account":
-        return factor * cmpString(a.account_name, b.account_name);
-      case "category": {
-        // Nulls last in BOTH directions: compare null-ness outside the factor.
-        const an = a.category_name ?? "";
-        const bn = b.category_name ?? "";
-        if (!an && !bn) return 0;
-        if (!an) return 1;
-        if (!bn) return -1;
-        return factor * cmpString(an, bn);
-      }
+        return cmpString(a.account_name, b.account_name, factor);
+      case "category":
+        return cmpString(a.category_name, b.category_name, factor);
       case "frequency":
-        return factor * cmpString(
+        return cmpString(
           FREQ_LABELS[a.frequency] ?? a.frequency,
           FREQ_LABELS[b.frequency] ?? b.frequency,
+          factor,
         );
       case "next_due_date":
         // ISO date strings (YYYY-MM-DD) sort chronologically as strings.
-        return factor * cmpString(a.next_due_date, b.next_due_date);
+        return cmpString(a.next_due_date, b.next_due_date, factor);
       case "amount":
-        return factor * cmpNumber(a.amount, b.amount);
+        return cmpNumber(a.amount, b.amount, factor);
       default:
         return 0;
     }

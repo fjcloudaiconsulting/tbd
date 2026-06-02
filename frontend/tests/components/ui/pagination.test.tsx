@@ -137,4 +137,34 @@ describe("Pagination", () => {
     render(<Pagination {...defaults} total={26} pageSize={25} page={1} />);
     expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
   });
+
+  describe("unique ids when multiple instances are rendered", () => {
+    it("two Pagination instances have distinct select ids", () => {
+      const { container } = render(
+        <>
+          <Pagination {...defaults} />
+          <Pagination {...defaults} />
+        </>,
+      );
+      const selects = container.querySelectorAll("select");
+      expect(selects.length).toBe(2);
+      const id0 = selects[0].id;
+      const id1 = selects[1].id;
+      expect(id0).toBeTruthy();
+      expect(id1).toBeTruthy();
+      expect(id0).not.toBe(id1);
+    });
+
+    it("each label is correctly associated with its own select (getByLabelText works with two instances)", () => {
+      const { getAllByLabelText } = render(
+        <>
+          <Pagination {...defaults} />
+          <Pagination {...defaults} />
+        </>,
+      );
+      // getByLabelText would throw if the ids collide; getAllByLabelText returns both
+      const perPageSelects = getAllByLabelText(/per page/i);
+      expect(perPageSelects.length).toBe(2);
+    });
+  });
 });

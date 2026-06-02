@@ -163,6 +163,41 @@ describe("RecurringPage — sorting by header click", () => {
     fireEvent.click(catHeader); // desc: Zed, Abc, then null still last
     expect(activeRowOrder()).toEqual(["HasCat", "AlsoCat", "NoCat"]);
   });
+
+  it("keeps empty account_name last in descending sort (nulls-last stable)", async () => {
+    mockApiWith([
+      rec({ id: 1, description: "A", account_name: "Zeta", next_due_date: "2026-01-01" }),
+      rec({ id: 2, description: "B", account_name: "", next_due_date: "2026-01-02" }),
+      rec({ id: 3, description: "C", account_name: "Alpha", next_due_date: "2026-01-03" }),
+    ]);
+    render(<RecurringPage />);
+    await waitFor(() => expect(activeRowOrder().length).toBe(3));
+
+    const table = screen.getByTestId("recurring-active-table");
+    const acctHeader = within(table).getByRole("button", { name: /^Account/ });
+    fireEvent.click(acctHeader); // asc: Alpha, Zeta, empty-last
+    expect(activeRowOrder()).toEqual(["C", "A", "B"]);
+    fireEvent.click(acctHeader); // desc: Zeta, Alpha, empty still last
+    expect(activeRowOrder()).toEqual(["A", "C", "B"]);
+  });
+
+  it("keeps empty description last in descending sort (nulls-last stable)", async () => {
+    mockApiWith([
+      rec({ id: 1, description: "Zeta", next_due_date: "2026-01-01" }),
+      rec({ id: 2, description: "", next_due_date: "2026-01-02" }),
+      rec({ id: 3, description: "Alpha", next_due_date: "2026-01-03" }),
+    ]);
+    render(<RecurringPage />);
+    await waitFor(() => expect(activeRowOrder().length).toBe(3));
+
+    const table = screen.getByTestId("recurring-active-table");
+    // Default sort is next_due_date asc; click Name to sort by description
+    const nameHeader = within(table).getByRole("button", { name: /^Name/ });
+    fireEvent.click(nameHeader); // asc: Alpha, Zeta, empty-last
+    expect(activeRowOrder()).toEqual(["Alpha", "Zeta", ""]);
+    fireEvent.click(nameHeader); // desc: Zeta, Alpha, empty still last
+    expect(activeRowOrder()).toEqual(["Zeta", "Alpha", ""]);
+  });
 });
 
 describe("RecurringPage — pagination", () => {

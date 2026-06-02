@@ -9,6 +9,8 @@
 // Copy rule: no em-dashes anywhere in user-visible text. Use the middot (·)
 // as the status separator, commas, periods, or parentheses everywhere else.
 
+import { useId } from "react";
+
 import { pageCount, PAGE_SIZE_OPTIONS } from "@/lib/hooks/use-table-state";
 
 export interface PaginationProps {
@@ -28,6 +30,8 @@ export default function Pagination({
   onPageSizeChange,
   pageSizeOptions = [...PAGE_SIZE_OPTIONS],
 }: PaginationProps) {
+  const uid = useId();
+  const selectId = `pagination-page-size-${uid}`;
   const totalPages = pageCount(total, pageSize);
   const isFirst = page <= 1;
   const isLast = page >= totalPages;
@@ -37,13 +41,13 @@ export default function Pagination({
       {/* Per-page selector */}
       <div className="flex items-center gap-2">
         <label
-          htmlFor="pagination-page-size"
+          htmlFor={selectId}
           className="whitespace-nowrap text-xs"
         >
           Per page
         </label>
         <select
-          id="pagination-page-size"
+          id={selectId}
           value={pageSize}
           onChange={(e) => onPageSizeChange(Number(e.target.value))}
           className="rounded border border-border bg-surface px-2 py-1 text-xs text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"

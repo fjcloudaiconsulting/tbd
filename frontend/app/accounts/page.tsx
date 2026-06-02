@@ -35,14 +35,20 @@ const ALLOWED_ACCOUNT_SORT_FIELDS: readonly AccountSortField[] = [
   "balance",
 ];
 
-// Case-insensitive string compare; null/empty always sort last.
-function cmpString(a: string | null | undefined, b: string | null | undefined): number {
-  const av = a ?? "";
-  const bv = b ?? "";
-  if (!av && !bv) return 0;
-  if (!av) return 1;
-  if (!bv) return -1;
-  return av.localeCompare(bv, undefined, { sensitivity: "base" });
+// Case-insensitive string compare; null/empty always sort last regardless of
+// direction. `factor` (+1 asc, -1 desc) applies only to the value comparison
+// so the empty-last sentinel is never flipped by descending direction.
+function cmpString(
+  a: string | null | undefined,
+  b: string | null | undefined,
+  factor: 1 | -1,
+): number {
+  const aEmpty = a == null || a === "";
+  const bEmpty = b == null || b === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;  // empty always after non-empty, direction-independent
+  if (bEmpty) return -1;
+  return factor * a!.localeCompare(b!, undefined, { sensitivity: "base" });
 }
 
 function sortAccounts(
@@ -50,13 +56,13 @@ function sortAccounts(
   field: AccountSortField,
   dir: SortDir,
 ): Account[] {
-  const factor = dir === "asc" ? 1 : -1;
+  const factor: 1 | -1 = dir === "asc" ? 1 : -1;
   return [...rows].sort((a, b) => {
     switch (field) {
       case "name":
-        return factor * cmpString(a.name, b.name);
+        return cmpString(a.name, b.name, factor);
       case "type":
-        return factor * cmpString(a.account_type_name, b.account_type_name);
+        return cmpString(a.account_type_name, b.account_type_name, factor);
       case "balance":
         // balance is typed number but the API/fixtures may serialize it as a
         // decimal string; coerce so the compare is always numeric.

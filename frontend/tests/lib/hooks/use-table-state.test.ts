@@ -58,6 +58,22 @@ describe("pageCount helper", () => {
     expect(pageCount(26, 25)).toBe(2);
     expect(pageCount(51, 25)).toBe(3);
   });
+
+  it("returns 1 when pageSize is 0 (avoids division by zero)", () => {
+    expect(pageCount(100, 0)).toBe(1);
+  });
+
+  it("returns 1 when pageSize is NaN", () => {
+    expect(pageCount(100, NaN)).toBe(1);
+  });
+
+  it("returns 1 when pageSize is Infinity", () => {
+    expect(pageCount(100, Infinity)).toBe(1);
+  });
+
+  it("returns 1 when pageSize is negative", () => {
+    expect(pageCount(100, -10)).toBe(1);
+  });
 });
 
 describe("PAGE_SIZE_OPTIONS", () => {
@@ -139,6 +155,47 @@ describe("useTableState", () => {
     );
     expect(result.current.sortField).toBe("date");
     expect(result.current.sortDir).toBe("asc");
+    expect(result.current.pageSize).toBe(25);
+  });
+
+  it("falls back to default pageSize when stored pageSize is 0", () => {
+    writePersisted(KEY, { sortField: "date", sortDir: "asc", pageSize: 0 });
+    const { result } = renderHook(() =>
+      useTableState<"date">({
+        key: KEY,
+        defaultSortField: "date",
+        defaultSortDir: "asc",
+      }),
+    );
+    expect(result.current.pageSize).toBe(25);
+  });
+
+  it("falls back to default pageSize when stored pageSize is negative", () => {
+    writePersisted(KEY, { sortField: "date", sortDir: "asc", pageSize: -5 });
+    const { result } = renderHook(() =>
+      useTableState<"date">({
+        key: KEY,
+        defaultSortField: "date",
+        defaultSortDir: "asc",
+      }),
+    );
+    expect(result.current.pageSize).toBe(25);
+  });
+
+  it("falls back to default pageSize when stored pageSize is NaN", () => {
+    // JSON.parse produces null for NaN since JSON.stringify(NaN) === "null"
+    // We simulate it by writing raw JSON with a non-integer string value.
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({ sortField: "date", sortDir: "asc", pageSize: "notanumber" }),
+    );
+    const { result } = renderHook(() =>
+      useTableState<"date">({
+        key: KEY,
+        defaultSortField: "date",
+        defaultSortDir: "asc",
+      }),
+    );
     expect(result.current.pageSize).toBe(25);
   });
 

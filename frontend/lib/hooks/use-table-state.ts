@@ -34,8 +34,12 @@ export function paginate<T>(rows: T[], page: number, pageSize: number): T[] {
 /**
  * Returns the number of pages needed to display `total` rows at `pageSize`
  * items per page. Always returns at least 1.
+ *
+ * Guards against corrupted pageSize values (0, NaN, Infinity, negative) by
+ * treating them as a single-page result rather than producing Infinity/NaN.
  */
 export function pageCount(total: number, pageSize: number): number {
+  if (!Number.isFinite(pageSize) || pageSize <= 0) return 1;
   if (total === 0) return 1;
   return Math.ceil(total / pageSize);
 }
@@ -81,7 +85,8 @@ function isStoredState(value: unknown): value is StoredState {
   return (
     typeof v.sortField === "string" &&
     (v.sortDir === "asc" || v.sortDir === "desc") &&
-    typeof v.pageSize === "number"
+    Number.isInteger(v.pageSize) &&
+    (v.pageSize as number) > 0
   );
 }
 

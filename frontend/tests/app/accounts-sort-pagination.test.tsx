@@ -3,7 +3,6 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { SORT_KEY_ACCOUNTS } from "@/lib/hooks/persisted-keys";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -282,5 +281,68 @@ describe("AccountsPage — pagination", () => {
     fireEvent.click(screen.getByRole("button", { name: /Previous page/ }));
     await waitFor(() => expect(screen.getByText("Acct 000")).toBeInTheDocument());
     expect(screen.queryByText("Acct 025")).toBeNull();
+  });
+});
+
+describe("AccountsPage — nulls-last stable sort", () => {
+  const ACCOUNTS_WITH_EMPTY_TYPE = [
+    {
+      id: 10,
+      name: "Charlie",
+      account_type_id: 2,
+      account_type_name: "",
+      account_type_slug: "checking",
+      balance: "500.00",
+      currency: "EUR",
+      is_active: true,
+      is_default: false,
+      close_day: null,
+    },
+    {
+      id: 20,
+      name: "alpha",
+      account_type_id: 1,
+      account_type_name: "Zeta",
+      account_type_slug: "credit_card",
+      balance: "-100.00",
+      currency: "EUR",
+      is_active: true,
+      is_default: true,
+      close_day: 5,
+    },
+    {
+      id: 30,
+      name: "Bravo",
+      account_type_id: 3,
+      account_type_name: "Alpha",
+      account_type_slug: "savings",
+      balance: "2000.00",
+      currency: "EUR",
+      is_active: true,
+      is_default: false,
+      close_day: null,
+    },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
+      if (url === "/api/v1/accounts") return Promise.resolve(ACCOUNTS_WITH_EMPTY_TYPE);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+      return Promise.resolve({});
+    }) as never);
+  });
+
+  it("keeps empty account_type_name last when sorting by Type descending", async () => {
+    render(<AccountsPage />);
+    await waitFor(() => expect(screen.getByText(/Charlie/)).toBeInTheDocument());
+
+    // Click Type once: asc => Alpha (Bravo), Zeta (alpha), empty (Charlie)
+    fireEvent.click(screen.getByRole("button", { name: /^Type/ }));
+    expect(rowNames()).toEqual(["Bravo", "alpha", "Charlie"]);
+
+    // Click Type again: desc => Zeta (alpha), Alpha (Bravo), empty (Charlie) still last
+    fireEvent.click(screen.getByRole("button", { name: /^Type/ }));
+    expect(rowNames()).toEqual(["alpha", "Bravo", "Charlie"]);
   });
 });
