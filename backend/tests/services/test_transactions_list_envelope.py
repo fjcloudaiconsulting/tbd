@@ -165,3 +165,35 @@ async def test_org_scoping(db_session):
     items, total = await transaction_service.list_transactions(db_session, org_a)
     assert total == 1
     assert [t.description for t in items] == ["a"]
+
+
+async def test_sort_category_name(db_session):
+    org_id, at = await _org(db_session, "A")
+    acct = await _acct(db_session, org_id, at, "Main")
+    c1 = await _cat(db_session, org_id, "Zoo", "zoo")
+    c2 = await _cat(db_session, org_id, "Auto", "auto")
+    await _tx(db_session, org_id, acct, c1, desc="z", amount="1.00", when=date.today())
+    await _tx(db_session, org_id, acct, c2, desc="a", amount="1.00", when=date.today())
+    await db_session.commit()
+
+    items, _ = await transaction_service.list_transactions(
+        db_session, org_id, sort_by="category_name", sort_dir="asc"
+    )
+    assert [t.description for t in items] == ["a", "z"]
+
+
+async def test_filter_composes_with_sort(db_session):
+    org_id, at = await _org(db_session, "A")
+    acct = await _acct(db_session, org_id, at, "Main")
+    keep = await _cat(db_session, org_id, "Keep", "keep")
+    drop = await _cat(db_session, org_id, "Drop", "drop")
+    await _tx(db_session, org_id, acct, keep, desc="k-big", amount="50.00", when=date.today())
+    await _tx(db_session, org_id, acct, keep, desc="k-small", amount="5.00", when=date.today())
+    await _tx(db_session, org_id, acct, drop, desc="d", amount="99.00", when=date.today())
+    await db_session.commit()
+
+    items, total = await transaction_service.list_transactions(
+        db_session, org_id, category_id=keep, sort_by="amount", sort_dir="asc"
+    )
+    assert total == 2  # filter applied to count too
+    assert [t.description for t in items] == ["k-small", "k-big"]  # sort within filtered set

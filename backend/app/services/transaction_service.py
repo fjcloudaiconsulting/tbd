@@ -1862,6 +1862,9 @@ async def list_transactions(
         tags=tags, tags_exclude=tags_exclude, tag_match=tag_match,
     )
 
+    # org_id is supplied twice on purpose: once as the pre-scoped WHERE on the
+    # base query, and again as a param so the category/tag subqueries inside
+    # _apply_transaction_filters can org-scope their own lookups.
     page_q = _apply_transaction_filters(
         select(Transaction).options(*_load_opts()).where(Transaction.org_id == org_id),
         org_id, **filter_kwargs,
