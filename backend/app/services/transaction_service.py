@@ -399,8 +399,9 @@ async def _propagate_fields_to_series(
         )
         .values(**values)
     )
-    # Core update() also bumps each pending sibling's updated_at via onupdate;
-    # harmless and expected.
+    # The pending-sibling update below bumps each row's updated_at via the
+    # column's onupdate; harmless and expected. (RecurringTransaction has no
+    # updated_at, so its update above changes only the named fields.)
     await db.execute(
         update(Transaction)
         .where(
