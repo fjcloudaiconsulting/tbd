@@ -176,8 +176,9 @@ async def stop_recurring(db: AsyncSession, org_id: int, recurring_id: int) -> in
     r.is_active = False
     removed = await _remove_pending_transactions(db, org_id, recurring_id)
 
-    # Clear the now-defunct recurring link on surviving (settled) rows so the
-    # "Recurring" badge disappears, mirroring delete's ON DELETE SET NULL.
+    # Clear the now-defunct recurring link on all surviving rows (settled, plus
+    # any past-dated pending) so the "Recurring" badge disappears, mirroring
+    # delete's ON DELETE SET NULL.
     await db.execute(
         update(Transaction)
         .where(
