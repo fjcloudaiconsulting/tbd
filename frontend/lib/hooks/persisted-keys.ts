@@ -9,3 +9,5 @@ export const SORT_KEY_DASHBOARD_TRANSACTIONS = "pfv:sort:dashboard-transactions"
 export const SORT_KEY_RECURRING = "pfv:sort:recurring";
 
 export const FILTERS_KEY_TRANSACTIONS = "pfv:filters:transactions";
+
+export const PAGE_SIZE_KEY_TRANSACTIONS = "tbd.tx.pageSize";

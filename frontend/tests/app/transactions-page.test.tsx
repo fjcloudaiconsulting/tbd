@@ -99,7 +99,8 @@ function setupApiFetch(txs: ReturnType<typeof makeTx>[]) {
     if (url.startsWith("/api/v1/accounts")) return [ACCT_A, ACCT_B] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
-    if (url.startsWith("/api/v1/transactions")) return txs as never;
+    if (url.startsWith("/api/v1/transactions"))
+      return { items: txs, total: txs.length, limit: 25, offset: 0 } as never;
     return null as never;
   });
 }
@@ -337,7 +338,8 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
         if (url === "/api/v1/transactions/99/tags") {
           throw new Error("tag attach failed");
         }
-        if (url.startsWith("/api/v1/transactions")) return [] as never;
+        if (url.startsWith("/api/v1/transactions"))
+          return { items: [], total: 0, limit: 25, offset: 0 } as never;
         return null as never;
       },
     );
