@@ -129,5 +129,15 @@ describe("TransactionsPage — recurring edit sync hint + badge tooltip", () => 
       "title",
       "Generated from a recurring series. Name and category stay in sync with the series.",
     );
+
+    expect(
+      await screen.findByTestId("edit-recurring-sync-hint-mobile-101"),
+    ).toHaveTextContent(
+      "Editing the name or category also updates this recurring series and its upcoming occurrences.",
+    );
+    expect(screen.getByTestId("edit-recurring-chip-mobile-101")).toHaveAttribute(
+      "title",
+      "Generated from a recurring series. Name and category stay in sync with the series.",
+    );
   });
 });
