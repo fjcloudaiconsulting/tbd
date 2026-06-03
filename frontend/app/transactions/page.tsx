@@ -276,7 +276,7 @@ function TransactionsPageContent() {
 
   const loadTransactions = useCallback(async (p: number) => {
     let url = `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}`;
-    url += `&sort_by=${sortField}&sort_dir=${sortDir}`;
+    url += `&sort_by=${encodeURIComponent(sortField)}&sort_dir=${encodeURIComponent(sortDir)}`;
     if (filterAccount) url += `&account_id=${filterAccount}`;
     if (filterCategory) url += `&category_id=${filterCategory}`;
     if (filterType) url += `&type=${filterType}`;
