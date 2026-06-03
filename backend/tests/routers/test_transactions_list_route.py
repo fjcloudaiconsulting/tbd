@@ -166,3 +166,8 @@ def test_invalid_sort_by_is_400(client):
 def test_invalid_sort_dir_is_400(client):
     res = client.get("/api/v1/transactions?sort_by=amount&sort_dir=up")
     assert res.status_code == 400
+
+
+def test_limit_zero_rejected(client):
+    res = client.get("/api/v1/transactions?limit=0")
+    assert res.status_code == 422

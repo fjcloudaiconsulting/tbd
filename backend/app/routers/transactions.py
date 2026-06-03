@@ -97,7 +97,7 @@ async def list_transactions(
     ),
     sort_by: str | None = Query(default=None),
     sort_dir: str | None = Query(default=None),
-    limit: int = Query(default=50, le=200),
+    limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
     tag_list = (
