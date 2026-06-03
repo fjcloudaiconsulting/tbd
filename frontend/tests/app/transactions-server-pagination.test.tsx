@@ -244,6 +244,42 @@ describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", 
     });
   });
 
+  it("per-page size persists across remount", async () => {
+    const { unmount } = render(<TransactionsPage />);
+    await waitForStableTxList();
+
+    // Change the page size; this writes to localStorage.
+    fireEvent.change(screen.getByLabelText(/per page/i), {
+      target: { value: "50" },
+    });
+    await waitFor(() => {
+      expect(
+        listUrls().some((u) => u.includes("limit=50")),
+      ).toBe(true);
+    });
+
+    // Unmount, then drop the recorded URLs so the next assertion only
+    // sees the fresh mount's fetches. localStorage is intentionally NOT
+    // cleared (beforeEach clears once; the two renders share it).
+    unmount();
+    urls = [];
+
+    // Fresh mount rehydrates the persisted page size. We can't reuse
+    // waitForStableTxList here: with pageSize=50 and 30 total rows the
+    // page renders a single page, and the page only mounts <Pagination>
+    // (which owns the "Per page" control) when `total > pageSize ||
+    // page > 0`. So settle on a visible row instead, then assert the
+    // rehydrated fetch carried the persisted limit.
+    render(<TransactionsPage />);
+    await screen.findAllByText("Row 1", undefined, { timeout: 4000 });
+
+    await waitFor(() => {
+      expect(
+        listUrls().some((u) => u.includes("limit=50")),
+      ).toBe(true);
+    });
+  });
+
   it("selection clears on navigation", async () => {
     render(<TransactionsPage />);
     await waitForStableTxList();
