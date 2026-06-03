@@ -176,3 +176,24 @@ async def test_edit_from_settled_instance_still_propagates(db_session):
     assert (await db_session.get(RecurringTransaction, rid)).description == "Renamed"
     assert (await db_session.get(Transaction, pending)).description == "Renamed"
     assert (await db_session.get(Transaction, settled)).description == "Renamed"
+
+
+async def test_edit_name_and_category_together_propagate(db_session):
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)
+    p1 = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+
+    await transaction_service.update_transaction(
+        db_session,
+        seed["org_id"],
+        p1,
+        TransactionUpdate(description="Gym Plus", category_id=seed["exp_cat2"]),
+    )
+
+    db_session.expire_all()
+    tmpl = await db_session.get(RecurringTransaction, rid)
+    assert tmpl.description == "Gym Plus"
+    assert tmpl.category_id == seed["exp_cat2"]
+    inst = await db_session.get(Transaction, p1)
+    assert inst.description == "Gym Plus"
+    assert inst.category_id == seed["exp_cat2"]

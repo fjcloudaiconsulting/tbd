@@ -384,7 +384,7 @@ async def _propagate_fields_to_series(
     template and all PENDING sibling instances. Pass only the fields that
     actually changed; None means leave that field untouched. SETTLED instances
     are intentionally never modified (historical fact). Caller commits."""
-    values: dict = {}
+    values: dict[str, object] = {}
     if description is not None:
         values["description"] = description
     if category_id is not None:
@@ -399,6 +399,8 @@ async def _propagate_fields_to_series(
         )
         .values(**values)
     )
+    # Core update() also bumps each pending sibling's updated_at via onupdate;
+    # harmless and expected.
     await db.execute(
         update(Transaction)
         .where(
