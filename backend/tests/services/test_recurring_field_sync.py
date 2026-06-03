@@ -225,6 +225,83 @@ async def test_category_not_propagated_when_type_also_changed(db_session):
     assert edited.category_id == inc_id
 
 
+async def test_category_not_propagated_from_type_diverged_instance(db_session):
+    from app.models.category import Category, CategoryType
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)  # expense template, exp_cat
+    diverged = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+    sibling = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+    inc1 = Category(org_id=seed["org_id"], name="Salary", slug="salary", type=CategoryType.INCOME)
+    inc2 = Category(org_id=seed["org_id"], name="Bonus", slug="bonus", type=CategoryType.INCOME)
+    db_session.add_all([inc1, inc2])
+    await db_session.commit()
+    inc1_id, inc2_id = inc1.id, inc2.id
+
+    # Diverge `diverged` to income (type + compatible income category together).
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], diverged,
+        TransactionUpdate(type="income", category_id=inc1_id),
+    )
+    # Now edit ONLY its category to another income category (no type change).
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], diverged, TransactionUpdate(category_id=inc2_id),
+    )
+
+    db_session.expire_all()
+    # Expense template + expense sibling must NOT receive the income category.
+    assert (await db_session.get(RecurringTransaction, rid)).category_id == seed["exp_cat"]
+    assert (await db_session.get(Transaction, sibling)).category_id == seed["exp_cat"]
+    # The edited (income) row itself changes.
+    assert (await db_session.get(Transaction, diverged)).category_id == inc2_id
+
+
+async def test_category_propagation_skips_type_diverged_sibling(db_session):
+    from app.models.category import Category, CategoryType
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)  # expense template, exp_cat
+    normal = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+    diverged_sib = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+    inc = Category(org_id=seed["org_id"], name="Salary", slug="salary", type=CategoryType.INCOME)
+    db_session.add(inc)
+    await db_session.commit()
+    inc_id = inc.id
+
+    # Diverge the sibling to income.
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], diverged_sib,
+        TransactionUpdate(type="income", category_id=inc_id),
+    )
+    # Edit the NORMAL expense instance's category.
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], normal, TransactionUpdate(category_id=seed["exp_cat2"]),
+    )
+
+    db_session.expire_all()
+    # Template (expense) + the normal expense row get the new expense category.
+    assert (await db_session.get(RecurringTransaction, rid)).category_id == seed["exp_cat2"]
+    assert (await db_session.get(Transaction, normal)).category_id == seed["exp_cat2"]
+    # The income-diverged sibling is NOT overwritten with an expense category.
+    assert (await db_session.get(Transaction, diverged_sib)).category_id == inc_id
+
+
+async def test_unchanged_resave_does_not_propagate(db_session):
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)  # description "Gym"
+    p1 = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING, description="Gym")
+    # Drift the template so that, IF propagation wrongly fired, it would overwrite this.
+    tmpl = await db_session.get(RecurringTransaction, rid)
+    tmpl.description = "Drifted"
+    await db_session.commit()
+    # Re-save with the SAME description (no real change) plus an amount edit.
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], p1,
+        TransactionUpdate(description="Gym", amount=Decimal("12.00")),
+    )
+    db_session.expire_all()
+    # description didn't change → propagation must not have fired → drift preserved.
+    assert (await db_session.get(RecurringTransaction, rid)).description == "Drifted"
+
+
 async def test_stop_clears_recurring_link_on_survivors(db_session):
     seed = await _seed(db_session)
     rid = await _add_template(db_session, seed)

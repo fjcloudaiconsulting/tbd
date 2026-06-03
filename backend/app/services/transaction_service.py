@@ -379,38 +379,64 @@ async def _propagate_fields_to_series(
     *,
     description: str | None,
     category_id: int | None,
+    tx_type: TransactionType,
 ) -> None:
     """Sync name/category from an edited recurring-linked transaction to its
-    template and all PENDING sibling instances. Pass only the fields that
-    actually changed; None means leave that field untouched. SETTLED instances
-    are intentionally never modified (historical fact). Caller commits."""
-    values: dict[str, object] = {}
+    template and PENDING sibling instances. Pass only the fields that actually
+    changed; None means leave that field untouched.
+
+    `description` is type-independent: it propagates to the template and ALL
+    PENDING siblings. `category_id` is type-dependent: a (type, category) pair
+    validated for one type may be invalid for another, so it propagates ONLY to
+    rows whose type matches the edited row's `tx_type` (the type its new
+    category was validated against). This prevents corrupting a template or a
+    sibling whose type has diverged via a per-occurrence edit.
+
+    SETTLED instances are never modified (historical fact). Concurrency: two
+    edits to different siblings race last-writer-wins on the template, which is
+    acceptable (no invariant at stake). Callers holding sibling ORM objects must
+    expire/re-select afterward; `update_transaction` re-selects the edited row
+    post-commit. Caller commits."""
     if description is not None:
-        values["description"] = description
+        await db.execute(
+            update(RecurringTransaction)
+            .where(
+                RecurringTransaction.id == recurring_id,
+                RecurringTransaction.org_id == org_id,
+            )
+            .values(description=description)
+        )
+        await db.execute(
+            update(Transaction)
+            .where(
+                Transaction.recurring_id == recurring_id,
+                Transaction.org_id == org_id,
+                Transaction.status == TransactionStatus.PENDING,
+            )
+            .values(description=description)
+        )
     if category_id is not None:
-        values["category_id"] = category_id
-    if not values:
-        return
-    await db.execute(
-        update(RecurringTransaction)
-        .where(
-            RecurringTransaction.id == recurring_id,
-            RecurringTransaction.org_id == org_id,
+        # RecurringTransaction.type is stored as the lowercase string value
+        # ("income"/"expense"); Transaction.type is the TransactionType enum.
+        await db.execute(
+            update(RecurringTransaction)
+            .where(
+                RecurringTransaction.id == recurring_id,
+                RecurringTransaction.org_id == org_id,
+                RecurringTransaction.type == tx_type.value,
+            )
+            .values(category_id=category_id)
         )
-        .values(**values)
-    )
-    # The pending-sibling update below bumps each row's updated_at via the
-    # column's onupdate; harmless and expected. (RecurringTransaction has no
-    # updated_at, so its update above changes only the named fields.)
-    await db.execute(
-        update(Transaction)
-        .where(
-            Transaction.recurring_id == recurring_id,
-            Transaction.org_id == org_id,
-            Transaction.status == TransactionStatus.PENDING,
+        await db.execute(
+            update(Transaction)
+            .where(
+                Transaction.recurring_id == recurring_id,
+                Transaction.org_id == org_id,
+                Transaction.status == TransactionStatus.PENDING,
+                Transaction.type == tx_type,
+            )
+            .values(category_id=category_id)
         )
-        .values(**values)
-    )
 
 
 async def update_transaction(
@@ -617,17 +643,8 @@ async def update_transaction(
     # Settled siblings keep their snapshot values. See spec
     # specs/recurring-transaction-field-sync.md.
     if tx.recurring_id is not None:
-        type_changed = body.type is not None and tx.type != old_type
         desc_changed = body.description is not None and tx.description != old_description
-        # Suppress category propagation when this edit also changed the row's
-        # type: the template's type is independent and is never propagated, so
-        # writing a type-incompatible category onto it would corrupt future
-        # generations. Name propagation is unaffected.
-        cat_changed = (
-            body.category_id is not None
-            and tx.category_id != old_category_id
-            and not type_changed
-        )
+        cat_changed = body.category_id is not None and tx.category_id != old_category_id
         if desc_changed or cat_changed:
             await _propagate_fields_to_series(
                 db,
@@ -635,6 +652,7 @@ async def update_transaction(
                 tx.recurring_id,
                 description=tx.description if desc_changed else None,
                 category_id=tx.category_id if cat_changed else None,
+                tx_type=tx.type,
             )
 
     await db.commit()
