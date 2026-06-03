@@ -399,10 +399,12 @@ function TransactionsPageContent() {
     void refreshAfterTransactionAdded();
   });
 
+  // Clear selection whenever the visible row set changes (filters, sort, page,
+  // or page size) so navigation never leaves an invisible selection behind.
   useEffect(() => {
     clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page]);
+  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page, pageSize]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -602,7 +604,6 @@ function TransactionsPageContent() {
   function changePageSize(n: number) {
     setPageSize(n);
     setPage(0);
-    clearSelection();
     if (typeof window !== "undefined") window.localStorage.setItem(PAGE_SIZE_KEY_TRANSACTIONS, String(n));
   }
 
@@ -854,7 +855,6 @@ function TransactionsPageContent() {
       persistedSort.setSort(field, SORT_DEFAULTS[field]);
     }
     setPage(0);
-    clearSelection();
   }
   // Visible rows are the fetched (server-sorted) transactions minus the
   // cascaded "duplicate" half of any transfer pair. Rows arrive pre-sorted
@@ -2051,7 +2051,7 @@ function TransactionsPageContent() {
                 page={page + 1}
                 pageSize={pageSize}
                 total={total}
-                onPageChange={(n) => { setPage(n - 1); clearSelection(); }}
+                onPageChange={(n) => setPage(n - 1)}
                 onPageSizeChange={changePageSize}
               />
             </div>
