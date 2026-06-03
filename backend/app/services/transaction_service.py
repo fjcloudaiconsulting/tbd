@@ -14,13 +14,14 @@ import datetime
 from decimal import Decimal, InvalidOperation
 
 import structlog
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.account import Account
 from app.models.category import Category, CategoryType
+from app.models.recurring import RecurringTransaction
 from app.models.tag import Tag, TransactionTag
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.tag import TagResponse
@@ -371,6 +372,44 @@ async def create_transaction(
     return result.scalar_one()
 
 
+async def _propagate_fields_to_series(
+    db: AsyncSession,
+    org_id: int,
+    recurring_id: int,
+    *,
+    description: str | None,
+    category_id: int | None,
+) -> None:
+    """Sync name/category from an edited recurring-linked transaction to its
+    template and all PENDING sibling instances. Pass only the fields that
+    actually changed; None means leave that field untouched. SETTLED instances
+    are intentionally never modified (historical fact). Caller commits."""
+    values: dict = {}
+    if description is not None:
+        values["description"] = description
+    if category_id is not None:
+        values["category_id"] = category_id
+    if not values:
+        return
+    await db.execute(
+        update(RecurringTransaction)
+        .where(
+            RecurringTransaction.id == recurring_id,
+            RecurringTransaction.org_id == org_id,
+        )
+        .values(**values)
+    )
+    await db.execute(
+        update(Transaction)
+        .where(
+            Transaction.recurring_id == recurring_id,
+            Transaction.org_id == org_id,
+            Transaction.status == TransactionStatus.PENDING,
+        )
+        .values(**values)
+    )
+
+
 async def update_transaction(
     db: AsyncSession, org_id: int, transaction_id: int, body: TransactionUpdate
 ) -> Transaction:
@@ -452,6 +491,7 @@ async def update_transaction(
     old_type = tx.type
     old_status = tx.status
     old_category_id = tx.category_id
+    old_description = tx.description
 
     new_account_id = body.account_id if body.account_id is not None else old_account_id
     new_status = TransactionStatus(body.status) if body.status is not None else old_status
@@ -567,6 +607,22 @@ async def update_transaction(
                 partner_id=partner.id,
                 old_amount=str(pre_edit_amount),
                 new_amount=str(tx.amount),
+            )
+
+    # Sync name/category forward to the recurring series (template + pending
+    # siblings) when this row belongs to one and the field actually changed.
+    # Settled siblings keep their snapshot values. See spec
+    # specs/recurring-transaction-field-sync.md.
+    if tx.recurring_id is not None:
+        desc_changed = body.description is not None and tx.description != old_description
+        cat_changed = body.category_id is not None and tx.category_id != old_category_id
+        if desc_changed or cat_changed:
+            await _propagate_fields_to_series(
+                db,
+                org_id,
+                tx.recurring_id,
+                description=tx.description if desc_changed else None,
+                category_id=tx.category_id if cat_changed else None,
             )
 
     await db.commit()
