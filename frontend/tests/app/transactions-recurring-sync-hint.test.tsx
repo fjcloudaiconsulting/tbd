@@ -111,8 +111,8 @@ beforeEach(() => {
   });
 });
 
-describe("TransactionsPage — recurring edit sync hint + badge tooltip", () => {
-  it("recurring row edit form: shows forward-sync hint and tooltip on the chip", async () => {
+describe("TransactionsPage — recurring edit sync hint", () => {
+  it("recurring row edit form: shows forward-sync hint next to the chip", async () => {
     const tx = makeTx({ id: 101, description: "Netflix", recurring_id: 7 });
     setupApiFetch([tx]);
     render(<TransactionsPage />);
@@ -125,19 +125,15 @@ describe("TransactionsPage — recurring edit sync hint + badge tooltip", () => 
     ).toHaveTextContent(
       "Editing the name or category also updates this recurring series and its upcoming occurrences.",
     );
-    expect(screen.getByTestId("edit-recurring-chip-101")).toHaveAttribute(
-      "title",
-      "Generated from a recurring series. Name and category stay in sync with the series.",
-    );
+    expect(screen.getByTestId("edit-recurring-chip-101")).toBeInTheDocument();
 
     expect(
       await screen.findByTestId("edit-recurring-sync-hint-mobile-101"),
     ).toHaveTextContent(
       "Editing the name or category also updates this recurring series and its upcoming occurrences.",
     );
-    expect(screen.getByTestId("edit-recurring-chip-mobile-101")).toHaveAttribute(
-      "title",
-      "Generated from a recurring series. Name and category stay in sync with the series.",
-    );
+    expect(
+      screen.getByTestId("edit-recurring-chip-mobile-101"),
+    ).toBeInTheDocument();
   });
 });

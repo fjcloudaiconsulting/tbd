@@ -1528,7 +1528,6 @@ function TransactionsPageContent() {
                               {tx.recurring_id !== null ? (
                                 <div className="flex flex-col gap-1">
                                   <span
-                                    title="Generated from a recurring series. Name and category stay in sync with the series."
                                     className="inline-flex w-fit items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-text-muted"
                                     data-testid={`edit-recurring-chip-${tx.id}`}
                                   >
@@ -1826,7 +1825,6 @@ function TransactionsPageContent() {
                                 {tx.recurring_id !== null ? (
                                   <div className="flex flex-col gap-1">
                                     <span
-                                      title="Generated from a recurring series. Name and category stay in sync with the series."
                                       className="inline-flex w-fit items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-text-muted"
                                       data-testid={`edit-recurring-chip-mobile-${tx.id}`}
                                     >
