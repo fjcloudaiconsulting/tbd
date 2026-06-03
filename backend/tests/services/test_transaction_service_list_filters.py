@@ -101,7 +101,7 @@ async def test_settled_in_period_settled_date_inside(db_session, world):
     db_session.add(tx)
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, date_from=MAY_FROM, date_to=MAY_TO,
     )
     assert [r.description for r in rows] == ["settled-in"]
@@ -119,7 +119,7 @@ async def test_settled_in_period_settled_date_outside(db_session, world):
     db_session.add(tx)
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, date_from=MAY_FROM, date_to=MAY_TO,
     )
     assert rows == []
@@ -134,7 +134,7 @@ async def test_pending_settling_in_period(db_session, world):
     db_session.add(tx)
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, date_from=MAY_FROM, date_to=MAY_TO,
     )
     assert [r.description for r in rows] == ["pending-in"]
@@ -152,7 +152,7 @@ async def test_pending_settling_after_period(db_session, world):
     db_session.add(tx)
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, date_from=MAY_FROM, date_to=MAY_TO,
     )
     assert rows == []
@@ -167,7 +167,7 @@ async def test_pending_settling_before_period(db_session, world):
     db_session.add(tx)
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, date_from=MAY_FROM, date_to=MAY_TO,
     )
     assert rows == []
@@ -185,7 +185,7 @@ async def test_pending_no_settled_date_falls_back_to_date(db_session, world):
     db_session.add(tx)
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, date_from=MAY_FROM, date_to=MAY_TO,
     )
     assert [r.description for r in rows] == ["pending-null"]
@@ -223,7 +223,7 @@ async def test_sort_order_uses_effective_date(db_session, world):
     db_session.add_all([tx_a, tx_b, tx_c])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, date_from=MAY_FROM, date_to=MAY_TO,
     )
     # Effective dates: B=05-25, A=05-15, C=05-10  ->  DESC: B, A, C
