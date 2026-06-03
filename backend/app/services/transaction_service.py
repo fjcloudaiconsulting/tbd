@@ -616,8 +616,17 @@ async def update_transaction(
     # Settled siblings keep their snapshot values. See spec
     # specs/recurring-transaction-field-sync.md.
     if tx.recurring_id is not None:
+        type_changed = body.type is not None and tx.type != old_type
         desc_changed = body.description is not None and tx.description != old_description
-        cat_changed = body.category_id is not None and tx.category_id != old_category_id
+        # Suppress category propagation when this edit also changed the row's
+        # type: the template's type is independent and is never propagated, so
+        # writing a type-incompatible category onto it would corrupt future
+        # generations. Name propagation is unaffected.
+        cat_changed = (
+            body.category_id is not None
+            and tx.category_id != old_category_id
+            and not type_changed
+        )
         if desc_changed or cat_changed:
             await _propagate_fields_to_series(
                 db,

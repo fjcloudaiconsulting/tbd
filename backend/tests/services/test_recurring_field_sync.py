@@ -199,6 +199,32 @@ async def test_edit_name_and_category_together_propagate(db_session):
     assert inst.category_id == seed["exp_cat2"]
 
 
+async def test_category_not_propagated_when_type_also_changed(db_session):
+    from app.models.category import Category, CategoryType
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)
+    p1 = await _add_instance(db_session, seed, rid, status=TransactionStatus.PENDING)
+
+    inc = Category(org_id=seed["org_id"], name="Bonus", slug="bonus", type=CategoryType.INCOME)
+    db_session.add(inc)
+    await db_session.commit()
+    inc_id = inc.id
+
+    await transaction_service.update_transaction(
+        db_session, seed["org_id"], p1,
+        TransactionUpdate(type="income", category_id=inc_id),
+    )
+
+    db_session.expire_all()
+    tmpl = await db_session.get(RecurringTransaction, rid)
+    # Template keeps its original expense category and type; no corrupting cross-type write.
+    assert tmpl.category_id == seed["exp_cat"]
+    assert tmpl.type == "expense"
+    # The edited row itself did change (its own type/category), but that's local.
+    edited = await db_session.get(Transaction, p1)
+    assert edited.category_id == inc_id
+
+
 async def test_stop_clears_recurring_link_on_survivors(db_session):
     seed = await _seed(db_session)
     rid = await _add_template(db_session, seed)
