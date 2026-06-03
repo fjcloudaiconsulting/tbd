@@ -7,7 +7,7 @@ next_due_date has passed. Advances next_due_date based on frequency.
 import datetime
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -175,6 +175,17 @@ async def stop_recurring(db: AsyncSession, org_id: int, recurring_id: int) -> in
 
     r.is_active = False
     removed = await _remove_pending_transactions(db, org_id, recurring_id)
+
+    # Clear the now-defunct recurring link on surviving (settled) rows so the
+    # "Recurring" badge disappears, mirroring delete's ON DELETE SET NULL.
+    await db.execute(
+        update(Transaction)
+        .where(
+            Transaction.recurring_id == recurring_id,
+            Transaction.org_id == org_id,
+        )
+        .values(recurring_id=None)
+    )
 
     await db.commit()
     return removed

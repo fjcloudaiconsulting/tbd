@@ -24,7 +24,7 @@ from app.models.category import CategoryType
 from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.transaction import TransactionUpdate
-from app.services import transaction_service
+from app.services import recurring_service, transaction_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -197,3 +197,40 @@ async def test_edit_name_and_category_together_propagate(db_session):
     inst = await db_session.get(Transaction, p1)
     assert inst.description == "Gym Plus"
     assert inst.category_id == seed["exp_cat2"]
+
+
+async def test_stop_clears_recurring_link_on_survivors(db_session):
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)
+    settled = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.SETTLED,
+        dt=date.today() - timedelta(days=10),
+    )
+    future_pending = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.PENDING,
+        dt=date.today() + timedelta(days=10),
+    )
+
+    await recurring_service.stop_recurring(db_session, seed["org_id"], rid)
+
+    db_session.expire_all()
+    survivor = await db_session.get(Transaction, settled)
+    assert survivor is not None
+    assert survivor.recurring_id is None
+    assert (await db_session.get(Transaction, future_pending)) is None
+
+
+async def test_delete_clears_recurring_link_on_survivors(db_session):
+    seed = await _seed(db_session)
+    rid = await _add_template(db_session, seed)
+    settled = await _add_instance(
+        db_session, seed, rid, status=TransactionStatus.SETTLED,
+        dt=date.today() - timedelta(days=10),
+    )
+
+    await recurring_service.delete_recurring(db_session, seed["org_id"], rid)
+
+    db_session.expire_all()
+    survivor = await db_session.get(Transaction, settled)
+    assert survivor is not None
+    assert survivor.recurring_id is None
