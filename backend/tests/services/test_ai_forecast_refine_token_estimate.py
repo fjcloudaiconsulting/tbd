@@ -1,5 +1,4 @@
 # backend/tests/services/test_ai_forecast_refine_token_estimate.py
-import pytest
 from app.services.ai_forecast_refine_token_estimate import (
     Scope,
     select_categories_by_scope,
@@ -34,5 +33,13 @@ def test_max_tokens_never_below_floor_and_covers_estimate():
 
 
 def test_estimate_prompt_tokens_is_char_based():
-    short = estimate_prompt_tokens("x" * 350)
-    assert short == pytest.approx(100, abs=5)  # ~1 token / 3.5 chars
+    assert estimate_prompt_tokens("x" * 350) == 100
+    assert estimate_prompt_tokens("x" * 351) == 101
+    assert estimate_prompt_tokens("") == 0
+
+
+def test_scope_truncation_lengths():
+    spend = {i: float(i) for i in range(1, 25)}  # 24 categories
+    assert len(select_categories_by_scope(spend, Scope.TOP_10)) == 10
+    assert len(select_categories_by_scope(spend, Scope.TOP_20)) == 20
+    assert len(select_categories_by_scope(spend, Scope.ALL)) == 24

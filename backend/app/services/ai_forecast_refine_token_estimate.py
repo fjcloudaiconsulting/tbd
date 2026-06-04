@@ -36,16 +36,20 @@ class Scope(str, enum.Enum):
     ALL = "all"
 
 
-def _limit_for_scope(scope: "Scope") -> int | None:
-    if scope is Scope.TOP_10:
-        return 10
-    if scope is Scope.TOP_20:
-        return 20
-    return None  # ALL
+def _limit_for_scope(scope: Scope) -> int | None:
+    match scope:
+        case Scope.TOP_10:
+            return 10
+        case Scope.TOP_20:
+            return 20
+        case Scope.ALL:
+            return None
+        case _:
+            raise ValueError(f"Unknown scope: {scope!r}")
 
 
 def select_categories_by_scope(
-    spend_by_category: dict[int, float], scope: "Scope"
+    spend_by_category: dict[int, float], scope: Scope
 ) -> list[int]:
     """Return category ids ordered by spend desc, truncated to the scope.
 
@@ -53,7 +57,7 @@ def select_categories_by_scope(
     """
     ordered = sorted(
         spend_by_category.keys(),
-        key=lambda cid: (-spend_by_category[cid], cid),
+        key=lambda cid: (-(spend_by_category[cid] or 0.0), cid),
     )
     limit = _limit_for_scope(scope)
     return ordered if limit is None else ordered[:limit]
@@ -64,6 +68,8 @@ def estimate_prompt_tokens(prompt_text: str) -> int:
 
 
 def estimate_output_tokens(*, category_count: int) -> int:
+    if category_count < 0:
+        raise ValueError(f"category_count must be >= 0, got {category_count}")
     anomalies = category_count // 4
     chars = (
         category_count * _SEASONAL_CHARS_PER_ROW
