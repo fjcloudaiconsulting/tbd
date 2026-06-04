@@ -527,6 +527,10 @@ export default function ForecastPlansClient({
     if (next === mode || savingMode) return;
     const prev = mode;
     setMode(next);
+    // Clear any in-progress category pick: a subcategory selected in
+    // subcategory mode is no longer a listed option once the picker flips
+    // to masterOnly, and vice versa. Mirrors the type-flip clear below.
+    setFormCategoryId("");
     setSavingMode(true);
     setError("");
     try {
@@ -1091,6 +1095,7 @@ export default function ForecastPlansClient({
                 value={formCategoryId}
                 onChange={(id) => setFormCategoryId(id)}
                 filterType={formType}
+                masterOnly={mode === "master"}
                 disabledIds={disabledForType}
                 className={input}
                 aria-label="Plan item category"
