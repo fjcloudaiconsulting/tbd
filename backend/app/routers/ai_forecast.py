@@ -40,7 +40,7 @@ from app.schemas.ai_forecast import (
 )
 from app.services import audit_service
 from app.services.ai_forecast_refine_service import estimate_refine, refine_forecast
-from app.services.ai_forecast_refine_token_estimate import Scope
+from app.services.ai_forecast_refine_token_estimate import Scope, _duration_band
 
 
 logger = structlog.stdlib.get_logger()
@@ -203,7 +203,7 @@ async def estimate_refine_endpoint(
             est_prompt_tokens=0,
             est_output_tokens=0,
             est_cost_cents=0,
-            duration_band="",
+            duration_band=_duration_band(Scope(body.scope)),
             can_proceed=False,
             reason="estimate_failed",
         )

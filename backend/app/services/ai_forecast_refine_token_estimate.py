@@ -29,6 +29,12 @@ _OUTPUT_SAFETY_MARGIN = 1.10
 _MAX_TOKENS_FLOOR = 1024
 _MAX_TOKENS_BUFFER = 400
 
+# Hard ceiling for Scope.ALL — must stay <= AIForecastAdjustments.seasonal
+# max_length (200) so Pydantic validation never rejects the category list.
+# At 200 categories, anomalies = 200//4 = 50, which is under the anomalies
+# max_length of 60, so the constraint is satisfied at this exact ceiling.
+_ALL_SCOPE_CEILING = 200  # must stay <= AIForecastAdjustments.seasonal max_length (anomalies = N//4 stays < its 60 cap at 200)
+
 
 class Scope(str, enum.Enum):
     TOP_10 = "top_10"
@@ -36,14 +42,14 @@ class Scope(str, enum.Enum):
     ALL = "all"
 
 
-def _limit_for_scope(scope: Scope) -> int | None:
+def _limit_for_scope(scope: Scope) -> int:
     match scope:
         case Scope.TOP_10:
             return 10
         case Scope.TOP_20:
             return 20
         case Scope.ALL:
-            return None
+            return _ALL_SCOPE_CEILING
         case _:
             raise ValueError(f"Unknown scope: {scope!r}")
 
@@ -59,8 +65,7 @@ def select_categories_by_scope(
         spend_by_category.keys(),
         key=lambda cid: (-(spend_by_category[cid] or 0.0), cid),
     )
-    limit = _limit_for_scope(scope)
-    return ordered if limit is None else ordered[:limit]
+    return ordered[: _limit_for_scope(scope)]
 
 
 def estimate_prompt_tokens(prompt_text: str) -> int:
@@ -83,3 +88,11 @@ def estimate_output_tokens(*, category_count: int) -> int:
 def max_tokens_for_output_estimate(category_count: int) -> int:
     est = estimate_output_tokens(category_count=category_count)
     return max(_MAX_TOKENS_FLOOR, est + _MAX_TOKENS_BUFFER)
+
+
+def _duration_band(scope: Scope) -> str:
+    return {
+        Scope.TOP_10: "~15-25s",
+        Scope.TOP_20: "~20-40s",
+        Scope.ALL: "may take 60s+",
+    }[scope]

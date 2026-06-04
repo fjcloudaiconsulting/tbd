@@ -4,10 +4,10 @@ Layers AI-detected seasonality + anomaly flags on top of the
 deterministic forecast from ``forecast_service``. The flow is:
 
 1. Compute the baseline via ``forecast_service.compute_forecast``.
-2. Build an aggregated transaction summary (LAST 6 BILLING PERIODS,
-   per-category, monthly totals only, no raw transaction text, no
-   merchant names, no descriptions). This is the prompt-builder's
-   privacy boundary: we send aggregates, not rows.
+2. Build an aggregated transaction summary (up to 12 months of history,
+   user-configurable: 3, 6, or 12; per-category, monthly totals only,
+   no raw transaction text, no merchant names, no descriptions). This
+   is the prompt-builder's privacy boundary: we send aggregates, not rows.
 3. Build the Prompt with the baseline + summary.
 4. Dispatch via ``ai_dispatch.call_llm_structured`` with feature key
    ``"ai.forecast"`` and the ``AIForecastAdjustments`` JSON schema.
@@ -56,6 +56,7 @@ from app.schemas.ai_forecast import (
 from app.services import ai_dispatch, ai_routing_service, forecast_service
 from app.services.ai_forecast_refine_token_estimate import (
     Scope,
+    _duration_band,
     estimate_output_tokens,
     estimate_prompt_tokens,
     max_tokens_for_output_estimate,
@@ -79,9 +80,11 @@ logger = structlog.stdlib.get_logger()
 GATE_KEY = "ai.forecast"
 ROUTING_KEY = "smart_forecast"
 
-# Maximum history window pulled from the DB. Sliced to the requested
-# timeframe (e.g. 6 months) at prompt-build time. Categories with zero
-# spend in the window are omitted.
+# Default ``months`` arg for ``_build_category_history``. Callers
+# (``refine_forecast`` and ``estimate_refine``) always pass
+# ``months=timeframe_months`` explicitly, so the DB query pulls exactly
+# the requested window. No max-window-then-slice happens here.
+# Categories with zero spend in the window are omitted.
 HISTORY_MONTHS = 12
 
 
@@ -377,14 +380,6 @@ async def _resolve_model_or_none(
     return model
 
 
-def _duration_band(scope: Scope) -> str:
-    return {
-        Scope.TOP_10: "~15-25s",
-        Scope.TOP_20: "~20-40s",
-        Scope.ALL: "may take 60s+",
-    }[scope]
-
-
 async def refine_forecast(
     db: AsyncSession,
     *,
@@ -585,6 +580,12 @@ async def estimate_refine(
     Returns a ``ForecastRefineEstimate`` with ``can_proceed=False`` when:
     - No transaction history exists for the org (``reason="insufficient_history"``)
     - No routing is configured (``reason="ai_routing_not_configured"``)
+
+    KNOWN LIMITATION: checks routing but does NOT pre-check the AI spend
+    cap, so an org at its hard cap can see ``can_proceed=True``. On
+    Confirm the dispatch enforces the cap and returns a graceful baseline
+    fallback with ``fallback_reason="ai_cap_exceeded"`` -- no overspend
+    occurs. Follow-up: add a cap pre-check here.
     """
     baseline = await forecast_service.compute_forecast(
         db, org_id, period_start=period_start

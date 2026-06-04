@@ -18,6 +18,7 @@ const REASON_COPY: Record<string, string> = {
   ai_routing_not_configured:
     "Configure an AI provider in Settings to use this feature.",
   insufficient_history: "Not enough transaction history yet to analyze.",
+  estimate_failed: "Something went wrong estimating the cost. Try again.",
 };
 
 export interface AIForecastRefinePanelProps {
@@ -173,7 +174,7 @@ export function AIForecastRefinePanel({
               <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
               Estimating cost…
             </span>
-          ) : estimate ? (
+          ) : estimate && canProceed ? (
             <span>
               {"≈"} {dollars} {"·"} {estimate.est_output_tokens} tokens{" "}
               {"·"} {estimate.duration_band}

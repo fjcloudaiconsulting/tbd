@@ -43,3 +43,8 @@ def test_scope_truncation_lengths():
     assert len(select_categories_by_scope(spend, Scope.TOP_10)) == 10
     assert len(select_categories_by_scope(spend, Scope.TOP_20)) == 20
     assert len(select_categories_by_scope(spend, Scope.ALL)) == 24
+
+
+def test_all_scope_is_capped_at_schema_ceiling():
+    spend = {i: float(i) for i in range(1, 301)}  # 300 categories
+    assert len(select_categories_by_scope(spend, Scope.ALL)) == 200

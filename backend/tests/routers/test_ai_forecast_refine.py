@@ -773,6 +773,7 @@ async def test_estimate_endpoint_returns_200_on_unexpected_error(session_factory
     body = resp.json()
     assert body["can_proceed"] is False
     assert body["reason"] == "estimate_failed"
+    assert body["duration_band"] != ""
 
 
 @pytest.mark.asyncio
