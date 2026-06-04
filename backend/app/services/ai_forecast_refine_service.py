@@ -413,12 +413,15 @@ def _coerce_adjustments(parsed: Any) -> dict:
     for row in parsed.get("seasonal") or []:
         if not isinstance(row, dict):
             continue
-        try:
-            cid = int(row.get("category_id"))
-        except (TypeError, ValueError):
+        raw_cid = row.get("category_id")
+        if raw_cid is None:
             continue  # a seasonal adjustment is useless without a category id
+        try:
+            cid = int(raw_cid)
+        except (TypeError, ValueError):
+            continue
         name = row.get("category_name")
-        name = str(name) if name is not None else ""
+        name = name if isinstance(name, str) else ""
         if not name:
             continue
         seasonal.append(
@@ -435,7 +438,7 @@ def _coerce_adjustments(parsed: Any) -> dict:
         if not isinstance(row, dict):
             continue
         name = row.get("category_name")
-        name = str(name) if name is not None else ""
+        name = name if isinstance(name, str) else ""
         if not name:
             continue
         try:
@@ -454,9 +457,13 @@ def _coerce_adjustments(parsed: Any) -> dict:
             }
         )
 
+    # Truncate to the AIForecastAdjustments list caps (seasonal<=200,
+    # anomalies<=60) so an over-long list can't fail strict validation and
+    # trigger a full fallback. seasonal is bounded by the <=200 scope ceiling
+    # already (defensive); anomalies can genuinely exceed 60 at Scope.ALL.
     return {
-        "seasonal": seasonal,
-        "anomalies": anomalies,
+        "seasonal": seasonal[:200],
+        "anomalies": anomalies[:60],
         "confidence": _clamp(_as_float(parsed.get("confidence"), 0.5), 0.0, 1.0),
         "summary": str(parsed.get("summary") or "")[:480],
     }
@@ -612,13 +619,14 @@ async def refine_forecast(
             _coerce_adjustments(result.response.parsed)
         )
     except PydanticValidationError as exc:
+        errors = exc.errors()
         logger.warning(
             "ai.forecast.refine.invalid_schema",
             org_id=org_id,
-            error_count=len(exc.errors()),
+            error_count=len(errors),
             error_fields=[
                 {"loc": ".".join(str(p) for p in e["loc"]), "type": e["type"]}
-                for e in exc.errors()[:20]
+                for e in errors[:20]
             ],
         )
         return _baseline_response(

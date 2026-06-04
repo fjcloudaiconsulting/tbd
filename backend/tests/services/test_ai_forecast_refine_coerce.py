@@ -60,6 +60,27 @@ def test_coerce_drops_unusable_rows_but_keeps_good_ones():
     assert [s.category_id for s in adj.seasonal] == [9]
 
 
+def test_coerce_truncates_lists_to_schema_caps():
+    # A model returning more rows than the schema allows must NOT trigger a
+    # full fallback; coercion truncates to the AIForecastAdjustments caps.
+    parsed = {
+        "seasonal": [
+            {"category_id": i, "category_name": f"C{i}", "multiplier": 1.0, "rationale": "r"}
+            for i in range(1, 260)  # 259 > 200 cap
+        ],
+        "anomalies": [
+            {"category_id": i, "category_name": f"C{i}", "description": "d", "severity": "info"}
+            for i in range(1, 120)  # 119 > 60 cap
+        ],
+        "confidence": 0.5,
+        "summary": "ok",
+    }
+    coerced = _coerce_adjustments(parsed)
+    adj = AIForecastAdjustments.model_validate(coerced)  # must not raise
+    assert len(adj.seasonal) == 200
+    assert len(adj.anomalies) == 60
+
+
 def test_coerce_supplies_defaults_for_missing_required_fields():
     # Model omits confidence/summary/rationale entirely.
     parsed = {"seasonal": [{"category_id": 1, "category_name": "A", "multiplier": 1.0}]}
