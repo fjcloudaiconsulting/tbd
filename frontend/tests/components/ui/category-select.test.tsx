@@ -60,6 +60,26 @@ vi.mock("@/components/ui/AddCategoryModal", () => ({
       >
         stub-create-both
       </button>
+      {/* Emit a subcategory (parent_id set) so masterOnly's guard can be
+          exercised: a created subcategory must not be auto-selected. */}
+      <button
+        type="button"
+        onClick={() =>
+          props.onCreated({
+            id: 7777,
+            name: props.initialName || "Stub Sub",
+            type: "expense",
+            parent_id: 20,
+            parent_name: "Groceries",
+            description: null,
+            slug: "stub-sub",
+            is_system: false,
+            transaction_count: 0,
+          })
+        }
+      >
+        stub-create-sub
+      </button>
     </div>
   ),
 }));
@@ -371,6 +391,57 @@ describe("CategorySelect — value resolution under filterType", () => {
     const listbox = screen.getByRole("listbox");
     fireEvent.click(within(listbox).getByText("Salary"));
     expect(onChange).toHaveBeenCalledWith(10);
+  });
+
+  it("masterOnly: a created subcategory is surfaced upward but not selected", () => {
+    // In master mode the "+ Add category" modal can still create a
+    // subcategory. It must be reported via onCategoryCreated (so other
+    // pickers can list it) but NOT auto-selected, since masterOnly must
+    // only ever emit master ids.
+    const onChange = vi.fn();
+    const onCategoryCreated = vi.fn();
+    render(
+      <CategorySelect
+        id="m3"
+        categories={CATEGORIES}
+        value=""
+        onChange={onChange}
+        onCategoryCreated={onCategoryCreated}
+        filterType="expense"
+        masterOnly
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
+    fireEvent.click(screen.getByText("stub-create-sub"));
+
+    // Upward notification still fires.
+    expect(onCategoryCreated).toHaveBeenCalledTimes(1);
+    expect(onCategoryCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 7777, parent_id: 20 }),
+    );
+    // But the subcategory is NOT selected.
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("masterOnly: a created master IS selected", () => {
+    const onChange = vi.fn();
+    render(
+      <CategorySelect
+        id="m4"
+        categories={CATEGORIES}
+        value=""
+        onChange={onChange}
+        filterType="expense"
+        masterOnly
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("button", { name: /Add category/i }));
+    fireEvent.click(screen.getByText("stub-create-expense"));
+
+    // The created master (parent_id null) is selected as normal.
+    expect(onChange).toHaveBeenCalledWith(9999);
   });
 
   it("typeFilter=BOTH: a compatible (both) created category IS selected", () => {

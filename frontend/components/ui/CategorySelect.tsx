@@ -102,7 +102,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
       : rawSelected;
 
   // Precompute parent IDs set and selectable items (O(n) instead of O(n^2))
-  const { selectable, parentIds } = useMemo(() => {
+  const { selectable } = useMemo(() => {
     const pIds = new Set<number>();
     for (const c of categories) {
       if (c.parent_id !== null) pIds.add(c.parent_id);
@@ -114,7 +114,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
       if (masterOnly) return c.parent_id === null;
       return c.parent_id !== null || !pIds.has(c.id);
     });
-    return { selectable: items, parentIds: pIds };
+    return { selectable: items };
   }, [categories, effectiveFilterType, bothOnly, masterOnly]);
 
   const q = query.toLowerCase();
@@ -361,6 +361,13 @@ export default function CategorySelect({ id, categories, value, onChange, filter
             // feedback on PR #296.
             onCategoryCreated?.(cat);
             if (bothOnly && cat.type !== "both") {
+              return;
+            }
+            // In masterOnly mode only masters are selectable. If the user
+            // created a subcategory from the modal, surface it upward but
+            // do NOT auto-select it — selecting it would emit a
+            // subcategory id and violate the masterOnly contract.
+            if (masterOnly && cat.parent_id !== null) {
               return;
             }
             handleSelect(cat);
