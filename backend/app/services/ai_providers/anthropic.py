@@ -32,7 +32,7 @@ from app.services.ai_providers.base import (
 
 
 VALIDATE_TIMEOUT_S = 10.0
-CHAT_TIMEOUT_S = 30.0
+CHAT_TIMEOUT_S = 60.0
 STREAM_TIMEOUT_S = 60.0
 # Anthropic advertises chat + tool use + structured output + streaming.
 # ``embed`` is intentionally absent — Anthropic has no embeddings API.

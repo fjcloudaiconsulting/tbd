@@ -17,6 +17,9 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 // requests were never replayed visibly to the user. 45s gives the
 // observed tail enough headroom that a single attempt succeeds.
 const RECOVERY_TIMEOUT_MS = 45_000;
+// AI dispatch endpoints (/ai/*) can take 20-40s for structured LLM calls.
+// Give them a 90s budget to avoid false-positive timeouts on slow models.
+const AI_TIMEOUT_MS = 90_000;
 // Back-compat alias retained for the rest of the module; existing callers
 // reference API_FETCH_TIMEOUT_MS in inline comments.
 const API_FETCH_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
@@ -45,8 +48,14 @@ function isRecoveryPath(path: string): boolean {
   );
 }
 
-function timeoutForPath(path: string): number {
-  return isRecoveryPath(path) ? RECOVERY_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+function isAIPath(path: string): boolean {
+  return path.includes("/api/v1/ai/") || path.startsWith("/ai/");
+}
+
+export function timeoutForPath(path: string): number {
+  if (isRecoveryPath(path)) return RECOVERY_TIMEOUT_MS;
+  if (isAIPath(path)) return AI_TIMEOUT_MS;
+  return DEFAULT_TIMEOUT_MS;
 }
 
 let accessToken: string | null = null;

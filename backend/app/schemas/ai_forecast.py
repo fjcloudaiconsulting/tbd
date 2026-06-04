@@ -14,7 +14,7 @@ the frontend can render a side-by-side delta or the toggle's
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
@@ -55,8 +55,8 @@ class AIForecastAdjustments(BaseModel):
     we never pass an LLM dict straight through to the baseline math.
     """
 
-    seasonal: list[SeasonalAdjustment] = Field(default_factory=list, max_length=40)
-    anomalies: list[AnomalyFlag] = Field(default_factory=list, max_length=20)
+    seasonal: list[SeasonalAdjustment] = Field(default_factory=list, max_length=200)
+    anomalies: list[AnomalyFlag] = Field(default_factory=list, max_length=60)
     confidence: StrictFloat = Field(..., ge=0.0, le=1.0)
     summary: StrictStr = Field(..., max_length=480)
 
@@ -108,10 +108,24 @@ class RefinedForecastResponse(BaseModel):
 
 
 class RefineForecastRequest(BaseModel):
-    """Request body for the refine endpoint.
+    """Request body for the refine + estimate endpoints.
 
-    ``period_start`` is optional. When omitted the service uses the
-    current billing period (same convention as GET /api/v1/forecast).
+    ``period_start`` optional (defaults to the current billing period).
+    ``timeframe_months`` selects history depth; ``scope`` selects how many
+    categories (by spend) are refined.
     """
 
     period_start: Optional[StrictStr] = None
+    timeframe_months: Literal[3, 6, 12] = 6
+    scope: Literal["top_10", "top_20", "all"] = "top_20"
+
+
+class ForecastRefineEstimate(BaseModel):
+    """No-LLM preflight estimate shown before the user confirms a refine."""
+
+    est_prompt_tokens: StrictInt
+    est_output_tokens: StrictInt
+    est_cost_cents: StrictInt
+    duration_band: StrictStr
+    can_proceed: StrictBool
+    reason: Optional[StrictStr] = None

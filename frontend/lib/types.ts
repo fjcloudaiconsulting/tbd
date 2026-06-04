@@ -766,6 +766,17 @@ export interface NotificationUnseenCountResponse {
 }
 
 // L4.10 — rate-limit overrides admin shape.
+// AI Forecast Refine — cost-confirmed estimate preflight (Task 8).
+// Mirrors backend/app/schemas/ai_forecast.ForecastRefineEstimate.
+export interface ForecastRefineEstimate {
+  est_prompt_tokens: number;
+  est_output_tokens: number;
+  est_cost_cents: number;
+  duration_band: string;
+  can_proceed: boolean;
+  reason: string | null;
+}
+
 export interface RateLimitOverride {
   id: number;
   org_id: number | null;

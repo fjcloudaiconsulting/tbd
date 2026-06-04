@@ -53,6 +53,17 @@ function refinedFixture(
   };
 }
 
+function estimateFixture(can_proceed = true) {
+  return {
+    est_prompt_tokens: 11000,
+    est_output_tokens: 2000,
+    est_cost_cents: 15,
+    duration_band: "~20-40s",
+    can_proceed,
+    reason: can_proceed ? null : "ai_routing_not_configured",
+  };
+}
+
 beforeEach(() => {
   mockedFetch.mockReset();
 });
@@ -62,8 +73,9 @@ afterEach(() => {
 });
 
 describe("AIForecastRefineToggle - idle and apply flow", () => {
-  it("renders the apply CTA when idle and triggers POST on click", async () => {
-    mockedFetch.mockResolvedValueOnce(refinedFixture());
+  it("renders the apply CTA when idle; clicking opens the configure panel", async () => {
+    // First call is the estimate (on panel mount).
+    mockedFetch.mockResolvedValue(estimateFixture());
 
     render(<AIForecastRefineToggle periodStart="2026-05-01" />);
     const button = screen.getByTestId("ai-forecast-refine-toggle");
@@ -72,28 +84,34 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
 
     fireEvent.click(button);
 
-    await waitFor(() => {
-      expect(screen.getByTestId("ai-forecast-refined-panel")).toBeInTheDocument();
-    });
-    expect(mockedFetch).toHaveBeenCalledTimes(1);
+    // Panel opens; estimate call fires; Confirm button appears.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /confirm/i })).toBeInTheDocument(),
+    );
+    // Direct refine NOT called yet — only the estimate call.
     expect(mockedFetch).toHaveBeenCalledWith(
-      "/api/v1/ai/forecast/refine",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ period_start: "2026-05-01" }),
-      }),
+      "/api/v1/ai/forecast/refine/estimate",
+      expect.objectContaining({ method: "POST" }),
     );
   });
 
-  it("shows the AI-refined badge when the backend applies adjustments", async () => {
-    mockedFetch.mockResolvedValueOnce(refinedFixture());
-    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
+  it("shows the AI-refined badge after Confirm completes", async () => {
+    // First call: estimate. Second call: refine.
+    mockedFetch
+      .mockResolvedValueOnce(estimateFixture())
+      .mockResolvedValueOnce(refinedFixture());
 
+    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
     fireEvent.click(screen.getByTestId("ai-forecast-refine-toggle"));
 
-    await waitFor(() => {
-      expect(screen.getByTestId("ai-refined-badge")).toBeInTheDocument();
-    });
+    // Wait for Confirm to be enabled.
+    const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-forecast-refined-panel")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("ai-refined-badge")).toBeInTheDocument();
     expect(screen.queryByTestId("ai-fallback-badge")).toBeNull();
     // Delta vs. baseline surfaced.
     expect(screen.getByText(/\+20\.00 vs\. baseline/)).toBeInTheDocument();
@@ -103,10 +121,16 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
 
 describe("AIForecastRefineToggle - tooltip details", () => {
   it("toggles the detail panel and lists adjustments + anomalies", async () => {
-    mockedFetch.mockResolvedValueOnce(refinedFixture());
-    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
+    mockedFetch
+      .mockResolvedValueOnce(estimateFixture())
+      .mockResolvedValueOnce(refinedFixture());
 
+    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
     fireEvent.click(screen.getByTestId("ai-forecast-refine-toggle"));
+
+    const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
+    fireEvent.click(confirmBtn);
+
     await waitFor(() =>
       expect(screen.getByTestId("ai-forecast-refined-panel")).toBeInTheDocument(),
     );
@@ -135,32 +159,37 @@ describe("AIForecastRefineToggle - tooltip details", () => {
 
 describe("AIForecastRefineToggle - fallback handling", () => {
   it("shows fallback badge + reason when backend returns ai_applied=false", async () => {
-    mockedFetch.mockResolvedValueOnce(
-      refinedFixture({
-        refined_forecast_expense: "100.00",
-        provenance: {
-          ai_applied: false,
-          fallback_reason: "ai_routing_not_configured",
-          model: null,
-          confidence: null,
-          summary: null,
-          notes: [],
-        },
-        categories: [
-          {
-            category_id: 1,
-            category_name: "Groceries",
-            baseline_forecast: "100.00",
-            multiplier: 1.0,
-            refined_forecast: "100.00",
+    mockedFetch
+      .mockResolvedValueOnce(estimateFixture())
+      .mockResolvedValueOnce(
+        refinedFixture({
+          refined_forecast_expense: "100.00",
+          provenance: {
+            ai_applied: false,
+            fallback_reason: "ai_routing_not_configured",
+            model: null,
+            confidence: null,
+            summary: null,
+            notes: [],
           },
-        ],
-        anomalies: [],
-      }),
-    );
+          categories: [
+            {
+              category_id: 1,
+              category_name: "Groceries",
+              baseline_forecast: "100.00",
+              multiplier: 1.0,
+              refined_forecast: "100.00",
+            },
+          ],
+          anomalies: [],
+        }),
+      );
 
     render(<AIForecastRefineToggle periodStart="2026-05-01" />);
     fireEvent.click(screen.getByTestId("ai-forecast-refine-toggle"));
+
+    const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
+    fireEvent.click(confirmBtn);
 
     await waitFor(() =>
       expect(screen.getByTestId("ai-fallback-badge")).toBeInTheDocument(),
@@ -171,8 +200,8 @@ describe("AIForecastRefineToggle - fallback handling", () => {
     );
   });
 
-  it("hides itself entirely on a 403 (feature gate closed)", async () => {
-    mockedFetch.mockRejectedValueOnce(
+  it("hides itself entirely when the estimate call returns a 403 (feature gate closed)", async () => {
+    mockedFetch.mockRejectedValue(
       new ApiResponseError(403, "feature_not_enabled", "feature_not_enabled"),
     );
 

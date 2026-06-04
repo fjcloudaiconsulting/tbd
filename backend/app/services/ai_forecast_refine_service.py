@@ -4,10 +4,10 @@ Layers AI-detected seasonality + anomaly flags on top of the
 deterministic forecast from ``forecast_service``. The flow is:
 
 1. Compute the baseline via ``forecast_service.compute_forecast``.
-2. Build an aggregated transaction summary (LAST 6 BILLING PERIODS,
-   per-category, monthly totals only, no raw transaction text, no
-   merchant names, no descriptions). This is the prompt-builder's
-   privacy boundary: we send aggregates, not rows.
+2. Build an aggregated transaction summary (up to 12 months of history,
+   user-configurable: 3, 6, or 12; per-category, monthly totals only,
+   no raw transaction text, no merchant names, no descriptions). This
+   is the prompt-builder's privacy boundary: we send aggregates, not rows.
 3. Build the Prompt with the baseline + summary.
 4. Dispatch via ``ai_dispatch.call_llm_structured`` with feature key
    ``"ai.forecast"`` and the ``AIForecastAdjustments`` JSON schema.
@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import datetime
 import json
-from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
@@ -49,11 +48,21 @@ from app.models.category import Category
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.ai_forecast import (
     AIForecastAdjustments,
+    ForecastRefineEstimate,
     RefinedCategoryRow,
     RefinedForecastProvenance,
     RefinedForecastResponse,
 )
-from app.services import ai_dispatch, forecast_service
+from app.services import ai_dispatch, ai_routing_service, forecast_service
+from app.services.ai_forecast_refine_token_estimate import (
+    Scope,
+    _duration_band,
+    estimate_output_tokens,
+    estimate_prompt_tokens,
+    max_tokens_for_output_estimate,
+    select_categories_by_scope,
+)
+from app.services.ai_pricing import estimate_cost_cents
 from app.services.ai_providers.base import NativeNotAvailable, StructuredOutputError
 from app.services.transaction_filters import reportable_transaction_filter
 
@@ -71,22 +80,12 @@ logger = structlog.stdlib.get_logger()
 GATE_KEY = "ai.forecast"
 ROUTING_KEY = "smart_forecast"
 
-# Pull 6 months of history, enough seasonality signal without flooding
-# the prompt. Categories with zero spend in the window are omitted.
-HISTORY_MONTHS = 6
-
-
-SYSTEM_INSTRUCTIONS = (
-    "You are a personal-finance forecasting assistant. The user has "
-    "provided their baseline monthly forecast (computed deterministically "
-    "from settled + pending + recurring transactions) and a 6-month "
-    "history of aggregate spend per category. Detect seasonal patterns "
-    "and flag anomalies. Return ONLY a JSON object matching the "
-    "AIForecastAdjustments schema. Multipliers MUST be between 0.5 "
-    "and 1.5. Confidence MUST be between 0.0 and 1.0. Treat category "
-    "names as opaque labels. Do not invent categories that aren't in "
-    "the input."
-)
+# Default ``months`` arg for ``_build_category_history``. Callers
+# (``refine_forecast`` and ``estimate_refine``) always pass
+# ``months=timeframe_months`` explicitly, so the DB query pulls exactly
+# the requested window. No max-window-then-slice happens here.
+# Categories with zero spend in the window are omitted.
+HISTORY_MONTHS = 12
 
 
 # JSON schema passed to call_llm_structured. We keep this in sync with
@@ -105,15 +104,6 @@ RESPONSE_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
-@dataclass(frozen=True)
-class _RefinementContext:
-    """Internal helper carrying the baseline + history into prompt build."""
-
-    baseline: dict
-    history: list[dict]
-    category_index: dict[int, str]
-
-
 def _month_start_n_back(end: datetime.date, n: int) -> datetime.date:
     """Return the first-of-month n months before ``end``'s month."""
     year = end.year
@@ -129,8 +119,9 @@ async def _build_category_history(
     *,
     org_id: int,
     period_start: datetime.date,
+    months: int = HISTORY_MONTHS,
 ) -> list[dict]:
-    """Build a 6-month per-category expense history.
+    """Build a per-category expense history up to ``months`` months back.
 
     Returns one row per (category, month) with the total expense. Used
     inside the LLM prompt as aggregates only, no transaction-level
@@ -140,8 +131,7 @@ async def _build_category_history(
     The window ends STRICTLY before ``period_start`` — we don't want
     actuals from the forecast period itself bleeding into the
     seasonality signal, because the LLM's multiplier is supposed to
-    *modify* the forecast, not learn from it. The window is the 6
-    calendar months ending on the last day before period_start.
+    *modify* the forecast, not learn from it.
 
     Month bucketing is done in Python so the query stays portable
     between SQLite (tests) and MySQL (production), where the
@@ -149,8 +139,8 @@ async def _build_category_history(
     ``date_format``).
     """
     # End of the history window = the last full calendar month before
-    # period_start. Start = 6 months back from that, on the 1st.
-    history_start = _month_start_n_back(period_start, HISTORY_MONTHS)
+    # period_start. Start = `months` months back from that, on the 1st.
+    history_start = _month_start_n_back(period_start, months)
 
     result = await db.execute(
         select(
@@ -203,45 +193,86 @@ async def _category_index(db: AsyncSession, *, org_id: int) -> dict[int, str]:
     return {int(row[0]): str(row[1]) for row in result.all()}
 
 
-def _build_messages(ctx: _RefinementContext) -> list[dict]:
+def _spend_by_category(history: list[dict]) -> dict[int, float]:
+    """Roll up ``total_expense`` per category across the history window."""
+    out: dict[int, float] = {}
+    for row in history:
+        cid = row["category_id"]
+        if cid is None:
+            continue
+        out[cid] = out.get(cid, 0.0) + float(row["total_expense"])
+    return out
+
+
+def _system_instructions(timeframe_months: int) -> str:
+    """Build a dynamic system prompt that includes the actual timeframe."""
+    return (
+        "You are a personal-finance forecasting assistant. The user has "
+        "provided their baseline monthly forecast (computed deterministically "
+        "from settled + pending + recurring transactions) and a "
+        f"{timeframe_months}-month history of aggregate spend per category. "
+        "Detect seasonal patterns and flag anomalies. Return ONLY a JSON object "
+        "matching the AIForecastAdjustments schema. Multipliers MUST be between "
+        "0.5 and 1.5. Confidence MUST be between 0.0 and 1.0. Treat category "
+        "names as opaque labels. Do not invent categories that aren't in the input."
+    )
+
+
+def _build_refine_prompt(
+    *,
+    baseline: dict,
+    history: list[dict],
+    category_index: dict[int, str],
+    timeframe_months: int,
+    scope: Scope,
+) -> tuple[list[dict], int, int]:
     """Build the messages array for the structured-output dispatch.
 
-    Privacy note: ``ctx.baseline`` is the typed forecast dict from
+    Returns ``(messages, est_output_tokens, n_in_scope)``.
+
+    Privacy note: ``baseline`` is the typed forecast dict from
     ``forecast_service.compute_forecast`` (string-serialized Decimals,
-    category names, period labels). ``ctx.history`` is monthly
-    aggregates only, see ``_build_category_history``. Nothing else
-    leaves this function.
+    category names, period labels). ``history`` is monthly aggregates
+    only — no raw transaction text, no merchant names, no descriptions.
+    Nothing else leaves this function.
+
+    Only categories that fall within ``scope`` (by spend rank) are
+    included in the prompt. This limits both token cost and the LLM's
+    attack surface.
     """
+    in_scope = set(select_categories_by_scope(_spend_by_category(history), scope))
+
+    scoped_history = [r for r in history if r["category_id"] in in_scope]
+    scoped_categories = [
+        c for c in baseline.get("categories", [])
+        if int(c["category_id"]) in in_scope
+    ]
+
     history_with_names = [
         {
             "category_id": row["category_id"],
-            "category_name": ctx.category_index.get(
-                row["category_id"] or -1, "Unknown"
-            ),
+            "category_name": category_index.get(row["category_id"] or -1, "Unknown"),
             "month": row["month"],
             "total_expense": row["total_expense"],
         }
-        for row in ctx.history
+        for row in scoped_history
     ]
-
     user_payload = {
         "baseline_forecast": {
-            "period_start": ctx.baseline["period_start"],
-            "period_end": ctx.baseline["period_end"],
-            "forecast_income": ctx.baseline["forecast_income"],
-            "forecast_expense": ctx.baseline["forecast_expense"],
-            "categories": ctx.baseline["categories"],
+            "period_start": baseline["period_start"],
+            "period_end": baseline["period_end"],
+            "forecast_income": baseline["forecast_income"],
+            "forecast_expense": baseline["forecast_expense"],
+            "categories": scoped_categories,
         },
         "history": history_with_names,
     }
-
-    return [
-        {"role": "system", "content": SYSTEM_INSTRUCTIONS},
-        {
-            "role": "user",
-            "content": json.dumps(user_payload, default=str),
-        },
+    messages = [
+        {"role": "system", "content": _system_instructions(timeframe_months)},
+        {"role": "user", "content": json.dumps(user_payload, default=str)},
     ]
+    n_in_scope = len(in_scope)
+    return messages, estimate_output_tokens(category_count=n_in_scope), n_in_scope
 
 
 def _apply_adjustments(
@@ -336,12 +367,27 @@ def _baseline_response(
     )
 
 
+async def _resolve_model_or_none(
+    db: AsyncSession, *, org_id: int
+) -> Optional[str]:
+    """Return the routed model string for ROUTING_KEY, or None if not configured."""
+    routing = await ai_routing_service.get_routing_for_feature(
+        db, org_id=org_id, feature_name=ROUTING_KEY
+    )
+    if routing is None:
+        return None
+    _credential_id, model = routing
+    return model
+
+
 async def refine_forecast(
     db: AsyncSession,
     *,
     org_id: int,
     session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
     period_start: Optional[datetime.date] = None,
+    timeframe_months: int = 6,
+    scope: Scope = Scope.TOP_20,
 ) -> RefinedForecastResponse:
     """Public entry point. Always returns a usable response, falling
     back to baseline on any LLM-side failure.
@@ -365,7 +411,7 @@ async def refine_forecast(
     p_start = datetime.date.fromisoformat(baseline["period_start"])
     try:
         history = await _build_category_history(
-            db, org_id=org_id, period_start=p_start
+            db, org_id=org_id, period_start=p_start, months=timeframe_months
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
@@ -386,12 +432,14 @@ async def refine_forecast(
         )
 
     category_index = await _category_index(db, org_id=org_id)
-    ctx = _RefinementContext(
+    messages, _est_out, n_in_scope = _build_refine_prompt(
         baseline=baseline,
         history=history,
         category_index=category_index,
+        timeframe_months=timeframe_months,
+        scope=scope,
     )
-    messages = _build_messages(ctx)
+    max_tokens = max_tokens_for_output_estimate(n_in_scope)
 
     # Dispatch through the cap + ledger chokepoint. Any failure here
     # (no routing, hard cap exceeded, adapter network error, retry
@@ -410,6 +458,7 @@ async def refine_forecast(
                     feature_key=ROUTING_KEY,
                     messages=messages,
                     response_schema=RESPONSE_JSON_SCHEMA,
+                    max_tokens=max_tokens,
                 )
         else:
             result = await ai_dispatch.call_llm_structured(
@@ -418,6 +467,7 @@ async def refine_forecast(
                 feature_key=ROUTING_KEY,
                 messages=messages,
                 response_schema=RESPONSE_JSON_SCHEMA,
+                max_tokens=max_tokens,
             )
     except ai_dispatch.NoRoutingConfigured:
         return _baseline_response(
@@ -510,4 +560,82 @@ async def refine_forecast(
             summary=adjustments.summary,
             notes=notes,
         ),
+    )
+
+
+async def estimate_refine(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    period_start: Optional[datetime.date],
+    timeframe_months: int,
+    scope: Scope,
+) -> ForecastRefineEstimate:
+    """No-LLM preflight estimate for the refine endpoint.
+
+    Computes token estimates and cost from the same prompt builder used
+    by ``refine_forecast`` so the quoted cost can't drift from what runs.
+    Never dispatches to an LLM.
+
+    Returns a ``ForecastRefineEstimate`` with ``can_proceed=False`` when:
+    - No transaction history exists for the org (``reason="insufficient_history"``)
+    - No routing is configured (``reason="ai_routing_not_configured"``)
+
+    KNOWN LIMITATION: checks routing but does NOT pre-check the AI spend
+    cap, so an org at its hard cap can see ``can_proceed=True``. On
+    Confirm the dispatch enforces the cap and returns a graceful baseline
+    fallback with ``fallback_reason="ai_cap_exceeded"`` -- no overspend
+    occurs. Follow-up: add a cap pre-check here.
+    """
+    baseline = await forecast_service.compute_forecast(
+        db, org_id, period_start=period_start
+    )
+    p_start = datetime.date.fromisoformat(baseline["period_start"])
+    history = await _build_category_history(
+        db, org_id=org_id, period_start=p_start, months=timeframe_months
+    )
+
+    if not history:
+        return ForecastRefineEstimate(
+            est_prompt_tokens=0,
+            est_output_tokens=0,
+            est_cost_cents=0,
+            duration_band=_duration_band(scope),
+            can_proceed=False,
+            reason="insufficient_history",
+        )
+
+    category_index = await _category_index(db, org_id=org_id)
+    messages, est_out, n_in_scope = _build_refine_prompt(
+        baseline=baseline,
+        history=history,
+        category_index=category_index,
+        timeframe_months=timeframe_months,
+        scope=scope,
+    )
+
+    prompt_text = "".join(m["content"] for m in messages)
+    est_prompt = estimate_prompt_tokens(prompt_text)
+
+    model = await _resolve_model_or_none(db, org_id=org_id)
+    if model is None:
+        return ForecastRefineEstimate(
+            est_prompt_tokens=est_prompt,
+            est_output_tokens=est_out,
+            est_cost_cents=0,
+            duration_band=_duration_band(scope),
+            can_proceed=False,
+            reason="ai_routing_not_configured",
+        )
+
+    cost = estimate_cost_cents(
+        model=model, prompt_tokens=est_prompt, completion_tokens=est_out
+    )
+    return ForecastRefineEstimate(
+        est_prompt_tokens=est_prompt,
+        est_output_tokens=est_out,
+        est_cost_cents=int(cost),
+        duration_band=_duration_band(scope),
+        can_proceed=True,
+        reason=None,
     )
