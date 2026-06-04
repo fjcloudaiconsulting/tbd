@@ -5,6 +5,9 @@ import { Sparkles, AlertTriangle } from "lucide-react";
 import { ApiResponseError } from "@/lib/api";
 import { card } from "@/lib/styles";
 import { AIForecastRefinePanel } from "@/components/dashboard/AIForecastRefinePanel";
+import { useAiStatus } from "@/lib/hooks/use-ai-status";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 
 // Friendly copy for the typed backend fallback_reason codes, so the badge
 // never shows a raw code like "ai_response_invalid_schema" to the user.
@@ -93,7 +96,22 @@ export default function AIForecastRefineToggle({
   const [gateBlocked, setGateBlocked] = useState(false);
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
+  const ai = useAiStatus();
+  const forecastAi = ai?.forecast;
+  const { user } = useAuth();
+  const role = user?.role ?? null;
+
   if (!visible || gateBlocked) return null;
+
+  if (forecastAi && !forecastAi.entitled) return null;
+  if (forecastAi && forecastAi.entitled && !forecastAi.configured) {
+    return (
+      <SetUpAiCta
+        role={role}
+        className="rounded border border-border bg-bg-secondary px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-bg-tertiary disabled:opacity-50"
+      />
+    );
+  }
 
   // When the panel calls onApplied (after a successful Confirm), store the
   // result and close the panel so the refined-result view renders below.
