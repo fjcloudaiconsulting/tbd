@@ -189,7 +189,7 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     } as never);
   });
 
-  it("Bug 1: income type shows master AND sub categories in the dropdown", async () => {
+  it("master mode: income picker offers master categories only (subs hidden)", async () => {
     mockApiFetch(makePlan());
     renderClient(makePlan());
 
@@ -214,11 +214,16 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     });
     fireEvent.focus(combobox);
 
-    // Both master "Salary" and sub "Bonus" must be present
     const listbox = await screen.findByRole("listbox");
-    expect(within(listbox).getByText("Salary")).toBeTruthy();
-    expect(within(listbox).getByText("Bonus")).toBeTruthy();
-    expect(within(listbox).getByText("Side gigs")).toBeTruthy();
+    const optionNames = within(listbox)
+      .getAllByRole("option")
+      .map((o) => o.textContent ?? "");
+
+    // In master mode the income masters are the selectable rows...
+    expect(optionNames.some((t) => t.includes("Salary"))).toBe(true);
+    expect(optionNames.some((t) => t.includes("Side gigs"))).toBe(true);
+    // ...and their subcategories are NOT offered (master granularity).
+    expect(within(listbox).queryByText("Bonus")).toBeNull();
     // Expense-only categories must NOT be present
     expect(within(listbox).queryByText("Groceries")).toBeNull();
     expect(within(listbox).queryByText("Supermarket")).toBeNull();
@@ -271,11 +276,10 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     expect(screen.queryByRole("listbox")).toBeTruthy();
   });
 
-  it("Bug 4: subcategory of an already-added master is disabled too", async () => {
-    // Plan has Salary master already added as income.
-    // Bonus is a child of Salary; picking Bonus would roll up to Salary,
-    // which is a no-op against the existing item — so Bonus should be
-    // shown as disabled too.
+  it("master mode: subcategories of an added master never appear in the picker", async () => {
+    // Plan has Salary master already added as income. In master mode the
+    // picker offers masters only, so Bonus (a child of Salary) is absent
+    // entirely, and the already-added Salary master shows as disabled.
     const plan = makePlan([
       {
         category_id: 10,
@@ -301,13 +305,17 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     fireEvent.focus(combobox);
 
     const listbox = await screen.findByRole("listbox");
+    // Subcategories are never listed in master mode.
+    expect(within(listbox).queryByText("Bonus")).toBeNull();
+
+    // The already-added Salary master is shown disabled.
     const options = within(listbox).getAllByRole("option");
-    const bonusButton = options.find((b) =>
-      (b.textContent ?? "").includes("Bonus"),
+    const salaryButton = options.find((b) =>
+      (b.textContent ?? "").includes("Salary"),
     ) as HTMLButtonElement | undefined;
-    expect(bonusButton).toBeTruthy();
-    expect(bonusButton!.disabled).toBe(true);
-    expect(bonusButton!.textContent).toContain("(already added)");
+    expect(salaryButton).toBeTruthy();
+    expect(salaryButton!.disabled).toBe(true);
+    expect(salaryButton!.textContent).toContain("(already added)");
   });
 
   it("subcategory mode: after adding one sub, OTHER subs of the same master stay enabled", async () => {
@@ -394,7 +402,7 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     });
   });
 
-  it("master mode: adding a sub rolls up to the master id (legacy behavior preserved)", async () => {
+  it("master mode: selecting a master submits its category id", async () => {
     const plan = makePlan([], "master");
     mockApiFetch(plan);
     renderClient(plan);
@@ -409,7 +417,8 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     });
     fireEvent.focus(combobox);
     const listbox = await screen.findByRole("listbox");
-    fireEvent.click(within(listbox).getByText("Supermarket"));
+    // Default type is expense; pick the "Groceries" master directly.
+    fireEvent.click(within(listbox).getByText("Groceries"));
 
     fireEvent.change(screen.getByLabelText("Planned Amount"), {
       target: { value: "200" },
@@ -425,6 +434,36 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
         }),
       );
     });
+  });
+
+  it("subcategory mode: picker offers subcategories grouped under their master", async () => {
+    const plan = makePlan([], "subcategory");
+    mockApiFetch(plan);
+    renderClient(plan);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /\+ Add Item/ })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    });
+    fireEvent.focus(combobox);
+    const listbox = await screen.findByRole("listbox");
+
+    // Subcategory mode: the expense subs are the selectable rows.
+    const optionNames = within(listbox)
+      .getAllByRole("option")
+      .map((o) => o.textContent ?? "");
+    expect(optionNames.some((t) => t.includes("Supermarket"))).toBe(true);
+    expect(optionNames.some((t) => t.includes("Restaurant"))).toBe(true);
+    // "Groceries" appears only as the non-selectable group header.
+    expect(
+      within(listbox)
+        .getAllByRole("option")
+        .some((o) => (o.textContent ?? "").includes("Groceries")),
+    ).toBe(false);
   });
 
   it("subcategory mode: list groups subs under their master with the master total", async () => {
@@ -456,6 +495,40 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     // Both subs render as their own rows.
     expect(screen.getByText("Supermarket")).toBeTruthy();
     expect(screen.getByText("Restaurant")).toBeTruthy();
+  });
+
+  it("flipping the build granularity clears an in-progress category pick", async () => {
+    mockApiFetch(makePlan([], "master"));
+    renderClient(makePlan([], "master"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("radiogroup", { name: /build granularity/i }),
+      ).toBeTruthy();
+    });
+
+    // Master mode default: open the add form and pick the Groceries master.
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    }) as HTMLInputElement;
+    fireEvent.focus(combobox);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(within(listbox).getByText("Groceries"));
+    expect(combobox.value).toBe("Groceries");
+
+    // Flip to subcategory mode — the stale master pick must be cleared so
+    // the chip can't misrepresent a selection that's no longer listed.
+    fireEvent.click(screen.getByRole("radio", { name: /Subcategories/ }));
+    await waitFor(() => {
+      expect(
+        (
+          screen.getByRole("combobox", {
+            name: /Plan item category/i,
+          }) as HTMLInputElement
+        ).value,
+      ).toBe("");
+    });
   });
 
   it("the build-granularity control persists the org setting and is hidden for non-admins", async () => {
@@ -577,23 +650,21 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
 
-    // Default formType is "expense". Pick "Supermarket" — an expense
-    // sub-category (its master "Groceries" is suppressed in the
-    // dropdown when it has children, so the leaf is the user-pickable
-    // option here).
+    // Default formType is "expense". In master mode the master itself is
+    // the selectable option, so pick the "Groceries" master.
     const combobox = screen.getByRole("combobox", {
       name: /Plan item category/i,
     }) as HTMLInputElement;
     fireEvent.focus(combobox);
     const listbox = await screen.findByRole("listbox");
-    const supermarketOption = within(listbox)
+    const groceriesOption = within(listbox)
       .getAllByRole("option")
-      .find((o) => (o.textContent ?? "").includes("Supermarket"));
-    expect(supermarketOption).toBeTruthy();
-    fireEvent.click(supermarketOption!);
+      .find((o) => (o.textContent ?? "").includes("Groceries"));
+    expect(groceriesOption).toBeTruthy();
+    fireEvent.click(groceriesOption!);
 
-    // Combobox should now show "Supermarket"
-    expect(combobox.value).toBe("Supermarket");
+    // Combobox should now show "Groceries"
+    expect(combobox.value).toBe("Groceries");
 
     // Flip type to income — the stale expense pick must be cleared so a
     // submit can't slip through with a mismatched (income, expense-cat)
@@ -1170,7 +1241,8 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     });
     fireEvent.focus(combobox);
     const listbox = await screen.findByRole("listbox");
-    fireEvent.click(within(listbox).getByText("Supermarket"));
+    // Master mode (default): pick the "Groceries" master directly.
+    fireEvent.click(within(listbox).getByText("Groceries"));
     fireEvent.change(screen.getByLabelText("Planned Amount"), {
       target: { value: "200" },
     });

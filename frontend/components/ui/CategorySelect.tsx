@@ -46,9 +46,18 @@ interface Props {
    * picked — the user can see why the option is no longer selectable.
    */
   disabledIds?: ReadonlySet<number> | number[];
+  /**
+   * Restrict the selectable rows to MASTER categories only (parent_id is
+   * null), rendered as a flat selectable list rather than non-selectable
+   * group headers. Used by the Forecast Plans page in "Master categories"
+   * build mode, where an item is added straight against a master. Default
+   * (off) keeps the standard behavior: subcategories are the selectable
+   * rows, grouped under their master's header.
+   */
+  masterOnly?: boolean;
 }
 
-export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, onCategoryCreated, disabledIds }: Props) {
+export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, onCategoryCreated, disabledIds, masterOnly = false }: Props) {
   const disabledSet = useMemo(() => {
     if (!disabledIds) return null;
     return disabledIds instanceof Set ? disabledIds : new Set(disabledIds);
@@ -93,7 +102,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
       : rawSelected;
 
   // Precompute parent IDs set and selectable items (O(n) instead of O(n^2))
-  const { selectable, parentIds } = useMemo(() => {
+  const { selectable } = useMemo(() => {
     const pIds = new Set<number>();
     for (const c of categories) {
       if (c.parent_id !== null) pIds.add(c.parent_id);
@@ -101,10 +110,12 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     const items = categories.filter((c) => {
       if (bothOnly && c.type !== "both") return false;
       if (effectiveFilterType && c.type !== effectiveFilterType && c.type !== "both") return false;
+      // Master mode: only masters are selectable (subcategories hidden).
+      if (masterOnly) return c.parent_id === null;
       return c.parent_id !== null || !pIds.has(c.id);
     });
-    return { selectable: items, parentIds: pIds };
-  }, [categories, effectiveFilterType, bothOnly]);
+    return { selectable: items };
+  }, [categories, effectiveFilterType, bothOnly, masterOnly]);
 
   const q = query.toLowerCase();
   const filtered = useMemo(() =>
@@ -182,6 +193,11 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     [categories]
   );
   const grouped = useMemo(() => {
+    // Master mode: masters ARE the selectable rows, so render them as a
+    // single flat, headerless group instead of grouping subs under each.
+    if (masterOnly) {
+      return nonRecent.length > 0 ? [{ label: "", items: nonRecent }] : [];
+    }
     const groups: { label: string; items: Category[] }[] = [];
     for (const master of masters) {
       const items = nonRecent.filter((c) => c.parent_id === master.id);
@@ -190,7 +206,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     const masterless = nonRecent.filter((c) => c.parent_id === null);
     if (masterless.length > 0) groups.push({ label: "Other", items: masterless });
     return groups;
-  }, [masters, nonRecent]);
+  }, [masters, nonRecent, masterOnly]);
 
   const activeDescendant = highlightIdx >= 0 && highlightIdx < flatList.length
     ? `${id}-opt-${flatList[highlightIdx].id}` : undefined;
@@ -262,7 +278,9 @@ export default function CategorySelect({ id, categories, value, onChange, filter
 
           {grouped.map((group) => (
             <div key={group.label}>
-              <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{group.label}</div>
+              {group.label && (
+                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{group.label}</div>
+              )}
               {group.items.map((cat) => {
                 const disabled = isDisabled(cat.id);
                 const navIdx = flatList.indexOf(cat);
@@ -343,6 +361,13 @@ export default function CategorySelect({ id, categories, value, onChange, filter
             // feedback on PR #296.
             onCategoryCreated?.(cat);
             if (bothOnly && cat.type !== "both") {
+              return;
+            }
+            // In masterOnly mode only masters are selectable. If the user
+            // created a subcategory from the modal, surface it upward but
+            // do NOT auto-select it — selecting it would emit a
+            // subcategory id and violate the masterOnly contract.
+            if (masterOnly && cat.parent_id !== null) {
               return;
             }
             handleSelect(cat);
