@@ -176,8 +176,10 @@ describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", 
     render(<TransactionsPage />);
     await waitForStableTxList();
 
-    // Per-page selector present.
-    expect(screen.getByLabelText(/per page/i)).toBeInTheDocument();
+    // Per-page selector present. Use findBy: the pagination bar renders a
+    // tick after the rows (once `total` state propagates), so a sync query
+    // races under slower CI timing.
+    expect(await screen.findByLabelText(/per page/i)).toBeInTheDocument();
 
     // Status line: 30 total / 25 per page => 2 pages.
     await waitFor(() => {
