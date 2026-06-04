@@ -73,7 +73,7 @@ function mockApi() {
   vi.mocked(apiFetch).mockImplementation(((url: string) => {
     if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
     if (url === "/api/v1/accounts") return Promise.resolve(ACCOUNTS);
-    if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+    if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     return Promise.resolve({});
   }) as never);
 }

@@ -87,7 +87,8 @@ function setupApiFetch(txs: ReturnType<typeof makePendingTx>[]) {
     if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
-    if (url.startsWith("/api/v1/transactions")) return txs as never;
+    if (url.startsWith("/api/v1/transactions"))
+      return { items: txs, total: txs.length, limit: 25, offset: 0 } as never;
     return null as never;
   });
 }

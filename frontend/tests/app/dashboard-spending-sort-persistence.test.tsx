@@ -106,11 +106,12 @@ function setupApiFetch() {
     if (url.startsWith("/api/v1/budgets")) return [] as never;
     if (url.startsWith("/api/v1/forecast")) return null as never;
     if (url.startsWith("/api/v1/transactions")) {
-      return [
+      const items = [
         tx({ id: 1, amount: "100.00", category_id: 11, category_name: "Groceries", date: "2026-05-02" }),
         tx({ id: 2, amount: "500.00", category_id: 12, category_name: "Rent", date: "2026-05-03" }),
         tx({ id: 3, amount: "50.00", category_id: 11, category_name: "Groceries", date: "2026-05-04" }),
-      ] as never;
+      ];
+      return { items, total: items.length, limit: 200, offset: 0 } as never;
     }
     return null as never;
   });

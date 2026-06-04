@@ -251,15 +251,15 @@ export default function DashboardPage() {
     const forecastUrl = realPeriodStart ? `/api/v1/forecast-plans/current?period_start=${realPeriodStart}` : "/api/v1/forecast-plans/current";
     const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
     const [pageData, allData, bds, fc] = await Promise.all([
-      apiFetch<Transaction[]>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&${dateFilter}`),
-      p === 0 ? apiFetch<Transaction[]>(`/api/v1/transactions?limit=200&${dateFilter}`) : null,
+      apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&${dateFilter}`),
+      p === 0 ? apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=200&${dateFilter}`) : null,
       p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
       p === 0 ? apiFetch<ForecastPlan | null>(forecastUrl) : null,
     ]);
-    const page_txs = pageData ?? [];
+    const page_txs = pageData?.items ?? [];
     setHasMore(page_txs.length > PAGE_SIZE);
     setTransactions(page_txs.slice(0, PAGE_SIZE));
-    if (allData) setAllTransactions(allData);
+    if (allData) setAllTransactions(allData.items);
     if (bds) setBudgets(bds);
     // null is a valid response (no plan yet) — set state so empty-state UI renders.
     if (p === 0) setForecast(fc ?? null);

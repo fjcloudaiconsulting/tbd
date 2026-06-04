@@ -120,7 +120,7 @@ async def test_category_filter_returns_only_matching_rows(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, category_id=world["groceries"].id,
     )
     assert sorted(r.description for r in rows) == ["g1", "g2"]
@@ -134,7 +134,7 @@ async def test_category_filter_none_returns_all(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id,
     )
     assert sorted(r.description for r in rows) == ["d1", "g1"]
@@ -156,7 +156,7 @@ async def test_master_category_filter_includes_subcategories(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, category_id=world["groceries"].id,
     )
     assert sorted(r.description for r in rows) == ["g-master", "g-sub"]
@@ -175,7 +175,7 @@ async def test_subcategory_filter_exact_match_only(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, category_id=world["groceries_sub"].id,
     )
     assert [r.description for r in rows] == ["g-sub"]
@@ -199,7 +199,7 @@ async def test_category_filter_compounds_with_date_range(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id,
         category_id=world["groceries"].id,
         date_from=date(2026, 5, 1),

@@ -116,7 +116,7 @@ async def test_list_returns_empty_tag_list_for_untagged_transaction(
     db_session.add(tx)
     await db_session.commit()
 
-    txns = await transaction_service.list_transactions(
+    txns, _ = await transaction_service.list_transactions(
         db_session, world["org"].id
     )
     assert len(txns) == 1
@@ -140,7 +140,7 @@ async def test_list_returns_attached_tags(db_session, world):
     )
     await db_session.commit()
 
-    txns = await transaction_service.list_transactions(
+    txns, _ = await transaction_service.list_transactions(
         db_session, world["org"].id
     )
     response = transaction_service.to_response(txns[0])
@@ -166,7 +166,7 @@ async def test_filter_tags_single_returns_only_tagged_rows(db_session, world):
     # tx_c has no tags
     await db_session.commit()
 
-    txns = await transaction_service.list_transactions(
+    txns, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, tags=["insurance"]
     )
     assert [tx.id for tx in txns] == [tx_a.id]
@@ -199,7 +199,7 @@ async def test_filter_tags_default_is_and(db_session, world):
     ])
     await db_session.commit()
 
-    txns = await transaction_service.list_transactions(
+    txns, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, tags=["insurance", "vacation"]
     )
     assert [tx.id for tx in txns] == [tx_both.id]
@@ -220,7 +220,7 @@ async def test_filter_tags_match_any_is_or(db_session, world):
     # tx_c untagged
     await db_session.commit()
 
-    txns = await transaction_service.list_transactions(
+    txns, _ = await transaction_service.list_transactions(
         db_session, world["org"].id,
         tags=["insurance", "vacation"], tag_match="any",
     )
@@ -247,7 +247,7 @@ async def test_filter_tags_exclude(db_session, world):
     await _attach_tags(db_session, tx_b, ["vacation"], world["org"].id)
     await db_session.commit()
 
-    txns = await transaction_service.list_transactions(
+    txns, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, tags_exclude=["insurance"]
     )
     ids = sorted(tx.id for tx in txns)
@@ -285,7 +285,7 @@ async def test_filter_tags_combined_with_exclude(db_session, world):
     ])
     await db_session.commit()
 
-    txns = await transaction_service.list_transactions(
+    txns, _ = await transaction_service.list_transactions(
         db_session, world["org"].id,
         tags=["vacation"], tags_exclude=["insurance"],
     )

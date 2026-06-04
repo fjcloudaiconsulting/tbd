@@ -132,7 +132,7 @@ async def test_search_pure_text_matches_description(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, search="coffee",
     )
     assert [r.description for r in rows] == ["Coffee shop"]
@@ -147,7 +147,7 @@ async def test_search_amount_matches_both_signs(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, search="42",
     )
     assert sorted(r.description for r in rows) == ["Charge", "Refund"]
@@ -162,7 +162,7 @@ async def test_search_decimal_amount_matches_equivalent_forms(db_session, world)
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, search="42.50",
     )
     assert sorted(r.description for r in rows) == ["A", "B"]
@@ -175,7 +175,7 @@ async def test_search_amount_no_match_returns_empty(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, search="9999.99",
     )
     assert rows == []
@@ -194,7 +194,7 @@ async def test_search_numeric_string_or_description_and_amount(db_session, world
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, search="1234",
     )
     assert sorted(r.description for r in rows) == [
@@ -213,7 +213,7 @@ async def test_search_combined_with_account_filter_is_and(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session,
         world["org"].id,
         search="coffee",
@@ -231,7 +231,7 @@ async def test_search_empty_string_skips_filter(db_session, world):
     ])
     await db_session.flush()
 
-    rows = await transaction_service.list_transactions(
+    rows, _ = await transaction_service.list_transactions(
         db_session, world["org"].id, search="   ",
     )
     assert sorted(r.description for r in rows) == ["A", "B"]

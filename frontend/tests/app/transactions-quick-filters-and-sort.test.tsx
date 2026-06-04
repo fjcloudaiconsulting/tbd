@@ -71,7 +71,8 @@ function setupApiFetch(periods: Period[] = []) {
     if (url.startsWith("/api/v1/accounts")) return [ACCT] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return periods as never;
-    if (url.startsWith("/api/v1/transactions")) return [] as never;
+    if (url.startsWith("/api/v1/transactions"))
+      return { items: [], total: 0, limit: 25, offset: 0 } as never;
     return null as never;
   });
   return apiFetchMock;

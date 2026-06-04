@@ -94,7 +94,8 @@ function setupApiFetch(txs: Tx[]) {
     if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
-    if (url.startsWith("/api/v1/transactions") && method === "GET") return txs as never;
+    if (url.startsWith("/api/v1/transactions") && method === "GET")
+      return { items: txs, total: txs.length, limit: 25, offset: 0 } as never;
     if (url === "/api/v1/transactions" && method === "POST") {
       return { ...makeTx(), id: 999 } as never;
     }

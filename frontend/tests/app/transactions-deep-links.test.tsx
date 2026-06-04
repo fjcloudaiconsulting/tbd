@@ -97,7 +97,8 @@ function setupApiFetch(txs: ReturnType<typeof makeTx>[]) {
     if (url.startsWith("/api/v1/settings/billing-periods")) {
       return [{ id: 9, start_date: "2026-05-01", end_date: null }] as never;
     }
-    if (url.startsWith("/api/v1/transactions")) return txs as never;
+    if (url.startsWith("/api/v1/transactions"))
+      return { items: txs, total: txs.length, limit: 25, offset: 0 } as never;
     return null as never;
   });
   return apiFetchMock;

@@ -50,9 +50,10 @@ function mockDashboardWithOneTx() {
       return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
     if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
     if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
-    if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+    if (url.startsWith("/api/v1/transactions?status=pending"))
+      return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     if (url.startsWith("/api/v1/transactions")) {
-      return Promise.resolve([
+      const items = [
         {
           id: 1,
           account_id: 10,
@@ -69,7 +70,8 @@ function mockDashboardWithOneTx() {
           is_imported: false,
           settled_date: "2026-05-01",
         },
-      ]);
+      ];
+      return Promise.resolve({ items, total: items.length, limit: 200, offset: 0 });
     }
     return Promise.resolve({});
   }) as never);
