@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles, AlertTriangle, Loader2 } from "lucide-react";
-import { apiFetch, ApiResponseError } from "@/lib/api";
+import { Sparkles, AlertTriangle } from "lucide-react";
+import { ApiResponseError } from "@/lib/api";
 import { card } from "@/lib/styles";
+import { AIForecastRefinePanel } from "@/components/dashboard/AIForecastRefinePanel";
 
 // Mirrors backend/app/schemas/ai_forecast.RefinedForecastResponse.
 export interface RefinedCategoryRow {
@@ -68,42 +69,39 @@ export default function AIForecastRefineToggle({
   visible = true,
 }: AIForecastRefineToggleProps) {
   const [refined, setRefined] = useState<RefinedForecastResponse | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [gateBlocked, setGateBlocked] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [tooltipOpen, setTooltipOpen] = useState(false);
 
   if (!visible || gateBlocked) return null;
 
-  const handleClick = async () => {
-    setLoading(true);
-    setErrorMessage(null);
-    try {
-      const body = await apiFetch<RefinedForecastResponse>(
-        "/api/v1/ai/forecast/refine",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ period_start: periodStart ?? null }),
-        },
-      );
-      setRefined(body);
-    } catch (err) {
-      if (err instanceof ApiResponseError && err.status === 403) {
-        // Feature gate closed. Hide the toggle entirely.
-        setGateBlocked(true);
-        return;
-      }
-      setErrorMessage(
-        err instanceof Error ? err.message : "Failed to refine forecast",
-      );
-    } finally {
-      setLoading(false);
+  // When the panel calls onApplied (after a successful Confirm), store the
+  // result and close the panel so the refined-result view renders below.
+  const handleApplied = (result: RefinedForecastResponse) => {
+    setRefined(result);
+    setPanelOpen(false);
+  };
+
+  // The panel's estimate call may 403 (feature gate closed) — propagate that
+  // up to hide the toggle exactly as the old direct-call path did.
+  const handleGateBlock = (err: unknown) => {
+    if (err instanceof ApiResponseError && err.status === 403) {
+      setGateBlocked(true);
     }
   };
 
-  // Idle state — invite the user to opt in.
+  // Idle state — invite the user to configure and confirm.
   if (refined === null) {
+    if (panelOpen) {
+      return (
+        <AIForecastRefinePanel
+          periodStart={periodStart}
+          onApplied={handleApplied}
+          onCancel={() => setPanelOpen(false)}
+          onGateBlock={handleGateBlock}
+        />
+      );
+    }
     return (
       <div className={`${card} mt-3 flex items-center gap-3 p-3 md:p-4`}>
         <Sparkles className="h-4 w-4 text-text-secondary" aria-hidden="true" />
@@ -112,25 +110,12 @@ export default function AIForecastRefineToggle({
         </div>
         <button
           type="button"
-          onClick={handleClick}
-          disabled={loading}
+          onClick={() => setPanelOpen(true)}
           data-testid="ai-forecast-refine-toggle"
           className="rounded border border-border bg-bg-secondary px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-bg-tertiary disabled:opacity-50"
         >
-          {loading ? (
-            <span className="inline-flex items-center gap-1">
-              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-              Refining…
-            </span>
-          ) : (
-            "Apply AI refinement"
-          )}
+          Apply AI refinement
         </button>
-        {errorMessage && (
-          <span className="text-xs text-danger" role="status">
-            {errorMessage}
-          </span>
-        )}
       </div>
     );
   }
