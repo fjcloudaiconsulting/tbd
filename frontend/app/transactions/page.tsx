@@ -1451,7 +1451,10 @@ function TransactionsPageContent() {
                                       testIdPrefix={`ai-suggest-${tx.id}`}
                                     />
                                   ) : (
-                                    <SetUpAiCta role={role} />
+                                    <SetUpAiCta
+                                      role={role}
+                                      className="text-xs text-text-secondary underline hover:text-text-primary"
+                                    />
                                   )}
                                 </div>
                               ) : null}
@@ -1756,7 +1759,10 @@ function TransactionsPageContent() {
                                         testIdPrefix={`ai-suggest-mobile-${tx.id}`}
                                       />
                                     ) : (
-                                      <SetUpAiCta role={role} />
+                                      <SetUpAiCta
+                                        role={role}
+                                        className="text-xs text-text-secondary underline hover:text-text-primary"
+                                      />
                                     )}
                                   </div>
                                 ) : null}
