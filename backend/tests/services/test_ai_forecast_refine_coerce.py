@@ -81,6 +81,21 @@ def test_coerce_truncates_lists_to_schema_caps():
     assert len(adj.anomalies) == 60
 
 
+def test_coerce_maps_non_finite_numbers_to_neutral_default():
+    # nan/inf from the model must become the neutral default (multiplier 1.0,
+    # confidence 0.5), not be absorbed to a clamp bound (e.g. 1.5).
+    for bad in ("nan", "inf", "-inf"):
+        parsed = {
+            "seasonal": [{"category_id": 1, "category_name": "A", "multiplier": bad, "rationale": "r"}],
+            "anomalies": [],
+            "confidence": bad,
+            "summary": "ok",
+        }
+        adj = AIForecastAdjustments.model_validate(_coerce_adjustments(parsed))
+        assert adj.seasonal[0].multiplier == 1.0
+        assert adj.confidence == 0.5
+
+
 def test_coerce_supplies_defaults_for_missing_required_fields():
     # Model omits confidence/summary/rationale entirely.
     parsed = {"seasonal": [{"category_id": 1, "category_name": "A", "multiplier": 1.0}]}

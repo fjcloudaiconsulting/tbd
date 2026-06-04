@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
@@ -399,9 +400,14 @@ def _coerce_adjustments(parsed: Any) -> dict:
     """
     def _as_float(v: Any, default: float) -> float:
         try:
-            return float(v)
+            f = float(v)
         except (TypeError, ValueError):
             return default
+        # Reject non-finite (nan/inf): a garbage value should map to the
+        # neutral default (1.0 multiplier / 0.5 confidence), not be absorbed
+        # to a clamp bound. Also avoids relying on _clamp's arg order to
+        # swallow NaN.
+        return f if math.isfinite(f) else default
 
     def _clamp(v: float, lo: float, hi: float) -> float:
         return max(lo, min(hi, v))
