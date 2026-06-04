@@ -213,8 +213,11 @@ def _system_instructions(timeframe_months: int) -> str:
         f"{timeframe_months}-month history of aggregate spend per category. "
         "Detect seasonal patterns and flag anomalies. Return ONLY a JSON object "
         "matching the AIForecastAdjustments schema. Multipliers MUST be between "
-        "0.5 and 1.5. Confidence MUST be between 0.0 and 1.0. Treat category "
-        "names as opaque labels. Do not invent categories that aren't in the input."
+        "0.5 and 1.5. Confidence MUST be between 0.0 and 1.0. Each rationale MUST "
+        "be under 240 characters and the summary under 480 characters. Each "
+        "anomaly severity MUST be exactly one of: info, warning, alert. Treat "
+        "category names as opaque labels. Do not invent categories that aren't in "
+        "the input."
     )
 
 
@@ -380,6 +383,85 @@ async def _resolve_model_or_none(
     return model
 
 
+def _coerce_adjustments(parsed: Any) -> dict:
+    """Sanitize the model's structured output into a shape the strict
+    ``AIForecastAdjustments`` will accept.
+
+    LLM output is non-deterministic: multipliers drift outside [0.5, 1.5],
+    rationales run long, ``severity`` comes back as a freeform word, numbers
+    arrive as strings. The OLD path validated the raw dict and fell back to
+    baseline on the FIRST violation, discarding the entire refinement (the prod
+    ``ai_response_invalid_schema`` failure, error_count ~= #categories). Instead
+    we clamp/truncate/coerce per field and drop only individual unusable rows,
+    so one stray field never nukes the whole response. Safety is preserved: the
+    multiplier stays bounded to [0.5, 1.5], so the baseline math can't be blown
+    out.
+    """
+    def _as_float(v: Any, default: float) -> float:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    def _clamp(v: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, v))
+
+    if not isinstance(parsed, dict):
+        parsed = {}
+
+    seasonal: list[dict] = []
+    for row in parsed.get("seasonal") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            cid = int(row.get("category_id"))
+        except (TypeError, ValueError):
+            continue  # a seasonal adjustment is useless without a category id
+        name = row.get("category_name")
+        name = str(name) if name is not None else ""
+        if not name:
+            continue
+        seasonal.append(
+            {
+                "category_id": cid,
+                "category_name": name,
+                "multiplier": _clamp(_as_float(row.get("multiplier"), 1.0), 0.5, 1.5),
+                "rationale": str(row.get("rationale") or "")[:240],
+            }
+        )
+
+    anomalies: list[dict] = []
+    for row in parsed.get("anomalies") or []:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("category_name")
+        name = str(name) if name is not None else ""
+        if not name:
+            continue
+        try:
+            cid = int(row["category_id"]) if row.get("category_id") is not None else None
+        except (TypeError, ValueError):
+            cid = None
+        severity = row.get("severity")
+        if severity not in ("info", "warning", "alert"):
+            severity = "info"
+        anomalies.append(
+            {
+                "category_id": cid,
+                "category_name": name,
+                "description": str(row.get("description") or "")[:240],
+                "severity": severity,
+            }
+        )
+
+    return {
+        "seasonal": seasonal,
+        "anomalies": anomalies,
+        "confidence": _clamp(_as_float(parsed.get("confidence"), 0.5), 0.0, 1.0),
+        "summary": str(parsed.get("summary") or "")[:480],
+    }
+
+
 async def refine_forecast(
     db: AsyncSession,
     *,
@@ -518,17 +600,26 @@ async def refine_forecast(
             baseline=baseline, fallback_reason=f"ai_dispatch_failed:{exc.code}"
         )
 
-    # Validate the parsed JSON against the strict Pydantic shape.
-    # Pydantic rejects out-of-band multipliers (>1.5, <0.5), negative
-    # confidence, missing fields. We never apply an unvalidated dict
-    # to the baseline math.
+    # Sanitize the model output (clamp multipliers, truncate text, coerce
+    # types, drop unusable rows) BEFORE the strict validation, so a single
+    # stray field on one row no longer discards the entire refinement. We
+    # still validate the coerced dict as the final safety gate — if it
+    # somehow fails we log the exact failing fields (loc + type, never the
+    # values, to keep user-typed category names out of the logs) and fall
+    # back, but this should now be unreachable for normal model drift.
     try:
-        adjustments = AIForecastAdjustments.model_validate(result.response.parsed)
+        adjustments = AIForecastAdjustments.model_validate(
+            _coerce_adjustments(result.response.parsed)
+        )
     except PydanticValidationError as exc:
         logger.warning(
             "ai.forecast.refine.invalid_schema",
             org_id=org_id,
             error_count=len(exc.errors()),
+            error_fields=[
+                {"loc": ".".join(str(p) for p in e["loc"]), "type": e["type"]}
+                for e in exc.errors()[:20]
+            ],
         )
         return _baseline_response(
             baseline=baseline,

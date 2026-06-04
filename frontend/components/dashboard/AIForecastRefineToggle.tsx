@@ -6,6 +6,26 @@ import { ApiResponseError } from "@/lib/api";
 import { card } from "@/lib/styles";
 import { AIForecastRefinePanel } from "@/components/dashboard/AIForecastRefinePanel";
 
+// Friendly copy for the typed backend fallback_reason codes, so the badge
+// never shows a raw code like "ai_response_invalid_schema" to the user.
+const FALLBACK_REASON_COPY: Record<string, string> = {
+  ai_response_invalid_schema: "The AI response could not be applied this time, showing your baseline.",
+  ai_structured_output_failed: "The AI response could not be read, showing your baseline.",
+  ai_routing_not_configured: "Configure an AI provider in Settings to use this.",
+  ai_cap_exceeded: "Your AI usage limit for this period has been reached.",
+  ai_capability_not_supported: "The selected AI provider does not support this feature.",
+  ai_native_not_available: "The built-in AI provider is not available yet.",
+  insufficient_history: "Not enough history yet to analyze.",
+  history_build_failed: "Could not load your history, showing your baseline.",
+};
+
+function fallbackReasonLabel(reason: string | null): string {
+  if (!reason) return "Showing your baseline.";
+  if (FALLBACK_REASON_COPY[reason]) return FALLBACK_REASON_COPY[reason];
+  // ai_dispatch_failed:<code> and any unmapped code -> generic, never raw.
+  return "AI is temporarily unavailable, showing your baseline.";
+}
+
 // Mirrors backend/app/schemas/ai_forecast.RefinedForecastResponse.
 export interface RefinedCategoryRow {
   category_id: number;
@@ -161,7 +181,7 @@ export default function AIForecastRefineToggle({
             </>
           ) : (
             <span data-testid="ai-fallback-reason" className="text-xs">
-              {refined.provenance.fallback_reason ?? "Falling back to baseline"}
+              {fallbackReasonLabel(refined.provenance.fallback_reason)}
             </span>
           )}
         </div>

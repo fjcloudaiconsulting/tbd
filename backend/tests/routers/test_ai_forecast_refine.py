@@ -377,12 +377,14 @@ async def test_happy_path_applies_multiplier(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_out_of_band_multiplier_falls_back_to_baseline(session_factory):
-    """LLM returns multiplier=5.0 -> Pydantic rejects -> baseline served.
+async def test_out_of_band_multiplier_is_clamped_not_rejected(session_factory):
+    """LLM returns multiplier=5.0 -> CLAMPED to 1.5 and applied.
 
-    This is the primary safety control: a misbehaving model cannot
-    blow up a forecast line. Out-of-band response triggers a fallback
-    with ``ai_response_invalid_schema``.
+    This is the primary safety control: a misbehaving model cannot blow up
+    a forecast line. We clamp the multiplier into [0.5, 1.5] rather than
+    discarding the entire refinement (the old all-or-nothing validation fell
+    back to baseline on a single out-of-band field, which is how the prod
+    ``ai_response_invalid_schema`` failure nuked every refinement).
     """
     seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
 
@@ -428,10 +430,13 @@ async def test_out_of_band_multiplier_falls_back_to_baseline(session_factory):
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["provenance"]["ai_applied"] is False
-    assert body["provenance"]["fallback_reason"] == "ai_response_invalid_schema"
-    # Refined equals baseline because no multiplier was applied.
-    assert body["refined_forecast_expense"] == body["baseline_forecast_expense"]
+    # AI is applied; the rogue 5.0 multiplier was clamped to the 1.5 ceiling.
+    assert body["provenance"]["ai_applied"] is True
+    assert body["provenance"]["fallback_reason"] is None
+    row = next(
+        c for c in body["categories"] if c["category_id"] == seed["category_id"]
+    )
+    assert row["multiplier"] == 1.5  # clamped, never the rogue 5.0
 
 
 @pytest.mark.asyncio
