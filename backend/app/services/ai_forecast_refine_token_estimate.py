@@ -1,0 +1,79 @@
+# backend/app/services/ai_forecast_refine_token_estimate.py
+"""Pure (DB-free) helpers for the cost-confirmed forecast-refine flow.
+
+Kept separate from the service so the heuristic + scope selection are
+unit-testable without a database or LLM. The SAME functions back both
+the /estimate preflight and the real refine call, so the quoted cost
+can't drift from what actually runs.
+"""
+from __future__ import annotations
+
+import enum
+import math
+
+# Char-per-token heuristics. The stack has no tokenizer; these are
+# deliberately rough and surfaced to the user as approximate ("≈").
+_PROMPT_CHARS_PER_TOKEN = 3.5
+_OUTPUT_CHARS_PER_TOKEN = 3.0
+
+# Per-row JSON size assumptions for the output shape (SeasonalAdjustment,
+# AnomalyFlag) plus fixed overhead (confidence, summary, braces).
+_SEASONAL_CHARS_PER_ROW = 220
+_ANOMALY_CHARS_PER_ROW = 180
+_FIXED_OUTPUT_CHARS = 600
+_OUTPUT_SAFETY_MARGIN = 1.10
+
+# max_tokens sizing: never below today's adapter default; add headroom
+# above the estimate so the tool-use JSON can't truncate before the
+# required `anomalies` key (the prod bug).
+_MAX_TOKENS_FLOOR = 1024
+_MAX_TOKENS_BUFFER = 400
+
+
+class Scope(str, enum.Enum):
+    TOP_10 = "top_10"
+    TOP_20 = "top_20"
+    ALL = "all"
+
+
+def _limit_for_scope(scope: "Scope") -> int | None:
+    if scope is Scope.TOP_10:
+        return 10
+    if scope is Scope.TOP_20:
+        return 20
+    return None  # ALL
+
+
+def select_categories_by_scope(
+    spend_by_category: dict[int, float], scope: "Scope"
+) -> list[int]:
+    """Return category ids ordered by spend desc, truncated to the scope.
+
+    Ties broken by category_id asc for determinism.
+    """
+    ordered = sorted(
+        spend_by_category.keys(),
+        key=lambda cid: (-spend_by_category[cid], cid),
+    )
+    limit = _limit_for_scope(scope)
+    return ordered if limit is None else ordered[:limit]
+
+
+def estimate_prompt_tokens(prompt_text: str) -> int:
+    return math.ceil(len(prompt_text) / _PROMPT_CHARS_PER_TOKEN)
+
+
+def estimate_output_tokens(*, category_count: int) -> int:
+    anomalies = category_count // 4
+    chars = (
+        category_count * _SEASONAL_CHARS_PER_ROW
+        + anomalies * _ANOMALY_CHARS_PER_ROW
+        + _FIXED_OUTPUT_CHARS
+    )
+    tokens = math.ceil(chars / _OUTPUT_CHARS_PER_TOKEN)
+    return math.ceil(tokens * _OUTPUT_SAFETY_MARGIN)
+
+
+def max_tokens_for_output_estimate(category_count: int) -> int:
+    est = estimate_output_tokens(category_count=category_count)
+    return max(_MAX_TOKENS_FLOOR, est + _MAX_TOKENS_BUFFER)
