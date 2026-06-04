@@ -1091,6 +1091,7 @@ export default function ForecastPlansClient({
                 value={formCategoryId}
                 onChange={(id) => setFormCategoryId(id)}
                 filterType={formType}
+                masterOnly={mode === "master"}
                 disabledIds={disabledForType}
                 className={input}
                 aria-label="Plan item category"

@@ -326,6 +326,53 @@ describe("CategorySelect — value resolution under filterType", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  // Forecast "Master categories" build mode: the picker must offer
+  // MASTER categories as selectable rows (not just non-selectable group
+  // headers), so a forecast item can be added straight against a master.
+  // Without `masterOnly`, a master that has subcategories renders only as
+  // a header and cannot be selected — the bug reported on the Forecast
+  // Plans page.
+  it("masterOnly: master with subcategories is selectable and its subcategory is hidden", () => {
+    const onChange = vi.fn();
+    render(
+      <CategorySelect
+        id="m1"
+        categories={CATEGORIES}
+        value=""
+        onChange={onChange}
+        filterType="expense"
+        masterOnly
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    const listbox = screen.getByRole("listbox");
+
+    // The subcategory must not appear as a selectable option in master mode.
+    expect(within(listbox).queryByText("Supermarket")).not.toBeInTheDocument();
+
+    // The master itself is now a selectable option.
+    fireEvent.click(within(listbox).getByText("Groceries"));
+    expect(onChange).toHaveBeenCalledWith(20);
+  });
+
+  it("masterOnly: childless master is still selectable; subcategories never appear", () => {
+    const onChange = vi.fn();
+    render(
+      <CategorySelect
+        id="m2"
+        categories={CATEGORIES}
+        value=""
+        onChange={onChange}
+        filterType="income"
+        masterOnly
+      />,
+    );
+    fireEvent.focus(screen.getByRole("combobox"));
+    const listbox = screen.getByRole("listbox");
+    fireEvent.click(within(listbox).getByText("Salary"));
+    expect(onChange).toHaveBeenCalledWith(10);
+  });
+
   it("typeFilter=BOTH: a compatible (both) created category IS selected", () => {
     const onChange = vi.fn();
     const onCategoryCreated = vi.fn();
