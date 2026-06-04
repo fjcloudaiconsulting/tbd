@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { apiFetch, ApiResponseError } from "@/lib/api";
 import { card } from "@/lib/styles";
@@ -50,8 +50,10 @@ export function AIForecastRefinePanel({
   const [estimating, setEstimating] = useState(false);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const seq = useRef(0);
 
   const refreshEstimate = useCallback(async () => {
+    const mine = ++seq.current;
     setEstimating(true);
     setEstimate(null);
     try {
@@ -67,19 +69,20 @@ export function AIForecastRefinePanel({
           }),
         },
       );
-      setEstimate(est);
+      if (seq.current === mine) setEstimate(est);
     } catch (err) {
       // 403 = feature gate closed; propagate to parent for hide logic.
+      // Gate status is not racy — always forward regardless of sequence.
       if (err instanceof ApiResponseError && err.status === 403) {
         onGateBlock?.(err);
         return;
       }
       // Other estimation errors are non-fatal; the Confirm button stays disabled.
-      setEstimate(null);
+      if (seq.current === mine) setEstimate(null);
     } finally {
-      setEstimating(false);
+      if (seq.current === mine) setEstimating(false);
     }
-  }, [timeframe, scope, periodStart]);
+  }, [timeframe, scope, periodStart, onGateBlock]);
 
   useEffect(() => {
     void refreshEstimate();
