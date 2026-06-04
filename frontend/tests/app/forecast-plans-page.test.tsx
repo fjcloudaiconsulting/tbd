@@ -497,6 +497,40 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
     expect(screen.getByText("Restaurant")).toBeTruthy();
   });
 
+  it("flipping the build granularity clears an in-progress category pick", async () => {
+    mockApiFetch(makePlan([], "master"));
+    renderClient(makePlan([], "master"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("radiogroup", { name: /build granularity/i }),
+      ).toBeTruthy();
+    });
+
+    // Master mode default: open the add form and pick the Groceries master.
+    fireEvent.click(screen.getByRole("button", { name: /\+ Add Item/ }));
+    const combobox = screen.getByRole("combobox", {
+      name: /Plan item category/i,
+    }) as HTMLInputElement;
+    fireEvent.focus(combobox);
+    const listbox = await screen.findByRole("listbox");
+    fireEvent.click(within(listbox).getByText("Groceries"));
+    expect(combobox.value).toBe("Groceries");
+
+    // Flip to subcategory mode — the stale master pick must be cleared so
+    // the chip can't misrepresent a selection that's no longer listed.
+    fireEvent.click(screen.getByRole("radio", { name: /Subcategories/ }));
+    await waitFor(() => {
+      expect(
+        (
+          screen.getByRole("combobox", {
+            name: /Plan item category/i,
+          }) as HTMLInputElement
+        ).value,
+      ).toBe("");
+    });
+  });
+
   it("the build-granularity control persists the org setting and is hidden for non-admins", async () => {
     const plan = makePlan([], "master");
     mockApiFetch(plan);
