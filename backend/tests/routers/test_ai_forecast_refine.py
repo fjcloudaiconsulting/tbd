@@ -722,6 +722,87 @@ async def test_capability_not_supported_falls_back(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_estimate_endpoint_returns_200_with_estimate(session_factory):
+    """POST /refine/estimate returns 200 with a ForecastRefineEstimate body.
+
+    No LLM dispatch happens — the endpoint only computes token heuristics.
+    With no routing configured the body comes back with can_proceed=False and
+    the expected estimate keys present.
+    """
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/ai/forecast/refine/estimate",
+        json={"timeframe_months": 6, "scope": "top_20"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "est_cost_cents" in body
+    assert "can_proceed" in body
+    # No routing configured → can_proceed=False with reason
+    assert body["can_proceed"] is False
+    assert body["reason"] == "ai_routing_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_estimate_endpoint_returns_200_on_unexpected_error(session_factory):
+    """Defensive guard: if estimate_refine raises unexpectedly the endpoint
+    must still return 200 with can_proceed=False and reason='estimate_failed'.
+    """
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    with patch(
+        "app.routers.ai_forecast.estimate_refine",
+        side_effect=RuntimeError("boom"),
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine/estimate",
+            json={"timeframe_months": 6, "scope": "top_20"},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["can_proceed"] is False
+    assert body["reason"] == "estimate_failed"
+
+
+@pytest.mark.asyncio
+async def test_refine_accepts_timeframe_scope_and_audits_them(session_factory):
+    """POST /refine with timeframe_months=12 and scope='top_10' must pass those
+    params into the service and write them into the audit detail row.
+    """
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    # No routing configured → baseline fallback, but the params are still
+    # threaded through and the audit row is still written.
+    resp = client.post(
+        "/api/v1/ai/forecast/refine",
+        json={"timeframe_months": 12, "scope": "top_10"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    rows = await _audit_rows(session_factory)
+    assert len(rows) == 1
+    detail = rows[0].detail or {}
+    assert detail["timeframe_months"] == 12
+    assert detail["scope"] == "top_10"
+
+
+@pytest.mark.asyncio
 async def test_endpoint_never_mutates_user_data_tables(session_factory):
     """The /refine endpoint must NEVER write to Transaction, Category,
     or Budget. Pinning the suggestion-only invariant at the router
