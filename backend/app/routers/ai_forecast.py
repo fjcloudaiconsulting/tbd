@@ -8,11 +8,12 @@ so the UI always renders something useful.
 Gating:
 - ``require_feature("ai.forecast")``, the same feature gate the AI
   tier catalog defines. Closed gate returns 403 ``feature_not_enabled``.
-- BYO routing + cap enforcement happen inside
-  ``ai_dispatch.call_llm_structured``. Missing routing /
-  cap-exceeded surface as "fallback to baseline" with a typed reason
-  in ``provenance.fallback_reason``, NOT as a hard error, so the user
-  still gets a usable forecast.
+- No provider configured (no routing) is a precondition failure: the
+  route returns 412 ``ai_provider_not_configured`` BEFORE running.
+- Runtime AI failures (cap exceeded, structured-output exhausted,
+  invalid schema) still surface as "fallback to baseline" with a typed
+  reason in ``provenance.fallback_reason`` (HTTP 200), so the user still
+  gets a usable forecast.
 
 Audit: every call writes an ``ai.forecast.refine.invoked`` event with
 the outcome (``success`` for AI-applied, ``failure`` for fallback) and
@@ -38,8 +39,12 @@ from app.schemas.ai_forecast import (
     RefineForecastRequest,
     RefinedForecastResponse,
 )
-from app.services import audit_service
-from app.services.ai_forecast_refine_service import estimate_refine, refine_forecast
+from app.services import ai_routing_service, audit_service
+from app.services.ai_forecast_refine_service import (
+    ROUTING_KEY,
+    estimate_refine,
+    refine_forecast,
+)
 from app.services.ai_forecast_refine_token_estimate import Scope, _duration_band
 
 
@@ -75,6 +80,18 @@ async def refine_forecast_endpoint(
                     "message": "period_start must be ISO date YYYY-MM-DD",
                 },
             )
+
+    routing = await ai_routing_service.get_routing_for_feature(
+        db, org_id=current_user.org_id, feature_name=ROUTING_KEY
+    )
+    if routing is None:
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "code": "ai_provider_not_configured",
+                "message": "Configure an AI provider to use this feature.",
+            },
+        )
 
     scope = Scope(body.scope)
     refined = await refine_forecast(
