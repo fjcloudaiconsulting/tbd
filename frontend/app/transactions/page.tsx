@@ -1526,12 +1526,21 @@ function TransactionsPageContent() {
                           {!editPartner && (
                             <div className="mt-3" data-testid={`edit-recurring-row-${tx.id}`}>
                               {tx.recurring_id !== null ? (
-                                <span
-                                  className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-text-muted"
-                                  data-testid={`edit-recurring-chip-${tx.id}`}
-                                >
-                                  Recurring
-                                </span>
+                                <div className="flex flex-col gap-1">
+                                  <span
+                                    className="inline-flex w-fit items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-[11px] text-text-muted"
+                                    data-testid={`edit-recurring-chip-${tx.id}`}
+                                  >
+                                    Recurring
+                                  </span>
+                                  <p
+                                    className="text-[11px] text-text-muted"
+                                    data-testid={`edit-recurring-sync-hint-${tx.id}`}
+                                  >
+                                    Editing the name or category also updates this
+                                    recurring series and its upcoming occurrences.
+                                  </p>
+                                </div>
                               ) : (
                                 <div className="flex flex-wrap items-center gap-3">
                                   <label className="inline-flex items-center gap-2 text-xs text-text-secondary">
@@ -1814,12 +1823,21 @@ function TransactionsPageContent() {
                             {!editPartner && (
                               <div data-testid={`edit-recurring-row-mobile-${tx.id}`}>
                                 {tx.recurring_id !== null ? (
-                                  <span
-                                    className="inline-flex items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-text-muted"
-                                    data-testid={`edit-recurring-chip-mobile-${tx.id}`}
-                                  >
-                                    Recurring
-                                  </span>
+                                  <div className="flex flex-col gap-1">
+                                    <span
+                                      className="inline-flex w-fit items-center gap-1 rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-text-muted"
+                                      data-testid={`edit-recurring-chip-mobile-${tx.id}`}
+                                    >
+                                      Recurring
+                                    </span>
+                                    <p
+                                      className="text-[11px] text-text-muted"
+                                      data-testid={`edit-recurring-sync-hint-mobile-${tx.id}`}
+                                    >
+                                      Editing the name or category also updates this
+                                      recurring series and its upcoming occurrences.
+                                    </p>
+                                  </div>
                                 ) : (
                                   <div className="flex flex-col gap-2">
                                     <label className="inline-flex items-center gap-2 text-sm text-text-secondary">

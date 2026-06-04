@@ -182,6 +182,19 @@ export default function DocsPage() {
               intentional: the template only schedules what has not
               happened yet.
             </p>
+            <p>
+              Transactions generated from a recurring template are
+              independent copies. Editing the name or category of any
+              one of them updates the template and every upcoming (not
+              yet settled) occurrence, so the series stays consistent
+              going forward. Amounts and dates stay per occurrence, so
+              you can adjust a single month without changing the rest.
+              Settled past entries are never rewritten. Deleting a
+              single transaction never removes other occurrences. Only
+              stopping or deleting the recurring template removes its
+              pending future occurrences, and settled history is always
+              kept.
+            </p>
 
             <h3>Marking transactions as a transfer pair</h3>
             <p>
