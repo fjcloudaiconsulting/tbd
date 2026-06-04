@@ -34,11 +34,13 @@ from app.deps import get_current_user, get_session_factory
 from app.models.user import User
 from app.rate_limit import get_client_ip
 from app.schemas.ai_forecast import (
+    ForecastRefineEstimate,
     RefineForecastRequest,
     RefinedForecastResponse,
 )
 from app.services import audit_service
-from app.services.ai_forecast_refine_service import refine_forecast
+from app.services.ai_forecast_refine_service import estimate_refine, refine_forecast
+from app.services.ai_forecast_refine_token_estimate import Scope, _duration_band
 
 
 logger = structlog.stdlib.get_logger()
@@ -74,11 +76,20 @@ async def refine_forecast_endpoint(
                 },
             )
 
+    scope = Scope(body.scope)
     refined = await refine_forecast(
         db,
         org_id=current_user.org_id,
         session_factory=session_factory,
         period_start=period_start_date,
+        timeframe_months=body.timeframe_months,
+        scope=scope,
+    )
+    logger.info(
+        "ai.forecast.refine.confirmed_params",
+        org_id=current_user.org_id,
+        timeframe_months=body.timeframe_months,
+        scope=body.scope,
     )
 
     # Audit AFTER the business operation. The audit row carries the
@@ -117,6 +128,8 @@ async def refine_forecast_endpoint(
         ),
         "anomalies_flagged": len(refined.anomalies),
         "period_start": refined.period_start,
+        "timeframe_months": body.timeframe_months,
+        "scope": body.scope,
     }
     try:
         await audit_service.record_audit_event(
@@ -142,3 +155,55 @@ async def refine_forecast_endpoint(
         )
 
     return refined
+
+
+@router.post("/refine/estimate", response_model=ForecastRefineEstimate)
+async def estimate_refine_endpoint(
+    body: RefineForecastRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _gate: dict = Depends(require_feature("ai.forecast")),
+):
+    """No-LLM preflight estimate for the refine endpoint.
+
+    Always returns 200. On any unexpected error returns a
+    ``can_proceed=False`` estimate rather than surfacing a 5xx, so the
+    UI always gets something to show. The 400 for a malformed
+    ``period_start`` is raised before the estimate call and still
+    propagates as a 400.
+    """
+    period_start_date: Optional[datetime.date] = None
+    if body.period_start:
+        try:
+            period_start_date = datetime.date.fromisoformat(body.period_start)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "invalid_period_start",
+                    "message": "period_start must be ISO date YYYY-MM-DD",
+                },
+            )
+
+    try:
+        return await estimate_refine(
+            db,
+            org_id=current_user.org_id,
+            period_start=period_start_date,
+            timeframe_months=body.timeframe_months,
+            scope=Scope(body.scope),
+        )
+    except Exception as exc:
+        logger.warning(
+            "ai.forecast.refine.estimate_failed",
+            org_id=current_user.org_id,
+            error_class=type(exc).__name__,
+        )
+        return ForecastRefineEstimate(
+            est_prompt_tokens=0,
+            est_output_tokens=0,
+            est_cost_cents=0,
+            duration_band=_duration_band(Scope(body.scope)),
+            can_proceed=False,
+            reason="estimate_failed",
+        )
