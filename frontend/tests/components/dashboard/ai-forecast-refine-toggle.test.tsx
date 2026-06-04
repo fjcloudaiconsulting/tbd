@@ -195,9 +195,10 @@ describe("AIForecastRefineToggle - fallback handling", () => {
       expect(screen.getByTestId("ai-fallback-badge")).toBeInTheDocument(),
     );
     expect(screen.queryByTestId("ai-refined-badge")).toBeNull();
-    expect(screen.getByTestId("ai-fallback-reason").textContent).toContain(
-      "ai_routing_not_configured",
-    );
+    // Friendly copy, never the raw code.
+    const reasonText = screen.getByTestId("ai-fallback-reason").textContent ?? "";
+    expect(reasonText).toContain("Configure an AI provider");
+    expect(reasonText).not.toContain("ai_routing_not_configured");
   });
 
   it("hides itself entirely when the estimate call returns a 403 (feature gate closed)", async () => {

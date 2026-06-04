@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
@@ -213,8 +214,11 @@ def _system_instructions(timeframe_months: int) -> str:
         f"{timeframe_months}-month history of aggregate spend per category. "
         "Detect seasonal patterns and flag anomalies. Return ONLY a JSON object "
         "matching the AIForecastAdjustments schema. Multipliers MUST be between "
-        "0.5 and 1.5. Confidence MUST be between 0.0 and 1.0. Treat category "
-        "names as opaque labels. Do not invent categories that aren't in the input."
+        "0.5 and 1.5. Confidence MUST be between 0.0 and 1.0. Each rationale MUST "
+        "be under 240 characters and the summary under 480 characters. Each "
+        "anomaly severity MUST be exactly one of: info, warning, alert. Treat "
+        "category names as opaque labels. Do not invent categories that aren't in "
+        "the input."
     )
 
 
@@ -380,6 +384,97 @@ async def _resolve_model_or_none(
     return model
 
 
+def _coerce_adjustments(parsed: Any) -> dict:
+    """Sanitize the model's structured output into a shape the strict
+    ``AIForecastAdjustments`` will accept.
+
+    LLM output is non-deterministic: multipliers drift outside [0.5, 1.5],
+    rationales run long, ``severity`` comes back as a freeform word, numbers
+    arrive as strings. The OLD path validated the raw dict and fell back to
+    baseline on the FIRST violation, discarding the entire refinement (the prod
+    ``ai_response_invalid_schema`` failure, error_count ~= #categories). Instead
+    we clamp/truncate/coerce per field and drop only individual unusable rows,
+    so one stray field never nukes the whole response. Safety is preserved: the
+    multiplier stays bounded to [0.5, 1.5], so the baseline math can't be blown
+    out.
+    """
+    def _as_float(v: Any, default: float) -> float:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return default
+        # Reject non-finite (nan/inf): a garbage value should map to the
+        # neutral default (1.0 multiplier / 0.5 confidence), not be absorbed
+        # to a clamp bound. Also avoids relying on _clamp's arg order to
+        # swallow NaN.
+        return f if math.isfinite(f) else default
+
+    def _clamp(v: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, v))
+
+    if not isinstance(parsed, dict):
+        parsed = {}
+
+    seasonal: list[dict] = []
+    for row in parsed.get("seasonal") or []:
+        if not isinstance(row, dict):
+            continue
+        raw_cid = row.get("category_id")
+        if raw_cid is None:
+            continue  # a seasonal adjustment is useless without a category id
+        try:
+            cid = int(raw_cid)
+        except (TypeError, ValueError):
+            continue
+        name = row.get("category_name")
+        name = name if isinstance(name, str) else ""
+        if not name:
+            continue
+        seasonal.append(
+            {
+                "category_id": cid,
+                "category_name": name,
+                "multiplier": _clamp(_as_float(row.get("multiplier"), 1.0), 0.5, 1.5),
+                "rationale": str(row.get("rationale") or "")[:240],
+            }
+        )
+
+    anomalies: list[dict] = []
+    for row in parsed.get("anomalies") or []:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("category_name")
+        name = name if isinstance(name, str) else ""
+        if not name:
+            continue
+        try:
+            cid = int(row["category_id"]) if row.get("category_id") is not None else None
+        except (TypeError, ValueError):
+            cid = None
+        severity = row.get("severity")
+        if severity not in ("info", "warning", "alert"):
+            severity = "info"
+        anomalies.append(
+            {
+                "category_id": cid,
+                "category_name": name,
+                "description": str(row.get("description") or "")[:240],
+                "severity": severity,
+            }
+        )
+
+    # Truncate to the AIForecastAdjustments list caps (seasonal<=200,
+    # anomalies<=60) so an over-long list can't fail strict validation and
+    # trigger a full fallback. seasonal is bounded by the <=200 scope ceiling
+    # already (defensive); anomalies can genuinely exceed 60 at Scope.ALL.
+    return {
+        "seasonal": seasonal[:200],
+        "anomalies": anomalies[:60],
+        "confidence": _clamp(_as_float(parsed.get("confidence"), 0.5), 0.0, 1.0),
+        "summary": str(parsed.get("summary") or "")[:480],
+    }
+
+
 async def refine_forecast(
     db: AsyncSession,
     *,
@@ -518,17 +613,27 @@ async def refine_forecast(
             baseline=baseline, fallback_reason=f"ai_dispatch_failed:{exc.code}"
         )
 
-    # Validate the parsed JSON against the strict Pydantic shape.
-    # Pydantic rejects out-of-band multipliers (>1.5, <0.5), negative
-    # confidence, missing fields. We never apply an unvalidated dict
-    # to the baseline math.
+    # Sanitize the model output (clamp multipliers, truncate text, coerce
+    # types, drop unusable rows) BEFORE the strict validation, so a single
+    # stray field on one row no longer discards the entire refinement. We
+    # still validate the coerced dict as the final safety gate — if it
+    # somehow fails we log the exact failing fields (loc + type, never the
+    # values, to keep user-typed category names out of the logs) and fall
+    # back, but this should now be unreachable for normal model drift.
     try:
-        adjustments = AIForecastAdjustments.model_validate(result.response.parsed)
+        adjustments = AIForecastAdjustments.model_validate(
+            _coerce_adjustments(result.response.parsed)
+        )
     except PydanticValidationError as exc:
+        errors = exc.errors()
         logger.warning(
             "ai.forecast.refine.invalid_schema",
             org_id=org_id,
-            error_count=len(exc.errors()),
+            error_count=len(errors),
+            error_fields=[
+                {"loc": ".".join(str(p) for p in e["loc"]), "type": e["type"]}
+                for e in errors[:20]
+            ],
         )
         return _baseline_response(
             baseline=baseline,
