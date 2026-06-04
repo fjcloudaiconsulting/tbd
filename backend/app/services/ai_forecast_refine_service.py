@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import datetime
 import json
-from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
@@ -49,16 +48,20 @@ from app.models.category import Category
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.ai_forecast import (
     AIForecastAdjustments,
+    ForecastRefineEstimate,
     RefinedCategoryRow,
     RefinedForecastProvenance,
     RefinedForecastResponse,
 )
-from app.services import ai_dispatch, forecast_service
+from app.services import ai_dispatch, ai_routing_service, forecast_service
 from app.services.ai_forecast_refine_token_estimate import (
     Scope,
     estimate_output_tokens,
+    estimate_prompt_tokens,
+    max_tokens_for_output_estimate,
     select_categories_by_scope,
 )
+from app.services.ai_pricing import estimate_cost_cents
 from app.services.ai_providers.base import NativeNotAvailable, StructuredOutputError
 from app.services.transaction_filters import reportable_transaction_filter
 
@@ -96,15 +99,6 @@ RESPONSE_JSON_SCHEMA: dict[str, Any] = {
         "summary": {"type": "string"},
     },
 }
-
-
-@dataclass(frozen=True)
-class _RefinementContext:
-    """Internal helper carrying the baseline + history into prompt build."""
-
-    baseline: dict
-    history: list[dict]
-    category_index: dict[int, str]
 
 
 def _month_start_n_back(end: datetime.date, n: int) -> datetime.date:
@@ -227,7 +221,7 @@ def _build_refine_prompt(
     history: list[dict],
     category_index: dict[int, str],
     timeframe_months: int,
-    scope: "Scope",
+    scope: Scope,
 ) -> tuple[list[dict], int, int]:
     """Build the messages array for the structured-output dispatch.
 
@@ -370,12 +364,35 @@ def _baseline_response(
     )
 
 
+async def _resolve_model_or_none(
+    db: AsyncSession, *, org_id: int
+) -> Optional[str]:
+    """Return the routed model string for ROUTING_KEY, or None if not configured."""
+    routing = await ai_routing_service.get_routing_for_feature(
+        db, org_id=org_id, feature_name=ROUTING_KEY
+    )
+    if routing is None:
+        return None
+    _credential_id, model = routing
+    return model
+
+
+def _duration_band(scope: Scope) -> str:
+    return {
+        Scope.TOP_10: "~15-25s",
+        Scope.TOP_20: "~20-40s",
+        Scope.ALL: "may take 60s+",
+    }[scope]
+
+
 async def refine_forecast(
     db: AsyncSession,
     *,
     org_id: int,
     session_factory: Optional[async_sessionmaker[AsyncSession]] = None,
     period_start: Optional[datetime.date] = None,
+    timeframe_months: int = 6,
+    scope: Scope = Scope.TOP_20,
 ) -> RefinedForecastResponse:
     """Public entry point. Always returns a usable response, falling
     back to baseline on any LLM-side failure.
@@ -399,7 +416,7 @@ async def refine_forecast(
     p_start = datetime.date.fromisoformat(baseline["period_start"])
     try:
         history = await _build_category_history(
-            db, org_id=org_id, period_start=p_start
+            db, org_id=org_id, period_start=p_start, months=timeframe_months
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
@@ -420,13 +437,14 @@ async def refine_forecast(
         )
 
     category_index = await _category_index(db, org_id=org_id)
-    messages, _est, _n = _build_refine_prompt(
+    messages, _est_out, n_in_scope = _build_refine_prompt(
         baseline=baseline,
         history=history,
         category_index=category_index,
-        timeframe_months=6,
-        scope=Scope.TOP_20,
+        timeframe_months=timeframe_months,
+        scope=scope,
     )
+    max_tokens = max_tokens_for_output_estimate(n_in_scope)
 
     # Dispatch through the cap + ledger chokepoint. Any failure here
     # (no routing, hard cap exceeded, adapter network error, retry
@@ -445,6 +463,7 @@ async def refine_forecast(
                     feature_key=ROUTING_KEY,
                     messages=messages,
                     response_schema=RESPONSE_JSON_SCHEMA,
+                    max_tokens=max_tokens,
                 )
         else:
             result = await ai_dispatch.call_llm_structured(
@@ -453,6 +472,7 @@ async def refine_forecast(
                 feature_key=ROUTING_KEY,
                 messages=messages,
                 response_schema=RESPONSE_JSON_SCHEMA,
+                max_tokens=max_tokens,
             )
     except ai_dispatch.NoRoutingConfigured:
         return _baseline_response(
@@ -545,4 +565,76 @@ async def refine_forecast(
             summary=adjustments.summary,
             notes=notes,
         ),
+    )
+
+
+async def estimate_refine(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    period_start: Optional[datetime.date],
+    timeframe_months: int,
+    scope: Scope,
+) -> ForecastRefineEstimate:
+    """No-LLM preflight estimate for the refine endpoint.
+
+    Computes token estimates and cost from the same prompt builder used
+    by ``refine_forecast`` so the quoted cost can't drift from what runs.
+    Never dispatches to an LLM.
+
+    Returns a ``ForecastRefineEstimate`` with ``can_proceed=False`` when:
+    - No transaction history exists for the org (``reason="insufficient_history"``)
+    - No routing is configured (``reason="ai_routing_not_configured"``)
+    """
+    baseline = await forecast_service.compute_forecast(
+        db, org_id, period_start=period_start
+    )
+    p_start = datetime.date.fromisoformat(baseline["period_start"])
+    history = await _build_category_history(
+        db, org_id=org_id, period_start=p_start, months=timeframe_months
+    )
+
+    if not history:
+        return ForecastRefineEstimate(
+            est_prompt_tokens=0,
+            est_output_tokens=0,
+            est_cost_cents=0,
+            duration_band=_duration_band(scope),
+            can_proceed=False,
+            reason="insufficient_history",
+        )
+
+    category_index = await _category_index(db, org_id=org_id)
+    messages, est_out, n_in_scope = _build_refine_prompt(
+        baseline=baseline,
+        history=history,
+        category_index=category_index,
+        timeframe_months=timeframe_months,
+        scope=scope,
+    )
+
+    prompt_text = "".join(m["content"] for m in messages)
+    est_prompt = estimate_prompt_tokens(prompt_text)
+
+    model = await _resolve_model_or_none(db, org_id=org_id)
+    if model is None:
+        return ForecastRefineEstimate(
+            est_prompt_tokens=est_prompt,
+            est_output_tokens=est_out,
+            est_cost_cents=0,
+            duration_band=_duration_band(scope),
+            can_proceed=False,
+            reason="ai_routing_not_configured",
+        )
+
+    cost = estimate_cost_cents(
+        model=model, prompt_tokens=est_prompt, completion_tokens=est_out
+    )
+    return ForecastRefineEstimate(
+        est_prompt_tokens=est_prompt,
+        est_output_tokens=est_out,
+        est_cost_cents=int(cost),
+        duration_band=_duration_band(scope),
+        can_proceed=True,
+        reason=None,
     )
