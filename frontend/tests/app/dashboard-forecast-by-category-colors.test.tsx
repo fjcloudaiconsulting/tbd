@@ -143,9 +143,9 @@ function setupApiMocks() {
     if (url.startsWith("/api/v1/forecast/account-balances"))
       return Promise.resolve({ accounts: [], period_start: "2026-05-01", period_end: "2026-05-31" });
     if (url.startsWith("/api/v1/transactions?status=pending"))
-      return Promise.resolve([]);
+      return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     if (url.startsWith("/api/v1/transactions"))
-      return Promise.resolve([]);
+      return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     return Promise.resolve(null);
   }) as never);
 }

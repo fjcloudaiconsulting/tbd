@@ -15,6 +15,7 @@ from app.models.account import Account
 from app.models.transaction import TransactionType
 from app.models.user import User
 from app.rate_limit import get_client_ip
+from app.schemas.common import ListEnvelope
 from app.schemas.import_batch import (
     BatchTransactionsRequest,
     BatchTransactionsResponse,
@@ -62,7 +63,7 @@ suggestions_logger = structlog.stdlib.get_logger(
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
 
-@router.get("", response_model=list[TransactionResponse])
+@router.get("", response_model=ListEnvelope[TransactionResponse])
 async def list_transactions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -94,7 +95,9 @@ async def list_transactions(
             "requires every named tag; 'any' requires at least one."
         ),
     ),
-    limit: int = Query(default=50, le=200),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ):
     tag_list = (
@@ -105,22 +108,32 @@ async def list_transactions(
         [t for t in (s.strip() for s in tags_exclude.split(",")) if t]
         if tags_exclude else None
     )
-    txns = await svc.list_transactions(
-        db, current_user.org_id,
-        account_id=account_id,
-        category_id=category_id,
-        tx_type=tx_type,
-        status=status,
-        date_from=date_from,
-        date_to=date_to,
-        search=search,
-        tags=tag_list,
-        tags_exclude=excl_list,
-        tag_match=tag_match,
+    try:
+        items, total = await svc.list_transactions(
+            db, current_user.org_id,
+            account_id=account_id,
+            category_id=category_id,
+            tx_type=tx_type,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+            search=search,
+            tags=tag_list,
+            tags_exclude=excl_list,
+            tag_match=tag_match,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    return ListEnvelope[TransactionResponse](
+        items=[svc.to_response(tx) for tx in items],
+        total=total,
         limit=limit,
         offset=offset,
     )
-    return [svc.to_response(tx) for tx in txns]
 
 
 @router.post("", response_model=TransactionResponse, status_code=201)

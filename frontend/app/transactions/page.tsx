@@ -25,14 +25,16 @@ import SuggestCategoryButton from "@/components/transactions/SuggestCategoryButt
 import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
 import {
   FILTERS_KEY_TRANSACTIONS,
+  PAGE_SIZE_KEY_TRANSACTIONS,
   SORT_KEY_TRANSACTIONS,
 } from "@/lib/hooks/persisted-keys";
 import { usePersistedFilters } from "@/lib/hooks/use-persisted-filters";
 import { usePersistedSort } from "@/lib/hooks/use-persisted-sort";
+import Pagination from "@/components/ui/Pagination";
+import { pageCount } from "@/lib/hooks/use-table-state";
 
 
 
-const PAGE_SIZE = 20;
 const DATE_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Column-aware sort defaults. When the user clicks a different column, that
@@ -86,7 +88,13 @@ function TransactionsPageContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(() => {
+    if (typeof window === "undefined") return 25;
+    const raw = window.localStorage.getItem(PAGE_SIZE_KEY_TRANSACTIONS);
+    const n = raw ? Number(raw) : 25;
+    return [10, 25, 50, 100].includes(n) ? n : 25;
+  });
 
   // Edit
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -267,7 +275,8 @@ function TransactionsPageContent() {
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
-    let url = `/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}`;
+    let url = `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}`;
+    url += `&sort_by=${encodeURIComponent(sortField)}&sort_dir=${encodeURIComponent(sortDir)}`;
     if (filterAccount) url += `&account_id=${filterAccount}`;
     if (filterCategory) url += `&category_id=${filterCategory}`;
     if (filterType) url += `&type=${filterType}`;
@@ -275,7 +284,7 @@ function TransactionsPageContent() {
 
     // Period filter overrides date_from/date_to
     if (filterPeriod) {
-      const per = periods.find((p) => String(p.id) === filterPeriod);
+      const per = periods.find((pp) => String(pp.id) === filterPeriod);
       if (per && per.end_date !== null) {
         url += `&date_from=${per.start_date}`;
         url += `&date_to=${per.end_date}`;
@@ -286,11 +295,11 @@ function TransactionsPageContent() {
     }
 
     if (filterSearch) url += `&search=${encodeURIComponent(filterSearch)}`;
-    const data = (await apiFetch<Transaction[]>(url)) ?? [];
-    setHasMore(data.length > PAGE_SIZE);
-    setTransactions(data.slice(0, PAGE_SIZE));
+    const data = await apiFetch<{ items: Transaction[]; total: number }>(url);
+    setTransactions(data?.items ?? []);
+    setTotal(data?.total ?? 0);
     setFetching(false);
-  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods]);
+  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods, pageSize, sortField, sortDir]);
 
   useEffect(() => {
     if (!loading && user) loadRefs().catch(() => {});
@@ -361,6 +370,14 @@ function TransactionsPageContent() {
 
   useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
 
+  // Clamp the page after a refetch shrinks the result set (e.g. a bulk
+  // delete that empties the last page) so the user is never stranded on a
+  // page beyond the new total.
+  useEffect(() => {
+    const last = pageCount(total, pageSize) - 1;
+    if (page > last) setPage(Math.max(0, last));
+  }, [total, pageSize, page]);
+
   // After a write from the AppShell-level "+ New Transaction" CTA the
   // page must re-pull the visible list (the new row should appear) and
   // the refs (a freshly-created category from inside the panel must
@@ -382,10 +399,12 @@ function TransactionsPageContent() {
     void refreshAfterTransactionAdded();
   });
 
+  // Clear selection whenever the visible row set changes (filters, sort, page,
+  // or page size) so navigation never leaves an invisible selection behind.
   useEffect(() => {
     clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page]);
+  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page, pageSize]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -580,6 +599,12 @@ function TransactionsPageContent() {
 
   function clearSelection() {
     setSelectedIds(new Set());
+  }
+
+  function changePageSize(n: number) {
+    setPageSize(n);
+    setPage(0);
+    if (typeof window !== "undefined") window.localStorage.setItem(PAGE_SIZE_KEY_TRANSACTIONS, String(n));
   }
 
   async function handleDelete(id: number) {
@@ -829,32 +854,16 @@ function TransactionsPageContent() {
     } else {
       persistedSort.setSort(field, SORT_DEFAULTS[field]);
     }
+    setPage(0);
   }
-  // Memoize the sort. On a typed-into-search render, only `filter*` state
-  // changes — the same `transactions` array shouldn't be re-sorted, and the
-  // result shouldn't get a new reference (which would invalidate every
-  // downstream map() identity check).
-  const sortedTransactions = useMemo(() => {
-    const copy = [...transactions];
-    copy.sort((a, b) => {
-      let cmp = 0;
-      if (sortField === "date") cmp = a.date.localeCompare(b.date);
-      else if (sortField === "description") cmp = a.description.localeCompare(b.description);
-      else if (sortField === "account_name") cmp = a.account_name.localeCompare(b.account_name);
-      else if (sortField === "category_name") cmp = a.category_name.localeCompare(b.category_name);
-      else if (sortField === "status") cmp = a.status.localeCompare(b.status);
-      else if (sortField === "amount") cmp = Number(a.amount) - Number(b.amount);
-      return sortDir === "asc" ? cmp : -cmp;
-    });
-    return copy;
-  }, [transactions, sortField, sortDir]);
-
-  // Visible rows are sortedTransactions minus the cascaded "duplicate" half
-  // of any transfer pair. Memoized so the array reference is stable across
+  // Visible rows are the fetched (server-sorted) transactions minus the
+  // cascaded "duplicate" half of any transfer pair. Rows arrive pre-sorted
+  // from the server (sort_by/sort_dir on the list request), so there is no
+  // client-side sort. Memoized so the array reference is stable across
   // unrelated renders (typing in the new-transaction form, hover, etc.).
   const visibleTxs = useMemo(
-    () => sortedTransactions.filter((t) => !selectionHiddenIds.has(t.id)),
-    [sortedTransactions, selectionHiddenIds],
+    () => transactions.filter((t) => !selectionHiddenIds.has(t.id)),
+    [transactions, selectionHiddenIds],
   );
   const targetTransactionId = useMemo(() => {
     const raw = searchParams.get("transaction_id");
@@ -2054,15 +2063,15 @@ function TransactionsPageContent() {
             })()}
           </div>
 
-          {(page > 0 || hasMore) && (
-            <div className="mt-4 flex items-center justify-between">
-              <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0 || bulkDeleting} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40">
-                Previous
-              </button>
-              <span className="text-xs text-text-muted">Page {page + 1}</span>
-              <button onClick={() => setPage(page + 1)} disabled={!hasMore || bulkDeleting} className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-raised disabled:opacity-40">
-                Next
-              </button>
+          {(total > pageSize || page > 0) && (
+            <div className="mt-4">
+              <Pagination
+                page={page + 1}
+                pageSize={pageSize}
+                total={total}
+                onPageChange={(n) => setPage(n - 1)}
+                onPageSizeChange={changePageSize}
+              />
             </div>
           )}
         </>

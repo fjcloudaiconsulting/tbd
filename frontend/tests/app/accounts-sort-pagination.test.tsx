@@ -100,7 +100,7 @@ function mockApi(accounts: unknown[] = ACCOUNTS) {
   vi.mocked(apiFetch).mockImplementation(((url: string) => {
     if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
     if (url === "/api/v1/accounts") return Promise.resolve(accounts);
-    if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+    if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     return Promise.resolve({});
   }) as never);
 }
@@ -195,7 +195,7 @@ describe("AccountsPage — page clamping when row count shrinks", () => {
       const method = opts?.method?.toUpperCase() ?? "GET";
       if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
       if (url === "/api/v1/accounts" && method === "GET") return Promise.resolve(initialAccounts);
-      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       return Promise.resolve({});
     }) as never);
 
@@ -215,7 +215,7 @@ describe("AccountsPage — page clamping when row count shrinks", () => {
       const method = opts?.method?.toUpperCase() ?? "GET";
       if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
       if (url === "/api/v1/accounts" && method === "GET") return Promise.resolve(afterDeleteAccounts);
-      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       if (url.match(/\/api\/v1\/accounts\/\d+/) && method === "DELETE") return Promise.resolve({});
       return Promise.resolve({});
     }) as never);
@@ -328,7 +328,7 @@ describe("AccountsPage — nulls-last stable sort", () => {
     vi.mocked(apiFetch).mockImplementation(((url: string) => {
       if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
       if (url === "/api/v1/accounts") return Promise.resolve(ACCOUNTS_WITH_EMPTY_TYPE);
-      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       return Promise.resolve({});
     }) as never);
   });

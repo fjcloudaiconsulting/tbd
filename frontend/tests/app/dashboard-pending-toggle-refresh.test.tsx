@@ -119,16 +119,18 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
       // these calls and return [] so fetchAll exits on the first page.
       if (url.startsWith("/api/v1/transactions?status=pending")) {
         pendingCalls += 1;
-        return Promise.resolve([]);
+        return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       }
       // limit=200 is the period-scoped "all" fetch (donut, charts, etc.).
       // limit=11 is the paginated visible-page fetch (PAGE_SIZE+1).
-      if (url.startsWith("/api/v1/transactions?limit=200"))
-        return Promise.resolve([...PAGE_0_ROWS, ...PAGE_1_ROWS]);
+      if (url.startsWith("/api/v1/transactions?limit=200")) {
+        const items = [...PAGE_0_ROWS, ...PAGE_1_ROWS];
+        return Promise.resolve({ items, total: items.length, limit: 200, offset: 0 });
+      }
       if (url.startsWith("/api/v1/transactions?limit=11&offset=0"))
-        return Promise.resolve(PAGE_0_ROWS);
+        return Promise.resolve({ items: PAGE_0_ROWS, total: PAGE_0_ROWS.length, limit: 11, offset: 0 });
       if (url.startsWith("/api/v1/transactions?limit=11&offset=10"))
-        return Promise.resolve(PAGE_1_ROWS);
+        return Promise.resolve({ items: PAGE_1_ROWS, total: PAGE_1_ROWS.length, limit: 11, offset: 10 });
       return Promise.resolve({});
     }) as never);
 
@@ -183,10 +185,10 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
         return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
       if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
       if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
-      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
-      if (url.startsWith("/api/v1/transactions?limit=200")) return Promise.resolve([SETTLED_TX]);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+      if (url.startsWith("/api/v1/transactions?limit=200")) return Promise.resolve({ items: [SETTLED_TX], total: 1, limit: 200, offset: 0 });
       if (url.startsWith("/api/v1/transactions?limit=11&offset=0"))
-        return Promise.resolve([SETTLED_TX]);
+        return Promise.resolve({ items: [SETTLED_TX], total: 1, limit: 11, offset: 0 });
       return Promise.resolve({});
     }) as never);
 
@@ -228,10 +230,10 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
         return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
       if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
       if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
-      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([]);
-      if (url.startsWith("/api/v1/transactions?limit=200")) return Promise.resolve([CC_TX]);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+      if (url.startsWith("/api/v1/transactions?limit=200")) return Promise.resolve({ items: [CC_TX], total: 1, limit: 200, offset: 0 });
       if (url.startsWith("/api/v1/transactions?limit=11&offset=0"))
-        return Promise.resolve([CC_TX]);
+        return Promise.resolve({ items: [CC_TX], total: 1, limit: 11, offset: 0 });
       return Promise.resolve({});
     }) as never);
 

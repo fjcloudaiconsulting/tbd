@@ -98,7 +98,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
       if (url === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
       if (url === "/api/v1/accounts") return Promise.resolve(ACCOUNTS);
       // fetchAll<T> appends &limit=200&offset=N; match the prefix.
-      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve(pending);
+      if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: pending, total: pending.length, limit: 200, offset: 0 });
       return Promise.resolve({});
     }) as never);
   }

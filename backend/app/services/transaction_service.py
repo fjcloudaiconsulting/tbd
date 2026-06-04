@@ -34,6 +34,7 @@ from app.schemas.transaction import (
 )
 from app.services.category_rules_service import learn_from_choice
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.list_query import resolve_order_by
 from app.services.transaction_filters import (
     effective_period_date_expr,
     is_reportable_transaction,
@@ -1802,27 +1803,25 @@ def _parse_search_amount(raw: str) -> Decimal | None:
         return None
 
 
-async def list_transactions(
-    db: AsyncSession,
+def _apply_transaction_filters(
+    q,
     org_id: int,
-    account_id: int | None = None,
-    category_id: int | None = None,
-    tx_type: str | None = None,
-    status: str | None = None,
-    date_from: datetime.date | None = None,
-    date_to: datetime.date | None = None,
-    search: str | None = None,
-    tags: list[str] | None = None,
-    tags_exclude: list[str] | None = None,
-    tag_match: str = "all",
-    limit: int = 50,
-    offset: int = 0,
-) -> list[Transaction]:
-    q = (
-        select(Transaction)
-        .options(*_load_opts())
-        .where(Transaction.org_id == org_id)
-    )
+    *,
+    account_id: int | None,
+    category_id: int | None,
+    tx_type: str | None,
+    status: str | None,
+    date_from: datetime.date | None,
+    date_to: datetime.date | None,
+    search: str | None,
+    tags: list[str] | None,
+    tags_exclude: list[str] | None,
+    tag_match: str,
+):
+    """Apply all transaction list filters to a query. Used for BOTH the page
+    query and the count query so `total` is computed over the same filtered
+    set (org-scoping contract; see app.services.list_query). The caller must
+    already have scoped `q` to org_id. Returns the filtered query."""
     if account_id is not None:
         q = q.where(Transaction.account_id == account_id)
     if category_id is not None:
@@ -1922,12 +1921,69 @@ async def list_transactions(
                     )
                 )
             )
+    return q
 
-    q = q.order_by(effective_period_date_expr().desc(), Transaction.id.desc())
-    q = q.limit(limit).offset(offset)
 
-    result = await db.execute(q)
-    return list(result.scalars().all())
+async def list_transactions(
+    db: AsyncSession,
+    org_id: int,
+    account_id: int | None = None,
+    category_id: int | None = None,
+    tx_type: str | None = None,
+    status: str | None = None,
+    date_from: datetime.date | None = None,
+    date_to: datetime.date | None = None,
+    search: str | None = None,
+    tags: list[str] | None = None,
+    tags_exclude: list[str] | None = None,
+    tag_match: str = "all",
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[Transaction], int]:
+    filter_kwargs = dict(
+        account_id=account_id, category_id=category_id, tx_type=tx_type,
+        status=status, date_from=date_from, date_to=date_to, search=search,
+        tags=tags, tags_exclude=tags_exclude, tag_match=tag_match,
+    )
+
+    # org_id is supplied twice on purpose: once as the pre-scoped WHERE on the
+    # base query, and again as a param so the category/tag subqueries inside
+    # _apply_transaction_filters can org-scope their own lookups.
+    page_q = _apply_transaction_filters(
+        select(Transaction).options(*_load_opts()).where(Transaction.org_id == org_id),
+        org_id, **filter_kwargs,
+    )
+    count_q = _apply_transaction_filters(
+        select(func.count()).select_from(Transaction).where(Transaction.org_id == org_id),
+        org_id, **filter_kwargs,
+    )
+
+    total = (await db.scalar(count_q)) or 0
+
+    allowed = {
+        "date": effective_period_date_expr(),
+        "amount": Transaction.amount,
+        "description": Transaction.description,
+        "status": Transaction.status,
+        "account_name": Account.name,
+        "category_name": Category.name,
+    }
+    if sort_by == "account_name":
+        page_q = page_q.join(Account, Account.id == Transaction.account_id)
+    elif sort_by == "category_name":
+        page_q = page_q.join(Category, Category.id == Transaction.category_id)
+
+    order_by = resolve_order_by(
+        sort_by, sort_dir, allowed=allowed,
+        default_key="date", default_dir="desc",
+        tiebreaker=Transaction.id.desc(),
+    )
+    page_q = page_q.order_by(*order_by).limit(limit).offset(offset)
+
+    items = list((await db.execute(page_q)).scalars().all())
+    return items, total
 
 
 async def reconcile_account(

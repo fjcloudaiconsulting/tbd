@@ -48,7 +48,7 @@ function mockEmptyDashboard() {
     if (url === "/api/v1/settings/billing-cycle") return Promise.resolve({ billing_cycle_day: 1 });
     if (url === "/api/v1/settings/billing-period") return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
     if (url === "/api/v1/settings/billing-periods") return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
-    if (url.startsWith("/api/v1/transactions")) return Promise.resolve([]);
+    if (url.startsWith("/api/v1/transactions")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
     return Promise.resolve({});
   }) as never);

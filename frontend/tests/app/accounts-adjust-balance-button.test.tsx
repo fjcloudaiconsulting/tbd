@@ -71,9 +71,8 @@ function mockApi() {
     if (path === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
     if (path.startsWith("/api/v1/accounts")) return Promise.resolve(ACCOUNTS);
     if (path.startsWith("/api/v1/transactions")) {
-      // fetchAll wraps the response — return a paginated shape compatible
-      // with both array and {items, total} fetchers.
-      return Promise.resolve([]);
+      // fetchAll reads `.items` off the list envelope.
+      return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     }
     return Promise.resolve([]);
   });

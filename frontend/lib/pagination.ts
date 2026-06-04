@@ -2,9 +2,10 @@ import { apiFetch } from "@/lib/api";
 
 /**
  * Page through a list endpoint that supports `limit` + `offset` query
- * params and returns an array of T. Stops when a response shorter than
- * `pageSize` arrives. For all-time aggregates whose per-page cap (≤200
- * server-side) would otherwise truncate the result.
+ * params and returns the `{ items, total }` list envelope. Reads `.items`
+ * off each response and stops when a page shorter than `pageSize` arrives.
+ * For all-time aggregates whose per-page cap (≤200 server-side) would
+ * otherwise truncate the result. Used for the transactions list endpoint.
  *
  * Caller passes a base URL with any non-pagination query params already
  * attached, e.g. `fetchAll<Transaction>("/api/v1/transactions?status=pending")`.
@@ -23,8 +24,11 @@ export async function fetchAll<T>(baseUrl: string, pageSize = 200): Promise<T[]>
   // beyond any realistic dashboard workload; raise if a real workload
   // ever approaches it.
   for (let page = 0; page < 100; page += 1) {
-    const rows = await apiFetch<T[]>(`${baseUrl}${sep}limit=${pageSize}&offset=${offset}`);
-    if (!Array.isArray(rows) || rows.length === 0) break;
+    const resp = await apiFetch<{ items: T[]; total: number }>(
+      `${baseUrl}${sep}limit=${pageSize}&offset=${offset}`,
+    );
+    const rows = resp?.items ?? [];
+    if (rows.length === 0) break;
     result.push(...rows);
     if (rows.length < pageSize) break;
     offset += pageSize;

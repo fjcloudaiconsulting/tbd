@@ -94,8 +94,8 @@ function mockDashboard() {
       return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
     if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
     if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
-    if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve([TXS[1]]);
-    if (url.startsWith("/api/v1/transactions")) return Promise.resolve(TXS);
+    if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [TXS[1]], total: 1, limit: 200, offset: 0 });
+    if (url.startsWith("/api/v1/transactions")) return Promise.resolve({ items: TXS, total: TXS.length, limit: 200, offset: 0 });
     return Promise.resolve({});
   }) as never);
 }

@@ -97,7 +97,8 @@ function setupApiFetch(txs: Tx[], extras: Record<string, unknown> = {}) {
     if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
     if (url.startsWith("/api/v1/categories")) return [CATEGORY_GROCERIES] as never;
     if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
-    if (url.startsWith("/api/v1/transactions") && method === "GET") return txs as never;
+    if (url.startsWith("/api/v1/transactions") && method === "GET")
+      return { items: txs, total: txs.length, limit: 25, offset: 0 } as never;
     return null as never;
   });
 }
@@ -215,7 +216,8 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
       if (url === "/api/v1/transactions/75/promote-to-recurring" && method === "POST") {
         throw new Error("recurring quota exceeded");
       }
-      if (url.startsWith("/api/v1/transactions") && method === "GET") return [tx] as never;
+      if (url.startsWith("/api/v1/transactions") && method === "GET")
+        return { items: [tx], total: 1, limit: 25, offset: 0 } as never;
       return null as never;
     });
 
@@ -317,7 +319,8 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
           recurring_id: 9001,
         }) as never;
       }
-      if (url.startsWith("/api/v1/transactions") && method === "GET") return [] as never;
+      if (url.startsWith("/api/v1/transactions") && method === "GET")
+        return { items: [], total: 0, limit: 25, offset: 0 } as never;
       return null as never;
     });
 
@@ -396,7 +399,8 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
           recurring_id: 9002,
         }) as never;
       }
-      if (url.startsWith("/api/v1/transactions") && method === "GET") return [] as never;
+      if (url.startsWith("/api/v1/transactions") && method === "GET")
+        return { items: [], total: 0, limit: 25, offset: 0 } as never;
       return null as never;
     });
 

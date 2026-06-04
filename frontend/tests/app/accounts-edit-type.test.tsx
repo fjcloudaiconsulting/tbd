@@ -98,7 +98,7 @@ function mockApi(accounts = [CHECKING_ACCT, CC_ACCT]) {
     if (path.startsWith("/api/v1/accounts/") && path.endsWith("/reconcile")) {
       return Promise.resolve({});
     }
-    if (path.startsWith("/api/v1/transactions")) return Promise.resolve([]);
+    if (path.startsWith("/api/v1/transactions")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
     return Promise.resolve([]);
   });
 }
@@ -275,7 +275,7 @@ describe("Edit Account Type — inline edit row", () => {
     vi.mocked(apiFetch).mockImplementation((path: string, init?: RequestInit) => {
       if (path === "/api/v1/account-types") return Promise.resolve(ACCOUNT_TYPES);
       if (path === "/api/v1/accounts") return Promise.resolve([CHECKING_ACCT, CC_ACCT]);
-      if (path.startsWith("/api/v1/transactions")) return Promise.resolve([]);
+      if (path.startsWith("/api/v1/transactions")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       if (init?.method === "PUT") {
         return Promise.reject(new Error("close_day is only allowed on credit_card accounts"));
       }

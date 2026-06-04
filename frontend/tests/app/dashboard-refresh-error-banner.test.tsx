@@ -116,7 +116,7 @@ function makeHandler(opts: { failTxOnSecondCall?: boolean } = {}) {
       if (opts.failTxOnSecondCall && txCalls >= 2) {
         throw new Error("backend hiccup");
       }
-      return [] as never;
+      return { items: [], total: 0, limit: 200, offset: 0 } as never;
     }
     return null as never;
   };
@@ -226,7 +226,7 @@ describe("Dashboard refresh-error banner", () => {
         // (call #2) is the only failure. After Retry the banner
         // clears.
         if (txCalls === 2) throw new Error("transient");
-        return [] as never;
+        return { items: [], total: 0, limit: 200, offset: 0 } as never;
       }
       return null as never;
     });
