@@ -22,6 +22,8 @@ import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
 import TagChipInput from "@/components/transactions/TagChipInput";
 import DescriptionAutocomplete from "@/components/transactions/DescriptionAutocomplete";
 import SuggestCategoryButton from "@/components/transactions/SuggestCategoryButton";
+import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
+import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import ResetSortFiltersButton from "@/components/ui/ResetSortFiltersButton";
 import {
   FILTERS_KEY_TRANSACTIONS,
@@ -72,6 +74,9 @@ export default function TransactionsPage() {
 
 function TransactionsPageContent() {
   const { user, loading } = useAuth();
+  const role = user?.role ?? null;
+  const ai = useAiStatus();
+  const categorizeAi = ai?.categorize;
   const searchParams = useSearchParams();
   const urlFiltersSyncedRef = useRef(false);
   const categoryUrlSyncedRef = useRef(false);
@@ -197,12 +202,6 @@ function TransactionsPageContent() {
   const [periods, setPeriods] = useState<{ id: number; start_date: string; end_date: string | null }[]>([]);
   const [periodsLoaded, setPeriodsLoaded] = useState(false);
 
-  // LAI.1: whether the "Suggest category" affordance should show on the
-  // edit row. True when the org has ai.autocategorize enabled AND has at
-  // least one AI credential configured. We fail closed (no button) on any
-  // load error; the backend still gates the endpoint independently.
-  const [aiSuggestAvailable, setAiSuggestAvailable] = useState(false);
-
   // Form
   const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
   const [formAccountId, setFormAccountId] = useState<number | "">("");
@@ -250,28 +249,6 @@ function TransactionsPageContent() {
     setCategories(cats ?? []);
     setPeriods(pers ?? []);
     setPeriodsLoaded(true);
-
-    // LAI.1 visibility probe. We only check the org-level feature
-    // flag here — the credentials-list endpoint
-    // (/api/v1/settings/ai-providers) is admin-gated, so probing it
-    // would 403 for regular org members and hide the affordance from
-    // users who SHOULD see it. The categorize endpoint itself is
-    // gated by the feature flag only; if the org has the feature on
-    // but no credentials configured, the click surfaces a friendly
-    // 412 error (and the button is already soft-fail).
-    //
-    // The backend re-checks the feature gate on every request, so an
-    // adversary cannot escalate by tampering with this probe.
-    try {
-      const sub = await apiFetch<{ plan?: { features?: Record<string, boolean> } }>(
-        "/api/v1/subscriptions",
-      );
-      setAiSuggestAvailable(
-        sub?.plan?.features?.["ai.autocategorize"] === true,
-      );
-    } catch {
-      setAiSuggestAvailable(false);
-    }
   }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
@@ -1465,13 +1442,17 @@ function TransactionsPageContent() {
                             <div>
                               <label htmlFor={`edit-cat-${tx.id}`} className={label}>Category</label>
                               <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
-                              {aiSuggestAvailable && !editPartner ? (
+                              {categorizeAi?.entitled && !editPartner ? (
                                 <div className="mt-1">
-                                  <SuggestCategoryButton
-                                    transactionId={tx.id}
-                                    onSuggested={(s) => setEditCategoryId(s.category_id)}
-                                    testIdPrefix={`ai-suggest-${tx.id}`}
-                                  />
+                                  {categorizeAi.configured ? (
+                                    <SuggestCategoryButton
+                                      transactionId={tx.id}
+                                      onSuggested={(s) => setEditCategoryId(s.category_id)}
+                                      testIdPrefix={`ai-suggest-${tx.id}`}
+                                    />
+                                  ) : (
+                                    <SetUpAiCta role={role} />
+                                  )}
                                 </div>
                               ) : null}
                             </div>
@@ -1766,13 +1747,17 @@ function TransactionsPageContent() {
                               <div>
                                 <label className={label}>Category</label>
                                 <CategorySelect aria-label="Category" id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editType} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
-                                {aiSuggestAvailable && !editPartner ? (
+                                {categorizeAi?.entitled && !editPartner ? (
                                   <div className="mt-1">
-                                    <SuggestCategoryButton
-                                      transactionId={tx.id}
-                                      onSuggested={(s) => setEditCategoryId(s.category_id)}
-                                      testIdPrefix={`ai-suggest-mobile-${tx.id}`}
-                                    />
+                                    {categorizeAi.configured ? (
+                                      <SuggestCategoryButton
+                                        transactionId={tx.id}
+                                        onSuggested={(s) => setEditCategoryId(s.category_id)}
+                                        testIdPrefix={`ai-suggest-mobile-${tx.id}`}
+                                      />
+                                    ) : (
+                                      <SetUpAiCta role={role} />
+                                    )}
                                   </div>
                                 ) : null}
                               </div>
