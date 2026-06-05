@@ -10,6 +10,9 @@ export function useAiStatus() {
   const { data } = useSWR<AIStatus>("/api/v1/ai/status", (url: string) => apiFetch<AIStatus>(url), {
     shouldRetryOnError: false,
     revalidateOnFocus: false,
+    // Surfaces hide on failure; log so a broken /ai/status is triageable in prod.
+    onError: (err) =>
+      console.warn("useAiStatus: /api/v1/ai/status failed; AI surfaces hidden", err),
   });
   return data;
 }

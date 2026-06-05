@@ -103,8 +103,12 @@ export default function AIForecastRefineToggle({
 
   if (!visible || gateBlocked) return null;
 
-  if (forecastAi && !forecastAi.entitled) return null;
-  if (forecastAi && forecastAi.entitled && !forecastAi.configured) {
+  // Fail CLOSED, consistent with the budgets + transactions surfaces: while
+  // useAiStatus() is still resolving (undefined), `!forecastAi?.entitled` is
+  // true, so we render nothing until the gating signal is known (no flash of
+  // the live toggle for non-entitled orgs).
+  if (!forecastAi?.entitled) return null;
+  if (!forecastAi.configured) {
     return (
       <SetUpAiCta
         role={role}
