@@ -8,6 +8,7 @@ import { AIForecastRefinePanel } from "@/components/dashboard/AIForecastRefinePa
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
+import HelpTooltip from "@/components/help/HelpTooltip";
 
 // Friendly copy for the typed backend fallback_reason codes, so the badge
 // never shows a raw code like "ai_response_invalid_schema" to the user.
@@ -156,8 +157,9 @@ export default function AIForecastRefineToggle({
           data-testid="ai-forecast-refine-toggle"
           className="rounded border border-border bg-bg-secondary px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-bg-tertiary disabled:opacity-50"
         >
-          Apply AI refinement
+          Refine forecast with AI
         </button>
+        <HelpTooltip k="ai.forecast" />
       </div>
     );
   }
