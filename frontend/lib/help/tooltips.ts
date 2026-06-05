@@ -161,13 +161,13 @@ export const HELP_TOOLTIPS = {
   },
   "ai.categorize": {
     content:
-      "Suggests a category for this transaction using AI. It only fills the picker, nothing is saved until you save. Uses your connected AI provider.",
+      "Suggests a category for this transaction using AI. It only fills the picker, nothing is saved until you save. Uses your connected AI provider (costs tokens).",
     learnMoreSection: "ai-features",
     triggerLabel: "What does Suggest category do?",
   },
   "ai.budget": {
     content:
-      "Asks the AI to propose budget changes across categories from recent spending. You accept or skip each one. Uses your connected AI provider.",
+      "Asks the AI to propose budget changes across categories from recent spending. You accept or skip each one. Uses your connected AI provider (costs tokens).",
     learnMoreSection: "ai-features",
     triggerLabel: "What does Suggest rebalance do?",
   },
