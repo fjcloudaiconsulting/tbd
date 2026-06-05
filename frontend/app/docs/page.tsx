@@ -36,6 +36,7 @@ const sections = [
   { id: "categories", label: "Categories" },
   { id: "budgets", label: "Budgets" },
   { id: "forecast-plans", label: "Forecast Plans" },
+  { id: "ai-features", label: "AI features" },
   { id: "admin", label: "Admin" },
   { id: "whats-next", label: "What's next" },
 ];
@@ -605,6 +606,41 @@ export default function DocsPage() {
               auto-population while preserving rows you typed yourself.
               See the Forecasts section above for the full mental model
               of plan vs projected vs variance.
+            </p>
+          </section>
+
+          <section>
+            <h2 id="ai-features">AI features</h2>
+            <p>
+              The Better Decision has three optional AI helpers. They are off by default and
+              only run when an org admin has connected an AI provider, because each call uses
+              your provider account and its tokens (which cost money).
+            </p>
+            <h3>Setting up a provider</h3>
+            <p>
+              An org admin opens Settings, then AI providers, and adds a key for OpenAI,
+              Anthropic, Ollama, or an OpenAI-compatible endpoint. Keys are encrypted at rest
+              and never shown again after you save them. Until a provider is connected, each AI
+              action shows a "Set up AI" prompt instead of running.
+            </p>
+            <h3>Auto-categorize (Transactions)</h3>
+            <p>
+              When you edit a transaction, "Suggest category" asks the AI for a category based
+              on the description and amount. It only fills the picker; nothing is saved until
+              you save the transaction.
+            </p>
+            <h3>Refine forecast with AI (Dashboard)</h3>
+            <p>
+              "Refine forecast with AI" layers AI-detected seasonal patterns on top of your
+              baseline forecast. You choose how much history and how many categories to analyze
+              and see the estimated cost before confirming. The result is a preview you can
+              revert; it does not change your saved data.
+            </p>
+            <h3>Suggest rebalance (Budgets)</h3>
+            <p>
+              On the current period, "Suggest rebalance" asks the AI to propose budget changes
+              across categories based on recent spending. You accept or skip each suggestion;
+              nothing changes until you apply it.
             </p>
           </section>
 

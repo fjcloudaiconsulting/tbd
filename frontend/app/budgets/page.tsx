@@ -234,13 +234,16 @@ export default function BudgetsPage() {
           )}
           {isCurrentPeriod && budgets.length > 0 && budgetAi?.entitled && (
             budgetAi.configured ? (
-              <button
-                onClick={() => setRebalanceOpen(true)}
-                className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
-                data-testid="suggest-rebalance-btn"
-              >
-                Suggest rebalance
-              </button>
+              <span className="inline-flex items-center gap-1">
+                <button
+                  onClick={() => setRebalanceOpen(true)}
+                  className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
+                  data-testid="suggest-rebalance-btn"
+                >
+                  Suggest rebalance
+                </button>
+                <HelpTooltip k="ai.budget" />
+              </span>
             ) : (
               <SetUpAiCta
                 role={role}

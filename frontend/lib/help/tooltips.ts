@@ -152,6 +152,26 @@ export const HELP_TOOLTIPS = {
     triggerLabel: "What is a master category here?",
   },
 
+  // AI features
+  "ai.forecast": {
+    content:
+      "Layers AI-detected seasonal patterns on your baseline forecast. Uses your connected AI provider (costs tokens). The result is a preview you can revert.",
+    learnMoreSection: "ai-features",
+    triggerLabel: "What does Refine forecast with AI do?",
+  },
+  "ai.categorize": {
+    content:
+      "Suggests a category for this transaction using AI. It only fills the picker, nothing is saved until you save. Uses your connected AI provider (costs tokens).",
+    learnMoreSection: "ai-features",
+    triggerLabel: "What does Suggest category do?",
+  },
+  "ai.budget": {
+    content:
+      "Asks the AI to propose budget changes across categories from recent spending. You accept or skip each one. Uses your connected AI provider (costs tokens).",
+    learnMoreSection: "ai-features",
+    triggerLabel: "What does Suggest rebalance do?",
+  },
+
   // Dashboard
   "dashboard.on-track": {
     content:

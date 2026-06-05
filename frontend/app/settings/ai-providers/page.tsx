@@ -98,6 +98,16 @@ const PROVIDER_LABELS: Record<Provider, string> = {
   native: "Native (hosted)",
 };
 
+const PROVIDER_DOC_LINKS: Partial<Record<Provider, { href: string; label: string }>> = {
+  openai: { href: "https://platform.openai.com/api-keys", label: "Get an OpenAI API key" },
+  anthropic: { href: "https://console.anthropic.com/settings/keys", label: "Get an Anthropic API key" },
+  ollama: { href: "https://ollama.com/download", label: "Set up Ollama locally" },
+  openai_compatible: {
+    href: "https://platform.openai.com/docs/api-reference",
+    label: "Use an OpenAI-compatible endpoint",
+  },
+};
+
 // Mirrors backend ROUTABLE_FEATURE_NAMES — keep in sync.
 const ROUTABLE_FEATURES: { key: string; label: string }[] = [
   { key: "categorize_transactions", label: "Categorize transactions" },
@@ -458,6 +468,16 @@ function AddCredentialModal({
                 Native hosted provider is coming soon (gated by
                 AI_NATIVE_ENABLED).
               </p>
+            )}
+            {PROVIDER_DOC_LINKS[provider] && (
+              <a
+                href={PROVIDER_DOC_LINKS[provider]!.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 inline-block text-xs text-text-secondary underline hover:text-text-primary"
+              >
+                {PROVIDER_DOC_LINKS[provider]!.label}
+              </a>
             )}
           </div>
           <div>
