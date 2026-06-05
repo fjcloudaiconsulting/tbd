@@ -10,7 +10,20 @@ vi.mock("@/lib/api", async () => {
   return { ...actual, apiFetch: vi.fn() };
 });
 
+vi.mock("@/lib/hooks/use-ai-status", () => ({
+  useAiStatus: vi.fn(() => ({
+    forecast: { entitled: true, configured: true },
+    categorize: { entitled: true, configured: true },
+    budget: { entitled: true, configured: true },
+  })),
+}));
+
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: vi.fn(() => ({ user: { role: "owner" } })),
+}));
+
 import { apiFetch, ApiResponseError } from "@/lib/api";
+import { useAiStatus } from "@/lib/hooks/use-ai-status";
 
 const mockedFetch = apiFetch as unknown as ReturnType<typeof vi.fn>;
 
@@ -224,5 +237,20 @@ describe("AIForecastRefineToggle - visibility prop", () => {
       <AIForecastRefineToggle periodStart="2026-05-01" visible={false} />,
     );
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("AIForecastRefineToggle - AI status gating", () => {
+  it("shows Set up AI CTA (not the toggle) when entitled but not configured", () => {
+    (useAiStatus as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      forecast: { entitled: true, configured: false },
+      categorize: { entitled: true, configured: true },
+      budget: { entitled: true, configured: true },
+    });
+
+    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
+
+    expect(screen.queryByTestId("ai-forecast-refine-toggle")).toBeNull();
+    expect(screen.getByText(/set up ai/i)).toBeInTheDocument();
   });
 });

@@ -54,3 +54,12 @@ vi.mock("@/components/notifications/NotificationBell", () => ({
   __esModule: true,
   default: () => null,
 }));
+
+// Same reasoning: AI surfaces call ``useAiStatus`` which fires
+// ``GET /api/v1/ai/status`` via SWR. Default it to ``undefined`` (status
+// unresolved -> AI affordances stay hidden) so ad-hoc ``mockResolvedValueOnce``
+// queues aren't consumed by the status call. Tests that exercise the gating
+// (budgets-ai-gate, ai-forecast-refine-toggle) declare their own ``vi.mock``.
+vi.mock("@/lib/hooks/use-ai-status", () => ({
+  useAiStatus: () => undefined,
+}));

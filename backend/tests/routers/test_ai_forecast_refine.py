@@ -274,12 +274,11 @@ async def test_feature_gate_closed_returns_403(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_no_routing_falls_back_to_baseline(session_factory):
-    """Feature gate open + no AI routing -> baseline with typed reason.
+async def test_no_routing_returns_412(session_factory):
+    """Feature gate open + no AI routing -> 412 ai_provider_not_configured.
 
-    The service must NOT 5xx when routing is missing; it must return
-    the baseline forecast with provenance.ai_applied=False so the UI
-    keeps rendering something useful.
+    The contract changed: missing routing is now a precondition the
+    route enforces (412) rather than a graceful service-level fallback.
     """
     seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
 
@@ -292,14 +291,9 @@ async def test_no_routing_falls_back_to_baseline(session_factory):
         "/api/v1/ai/forecast/refine",
         json={"period_start": seed["period_start"]},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 412, resp.text
     body = resp.json()
-    assert body["provenance"]["ai_applied"] is False
-    assert body["provenance"]["fallback_reason"] == "ai_routing_not_configured"
-    # Baseline still computed correctly.
-    assert body["baseline_forecast_expense"] == body["refined_forecast_expense"]
-    # The seeded category appears in the response with multiplier=1.0.
-    assert any(c["category_id"] == seed["category_id"] for c in body["categories"])
+    assert body["detail"]["code"] == "ai_provider_not_configured"
 
 
 @pytest.mark.asyncio
@@ -353,6 +347,9 @@ async def test_happy_path_applies_multiplier(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         return_value=fake_response,
     ):
@@ -421,6 +418,9 @@ async def test_out_of_band_multiplier_is_clamped_not_rejected(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         return_value=fake_response,
     ):
@@ -450,6 +450,9 @@ async def test_structured_output_exhausted_falls_back(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         side_effect=StructuredOutputError(),
     ):
@@ -541,6 +544,9 @@ async def test_audit_row_written_on_success(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         return_value=fake_response,
     ):
@@ -563,10 +569,12 @@ async def test_audit_row_written_on_success(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_audit_row_user_state_preconditions_are_success(session_factory):
-    """No-routing / cap-exceeded / insufficient-history are clean
-    preconditions, not system failures. The audit outcome must be
-    'success' for those so ops dashboards aren't polluted with noise."""
+async def test_no_routing_412_writes_no_audit_row(session_factory):
+    """No routing configured → route raises 412 before any audit write.
+
+    The precondition check short-circuits before the service + audit
+    path, so no audit row should be written.
+    """
     seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
 
     async def resolver(_factory):
@@ -574,21 +582,15 @@ async def test_audit_row_user_state_preconditions_are_success(session_factory):
 
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
-    # No routing configured by default in the seed → service returns
-    # 'ai_routing_not_configured', a precondition.
     resp = client.post(
         "/api/v1/ai/forecast/refine",
         json={"period_start": seed["period_start"]},
     )
-    assert resp.status_code == 200
-    assert resp.json()["provenance"]["fallback_reason"] == "ai_routing_not_configured"
+    assert resp.status_code == 412
+    assert resp.json()["detail"]["code"] == "ai_provider_not_configured"
 
     rows = await _audit_rows(session_factory)
-    assert len(rows) == 1
-    assert rows[0].outcome.value == "success", (
-        "ai_routing_not_configured is a user-state precondition, not a system failure"
-    )
-    assert (rows[0].detail or {}).get("fallback_reason") == "ai_routing_not_configured"
+    assert len(rows) == 0, "412 precondition fires before audit — no row expected"
 
 
 @pytest.mark.asyncio
@@ -603,6 +605,9 @@ async def test_audit_row_system_failure_marks_failure(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         side_effect=StructuredOutputError(),
     ):
@@ -635,6 +640,9 @@ async def test_native_not_available_falls_back_to_baseline(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         side_effect=NativeNotAvailable(),
     ):
@@ -661,6 +669,9 @@ async def test_cap_exceeded_falls_back_to_baseline(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         side_effect=AICapExceeded(),
     ):
@@ -685,6 +696,9 @@ async def test_dispatch_failed_falls_back_with_code(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         side_effect=AIDispatchFailed("connection_error"),
     ):
@@ -709,6 +723,9 @@ async def test_capability_not_supported_falls_back(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         side_effect=AICapabilityNotSupported(
             capability="structured_output",
@@ -785,20 +802,48 @@ async def test_estimate_endpoint_returns_200_on_unexpected_error(session_factory
 async def test_refine_accepts_timeframe_scope_and_audits_them(session_factory):
     """POST /refine with timeframe_months=12 and scope='top_10' must pass those
     params into the service and write them into the audit detail row.
+
+    Routing is mocked to return a valid routing so the precondition
+    passes and the happy-path (with a mocked dispatch) is exercised.
     """
     seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
 
     async def resolver(_factory):
         return await _get_user(session_factory, seed["owner_id"])
 
+    from app.services.ai_providers.base import StructuredResponse
+    from app.services.ai_dispatch import StructuredDispatchResult
+
+    fake_response = StructuredDispatchResult(
+        response=StructuredResponse(
+            parsed={
+                "seasonal": [],
+                "anomalies": [],
+                "confidence": 0.8,
+                "summary": "ok",
+            },
+            raw_text="{}",
+            prompt_tokens=1,
+            completion_tokens=1,
+            model="m",
+            retries_used=0,
+        ),
+        ledger_id=1,
+    )
+
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
-    # No routing configured → baseline fallback, but the params are still
-    # threaded through and the audit row is still written.
-    resp = client.post(
-        "/api/v1/ai/forecast/refine",
-        json={"timeframe_months": 12, "scope": "top_10"},
-    )
+    with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
+        "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
+        return_value=fake_response,
+    ):
+        resp = client.post(
+            "/api/v1/ai/forecast/refine",
+            json={"timeframe_months": 12, "scope": "top_10"},
+        )
     assert resp.status_code == 200, resp.text
 
     rows = await _audit_rows(session_factory)
@@ -876,6 +921,9 @@ async def test_endpoint_never_mutates_user_data_tables(session_factory):
     app = _make_app(session_factory, resolver)
     client = TestClient(app)
     with patch(
+        "app.routers.ai_forecast.ai_routing_service.get_routing_for_feature",
+        return_value=(1, "claude-test"),
+    ), patch(
         "app.services.ai_forecast_refine_service.ai_dispatch.call_llm_structured",
         return_value=fake_response,
     ):
@@ -892,3 +940,29 @@ async def test_endpoint_never_mutates_user_data_tables(session_factory):
         "POST /refine must NOT mutate Transaction / Category / Budget rows; "
         "this feature is suggestion-only by contract."
     )
+
+
+# ---------- 412 no-provider precondition --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_refine_returns_412_when_no_provider_configured(session_factory):
+    """Feature gate open + no routing configured -> 412 ai_provider_not_configured.
+
+    The route must short-circuit with HTTP 412 before calling the service so
+    the user gets a clear actionable error rather than a silent baseline.
+    """
+    seed = await _seed_org_with_data(session_factory, enable_ai_forecast=True)
+
+    async def resolver(_f):
+        return await _get_user(session_factory, seed["owner_id"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    # No routing configured for this org -> precondition fails.
+    resp = client.post(
+        "/api/v1/ai/forecast/refine",
+        json={"timeframe_months": 6, "scope": "top_20"},
+    )
+    assert resp.status_code == 412
+    assert resp.json()["detail"]["code"] == "ai_provider_not_configured"

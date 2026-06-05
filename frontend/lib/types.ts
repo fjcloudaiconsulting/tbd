@@ -796,3 +796,7 @@ export interface RateLimitOverrideListResponse {
   total: number;
 }
 
+// AI readiness gating — PR1
+export interface AIFeatureState { entitled: boolean; configured: boolean }
+export interface AIStatus { categorize: AIFeatureState; forecast: AIFeatureState; budget: AIFeatureState }
+

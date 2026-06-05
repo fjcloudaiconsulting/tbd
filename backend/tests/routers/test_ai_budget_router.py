@@ -160,6 +160,9 @@ def test_feature_gate_open_returns_typed_response(
         suggestions=[],
     )
     with patch(
+        "app.routers.ai_budget.ai_routing_service.get_routing_for_feature",
+        new=AsyncMock(return_value=(1, "claude-test")),
+    ), patch(
         "app.services.budget_rebalance_service.suggest_rebalance",
         new=AsyncMock(return_value=fake),
     ):
@@ -175,6 +178,10 @@ def test_feature_gate_open_returns_typed_response(
 def test_llm_unavailable_response_still_returns_200(
     session_factory, org_and_user
 ):
+    """llm_unavailable (runtime dispatch failure) returns 200 — the
+    routing precondition passed, so the route reached the service.
+    This pins the contract that only pre-configured routing is 412;
+    a runtime dispatch failure is still a graceful 200 empty-state."""
     org, user = org_and_user
     app = _make_app(
         session_factory,
@@ -192,6 +199,9 @@ def test_llm_unavailable_response_still_returns_200(
         summary="AI rebalance is temporarily unavailable.",
     )
     with patch(
+        "app.routers.ai_budget.ai_routing_service.get_routing_for_feature",
+        new=AsyncMock(return_value=(1, "claude-test")),
+    ), patch(
         "app.services.budget_rebalance_service.suggest_rebalance",
         new=AsyncMock(return_value=fake),
     ):
@@ -227,6 +237,9 @@ def test_audit_row_written_with_outcome_and_count(
         suggestions=[],  # empty but ok status is success outcome
     )
     with patch(
+        "app.routers.ai_budget.ai_routing_service.get_routing_for_feature",
+        new=AsyncMock(return_value=(1, "claude-test")),
+    ), patch(
         "app.services.budget_rebalance_service.suggest_rebalance",
         new=AsyncMock(return_value=fake),
     ):
@@ -278,6 +291,9 @@ def test_audit_row_on_llm_unavailable_is_failure(
         summary="AI temporarily unavailable.",
     )
     with patch(
+        "app.routers.ai_budget.ai_routing_service.get_routing_for_feature",
+        new=AsyncMock(return_value=(1, "claude-test")),
+    ), patch(
         "app.services.budget_rebalance_service.suggest_rebalance",
         new=AsyncMock(return_value=fake),
     ):
@@ -329,6 +345,9 @@ def test_audit_row_on_empty_no_budgets_is_success(
         summary="No budgets are set.",
     )
     with patch(
+        "app.routers.ai_budget.ai_routing_service.get_routing_for_feature",
+        new=AsyncMock(return_value=(1, "claude-test")),
+    ), patch(
         "app.services.budget_rebalance_service.suggest_rebalance",
         new=AsyncMock(return_value=fake),
     ):
@@ -430,6 +449,9 @@ def test_endpoint_never_mutates_budgets_table(
         ],
     )
     with patch(
+        "app.routers.ai_budget.ai_routing_service.get_routing_for_feature",
+        new=AsyncMock(return_value=(1, "claude-test")),
+    ), patch(
         "app.services.budget_rebalance_service.suggest_rebalance",
         new=AsyncMock(return_value=fake),
     ):
@@ -451,3 +473,33 @@ def test_endpoint_never_mutates_budgets_table(
         "POST /rebalance must NEVER mutate the budgets table; "
         f"before={before}, after={after}"
     )
+
+
+# ---------- 412 no-provider precondition --------------------------------
+
+
+def test_rebalance_returns_412_when_no_provider_configured(
+    session_factory, org_and_user
+):
+    """Feature gate open + no routing configured -> 412 ai_provider_not_configured.
+
+    The route must short-circuit with HTTP 412 before invoking the
+    service, so an org that hasn't wired up an AI provider gets a
+    clear actionable error.
+    """
+    _, user = org_and_user
+    app = _make_app(
+        session_factory,
+        features={
+            "ai.budget": True,
+            "ai.forecast": False,
+            "ai.smart_plan": False,
+            "ai.autocategorize": False,
+        },
+        user=user,
+    )
+    # No routing row seeded for this org → precondition fires.
+    client = TestClient(app)
+    res = client.post("/api/v1/ai/budget/rebalance")
+    assert res.status_code == 412
+    assert res.json()["detail"]["code"] == "ai_provider_not_configured"
