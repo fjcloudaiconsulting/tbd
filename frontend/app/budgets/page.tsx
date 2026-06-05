@@ -17,6 +17,8 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
+import { useAiStatus } from "@/lib/hooks/use-ai-status";
+import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
 
 export default function BudgetsPage() {
@@ -51,6 +53,10 @@ export default function BudgetsPage() {
   // and never auto-applies; user accept/skip per row, then Apply
   // writes via existing PUT /budgets/{id}.
   const [rebalanceOpen, setRebalanceOpen] = useState(false);
+
+  const ai = useAiStatus();
+  const budgetAi = ai?.budget;
+  const role = user?.role ?? null;
 
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
@@ -226,14 +232,21 @@ export default function BudgetsPage() {
               From Forecast
             </button>
           )}
-          {isCurrentPeriod && budgets.length > 0 && (
-            <button
-              onClick={() => setRebalanceOpen(true)}
-              className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
-              data-testid="suggest-rebalance-btn"
-            >
-              Suggest rebalance
-            </button>
+          {isCurrentPeriod && budgets.length > 0 && budgetAi?.entitled && (
+            budgetAi.configured ? (
+              <button
+                onClick={() => setRebalanceOpen(true)}
+                className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
+                data-testid="suggest-rebalance-btn"
+              >
+                Suggest rebalance
+              </button>
+            ) : (
+              <SetUpAiCta
+                role={role}
+                className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
+              />
+            )
           )}
           {isCurrentPeriod && availableCategories.length > 0 && (
             <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} sm:min-h-0`}>

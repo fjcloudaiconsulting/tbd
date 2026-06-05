@@ -16,7 +16,7 @@ instead of crashing.
 from __future__ import annotations
 
 import structlog
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.feature_deps import require_feature
@@ -25,7 +25,12 @@ from app.deps import get_current_user, get_session_factory
 from app.models.user import User
 from app.rate_limit import get_client_ip
 from app.schemas.budget_rebalance import BudgetRebalanceResponse
-from app.services import audit_service, budget_rebalance_service
+from app.services import ai_routing_service, audit_service, budget_rebalance_service
+from app.services.ai_feature_map import ui_to_routing
+
+# Source the routing name from the canonical map so it can't drift from the
+# entitlement/UI mapping (budget_rebalance_service exposes no ROUTING_KEY).
+_ROUTING_KEY = ui_to_routing("budget")
 
 
 logger = structlog.stdlib.get_logger()
@@ -60,6 +65,18 @@ async def rebalance(
     Audit-logged with the structural outcome + suggestion count only;
     no prompt / completion content, no category names.
     """
+    routing = await ai_routing_service.get_routing_for_feature(
+        db, org_id=current_user.org_id, feature_name=_ROUTING_KEY
+    )
+    if routing is None:
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail={
+                "code": "ai_provider_not_configured",
+                "message": "Configure an AI provider to use this feature.",
+            },
+        )
+
     response = await budget_rebalance_service.suggest_rebalance(
         db,
         org_id=current_user.org_id,

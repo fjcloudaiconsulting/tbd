@@ -67,7 +67,14 @@ from app.services.transaction_filters import reportable_transaction_filter
 logger = structlog.stdlib.get_logger()
 
 
-FEATURE_KEY = "ai.budget"
+# The dispatch feature_key MUST be the routable name (``smart_budget``), NOT the
+# entitlement key (``ai.budget``) — same convention as forecast (``smart_forecast``)
+# and categorize (``categorize_transactions``). ``call_llm_structured`` uses this
+# for routing lookup + cap/ledger accounting; using the entitlement key here would
+# silently ignore a per-feature ``smart_budget`` routing override and disagree with
+# the /ai/status gating signal. The 403 entitlement gate (``ai.budget``) lives in
+# the router via ``require_feature``.
+ROUTING_KEY = "smart_budget"
 
 
 # The structured-output schema the LLM must satisfy. ``call_llm_structured``
@@ -416,7 +423,7 @@ async def suggest_rebalance(
                 result = await call_llm_structured(
                     dispatch_db,
                     org_id=org_id,
-                    feature_key=FEATURE_KEY,
+                    feature_key=ROUTING_KEY,
                     messages=messages,
                     response_schema=LLM_RESPONSE_SCHEMA,
                 )
@@ -424,7 +431,7 @@ async def suggest_rebalance(
             result = await call_llm_structured(
                 db,
                 org_id=org_id,
-                feature_key=FEATURE_KEY,
+                feature_key=ROUTING_KEY,
                 messages=messages,
                 response_schema=LLM_RESPONSE_SCHEMA,
             )
