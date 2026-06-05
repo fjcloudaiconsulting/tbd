@@ -1445,11 +1445,14 @@ function TransactionsPageContent() {
                               {categorizeAi?.entitled && !editPartner ? (
                                 <div className="mt-1">
                                   {categorizeAi.configured ? (
-                                    <SuggestCategoryButton
-                                      transactionId={tx.id}
-                                      onSuggested={(s) => setEditCategoryId(s.category_id)}
-                                      testIdPrefix={`ai-suggest-${tx.id}`}
-                                    />
+                                    <span className="inline-flex items-center gap-1">
+                                      <SuggestCategoryButton
+                                        transactionId={tx.id}
+                                        onSuggested={(s) => setEditCategoryId(s.category_id)}
+                                        testIdPrefix={`ai-suggest-${tx.id}`}
+                                      />
+                                      <HelpTooltip k="ai.categorize" />
+                                    </span>
                                   ) : (
                                     <SetUpAiCta
                                       role={role}
@@ -1753,11 +1756,14 @@ function TransactionsPageContent() {
                                 {categorizeAi?.entitled && !editPartner ? (
                                   <div className="mt-1">
                                     {categorizeAi.configured ? (
-                                      <SuggestCategoryButton
-                                        transactionId={tx.id}
-                                        onSuggested={(s) => setEditCategoryId(s.category_id)}
-                                        testIdPrefix={`ai-suggest-mobile-${tx.id}`}
-                                      />
+                                      <span className="inline-flex items-center gap-1">
+                                        <SuggestCategoryButton
+                                          transactionId={tx.id}
+                                          onSuggested={(s) => setEditCategoryId(s.category_id)}
+                                          testIdPrefix={`ai-suggest-mobile-${tx.id}`}
+                                        />
+                                        <HelpTooltip k="ai.categorize" />
+                                      </span>
                                     ) : (
                                       <SetUpAiCta
                                         role={role}

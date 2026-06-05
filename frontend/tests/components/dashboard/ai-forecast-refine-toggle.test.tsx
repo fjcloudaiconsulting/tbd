@@ -93,7 +93,7 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
     render(<AIForecastRefineToggle periodStart="2026-05-01" />);
     const button = screen.getByTestId("ai-forecast-refine-toggle");
     expect(button).toBeInTheDocument();
-    expect(button.textContent).toContain("Apply AI refinement");
+    expect(button.textContent).toContain("Refine forecast with AI");
 
     fireEvent.click(button);
 
