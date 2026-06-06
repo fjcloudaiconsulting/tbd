@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import TransactionForm from "@/components/floating/TransactionForm";
 import { apiFetch } from "@/lib/api";
+import { todayISO } from "@/lib/format";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -788,5 +789,217 @@ describe("TransactionForm", () => {
         (init as RequestInit | undefined)?.method === "POST",
     );
     expect(basePosts).toHaveLength(1);
+  });
+
+  it("surfaces both tag AND recurring partial-success failures in a single warning", async () => {
+    // The parent (AppShellAddTransactionCta) stores a single warning string,
+    // so a second onWarning call would overwrite the first. When BOTH the tag
+    // attach and the promote-to-recurring fail, the component must emit ONE
+    // combined warning so the user sees both problems.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+
+    const onWarning = vi.fn();
+
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      if (url === "/api/v1/transactions/42/tags") {
+        throw new Error("tag attach failed");
+      }
+      if (url === "/api/v1/transactions/42/promote-to-recurring") {
+        throw new Error("recurring setup failed");
+      }
+      return {} as never;
+    });
+
+    const { container } = render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+        onWarning={onWarning}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+    const tagInput = container.querySelector(
+      "#fab-tx-tags",
+    ) as HTMLInputElement;
+    fireEvent.change(tagInput, { target: { value: "rent" } });
+    fireEvent.keyDown(tagInput, { key: "Enter" });
+    fireEvent.click(screen.getByLabelText("Repeats"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    // Exactly ONE warning call, containing BOTH failure messages.
+    await waitFor(() => {
+      expect(onWarning).toHaveBeenCalledTimes(1);
+    });
+    expect(onWarning.mock.calls[0][0]).toMatch(/tag attach failed/);
+    expect(onWarning.mock.calls[0][0]).toMatch(/recurring schedule/);
+  });
+
+  it("promotes the new transaction to recurring when Repeats is on", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      return {} as never;
+    });
+
+    render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+    fireEvent.click(screen.getByLabelText("Repeats"));
+    fireEvent.change(screen.getByLabelText("Frequency"), {
+      target: { value: "monthly" },
+    });
+    fireEvent.click(screen.getByLabelText("Auto-settle"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => {
+      expect(postCalls(apiFetchMock)).toHaveLength(1);
+    });
+
+    const promoteCalls = apiFetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/v1/transactions/42/promote-to-recurring" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(promoteCalls).toHaveLength(1);
+    const promoteBody = JSON.parse(
+      String((promoteCalls[0][1] as RequestInit | undefined)?.body),
+    );
+    expect(promoteBody.frequency).toBe("monthly");
+    expect(promoteBody.auto_settle).toBe(true);
+    expect(promoteBody.next_due_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    // Recurring is set up via promote-to-recurring (which links the source
+    // row's recurring_id), NOT the legacy standalone POST /recurring that
+    // left the source row unlinked and re-created a duplicate template on
+    // a later edit. Guard against regressing to that path.
+    const legacyRecurringCalls = apiFetchMock.mock.calls.filter(
+      ([url]) => String(url) === "/api/v1/recurring",
+    );
+    expect(legacyRecurringCalls).toHaveLength(0);
+  });
+
+  it("bumps a back-dated recurring next_due_date forward to today", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      return {} as never;
+    });
+
+    render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+    // Back-date the transaction; the recurring next_due_date must still be
+    // today-or-later (server guard), so it should be bumped to today.
+    fireEvent.change(screen.getByLabelText("Date"), {
+      target: { value: "2020-01-01" },
+    });
+    fireEvent.click(screen.getByLabelText("Repeats"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => {
+      expect(postCalls(apiFetchMock)).toHaveLength(1);
+    });
+
+    const promoteCalls = apiFetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/v1/transactions/42/promote-to-recurring" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(promoteCalls).toHaveLength(1);
+    const promoteBody = JSON.parse(
+      String((promoteCalls[0][1] as RequestInit | undefined)?.body),
+    );
+    expect(promoteBody.next_due_date).toBe(todayISO());
+  });
+
+  it("does not promote when Repeats is off", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      return {} as never;
+    });
+
+    render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => {
+      expect(postCalls(apiFetchMock)).toHaveLength(1);
+    });
+
+    const promoteCalls = apiFetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/promote-to-recurring"),
+    );
+    expect(promoteCalls).toHaveLength(0);
   });
 });

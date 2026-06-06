@@ -1,5 +1,5 @@
 import React from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -310,100 +310,6 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
         screen.queryByRole("button", { name: /Unlink transfer: Solo tx/i }),
       ).toBeNull();
     });
-  });
-
-  it("inline new-transaction form: PUT /tags failure stays as partial success (no duplicate POST)", async () => {
-    // Regression for PR #326 review: when the user adds a chip-managed
-    // tag and the PUT /tags call fails after the base POST succeeded,
-    // the form must reset (preventing a re-POST of the same base on
-    // the next Save click) and surface a non-blocking partial-success
-    // warning via the existing setError channel (same channel the
-    // promote-to-recurring partial-success uses).
-    const apiFetchMock = vi.mocked(apiFetch);
-    apiFetchMock.mockReset();
-
-    apiFetchMock.mockImplementation(
-      async (url: string, init?: RequestInit) => {
-        if (url.startsWith("/api/v1/accounts")) return [ACCT_A, ACCT_B] as never;
-        if (url.startsWith("/api/v1/categories"))
-          return [CATEGORY_GROCERIES] as never;
-        if (url.startsWith("/api/v1/settings/billing-periods"))
-          return [] as never;
-        if (
-          url === "/api/v1/transactions" &&
-          init?.method === "POST"
-        ) {
-          return { id: 99 } as never;
-        }
-        if (url === "/api/v1/transactions/99/tags") {
-          throw new Error("tag attach failed");
-        }
-        if (url.startsWith("/api/v1/transactions"))
-          return { items: [], total: 0, limit: 25, offset: 0 } as never;
-        return null as never;
-      },
-    );
-
-    const { container } = render(<TransactionsPage />);
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /\+ New Transaction/i }),
-      ).toBeInTheDocument();
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: /\+ New Transaction/i }),
-    );
-
-    // Fill the inline form.
-    await waitFor(() => {
-      expect(document.getElementById("tx-desc")).not.toBeNull();
-    });
-    const descEl = document.getElementById("tx-desc") as HTMLInputElement;
-    fireEvent.change(descEl, { target: { value: "Grocery run" } });
-    fireEvent.change(document.getElementById("tx-amount") as HTMLInputElement, {
-      target: { value: "12.34" },
-    });
-    // Add a tag chip so the PUT /tags arm fires.
-    const tagInput = container.querySelector(
-      "#tx-tags",
-    ) as HTMLInputElement;
-    fireEvent.change(tagInput, { target: { value: "rent" } });
-    fireEvent.keyDown(tagInput, { key: "Enter" });
-
-    // Submit (the form's onSubmit). Use the Save button.
-    const saveBtn = screen.getByRole("button", { name: /^Add Transaction$/i });
-    await act(async () => {
-      fireEvent.click(saveBtn);
-    });
-
-    // The base POST happened exactly once.
-    const basePosts = apiFetchMock.mock.calls.filter(
-      ([url, init]) =>
-        url === "/api/v1/transactions" &&
-        (init as RequestInit | undefined)?.method === "POST",
-    );
-    expect(basePosts).toHaveLength(1);
-
-    // The PUT /tags attempt happened (and failed).
-    const tagPuts = apiFetchMock.mock.calls.filter(
-      ([url, init]) =>
-        url === "/api/v1/transactions/99/tags" &&
-        (init as RequestInit | undefined)?.method === "PUT",
-    );
-    expect(tagPuts).toHaveLength(1);
-
-    // The partial-success warning surfaced via the existing setError
-    // channel. We assert by text rather than role to match the same
-    // banner the promote-to-recurring partial-success uses.
-    await waitFor(() => {
-      expect(
-        screen.getByText(/Transaction saved\. Tags couldn't be applied/),
-      ).toBeInTheDocument();
-    });
-
-    // The form has been reset (showForm=false hides the form), so a
-    // subsequent Save click cannot re-POST the same base transaction.
-    expect(screen.queryByRole("button", { name: /^Add Transaction$/i })).toBeNull();
   });
 
   it("Per-row Mark as transfer button shown on un-linked rows only", async () => {
