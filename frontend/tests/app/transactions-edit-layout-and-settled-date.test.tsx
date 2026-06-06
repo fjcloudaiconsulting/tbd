@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -162,6 +162,78 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
     expect(desktopType?.tagName).toBe("SELECT");
     const typeLabels = Array.from(desktopType!.options).map((o) => o.textContent);
     expect(typeLabels).toEqual(["Expense", "Income"]);
+  });
+
+  it("edit category picker on a transfer row lists only both-type categories", async () => {
+    // A transfer's shared category must be a `both`-type category (the
+    // backend rejects income/expense-only categories on transfer legs).
+    // The edit picker on a transfer row must therefore offer only
+    // `both`-type categories, hiding the income- and expense-only ones.
+    const CAT_EXPENSE = {
+      id: 11, name: "Groceries", type: "expense" as const,
+      parent_id: null, parent_name: null, description: null,
+      slug: "groceries", is_system: false, transaction_count: 0,
+    };
+    const CAT_INCOME = {
+      id: 12, name: "Salary", type: "income" as const,
+      parent_id: null, parent_name: null, description: null,
+      slug: "salary", is_system: false, transaction_count: 0,
+    };
+    const CAT_BOTH = {
+      id: 13, name: "Transfer", type: "both" as const,
+      parent_id: null, parent_name: null, description: null,
+      slug: "transfer", is_system: false, transaction_count: 0,
+    };
+
+    // Transfer pair: the lower-id leg (200) is the single visible row; the
+    // higher-id leg (201) is hidden but present in the list so startEdit can
+    // resolve the partner synchronously and set editPartner.
+    const visibleLeg = makeTx({
+      id: 200, description: "Move money",
+      category_id: CAT_BOTH.id, category_name: CAT_BOTH.name,
+      type: "expense", linked_transaction_id: 201,
+    });
+    const hiddenLeg = makeTx({
+      id: 201, description: "Move money",
+      category_id: CAT_BOTH.id, category_name: CAT_BOTH.name,
+      type: "income", linked_transaction_id: 200,
+    });
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
+      if (url.startsWith("/api/v1/categories"))
+        return [CAT_EXPENSE, CAT_INCOME, CAT_BOTH] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+      if (url.startsWith("/api/v1/transactions") && method === "GET")
+        return { items: [visibleLeg, hiddenLeg], total: 2, limit: 25, offset: 0 } as never;
+      return null as never;
+    });
+
+    render(<TransactionsPage />);
+
+    await waitForStableTxList();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+
+    // Open the desktop transfer-row category combobox by focusing its input.
+    // Both desktop + mobile CategorySelects render in jsdom; target the
+    // desktop one by its id.
+    const combos = await screen.findAllByRole("combobox", { name: "Category" });
+    const combo = combos.find((c) => c.id === "edit-cat-200") as HTMLInputElement;
+    expect(combo).toBeTruthy();
+    fireEvent.focus(combo);
+
+    // Scope option assertions to the desktop picker's listbox so the mobile
+    // picker (still closed) can't affect the result.
+    const listbox = await screen.findByRole("listbox");
+    const optionNames = within(listbox)
+      .getAllByRole("option")
+      .map((o) => o.textContent ?? "");
+    expect(optionNames.some((n) => /Transfer/.test(n))).toBe(true);
+    expect(optionNames.some((n) => /Groceries/.test(n))).toBe(false);
+    expect(optionNames.some((n) => /Salary/.test(n))).toBe(false);
   });
 
   it("desktop edit form Save/Cancel meet the 44px touch-target floor", async () => {
