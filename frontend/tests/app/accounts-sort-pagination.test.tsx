@@ -221,9 +221,15 @@ describe("AccountsPage — page clamping when row count shrinks", () => {
     }) as never);
 
     // Delete the first row visible on page 2 (Acct 025, id=125).
-    // The row's delete button has aria-label "Delete Acct 025".
-    const deleteBtn = screen.getByRole("button", { name: /Delete Acct 025/ });
-    fireEvent.click(deleteBtn);
+    // Delete now lives in the per-row "..." overflow menu, so open it
+    // first, then click the Delete menu item (aria-label "Delete Acct 025").
+    fireEvent.click(
+      screen.getByRole("button", { name: /More actions for Acct 025/ }),
+    );
+    const deleteItem = await screen.findByRole("menuitem", {
+      name: /Delete Acct 025/,
+    });
+    fireEvent.click(deleteItem);
 
     // ConfirmModal appears — click its Delete confirmation button (last "Delete").
     await screen.findByText(/Delete this account/);
