@@ -8,12 +8,16 @@ describe("sitemap.ts", () => {
     expect(urls).toContain("/docs/plans");
   });
 
-  it("preserves the original 5 public URLs", () => {
+  it("lists the public URLs", () => {
     const urls = sitemap().map((entry) => new URL(entry.url).pathname);
     expect(urls).toContain("/");
-    expect(urls).toContain("/login");
     expect(urls).toContain("/register");
     expect(urls).toContain("/privacy");
     expect(urls).toContain("/terms");
+  });
+
+  it("omits /login (noindex, see app/login/page.tsx)", () => {
+    const urls = sitemap().map((entry) => new URL(entry.url).pathname);
+    expect(urls).not.toContain("/login");
   });
 });

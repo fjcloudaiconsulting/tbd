@@ -2,21 +2,22 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
-import { pageSocialMeta, siteName } from "@/lib/site";
+import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
 
 const description =
   "How the Plans simulation sandbox works: plan types, verdict colors, the math, and the contribution curve.";
 
+// Canonicalize to the apex host (served on both apex and app subdomain).
 export const metadata: Metadata = {
   title: "Plans guide",
   description,
   alternates: {
-    canonical: "/docs/plans",
+    canonical: apexCanonical("/docs/plans"),
   },
   ...pageSocialMeta({
     title: `Plans guide · ${siteName}`,
     description,
-    path: "/docs/plans",
+    path: apexCanonical("/docs/plans"),
   }),
   robots: { index: true, follow: true },
 };
