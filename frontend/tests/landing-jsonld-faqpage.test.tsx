@@ -21,22 +21,35 @@ vi.mock("next/navigation", () => ({
 }));
 
 describe("landing JSON-LD", () => {
-  it("renders SoftwareApplication and FAQPage blocks", async () => {
+  it("renders Organization, WebSite, SoftwareApplication, HowTo and FAQPage blocks", async () => {
     const ui = await LandingPage();
     const { container } = render(ui as React.ReactElement);
     const scripts = Array.from(
       container.querySelectorAll('script[type="application/ld+json"]'),
     );
-    expect(scripts.length).toBeGreaterThanOrEqual(2);
+    expect(scripts.length).toBeGreaterThanOrEqual(5);
 
     const parsed = scripts.map((s) => JSON.parse(s.textContent ?? "{}"));
     const types = parsed.map((p) => p["@type"]);
+    expect(types).toContain("Organization");
+    expect(types).toContain("WebSite");
     expect(types).toContain("SoftwareApplication");
+    expect(types).toContain("HowTo");
     expect(types).toContain("FAQPage");
 
+    // SoftwareApplication and WebSite reference the standalone Organization
+    // node by @id, so the entity resolves to a single canonical node.
+    const org = parsed.find((p) => p["@type"] === "Organization");
+    expect(org["@id"]).toBeDefined();
     const software = parsed.find((p) => p["@type"] === "SoftwareApplication");
-    expect(software.author).toBeDefined();
-    expect(software.publisher).toBeDefined();
+    expect(software.author).toEqual({ "@id": org["@id"] });
+    expect(software.publisher).toEqual({ "@id": org["@id"] });
+
+    // HowTo steps mirror the rendered "how it works" section.
+    const howTo = parsed.find((p) => p["@type"] === "HowTo");
+    expect(Array.isArray(howTo.step)).toBe(true);
+    expect(howTo.step.length).toBe(3);
+    expect(howTo.step[0]["@type"]).toBe("HowToStep");
   });
 
   it("FAQPage mainEntity mirrors the rendered FAQ entries", async () => {

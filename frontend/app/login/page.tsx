@@ -15,7 +15,10 @@ export const metadata: Metadata = {
     description,
     path: "/login",
   }),
-  robots: { index: true, follow: true },
+  // A bare sign-in form has no search value and would only dilute the
+  // index. Keep it crawlable (follow) so the noindex is seen, but out of
+  // the index. /register stays indexable as a signup entry point.
+  robots: { index: false, follow: true },
 };
 
 export default function LoginPage() {

@@ -116,9 +116,19 @@ describe("apex build target — scripts/build-apex.sh", () => {
       "docs",
       "_next",
       "_meta.json",
+      // Static social-share image copied from public/og.png. Must be on
+      // the output allowlist or the post-build guard rejects it.
+      "og.png",
     ]) {
       expect(script).toContain(`"${allowed}"`);
     }
+  });
+
+  it("lists /docs/plans in the apex sitemap", () => {
+    // /docs/plans ships to the apex (it lives under the allowlisted docs/
+    // route dir) and canonicalizes to the apex, so the apex sitemap must
+    // list it alongside the other public routes.
+    expect(script).toContain("/docs/plans/</loc>");
   });
 
   it("post-build guard fails on unexpected top-level entries", () => {

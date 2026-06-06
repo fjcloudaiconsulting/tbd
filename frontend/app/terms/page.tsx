@@ -3,21 +3,22 @@ import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
 
-import { pageSocialMeta, siteName } from "@/lib/site";
+import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
 
 const description =
   "The agreement between you and The Better Decision when you use the service.";
 
+// Canonicalize to the apex host (served on both apex and app subdomain).
 export const metadata: Metadata = {
   title: "Terms of Service",
   description,
   alternates: {
-    canonical: "/terms",
+    canonical: apexCanonical("/terms"),
   },
   ...pageSocialMeta({
     title: `Terms of Service · ${siteName}`,
     description,
-    path: "/terms",
+    path: apexCanonical("/terms"),
   }),
   robots: { index: true, follow: true },
 };

@@ -86,6 +86,10 @@ ALLOWED_OUTPUT_GLOBS=(
   "sitemap.xml"
   "icon.svg"
   "favicon.ico"
+  # Static social-share image (public/og.png), referenced as og:image /
+  # twitter:image by lib/site.ts. Copied verbatim from public/ into the
+  # export; the dynamic /opengraph-image route is not exported here.
+  "og.png"
   "__next.*.txt"
   # Reserved directory under public/ for future marketing screenshots
   # used by the landing surface. Next.js copies the whole public/ tree
@@ -259,6 +263,7 @@ cat > "${FRONTEND_DIR}/out-apex/sitemap.xml" <<EOF
   <url><loc>${APEX_URL}/privacy/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/terms/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/docs/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
+  <url><loc>${APEX_URL}/docs/plans/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
 </urlset>
 EOF
 

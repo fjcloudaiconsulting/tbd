@@ -2,21 +2,22 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
-import { pageSocialMeta, siteName } from "@/lib/site";
+import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
 
 const description =
   "Rough user manual for The Better Decision: core concepts, common workflows, and admin tasks.";
 
+// Canonicalize to the apex host (served on both apex and app subdomain).
 export const metadata: Metadata = {
   title: "Docs",
   description,
   alternates: {
-    canonical: "/docs",
+    canonical: apexCanonical("/docs"),
   },
   ...pageSocialMeta({
     title: `Docs · ${siteName}`,
     description,
-    path: "/docs",
+    path: apexCanonical("/docs"),
   }),
   robots: { index: true, follow: true },
 };
