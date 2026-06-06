@@ -36,8 +36,10 @@ import type { Account, Category, Transaction } from "@/lib/types";
  *     visible).
  *   - Posts to POST /api/v1/transactions exactly like the page-level
  *     form. No new backend endpoints.
- *   - Repeats / promote-to-recurring: deferred to a later iteration.
- *     The primary use case is "I just spent something, log it."
+ *   - Repeats / promote-to-recurring: supported. When Repeats is on,
+ *     the new transaction is promoted via
+ *     POST /api/v1/transactions/{id}/promote-to-recurring after create,
+ *     since this form is now the single add entry point.
  *
  * "Save & add new" behavior:
  *   - Default Save submits + closes the panel via onSaved().
@@ -115,6 +117,12 @@ export default function TransactionForm({
   // (called right after the POST below) so the user does not need to
   // pre-create tags from a management page.
   const [tags, setTags] = useState<string[]>([]);
+  // Repeats / promote-to-recurring. After the base transaction is created
+  // we optionally promote it so the source row gets recurring_id set (same
+  // contract the former page-level inline form used).
+  const [repeat, setRepeat] = useState(false);
+  const [frequency, setFrequency] = useState("monthly");
+  const [autoSettle, setAutoSettle] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   // Focus target for the "Save and add new" refocus path. The
@@ -166,6 +174,9 @@ export default function TransactionForm({
     setSettledDate("");
     // Tags are per-transaction, not sticky across entries.
     setTags([]);
+    setRepeat(false);
+    setFrequency("monthly");
+    setAutoSettle(false);
     setErrMsg("");
   }
 
@@ -228,9 +239,39 @@ export default function TransactionForm({
         )}. Edit the transaction to add them.`;
       }
     }
+    // Promote the new tx to recurring if Repeats is on. Mirrors the former
+    // page-level form: promote-to-recurring sets recurring_id on the source
+    // row so a later edit shows the "Recurring" chip. next_due_date must be
+    // today-or-later (server guard); bump a back-dated row to today.
+    let recurringWarning: string | null = null;
+    if (repeat && created?.id) {
+      const today = todayISO();
+      const nextDue = date < today ? today : date;
+      try {
+        await apiFetch(
+          `/api/v1/transactions/${created.id}/promote-to-recurring`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              frequency,
+              next_due_date: nextDue,
+              auto_settle: autoSettle,
+            }),
+          },
+        );
+      } catch (err) {
+        recurringWarning = `Transaction saved, but couldn't set up the recurring schedule: ${extractErrorMessage(
+          err,
+        )}. Edit the transaction to make it recurring.`;
+      }
+    }
     onTransactionAdded?.();
-    if (tagWarning) {
-      onWarning?.(tagWarning);
+    // The parent stores a single warning string, so emit both partial-success
+    // warnings in ONE call — otherwise a second onWarning would overwrite the
+    // first and the user would only ever see one of two failures.
+    const warnings = [tagWarning, recurringWarning].filter(Boolean);
+    if (warnings.length > 0) {
+      onWarning?.(warnings.join(" "));
     }
     if (addAnother) {
       clearForm();
@@ -450,6 +491,50 @@ export default function TransactionForm({
           </p>
         </div>
       )}
+
+      <div className="flex flex-wrap items-end gap-4">
+        <label className="flex items-center gap-2 text-sm text-text-secondary">
+          <input
+            type="checkbox"
+            checked={repeat}
+            onChange={(e) => setRepeat(e.target.checked)}
+            className="rounded border-border"
+          />
+          Repeats
+        </label>
+        {repeat && (
+          <>
+            <div className="flex items-center gap-1">
+              <label htmlFor="fab-tx-freq" className="sr-only">
+                Frequency
+              </label>
+              <select
+                id="fab-tx-freq"
+                value={frequency}
+                onChange={(e) => setFrequency(e.target.value)}
+                className={input}
+              >
+                <option value="weekly">Weekly</option>
+                <option value="biweekly">Every 2 weeks</option>
+                <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="yearly">Yearly</option>
+              </select>
+              <HelpTooltip k="tx.frequency" />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-text-muted">
+              <input
+                type="checkbox"
+                checked={autoSettle}
+                onChange={(e) => setAutoSettle(e.target.checked)}
+                className="rounded border-border"
+              />
+              Auto-settle
+              <HelpTooltip k="tx.auto-settle" />
+            </label>
+          </>
+        )}
+      </div>
 
       <div className="flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end">
         <button
