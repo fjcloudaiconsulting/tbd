@@ -416,7 +416,7 @@ export default function AccountsPage() {
   // the inline buttons (Edit, optional Adjust balance) plus the "..."
   // overflow trigger. Without Adjust balance only Edit + "..." sit there
   // (~5rem); with it the column needs room for "Adjust balance" too
-  // (~11rem). The first column stays minmax(0,1fr) so the account name
+  // (~12rem). The first column stays minmax(0,1fr) so the account name
   // takes all the freed space.
   const accountsGridTemplate = canAdjustBalance
     ? "md:grid-cols-[minmax(0,1fr)_8rem_8rem_12rem]"

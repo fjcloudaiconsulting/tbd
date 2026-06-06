@@ -25,8 +25,10 @@ import { MoreHorizontal } from "lucide-react";
  *     the first item.
  *   - ArrowDown / ArrowUp cycle items.
  *   - Escape closes the menu and returns focus to the trigger.
- *   - Tab closes the menu and returns focus to the trigger (the menu is
- *     not a focus trap; focus then continues to the next page control).
+ *   - Tab closes the menu and returns focus to the trigger. Tab's default
+ *     traversal is prevented, so focus stays on the trigger rather than
+ *     advancing to the next control (the menu is not a focus trap).
+ *   - Selecting an item closes the menu and returns focus to the trigger.
  *   - Outside mousedown closes the menu.
  */
 
@@ -127,7 +129,13 @@ export default function OverflowMenu({
   }
 
   function selectItem(item: OverflowMenuItem) {
+    // Restore focus to the trigger BEFORE running the action. Selecting an
+    // item unmounts the focused menuitem; without this, focus falls to
+    // <body>, and an action that opens a modal (e.g. Delete -> ConfirmModal)
+    // would anchor its restore-focus to <body> instead of the trigger.
+    // setOpen is deferred, so the menu is still mounted at this point.
     setOpen(false);
+    triggerRef.current?.focus();
     item.onSelect();
   }
 
@@ -160,7 +168,7 @@ export default function OverflowMenu({
         >
           {items.map((item, i) => (
             <button
-              key={item.label}
+              key={item.testId ?? `${item.ariaLabel ?? item.label}-${i}`}
               ref={i === 0 ? firstItemRef : undefined}
               type="button"
               role="menuitem"

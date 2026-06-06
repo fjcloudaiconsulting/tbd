@@ -64,6 +64,22 @@ describe("OverflowMenu", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });
 
+  it("restores focus to the trigger when an item is selected", async () => {
+    // Selecting an item unmounts the focused menuitem. Focus must land back
+    // on the trigger (not <body>) so an action that opens a modal anchors
+    // its restore-focus to the trigger, and so keyboard users keep a stable
+    // anchor for non-modal actions.
+    render(<OverflowMenu items={items()} testId="row-overflow" />);
+    fireEvent.click(screen.getByTestId("row-overflow"));
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(document.activeElement).toBe(screen.getByTestId("row-overflow"));
+  });
+
   it("uses ariaLabel override for the accessible name when provided", async () => {
     render(
       <OverflowMenu
