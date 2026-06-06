@@ -1035,7 +1035,16 @@ async def bulk_update_transactions(
                     db, org_id, tx_id, TransactionUpdate(**update_kwargs)
                 )
                 applied = True
-            except (ValidationError, ConflictError, NotFoundError) as exc:
+            except (
+                ValidationError,
+                ConflictError,
+                NotFoundError,
+                IntegrityError,
+            ) as exc:
+                # Degrade a single bad row to a skip (and clear any half-open
+                # transaction) rather than aborting the whole batch — parity
+                # with the tags branch below.
+                await db.rollback()
                 skipped.append((tx_id, _reason(exc)))
                 continue
 

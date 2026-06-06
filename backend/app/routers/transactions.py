@@ -515,8 +515,13 @@ async def bulk_update_transactions(
     db: AsyncSession = Depends(get_db),
 ):
     """Apply optional field updates (category/status/account/tags) to many
-    transactions. Partial success: see skipped[] for rows that couldn't be
-    fully updated. Transfers accept category only.
+    transactions. Partial success: ``updated_count`` counts every row that
+    applied at least one field; ``skipped[]`` lists only rows where NO field
+    could be applied (not found, manual adjustment, or a transfer leg whose
+    sole requested fields were status/account/tags), each with a reason. A row
+    that applies some fields but not others (e.g. category applies but the tag
+    merge fails) still counts as updated and is NOT in skipped[]. Transfers
+    accept category only.
     """
     updated_count, skipped = await svc.bulk_update_transactions(
         db,
