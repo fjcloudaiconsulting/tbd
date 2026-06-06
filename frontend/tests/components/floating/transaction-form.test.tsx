@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import TransactionForm from "@/components/floating/TransactionForm";
 import { apiFetch } from "@/lib/api";
+import { todayISO } from "@/lib/format";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -788,5 +789,149 @@ describe("TransactionForm", () => {
         (init as RequestInit | undefined)?.method === "POST",
     );
     expect(basePosts).toHaveLength(1);
+  });
+
+  it("promotes the new transaction to recurring when Repeats is on", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      return {} as never;
+    });
+
+    render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+    fireEvent.click(screen.getByLabelText("Repeats"));
+    fireEvent.change(screen.getByLabelText("Frequency"), {
+      target: { value: "monthly" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => {
+      expect(postCalls(apiFetchMock)).toHaveLength(1);
+    });
+
+    const promoteCalls = apiFetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/v1/transactions/42/promote-to-recurring" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(promoteCalls).toHaveLength(1);
+    const promoteBody = JSON.parse(
+      String((promoteCalls[0][1] as RequestInit | undefined)?.body),
+    );
+    expect(promoteBody.frequency).toBe("monthly");
+    expect(typeof promoteBody.auto_settle).toBe("boolean");
+    expect(promoteBody.next_due_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("bumps a back-dated recurring next_due_date forward to today", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      return {} as never;
+    });
+
+    render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+    // Back-date the transaction; the recurring next_due_date must still be
+    // today-or-later (server guard), so it should be bumped to today.
+    fireEvent.change(screen.getByLabelText("Date"), {
+      target: { value: "2020-01-01" },
+    });
+    fireEvent.click(screen.getByLabelText("Repeats"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => {
+      expect(postCalls(apiFetchMock)).toHaveLength(1);
+    });
+
+    const promoteCalls = apiFetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/v1/transactions/42/promote-to-recurring" &&
+        (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(promoteCalls).toHaveLength(1);
+    const promoteBody = JSON.parse(
+      String((promoteCalls[0][1] as RequestInit | undefined)?.body),
+    );
+    expect(promoteBody.next_due_date).toBe(todayISO());
+  });
+
+  it("does not promote when Repeats is off", async () => {
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      return {} as never;
+    });
+
+    render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    await waitFor(() => {
+      expect(postCalls(apiFetchMock)).toHaveLength(1);
+    });
+
+    const promoteCalls = apiFetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/promote-to-recurring"),
+    );
+    expect(promoteCalls).toHaveLength(0);
   });
 });
