@@ -791,6 +791,64 @@ describe("TransactionForm", () => {
     expect(basePosts).toHaveLength(1);
   });
 
+  it("surfaces both tag AND recurring partial-success failures in a single warning", async () => {
+    // The parent (AppShellAddTransactionCta) stores a single warning string,
+    // so a second onWarning call would overwrite the first. When BOTH the tag
+    // attach and the promote-to-recurring fail, the component must emit ONE
+    // combined warning so the user sees both problems.
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+
+    const onWarning = vi.fn();
+
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/v1/transactions" && init?.method === "POST") {
+        return { id: 42 } as never;
+      }
+      if (url === "/api/v1/transactions/42/tags") {
+        throw new Error("tag attach failed");
+      }
+      if (url === "/api/v1/transactions/42/promote-to-recurring") {
+        throw new Error("recurring setup failed");
+      }
+      return {} as never;
+    });
+
+    const { container } = render(
+      <TransactionForm
+        accounts={[ACCT]}
+        categories={[CAT]}
+        defaultCategoryId={CAT.id}
+        onSaved={() => {}}
+        onWarning={onWarning}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Rent" },
+    });
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "1200.00" },
+    });
+    const tagInput = container.querySelector(
+      "#fab-tx-tags",
+    ) as HTMLInputElement;
+    fireEvent.change(tagInput, { target: { value: "rent" } });
+    fireEvent.keyDown(tagInput, { key: "Enter" });
+    fireEvent.click(screen.getByLabelText("Repeats"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+    });
+
+    // Exactly ONE warning call, containing BOTH failure messages.
+    await waitFor(() => {
+      expect(onWarning).toHaveBeenCalledTimes(1);
+    });
+    expect(onWarning.mock.calls[0][0]).toMatch(/tag attach failed/);
+    expect(onWarning.mock.calls[0][0]).toMatch(/recurring schedule/);
+  });
+
   it("promotes the new transaction to recurring when Repeats is on", async () => {
     const apiFetchMock = vi.mocked(apiFetch);
     apiFetchMock.mockReset();

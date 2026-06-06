@@ -243,6 +243,7 @@ export default function TransactionForm({
     // page-level form: promote-to-recurring sets recurring_id on the source
     // row so a later edit shows the "Recurring" chip. next_due_date must be
     // today-or-later (server guard); bump a back-dated row to today.
+    let recurringWarning: string | null = null;
     if (repeat && created?.id) {
       const today = todayISO();
       const nextDue = date < today ? today : date;
@@ -259,16 +260,18 @@ export default function TransactionForm({
           },
         );
       } catch (err) {
-        onWarning?.(
-          `Transaction saved, but couldn't set up the recurring schedule: ${extractErrorMessage(
-            err,
-          )}. Edit the transaction to make it recurring.`,
-        );
+        recurringWarning = `Transaction saved, but couldn't set up the recurring schedule: ${extractErrorMessage(
+          err,
+        )}. Edit the transaction to make it recurring.`;
       }
     }
     onTransactionAdded?.();
-    if (tagWarning) {
-      onWarning?.(tagWarning);
+    // The parent stores a single warning string, so emit both partial-success
+    // warnings in ONE call — otherwise a second onWarning would overwrite the
+    // first and the user would only ever see one of two failures.
+    const warnings = [tagWarning, recurringWarning].filter(Boolean);
+    if (warnings.length > 0) {
+      onWarning?.(warnings.join(" "));
     }
     if (addAnother) {
       clearForm();
