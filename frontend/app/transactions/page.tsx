@@ -19,6 +19,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
 import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
 import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
+import BatchEditModal from "@/components/transactions/BatchEditModal";
 import TagChipInput from "@/components/transactions/TagChipInput";
 import SuggestCategoryButton from "@/components/transactions/SuggestCategoryButton";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
@@ -204,6 +205,8 @@ function TransactionsPageContent() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [showBatchEdit, setShowBatchEdit] = useState(false);
+  const [batchEditing, setBatchEditing] = useState(false);
 
   // Transfer modals
   const [linkModalLegs, setLinkModalLegs] = useState<{ expense: Transaction; income: Transaction } | null>(null);
@@ -466,6 +469,38 @@ function TransactionsPageContent() {
       setError(extractErrorMessage(err));
     } finally {
       setBulkDeleting(false);
+    }
+  }
+
+  async function handleBatchEdit(payload: {
+    category_id?: number; status?: "settled" | "pending"; account_id?: number; tags?: string[];
+  }) {
+    setShowBatchEdit(false);
+    setError("");
+    setBatchEditing(true);
+    try {
+      const res = await apiFetch<{
+        requested_count: number;
+        updated_count: number;
+        skipped: { id: number; reason: string }[];
+      }>("/api/v1/transactions/bulk-update", {
+        method: "POST",
+        body: JSON.stringify({ ids: Array.from(selectedIds), ...payload }),
+      });
+      clearSelection();
+      await loadTransactions(page);
+      if (res.skipped.length > 0) {
+        setError(
+          `Updated ${res.updated_count} of ${res.requested_count}. ${res.skipped.length} skipped: ${res.skipped
+            .slice(0, 3)
+            .map((s) => s.reason)
+            .join("; ")}${res.skipped.length > 3 ? "…" : ""}`,
+        );
+      }
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setBatchEditing(false);
     }
   }
 
@@ -810,9 +845,17 @@ function TransactionsPageContent() {
             )}
             <button
               type="button"
+              className={`${btnSecondary} inline-flex min-h-[44px] items-center`}
+              onClick={() => setShowBatchEdit(true)}
+              disabled={bulkDeleting || batchEditing}
+            >
+              {batchEditing ? "Applying…" : "Batch edit"}
+            </button>
+            <button
+              type="button"
               className={`${btnDangerSolid} inline-flex min-h-[44px] items-center`}
               onClick={() => setConfirmBulkDelete(true)}
-              disabled={bulkDeleting}
+              disabled={bulkDeleting || batchEditing}
             >
               {bulkDeleting ? "Deleting…" : "Delete selected"}
             </button>
@@ -1735,6 +1778,15 @@ function TransactionsPageContent() {
         variant="danger"
         onConfirm={handleBulkDelete}
         onCancel={() => setConfirmBulkDelete(false)}
+      />
+      <BatchEditModal
+        open={showBatchEdit}
+        count={selectedIds.size}
+        categories={categories}
+        accounts={accounts}
+        submitting={batchEditing}
+        onSubmit={handleBatchEdit}
+        onCancel={() => setShowBatchEdit(false)}
       />
       {linkModalLegs && (
         <LinkAsTransferModal

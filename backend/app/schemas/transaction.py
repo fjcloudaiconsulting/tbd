@@ -4,7 +4,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas.tag import TagResponse
+from app.schemas.tag import MAX_TAGS_PER_TRANSACTION, TagResponse
 
 
 class TransactionCreate(BaseModel):
@@ -152,6 +152,42 @@ class BulkDeleteResponse(BaseModel):
     requested_count: int
     deleted_count: int
     skipped_ids: list[int]  # IDs that were requested but not found in this org
+
+
+class BulkUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[int] = Field(..., min_length=1, max_length=500)
+    category_id: Optional[int] = None
+    status: Optional[Literal["settled", "pending"]] = None
+    account_id: Optional[int] = None
+    # Tags are ADDED (merged) to each eligible row, not replaced. Capped at the
+    # per-transaction max for the number you can add in one batch call.
+    tags: Optional[list[str]] = Field(default=None, max_length=MAX_TAGS_PER_TRANSACTION)
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> "BulkUpdateRequest":
+        # An empty tags list is a no-op (tags merge nothing), so it does not
+        # count as a provided field — reject it like an all-empty request.
+        if (
+            self.category_id is None
+            and self.status is None
+            and self.account_id is None
+            and not self.tags
+        ):
+            raise ValueError("Provide at least one field to update")
+        return self
+
+
+class BulkUpdateSkip(BaseModel):
+    id: int
+    reason: str
+
+
+class BulkUpdateResponse(BaseModel):
+    requested_count: int
+    updated_count: int
+    skipped: list[BulkUpdateSkip]
 
 
 class TransactionPairRequest(BaseModel):

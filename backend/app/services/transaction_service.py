@@ -965,6 +965,137 @@ async def bulk_delete_transactions(
     return (len(found), skipped_ids)
 
 
+async def bulk_update_transactions(
+    db: AsyncSession,
+    org_id: int,
+    ids: list[int],
+    *,
+    category_id: int | None = None,
+    status: str | None = None,
+    account_id: int | None = None,
+    tags: list[str] | None = None,
+    actor_user_id: int,
+) -> tuple[int, list[tuple[int, str]]]:
+    """Apply an optional set of field updates to many transactions.
+
+    Per-row partial success: a row that successfully applies at least one field
+    counts as updated; a row that can apply nothing is returned in ``skipped``
+    with a human reason. Transfer legs only accept ``category_id`` (which
+    cascades to the partner via update_transaction); ``status``/``account_id``/
+    ``tags`` are skipped for them. Reuses update_transaction for all balance,
+    transfer-guard, and partner-cascade logic (it commits per row, so this is
+    naturally partial-success).
+
+    Returns (updated_count, skipped) where skipped is a list of (id, reason).
+    """
+    from app.services.tag_service import set_transaction_tags
+
+    requested = list(dict.fromkeys(ids))
+    updated = 0
+    skipped: list[tuple[int, str]] = []
+
+    def _reason(exc: Exception) -> str:
+        return getattr(exc, "detail", None) or str(exc)
+
+    for tx_id in requested:
+        row = await db.scalar(
+            select(Transaction)
+            .options(selectinload(Transaction.tags))
+            .where(Transaction.id == tx_id, Transaction.org_id == org_id)
+        )
+        if row is None:
+            skipped.append((tx_id, "Transaction not found"))
+            continue
+        if row.is_manual_adjustment:
+            skipped.append((tx_id, "Manual balance adjustments cannot be edited"))
+            continue
+
+        is_transfer = row.linked_transaction_id is not None
+        existing_tag_names = [t.name for t in row.tags]  # capture before commits
+        applied = False
+        row_notes: list[str] = []
+
+        # 1) category / status / account through update_transaction
+        update_kwargs: dict = {}
+        if category_id is not None:
+            update_kwargs["category_id"] = category_id
+        if status is not None:
+            if is_transfer:
+                row_notes.append("status not applied to transfers")
+            else:
+                update_kwargs["status"] = status
+        if account_id is not None:
+            if is_transfer:
+                row_notes.append("account not applied to transfers")
+            else:
+                update_kwargs["account_id"] = account_id
+        if update_kwargs:
+            try:
+                await update_transaction(
+                    db, org_id, tx_id, TransactionUpdate(**update_kwargs)
+                )
+                applied = True
+            except (
+                ValidationError,
+                ConflictError,
+                NotFoundError,
+                IntegrityError,
+            ) as exc:
+                # Degrade a single bad row to a skip (and clear any half-open
+                # transaction) rather than aborting the whole batch — parity
+                # with the tags branch below.
+                await db.rollback()
+                skipped.append((tx_id, _reason(exc)))
+                continue
+
+        # 2) tags MERGE (regular rows only)
+        if tags:
+            if is_transfer:
+                row_notes.append("tags not applied to transfers")
+            else:
+                merged = list(dict.fromkeys([*existing_tag_names, *tags]))
+                try:
+                    await set_transaction_tags(
+                        db,
+                        org_id=org_id,
+                        transaction_id=tx_id,
+                        tag_names=merged,
+                        created_by_user_id=actor_user_id,
+                    )
+                    await db.commit()
+                    applied = True
+                except (
+                    ValidationError,
+                    ConflictError,
+                    NotFoundError,
+                    IntegrityError,
+                ) as exc:
+                    # Degrade a tag failure (incl. a tag-name unique-constraint
+                    # race) to a per-row skip rather than aborting the whole
+                    # batch. The field updates this row already committed via
+                    # update_transaction are preserved.
+                    await db.rollback()
+                    if applied:
+                        row_notes.append(f"tags not applied ({_reason(exc)})")
+                    else:
+                        skipped.append((tx_id, f"Tags: {_reason(exc)}"))
+                        continue
+
+        if applied:
+            updated += 1
+        else:
+            # Nothing applied — only happens for a transfer leg whose only
+            # requested fields were status/account/tags.
+            reason = (
+                "; ".join(row_notes)
+                if row_notes
+                else "No applicable changes for this row"
+            )
+            skipped.append((tx_id, reason))
+
+    return updated, skipped
+
+
 async def _link_pair(
     db: AsyncSession,
     *,
