@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -151,41 +151,73 @@ describe("AccountsPage — list header row and fixed action column", () => {
     expect(screen.queryByTestId("accounts-list-header")).toBeNull();
   });
 
-  it("uses the same action-column grid template regardless of DEFAULT badge", async () => {
+  it("uses the same shared grid template on header and rows so columns align", async () => {
     render(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
 
-    const nonDefaultActions = screen.getByTestId("account-row-actions-10");
-    const defaultActions = screen.getByTestId("account-row-actions-20");
-
-    // The grid-cols-* utility (which encodes the fixed-slot widths)
-    // must be identical between the two rows. If "Set default" being
-    // omitted on the default row collapsed an action slot, this would
-    // diverge — exactly the bug we are guarding against.
+    // The header <tr> and each row <article> must carry the IDENTICAL
+    // md:grid-cols-* template so the Account / Type / Balance / Actions
+    // columns line up. A drift here is exactly the misalignment bug this
+    // refactor fixes.
     const gridCols = (el: HTMLElement) =>
       Array.from(el.classList).find((c) => c.startsWith("md:grid-cols-"));
-    expect(gridCols(nonDefaultActions)).toBeDefined();
-    expect(gridCols(nonDefaultActions)).toBe(gridCols(defaultActions));
 
-    // Same number of grid children rendered on each row, so each slot
-    // is occupied either by a button or an aria-hidden placeholder.
-    expect(nonDefaultActions.children.length).toBe(defaultActions.children.length);
+    const headerRow = within(
+      screen.getByTestId("accounts-list-header"),
+    ).getByRole("row");
+    const nonDefaultRow = screen.getByTestId("account-row-10");
+    const defaultRow = screen.getByTestId("account-row-20");
+
+    expect(gridCols(headerRow)).toBeDefined();
+    expect(gridCols(nonDefaultRow)).toBe(gridCols(headerRow));
+    expect(gridCols(defaultRow)).toBe(gridCols(headerRow));
   });
 
-  it("still renders Edit / Activate-Deactivate / Delete on the default row", async () => {
+  it("keeps the inline Edit button and exposes the rest via the overflow menu", async () => {
     render(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/ING Joint/)).toBeInTheDocument());
 
-    // The default row keeps its non-conditional actions; only "Set
-    // default" is replaced by a placeholder.
+    // Edit stays inline on every row.
     expect(screen.getByRole("button", { name: /^Edit ING Joint$/ })).toBeInTheDocument();
+
+    // Deactivate / Delete live behind the per-row "..." menu and are not
+    // in the DOM until it is opened.
     expect(
-      screen.getByRole("button", { name: /^Deactivate ING Joint$/ }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Delete ING Joint$/ })).toBeInTheDocument();
-    // No "Set default" button on the default row.
-    expect(
-      screen.queryByRole("button", { name: /Set ING Joint as default/ }),
+      screen.queryByRole("menuitem", { name: /^Deactivate ING Joint$/ }),
     ).toBeNull();
+
+    const actions = screen.getByTestId("account-row-actions-20");
+    fireEvent.click(
+      within(actions).getByRole("button", { name: /More actions for ING Joint/ }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("menuitem", { name: /^Deactivate ING Joint$/ }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("menuitem", { name: /^Delete ING Joint$/ }),
+    ).toBeInTheDocument();
+    // No "Set default" item on the default row.
+    expect(
+      screen.queryByRole("menuitem", { name: /Set ING Joint as default/ }),
+    ).toBeNull();
+  });
+
+  it("offers Set default in the overflow menu only on a non-default active row", async () => {
+    render(<AccountsPage />);
+    await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
+
+    const actions = screen.getByTestId("account-row-actions-10");
+    fireEvent.click(
+      within(actions).getByRole("button", { name: /More actions for Amex Primary/ }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("menuitem", { name: /^Set Amex Primary as default$/ }),
+      ).toBeInTheDocument(),
+    );
   });
 });

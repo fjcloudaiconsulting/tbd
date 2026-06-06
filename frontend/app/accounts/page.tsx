@@ -24,6 +24,7 @@ import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCl
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import type { Account, AccountType, Transaction } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import OverflowMenu, { type OverflowMenuItem } from "@/components/ui/OverflowMenu";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
 
 // Sortable column identifiers for the accounts list.
@@ -354,6 +355,13 @@ export default function AccountsPage() {
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
+  async function handleSetDefault(account: Account) {
+    try {
+      await apiFetch(`/api/v1/accounts/${account.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) });
+      await reload();
+    } catch (err) { setError(extractErrorMessage(err)); }
+  }
+
   // Per-account pending totals. Income contributes positively, expense
   // negatively (so for a CC, pending is normally negative — money owed).
   // The display below renders Math.abs() and the "Pending:" label, so
@@ -401,6 +409,18 @@ export default function AccountsPage() {
     },
     [sortField, sortDir, setSort],
   );
+
+  // Shared grid template for the accounts list. The header <tr> and each
+  // row <article> MUST use the IDENTICAL template string so the columns
+  // line up. The trailing action column is a small FIXED width sized for
+  // the inline buttons (Edit, optional Adjust balance) plus the "..."
+  // overflow trigger. Without Adjust balance only Edit + "..." sit there
+  // (~5rem); with it the column needs room for "Adjust balance" too
+  // (~12rem). The first column stays minmax(0,1fr) so the account name
+  // takes all the freed space.
+  const accountsGridTemplate = canAdjustBalance
+    ? "md:grid-cols-[minmax(0,1fr)_8rem_8rem_12rem]"
+    : "md:grid-cols-[minmax(0,1fr)_8rem_8rem_5rem]";
 
   return (
     <AppShell>
@@ -602,7 +622,7 @@ export default function AccountsPage() {
                   className="hidden w-full border-b border-border-subtle md:table"
                 >
                   <thead>
-                    <tr className="grid grid-cols-[minmax(0,1fr)_8rem_8rem_auto] items-center gap-4 px-3">
+                    <tr className={`grid ${accountsGridTemplate} items-center gap-4 px-3`}>
                       <SortableHeader
                         label="Account"
                         field="name"
@@ -703,7 +723,7 @@ export default function AccountsPage() {
                     key={a.id}
                     data-testid={`account-row-${a.id}`}
                     data-account-name={a.name}
-                    className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:grid md:grid-cols-[minmax(0,1fr)_8rem_8rem_auto] md:items-center md:gap-4 ${!a.is_active ? "opacity-40" : ""}`}
+                    className={`flex flex-col gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-surface-raised md:grid ${accountsGridTemplate} md:items-center md:gap-4 ${!a.is_active ? "opacity-40" : ""}`}
                   >
                     {/* Description column: name + meta. The "DEFAULT"
                         badge is a fixed-width inline pill (NOT trailing
@@ -762,49 +782,57 @@ export default function AccountsPage() {
                         </span>
                       ) : null}
                     </div>
-                    {/* Action column with fixed slots so links don't
-                        shift when an action is conditionally absent
-                        (e.g. "Set default" disappears once the row IS
-                        the default). Each conditional action renders an
-                        empty placeholder span when omitted, keeping
-                        every action's column position stable across
-                        rows. The "Adjust balance" slot is omitted from
-                        the template entirely when the user lacks the
-                        permission, so non-admin views aren't padded. */}
-                    <div
-                      data-testid={`account-row-actions-${a.id}`}
-                      className={`flex flex-wrap gap-3 md:grid md:items-center md:justify-end md:gap-3 ${
-                        canAdjustBalance
-                          ? "md:grid-cols-[3rem_7rem_5rem_5.5rem_4rem]"
-                          : "md:grid-cols-[3rem_5rem_5.5rem_4rem]"
-                      }`}
-                    >
-                      <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="min-h-[44px] text-left text-xs text-text-muted hover:text-accent md:min-h-0 md:text-center">Edit</button>
-                      {canAdjustBalance && (
-                        a.is_active ? (
-                          <button
-                            onClick={() => setAdjustingAccount(a)}
-                            aria-label={`Adjust balance of ${a.name}`}
-                            className="min-h-[44px] text-left text-xs text-text-muted hover:text-accent md:min-h-0 md:text-center"
-                          >
-                            Adjust balance
-                          </button>
-                        ) : (
-                          <span aria-hidden="true" className="hidden md:block" />
-                        )
-                      )}
-                      {!a.is_default && a.is_active ? (
-                        <button onClick={async () => { try { await apiFetch(`/api/v1/accounts/${a.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) }); await reload(); } catch (err) { setError(extractErrorMessage(err)); } }} aria-label={`Set ${a.name} as default`} className="min-h-[44px] text-left text-xs text-text-muted hover:text-accent md:min-h-0 md:text-center">
-                          Set default
-                        </button>
-                      ) : (
-                        <span aria-hidden="true" className="hidden md:block" />
-                      )}
-                      <button onClick={() => handleToggleActive(a)} aria-label={a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`} className="min-h-[44px] text-left text-xs text-text-muted hover:text-text-secondary md:min-h-0 md:text-center">
-                        {a.is_active ? "Deactivate" : "Activate"}
-                      </button>
-                      <button onClick={() => setConfirmDeleteAcctId(a.id)} aria-label={`Delete ${a.name}`} className="min-h-[44px] text-left text-xs text-text-muted hover:text-danger md:min-h-0 md:text-center">Delete</button>
-                    </div>
+                    {/* Action column. Edit (and Adjust balance, when the
+                        admin permission is on AND the account is active)
+                        stay inline; the rarer actions move into a per-row
+                        "..." overflow menu so the action column can be a
+                        small fixed width and the Account name column gets
+                        the freed space. The fixed width is shared with the
+                        header via accountsGridTemplate so the columns stay
+                        aligned. */}
+                    {(() => {
+                      const overflowItems: OverflowMenuItem[] = [];
+                      if (!a.is_default && a.is_active) {
+                        overflowItems.push({
+                          label: "Set default",
+                          ariaLabel: `Set ${a.name} as default`,
+                          onSelect: () => { void handleSetDefault(a); },
+                        });
+                      }
+                      overflowItems.push({
+                        label: a.is_active ? "Deactivate" : "Activate",
+                        ariaLabel: a.is_active ? `Deactivate ${a.name}` : `Activate ${a.name}`,
+                        onSelect: () => { void handleToggleActive(a); },
+                      });
+                      overflowItems.push({
+                        label: "Delete",
+                        ariaLabel: `Delete ${a.name}`,
+                        danger: true,
+                        onSelect: () => setConfirmDeleteAcctId(a.id),
+                      });
+                      return (
+                        <div
+                          data-testid={`account-row-actions-${a.id}`}
+                          className="flex items-center justify-end gap-3"
+                        >
+                          <button onClick={() => startEditAcct(a)} aria-label={`Edit ${a.name}`} className="min-h-[44px] whitespace-nowrap text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
+                          {canAdjustBalance && a.is_active && (
+                            <button
+                              onClick={() => setAdjustingAccount(a)}
+                              aria-label={`Adjust balance of ${a.name}`}
+                              className="min-h-[44px] whitespace-nowrap text-xs text-text-muted hover:text-accent md:min-h-0"
+                            >
+                              Adjust balance
+                            </button>
+                          )}
+                          <OverflowMenu
+                            items={overflowItems}
+                            label={`More actions for ${a.name}`}
+                            testId={`account-row-overflow-${a.id}`}
+                          />
+                        </div>
+                      );
+                    })()}
                   </article>
                 ))}
                 {accounts.length === 0 && (

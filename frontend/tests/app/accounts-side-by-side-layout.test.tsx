@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -134,9 +134,15 @@ describe("AccountsPage — side-by-side layout (post-#199 follow-up)", () => {
     expect(screen.getByPlaceholderText(/New type name/)).toBeInTheDocument();
 
     // Accounts card actions survived (Add Account toggle + row actions).
+    // Edit stays inline; Delete now lives in the per-row "..." overflow menu.
     expect(screen.getByRole("button", { name: /\+ Add Account/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Edit Amex Primary$/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Delete Amex Primary$/ })).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /More actions for Amex Primary/ }),
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: /^Delete Amex Primary$/ }),
+    ).toBeInTheDocument();
 
     // Page-title HelpAnchor still present (link with `Help: Accounts`).
     expect(

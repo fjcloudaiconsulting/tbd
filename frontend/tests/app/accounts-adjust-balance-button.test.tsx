@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -122,5 +122,26 @@ describe("AccountsPage — Adjust balance button gating (Track E)", () => {
         screen.getByRole("button", { name: /Adjust balance of Primary/i })
       ).toBeTruthy();
     });
+  });
+
+  it("keeps header/row grid templates aligned in the wider Adjust-balance (12rem) branch", async () => {
+    // When canAdjustBalance is true the action column widens to 12rem. The
+    // header <tr> and each row <article> must still carry the IDENTICAL
+    // md:grid-cols-* template, otherwise the columns drift (the misalignment
+    // bug this refactor fixes). The other (5rem) branch is covered in
+    // accounts-list-headers.test.tsx.
+    setUser("admin", true);
+    render(<AccountsPage />);
+    await waitFor(() => expect(screen.getByText("Primary")).toBeTruthy());
+
+    const gridCols = (el: HTMLElement) =>
+      Array.from(el.classList).find((c) => c.startsWith("md:grid-cols-"));
+    const headerRow = within(
+      screen.getByTestId("accounts-list-header"),
+    ).getByRole("row");
+    const row = screen.getByTestId("account-row-10");
+
+    expect(gridCols(headerRow)).toContain("12rem");
+    expect(gridCols(row)).toBe(gridCols(headerRow));
   });
 });
