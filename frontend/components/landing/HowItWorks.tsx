@@ -9,24 +9,10 @@
 // Layout: numbered three-up grid, mirrors FeatureTiles spacing so the
 // two sections read as a pair. The numbers in the small kicker reuse
 // the same uppercase-tracked tag treatment as FeatureTiles.
-
-const steps = [
-  {
-    title: "Connect your accounts",
-    body:
-      "Import a CSV from your bank or pull in transactions one by one. The Better Decision keeps the data in your org, never sold, never shared.",
-  },
-  {
-    title: "Categorize as you go",
-    body:
-      "Auto-categorization learns from your edits. Spending breakdowns and budgets update in the same view, so you decide on the page you read.",
-  },
-  {
-    title: "See what comes next",
-    body:
-      "Recurring bills, forecasts, and a single per-period view show what's coming. No surprises at the end of the month.",
-  },
-];
+//
+// Step copy lives in howItWorksData.ts so the landing page's JSON-LD
+// HowTo block can share the same source without drifting.
+import { howItWorksSteps as steps } from "./howItWorksData";
 
 export default function HowItWorks() {
   return (

@@ -3,21 +3,24 @@ import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
 
-import { pageSocialMeta, siteName } from "@/lib/site";
+import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
 
 const description =
   "How The Better Decision collects, uses, and protects your personal data.";
 
+// Canonicalize to the apex host. This page is served on both the apex and
+// the app subdomain; pointing both copies' canonical at the apex keeps the
+// ranking signal on one URL instead of splitting it across hosts.
 export const metadata: Metadata = {
   title: "Privacy Policy",
   description,
   alternates: {
-    canonical: "/privacy",
+    canonical: apexCanonical("/privacy"),
   },
   ...pageSocialMeta({
     title: `Privacy Policy · ${siteName}`,
     description,
-    path: "/privacy",
+    path: apexCanonical("/privacy"),
   }),
   robots: { index: true, follow: true },
 };
