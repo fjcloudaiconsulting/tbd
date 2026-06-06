@@ -29,7 +29,7 @@ from app.models import Account, AccountType, Category, Organization, Transaction
 from app.models.base import Base
 from app.models.category import CategoryType
 from app.models.transaction import TransactionStatus, TransactionType
-from app.schemas.transaction import TransferCreate
+from app.schemas.transaction import TransactionUpdate, TransferCreate
 from app.services import transaction_service
 from app.services.exceptions import ValidationError
 
@@ -250,3 +250,93 @@ async def test_pair_existing_accepts_both_category(db_session):
     )
     assert e_tx.category_id == seed["other_both_id"]
     assert i_tx.category_id == seed["other_both_id"]
+
+
+# ── update_transaction (edit path) ─────────────────────────────────────────
+
+
+async def _make_transfer(db: AsyncSession, seed: dict) -> tuple[int, int]:
+    """Create a real linked transfer pair via the service. Returns
+    (expense_leg_id, income_leg_id)."""
+    body = TransferCreate(
+        from_account_id=seed["src_id"],
+        to_account_id=seed["dst_id"],
+        category_id=seed["transfer_cat_id"],
+        amount=Decimal("50"),
+        date=date(2026, 5, 1),
+        status="settled",
+    )
+    expense_tx, income_tx = await transaction_service.create_transfer(
+        db, seed["org_id"], body
+    )
+    return expense_tx.id, income_tx.id
+
+
+async def test_update_transfer_leg_rejects_expense_only_category(db_session):
+    """Editing a transfer leg to an expense-only category is rejected,
+    even though that category is type-compatible with the expense leg."""
+    seed = await _seed(db_session)
+    expense_id, _ = await _make_transfer(db_session, seed)
+    with pytest.raises(ValidationError):
+        await transaction_service.update_transaction(
+            db_session,
+            seed["org_id"],
+            expense_id,
+            TransactionUpdate(category_id=seed["expense_only_id"]),
+        )
+
+
+async def test_update_transfer_leg_rejects_income_only_category(db_session):
+    """Same rejection editing the income leg to an income-only category."""
+    seed = await _seed(db_session)
+    _, income_id = await _make_transfer(db_session, seed)
+    with pytest.raises(ValidationError):
+        await transaction_service.update_transaction(
+            db_session,
+            seed["org_id"],
+            income_id,
+            TransactionUpdate(category_id=seed["income_only_id"]),
+        )
+
+
+async def test_update_transfer_leg_accepts_both_category_and_syncs_partner(db_session):
+    """Editing one leg's category to another BOTH category succeeds and the
+    partner leg receives the same category (pair stays in sync)."""
+    seed = await _seed(db_session)
+    expense_id, income_id = await _make_transfer(db_session, seed)
+    await transaction_service.update_transaction(
+        db_session,
+        seed["org_id"],
+        expense_id,
+        TransactionUpdate(category_id=seed["other_both_id"]),
+    )
+    # Drop identity-map state so the asserts read persisted DB rows, proving
+    # the partner cascade was committed (not just mutated in memory).
+    db_session.expire_all()
+    expense_tx = await db_session.get(Transaction, expense_id)
+    income_tx = await db_session.get(Transaction, income_id)
+    assert expense_tx.category_id == seed["other_both_id"]
+    assert income_tx.category_id == seed["other_both_id"]
+
+
+async def test_update_regular_transaction_category_unaffected(db_session):
+    """Regression: a non-transfer expense row can still take an expense-only
+    category (the transfer guard must not leak onto regular rows)."""
+    seed = await _seed(db_session)
+    tx = Transaction(
+        org_id=seed["org_id"], account_id=seed["src_id"],
+        category_id=seed["transfer_cat_id"],
+        description="lunch", amount=Decimal("10"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 5, 1), settled_date=date(2026, 5, 1),
+    )
+    db_session.add(tx)
+    await db_session.commit()
+    await transaction_service.update_transaction(
+        db_session,
+        seed["org_id"],
+        tx.id,
+        TransactionUpdate(category_id=seed["expense_only_id"]),
+    )
+    refreshed = await db_session.get(Transaction, tx.id)
+    assert refreshed.category_id == seed["expense_only_id"]
