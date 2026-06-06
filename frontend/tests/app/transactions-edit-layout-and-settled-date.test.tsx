@@ -236,6 +236,75 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
     expect(optionNames.some((n) => /Salary/.test(n))).toBe(false);
   });
 
+  it("transfer edit picker stays both-only even when the partner leg is off-page (editPartner unresolved)", async () => {
+    // With server-side pagination the partner leg can be absent from the
+    // current page, so startEdit resolves editPartner asynchronously (and
+    // here never — the partner fetch returns null). The both-only constraint
+    // must NOT depend on editPartner: it is keyed off the synchronously-known
+    // tx.linked_transaction_id (isTransfer). Regression guard for the picker
+    // briefly showing income/expense-only categories during that window.
+    const CAT_EXPENSE = {
+      id: 11, name: "Groceries", type: "expense" as const,
+      parent_id: null, parent_name: null, description: null,
+      slug: "groceries", is_system: false, transaction_count: 0,
+    };
+    const CAT_INCOME = {
+      id: 12, name: "Salary", type: "income" as const,
+      parent_id: null, parent_name: null, description: null,
+      slug: "salary", is_system: false, transaction_count: 0,
+    };
+    const CAT_BOTH = {
+      id: 13, name: "Transfer", type: "both" as const,
+      parent_id: null, parent_name: null, description: null,
+      slug: "transfer", is_system: false, transaction_count: 0,
+    };
+
+    // Only the visible leg (200) is on this page; its partner (201) is NOT
+    // in the list, so startEdit must fetch it. We resolve that fetch to null
+    // so editPartner stays null for the whole assertion — isolating the
+    // isTransfer-driven constraint from editPartner.
+    const visibleLeg = makeTx({
+      id: 200, description: "Move money",
+      category_id: CAT_BOTH.id, category_name: CAT_BOTH.name,
+      type: "expense", linked_transaction_id: 201,
+    });
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockReset();
+    apiFetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url.startsWith("/api/v1/accounts")) return [ACCT_A] as never;
+      if (url.startsWith("/api/v1/categories"))
+        return [CAT_EXPENSE, CAT_INCOME, CAT_BOTH] as never;
+      if (url.startsWith("/api/v1/settings/billing-periods")) return [] as never;
+      // Single-transaction GET for the off-page partner: resolve null so
+      // editPartner is never set.
+      if (url === "/api/v1/transactions/201" && method === "GET")
+        return null as never;
+      if (url.startsWith("/api/v1/transactions") && method === "GET")
+        return { items: [visibleLeg], total: 1, limit: 25, offset: 0 } as never;
+      return null as never;
+    });
+
+    render(<TransactionsPage />);
+
+    await waitForStableTxList();
+    fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
+
+    const combos = await screen.findAllByRole("combobox", { name: "Category" });
+    const combo = combos.find((c) => c.id === "edit-cat-200") as HTMLInputElement;
+    expect(combo).toBeTruthy();
+    fireEvent.focus(combo);
+
+    const listbox = await screen.findByRole("listbox");
+    const optionNames = within(listbox)
+      .getAllByRole("option")
+      .map((o) => o.textContent ?? "");
+    expect(optionNames.some((n) => /Transfer/.test(n))).toBe(true);
+    expect(optionNames.some((n) => /Groceries/.test(n))).toBe(false);
+    expect(optionNames.some((n) => /Salary/.test(n))).toBe(false);
+  });
+
   it("desktop edit form Save/Cancel meet the 44px touch-target floor", async () => {
     // Tablet portrait (md+) still receives the desktop layout, so a 36px
     // tap target would fall below the project a11y baseline shipped in

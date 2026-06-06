@@ -1441,7 +1441,7 @@ function TransactionsPageContent() {
                             </div>
                             <div>
                               <label htmlFor={`edit-cat-${tx.id}`} className={label}>Category</label>
-                              <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editPartner ? undefined : editType} typeFilter={editPartner ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
+                              <CategorySelect aria-label="Category" id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                               {categorizeAi?.entitled && !editPartner ? (
                                 <div className="mt-1">
                                   {categorizeAi.configured ? (
@@ -1752,7 +1752,7 @@ function TransactionsPageContent() {
                               </div>
                               <div>
                                 <label className={label}>Category</label>
-                                <CategorySelect aria-label="Category" id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={editPartner ? undefined : editType} typeFilter={editPartner ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
+                                <CategorySelect aria-label="Category" id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                                 {categorizeAi?.entitled && !editPartner ? (
                                   <div className="mt-1">
                                     {categorizeAi.configured ? (
