@@ -8,7 +8,6 @@ import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import HelpTooltip from "@/components/Tooltip";
 import TourAnchor from "@/components/tour/TourAnchor";
-import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
@@ -98,6 +97,36 @@ function transactionHighlightHref(tx: Transaction) {
   });
 
   return `/transactions?${params.toString()}`;
+}
+
+// Layout-shaped loading state. Product guidance prefers a skeleton that
+// mirrors the real structure (period bar → hero → accounts/forecast →
+// three charts → transactions) over a centered spinner: it cuts perceived
+// latency and avoids the layout shift when data lands. Purely decorative —
+// aria-hidden, with a single sr-only status line for assistive tech. The
+// global prefers-reduced-motion block neutralizes the pulse automatically.
+function DashboardSkeleton() {
+  const block = "rounded-md bg-surface-raised";
+  return (
+    <div role="status" aria-busy="true" className="space-y-5">
+      <span className="sr-only">Loading dashboard…</span>
+      <div aria-hidden="true" className="flex items-center justify-between">
+        <div className={`h-8 w-48 ${block}`} />
+        <div className={`h-4 w-32 ${block}`} />
+      </div>
+      <div aria-hidden="true" className={`${card} h-32 animate-pulse`} />
+      <div aria-hidden="true" className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]">
+        <div className={`${card} h-40 animate-pulse`} />
+        <div className={`${card} h-40 animate-pulse`} />
+      </div>
+      <div aria-hidden="true" className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <div className={`${card} h-48 animate-pulse`} />
+        <div className={`${card} h-48 animate-pulse`} />
+        <div className={`${card} h-48 animate-pulse`} />
+      </div>
+      <div aria-hidden="true" className={`${card} h-64 animate-pulse`} />
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -461,18 +490,26 @@ export default function DashboardPage() {
   // All active accounts for individual tiles
   const accountsWithBalance = activeAccounts;
 
-  // Precompute tx map for O(1) linked lookups
-  const txMap = new Map(allTransactions.map((tx) => [tx.id, tx]));
+  // Precompute tx map for O(1) linked lookups. Memoized so it isn't
+  // rebuilt on every unrelated render (hover, sort toggle, period nav).
+  const txMap = useMemo(
+    () => new Map(allTransactions.map((tx) => [tx.id, tx])),
+    [allTransactions],
+  );
 
   // Pending totals per account, computed from the all-time pending fetch
   // (NOT from the period-filtered allTransactions). Pending CC charges
   // must remain visible regardless of which billing period the user is
   // viewing — pending is a status, not a date.
-  const pendingByAccount = pendingTransactions.reduce<Record<number, number>>((acc, tx) => {
-    const sign = tx.type === "income" ? 1 : -1;
-    acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
-    return acc;
-  }, {});
+  const pendingByAccount = useMemo(
+    () =>
+      pendingTransactions.reduce<Record<number, number>>((acc, tx) => {
+        const sign = tx.type === "income" ? 1 : -1;
+        acc[tx.account_id] = (acc[tx.account_id] || 0) + Number(tx.amount) * sign;
+        return acc;
+      }, {}),
+    [pendingTransactions],
+  );
 
   // Spending by category from all period transactions. Transfer expense
   // halves carry linked_transaction_id; excluding them here stops transfers
@@ -503,15 +540,19 @@ export default function DashboardPage() {
       .sort((a, b) => b.value - a.value);
   }, [allTransactions]);
   const donutData = donutDataRaw;
-  const totalSpend = donutDataRaw.reduce((s, d) => s + d.value, 0);
-  const sortedSpending = (() => {
-    const list = donutDataRaw.map((d) => ({
+  const totalSpend = useMemo(
+    () => donutDataRaw.reduce((s, d) => s + d.value, 0),
+    [donutDataRaw],
+  );
+  const sortedSpending = useMemo(() => {
+    const list = donutDataRaw.map((d, i) => ({
       name: d.name,
       value: d.value,
       pct: totalSpend > 0 ? (d.value / totalSpend) * 100 : 0,
       // Preserve original index so legend dots keep matching the donut's
-      // color order regardless of how the rows are sorted.
-      origIdx: donutDataRaw.indexOf(d),
+      // color order regardless of how the rows are sorted. Uses the map
+      // index directly (was donutDataRaw.indexOf(d), an O(n^2) scan).
+      origIdx: i,
     }));
     list.sort((a, b) => {
       let cmp = 0;
@@ -521,17 +562,19 @@ export default function DashboardPage() {
       return spendingSort.dir === "asc" ? cmp : -cmp;
     });
     return list;
-  })();
+  }, [donutDataRaw, totalSpend, spendingSort.field, spendingSort.dir]);
 
-  // When chart filter is active, show from allTransactions; otherwise paginated
-  const txSource = chartFilter ? allTransactions : transactions;
-
-  // Dedup transfers
-  const hiddenIds = new Set<number>();
-  for (const tx of txSource) {
-    if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) hiddenIds.add(tx.id);
-  }
-  const visibleTxs = txSource.filter((tx) => !hiddenIds.has(tx.id));
+  // When chart filter is active, show from allTransactions; otherwise
+  // paginated. Dedups transfer legs (keep the lower-id half). Memoized so
+  // the Set build + filter don't rerun on every unrelated render.
+  const visibleTxs = useMemo(() => {
+    const txSource = chartFilter ? allTransactions : transactions;
+    const hiddenIds = new Set<number>();
+    for (const tx of txSource) {
+      if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) hiddenIds.add(tx.id);
+    }
+    return txSource.filter((tx) => !hiddenIds.has(tx.id));
+  }, [chartFilter, allTransactions, transactions]);
 
   // First six budgets feed the "Budget Overview" mini bar chart on the
   // dashboard. Memoizing prevents Recharts from re-laying out the bars
@@ -600,20 +643,25 @@ export default function DashboardPage() {
     }
   }
 
-  // Sort + filter the visible transactions
-  const sortedVisibleTxs = visibleTxs
-    .filter((tx) => !chartFilter || tx.category_name === chartFilter)
-    .sort((a, b) => {
-      let cmp = 0;
-      if (dashSortField === "date") cmp = a.date.localeCompare(b.date);
-      else if (dashSortField === "description") cmp = a.description.localeCompare(b.description);
-      // Status sort is alphabetical on the enum value: "pending" < "settled"
-      // so asc surfaces pending rows first (what the user wants to act on),
-      // desc surfaces settled first.
-      else if (dashSortField === "status") cmp = a.status.localeCompare(b.status);
-      else if (dashSortField === "amount") cmp = Number(a.amount) - Number(b.amount);
-      return dashSortDir === "asc" ? cmp : -cmp;
-    });
+  // Sort + filter the visible transactions. Memoized on its real inputs so
+  // a hover or AI-toggle flip doesn't re-sort the whole list.
+  const sortedVisibleTxs = useMemo(
+    () =>
+      visibleTxs
+        .filter((tx) => !chartFilter || tx.category_name === chartFilter)
+        .sort((a, b) => {
+          let cmp = 0;
+          if (dashSortField === "date") cmp = a.date.localeCompare(b.date);
+          else if (dashSortField === "description") cmp = a.description.localeCompare(b.description);
+          // Status sort is alphabetical on the enum value: "pending" < "settled"
+          // so asc surfaces pending rows first (what the user wants to act on),
+          // desc surfaces settled first.
+          else if (dashSortField === "status") cmp = a.status.localeCompare(b.status);
+          else if (dashSortField === "amount") cmp = Number(a.amount) - Number(b.amount);
+          return dashSortDir === "asc" ? cmp : -cmp;
+        }),
+    [visibleTxs, chartFilter, dashSortField, dashSortDir],
+  );
 
   const CHART_COLORS = [
     "var(--color-chart-1)",
@@ -653,7 +701,7 @@ export default function DashboardPage() {
             type="button"
             onClick={() => setResetBanner(false)}
             aria-label="Dismiss"
-            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-lg leading-none text-text-secondary hover:text-text-primary"
+            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-lg leading-none text-text-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
           >
             ×
           </button>
@@ -684,25 +732,25 @@ export default function DashboardPage() {
       )}
 
       {fetching ? (
-        <Spinner />
+        <DashboardSkeleton />
       ) : (
         <div className="space-y-5">
           {/* ═══ BILLING PERIOD — standalone nav bar ═══ */}
           <TourAnchor id="dashboard.period-nav" as="child">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Previous period">
+              <button onClick={() => { setPeriodIdx(Math.min(periodIdx + 1, periods.length - 1)); setChartFilter(null); }} disabled={periodIdx >= periods.length - 1} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Previous period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
               </button>
               <span className="text-sm font-medium text-text-primary">
                 {monthFrom}{monthTo ? ` – ${monthTo}` : ""}
               </span>
-              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30" aria-label="Next period">
+              <button onClick={() => { setPeriodIdx(Math.max(periodIdx - 1, 0)); setChartFilter(null); }} disabled={periodIdx <= 0} className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded text-text-muted hover:bg-surface-raised disabled:opacity-30 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30" aria-label="Next period">
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
               </button>
               {selectedPeriod?.end_date === null && <span className="ml-1 rounded bg-success-dim px-2 py-0.5 text-[10px] font-semibold text-success">CURRENT</span>}
               {selectedPeriod?.end_date !== null && (
-                <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised">Today</button>
+                <button onClick={() => { const idx = periods.findIndex((p) => p.end_date === null); if (idx >= 0) { setPeriodIdx(idx); setChartFilter(null); } }} className="ml-1 inline-flex min-h-[44px] items-center rounded-md px-3 text-xs font-medium text-text-muted hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Today</button>
               )}
             </div>
             <Link href="/transactions" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">View All Transactions</Link>
@@ -821,7 +869,7 @@ export default function DashboardPage() {
             <div className={`${card} p-5`}>
               <h2 className={`mb-3 ${cardTitle}`}>Spending by Category</h2>
               {chartFilter && (
-                <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised">
+                <button onClick={() => setChartFilter(null)} className="mb-2 rounded-md bg-surface-overlay px-2.5 py-1 text-xs text-text-secondary hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">
                   Filtering: {chartFilter} &times;
                 </button>
               )}
@@ -973,8 +1021,10 @@ export default function DashboardPage() {
                         className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-surface-overlay" : ""}`}>
                         <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_COLORS[d.origIdx % CHART_COLORS.length] }} />
                         <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
-                        <span className="text-right text-[10px] tabular-nums text-text-muted">{d.pct.toFixed(0)}%</span>
-                        <span className="text-right text-xs tabular-nums text-text-muted">{formatAmount(d.value)}</span>
+                        {/* %/amount carry data, so they ride text-secondary
+                            (~6.9:1) not text-muted (~3.0:1, fails AA 1.4.3). */}
+                        <span className="text-right text-[10px] tabular-nums text-text-secondary">{d.pct.toFixed(0)}%</span>
+                        <span className="text-right text-xs tabular-nums text-text-secondary">{formatAmount(d.value)}</span>
                       </button>
                     ))}
                     {sortedSpending.length > 10 && (
@@ -1012,7 +1062,7 @@ export default function DashboardPage() {
                           utilization (when the trailing remaining
                           segment collapses to zero). Static
                           radius={[4,0,0,4]} left those rows squared. */}
-                      <Bar dataKey="spent" stackId="a" animationDuration={600}
+                      <Bar dataKey="spent" stackId="a" animationDuration={220}
                         cursor="pointer"
                         shape={(props: BudgetSpentBarShapeProps) => (
                           <BudgetSpentBarShape {...props} />
@@ -1026,11 +1076,11 @@ export default function DashboardPage() {
                           <Cell key={b.category_id} fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent} />
                         ))}
                       </Bar>
-                      <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={600} />
+                      <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={220} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-                <div className="flex flex-wrap gap-3 px-4 pb-3 text-[10px] text-text-muted">
+                <div className="flex flex-wrap gap-3 px-4 pb-3 text-[10px] text-text-secondary">
                   <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.spent }} /> Spent</span>
                   <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.watch }} /> &gt;80%</span>
                   <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over budget</span>
@@ -1082,14 +1132,14 @@ export default function DashboardPage() {
                             }}
                             contentStyle={{ fontSize: "11px" }}
                           />
-                          <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={600}
+                          <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={220}
                             cursor="pointer"
                             onClick={(_, idx) => {
                               const name = forecastExpenseItems[idx]?.category_name;
                               if (name) setChartFilter(chartFilter === name ? null : name);
                             }}
                           />
-                          <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={600}>
+                          <Bar dataKey="actual" fill={chartColor.actual} radius={[4, 4, 4, 4]} animationDuration={220}>
                             {forecastChartRows.map((d) => (
                               <Cell
                                 key={d.categoryId}
@@ -1113,7 +1163,7 @@ export default function DashboardPage() {
                   </p>
                 );
               })()}
-              <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-text-muted">
+              <div className="mt-2 flex flex-wrap gap-3 text-[10px] text-text-secondary">
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.planned }} /> Planned</span>
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.actual }} /> Under plan</span>
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over plan</span>
@@ -1137,15 +1187,32 @@ export default function DashboardPage() {
                   { field: "description" as const, label: "Description", span: "col-span-6", align: "text-left" },
                   { field: "status" as const, label: "Status", span: "col-span-2", align: "text-center" },
                   { field: "amount" as const, label: "Amount", span: "col-span-2", align: "text-right" },
-                ]).map((col) => (
-                  <button
-                    key={col.field}
-                    onClick={() => toggleDashSort(col.field)}
-                    className={`${col.span} ${col.align} min-h-[32px] hover:text-text-primary transition-colors`}
-                  >
-                    {col.label}{dashSortField === col.field ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}
-                  </button>
-                ))}
+                ]).map((col) => {
+                  const active = dashSortField === col.field;
+                  // min-h-[32px] is a deliberate dense-header exception: it
+                  // clears WCAG 2.5.8 (24px AA floor) without inflating the
+                  // table header to the 44px primary-control floor. Locked by
+                  // dashboard-sort-header-touch-targets.test.tsx. The visible
+                  // ↑/↓ arrow stays in textContent for sighted users and the
+                  // columns test; aria-label carries the same state to AT.
+                  return (
+                    <button
+                      key={col.field}
+                      onClick={() => toggleDashSort(col.field)}
+                      // "Sort transactions by …" is deliberately distinct from
+                      // the Spending card's "Sort by …" labels so role-name
+                      // queries stay unambiguous across the two sortable tables.
+                      aria-label={
+                        active
+                          ? `Transactions sorted by ${col.label.toLowerCase()}, ${dashSortDir === "asc" ? "ascending" : "descending"}. Activate to reverse.`
+                          : `Sort transactions by ${col.label.toLowerCase()}`
+                      }
+                      className={`${col.span} ${col.align} min-h-[32px] rounded-sm hover:text-text-primary transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30`}
+                    >
+                      {col.label}{active ? (dashSortDir === "asc" ? " ↑" : " ↓") : ""}
+                    </button>
+                  );
+                })}
               </div>
             </div>
             <div className="divide-y divide-border-subtle">
@@ -1180,7 +1247,7 @@ export default function DashboardPage() {
                     }}
                     aria-label={`Mark as ${tx.status === "settled" ? "pending" : "settled"}`}
                     aria-pressed={tx.status === "settled"}
-                    className="inline-flex min-h-[44px] items-center"
+                    className="inline-flex min-h-[44px] items-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
                   >
                     {/* Outer button carries the WCAG 2.5.8 touch target;
                         inner span matches /transactions' pill visual. */}
@@ -1204,10 +1271,10 @@ export default function DashboardPage() {
                         href={transactionHighlightHref(tx)}
                         className="-mx-2 -my-1.5 flex min-w-0 items-center gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent sm:col-span-8 sm:my-0"
                       >
-                        <span className="w-16 shrink-0 text-xs tabular-nums text-text-muted sm:w-auto">{tx.date.slice(5)}</span>
+                        <span className="w-16 shrink-0 text-xs tabular-nums text-text-secondary sm:w-auto">{tx.date.slice(5)}</span>
                         <div className="min-w-0">
                           <p className="text-sm text-text-primary truncate">{tx.description}</p>
-                          <p className="text-[11px] text-text-muted truncate">{subline}</p>
+                          <p className="text-[11px] text-text-secondary truncate">{subline}</p>
                         </div>
                       </Link>
                       {/* Status + Amount: on desktop these split into their
@@ -1233,9 +1300,9 @@ export default function DashboardPage() {
             </div>
             {!chartFilter && (page > 0 || hasMore) && (
               <div className="flex items-center justify-between border-t border-border px-5 py-2.5">
-                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border px-3 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40">Prev</button>
+                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border px-3 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Prev</button>
                 <span className="text-xs text-text-muted">Page {page + 1}</span>
-                <button onClick={() => setPage(page + 1)} disabled={!hasMore} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border px-3 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40">Next</button>
+                <button onClick={() => setPage(page + 1)} disabled={!hasMore} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border px-3 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Next</button>
               </div>
             )}
           </div>
