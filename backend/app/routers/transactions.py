@@ -23,6 +23,9 @@ from app.schemas.import_batch import (
 from app.schemas.transaction import (
     BulkDeleteRequest,
     BulkDeleteResponse,
+    BulkUpdateRequest,
+    BulkUpdateResponse,
+    BulkUpdateSkip,
     ConvertToTransferRequest,
     PromoteToRecurringRequest,
     TransactionCreate,
@@ -502,4 +505,31 @@ async def bulk_delete_transactions(
         requested_count=len(unique_ids),
         deleted_count=deleted_count,
         skipped_ids=skipped_ids,
+    )
+
+
+@router.post("/bulk-update", response_model=BulkUpdateResponse)
+async def bulk_update_transactions(
+    body: BulkUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply optional field updates (category/status/account/tags) to many
+    transactions. Partial success: see skipped[] for rows that couldn't be
+    fully updated. Transfers accept category only.
+    """
+    updated_count, skipped = await svc.bulk_update_transactions(
+        db,
+        current_user.org_id,
+        body.ids,
+        category_id=body.category_id,
+        status=body.status,
+        account_id=body.account_id,
+        tags=body.tags,
+        actor_user_id=current_user.id,
+    )
+    return BulkUpdateResponse(
+        requested_count=len(dict.fromkeys(body.ids)),
+        updated_count=updated_count,
+        skipped=[BulkUpdateSkip(id=i, reason=r) for i, r in skipped],
     )
