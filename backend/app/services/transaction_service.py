@@ -535,6 +535,12 @@ async def update_transaction(
     new_type = TransactionType(body.type) if body.type is not None else old_type
     if body.category_id is not None or body.type is not None:
         await validate_category_for_type(db, new_category_id, org_id, new_type)
+    # Transfer legs share one category and only accept CategoryType.BOTH (the
+    # same rule create_transfer/_link_pair enforce). validate_category_for_type
+    # above would happily accept an expense-only category on an expense leg, so
+    # the transfer-specific guard is required on the edit path too.
+    if partner is not None and body.category_id is not None:
+        await validate_transfer_category(db, new_category_id, org_id)
 
     # 3. Lock affected accounts in sorted ID order
     account_ids_to_lock: set[int] = set()
@@ -563,6 +569,11 @@ async def update_transaction(
         _apply_field_updates(tx, body)
         if body.category_id is not None:
             tx.category_id = body.category_id
+            # Both transfer legs share one category. Mirror the change to the
+            # partner leg here so editing the single visible row (the partner
+            # is hidden in the list) keeps the pair consistent.
+            if partner is not None:
+                partner.category_id = body.category_id
         if body.account_id is not None and body.account_id != old_account_id:
             tx.account_id = body.account_id
         if body.status is not None:
