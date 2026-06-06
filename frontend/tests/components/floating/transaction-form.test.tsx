@@ -820,6 +820,7 @@ describe("TransactionForm", () => {
     fireEvent.change(screen.getByLabelText("Frequency"), {
       target: { value: "monthly" },
     });
+    fireEvent.click(screen.getByLabelText("Auto-settle"));
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
@@ -839,8 +840,17 @@ describe("TransactionForm", () => {
       String((promoteCalls[0][1] as RequestInit | undefined)?.body),
     );
     expect(promoteBody.frequency).toBe("monthly");
-    expect(typeof promoteBody.auto_settle).toBe("boolean");
+    expect(promoteBody.auto_settle).toBe(true);
     expect(promoteBody.next_due_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    // Recurring is set up via promote-to-recurring (which links the source
+    // row's recurring_id), NOT the legacy standalone POST /recurring that
+    // left the source row unlinked and re-created a duplicate template on
+    // a later edit. Guard against regressing to that path.
+    const legacyRecurringCalls = apiFetchMock.mock.calls.filter(
+      ([url]) => String(url) === "/api/v1/recurring",
+    );
+    expect(legacyRecurringCalls).toHaveLength(0);
   });
 
   it("bumps a back-dated recurring next_due_date forward to today", async () => {

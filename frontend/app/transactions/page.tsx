@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
@@ -11,7 +11,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
-import { input, label, btnPrimary, btnSecondary, btnDangerSolid, card, cardHeader, cardTitle, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
+import { input, label, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
@@ -20,7 +20,6 @@ import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
 import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
 import UnpairTransferModal from "@/components/transactions/UnpairTransferModal";
 import TagChipInput from "@/components/transactions/TagChipInput";
-import DescriptionAutocomplete from "@/components/transactions/DescriptionAutocomplete";
 import SuggestCategoryButton from "@/components/transactions/SuggestCategoryButton";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
@@ -85,7 +84,6 @@ function TransactionsPageContent() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
   // Non-blocking refresh-error state for the AppShell post-write event
   // listener. The page keeps the previous list; banner offers a Retry.
@@ -202,29 +200,6 @@ function TransactionsPageContent() {
   const [periods, setPeriods] = useState<{ id: number; start_date: string; end_date: string | null }[]>([]);
   const [periodsLoaded, setPeriodsLoaded] = useState(false);
 
-  // Form
-  const [formMode, setFormMode] = useState<"transaction" | "transfer">("transaction");
-  const [formAccountId, setFormAccountId] = useState<number | "">("");
-  const [formToAccountId, setFormToAccountId] = useState<number | "">("");
-  const [formTransferCatId, setFormTransferCatId] = useState<number | "">("");
-  const [formCategoryId, setFormCategoryId] = useState<number | "">("");
-  const [formDescription, setFormDescription] = useState("");
-  const [formAmount, setFormAmount] = useState("");
-  const [formType, setFormType] = useState<"income" | "expense">("expense");
-  const [formStatus, setFormStatus] = useState<"settled" | "pending">("settled");
-  const [formDate, setFormDate] = useState(todayISO());
-  // Expected settlement date for pending creates. Left empty by default so
-  // the user explicitly picks a settlement date when status=pending; this
-  // keeps credit-card-style settlement lag a deliberate choice instead of
-  // silently inheriting the transaction date.
-  const [formSettledDate, setFormSettledDate] = useState("");
-  // PR-Tags-A: chip-managed tag set for the create form. Attached via
-  // PUT /api/v1/transactions/{id}/tags after the POST resolves (see
-  // submitForm below). Tags do not apply to transfer mode.
-  const [formTags, setFormTags] = useState<string[]>([]);
-  const [formRecurring, setFormRecurring] = useState(false);
-  const [formFrequency, setFormFrequency] = useState("monthly");
-  const [formAutoSettle, setFormAutoSettle] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
@@ -397,135 +372,6 @@ function TransactionsPageContent() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedIds.size, confirmBulkDelete, bulkDeleting]);
-
-  function handleTypeChange(t: "income" | "expense") {
-    setFormType(t);
-    setFormCategoryId("");
-  }
-
-  async function handleAdd(e: FormEvent) {
-    e.preventDefault();
-    setError("");
-    // Inline validation for the optional pending settled-date field. The
-    // backend repeats the check, but matching the message client-side
-    // keeps the form-submit experience snappy and mirror-consistent.
-    if (
-      formMode === "transaction" &&
-      formStatus === "pending" &&
-      formSettledDate &&
-      formSettledDate < formDate
-    ) {
-      setError("Expected settlement date must be on or after the transaction date");
-      return;
-    }
-    try {
-      if (formMode === "transfer") {
-        await apiFetch("/api/v1/transactions/transfer", {
-          method: "POST",
-          body: JSON.stringify({
-            from_account_id: formAccountId,
-            to_account_id: formToAccountId,
-            description: formDescription,
-            amount: formAmount,
-            status: formStatus,
-            date: formDate,
-            ...(formTransferCatId !== "" ? { category_id: formTransferCatId } : {}),
-          }),
-        });
-      } else {
-        // Step 1: POST the base transaction. Hard-failures here keep
-        // the form open with the user's input intact for retry.
-        let created: Transaction | undefined;
-        try {
-          created = await apiFetch<Transaction>("/api/v1/transactions", {
-            method: "POST",
-            body: JSON.stringify({
-              account_id: formAccountId,
-              category_id: formCategoryId,
-              description: formDescription,
-              amount: formAmount,
-              type: formType,
-              status: formStatus,
-              date: formDate,
-              // settled_date only travels on pending creates; SETTLED rows
-              // get their settled_date stamped server-side from `date`.
-              ...(formStatus === "pending" && formSettledDate
-                ? { settled_date: formSettledDate }
-                : {}),
-            }),
-          });
-        } catch (err) {
-          setError(extractErrorMessage(err));
-          return;
-        }
-        // Step 2: PUT /tags. The transaction was already saved, so a
-        // failure here is a PARTIAL SUCCESS — we must not leave the
-        // form in a state that re-POSTs the base transaction on the
-        // next click or we double-create. Surface a non-blocking
-        // warning via setError (same channel the promote-to-recurring
-        // partial-success uses), then fall through to the form-reset
-        // path so the user gets a clean slate.
-        let tagWarning: string | null = null;
-        if (formTags.length > 0 && created?.id) {
-          try {
-            await apiFetch(`/api/v1/transactions/${created.id}/tags`, {
-              method: "PUT",
-              body: JSON.stringify({ tag_names: formTags }),
-            });
-          } catch (err) {
-            tagWarning = `Transaction saved. Tags couldn't be applied: ${extractErrorMessage(
-              err,
-            )}. Edit the transaction to add them.`;
-          }
-        }
-        // Promote the new tx to recurring if repeat is enabled. Using
-        // promote-to-recurring (vs a separate POST /recurring) sets
-        // tx.recurring_id on the source transaction so a subsequent edit
-        // shows the "Recurring" chip — preventing the duplicate-template
-        // bug where re-toggling "Make recurring" on edit would create a
-        // second template because the source row stayed unlinked. A
-        // promote failure still bubbles to the outer catch (matches
-        // pre-PR behavior); this PR only changes the tag-attach arm.
-        if (formRecurring && formMode === "transaction" && created?.id) {
-          // next_due_date must be today-or-later (server-side guard).
-          // The Date input is already constrained to today via min=,
-          // but defensively bump back-dated rows to today so the user's
-          // tx still saves cleanly.
-          const today = todayISO();
-          const nextDue = formDate < today ? today : formDate;
-          await apiFetch<Transaction>(
-            `/api/v1/transactions/${created.id}/promote-to-recurring`,
-            {
-              method: "POST",
-              body: JSON.stringify({
-                frequency: formFrequency,
-                next_due_date: nextDue,
-                auto_settle: formAutoSettle,
-              }),
-            },
-          );
-        }
-        if (tagWarning) {
-          setError(tagWarning);
-        }
-      }
-      setFormDescription("");
-      setFormAmount("");
-      setFormType("expense");
-      setFormStatus("settled");
-      setFormToAccountId("");
-      setFormTransferCatId("");
-      setFormRecurring(false);
-      setFormAutoSettle(false);
-      setFormDate(todayISO());
-      setFormSettledDate("");
-      setFormTags([]);
-      setShowForm(false);
-      await loadTransactions(page);
-    } catch (err) {
-      setError(extractErrorMessage(err));
-    }
-  }
 
   // Selection state operates on the VISIBLE rows only (transfer pairs are
   // rendered as a single row — the hidden half cascades server-side). Using
@@ -872,23 +718,6 @@ function TransactionsPageContent() {
     () => new Map(transactions.map((t) => [t.id, t] as const)),
     [transactions],
   );
-  const defaultAccount = activeAccounts.find((a) => a.is_default);
-
-  // Pre-select default account when opening form
-  useEffect(() => {
-    if (showForm && formAccountId === "" && defaultAccount) {
-      setFormAccountId(defaultAccount.id);
-      if (defaultAccount.account_type_slug === "credit_card") setFormStatus("pending");
-    }
-  }, [showForm, formAccountId, defaultAccount]);
-
-  function handleAccountChange(id: number | "") {
-    setFormAccountId(id);
-    if (formToAccountId === id) setFormToAccountId("");
-    const acct = accounts.find((a) => a.id === id);
-    setFormStatus(acct?.account_type_slug === "credit_card" ? "pending" : "settled");
-  }
-
   // Bulk "Link as transfer" validation. Server is the source of truth;
   // this is advisory only so we can disable the button + show a tooltip.
   function evaluateLinkSelection(): {
@@ -996,11 +825,6 @@ function TransactionsPageContent() {
           <HelpAnchor section="transactions" label="Transactions" />
         </div>
         <div className="flex items-center gap-2">
-          {activeAccounts.length > 0 && categories.length > 0 && (
-            <button onClick={() => setShowForm(!showForm)} className={btnPrimary}>
-              {showForm ? "Cancel" : "+ New Transaction"}
-            </button>
-          )}
           <Link href="/transactions/batch" className={btnSecondary}>
             Batch entry
           </Link>
@@ -1030,185 +854,6 @@ function TransactionsPageContent() {
           >
             {refreshing ? "Retrying..." : "Retry"}
           </button>
-        </div>
-      )}
-
-      {showForm && (
-        <div className={`mb-6 ${card} p-6`}>
-          <div className="mb-4 flex items-center gap-4">
-            <h2 className={cardTitle}>{formMode === "transfer" ? "New Transfer" : "New Transaction"}</h2>
-            <div className="flex rounded-md border border-border text-xs">
-              <button type="button" onClick={() => setFormMode("transaction")} className={`px-3 py-1 rounded-l-md ${formMode === "transaction" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transaction</button>
-              <button type="button" onClick={() => setFormMode("transfer")} className={`px-3 py-1 rounded-r-md ${formMode === "transfer" ? "bg-accent text-accent-text" : "text-text-muted hover:bg-surface-raised"}`}>Transfer</button>
-            </div>
-          </div>
-          <form onSubmit={handleAdd} className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <span className="mb-1.5 flex items-center gap-1">
-                <label htmlFor="tx-account" className={`${label} mb-0`}>{formMode === "transfer" ? "From Account" : "Account"}</label>
-                {formMode === "transaction" ? <HelpTooltip k="tx.account" /> : null}
-              </span>
-              <select id="tx-account" required value={formAccountId} onChange={(e) => handleAccountChange(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
-                <option value="">Select account</option>
-                {activeAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-              </select>
-            </div>
-            {formMode === "transfer" ? (
-              <div>
-                <label htmlFor="tx-to-account" className={label}>To Account</label>
-                <select id="tx-to-account" required value={formToAccountId} onChange={(e) => setFormToAccountId(e.target.value === "" ? "" : Number(e.target.value))} className={input}>
-                  <option value="">Select account</option>
-                  {activeAccounts.filter((a) => a.id !== formAccountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
-              </div>
-            ) : (
-              <div>
-                <span className="mb-1.5 flex items-center gap-1">
-                  <label htmlFor="tx-type" className={`${label} mb-0`}>Type</label>
-                  <HelpTooltip k="tx.type" />
-                </span>
-                <select id="tx-type" value={formType} onChange={(e) => handleTypeChange(e.target.value as "income" | "expense")} className={input}>
-                  <option value="expense">Expense</option>
-                  <option value="income">Income</option>
-                </select>
-              </div>
-            )}
-            {formMode === "transaction" && (
-              <div>
-                <label htmlFor="tx-category" className={label}>Category</label>
-                <CategorySelect id="tx-category" categories={categories} value={formCategoryId} onChange={setFormCategoryId} filterType={formType} className={input} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
-              </div>
-            )}
-            {formMode === "transfer" && (
-              <div>
-                <span className="mb-1.5 flex items-center gap-1">
-                  <label htmlFor="tx-transfer-cat" className={`${label} mb-0`}>Transfer category</label>
-                  <HelpTooltip k="transfer.category" />
-                </span>
-                <CategorySelect id="tx-transfer-cat" categories={categories} value={formTransferCatId} onChange={setFormTransferCatId} typeFilter="BOTH" className={input} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
-                <p className="mt-1 text-[10px] text-text-muted">Transfers use one category shared by both legs. Pick Transfer, Credit Card Payment, or another transfer-compatible category you create. Leave empty to use the default Transfer category.</p>
-              </div>
-            )}
-            <div>
-              <label htmlFor="tx-desc" className={label}>Description</label>
-              {formMode === "transaction" ? (
-                <DescriptionAutocomplete
-                  id="tx-desc"
-                  type={formType}
-                  value={formDescription}
-                  onChange={setFormDescription}
-                  onPick={(s) => {
-                    // Pre-fill category from the most-common pair for
-                    // this description, but only if the user has not
-                    // already chosen one. Matches the spec's "optional
-                    // pre-populate" rule for the category hint.
-                    if (formCategoryId === "") {
-                      setFormCategoryId(s.category_id);
-                    }
-                  }}
-                  placeholder="What was it for?"
-                  required
-                />
-              ) : (
-                <input
-                  id="tx-desc"
-                  type="text"
-                  placeholder="Auto: Transfer from X to Y"
-                  value={formDescription}
-                  onChange={(e) => setFormDescription(e.target.value)}
-                  className={input}
-                />
-              )}
-            </div>
-            {formMode === "transaction" && (
-              <div>
-                <span className="mb-1.5 flex items-center gap-1">
-                  <label htmlFor="tx-tags" className={`${label} mb-0`}>Tags</label>
-                  <HelpTooltip k="tx.tags" />
-                </span>
-                <TagChipInput
-                  id="tx-tags"
-                  value={formTags}
-                  onChange={setFormTags}
-                  categoryId={formCategoryId}
-                />
-              </div>
-            )}
-            <div>
-              <span className="mb-1.5 flex items-center gap-1">
-                <label htmlFor="tx-amount" className={`${label} mb-0`}>Amount</label>
-                <HelpTooltip k="tx.amount" />
-              </span>
-              <input id="tx-amount" type="number" step="0.01" min="0.01" required placeholder="0.00" value={formAmount} onChange={(e) => setFormAmount(e.target.value)} className={input} />
-            </div>
-            <div>
-              <span className="mb-1.5 flex items-center gap-1">
-                <label htmlFor="tx-status" className={`${label} mb-0`}>Status</label>
-                <Tooltip
-                  content="Settled transactions count toward your balance today. Pending transactions affect forecasts but not the current balance until they settle."
-                  learnMoreSection="transactions"
-                  triggerLabel="What is the difference between Settled and Pending?"
-                />
-              </span>
-              <select id="tx-status" value={formStatus} onChange={(e) => setFormStatus(e.target.value as "settled" | "pending")} className={input}>
-                <option value="settled">Settled</option>
-                <option value="pending">Pending</option>
-              </select>
-            </div>
-            <div>
-              <label htmlFor="tx-date" className={label}>Date</label>
-              <input id="tx-date" type="date" required value={formDate} onChange={(e) => setFormDate(e.target.value)} className={input} />
-            </div>
-            {formMode === "transaction" && formStatus === "pending" && (
-              <div>
-                <label htmlFor="tx-settled-date" className={label}>
-                  Expected settlement date
-                </label>
-                <input
-                  id="tx-settled-date"
-                  type="date"
-                  min={formDate}
-                  value={formSettledDate}
-                  onChange={(e) => setFormSettledDate(e.target.value)}
-                  className={input}
-                />
-                <p className="mt-1 text-[10px] text-text-muted">
-                  Optional. When the bank actually charges the card.
-                </p>
-              </div>
-            )}
-            {formMode === "transaction" && (
-              <div className="flex items-end gap-4">
-                <label className="flex items-center gap-2 text-sm text-text-secondary">
-                  <input type="checkbox" checked={formRecurring} onChange={(e) => setFormRecurring(e.target.checked)} className="rounded border-border" />
-                  Repeats
-                </label>
-                {formRecurring && (
-                  <>
-                    <div className="flex items-center gap-1">
-                      <label htmlFor="tx-freq" className="sr-only">Frequency</label>
-                      <select id="tx-freq" value={formFrequency} onChange={(e) => setFormFrequency(e.target.value)} className={input}>
-                        <option value="weekly">Weekly</option>
-                        <option value="biweekly">Every 2 weeks</option>
-                        <option value="monthly">Monthly</option>
-                        <option value="quarterly">Quarterly</option>
-                        <option value="yearly">Yearly</option>
-                      </select>
-                      <HelpTooltip k="tx.frequency" />
-                    </div>
-                    <label className="flex items-center gap-2 text-xs text-text-muted">
-                      <input type="checkbox" checked={formAutoSettle} onChange={(e) => setFormAutoSettle(e.target.checked)} className="rounded border-border" />
-                      Auto-settle
-                      <HelpTooltip k="tx.auto-settle" />
-                    </label>
-                  </>
-                )}
-              </div>
-            )}
-            <div className="flex items-end">
-              <button type="submit" className={btnPrimary}>{formMode === "transfer" ? "Transfer" : "Add Transaction"}</button>
-            </div>
-          </form>
         </div>
       )}
 
