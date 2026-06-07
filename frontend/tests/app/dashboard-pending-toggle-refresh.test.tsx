@@ -137,14 +137,15 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
     render(<DashboardPage />);
 
     // Wait for the initial page-0 render. The Next button is enabled
-    // (hasMore=true because PAGE_0_ROWS.length = 11 > PAGE_SIZE).
+    // (txTotal = 11 > PAGE_SIZE, so the shared Pagination renders and Next
+    // is not on the last page). The shared component labels it "Next page".
     await waitFor(
-      () => expect(screen.getByRole("button", { name: /^Next$/ })).not.toBeDisabled(),
+      () => expect(screen.getByRole("button", { name: /Next page/ })).not.toBeDisabled(),
       { timeout: 3000 },
     );
 
     // Navigate to page 1 (page index 1 = "page > 0", the regression case).
-    fireEvent.click(screen.getByRole("button", { name: /^Next$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Next page/ }));
 
     // Wait for page-1 render. SETTLED_TX (Coffee) is now visible; its
     // status-toggle button has the destination-aware aria-label set in
