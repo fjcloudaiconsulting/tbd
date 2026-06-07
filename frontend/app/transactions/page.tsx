@@ -11,7 +11,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
-import { input, label, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import CategorySelect from "@/components/ui/CategorySelect";
 import type { Account, Category, Transaction } from "@/lib/types";
@@ -1279,7 +1279,7 @@ function TransactionsPageContent() {
                                 #173/#174). md+ tablet width also lands here, so
                                 36px would land below WCAG 2.5.8 AA (24px) and
                                 comfortably below the project's stricter floor. */}
-                            <button onClick={handleSaveEdit} className="min-h-[44px] rounded-md bg-accent px-4 text-sm font-medium text-accent-text hover:bg-accent-hover">Save</button>
+                            <button onClick={handleSaveEdit} className={btnPrimary}>Save</button>
                             <button onClick={closeEdit} className="min-h-[44px] rounded-md border border-border px-4 text-sm text-text-secondary hover:bg-surface-raised">Cancel</button>
                           </div>
                         </div>
@@ -1377,14 +1377,14 @@ function TransactionsPageContent() {
                             {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
                           </span>
                           <span className="col-span-2 flex flex-wrap justify-end gap-x-2 gap-y-1">
-                            <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
+                            <button onClick={() => startEdit(tx)} aria-label={`Edit: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Edit</button>
                             {!isTransfer && (
-                              <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
+                              <button onClick={() => setMarkModalSource(tx)} aria-label={`Mark as transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Mark transfer</button>
                             )}
                             {isTransfer && (
-                              <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
+                              <button onClick={() => openUnpairModal(tx)} aria-label={`Unlink transfer: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-accent disabled:opacity-40 disabled:cursor-not-allowed">Unlink</button>
                             )}
-                            <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="whitespace-nowrap text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
+                            <button onClick={() => setConfirmDeleteId(tx.id)} aria-label={`Delete: ${tx.description}`} disabled={bulkDeleting} className="min-h-[44px] lg:min-h-0 whitespace-nowrap text-xs text-text-muted hover:text-danger disabled:opacity-40 disabled:cursor-not-allowed">Delete</button>
                           </span>
                         </div>
                       );
@@ -1595,7 +1595,7 @@ function TransactionsPageContent() {
                               </div>
                             )}
                             <div className="flex flex-wrap gap-2 pt-2 border-t border-border-subtle">
-                              <button onClick={handleSaveEdit} className="min-h-[44px] px-4 rounded-md bg-accent text-accent-text text-sm font-medium">Save</button>
+                              <button onClick={handleSaveEdit} className={btnPrimary}>Save</button>
                               <button onClick={closeEdit} className="min-h-[44px] px-4 rounded-md border border-border text-sm text-text-secondary">Cancel</button>
                             </div>
                           </article>

@@ -20,9 +20,6 @@ export default function Faq() {
       className="mx-auto max-w-3xl px-6 py-20 lg:py-24"
     >
       <div className="mb-10">
-        <p className="mb-3 font-display text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
-          Questions you might have
-        </p>
         <h2
           id="faq-heading"
           className="font-display text-3xl font-semibold leading-tight text-text-primary lg:text-4xl"

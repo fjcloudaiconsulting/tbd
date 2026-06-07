@@ -59,7 +59,7 @@ export default function ForecastPlanChart({
           dataKey="planned"
           fill={chartColor.planned}
           radius={[4, 4, 4, 4]}
-          animationDuration={600}
+          animationDuration={220}
           cursor="pointer"
           onClick={(data) => onBarClick(data?.name || data?.payload?.name)}
         />
@@ -67,7 +67,7 @@ export default function ForecastPlanChart({
           dataKey="actual"
           fill={chartColor.actual}
           radius={[4, 4, 4, 4]}
-          animationDuration={600}
+          animationDuration={220}
         >
           {chartData.map((d) => (
             <Cell

@@ -8,16 +8,15 @@
  */
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
+// Canonical categorical chart palette (theme tokens, mirrors the
+// dashboard donut). Slices cycle through chart-1..chart-5; the explicit
+// "Other" roll-up below stays on the neutral border track.
 const PIE_COLORS = [
-  "var(--color-accent)",
-  "var(--color-success)",
-  "var(--color-info, var(--color-accent))",
-  "var(--color-warning, var(--color-text-secondary))",
-  "var(--color-danger)",
-  "var(--color-text-secondary)",
-  "var(--color-border)",
-  "var(--color-text-muted)",
-  "var(--color-surface-overlay)",
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
 ];
 
 export interface PieWidgetChartProps {
