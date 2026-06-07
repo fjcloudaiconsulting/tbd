@@ -1,5 +1,9 @@
 # Product
 
+## Register
+
+product
+
 ## Users
 
 Individuals and households who plan their financial lives, not just track them. The seed user is a finance-savvy operator who currently runs a manual monthly spreadsheet (per-line-item budget + forecast across multiple accounts and a credit card). The product expands to couples and families managing shared finances through the org-scoped data model (every account, transaction, budget, and forecast belongs to an organization, not a single user).
