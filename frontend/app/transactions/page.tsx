@@ -1158,10 +1158,13 @@ function TransactionsPageContent() {
                               </select>
                             </div>
                             <div>
-                              <label htmlFor={`edit-type-${tx.id}`} className={label}>Type</label>
+                              {editPartner ? (
+                                <span className={label}>Type</span>
+                              ) : (
+                                <label htmlFor={`edit-type-${tx.id}`} className={label}>Type</label>
+                              )}
                               {editPartner ? (
                                 <span
-                                  id={`edit-type-${tx.id}`}
                                   aria-label="Type"
                                   title="Type is fixed for transfer legs."
                                   className="text-sm flex items-center px-3 rounded border border-border bg-surface text-text-muted h-10"
@@ -1470,7 +1473,11 @@ function TransactionsPageContent() {
                                 </select>
                               </div>
                               <div>
-                                <label htmlFor={editPartner ? undefined : `edit-type-mobile-${tx.id}`} className={label}>Type</label>
+                                {editPartner ? (
+                                  <span className={label}>Type</span>
+                                ) : (
+                                  <label htmlFor={`edit-type-mobile-${tx.id}`} className={label}>Type</label>
+                                )}
                                 {editPartner ? (
                                   <span
                                     aria-label="Type"

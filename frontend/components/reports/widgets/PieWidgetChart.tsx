@@ -17,7 +17,7 @@ const PIE_COLORS = [
   "var(--color-text-secondary)",
   "var(--color-border)",
   "var(--color-text-muted)",
-  "var(--color-bg-elevated, var(--color-border))",
+  "var(--color-surface-overlay)",
 ];
 
 export interface PieWidgetChartProps {

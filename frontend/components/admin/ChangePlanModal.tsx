@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import { btnPrimary, btnSecondary, card, error as errorCls, input, label } from "@/lib/styles";
 import type { Plan } from "@/lib/types";
 
@@ -20,7 +21,8 @@ export default function ChangePlanModal({ orgId, currentPlanSlug, onClose, onCha
   const [submitting, setSubmitting] = useState(false);
 
   const dialogRef = useRef<HTMLFormElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useFocusTrap({ active: true, containerRef: dialogRef });
 
   useEffect(() => {
     apiFetch<Plan[]>("/api/v1/plans/all").then((all) => {
@@ -31,33 +33,8 @@ export default function ChangePlanModal({ orgId, currentPlanSlug, onClose, onCha
   }, [currentPlanSlug]);
 
   useEffect(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement;
-    const focusable = dialogRef.current?.querySelector<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-    focusable?.focus();
-    return () => {
-      previousFocusRef.current?.focus();
-      previousFocusRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); onClose(); return; }
-      if (e.key === "Tab") {
-        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (!focusable || focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault(); last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault(); first.focus();
-        }
-      }
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);

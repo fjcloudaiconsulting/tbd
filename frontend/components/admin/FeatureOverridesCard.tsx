@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import { FEATURE_LABELS } from "@/lib/feature-catalog";
 import { btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, input, label } from "@/lib/styles";
 import type { FeatureKey, FeatureStateResponse, FeatureStateRow } from "@/lib/types";
@@ -110,36 +111,12 @@ function FeatureOverrideEditModal({
   const [errorMsg, setErrorMsg] = useState("");
 
   const dialogRef = useRef<HTMLFormElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
 
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement;
-    const focusable = dialogRef.current?.querySelector<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-    focusable?.focus();
-    return () => {
-      previousFocusRef.current?.focus();
-      previousFocusRef.current = null;
-    };
-  }, []);
+  useFocusTrap({ active: true, containerRef: dialogRef });
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); onClose(); return; }
-      if (e.key === "Tab") {
-        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (!focusable || focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault(); last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault(); first.focus();
-        }
-      }
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
