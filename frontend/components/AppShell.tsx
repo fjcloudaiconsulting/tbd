@@ -474,9 +474,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   key={item.href}
                   href={item.href}
                   onClick={() => setSidebarOpen(false)}
+                  aria-current={isActive(item.href) ? "page" : undefined}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors ${
                     isActive(item.href)
-                      ? "bg-sidebar-active-bg text-sidebar-active-text"
+                      ? "bg-sidebar-active-bg text-sidebar-active-text font-semibold"
                       : "text-sidebar-text hover:bg-sidebar-hover hover:text-sidebar-text-bright"
                   }`}
                 >

@@ -86,13 +86,13 @@ describe("L5.1 landing — ScreenshotShowcase", () => {
 
   it("each preview has a short product caption visible to users", () => {
     const { container } = render(<ScreenshotShowcase />);
-    // Each preview identifies its surface via the frame's URL bar
-    // ("transactions.thebetterdecision.com" etc.) and its aria-label;
-    // match case-insensitively so the surface name is discoverable.
+    // Assert the actual user-facing caption copy under each preview, not
+    // the surface name (which now lives only in the frame's URL bar +
+    // aria-label after the eyebrow removal).
     const text = allText(container);
-    expect(text).toMatch(/transactions/i);
-    expect(text).toMatch(/reports/i);
-    expect(text).toMatch(/plans/i);
+    expect(text).toMatch(/Categorize as you go/i);
+    expect(text).toMatch(/Custom canvas of cards/i);
+    expect(text).toMatch(/what-if/i);
   });
 
   it("preview frames use animation classes guarded by motion-safe", () => {

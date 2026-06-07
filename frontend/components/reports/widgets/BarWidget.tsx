@@ -89,9 +89,15 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
 
   // Sliced shape: pivot [primary, secondary] into one numeric field per
   // distinct secondary value so each becomes a stacked Recharts series.
-  const { rows: stackedRows, secondaryValues, seriesKeys } = sliced
-    ? pivotBySecondaryDimension(queryRows, primaryKey, secondaryKey!)
-    : { rows: [], secondaryValues: [] as string[], seriesKeys: [] as string[] };
+  // Memoized like simpleRows so the O(n) pivot doesn't rerun (and force a
+  // Recharts re-layout) on unrelated parent renders.
+  const { rows: stackedRows, secondaryValues, seriesKeys } = useMemo(
+    () =>
+      sliced
+        ? pivotBySecondaryDimension(queryRows, primaryKey, secondaryKey!)
+        : { rows: [], secondaryValues: [] as string[], seriesKeys: [] as string[] },
+    [sliced, queryRows, primaryKey, secondaryKey],
+  );
 
   const rows = sliced ? stackedRows : simpleRows;
   const hasRows = rows.length > 0;
