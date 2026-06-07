@@ -101,6 +101,7 @@ describe("AdminRolesPage", () => {
               updated_at: "2026-05-07T09:00:00",
             },
           ],
+          total: 1,
         };
       }
       if (path === "/api/v1/admin/permissions") return CATALOG;
@@ -134,7 +135,7 @@ describe("AdminRolesPage", () => {
 
   it("renders for a non-superadmin who carries roles.manage in permissions", async () => {
     apiFetchMock.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/admin/roles") return { items: [] };
+      if (path === "/api/v1/admin/roles") return { items: [], total: 0 };
       if (path === "/api/v1/admin/permissions") return CATALOG;
       throw new Error(`unexpected path: ${path}`);
     });
@@ -163,7 +164,7 @@ describe("AdminRolesPage", () => {
   it("opens the create modal and submits a new role", async () => {
     apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
       if (path === "/api/v1/admin/roles" && (!init || init.method === undefined)) {
-        return { items: [] };
+        return { items: [], total: 0 };
       }
       if (path === "/api/v1/admin/permissions") return CATALOG;
       if (path === "/api/v1/admin/roles" && init?.method === "POST") {

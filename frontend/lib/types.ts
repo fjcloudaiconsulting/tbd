@@ -489,6 +489,7 @@ export interface RoleListItem {
 
 export interface RoleListResponse {
   items: RoleListItem[];
+  total: number;
 }
 
 export interface RoleDetail {

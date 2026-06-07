@@ -78,8 +78,12 @@ async def list_permission_catalog() -> PermissionCatalogResponse:
 )
 async def list_roles(db: AsyncSession = Depends(get_db)) -> RoleListResponse:
     items = await role_service.list_roles(db)
+    # Roles are fully listed (no offset/limit), so ``total`` is simply
+    # the row count. The envelope now matches the other admin tables so
+    # the FE can reuse the shared <Pagination> component.
     return RoleListResponse(
-        items=[RoleListItem(**item) for item in items]
+        items=[RoleListItem(**item) for item in items],
+        total=len(items),
     )
 
 
