@@ -1413,16 +1413,17 @@ function TransactionsPageContent() {
                             )}
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div>
-                                <label className={label}>Date</label>
-                                <input aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} />
+                                <label htmlFor={`edit-date-mobile-${tx.id}`} className={label}>Date</label>
+                                <input id={`edit-date-mobile-${tx.id}`} aria-label="Date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className={`text-sm ${input}`} />
                               </div>
                               <div>
-                                <label className={label}>Description</label>
-                                <input aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} />
+                                <label htmlFor={`edit-desc-mobile-${tx.id}`} className={label}>Description</label>
+                                <input id={`edit-desc-mobile-${tx.id}`} aria-label="Description" type="text" required value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className={`text-sm ${input}`} />
                               </div>
                               <div>
-                                <label className={label}>Account</label>
+                                <label htmlFor={`edit-account-mobile-${tx.id}`} className={label}>Account</label>
                                 <select
+                                  id={`edit-account-mobile-${tx.id}`}
                                   aria-label="Account"
                                   value={editAccountId}
                                   onChange={(e) => setEditAccountId(e.target.value === "" ? "" : Number(e.target.value))}
@@ -1439,7 +1440,7 @@ function TransactionsPageContent() {
                                 </select>
                               </div>
                               <div>
-                                <label className={label}>Category</label>
+                                <label htmlFor={`edit-cat-mobile-${tx.id}`} className={label}>Category</label>
                                 <CategorySelect aria-label="Category" id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                                 {categorizeAi?.entitled && !editPartner ? (
                                   <div className="mt-1">
@@ -1462,14 +1463,14 @@ function TransactionsPageContent() {
                                 ) : null}
                               </div>
                               <div>
-                                <label className={label}>Status</label>
-                                <select aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-sm ${input}`}>
+                                <label htmlFor={`edit-status-mobile-${tx.id}`} className={label}>Status</label>
+                                <select id={`edit-status-mobile-${tx.id}`} aria-label="Status" value={editStatus} onChange={(e) => setEditStatus(e.target.value as "settled" | "pending")} className={`text-sm ${input}`}>
                                   <option value="settled">Settled</option>
                                   <option value="pending">Pending</option>
                                 </select>
                               </div>
                               <div>
-                                <label className={label}>Type</label>
+                                <label htmlFor={editPartner ? undefined : `edit-type-mobile-${tx.id}`} className={label}>Type</label>
                                 {editPartner ? (
                                   <span
                                     aria-label="Type"
@@ -1479,15 +1480,15 @@ function TransactionsPageContent() {
                                     {editType === "expense" ? "Expense" : "Income"}
                                   </span>
                                 ) : (
-                                  <select aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-sm ${input}`}>
+                                  <select id={`edit-type-mobile-${tx.id}`} aria-label="Type" value={editType} onChange={(e) => { setEditType(e.target.value as "income" | "expense"); setEditCategoryId(""); }} className={`text-sm ${input}`}>
                                     <option value="expense">Expense</option>
                                     <option value="income">Income</option>
                                   </select>
                                 )}
                               </div>
                               <div className="sm:col-span-2">
-                                <label className={label}>Amount</label>
-                                <input aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm ${input}`} />
+                                <label htmlFor={`edit-amount-mobile-${tx.id}`} className={label}>Amount</label>
+                                <input id={`edit-amount-mobile-${tx.id}`} aria-label="Amount" type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className={`text-sm ${input}`} />
                               </div>
                               <div className="sm:col-span-2">
                                 <label htmlFor={`edit-tags-mobile-${tx.id}`} className={label}>Tags</label>
@@ -1500,8 +1501,9 @@ function TransactionsPageContent() {
                               </div>
                               {editStatus === "pending" && (
                                 <div className="sm:col-span-2" data-testid={`edit-settled-date-cell-mobile-${tx.id}`}>
-                                  <label className={label}>Expected settlement date</label>
+                                  <label htmlFor={`edit-settled-mobile-${tx.id}`} className={label}>Expected settlement date</label>
                                   <input
+                                    id={`edit-settled-mobile-${tx.id}`}
                                     aria-label="Expected settlement date"
                                     type="date"
                                     min={editDate}
@@ -1548,8 +1550,9 @@ function TransactionsPageContent() {
                                     {editPromoteRecurring && (
                                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                         <div>
-                                          <label className={label}>Frequency</label>
+                                          <label htmlFor={`edit-rec-frequency-mobile-${tx.id}`} className={label}>Frequency</label>
                                           <select
+                                            id={`edit-rec-frequency-mobile-${tx.id}`}
                                             aria-label="Frequency"
                                             value={editRecFrequency}
                                             onChange={(e) =>
@@ -1567,8 +1570,9 @@ function TransactionsPageContent() {
                                           </select>
                                         </div>
                                         <div>
-                                          <label className={label}>Next due date</label>
+                                          <label htmlFor={`edit-rec-nextdue-mobile-${tx.id}`} className={label}>Next due date</label>
                                           <input
+                                            id={`edit-rec-nextdue-mobile-${tx.id}`}
                                             aria-label="Next due date"
                                             type="date"
                                             min={todayISO()}

@@ -5,19 +5,16 @@
  * multiple series are configured AND ``stacked`` is true, the areas
  * stack (each series sums on top of the prior). When ``stacked`` is
  * false, overlapping areas render with transparency.
+ *
+ * The recharts-rendering subtree is code-split: it lives in
+ * ``AreaWidgetChart`` and is loaded via ``next/dynamic`` (ssr:false) so
+ * the ~100KB recharts bundle is fetched only when a chart actually
+ * mounts, not in the route's initial JS. The fallback matches the
+ * existing loading placeholder (the global prefers-reduced-motion block
+ * neutralizes the pulse).
  */
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
 
-import { chartColor } from "@/lib/chart-colors";
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
 import { mergeSeriesRows, seriesLabel } from "@/lib/reports/series";
 import type {
@@ -27,19 +24,21 @@ import type {
 import WidgetCsvButton from "./WidgetCsvButton";
 import { buildSeriesCsvDataset } from "./seriesCsv";
 
+const AreaWidgetChart = dynamic(() => import("./AreaWidgetChart"), {
+  ssr: false,
+  loading: () => (
+    <div
+      data-testid="area-widget-chart-loading"
+      className="h-full w-full animate-pulse rounded bg-border/40"
+    />
+  ),
+});
+
 interface Props {
   widget: AreaWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
 }
-
-const AREA_COLORS = [
-  "var(--color-accent)",
-  "var(--color-success)",
-  "var(--color-info, var(--color-accent))",
-  "var(--color-warning, var(--color-text-secondary))",
-  "var(--color-danger)",
-];
 
 export default function AreaWidget({ widget, canvasFilters, editMode }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
@@ -104,35 +103,12 @@ export default function AreaWidget({ widget, canvasFilters, editMode }: Props) {
             No data
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-              <XAxis
-                dataKey="label"
-                tick={{ fill: chartColor.axisTick, fontSize: 11 }}
-                interval={0}
-              />
-              <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
-              <Tooltip cursor={{ stroke: "var(--color-border)" }} />
-              {seriesKeys.length > 1 && (
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              )}
-              {seriesKeys.map((key, i) => (
-                <Area
-                  key={key}
-                  type="monotone"
-                  dataKey={key}
-                  name={labels[i]}
-                  stackId={stackId}
-                  stroke={AREA_COLORS[i % AREA_COLORS.length]}
-                  fill={AREA_COLORS[i % AREA_COLORS.length]}
-                  fillOpacity={seriesKeys.length > 1 ? 0.35 : 0.55}
-                  strokeWidth={2}
-                  isAnimationActive={false}
-                />
-              ))}
-            </AreaChart>
-          </ResponsiveContainer>
+          <AreaWidgetChart
+            rows={rows}
+            seriesKeys={seriesKeys}
+            labels={labels}
+            stackId={stackId}
+          />
         )}
       </div>
     </div>

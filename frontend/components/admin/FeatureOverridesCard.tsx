@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { FEATURE_LABELS } from "@/lib/feature-catalog";
@@ -109,6 +109,47 @@ function FeatureOverrideEditModal({
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
+  const dialogRef = useRef<HTMLFormElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement as HTMLElement;
+    const focusable = dialogRef.current?.querySelector<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    focusable?.focus();
+    return () => {
+      previousFocusRef.current?.focus();
+      previousFocusRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); return; }
+      if (e.key === "Tab") {
+        const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusable || focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault(); last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault(); first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
@@ -130,13 +171,25 @@ function FeatureOverrideEditModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
-      <form onSubmit={handleSubmit} className={`${card} w-full max-w-md p-6`}>
-        <h2 className="mb-4 text-lg font-semibold">{FEATURE_LABELS[row.key].label}</h2>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4"
+      onClick={onClose}
+    >
+      <form
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`feature-override-modal-title-${row.key}`}
+        onSubmit={handleSubmit}
+        onClick={(e) => e.stopPropagation()}
+        className={`${card} w-full max-w-md p-6`}
+      >
+        <h2 id={`feature-override-modal-title-${row.key}`} className="mb-4 text-lg font-semibold">{FEATURE_LABELS[row.key].label}</h2>
         {errorMsg && <div className={`${errorCls} mb-3`}>{errorMsg}</div>}
         <div className="mb-3">
-          <label className={label}>Value</label>
+          <label htmlFor={`feature-override-value-${row.key}`} className={label}>Value</label>
           <select
+            id={`feature-override-value-${row.key}`}
             value={String(value)}
             onChange={(e) => setValue(e.target.value === "true")}
             className={input}
@@ -146,8 +199,9 @@ function FeatureOverrideEditModal({
           </select>
         </div>
         <div className="mb-3">
-          <label className={label}>Expires at (your local time, stored as UTC)</label>
+          <label htmlFor={`feature-override-expires-${row.key}`} className={label}>Expires at (your local time, stored as UTC)</label>
           <input
+            id={`feature-override-expires-${row.key}`}
             type="datetime-local"
             value={expiresAtLocal}
             onChange={(e) => setExpiresAtLocal(e.target.value)}
@@ -155,8 +209,9 @@ function FeatureOverrideEditModal({
           />
         </div>
         <div className="mb-4">
-          <label className={label}>Note (max 500 chars)</label>
+          <label htmlFor={`feature-override-note-${row.key}`} className={label}>Note (max 500 chars)</label>
           <textarea
+            id={`feature-override-note-${row.key}`}
             value={note}
             onChange={(e) => setNote(e.target.value)}
             maxLength={500}

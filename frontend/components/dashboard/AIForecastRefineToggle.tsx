@@ -113,7 +113,7 @@ export default function AIForecastRefineToggle({
     return (
       <SetUpAiCta
         role={role}
-        className="rounded border border-border bg-bg-secondary px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-bg-tertiary disabled:opacity-50"
+        className="rounded border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-surface-overlay disabled:opacity-50"
       />
     );
   }
@@ -155,7 +155,7 @@ export default function AIForecastRefineToggle({
           type="button"
           onClick={() => setPanelOpen(true)}
           data-testid="ai-forecast-refine-toggle"
-          className="rounded border border-border bg-bg-secondary px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-bg-tertiary disabled:opacity-50"
+          className="rounded border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-surface-overlay disabled:opacity-50"
         >
           Refine forecast with AI
         </button>
@@ -177,7 +177,7 @@ export default function AIForecastRefineToggle({
         {aiApplied ? (
           <span
             data-testid="ai-refined-badge"
-            className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-xs font-medium text-text-primary"
+            className="inline-flex items-center gap-1 rounded-full bg-surface-raised px-2 py-0.5 text-xs font-medium text-text-primary"
           >
             <Sparkles className="h-3 w-3" aria-hidden="true" />
             AI-refined
@@ -185,7 +185,7 @@ export default function AIForecastRefineToggle({
         ) : (
           <span
             data-testid="ai-fallback-badge"
-            className="inline-flex items-center gap-1 rounded-full bg-bg-tertiary px-2 py-0.5 text-xs font-medium text-text-muted"
+            className="inline-flex items-center gap-1 rounded-full bg-surface-raised px-2 py-0.5 text-xs font-medium text-text-muted"
           >
             <AlertTriangle className="h-3 w-3" aria-hidden="true" />
             Baseline (AI unavailable)

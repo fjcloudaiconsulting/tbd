@@ -17,19 +17,13 @@
  *
  * Recharts is the canvas chart engine across the app (Dashboard,
  * Budgets, Forecast Plans); reusing it here keeps visual register
- * consistent.
+ * consistent. The recharts subtree is code-split via ``next/dynamic``
+ * (ssr:false) into ``BarWidgetChart`` so recharts loads only when a
+ * chart mounts, keeping it out of the route's initial JS.
  */
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
 
-import { categoricalColor, chartColor } from "@/lib/chart-colors";
+import { categoricalColor } from "@/lib/chart-colors";
 import { useReportQuery } from "@/lib/reports/useReportQuery";
 import { dimensionHeader, pivotBySecondaryDimension } from "@/lib/reports/series";
 import type {
@@ -38,6 +32,16 @@ import type {
 } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
 import type { CsvCell } from "@/lib/reports/csv";
+
+const BarWidgetChart = dynamic(() => import("./BarWidgetChart"), {
+  ssr: false,
+  loading: () => (
+    <div
+      data-testid="bar-widget-chart-loading"
+      className="h-full w-full animate-pulse rounded bg-border/40"
+    />
+  ),
+});
 
 interface Props {
   widget: BarWidgetType;
@@ -126,40 +130,12 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
             No data
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-              <XAxis
-                dataKey="label"
-                tick={{ fill: chartColor.axisTick, fontSize: 11 }}
-                interval={0}
-              />
-              <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
-              <Tooltip cursor={{ fill: "var(--color-border)", opacity: 0.3 }} />
-              {sliced ? (
-                secondaryValues.map((sv, i) => (
-                  <Bar
-                    key={seriesKeys[i]}
-                    dataKey={seriesKeys[i]}
-                    name={sv}
-                    stackId="stack"
-                    fill={categoricalColor(i)}
-                    radius={
-                      i === secondaryValues.length - 1 ? [4, 4, 0, 0] : 0
-                    }
-                    animationDuration={400}
-                  />
-                ))
-              ) : (
-                <Bar
-                  dataKey="value"
-                  fill={chartColor.spent}
-                  radius={[4, 4, 0, 0]}
-                  animationDuration={400}
-                />
-              )}
-            </BarChart>
-          </ResponsiveContainer>
+          <BarWidgetChart
+            rows={rows}
+            sliced={sliced}
+            secondaryValues={secondaryValues}
+            seriesKeys={seriesKeys}
+          />
         )}
       </div>
 
