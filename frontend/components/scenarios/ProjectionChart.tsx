@@ -72,15 +72,16 @@ export interface ProjectionInput {
   currency: string;
 }
 
-// A small palette pulled from the shared chart-colors tokens. The
-// stacked area uses tokens in the same semantic order the dashboard
-// uses for category bars, so colors don't drift across surfaces.
+// Canonical categorical chart palette (theme tokens, mirrors the
+// dashboard) so per-account areas don't drift across surfaces. chart-5
+// (danger/red) sits last; genuine negative semantics (the real-terms
+// line, dip alert dots) keep their own explicit danger color below.
 const SERIES_COLORS = [
-  "var(--color-accent)",
-  "var(--color-success)",
-  "var(--color-info)",
-  "var(--color-text-secondary)",
-  "var(--color-danger)",
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
 ];
 
 function pickColor(index: number): string {

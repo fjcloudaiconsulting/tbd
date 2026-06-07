@@ -54,7 +54,7 @@ export default function BudgetOverviewChart({
         {/* D5 fix: shared BudgetSpentBarShape recomputes corner radii
             per-row so a stack at >=100% utilization (no remaining
             segment, no over segment) still rounds its right edge. */}
-        <Bar dataKey="spent" stackId="a" animationDuration={600}
+        <Bar dataKey="spent" stackId="a" animationDuration={220}
           cursor="pointer"
           shape={(props: BudgetSpentBarShapeProps) => (
             <BudgetSpentBarShape {...props} />
@@ -68,8 +68,8 @@ export default function BudgetOverviewChart({
             />
           ))}
         </Bar>
-        <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={600} />
-        <Bar dataKey="over" stackId="a" fill={chartColor.over} radius={[4, 4, 4, 4]} animationDuration={600} />
+        <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={220} />
+        <Bar dataKey="over" stackId="a" fill={chartColor.over} radius={[4, 4, 4, 4]} animationDuration={220} />
       </BarChart>
     </ResponsiveContainer>
   );

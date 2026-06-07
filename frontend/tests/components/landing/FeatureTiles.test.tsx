@@ -19,7 +19,7 @@ describe("<FeatureTiles />", () => {
     expect(headings).toEqual(expectedTitles);
   });
 
-  it("renders each tile sub-copy and an ordinal marker", () => {
+  it("renders each tile sub-copy", () => {
     render(<FeatureTiles />);
     expect(
       screen.getByText(/all your accounts and transactions/i),
@@ -33,10 +33,6 @@ describe("<FeatureTiles />", () => {
     expect(
       screen.getByText(/eu-hosted today/i),
     ).toBeInTheDocument();
-    // Ordinal markers 01..04
-    for (const n of ["01", "02", "03", "04"]) {
-      expect(screen.getByText(n)).toBeInTheDocument();
-    }
   });
 
   it("never contains an em-dash (locked policy)", () => {

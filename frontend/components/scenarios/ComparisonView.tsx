@@ -76,10 +76,13 @@ export interface CompareProjection {
   projection: ProjectionResult;
 }
 
+// Canonical categorical chart palette (theme tokens, mirrors the
+// dashboard) — one color per scenario. The endpoint caps comparison at
+// 3 scenarios, so chart-5 (danger/red) is never reached here.
 const SCENARIO_COLORS = [
-  "var(--color-accent)",
-  "var(--color-info)",
-  "var(--color-success)",
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
 ];
 
 function pickColor(index: number): string {

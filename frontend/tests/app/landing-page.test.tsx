@@ -86,13 +86,13 @@ describe("L5.1 landing — ScreenshotShowcase", () => {
 
   it("each preview has a short product caption visible to users", () => {
     const { container } = render(<ScreenshotShowcase />);
-    // Captions sit alongside the framed preview in the same grid
-    // cell pair. We assert each surface kicker ("Transactions" /
-    // "Reports" / "Plans") shows up as an uppercase eyebrow.
+    // Assert the actual user-facing caption copy under each preview, not
+    // the surface name (which now lives only in the frame's URL bar +
+    // aria-label after the eyebrow removal).
     const text = allText(container);
-    expect(text).toMatch(/Transactions/);
-    expect(text).toMatch(/Reports/);
-    expect(text).toMatch(/Plans/);
+    expect(text).toMatch(/Categorize as you go/i);
+    expect(text).toMatch(/Custom canvas of cards/i);
+    expect(text).toMatch(/what-if/i);
   });
 
   it("preview frames use animation classes guarded by motion-safe", () => {

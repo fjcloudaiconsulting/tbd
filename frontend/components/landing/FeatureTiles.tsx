@@ -28,14 +28,11 @@ export default function FeatureTiles() {
     >
       <h2 className="sr-only">What The Better Decision does</h2>
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 lg:gap-8">
-        {tiles.map((tile, i) => (
+        {tiles.map((tile) => (
           <div
             key={tile.title}
             className="rounded-xl border border-border bg-surface p-6"
           >
-            <div className="mb-3 font-display text-xs font-semibold uppercase tracking-[0.14em] text-text-muted">
-              {String(i + 1).padStart(2, "0")}
-            </div>
             <h3 className="mb-2 font-display text-lg font-semibold leading-snug text-text-primary">
               {tile.title}
             </h3>

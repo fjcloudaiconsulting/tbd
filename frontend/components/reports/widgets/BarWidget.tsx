@@ -22,8 +22,8 @@
  * chart mounts, keeping it out of the route's initial JS.
  */
 import dynamic from "next/dynamic";
+import { useMemo } from "react";
 
-import { categoricalColor } from "@/lib/chart-colors";
 import { useReportQuery } from "@/lib/reports/useReportQuery";
 import { dimensionHeader, pivotBySecondaryDimension } from "@/lib/reports/series";
 import type {
@@ -49,6 +49,23 @@ interface Props {
   editMode?: boolean;
 }
 
+// Canonical categorical chart palette (theme tokens, mirrors the
+// dashboard). Kept in sync with BarWidgetChart's bar fills; duplicated
+// here rather than imported across the next/dynamic boundary so the
+// legend doesn't pull the recharts-laden chart module into the route's
+// initial JS.
+const LEGEND_COLORS = [
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
+];
+
+function legendColor(index: number): string {
+  return LEGEND_COLORS[index % LEGEND_COLORS.length];
+}
+
 export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
@@ -59,16 +76,28 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
   const queryRows = data?.rows ?? [];
 
   // Single-series shape (no break-down): one ``value`` per label.
-  const simpleRows = queryRows.map((r) => ({
-    label: String(r[primaryKey] ?? "—"),
-    value: typeof r.value === "number" ? r.value : Number(r.value ?? 0),
-  }));
+  // Memoized on the query rows + primary key so unrelated parent renders
+  // don't rebuild the array reference and force Recharts to re-layout.
+  const simpleRows = useMemo(
+    () =>
+      queryRows.map((r) => ({
+        label: String(r[primaryKey] ?? "—"),
+        value: typeof r.value === "number" ? r.value : Number(r.value ?? 0),
+      })),
+    [queryRows, primaryKey],
+  );
 
   // Sliced shape: pivot [primary, secondary] into one numeric field per
   // distinct secondary value so each becomes a stacked Recharts series.
-  const { rows: stackedRows, secondaryValues, seriesKeys } = sliced
-    ? pivotBySecondaryDimension(queryRows, primaryKey, secondaryKey!)
-    : { rows: [], secondaryValues: [] as string[], seriesKeys: [] as string[] };
+  // Memoized like simpleRows so the O(n) pivot doesn't rerun (and force a
+  // Recharts re-layout) on unrelated parent renders.
+  const { rows: stackedRows, secondaryValues, seriesKeys } = useMemo(
+    () =>
+      sliced
+        ? pivotBySecondaryDimension(queryRows, primaryKey, secondaryKey!)
+        : { rows: [], secondaryValues: [] as string[], seriesKeys: [] as string[] },
+    [sliced, queryRows, primaryKey, secondaryKey],
+  );
 
   const rows = sliced ? stackedRows : simpleRows;
   const hasRows = rows.length > 0;
@@ -156,10 +185,10 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
             >
               <span
                 data-testid="bar-widget-legend-swatch"
-                data-color={categoricalColor(i)}
+                data-color={legendColor(i)}
                 aria-hidden="true"
                 className="inline-block h-2.5 w-2.5 rounded-sm"
-                style={{ backgroundColor: categoricalColor(i) }}
+                style={{ backgroundColor: legendColor(i) }}
               />
               <span>{sv}</span>
             </li>

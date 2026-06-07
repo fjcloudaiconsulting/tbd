@@ -50,12 +50,23 @@ export default function TableWidget({ widget, canvasFilters, editMode }: Props) 
     measures,
   );
 
-  const seriesKeys = widget.config.measures.map((_, i) => `s${i}`);
-  const seriesLabels = widget.config.measures.map((m, i) =>
-    seriesLabel(m, i, widget.config.measures.length),
+  const measuresConfig = widget.config.measures;
+  // Memoize the derived series keys/labels and the merged table rows on
+  // their real inputs so unrelated parent renders (sort toggle, page
+  // change, hover) don't rebuild these arrays and re-run the O(n) merge.
+  const seriesKeys = useMemo(
+    () => measuresConfig.map((_, i) => `s${i}`),
+    [measuresConfig],
+  );
+  const seriesLabels = useMemo(
+    () => measuresConfig.map((m, i) => seriesLabel(m, i, measuresConfig.length)),
+    [measuresConfig],
   );
   const dimensions = widget.config.dimensions;
-  const rows = mergeSeriesRowsForTable(series, dimensions, seriesKeys);
+  const rows = useMemo(
+    () => mergeSeriesRowsForTable(series, dimensions, seriesKeys),
+    [series, dimensions, seriesKeys],
+  );
 
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");

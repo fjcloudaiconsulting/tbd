@@ -9,9 +9,9 @@ describe("<HowItWorks />", () => {
     expect(list.tagName).toBe("OL");
     const items = screen.getAllByRole("listitem");
     expect(items).toHaveLength(3);
-    expect(items[0]).toHaveTextContent(/step 01/i);
-    expect(items[1]).toHaveTextContent(/step 02/i);
-    expect(items[2]).toHaveTextContent(/step 03/i);
+    expect(items[0]).toHaveTextContent(/step 1/i);
+    expect(items[1]).toHaveTextContent(/step 2/i);
+    expect(items[2]).toHaveTextContent(/step 3/i);
   });
 
   it("renders each step title and a distinctive body snippet", () => {

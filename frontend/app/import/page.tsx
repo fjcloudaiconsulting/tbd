@@ -761,7 +761,7 @@ function ImportPageContent() {
 
                       {pill && ui.panelOpen && (
                         <tr
-                          className="border-b border-border bg-surface-2/50"
+                          className="border-b border-border bg-surface-raised/50"
                           data-testid={`transfer-panel-${previewRow.row_number}`}
                         >
                           <td colSpan={COL_COUNT} className="px-6 py-3">
