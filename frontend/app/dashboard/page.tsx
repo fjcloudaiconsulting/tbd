@@ -7,6 +7,7 @@ import { ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import HelpTooltip from "@/components/Tooltip";
+import Pagination from "@/components/ui/Pagination";
 import TourAnchor from "@/components/tour/TourAnchor";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -192,7 +193,7 @@ export default function DashboardPage() {
   const projectionRequestId = useRef(0);
   const [fetching, setFetching] = useState(true);
   const [page, setPage] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
+  const [txTotal, setTxTotal] = useState(0);
   const [error, setError] = useState("");
   // Non-blocking error from a post-write refresh. The initial-load
   // banner above (`error`) keeps its hard-fail semantics: blank page +
@@ -280,14 +281,14 @@ export default function DashboardPage() {
     const forecastUrl = realPeriodStart ? `/api/v1/forecast-plans/current?period_start=${realPeriodStart}` : "/api/v1/forecast-plans/current";
     const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
     const [pageData, allData, bds, fc] = await Promise.all([
-      apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE + 1}&offset=${p * PAGE_SIZE}&${dateFilter}`),
+      apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&${dateFilter}`),
       p === 0 ? apiFetch<{ items: Transaction[]; total: number }>(`/api/v1/transactions?limit=200&${dateFilter}`) : null,
       p === 0 ? apiFetch<Budget[]>(budgetUrl) : null,
       p === 0 ? apiFetch<ForecastPlan | null>(forecastUrl) : null,
     ]);
     const page_txs = pageData?.items ?? [];
-    setHasMore(page_txs.length > PAGE_SIZE);
-    setTransactions(page_txs.slice(0, PAGE_SIZE));
+    setTxTotal(pageData?.total ?? 0);
+    setTransactions(page_txs);
     if (allData) setAllTransactions(allData.items);
     if (bds) setBudgets(bds);
     // null is a valid response (no plan yet) — set state so empty-state UI renders.
@@ -1298,11 +1299,16 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
-            {!chartFilter && (page > 0 || hasMore) && (
-              <div className="flex items-center justify-between border-t border-border px-5 py-2.5">
-                <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border px-3 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Prev</button>
-                <span className="text-xs text-text-muted">Page {page + 1}</span>
-                <button onClick={() => setPage(page + 1)} disabled={!hasMore} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md border border-border px-3 text-xs text-text-secondary hover:bg-surface-raised disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30">Next</button>
+            {!chartFilter && (txTotal > PAGE_SIZE || page > 0) && (
+              <div className="border-t border-border px-5">
+                <Pagination
+                  page={page + 1}
+                  pageSize={PAGE_SIZE}
+                  total={txTotal}
+                  onPageChange={(n) => setPage(n - 1)}
+                  onPageSizeChange={() => {}}
+                  showPageSizeSelector={false}
+                />
               </div>
             )}
           </div>
