@@ -7,7 +7,7 @@
  * line / area / stacked-bar / kpi / pie / sparkline still only consume
  * ``dimensions[0]``, so they expose no secondary picker.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { renderWithSWR, fireEvent, screen } from "../../utils/render-with-swr";
 import { SWRConfig } from "swr";
 
 import ConfigRail from "@/components/reports/ConfigRail";
@@ -27,14 +27,6 @@ import type {
 vi.mock("@/lib/api", () => ({
   apiFetch: vi.fn(),
 }));
-
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
 
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
@@ -166,7 +158,7 @@ const HIDDEN_CASES: Array<{ name: string; widget: Widget }> = [
 describe("ConfigRail — secondary dimension picker visibility", () => {
   for (const { name, widget } of HIDDEN_CASES) {
     it(`does NOT render the secondary dimension picker for ${name}`, () => {
-      renderIsolated(
+      renderWithSWR(
         <ConfigRail
           widget={widget}
           canvasFilters={{}}
@@ -181,7 +173,7 @@ describe("ConfigRail — secondary dimension picker visibility", () => {
   }
 
   it("DOES render the secondary dimension picker for table", () => {
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeTable()}
         canvasFilters={{}}
@@ -195,7 +187,7 @@ describe("ConfigRail — secondary dimension picker visibility", () => {
   });
 
   it("DOES render the 'Break down by' picker for bar", () => {
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeBar()}
         canvasFilters={{}}
@@ -213,7 +205,7 @@ describe("ConfigRail — secondary dimension picker visibility", () => {
   it("sets dimensions[1] when a bar break-down is chosen, and clears it on None", () => {
     const updates: Widget[] = [];
     const bar = makeBar();
-    const { rerender } = renderIsolated(
+    const { rerender } = renderWithSWR(
       <ConfigRail
         widget={bar}
         canvasFilters={{}}

@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
 
 import KPIWidget from "@/components/reports/widgets/KPIWidget";
 import type { KPIWidget as KPIWidgetType } from "@/lib/reports/types";
@@ -11,14 +10,6 @@ vi.mock("@/lib/reports/api", () => ({
 
 // Fresh SWR provider per test prevents cache reuse from leaking
 // a previous test's resolved value into the next test's mount.
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
-
 function makeWidget(overrides: Partial<KPIWidgetType> = {}): KPIWidgetType {
   return {
     id: `w_kpi_${Math.random().toString(36).slice(2, 10)}`,
@@ -47,7 +38,7 @@ describe("KPIWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 12 },
     });
 
-    renderIsolated(<KPIWidget widget={makeWidget()} />);
+    renderWithSWR(<KPIWidget widget={makeWidget()} />);
 
     const value = await screen.findByTestId("kpi-widget-value");
     // Currency formatting renders the symbol; assert the digits are
@@ -70,7 +61,7 @@ describe("KPIWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<KPIWidget widget={widget} priorValue={100} />);
+    renderWithSWR(<KPIWidget widget={widget} priorValue={100} />);
 
     const delta = await screen.findByTestId("kpi-widget-delta");
     // 100 → 200 is a +100% change.
@@ -85,7 +76,7 @@ describe("KPIWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<KPIWidget widget={makeWidget()} priorValue={100} />);
+    renderWithSWR(<KPIWidget widget={makeWidget()} priorValue={100} />);
 
     await screen.findByTestId("kpi-widget-value");
     expect(screen.queryByTestId("kpi-widget-delta")).toBeNull();
@@ -94,7 +85,7 @@ describe("KPIWidget", () => {
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("boom"));
 
-    renderIsolated(<KPIWidget widget={makeWidget()} />);
+    renderWithSWR(<KPIWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("kpi-widget-error")).toBeInTheDocument(),

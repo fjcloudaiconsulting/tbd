@@ -1,5 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import {
+  renderWithSWR,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "../utils/render-with-swr";
 
 // Stub the canvas (react-grid-layout) — jsdom can't measure container
 // width so the responsive grid silently collapses to width=-1 and
@@ -126,14 +131,6 @@ function makeParams(id = "10") {
   return { id };
 }
 
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
-
 describe("ReportEditorPage", () => {
   const getReportMock = vi.mocked(reportsApi.getReport);
   const saveLayoutMock = vi.mocked(reportsApi.saveLayout);
@@ -181,7 +178,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:00",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
     // The editor renders inside AppShell so users keep the
@@ -224,7 +221,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:00",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
     fireEvent.click(screen.getByTestId("report-editor-add-widget"));
@@ -270,7 +267,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:01",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
     // Make the report dirty by adding a widget.
@@ -329,7 +326,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:00",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await waitFor(() => expect(runQueryMock).toHaveBeenCalled());
     const lastCall = runQueryMock.mock.calls[runQueryMock.mock.calls.length - 1];
@@ -379,7 +376,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:00",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     // Report has widgets → opens in view mode. Enter edit mode so the
     // config rail can mount on widget selection.
@@ -414,7 +411,7 @@ describe("ReportEditorPage", () => {
     });
     deleteReportMock.mockResolvedValue(undefined);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
     fireEvent.click(screen.getByTestId("report-editor-delete"));
@@ -443,7 +440,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:00",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
     // Make a dirty change.
@@ -507,7 +504,7 @@ describe("ReportEditorPage", () => {
     mockUser(true);
     getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("kpi-widget");
     // View-mode toolbar.
@@ -526,7 +523,7 @@ describe("ReportEditorPage", () => {
     mockUser(true);
     getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("kpi-widget");
     fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
@@ -556,7 +553,7 @@ describe("ReportEditorPage", () => {
     mockUser(true);
     getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("kpi-widget");
     // Enter edit.
@@ -592,7 +589,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:00",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
     // Edit mode: Add widget present, toggle reads "Done".
@@ -624,7 +621,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:05",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("kpi-widget");
     fireEvent.click(screen.getByTestId("report-editor-history"));
@@ -669,7 +666,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T11:00:00",
     } as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("kpi-widget");
     const toggle = screen.getByTestId("report-editor-visibility-toggle");
@@ -701,7 +698,7 @@ describe("ReportEditorPage", () => {
       visibility: "org",
     } as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("kpi-widget");
     // No enabled toggle for a non-editor.
@@ -719,7 +716,7 @@ describe("ReportEditorPage", () => {
       visibility: "org",
     } as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("kpi-widget");
     // The Edit/Done toggle is owner-only.
@@ -742,7 +739,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:00",
     } as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor-empty");
     // Owner-only CTA must not render for a view-only user; the backend
@@ -764,7 +761,7 @@ describe("ReportEditorPage", () => {
       id: 77,
     } as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("kpi-widget");
     fireEvent.click(screen.getByTestId("report-editor-duplicate"));
@@ -806,7 +803,7 @@ describe("ReportEditorPage", () => {
       updated_at: "2026-05-22T10:00:01",
     });
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
     fireEvent.click(screen.getByTestId("report-editor-add-widget"));
@@ -858,7 +855,7 @@ describe("ReportEditorPage", () => {
       },
     } as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await screen.findByTestId("report-editor");
     // Read-only stack renders (NOT the grid Canvas).
@@ -914,7 +911,7 @@ describe("ReportEditorPage", () => {
       id: 10,
     } as never);
 
-    renderIsolated(<ReportEditorPage params={makeParams()} />);
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     await waitFor(() =>
       expect(replaceMock).toHaveBeenCalledWith("/dashboard"),

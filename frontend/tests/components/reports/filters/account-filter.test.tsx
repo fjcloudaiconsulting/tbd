@@ -1,5 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import AccountFilter from "@/components/reports/filters/AccountFilter";
 import { apiFetch } from "@/lib/api";
@@ -35,14 +34,6 @@ const ACCOUNTS = [
   },
 ];
 
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
-
 describe("AccountFilter", () => {
   const apiFetchMock = vi.mocked(apiFetch);
 
@@ -53,7 +44,7 @@ describe("AccountFilter", () => {
   it("fetches accounts on mount and renders one chip per account", async () => {
     apiFetchMock.mockResolvedValueOnce(ACCOUNTS);
 
-    renderIsolated(<AccountFilter value={[]} onChange={() => {}} />);
+    renderWithSWR(<AccountFilter value={[]} onChange={() => {}} />);
 
     expect(await screen.findByTestId("account-filter-chip-1")).toBeInTheDocument();
     expect(screen.getByTestId("account-filter-chip-2")).toBeInTheDocument();
@@ -64,7 +55,7 @@ describe("AccountFilter", () => {
     apiFetchMock.mockResolvedValueOnce(ACCOUNTS);
     const onChange = vi.fn();
 
-    renderIsolated(<AccountFilter value={[]} onChange={onChange} />);
+    renderWithSWR(<AccountFilter value={[]} onChange={onChange} />);
 
     const chip = await screen.findByTestId("account-filter-chip-1");
     fireEvent.click(chip);
@@ -75,7 +66,7 @@ describe("AccountFilter", () => {
     apiFetchMock.mockResolvedValueOnce(ACCOUNTS);
     const onChange = vi.fn();
 
-    renderIsolated(<AccountFilter value={[1, 2]} onChange={onChange} />);
+    renderWithSWR(<AccountFilter value={[1, 2]} onChange={onChange} />);
 
     const chip = await screen.findByTestId("account-filter-chip-1");
     fireEvent.click(chip);
@@ -110,7 +101,7 @@ describe("AccountFilter", () => {
       },
     ]);
 
-    renderIsolated(<AccountFilter value={[]} onChange={() => {}} />);
+    renderWithSWR(<AccountFilter value={[]} onChange={() => {}} />);
 
     expect(await screen.findByTestId("account-filter-chip-10")).toBeInTheDocument();
     expect(screen.getByText("Checking")).toBeInTheDocument();
@@ -121,7 +112,7 @@ describe("AccountFilter", () => {
   it("renders an error state when the fetch fails", async () => {
     apiFetchMock.mockRejectedValueOnce(new Error("boom"));
 
-    renderIsolated(<AccountFilter value={[]} onChange={() => {}} />);
+    renderWithSWR(<AccountFilter value={[]} onChange={() => {}} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("account-filter-error")).toBeInTheDocument(),

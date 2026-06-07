@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
 
 import LineWidget from "@/components/reports/widgets/LineWidget";
 import type { LineWidget as LineWidgetType } from "@/lib/reports/types";
@@ -8,14 +7,6 @@ import { runQuery } from "@/lib/reports/api";
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
 }));
-
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
 
 function makeWidget(overrides: Partial<LineWidgetType["config"]> = {}): LineWidgetType {
   return {
@@ -51,7 +42,7 @@ describe("LineWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 5 },
     });
 
-    renderIsolated(<LineWidget widget={makeWidget()} />);
+    renderWithSWR(<LineWidget widget={makeWidget()} />);
 
     await waitFor(() => {
       expect(screen.queryByTestId("line-widget-empty")).toBeNull();
@@ -67,7 +58,7 @@ describe("LineWidget", () => {
       meta: { row_count: 0, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<LineWidget widget={makeWidget()} />);
+    renderWithSWR(<LineWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("line-widget-empty")).toBeInTheDocument(),
@@ -77,7 +68,7 @@ describe("LineWidget", () => {
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("boom"));
 
-    renderIsolated(<LineWidget widget={makeWidget()} />);
+    renderWithSWR(<LineWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("line-widget-error")).toBeInTheDocument(),
@@ -90,7 +81,7 @@ describe("LineWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(
+    renderWithSWR(
       <LineWidget
         widget={makeWidget({
           measures: [
