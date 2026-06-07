@@ -20,6 +20,10 @@ export interface PaginationProps {
   onPageChange: (n: number) => void;
   onPageSizeChange: (n: number) => void;
   pageSizeOptions?: number[];
+  // When false, the per-page selector is omitted. An empty <div /> is still
+  // rendered as the first flex child so justify-between keeps the status +
+  // navigation group right-aligned (dropping the child would left-align them).
+  showPageSizeSelector?: boolean;
 }
 
 export default function Pagination({
@@ -29,6 +33,7 @@ export default function Pagination({
   onPageChange,
   onPageSizeChange,
   pageSizeOptions = [...PAGE_SIZE_OPTIONS],
+  showPageSizeSelector = true,
 }: PaginationProps) {
   const uid = useId();
   const selectId = `pagination-page-size-${uid}`;
@@ -38,27 +43,32 @@ export default function Pagination({
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 py-2 text-sm text-text-secondary">
-      {/* Per-page selector */}
-      <div className="flex items-center gap-2">
-        <label
-          htmlFor={selectId}
-          className="whitespace-nowrap text-xs"
-        >
-          Per page
-        </label>
-        <select
-          id={selectId}
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          className="rounded border border-border bg-surface px-2 py-1 text-xs text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-        >
-          {pageSizeOptions.map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* Per-page selector. When hidden, render an empty <div /> so the
+          justify-between layout keeps the status + nav group right-aligned. */}
+      {showPageSizeSelector ? (
+        <div className="flex items-center gap-2">
+          <label
+            htmlFor={selectId}
+            className="whitespace-nowrap text-xs"
+          >
+            Per page
+          </label>
+          <select
+            id={selectId}
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            className="rounded border border-border bg-surface px-2 py-1 text-xs text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+          >
+            {pageSizeOptions.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : (
+        <div />
+      )}
 
       {/* Status + navigation */}
       <div className="flex items-center gap-3">

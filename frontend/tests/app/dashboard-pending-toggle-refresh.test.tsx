@@ -85,9 +85,10 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
     let pendingCalls = 0;
     let toggleCallSeen = false;
 
-    // Page 0: 11 rows so hasMore is true and the Next button is enabled.
-    // Each row has a unique id so React keys are stable.
-    const PAGE_0_ROWS = Array.from({ length: 11 }, (_, i) => ({
+    // Page 0: a full page of PAGE_SIZE (10) rows. The grand total (11) is
+    // what enables the Next button — the visible-page fetch carries `total`,
+    // not an extra probe row. Each row has a unique id so React keys are stable.
+    const PAGE_0_ROWS = Array.from({ length: 10 }, (_, i) => ({
       ...SETTLED_TX,
       id: 200 + i,
       description: `Row ${i}`,
@@ -96,6 +97,7 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
     // below targets exactly this row, so the toggle test is unambiguous
     // about which page it's on.
     const PAGE_1_ROWS = [SETTLED_TX];
+    const GRAND_TOTAL = PAGE_0_ROWS.length + PAGE_1_ROWS.length;
 
     vi.mocked(apiFetch).mockImplementation(((url: string, init?: RequestInit) => {
       if (url === "/api/v1/accounts") return Promise.resolve([]);
@@ -122,29 +124,31 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
         return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       }
       // limit=200 is the period-scoped "all" fetch (donut, charts, etc.).
-      // limit=11 is the paginated visible-page fetch (PAGE_SIZE+1).
+      // limit=10 is the paginated visible-page fetch (PAGE_SIZE). Every page
+      // response carries the grand total so the Pagination control can render.
       if (url.startsWith("/api/v1/transactions?limit=200")) {
         const items = [...PAGE_0_ROWS, ...PAGE_1_ROWS];
         return Promise.resolve({ items, total: items.length, limit: 200, offset: 0 });
       }
-      if (url.startsWith("/api/v1/transactions?limit=11&offset=0"))
-        return Promise.resolve({ items: PAGE_0_ROWS, total: PAGE_0_ROWS.length, limit: 11, offset: 0 });
-      if (url.startsWith("/api/v1/transactions?limit=11&offset=10"))
-        return Promise.resolve({ items: PAGE_1_ROWS, total: PAGE_1_ROWS.length, limit: 11, offset: 10 });
+      if (url.startsWith("/api/v1/transactions?limit=10&offset=0"))
+        return Promise.resolve({ items: PAGE_0_ROWS, total: GRAND_TOTAL, limit: 10, offset: 0 });
+      if (url.startsWith("/api/v1/transactions?limit=10&offset=10"))
+        return Promise.resolve({ items: PAGE_1_ROWS, total: GRAND_TOTAL, limit: 10, offset: 10 });
       return Promise.resolve({});
     }) as never);
 
     render(<DashboardPage />);
 
     // Wait for the initial page-0 render. The Next button is enabled
-    // (hasMore=true because PAGE_0_ROWS.length = 11 > PAGE_SIZE).
+    // (txTotal = 11 > PAGE_SIZE, so the shared Pagination renders and Next
+    // is not on the last page). The shared component labels it "Next page".
     await waitFor(
-      () => expect(screen.getByRole("button", { name: /^Next$/ })).not.toBeDisabled(),
+      () => expect(screen.getByRole("button", { name: /Next page/ })).not.toBeDisabled(),
       { timeout: 3000 },
     );
 
     // Navigate to page 1 (page index 1 = "page > 0", the regression case).
-    fireEvent.click(screen.getByRole("button", { name: /^Next$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Next page/ }));
 
     // Wait for page-1 render. SETTLED_TX (Coffee) is now visible; its
     // status-toggle button has the destination-aware aria-label set in
@@ -187,8 +191,8 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
       if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
       if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       if (url.startsWith("/api/v1/transactions?limit=200")) return Promise.resolve({ items: [SETTLED_TX], total: 1, limit: 200, offset: 0 });
-      if (url.startsWith("/api/v1/transactions?limit=11&offset=0"))
-        return Promise.resolve({ items: [SETTLED_TX], total: 1, limit: 11, offset: 0 });
+      if (url.startsWith("/api/v1/transactions?limit=10&offset=0"))
+        return Promise.resolve({ items: [SETTLED_TX], total: 1, limit: 10, offset: 0 });
       return Promise.resolve({});
     }) as never);
 
@@ -232,8 +236,8 @@ describe("DashboardPage — pending refetch on status toggle (L3.4)", () => {
       if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
       if (url.startsWith("/api/v1/transactions?status=pending")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
       if (url.startsWith("/api/v1/transactions?limit=200")) return Promise.resolve({ items: [CC_TX], total: 1, limit: 200, offset: 0 });
-      if (url.startsWith("/api/v1/transactions?limit=11&offset=0"))
-        return Promise.resolve({ items: [CC_TX], total: 1, limit: 11, offset: 0 });
+      if (url.startsWith("/api/v1/transactions?limit=10&offset=0"))
+        return Promise.resolve({ items: [CC_TX], total: 1, limit: 10, offset: 0 });
       return Promise.resolve({});
     }) as never);
 

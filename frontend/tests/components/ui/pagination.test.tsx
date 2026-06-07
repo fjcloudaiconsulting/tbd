@@ -138,6 +138,33 @@ describe("Pagination", () => {
     expect(screen.getByText(/Page 1 of 2/)).toBeInTheDocument();
   });
 
+  describe("showPageSizeSelector={false}", () => {
+    it("does not render the per-page select", () => {
+      render(<Pagination {...defaults} showPageSizeSelector={false} />);
+      expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/per page/i)).not.toBeInTheDocument();
+    });
+
+    it("still renders the status line and navigation buttons", () => {
+      render(
+        <Pagination
+          {...defaults}
+          page={1}
+          total={100}
+          pageSize={25}
+          showPageSizeSelector={false}
+        />,
+      );
+      expect(screen.getByText(/Page 1 of 4/)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /next page/i }),
+      ).not.toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: /previous page/i }),
+      ).toBeDisabled();
+    });
+  });
+
   describe("unique ids when multiple instances are rendered", () => {
     it("two Pagination instances have distinct select ids", () => {
       const { container } = render(
