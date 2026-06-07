@@ -18,11 +18,24 @@ itself only relies on standard SQL.
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import pathlib
+import sqlite3
 
 import pytest
 import sqlalchemy as sa
+
+
+# Python 3.12 deprecated sqlite3's built-in date/datetime adapters. The
+# migration under test binds ``datetime.date`` / ``datetime.datetime``
+# objects (trial_start, trial_end, created_at, updated_at), which would
+# otherwise trip the default-adapter DeprecationWarning. Register the
+# explicit ISO-8601 adapters the 3.12 docs recommend so the stored values
+# stay byte-for-byte identical (ISO strings the tests parse back via
+# ``date.fromisoformat``).
+sqlite3.register_adapter(datetime.date, lambda d: d.isoformat())
+sqlite3.register_adapter(datetime.datetime, lambda d: d.isoformat())
 
 
 _MIGRATION_PATH = (

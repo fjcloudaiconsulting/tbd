@@ -39,7 +39,7 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import LEGACY_REFRESH_COOKIE_PATH, router as auth_router
 from app.security import create_refresh_token, hash_password
-from tests.conftest import issue_test_refresh_token
+from tests.conftest import issue_test_refresh_token, set_refresh_cookie
 
 
 def _mint_refresh_at(user_id: int, iat: datetime) -> str:
@@ -333,9 +333,9 @@ async def test_refresh_rotation_emits_legacy_cleanup(session_factory):
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/refresh"
         )
 
     assert res.status_code == 200
@@ -364,9 +364,9 @@ async def test_refresh_session_expired_emits_legacy_cleanup(session_factory):
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/refresh"
         )
 
     assert res.status_code == 401

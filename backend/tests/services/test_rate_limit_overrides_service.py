@@ -13,7 +13,7 @@ Covers the architect-locked invariants:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -228,7 +228,7 @@ async def test_resolve_falls_through_to_org(session_factory, fake_redis):
 @pytest.mark.asyncio
 async def test_resolve_ignores_expired_row(session_factory, fake_redis):
     org_id, _ = await _seed_org_user(session_factory)
-    past = datetime.utcnow() - timedelta(hours=1)
+    past = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
     async with session_factory() as db:
         await svc.create_override(
             db,
@@ -254,7 +254,7 @@ async def test_resolve_ignores_expired_row(session_factory, fake_redis):
 @pytest.mark.asyncio
 async def test_resolve_honours_future_expiry(session_factory, fake_redis):
     org_id, _ = await _seed_org_user(session_factory)
-    future = datetime.utcnow() + timedelta(hours=1)
+    future = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)
     async with session_factory() as db:
         await svc.create_override(
             db,

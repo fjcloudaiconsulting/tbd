@@ -62,6 +62,8 @@ from app.security import (
     hash_password,
 )
 
+from tests.conftest import set_refresh_cookie
+
 
 PASSWORD = "starting-password-1"
 
@@ -225,7 +227,8 @@ async def test_logout_after_rotation_revokes_entire_family(
         old_jti, sid = decode_refresh_jti_sid(token)
 
         # Rotate so old_jti only has a grace key, new_jti is the primary.
-        r1 = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        r1 = client.post("/api/v1/auth/refresh" )
         assert r1.status_code == 200
         new_raw = _canonical_refresh_cookie(r1.headers)
         assert new_raw is not None
@@ -246,10 +249,10 @@ async def test_logout_after_rotation_revokes_entire_family(
             seed["org_id"],
             Role.OWNER.value,
         )
+        set_refresh_cookie(client, new_token)
         logout = client.post(
             "/api/v1/auth/logout",
-            cookies={"refresh_token": new_token},
-            headers={"Authorization": f"Bearer {access}"},
+            headers={"Authorization": f"Bearer {access}"}
         )
         assert logout.status_code == 200, logout.text
 
@@ -262,8 +265,9 @@ async def test_logout_after_rotation_revokes_entire_family(
 
         # Replay the PRE-rotation cookie. Grace key is gone AND family
         # is gone, so /refresh must 401.
+        set_refresh_cookie(client, token)
         replay = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
+            "/api/v1/auth/refresh"
         )
     assert replay.status_code == 401
     assert replay.json()["detail"] == "Session has been invalidated"
@@ -313,15 +317,16 @@ async def test_concurrent_logout_vs_rotation_returns_session_revoked(
 
     async with _httpx_app_client(app) as ac:
         async def _do_refresh():
+            set_refresh_cookie(ac, token)
             return await ac.post(
-                "/api/v1/auth/refresh", cookies={"refresh_token": token}
+                "/api/v1/auth/refresh"
             )
 
         async def _do_logout():
+            set_refresh_cookie(ac, token)
             res = await ac.post(
                 "/api/v1/auth/logout",
-                cookies={"refresh_token": token},
-                headers={"Authorization": f"Bearer {access}"},
+                headers={"Authorization": f"Bearer {access}"}
             )
             logout_done.set()
             return res
@@ -362,7 +367,8 @@ async def test_verify_rejects_grace_ticket_after_logout(
         old_jti, sid = decode_refresh_jti_sid(token)
 
         # Rotate so the grace key exists for old_jti.
-        r1 = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        r1 = client.post("/api/v1/auth/refresh" )
         assert r1.status_code == 200
         new_token = _refresh_token_from_set_cookie(
             _canonical_refresh_cookie(r1.headers)
@@ -372,18 +378,19 @@ async def test_verify_rejects_grace_ticket_after_logout(
         access = create_access_token(
             seed["user_id"], seed["org_id"], Role.OWNER.value
         )
+        set_refresh_cookie(client, new_token)
         logout = client.post(
             "/api/v1/auth/logout",
-            cookies={"refresh_token": new_token},
-            headers={"Authorization": f"Bearer {access}"},
+            headers={"Authorization": f"Bearer {access}"}
         )
         assert logout.status_code == 200
 
         # /verify with the PRE-rotation cookie. Grace key was deleted
         # by Round B, but even if some grace-only edge case lingered,
         # the family-set check in the grace branch rejects.
+        set_refresh_cookie(client, token)
         verify = client.post(
-            "/api/v1/auth/verify", cookies={"refresh_token": token}
+            "/api/v1/auth/verify"
         )
     assert verify.status_code == 401
 
@@ -480,9 +487,9 @@ async def test_corrupt_refresh_cookie_logout_still_clears(session_factory, fake_
     await _seed_user(session_factory)
     app = _make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, "this-is-not-a-jwt")
         res = client.post(
-            "/api/v1/auth/logout",
-            cookies={"refresh_token": "this-is-not-a-jwt"},
+            "/api/v1/auth/logout"
         )
     assert res.status_code == 200
     deletes = _delete_cookie_headers(res.headers)
@@ -524,10 +531,10 @@ async def test_logout_does_not_write_sessions_invalidated_at(
             user_before = row.scalar_one()
             cutoff_before = user_before.sessions_invalidated_at
 
+        set_refresh_cookie(client, token)
         res = client.post(
             "/api/v1/auth/logout",
-            cookies={"refresh_token": token},
-            headers={"Authorization": f"Bearer {access}"},
+            headers={"Authorization": f"Bearer {access}"}
         )
     assert res.status_code == 200
 
@@ -561,10 +568,10 @@ async def test_logout_audit_binds_to_actor_when_bearer_present(
         access = create_access_token(
             seed["user_id"], seed["org_id"], Role.OWNER.value
         )
+        set_refresh_cookie(client, token)
         res = client.post(
             "/api/v1/auth/logout",
-            cookies={"refresh_token": token},
-            headers={"Authorization": f"Bearer {access}"},
+            headers={"Authorization": f"Bearer {access}"}
         )
     assert res.status_code == 200
 
@@ -592,10 +599,10 @@ async def test_logout_clears_canonical_and_legacy_cookie_paths(
         access = create_access_token(
             seed["user_id"], seed["org_id"], Role.OWNER.value
         )
+        set_refresh_cookie(client, token)
         res = client.post(
             "/api/v1/auth/logout",
-            cookies={"refresh_token": token},
-            headers={"Authorization": f"Bearer {access}"},
+            headers={"Authorization": f"Bearer {access}"}
         )
     assert res.status_code == 200
     deletes = _delete_cookie_headers(res.headers)
@@ -637,10 +644,10 @@ async def test_logout_one_device_leaves_other_device_authenticated(
         seed["user_id"], seed["org_id"], Role.OWNER.value
     )
     with TestClient(app_a) as client_a:
+        set_refresh_cookie(client_a, token_a)
         logout = client_a.post(
             "/api/v1/auth/logout",
-            cookies={"refresh_token": token_a},
-            headers={"Authorization": f"Bearer {access_a}"},
+            headers={"Authorization": f"Bearer {access_a}"}
         )
     assert logout.status_code == 200
 
@@ -651,8 +658,9 @@ async def test_logout_one_device_leaves_other_device_authenticated(
 
     # Device B can still rotate.
     with TestClient(app_b) as client_b:
+        set_refresh_cookie(client_b, token_b)
         rotate = client_b.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token_b}
+            "/api/v1/auth/refresh"
         )
     assert rotate.status_code == 200
     new_raw = _canonical_refresh_cookie(rotate.headers)
@@ -691,8 +699,9 @@ async def test_verify_rejects_primary_when_family_set_missing(
         # Primary + grace keys deliberately remain — that's the bug class.
         del fake_redis._sets[f"auth:session:by_sid:{sid}"]
 
+        set_refresh_cookie(client, token)
         verify = client.post(
-            "/api/v1/auth/verify", cookies={"refresh_token": token}
+            "/api/v1/auth/verify"
         )
     assert verify.status_code == 401, verify.json()
     assert "invalidated" in verify.json()["detail"].lower()
@@ -714,8 +723,9 @@ async def test_refresh_rejects_primary_when_family_set_missing(
         # Round A simulation.
         del fake_redis._sets[f"auth:session:by_sid:{sid}"]
 
+        set_refresh_cookie(client, token)
         refresh = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
+            "/api/v1/auth/refresh"
         )
     assert refresh.status_code == 401, refresh.json()
     # No Set-Cookie on a rejected refresh.
@@ -763,10 +773,10 @@ async def test_logout_round_a_succeeds_round_b_fails_revocation_still_holds(
         # the cookie is still cleared, and the response is 200. The
         # orphan primary remains in Redis — exactly the half-revoked
         # state we want to test against.
+        set_refresh_cookie(client, token)
         logout = client.post(
             "/api/v1/auth/logout",
-            cookies={"refresh_token": token},
-            headers={"Authorization": f"Bearer {access}"},
+            headers={"Authorization": f"Bearer {access}"}
         )
         assert logout.status_code == 200
 
@@ -787,13 +797,15 @@ async def test_logout_round_a_succeeds_round_b_fails_revocation_still_holds(
         # The orphaned cookie must NOT verify and must NOT refresh,
         # even though the primary key is still alive. The
         # membership check is what enforces this.
+        set_refresh_cookie(client, token)
         verify = client.post(
-            "/api/v1/auth/verify", cookies={"refresh_token": token}
+            "/api/v1/auth/verify"
         )
         assert verify.status_code == 401, verify.json()
 
+        set_refresh_cookie(client, token)
         refresh = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
+            "/api/v1/auth/refresh"
         )
         assert refresh.status_code == 401, refresh.json()
         assert _canonical_refresh_cookie(refresh.headers) is None
