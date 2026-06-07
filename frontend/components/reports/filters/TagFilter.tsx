@@ -104,8 +104,8 @@ export default function TagFilter({
                 onClick={() => toggle(t.name)}
                 className={`rounded-full border px-2.5 py-0.5 text-xs transition ${
                   active
-                    ? "border-accent bg-accent text-accent-foreground"
-                    : "border-border text-text-secondary hover:bg-bg-elevated"
+                    ? "border-accent bg-accent text-accent-text"
+                    : "border-border text-text-secondary hover:bg-surface-raised"
                 }`}
               >
                 {t.name}

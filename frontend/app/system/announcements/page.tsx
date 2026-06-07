@@ -228,8 +228,9 @@ export default function SystemAnnouncementsPage() {
           </div>
           <form onSubmit={handleSubmit} className="p-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="sm:col-span-2">
-              <label className={label}>Title</label>
+              <label htmlFor="announcement-title" className={label}>Title</label>
               <input
+                id="announcement-title"
                 value={formTitle}
                 onChange={(e) => setFormTitle(e.target.value)}
                 className={input}
@@ -239,8 +240,9 @@ export default function SystemAnnouncementsPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label className={label}>Body</label>
+              <label htmlFor="announcement-body" className={label}>Body</label>
               <textarea
+                id="announcement-body"
                 value={formBody}
                 onChange={(e) => setFormBody(e.target.value)}
                 className={`${input} min-h-[120px]`}
@@ -253,8 +255,9 @@ export default function SystemAnnouncementsPage() {
               </p>
             </div>
             <div>
-              <label className={label}>Severity</label>
+              <label htmlFor="announcement-severity" className={label}>Severity</label>
               <select
+                id="announcement-severity"
                 value={formSeverity}
                 onChange={(e) => setFormSeverity(e.target.value as Severity)}
                 className={input}
@@ -278,8 +281,9 @@ export default function SystemAnnouncementsPage() {
               </label>
             </div>
             <div>
-              <label className={label}>Start (UTC, optional)</label>
+              <label htmlFor="announcement-start" className={label}>Start (UTC, optional)</label>
               <input
+                id="announcement-start"
                 type="datetime-local"
                 value={formStartAt}
                 onChange={(e) => setFormStartAt(e.target.value)}
@@ -288,8 +292,9 @@ export default function SystemAnnouncementsPage() {
               />
             </div>
             <div>
-              <label className={label}>End (UTC, optional)</label>
+              <label htmlFor="announcement-end" className={label}>End (UTC, optional)</label>
               <input
+                id="announcement-end"
                 type="datetime-local"
                 value={formEndAt}
                 onChange={(e) => setFormEndAt(e.target.value)}

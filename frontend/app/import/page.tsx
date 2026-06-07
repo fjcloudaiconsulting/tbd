@@ -417,8 +417,9 @@ function ImportPageContent() {
           </div>
           <div className="space-y-4 p-6">
             <div>
-              <label className={label}>Target Account</label>
+              <label htmlFor="import-target-account" className={label}>Target Account</label>
               <select
+                id="import-target-account"
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value === "" ? "" : Number(e.target.value))}
                 className={input}
@@ -432,8 +433,9 @@ function ImportPageContent() {
               </select>
             </div>
             <div>
-              <label className={label}>CSV File</label>
+              <label htmlFor="import-csv-file" className={label}>CSV File</label>
               <input
+                id="import-csv-file"
                 type="file"
                 accept=".csv"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
@@ -515,10 +517,11 @@ function ImportPageContent() {
           {/* Default category */}
           <div className={card}>
             <div className="p-6">
-              <label className={label}>
+              <label htmlFor="import-default-category" className={label}>
                 Default Category (applied to rows without a specific category)
               </label>
               <select
+                id="import-default-category"
                 value={defaultCategoryId}
                 onChange={(e) => setDefaultCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
                 className={input + " max-w-sm"}

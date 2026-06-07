@@ -91,8 +91,8 @@ export default function DatePresetChips({
               onClick={() => pick(p.key)}
               className={`rounded-full border px-3 py-1 text-xs transition ${
                 isActive
-                  ? "border-accent bg-accent text-accent-foreground"
-                  : "border-border text-text-secondary hover:bg-bg-elevated"
+                  ? "border-accent bg-accent text-accent-text"
+                  : "border-border text-text-secondary hover:bg-surface-raised"
               }`}
             >
               {p.label}

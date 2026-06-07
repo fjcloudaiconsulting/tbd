@@ -9,13 +9,12 @@
  *
  * Single dimension, single aggregation — the config rail locks both
  * when the widget type is ``sparkline``.
+ *
+ * The recharts subtree is code-split via ``next/dynamic`` (ssr:false)
+ * into ``SparklineWidgetChart`` so recharts loads only when a sparkline
+ * mounts, keeping it out of the route's initial JS.
  */
-import {
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-} from "recharts";
+import dynamic from "next/dynamic";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
 import { dimensionHeader } from "@/lib/reports/series";
@@ -25,6 +24,19 @@ import type {
 } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
 import type { CsvCell } from "@/lib/reports/csv";
+
+const SparklineWidgetChart = dynamic(
+  () => import("./SparklineWidgetChart"),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        data-testid="sparkline-widget-chart-loading"
+        className="h-full w-full animate-pulse rounded bg-border/40"
+      />
+    ),
+  },
+);
 
 interface Props {
   widget: SparklineWidgetType;
@@ -98,19 +110,7 @@ export default function SparklineWidget({
             {formatValue(lastValue ?? 0, format)}
           </div>
           <div className="-mx-1 h-10">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={rows} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
-                <Tooltip cursor={false} />
-                <Line
-                  type="monotone"
-                  dataKey="value"
-                  stroke="var(--color-accent)"
-                  strokeWidth={2}
-                  dot={false}
-                  isAnimationActive={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            <SparklineWidgetChart rows={rows} />
           </div>
         </>
       )}

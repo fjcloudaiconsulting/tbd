@@ -137,7 +137,7 @@ export function AIForecastRefinePanel({
               id="ai-refine-timeframe"
               value={timeframe}
               onChange={(e) => setTimeframe(Number(e.target.value))}
-              className="rounded border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+              className="rounded border border-border bg-surface px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
             >
               {TIMEFRAMES.map((m) => (
                 <option key={m} value={m}>
@@ -157,7 +157,7 @@ export function AIForecastRefinePanel({
               id="ai-refine-scope"
               value={scope}
               onChange={(e) => setScope(e.target.value)}
-              className="rounded border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
+              className="rounded border border-border bg-surface px-2 py-1 text-xs text-text-primary focus:border-accent focus:outline-none"
             >
               {SCOPES.map((s) => (
                 <option key={s.value} value={s.value}>
@@ -199,7 +199,7 @@ export function AIForecastRefinePanel({
             type="button"
             onClick={handleConfirm}
             disabled={!canProceed || estimating || running}
-            className="rounded border border-border bg-bg-secondary px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-bg-tertiary disabled:opacity-50"
+            className="rounded border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-surface-overlay disabled:opacity-50"
           >
             {running ? (
               <span className="inline-flex items-center gap-1">

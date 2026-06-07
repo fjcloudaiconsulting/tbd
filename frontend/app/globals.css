@@ -20,7 +20,10 @@
 
   --theme-text-primary: #E6EAF0;
   --theme-text-secondary: #9ba8bd;
-  --theme-text-muted: #5a6a82;
+  /* Lifted from #5a6a82 (3.0:1 on surface) to clear WCAG 1.4.3 (>=4.5:1) on
+     every dark surface up to surface-overlay; muted stays below text-secondary
+     so the hierarchy holds. */
+  --theme-text-muted: #8f9db2;
 
   --theme-accent: #D4A64A;
   --theme-accent-hover: #B88A2E;
@@ -69,10 +72,15 @@
 
   --theme-text-primary: #0B1F3A;
   --theme-text-secondary: #3d5070;
-  --theme-text-muted: #8895a8;
+  /* Darkened from #8895a8 (3.0:1 on white) to clear WCAG 1.4.3 on the light
+     surfaces. */
+  --theme-text-muted: #5d6a7e;
 
-  --theme-accent: #B88A2E;
-  --theme-accent-hover: #9a7425;
+  /* Darkened from #B88A2E (white-on-brass was 3.13:1) so primary buttons and
+     text-accent links clear 4.5:1 in the light theme. Sidebar brass is a
+     separate always-dark token and is unaffected. */
+  --theme-accent: #8a6a1f;
+  --theme-accent-hover: #75591a;
   --theme-accent-dim: rgba(184, 138, 46, 0.08);
   --theme-accent-text: #ffffff;
 

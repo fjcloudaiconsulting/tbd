@@ -56,7 +56,7 @@ export default function WidgetCsvButton({ title, dataset, editMode }: Props) {
       disabled={!hasRows}
       title="Export CSV"
       aria-label={`Export ${title || "widget"} as CSV`}
-      className="rounded p-1 text-text-muted transition hover:bg-bg-elevated hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+      className="rounded p-1 text-text-muted transition hover:bg-surface-raised hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
     >
       <Download aria-hidden="true" className="h-3.5 w-3.5" />
     </button>

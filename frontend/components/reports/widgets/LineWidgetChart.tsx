@@ -1,0 +1,69 @@
+"use client";
+
+/**
+ * Recharts-rendering inner for LineWidget. Split out so recharts is
+ * dynamically imported (ssr:false) only when a line chart mounts. The
+ * public LineWidget keeps all data wiring; this renders merged rows.
+ */
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+import { chartColor } from "@/lib/chart-colors";
+
+const LINE_COLORS = [
+  "var(--color-accent)",
+  "var(--color-success)",
+  "var(--color-info, var(--color-accent))",
+  "var(--color-warning, var(--color-text-secondary))",
+  "var(--color-danger)",
+];
+
+export interface LineWidgetChartProps {
+  rows: Array<{ label: string } & Record<string, number | string>>;
+  seriesKeys: string[];
+  labels: string[];
+  smooth?: boolean;
+}
+
+export default function LineWidgetChart({
+  rows,
+  seriesKeys,
+  labels,
+  smooth,
+}: LineWidgetChartProps) {
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+        <XAxis
+          dataKey="label"
+          tick={{ fill: chartColor.axisTick, fontSize: 11 }}
+          interval={0}
+        />
+        <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
+        <Tooltip cursor={{ stroke: "var(--color-border)" }} />
+        {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
+        {seriesKeys.map((key, i) => (
+          <Line
+            key={key}
+            type={smooth === false ? "linear" : "monotone"}
+            dataKey={key}
+            name={labels[i]}
+            stroke={LINE_COLORS[i % LINE_COLORS.length]}
+            strokeWidth={2}
+            dot={false}
+            isAnimationActive={false}
+          />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
