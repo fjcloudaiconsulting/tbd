@@ -8,15 +8,12 @@
 #     excluded — they cannot rely on Tailwind theme tokens at runtime).
 #   - Hard-coded hex literals in .ts/.tsx.
 #
-# This script is EXPECTED TO FAIL today (Phase A): the foundation PR adds
-# the missing primitives but does not migrate call sites. Phase B will
-# replace the offending utilities at the call sites and, once green, this
-# check will be wired into CI. Until then, do not gate CI on it.
-#
-# Tracked Phase B fix targets (non-exhaustive):
-#   - app/transactions/page.tsx (sticky bar + amber/red utilities)
-#   - components/categories/BatchActionBar.tsx (sticky bar)
-#   - any component still using bg-amber-* / bg-red-* / text-white / text-black
+# This check is wired into CI (.github/workflows/test.yml) and is expected to
+# PASS: the call sites have been migrated to theme tokens. Both the raw-palette
+# / hex checks and the phantom-token check (a className referencing a --color-*
+# name that does not exist, which silently emits no CSS) are fatal. Keep it
+# green: use a theme token from app/globals.css or a primitive from
+# lib/styles.ts instead of a raw color or an undefined token.
 #
 # Usage:
 #   bash frontend/scripts/check-design-tokens.sh
@@ -148,15 +145,13 @@ if [ -n "${candidates}" ]; then
   done <<< "${candidates}"
 
   if [ -n "${phantom_hits}" ]; then
-    # Phantom-token findings are reported as WARNINGS in this commit
-    # (do not flip ``fail`` to 1). There is one pre-existing offender
-    # in ``app/import/page.tsx`` that predates this check; gating CI
-    # on it would expand scope. Each follow-up PR that touches a
-    # phantom site should drop it from the list. Once the list is
-    # empty, promote this block to ``fail=1`` so the check gates CI
-    # on its own.
+    # Phantom-token findings are FATAL. All known offenders were migrated
+    # to real tokens (audit P1/P2), so any new className referencing a
+    # --color-* name that does not exist (it silently emits no CSS, e.g.
+    # invisible text or a dead hover) must fail the check.
+    fail=1
     echo "── Phantom theme-token utilities (no --color-* match) ─────"
-    echo "WARNING (not currently fatal). Fix at first opportunity."
+    echo "FAIL: className references a token with no --color-* definition."
     printf '%s' "${phantom_hits}"
     echo
   fi
