@@ -50,7 +50,7 @@
   --theme-sidebar-active-bg: rgba(212, 166, 74, 0.12);
   --theme-sidebar-active-text: #D4A64A;
   --theme-sidebar-border: rgba(212, 166, 74, 0.08);
-  --theme-sidebar-muted: #3d4f68;
+  --theme-sidebar-muted: #7286a0;
 
   /* Tour-overlay chrome (L3.3). `scrim` is the semi-opaque backdrop
      painted under the overlay; `card-shadow` is the elevation shadow
@@ -104,7 +104,7 @@
   --theme-sidebar-active-bg: rgba(212, 166, 74, 0.12);
   --theme-sidebar-active-text: #D4A64A;
   --theme-sidebar-border: rgba(212, 166, 74, 0.08);
-  --theme-sidebar-muted: #3d4f68;
+  --theme-sidebar-muted: #7286a0;
 
   /* L3.3 tour overlay. The light scrim is a softer slate wash so the
      page underneath stays readable; the card shadow drops the

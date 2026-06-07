@@ -46,9 +46,6 @@ export default function ScreenshotShowcase() {
       className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-24"
     >
       <div className="mb-12 max-w-2xl">
-        <p className="mb-3 font-display text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
-          See it in motion
-        </p>
         <h2 className="font-display text-3xl font-semibold leading-tight text-text-primary lg:text-4xl">
           Built for the way you actually look at money.
         </h2>
@@ -66,9 +63,6 @@ export default function ScreenshotShowcase() {
             }`}
           >
             <div className="motion-safe:animate-fade-in-up">
-              <p className="mb-3 font-display text-xs font-semibold uppercase tracking-[0.14em] text-accent">
-                {p.surface}
-              </p>
               <p className="text-lg leading-relaxed text-text-primary lg:text-xl">
                 {p.caption}
               </p>

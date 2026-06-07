@@ -20,12 +20,15 @@ import {
 
 import { chartColor } from "@/lib/chart-colors";
 
+// Canonical categorical chart palette (theme tokens, mirrors the
+// dashboard). chart-5 (danger/red) sits last so neutral series don't
+// pick up alarm semantics until the cycle wraps.
 const AREA_COLORS = [
-  "var(--color-accent)",
-  "var(--color-success)",
-  "var(--color-info, var(--color-accent))",
-  "var(--color-warning, var(--color-text-secondary))",
-  "var(--color-danger)",
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
 ];
 
 export interface AreaWidgetChartProps {

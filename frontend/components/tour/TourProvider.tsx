@@ -303,7 +303,7 @@ function TourOverlay({ api }: { api: TourApi }) {
         role="region"
         aria-live="polite"
         data-testid="tour-card"
-        className="absolute w-[340px] rounded-xl bg-surface text-text-primary shadow-card p-5 pointer-events-auto border border-border"
+        className="absolute w-[min(340px,calc(100vw-2rem))] rounded-xl bg-surface text-text-primary shadow-card p-5 pointer-events-auto border border-border"
         style={{
           transition,
           ...cardStyle,

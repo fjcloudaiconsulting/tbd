@@ -86,13 +86,13 @@ describe("L5.1 landing — ScreenshotShowcase", () => {
 
   it("each preview has a short product caption visible to users", () => {
     const { container } = render(<ScreenshotShowcase />);
-    // Captions sit alongside the framed preview in the same grid
-    // cell pair. We assert each surface kicker ("Transactions" /
-    // "Reports" / "Plans") shows up as an uppercase eyebrow.
+    // Each preview identifies its surface via the frame's URL bar
+    // ("transactions.thebetterdecision.com" etc.) and its aria-label;
+    // match case-insensitively so the surface name is discoverable.
     const text = allText(container);
-    expect(text).toMatch(/Transactions/);
-    expect(text).toMatch(/Reports/);
-    expect(text).toMatch(/Plans/);
+    expect(text).toMatch(/transactions/i);
+    expect(text).toMatch(/reports/i);
+    expect(text).toMatch(/plans/i);
   });
 
   it("preview frames use animation classes guarded by motion-safe", () => {

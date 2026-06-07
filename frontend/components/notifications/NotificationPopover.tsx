@@ -139,7 +139,7 @@ export default function NotificationPopover({
             <button
               type="button"
               onClick={() => handleRowClick(notif)}
-              className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-hover focus:outline-none focus:ring-1 focus:ring-accent"
+              className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-raised focus:outline-none focus:ring-1 focus:ring-accent"
             >
               <span
                 aria-hidden="true"
