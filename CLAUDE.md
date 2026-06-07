@@ -139,4 +139,11 @@ frontend/
 - **Production data plane is self-hosted** — MySQL 8 and Redis run on a single dedicated DO droplet (`pfv-data-01`) in a private VPC; App Platform reaches them over the VPC's private IPv4. Runbook lives in `infra/MIGRATION.md`. Terraform is VCS-driven via TFC (workspace `FlamaCorp/pfv`), with manual Confirm & Apply on merge.
 - **Sensitive admin / org actions are audited** — org rename, org-data wipe, override sweep, role edits, etc. write to `audit_events` and surface in `/admin/audit`.
 
+## Design Context
+
+Two root files carry the design source of truth; read them before any UI work:
+
+- **`PRODUCT.md`** (strategy) — register (`product`), target users, product purpose, brand personality, anti-references (bank apps, spreadsheet skins), design principles (plan-first, line-item visibility, hierarchy-without-grids, quiet-by-default, status-is-data), and WCAG 2.2 AA commitments.
+- **`DESIGN.md`** (visual system) — Stitch-format tokens in YAML frontmatter (colors, typography, rounded, spacing, components) plus the named rules that govern the app: *The One Brass Rule*, *Sidebar-Always-Navy*, *No Off-Token* (every color from `globals.css` theme tokens; raw Tailwind palette colors are CI-blocked by `frontend/scripts/check-design-tokens.sh`), *Brand-Surface Lock* (`frontend/lib/brand.ts` literals never theme-switch), and the typography/elevation/component rules. `DESIGN.json` is the renderable sidecar. Component primitives live in `frontend/lib/styles.ts`.
+
 
