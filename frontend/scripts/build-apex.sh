@@ -90,6 +90,11 @@ ALLOWED_OUTPUT_GLOBS=(
   # twitter:image by lib/site.ts. Copied verbatim from public/ into the
   # export; the dynamic /opengraph-image route is not exported here.
   "og.png"
+  # Static llms.txt (public/llms.txt) describing the product + key apex
+  # pages for AI crawlers / answer engines. Copied verbatim from public/
+  # into the export; must be on this allowlist or the post-build guard
+  # rejects it (same rule that applied to og.png).
+  "llms.txt"
   "__next.*.txt"
   # Reserved directory under public/ for future marketing screenshots
   # used by the landing surface. Next.js copies the whole public/ tree
@@ -248,7 +253,37 @@ APP_URL="${NEXT_PUBLIC_APP_URL:-https://app.thebetterdecision.com}"
 # robots.txt — allow indexing of the apex landing surface, point at the
 # apex sitemap (NOT the app sitemap; the app keeps its own at
 # app.thebetterdecision.com/sitemap.xml).
+#
+# The apex host serves ONLY public marketing + docs content, so we
+# explicitly welcome the major AI crawlers / answer engines (training
+# and live-retrieval bots) in addition to the catch-all. The app host
+# (app.thebetterdecision.com) stays auth-walled and keeps its own
+# noindex robots from app/robots.ts; do not loosen that one.
 cat > "${FRONTEND_DIR}/out-apex/robots.txt" <<EOF
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
 User-agent: *
 Allow: /
 

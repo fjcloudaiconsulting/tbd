@@ -2,7 +2,8 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
-import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
+import { readNonce } from "@/lib/nonce";
+import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 
 const description =
   "Rough user manual for The Better Decision: core concepts, common workflows, and admin tasks.";
@@ -21,6 +22,45 @@ export const metadata: Metadata = {
   }),
   robots: { index: true, follow: true },
 };
+
+// Structured data for rich results + AI-engine entity resolution.
+// Reuse the SAME Organization @id the landing page declares so the
+// graph links: this doc resolves to the one canonical Organization
+// node. URLs point at the apex (the canonical home for shared pages).
+// We omit author / datePublished — there is no truthful value for them.
+const orgId = `${apexUrl}/#organization`;
+
+const techArticleLd = {
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  headline: "The Better Decision docs",
+  description,
+  url: apexCanonical("/docs"),
+  inLanguage: "en",
+  isPartOf: { "@id": orgId },
+  publisher: { "@id": orgId },
+};
+
+const breadcrumbLd = {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  itemListElement: [
+    {
+      "@type": "ListItem",
+      position: 1,
+      name: "Home",
+      item: apexCanonical("/"),
+    },
+    {
+      "@type": "ListItem",
+      position: 2,
+      name: "Docs",
+      item: apexCanonical("/docs"),
+    },
+  ],
+};
+
+const structuredData = [techArticleLd, breadcrumbLd];
 
 const sections = [
   { id: "overview", label: "Overview" },
@@ -42,9 +82,25 @@ const sections = [
   { id: "whats-next", label: "What's next" },
 ];
 
-export default function DocsPage() {
+export default async function DocsPage() {
+  // Per-request CSP nonce so the JSON-LD inline scripts pass the strict
+  // prod CSP. readNonce() returns "" on the apex static export (no
+  // request context), so we conditionally spread the prop — same pattern
+  // app/page.tsx uses.
+  const nonce = await readNonce();
+  const nonceProp = nonce ? { nonce } : {};
   return (
     <div className="relative min-h-screen px-4 py-12">
+      {structuredData.map((block) => (
+        <script
+          key={block["@type"]}
+          type="application/ld+json"
+          {...nonceProp}
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(block).replace(/<\/script>/gi, "<\\/script>"),
+          }}
+        />
+      ))}
       <ThemeToggle className="absolute right-6 top-6" />
       <article className="mx-auto max-w-2xl">
         <header className="mb-10">

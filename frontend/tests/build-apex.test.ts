@@ -119,9 +119,35 @@ describe("apex build target — scripts/build-apex.sh", () => {
       // Static social-share image copied from public/og.png. Must be on
       // the output allowlist or the post-build guard rejects it.
       "og.png",
+      // Static llms.txt copied from public/llms.txt. Must be on the
+      // output allowlist or the post-build guard rejects it.
+      "llms.txt",
     ]) {
       expect(script).toContain(`"${allowed}"`);
     }
+  });
+
+  it("welcomes the major AI crawlers in the apex robots.txt", () => {
+    // The apex hosts only public marketing + docs content, so the
+    // generated robots.txt explicitly allows the major training /
+    // live-retrieval bots in addition to the catch-all User-agent: *.
+    for (const bot of [
+      "GPTBot",
+      "ChatGPT-User",
+      "OAI-SearchBot",
+      "ClaudeBot",
+      "Claude-Web",
+      "anthropic-ai",
+      "PerplexityBot",
+      "Google-Extended",
+    ]) {
+      expect(script, `expected AI crawler group: ${bot}`).toContain(
+        `User-agent: ${bot}`,
+      );
+    }
+    // The catch-all + sitemap pointer must survive.
+    expect(script).toContain("User-agent: *");
+    expect(script).toMatch(/Sitemap: \$\{APEX_URL\}\/sitemap\.xml/);
   });
 
   it("lists /docs/plans in the apex sitemap", () => {
