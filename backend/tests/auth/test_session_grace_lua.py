@@ -60,6 +60,8 @@ from app.routers.auth import (
 )
 from app.security import decode_refresh_jti_sid, hash_password
 
+from tests.conftest import set_refresh_cookie
+
 
 PASSWORD = "starting-password-1"
 
@@ -213,7 +215,8 @@ async def test_replay_after_grace_window_returns_401(session_factory, fake_redis
         old_jti, _sid = decode_refresh_jti_sid(token)
 
         # First refresh rotates.
-        first = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        first = client.post("/api/v1/auth/refresh")
         assert first.status_code == 200
         # Grace key should exist now.
         assert f"auth:session:grace:{old_jti}" in fake_redis._kv
@@ -222,9 +225,8 @@ async def test_replay_after_grace_window_returns_401(session_factory, fake_redis
         del fake_redis._kv[f"auth:session:grace:{old_jti}"]
 
         # Replay the old cookie.
-        second = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
-        )
+        set_refresh_cookie(client, token)
+        second = client.post("/api/v1/auth/refresh")
     assert second.status_code == 401
     assert second.json()["detail"] == "Session has been invalidated"
 
@@ -268,10 +270,10 @@ async def test_concurrent_refresh_one_winner_one_grace(session_factory, fake_red
     fake_redis.eval_barrier_target = 2
 
     async with _httpx_app_client(app) as ac:
+        set_refresh_cookie(ac, token)
+
         async def _do_refresh():
-            return await ac.post(
-                "/api/v1/auth/refresh", cookies={"refresh_token": token}
-            )
+            return await ac.post("/api/v1/auth/refresh")
 
         task_a = asyncio.create_task(_do_refresh())
         task_b = asyncio.create_task(_do_refresh())
@@ -341,10 +343,10 @@ async def test_concurrent_refresh_emits_one_rotated_and_one_grace_accept(
     fake_redis.eval_barrier_target = 2
 
     async with _httpx_app_client(app) as ac:
+        set_refresh_cookie(ac, token)
+
         async def _do_refresh():
-            return await ac.post(
-                "/api/v1/auth/refresh", cookies={"refresh_token": token}
-            )
+            return await ac.post("/api/v1/auth/refresh")
 
         task_a = asyncio.create_task(_do_refresh())
         task_b = asyncio.create_task(_do_refresh())
@@ -377,12 +379,14 @@ async def test_verify_accepts_grace_ticket_when_family_alive(
         old_jti, sid = decode_refresh_jti_sid(token)
 
         # Rotate once to land the grace key.
-        r1 = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
         assert f"auth:session:grace:{old_jti}" in fake_redis._kv
 
         # /verify with the OLD cookie — primary gone, grace alive, family alive.
-        res = client.post("/api/v1/auth/verify", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        res = client.post("/api/v1/auth/verify")
     assert res.status_code == 200, res.text
     # Invariant: no Set-Cookie from /verify.
     assert _canonical_refresh_cookie(res.headers) is None
@@ -404,13 +408,15 @@ async def test_verify_rejects_grace_ticket_when_family_deleted(
         token = _login(client)
         old_jti, sid = decode_refresh_jti_sid(token)
 
-        r1 = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
 
         # Simulate concurrent logout: wipe the family set.
         del fake_redis._sets[f"auth:session:by_sid:{sid}"]
 
-        res = client.post("/api/v1/auth/verify", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        res = client.post("/api/v1/auth/verify")
     assert res.status_code == 401
 
 
@@ -430,16 +436,16 @@ async def test_refresh_grace_branch_rejects_when_family_deleted(
         old_jti, sid = decode_refresh_jti_sid(token)
 
         # Rotate so old_jti has only a grace key.
-        r1 = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
         assert f"auth:session:grace:{old_jti}" in fake_redis._kv
 
         # Concurrent logout: wipe the family set.
         del fake_redis._sets[f"auth:session:by_sid:{sid}"]
 
-        res = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
-        )
+        set_refresh_cookie(client, token)
+        res = client.post("/api/v1/auth/refresh")
     assert res.status_code == 401, res.text
     assert res.json()["detail"] == "Session has been invalidated"
 
@@ -459,16 +465,16 @@ async def test_refresh_grace_branch_rejects_on_sid_mismatch(
         token = _login(client)
         old_jti, sid = decode_refresh_jti_sid(token)
 
-        r1 = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
         # Corrupt the grace row so its sid mismatches the JWT's sid.
         fake_redis._kv[f"auth:session:grace:{old_jti}"] = json.dumps(
             {"user_id": 1, "sid": "deadbeef-not-the-real-sid", "successor_jti": "x"}
         )
 
-        res = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
-        )
+        set_refresh_cookie(client, token)
+        res = client.post("/api/v1/auth/refresh")
     assert res.status_code == 401
 
 
@@ -517,9 +523,8 @@ async def test_jti_collision_retries_and_succeeds(
     )
 
     with TestClient(app) as client:
-        res = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
-        )
+        set_refresh_cookie(client, token)
+        res = client.post("/api/v1/auth/refresh")
     assert res.status_code == 200, res.text
     assert _canonical_refresh_cookie(res.headers) is not None
 
@@ -555,9 +560,8 @@ async def test_jti_collision_double_failure_returns_503(
     )
 
     with TestClient(app) as client:
-        res = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
-        )
+        set_refresh_cookie(client, token)
+        res = client.post("/api/v1/auth/refresh")
     assert res.status_code == 503, res.text
     assert _canonical_refresh_cookie(res.headers) is None
 
@@ -592,7 +596,8 @@ async def test_refresh_direct_grace_path_emits_catchup_cookie_and_audit(
         token = _login(client)
         old_jti, sid = decode_refresh_jti_sid(token)
 
-        r1 = client.post("/api/v1/auth/refresh", cookies={"refresh_token": token})
+        set_refresh_cookie(client, token)
+        r1 = client.post("/api/v1/auth/refresh")
         assert r1.status_code == 200
         # Capture the winner's successor jti from r1's Set-Cookie.
         winner_raw = _canonical_refresh_cookie(r1.headers)
@@ -602,9 +607,8 @@ async def test_refresh_direct_grace_path_emits_catchup_cookie_and_audit(
 
         # At this point primary {old_jti} is gone, grace alive, family alive.
         # Tab B replays the old cookie.
-        res = client.post(
-            "/api/v1/auth/refresh", cookies={"refresh_token": token}
-        )
+        set_refresh_cookie(client, token)
+        res = client.post("/api/v1/auth/refresh")
 
     assert res.status_code == 200, res.text
     catchup_raw = _canonical_refresh_cookie(res.headers)

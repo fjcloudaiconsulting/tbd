@@ -58,6 +58,8 @@ from app.rate_limit import limiter
 from app.routers.auth import router as auth_router
 from app.security import create_refresh_token, hash_password
 
+from tests.conftest import set_refresh_cookie
+
 
 PASSWORD = "starting-password-1"
 
@@ -200,9 +202,9 @@ class TestGraceBranchCatchupCookie:
 
         app = _make_app(session_factory)
         with TestClient(app) as client:
+            set_refresh_cookie(client, token)
             res = client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": token},
+                "/api/v1/auth/refresh"
             )
 
         assert res.status_code == 200, res.json()
@@ -288,9 +290,9 @@ class TestGraceBranchCatchupCookie:
         )
         app = _make_app(session_factory)
         with TestClient(app) as cli:
+            set_refresh_cookie(cli, token)
             res = cli.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": token},
+                "/api/v1/auth/refresh"
             )
 
         assert res.status_code == 200, res.json()
@@ -348,9 +350,9 @@ class TestConcurrentRaceConvergence:
         decoded_jtis: list[str] = []
         with TestClient(app) as client:
             for _ in range(2):
+                set_refresh_cookie(client, token)
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
                 assert res.status_code == 200
                 set_cookie = next(
@@ -402,9 +404,9 @@ class TestCatchupCookieValidatesAgainstPrimary:
         app = _make_app(session_factory)
         with TestClient(app) as client:
             # Round 1: grace path → catch-up cookie.
+            set_refresh_cookie(client, token)
             res1 = client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": token},
+                "/api/v1/auth/refresh"
             )
             assert res1.status_code == 200
             set_cookie = next(
@@ -418,9 +420,9 @@ class TestCatchupCookieValidatesAgainstPrimary:
             # Round 2: send the catch-up token. The validator should
             # find ``successor_jti`` as primary, run the rotation,
             # and emit a NEW Set-Cookie with a DIFFERENT jti.
+            set_refresh_cookie(client, new_token)
             res2 = client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": new_token},
+                "/api/v1/auth/refresh"
             )
             assert res2.status_code == 200
             second_set_cookie = next(
@@ -492,9 +494,9 @@ class TestNoRedisWriteOnCatchup:
 
         app = _make_app(session_factory)
         with TestClient(app) as client:
+            set_refresh_cookie(client, token)
             res = client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": token},
+                "/api/v1/auth/refresh"
             )
         assert res.status_code == 200
         assert write_calls == [], (
@@ -532,9 +534,9 @@ class TestMissingSuccessorFailsClosed:
         app = _make_app(session_factory)
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as cli:
+                set_refresh_cookie(cli, token)
                 res = cli.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
         # Reason log emitted.
@@ -597,9 +599,9 @@ class TestMissingSuccessorFailsClosed:
         app = _make_app(session_factory)
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as cli:
+                set_refresh_cookie(cli, token)
                 res = cli.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
         rejection_logs = [
@@ -650,9 +652,9 @@ class TestMissingSuccessorFailsClosed:
         app = _make_app(session_factory)
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as cli:
+                set_refresh_cookie(cli, token)
                 res = cli.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
         rejection_logs = [
@@ -691,9 +693,9 @@ class TestVerifyNeverEmitsCookie:
 
         app = _make_app(session_factory)
         with TestClient(app) as cli:
+            set_refresh_cookie(cli, token)
             res = cli.post(
-                "/api/v1/auth/verify",
-                cookies={"refresh_token": token},
+                "/api/v1/auth/verify"
             )
         assert res.status_code == 200
         # No Set-Cookie header at all from /verify — neither the

@@ -19,7 +19,7 @@ Pins the architect-locked invariants:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -274,7 +274,7 @@ async def test_create_rejects_past_expiry(session_factory):
     seeded = await _seed(session_factory)
     app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
     client = TestClient(app)
-    past = (datetime.utcnow() - timedelta(hours=1)).isoformat()
+    past = (datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)).isoformat()
     resp = client.post(
         "/api/v1/admin/rate-limit-overrides",
         json={
