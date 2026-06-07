@@ -212,7 +212,7 @@ export default function SettingsProfilePage() {
         )}
         <div className={`${card} p-6`}>
           <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-dim font-display text-lg text-accent">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-dim text-lg font-semibold text-accent">
               {initials}
             </div>
             <div>
