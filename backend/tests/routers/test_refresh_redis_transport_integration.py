@@ -39,7 +39,7 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import router as auth_router
 from app.security import hash_password
-from tests.conftest import issue_test_refresh_token
+from tests.conftest import issue_test_refresh_token, set_refresh_cookie
 
 
 PASSWORD = "starting-password-1"
@@ -156,9 +156,9 @@ class TestRefreshReturns503OnClosedTransport:
 
         with self._patch_client_get(side_effect=closed_transport_error):
             with TestClient(app) as client:
+                set_refresh_cookie(client, token)
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
 
         # The contract: 503, not 500. The frontend reactive-recovery
@@ -185,9 +185,9 @@ class TestRefreshReturns503OnClosedTransport:
             side_effect=BrokenPipeError(32, "Broken pipe")
         ):
             with TestClient(app) as client:
+                set_refresh_cookie(client, token)
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 503
 
@@ -212,9 +212,9 @@ class TestRefreshReturns503OnClosedTransport:
             # 500 response instead of re-raising the inner exception —
             # we want to assert on the response, not catch the bug.
             with TestClient(app, raise_server_exceptions=False) as client:
+                set_refresh_cookie(client, token)
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 500, (
             f"Genuine RuntimeError must stay a 500; got {res.status_code}"
@@ -244,9 +244,9 @@ class TestRefreshRejectedLogging:
         app = _make_app(session_factory)
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as client:
+                set_refresh_cookie(client, "not.a.jwt")
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": "not.a.jwt"},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
         rejection_logs = [
@@ -284,9 +284,9 @@ class TestRefreshRejectedLogging:
         app = _make_app(session_factory)
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as client:
+                set_refresh_cookie(client, legacy_token)
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": legacy_token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
         rejection_logs = [
@@ -320,9 +320,9 @@ class TestRefreshRejectedLogging:
         app = _make_app(session_factory)
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as client:
+                set_refresh_cookie(client, token)
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
 
@@ -459,9 +459,9 @@ class TestRefreshPrefersTransientOverTerminal:
         no transient ever seen."""
         app = _make_app(session_factory)
         with TestClient(app) as client:
+            set_refresh_cookie(client, "not.a.jwt")
             res = client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": "not.a.jwt"},
+                "/api/v1/auth/refresh"
             )
         assert res.status_code == 401
 
@@ -529,9 +529,9 @@ class TestRefreshLuaRotationLogging:
 
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as client:
+                set_refresh_cookie(client, token)
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
         assert "invalidated" in res.json()["detail"].lower()
@@ -590,9 +590,9 @@ class TestRefreshLuaRotationLogging:
 
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as client:
+                set_refresh_cookie(client, token)
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": token},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
 

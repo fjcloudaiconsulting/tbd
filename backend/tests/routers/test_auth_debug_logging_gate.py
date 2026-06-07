@@ -37,6 +37,8 @@ from app.models import Base
 from app.rate_limit import limiter
 from app.routers.auth import router as auth_router
 
+from tests.conftest import set_refresh_cookie
+
 
 @pytest_asyncio.fixture
 async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
@@ -92,9 +94,9 @@ class TestAuthDebugLoggingGate:
         app = _make_app(session_factory)
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as client:
+                set_refresh_cookie(client, "not.a.jwt")
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": "not.a.jwt"},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401, res.json()
         rejection_logs = [
@@ -137,9 +139,9 @@ class TestAuthDebugLoggingGate:
         app = _make_app(session_factory)
         with structlog.testing.capture_logs() as captured:
             with TestClient(app) as client:
+                set_refresh_cookie(client, "not.a.jwt")
                 res = client.post(
-                    "/api/v1/auth/refresh",
-                    cookies={"refresh_token": "not.a.jwt"},
+                    "/api/v1/auth/refresh"
                 )
         assert res.status_code == 401
         rejection_logs = [

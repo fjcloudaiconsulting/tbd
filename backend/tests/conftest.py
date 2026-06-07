@@ -30,6 +30,23 @@ os.environ.setdefault("APP_ENV", "development")
 logging.getLogger("ofxtools").setLevel(logging.WARNING)
 
 
+def set_refresh_cookie(client: Any, token: str) -> None:
+    """Pin ``refresh_token`` on the test client's cookie jar.
+
+    Replaces the deprecated per-request ``cookies={"refresh_token": ...}``
+    kwarg (Starlette/httpx warn that per-request cookie persistence is
+    ambiguous). We first ``delete`` every existing ``refresh_token`` entry
+    across all domains/paths — including any canonical or legacy-path cookie
+    the server set on a prior rotation — then ``set`` exactly the intended
+    value, so the next request sends only this token. This reproduces the
+    per-request override behaviour deterministically (no duplicate-cookie
+    ``CookieConflict``). Works for both ``TestClient`` and
+    ``httpx.AsyncClient`` (both expose an ``httpx.Cookies`` jar).
+    """
+    client.cookies.delete("refresh_token")
+    client.cookies.set("refresh_token", token)
+
+
 # ── Fake in-process Redis (PR 2 — backend session model) ────────────────────
 #
 # After PR 2 of ``specs/2026-05-17-backend-session-model.md`` every refresh

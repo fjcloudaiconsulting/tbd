@@ -61,6 +61,8 @@ from app.services.mfa_service import (
     hash_recovery_code,
 )
 
+from tests.conftest import set_refresh_cookie
+
 
 PASSWORD = "starting-password-1"
 
@@ -299,9 +301,9 @@ async def test_refresh_rotation_preserves_sid(session_factory, fake_redis) -> No
         login_token = _refresh_token_from_set_cookie(login_raw)
         original_jti, original_sid = decode_refresh_jti_sid(login_token)
 
+        set_refresh_cookie(client, login_token)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": login_token},
+            "/api/v1/auth/refresh"
         )
 
     assert res.status_code == 200, res.json()
@@ -340,9 +342,9 @@ async def test_sid_preserved_across_five_rotations(
 
         seen_jtis = [original_jti]
         for _ in range(5):
+            set_refresh_cookie(client, token)
             res = client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": token},
+                "/api/v1/auth/refresh"
             )
             assert res.status_code == 200, res.json()
             raw = _canonical_refresh_cookie(res.headers)
@@ -501,9 +503,9 @@ async def test_legacy_no_jti_no_sid_token_rejected(
 
     app = _make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, legacy_token)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": legacy_token},
+            "/api/v1/auth/refresh"
         )
 
     assert res.status_code == 401, res.json()
@@ -529,9 +531,9 @@ async def test_manual_redis_del_invalidates_session(
         # Operator yanks the row out of Redis.
         del fake_redis._kv[f"auth:session:{jti}"]
 
+        set_refresh_cookie(client, token)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": token},
+            "/api/v1/auth/refresh"
         )
 
     assert res.status_code == 401, res.json()
@@ -557,9 +559,9 @@ async def test_family_set_membership_matches_rotation_chain(
         issued = [first_jti]
 
         for _ in range(3):
+            set_refresh_cookie(client, token)
             res = client.post(
-                "/api/v1/auth/refresh",
-                cookies={"refresh_token": token},
+                "/api/v1/auth/refresh"
             )
             assert res.status_code == 200
             token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(res.headers))
@@ -609,9 +611,9 @@ async def test_refresh_503_when_redis_unreachable(
     # Now make redis disappear and try to rotate.
     monkeypatch.setattr(redis_client, "get_client", lambda: None)
     with TestClient(app) as client:
+        set_refresh_cookie(client, token)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": token},
+            "/api/v1/auth/refresh"
         )
     assert res.status_code == 503, res.json()
     assert _canonical_refresh_cookie(res.headers) is None
@@ -807,9 +809,9 @@ async def test_verify_accepts_session_with_redis_row(
         )
         token = _refresh_token_from_set_cookie(_canonical_refresh_cookie(login.headers))
 
+        set_refresh_cookie(client, token)
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": token},
+            "/api/v1/auth/verify"
         )
     assert res.status_code == 200, res.json()
     # /verify must NEVER emit Set-Cookie (RSC contract).
@@ -832,9 +834,9 @@ async def test_verify_rejects_token_with_missing_redis_row(
         jti, _sid = decode_refresh_jti_sid(token)
         del fake_redis._kv[f"auth:session:{jti}"]
 
+        set_refresh_cookie(client, token)
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": token},
+            "/api/v1/auth/verify"
         )
     assert res.status_code == 401, res.json()
 
@@ -1036,9 +1038,9 @@ async def test_refresh_rejects_jti_with_mismatched_user_id_in_redis(
             {"user_id": 999999, "sid": sid}
         )
 
+        set_refresh_cookie(client, token)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": token},
+            "/api/v1/auth/refresh"
         )
     assert res.status_code == 401, res.json()
     assert "invalidated" in res.json()["detail"].lower()
@@ -1072,8 +1074,8 @@ async def test_refresh_rejects_jti_with_mismatched_sid_in_redis(
             {"user_id": row["user_id"], "sid": "deadbeef-not-the-real-sid"}
         )
 
+        set_refresh_cookie(client, token)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": token},
+            "/api/v1/auth/refresh"
         )
     assert res.status_code == 401, res.json()

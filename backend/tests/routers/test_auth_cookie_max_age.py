@@ -53,7 +53,7 @@ from app.security import (
     create_refresh_token,
     hash_password,
 )
-from tests.conftest import issue_test_refresh_token
+from tests.conftest import issue_test_refresh_token, set_refresh_cookie
 from app.services.mfa_service import (
     generate_recovery_codes,
     hash_recovery_code,
@@ -279,9 +279,9 @@ async def test_refresh_rotation_cookie_max_age_matches_settings(
     app = _make_app(session_factory)
 
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/refresh"
         )
 
     assert res.status_code == 200, res.json()
@@ -381,9 +381,9 @@ async def test_all_four_sites_emit_same_max_age_when_setting_changes(
     # 2. Refresh rotation.
     refresh = issue_test_refresh_token(seed["user_id"])
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         refresh_res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/refresh"
         )
     assert refresh_res.status_code == 200, refresh_res.json()
     refresh_raw = _canonical_refresh_cookie(refresh_res.headers)

@@ -494,7 +494,7 @@ async def test_malformed_json_as_non_admin_returns_403_not_422(session_factory, 
     with TestClient(app) as client:
         res = client.post(
             f"/api/v1/accounts/{seeded['account_id']}/adjust-balance",
-            data=b"not json",
+            content=b"not json",
             headers={"content-type": "application/json"},
         )
     assert res.status_code == 403
@@ -521,7 +521,7 @@ async def test_malformed_json_with_full_permissions_returns_422(session_factory,
     with TestClient(app) as client:
         res = client.post(
             f"/api/v1/accounts/{seeded['account_id']}/adjust-balance",
-            data=b"not json",
+            content=b"not json",
             headers={"content-type": "application/json"},
         )
     assert res.status_code == 422

@@ -29,7 +29,7 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import router as auth_router
 from app.security import create_refresh_token, hash_password
-from tests.conftest import issue_test_refresh_token
+from tests.conftest import issue_test_refresh_token, set_refresh_cookie
 
 
 PASSWORD = "S3cret-Pass!"
@@ -111,9 +111,9 @@ async def test_verify_returns_user_and_access_token(session_factory):
     with TestClient(app) as client:
         # First call `/me` after login to know the canonical user shape; here
         # we just assert the verify body contains the same key fields.
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/verify"
         )
 
     assert res.status_code == 200
@@ -151,9 +151,9 @@ async def test_verify_user_shape_matches_me(session_factory):
         )
         assert me.status_code == 200
 
+        set_refresh_cookie(client, refresh)
         verify = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/verify"
         )
         assert verify.status_code == 200
 
@@ -175,9 +175,9 @@ async def test_verify_no_cookie_returns_401(session_factory):
 async def test_verify_invalid_refresh_token_returns_401(session_factory):
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, "this.is.not.a.jwt")
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": "this.is.not.a.jwt"},
+            "/api/v1/auth/verify"
         )
 
     assert res.status_code == 401
@@ -193,9 +193,9 @@ async def test_verify_access_token_not_accepted_as_refresh(session_factory):
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, access)
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": access},
+            "/api/v1/auth/verify"
         )
 
     assert res.status_code == 401
@@ -208,9 +208,9 @@ async def test_verify_inactive_user_returns_401(session_factory):
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/verify"
         )
 
     assert res.status_code == 401
@@ -229,9 +229,9 @@ async def test_verify_does_not_rotate_or_set_cookie(session_factory):
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/verify"
         )
 
     assert res.status_code == 200
@@ -286,9 +286,9 @@ async def test_cookie_path_is_root_on_refresh_rotation(session_factory):
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/refresh"
         )
 
     assert res.status_code == 200
@@ -376,9 +376,9 @@ async def test_verify_rejects_invalidated_refresh_token(session_factory):
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/verify"
         )
 
     assert res.status_code == 401
@@ -411,9 +411,9 @@ async def test_verify_rejects_expired_session_lifetime(session_factory):
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/verify",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/verify"
         )
 
     assert res.status_code == 401
@@ -445,9 +445,9 @@ async def test_refresh_clears_cookie_on_session_lifetime_expiry(session_factory)
 
     app = make_app(session_factory)
     with TestClient(app) as client:
+        set_refresh_cookie(client, refresh)
         res = client.post(
-            "/api/v1/auth/refresh",
-            cookies={"refresh_token": refresh},
+            "/api/v1/auth/refresh"
         )
 
     assert res.status_code == 401
