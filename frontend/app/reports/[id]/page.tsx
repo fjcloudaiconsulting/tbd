@@ -615,7 +615,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
               data-testid="report-editor-add-widget"
             >
               Add widget
@@ -626,7 +626,7 @@ export default function ReportEditorPage({ params }: PageProps) {
               type="button"
               onClick={handleSave}
               disabled={saving || !dirty}
-              className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-text transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
               data-testid="report-editor-save"
             >
               {saving ? "Saving..." : "Save"}
@@ -636,7 +636,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             <button
               type="button"
               onClick={handleCancelEdit}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
               data-testid="report-editor-cancel"
             >
               Cancel
@@ -650,7 +650,7 @@ export default function ReportEditorPage({ params }: PageProps) {
               type="button"
               onClick={handleToggleVisibility}
               disabled={togglingVisibility}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
               data-testid="report-editor-visibility-toggle"
               aria-label="Toggle report sharing"
             >
@@ -671,7 +671,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             type="button"
             onClick={handleDuplicate}
             disabled={duplicating}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="report-editor-duplicate"
           >
             {duplicating ? "Duplicating..." : "Duplicate"}
@@ -680,7 +680,7 @@ export default function ReportEditorPage({ params }: PageProps) {
           <button
             type="button"
             onClick={() => setHistoryOpen(true)}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
             data-testid="report-editor-history"
           >
             History
@@ -705,7 +705,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             <button
               type="button"
               onClick={() => setEditMode((v) => !v)}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-bg-elevated"
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
               data-testid="report-editor-toggle-edit"
             >
               {editMode ? "Done" : "Edit"}
@@ -764,7 +764,7 @@ export default function ReportEditorPage({ params }: PageProps) {
                   <button
                     type="button"
                     onClick={() => setPickerOpen(true)}
-                    className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
+                    className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-text transition hover:bg-accent-hover"
                     data-testid="report-editor-empty-add-widget"
                   >
                     Add widget
@@ -772,7 +772,7 @@ export default function ReportEditorPage({ params }: PageProps) {
                 )}
                 <Link
                   href="/reports"
-                  className="rounded-md border border-border px-4 py-2 text-sm text-text-primary hover:bg-bg-elevated"
+                  className="rounded-md border border-border px-4 py-2 text-sm text-text-primary hover:bg-surface-raised"
                   data-testid="report-editor-empty-templates"
                 >
                   Start from a template

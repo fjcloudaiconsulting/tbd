@@ -210,12 +210,13 @@ export default function SystemPlansPage() {
           </div>
           <form onSubmit={handleSubmit} className="p-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label className={label}>Name</label>
-              <input value={formName} onChange={(e) => setFormName(e.target.value)} className={input} required />
+              <label htmlFor="plan-name" className={label}>Name</label>
+              <input id="plan-name" value={formName} onChange={(e) => setFormName(e.target.value)} className={input} required />
             </div>
             <div>
-              <label className={label}>Slug</label>
+              <label htmlFor="plan-slug" className={label}>Slug</label>
               <input
+                id="plan-slug"
                 value={formSlug}
                 onChange={(e) => setFormSlug(e.target.value)}
                 className={input}
@@ -225,28 +226,28 @@ export default function SystemPlansPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label className={label}>Description</label>
-              <input value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
+              <label htmlFor="plan-description" className={label}>Description</label>
+              <input id="plan-description" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={input} />
             </div>
             <div>
-              <label className={label}>Price Monthly (€)</label>
-              <input type="number" step="0.01" min="0" value={formPriceMonthly} onChange={(e) => setFormPriceMonthly(e.target.value)} className={input} />
+              <label htmlFor="plan-price-monthly" className={label}>Price Monthly (€)</label>
+              <input id="plan-price-monthly" type="number" step="0.01" min="0" value={formPriceMonthly} onChange={(e) => setFormPriceMonthly(e.target.value)} className={input} />
             </div>
             <div>
-              <label className={label}>Price Yearly (€)</label>
-              <input type="number" step="0.01" min="0" value={formPriceYearly} onChange={(e) => setFormPriceYearly(e.target.value)} className={input} />
+              <label htmlFor="plan-price-yearly" className={label}>Price Yearly (€)</label>
+              <input id="plan-price-yearly" type="number" step="0.01" min="0" value={formPriceYearly} onChange={(e) => setFormPriceYearly(e.target.value)} className={input} />
             </div>
             <div>
-              <label className={label}>Max Users (blank = unlimited)</label>
-              <input type="number" min="1" value={formMaxUsers} onChange={(e) => setFormMaxUsers(e.target.value)} className={input} />
+              <label htmlFor="plan-max-users" className={label}>Max Users (blank = unlimited)</label>
+              <input id="plan-max-users" type="number" min="1" value={formMaxUsers} onChange={(e) => setFormMaxUsers(e.target.value)} className={input} />
             </div>
             <div>
-              <label className={label}>Retention Days (blank = unlimited)</label>
-              <input type="number" min="1" value={formRetentionDays} onChange={(e) => setFormRetentionDays(e.target.value)} className={input} />
+              <label htmlFor="plan-retention-days" className={label}>Retention Days (blank = unlimited)</label>
+              <input id="plan-retention-days" type="number" min="1" value={formRetentionDays} onChange={(e) => setFormRetentionDays(e.target.value)} className={input} />
             </div>
             <div>
-              <label className={label}>Sort Order</label>
-              <input type="number" value={formSortOrder} onChange={(e) => setFormSortOrder(e.target.value)} className={input} />
+              <label htmlFor="plan-sort-order" className={label}>Sort Order</label>
+              <input id="plan-sort-order" type="number" value={formSortOrder} onChange={(e) => setFormSortOrder(e.target.value)} className={input} />
             </div>
             <div className="flex items-center gap-2 pt-6">
               <input type="checkbox" id="is_custom" checked={formIsCustom} onChange={(e) => setFormIsCustom(e.target.checked)} />

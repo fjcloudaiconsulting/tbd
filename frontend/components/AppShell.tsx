@@ -407,6 +407,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
+      {/* Skip link (WCAG 2.4.1 Bypass Blocks). Visually hidden until focused,
+          then surfaces top-left as a brass chip; jumps past the sidebar nav
+          straight to <main>. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-accent focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-accent-text focus:shadow-lg"
+      >
+        Skip to main content
+      </a>
       {/* Mobile overlay backdrop — real <button> so keyboard users can dismiss */}
       {sidebarOpen && (
         <button
@@ -584,7 +593,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <AnnouncementBar />
-        <main className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
         <AppShellFooter />
       </div>
     </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
 import AppShell from "@/components/AppShell";
@@ -25,19 +26,24 @@ import {
   btnLink,
   btnDanger,
 } from "@/lib/styles";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  Cell,
-
-} from "recharts";
 import type { BillingPeriod, Category, ForecastPlan, ForecastPlanItem } from "@/lib/types";
+// chartColor (theme tokens) stays for the static DOM legend swatches
+// below the chart; the recharts subtree is code-split (see below).
 import { chartColor } from "@/lib/chart-colors";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
+
+// The recharts subtree (Planned vs Actual) is code-split into
+// ForecastPlanChart and loaded via next/dynamic (ssr:false) so recharts
+// stays out of the route's initial JS.
+const ForecastPlanChart = dynamic(() => import("./ForecastPlanChart"), {
+  ssr: false,
+  loading: () => (
+    <div
+      aria-hidden="true"
+      className="h-full w-full animate-pulse rounded bg-surface-raised"
+    />
+  ),
+});
 
 // "Auto" is the honest label for source=history (PR #146 #1). populate
 // surfaces both 3-month-average rows AND current-period-only rows under
@@ -1184,52 +1190,12 @@ export default function ForecastPlansClient({
                 Planned vs Actual (Expenses)
               </h2>
               <div className="w-full min-w-0" style={{ height: Math.max(chartData.length * 40, 100) }}>
-                <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
-                  <BarChart
-                    data={chartData}
-                    layout="vertical"
-                    margin={{ left: 0, right: 20, top: 0, bottom: 0 }}
-                  >
-                    <XAxis type="number" hide />
-                    <YAxis
-                      type="category"
-                      dataKey="name"
-                      width={100}
-                      tick={{ fill: chartColor.axisTick, fontSize: 11 }}
-                    />
-                    <Tooltip
-                      formatter={(v, name) => [
-                        formatAmount(Number(v)),
-                        name === "planned" ? <span style={{ color: chartColor.planned }}>Planned</span> : <span style={{ color: chartColor.actual }}>Actual</span>,
-                      ]}
-                      contentStyle={{ fontSize: "11px" }}
-                    />
-                    <Bar
-                      dataKey="planned"
-                      fill={chartColor.planned}
-                      radius={[4, 4, 4, 4]}
-                      animationDuration={600}
-                      cursor="pointer"
-                      onClick={(data) => {
-                        const name = data?.name || data?.payload?.name;
-                        if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
-                      }}
-                    />
-                    <Bar
-                      dataKey="actual"
-                      fill={chartColor.actual}
-                      radius={[4, 4, 4, 4]}
-                      animationDuration={600}
-                    >
-                      {chartData.map((d) => (
-                        <Cell
-                          key={d.categoryId}
-                          fill={d.actual > d.planned ? chartColor.over : chartColor.actual}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                <ForecastPlanChart
+                  chartData={chartData}
+                  onBarClick={(name) => {
+                    if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                  }}
+                />
               </div>
               <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.planned }} /> Planned</span>

@@ -673,12 +673,12 @@ export default function OrganizationSettingsPage() {
           <div className="p-6 space-y-4">
             <form onSubmit={handleAdd} className="flex flex-col gap-3 sm:flex-row sm:items-end sm:gap-3">
               <div className="flex-1">
-                <label className={label}>Key</label>
-                <input value={key} onChange={(e) => setKey(e.target.value)} className={`${input} w-full`} placeholder="key" />
+                <label htmlFor="org-setting-key" className={label}>Key</label>
+                <input id="org-setting-key" value={key} onChange={(e) => setKey(e.target.value)} className={`${input} w-full`} placeholder="key" />
               </div>
               <div className="flex-1">
-                <label className={label}>Value</label>
-                <input value={value} onChange={(e) => setValue(e.target.value)} className={`${input} w-full`} placeholder="value" />
+                <label htmlFor="org-setting-value" className={label}>Value</label>
+                <input id="org-setting-value" value={value} onChange={(e) => setValue(e.target.value)} className={`${input} w-full`} placeholder="value" />
               </div>
               <button type="submit" className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>Add</button>
             </form>

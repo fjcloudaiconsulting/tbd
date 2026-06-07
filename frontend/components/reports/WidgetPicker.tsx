@@ -151,7 +151,7 @@ export default function WidgetPicker({ open, onClose, onPick }: Props) {
                       type="button"
                       onClick={() => onPick(type)}
                       data-testid={`widget-picker-option-${type}`}
-                      className="flex w-full items-start gap-3 rounded-md border border-border bg-bg p-3 text-left transition hover:border-accent hover:bg-bg-elevated"
+                      className="flex w-full items-start gap-3 rounded-md border border-border bg-bg p-3 text-left transition hover:border-accent hover:bg-surface-raised"
                     >
                       <Icon
                         aria-hidden="true"

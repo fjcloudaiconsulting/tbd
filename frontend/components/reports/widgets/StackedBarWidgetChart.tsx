@@ -1,0 +1,74 @@
+"use client";
+
+/**
+ * Recharts-rendering inner for StackedBarWidget. Split out so recharts is
+ * dynamically imported (ssr:false) only when a chart mounts. The public
+ * StackedBarWidget keeps all data wiring; this renders merged rows.
+ */
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
+import { chartColor } from "@/lib/chart-colors";
+
+const BAR_COLORS = [
+  "var(--color-accent)",
+  "var(--color-success)",
+  "var(--color-info, var(--color-accent))",
+  "var(--color-warning, var(--color-text-secondary))",
+  "var(--color-danger)",
+];
+
+export interface StackedBarWidgetChartProps {
+  rows: Array<{ label: string } & Record<string, number | string>>;
+  seriesKeys: string[];
+  labels: string[];
+  stackId?: string;
+}
+
+export default function StackedBarWidgetChart({
+  rows,
+  seriesKeys,
+  labels,
+  stackId,
+}: StackedBarWidgetChartProps) {
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <BarChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
+        <XAxis
+          dataKey="label"
+          tick={{ fill: chartColor.axisTick, fontSize: 11 }}
+          interval={0}
+        />
+        <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
+        <Tooltip cursor={{ fill: "var(--color-border)", opacity: 0.3 }} />
+        {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
+        {seriesKeys.map((key, i) => (
+          <Bar
+            key={key}
+            dataKey={key}
+            name={labels[i]}
+            stackId={stackId}
+            fill={BAR_COLORS[i % BAR_COLORS.length]}
+            radius={
+              stackId && i === seriesKeys.length - 1
+                ? [4, 4, 0, 0]
+                : stackId
+                  ? 0
+                  : [4, 4, 0, 0]
+            }
+            isAnimationActive={false}
+          />
+        ))}
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}

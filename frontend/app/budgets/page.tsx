@@ -11,12 +11,24 @@ import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle, badgeError } from "@/lib/styles";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import dynamic from "next/dynamic";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+// chartColor (theme tokens) stays for the static DOM legend swatches
+// below the chart; the recharts subtree itself is code-split into
+// BudgetOverviewChart and loaded via next/dynamic (ssr:false).
 import { chartColor } from "@/lib/chart-colors";
-import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
+
+const BudgetOverviewChart = dynamic(() => import("./BudgetOverviewChart"), {
+  ssr: false,
+  loading: () => (
+    <div
+      aria-hidden="true"
+      className="h-full w-full animate-pulse rounded bg-surface-raised"
+    />
+  ),
+});
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
@@ -379,47 +391,13 @@ export default function BudgetsPage() {
                 </span>
               </div>
               <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
-                <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
-                  <BarChart data={budgetChartData} layout="vertical" margin={{ left: 0, right: 0, top: 0, bottom: 0 }}>
-                    <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
-                    <Tooltip
-                      formatter={(v, name) => [
-                        formatAmount(Number(v)),
-                        name === "spent" ? <span style={{ color: chartColor.spent }}>Spent</span>
-                          : name === "over" ? <span style={{ color: chartColor.over }}>Over budget</span>
-                          : <span style={{ color: chartColor.remaining }}>Remaining</span>,
-                      ]}
-                      contentStyle={{ fontSize: "11px" }}
-                    />
-                    {/* D5 fix: shared BudgetSpentBarShape recomputes
-                        corner radii per-row so a stack at >=100%
-                        utilization (no remaining segment, no over
-                        segment) still rounds its right edge. Static
-                        radius={[4,0,0,4]} on the Bar wouldn't, because
-                        the trailing remaining bar would normally own
-                        the right rounding. */}
-                    <Bar dataKey="spent" stackId="a" animationDuration={600}
-                      cursor="pointer"
-                      shape={(props: BudgetSpentBarShapeProps) => (
-                        <BudgetSpentBarShape {...props} />
-                      )}
-                      onClick={(data) => {
-                        const name = data?.name || data?.payload?.name;
-                        if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
-                      }}
-                    >
-                      {budgets.map((b) => (
-                        <Cell
-                          key={b.category_id}
-                          fill={b.percent_used > 100 ? chartColor.over : b.percent_used > 80 ? chartColor.watch : chartColor.spent}
-                        />
-                      ))}
-                    </Bar>
-                    <Bar dataKey="remaining" stackId="a" fill={chartColor.remaining} radius={[0, 4, 4, 0]} animationDuration={600} />
-                    <Bar dataKey="over" stackId="a" fill={chartColor.over} radius={[4, 4, 4, 4]} animationDuration={600} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <BudgetOverviewChart
+                  budgetChartData={budgetChartData}
+                  cellMeta={budgets}
+                  onBarClick={(name) => {
+                    if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                  }}
+                />
               </div>
               <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
                 <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.spent }} /> Spent</span>

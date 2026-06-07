@@ -7,15 +7,12 @@
  *
  * Single dimension, single aggregation — the config rail locks both
  * to length 1 when the widget type is ``pie``.
+ *
+ * The recharts subtree is code-split via ``next/dynamic`` (ssr:false)
+ * into ``PieWidgetChart`` so recharts loads only when a chart mounts,
+ * keeping it out of the route's initial JS.
  */
-import {
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-} from "recharts";
+import dynamic from "next/dynamic";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
 import { dimensionHeader, topNWithOther } from "@/lib/reports/series";
@@ -26,23 +23,21 @@ import type {
 import WidgetCsvButton from "./WidgetCsvButton";
 import type { CsvCell } from "@/lib/reports/csv";
 
+const PieWidgetChart = dynamic(() => import("./PieWidgetChart"), {
+  ssr: false,
+  loading: () => (
+    <div
+      data-testid="pie-widget-chart-loading"
+      className="h-full w-full animate-pulse rounded bg-border/40"
+    />
+  ),
+});
+
 interface Props {
   widget: PieWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
 }
-
-const PIE_COLORS = [
-  "var(--color-accent)",
-  "var(--color-success)",
-  "var(--color-info, var(--color-accent))",
-  "var(--color-warning, var(--color-text-secondary))",
-  "var(--color-danger)",
-  "var(--color-text-secondary)",
-  "var(--color-border)",
-  "var(--color-text-muted)",
-  "var(--color-bg-elevated, var(--color-border))",
-];
 
 export default function PieWidget({ widget, canvasFilters, editMode }: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
@@ -104,36 +99,7 @@ export default function PieWidget({ widget, canvasFilters, editMode }: Props) {
             No data
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={rows}
-                dataKey="value"
-                nameKey="label"
-                innerRadius="40%"
-                outerRadius="75%"
-                stroke="var(--color-surface)"
-                isAnimationActive={false}
-              >
-                {rows.map((row, i) => (
-                  <Cell
-                    key={row.label}
-                    fill={
-                      row.label === "Other"
-                        ? "var(--color-border)"
-                        : PIE_COLORS[i % PIE_COLORS.length]
-                    }
-                  />
-                ))}
-              </Pie>
-              <Tooltip />
-              <Legend
-                verticalAlign="bottom"
-                wrapperStyle={{ fontSize: 11 }}
-                iconSize={8}
-              />
-            </PieChart>
-          </ResponsiveContainer>
+          <PieWidgetChart rows={rows} />
         )}
       </div>
     </div>

@@ -8,20 +8,12 @@
  *
  * Recharts is the canvas chart engine across the app (Dashboard,
  * Budgets, Forecast Plans); reusing it here keeps visual register
- * consistent.
+ * consistent. The recharts subtree is code-split via ``next/dynamic``
+ * (ssr:false) into ``LineWidgetChart`` so it loads only when a chart
+ * mounts, keeping recharts out of the route's initial JS.
  */
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
 
-import { chartColor } from "@/lib/chart-colors";
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
 import { mergeSeriesRows, seriesLabel } from "@/lib/reports/series";
 import type {
@@ -31,19 +23,21 @@ import type {
 import WidgetCsvButton from "./WidgetCsvButton";
 import { buildSeriesCsvDataset } from "./seriesCsv";
 
+const LineWidgetChart = dynamic(() => import("./LineWidgetChart"), {
+  ssr: false,
+  loading: () => (
+    <div
+      data-testid="line-widget-chart-loading"
+      className="h-full w-full animate-pulse rounded bg-border/40"
+    />
+  ),
+});
+
 interface Props {
   widget: LineWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
 }
-
-const LINE_COLORS = [
-  "var(--color-accent)",
-  "var(--color-success)",
-  "var(--color-info, var(--color-accent))",
-  "var(--color-warning, var(--color-text-secondary))",
-  "var(--color-danger)",
-];
 
 export default function LineWidget({ widget, canvasFilters, editMode }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
@@ -107,33 +101,12 @@ export default function LineWidget({ widget, canvasFilters, editMode }: Props) {
             No data
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-              <XAxis
-                dataKey="label"
-                tick={{ fill: chartColor.axisTick, fontSize: 11 }}
-                interval={0}
-              />
-              <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
-              <Tooltip cursor={{ stroke: "var(--color-border)" }} />
-              {seriesKeys.length > 1 && (
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              )}
-              {seriesKeys.map((key, i) => (
-                <Line
-                  key={key}
-                  type={widget.config.smooth === false ? "linear" : "monotone"}
-                  dataKey={key}
-                  name={labels[i]}
-                  stroke={LINE_COLORS[i % LINE_COLORS.length]}
-                  strokeWidth={2}
-                  dot={false}
-                  isAnimationActive={false}
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
+          <LineWidgetChart
+            rows={rows}
+            seriesKeys={seriesKeys}
+            labels={labels}
+            smooth={widget.config.smooth}
+          />
         )}
       </div>
     </div>

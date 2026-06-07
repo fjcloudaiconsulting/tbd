@@ -9,19 +9,13 @@
  *
  * With a single measure this falls back to a plain bar visual; the
  * config rail still lets the user add additional series.
+ *
+ * The recharts subtree is code-split via ``next/dynamic`` (ssr:false)
+ * into ``StackedBarWidgetChart`` so recharts loads only when a chart
+ * mounts, keeping it out of the route's initial JS.
  */
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
 
-import { chartColor } from "@/lib/chart-colors";
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
 import { mergeSeriesRows, seriesLabel } from "@/lib/reports/series";
 import type {
@@ -31,19 +25,24 @@ import type {
 import WidgetCsvButton from "./WidgetCsvButton";
 import { buildSeriesCsvDataset } from "./seriesCsv";
 
+const StackedBarWidgetChart = dynamic(
+  () => import("./StackedBarWidgetChart"),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        data-testid="stacked-bar-widget-chart-loading"
+        className="h-full w-full animate-pulse rounded bg-border/40"
+      />
+    ),
+  },
+);
+
 interface Props {
   widget: StackedBarWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
 }
-
-const BAR_COLORS = [
-  "var(--color-accent)",
-  "var(--color-success)",
-  "var(--color-info, var(--color-accent))",
-  "var(--color-warning, var(--color-text-secondary))",
-  "var(--color-danger)",
-];
 
 export default function StackedBarWidget({
   widget,
@@ -116,38 +115,12 @@ export default function StackedBarWidget({
             No data
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
-              <XAxis
-                dataKey="label"
-                tick={{ fill: chartColor.axisTick, fontSize: 11 }}
-                interval={0}
-              />
-              <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
-              <Tooltip cursor={{ fill: "var(--color-border)", opacity: 0.3 }} />
-              {seriesKeys.length > 1 && (
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              )}
-              {seriesKeys.map((key, i) => (
-                <Bar
-                  key={key}
-                  dataKey={key}
-                  name={labels[i]}
-                  stackId={stackId}
-                  fill={BAR_COLORS[i % BAR_COLORS.length]}
-                  radius={
-                    stackId && i === seriesKeys.length - 1
-                      ? [4, 4, 0, 0]
-                      : stackId
-                        ? 0
-                        : [4, 4, 0, 0]
-                  }
-                  isAnimationActive={false}
-                />
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
+          <StackedBarWidgetChart
+            rows={rows}
+            seriesKeys={seriesKeys}
+            labels={labels}
+            stackId={stackId}
+          />
         )}
       </div>
     </div>

@@ -144,7 +144,7 @@ export default function ReportsListPage() {
         <button
           type="button"
           onClick={handleNewReport}
-          className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
+          className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-text transition hover:bg-accent-hover"
         >
           New report
         </button>
@@ -178,7 +178,7 @@ export default function ReportsListPage() {
                 <button
                   type="button"
                   onClick={() => handleUseTemplate(t)}
-                  className="mt-3 inline-flex items-center justify-center gap-2 self-start rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition hover:bg-accent-hover"
+                  className="mt-3 inline-flex items-center justify-center gap-2 self-start rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-text transition hover:bg-accent-hover"
                 >
                   Use template
                 </button>
@@ -207,7 +207,7 @@ export default function ReportsListPage() {
       ) : (
         <ul className="divide-y divide-border rounded-md border border-border bg-surface">
           {(reports ?? []).map((r) => (
-            <li key={r.id} className="flex items-center hover:bg-bg-elevated">
+            <li key={r.id} className="flex items-center hover:bg-surface-raised">
               <Link
                 href={`/reports/${r.id}`}
                 className="flex flex-1 items-center justify-between px-4 py-3"
@@ -229,7 +229,7 @@ export default function ReportsListPage() {
                 type="button"
                 onClick={() => handleDuplicate(r)}
                 disabled={duplicatingId === r.id}
-                className="mr-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-primary hover:bg-bg-elevated disabled:cursor-not-allowed disabled:opacity-60"
+                className="mr-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-primary hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
                 data-testid={`report-duplicate-${r.id}`}
               >
                 {duplicatingId === r.id ? "Duplicating..." : "Duplicate"}

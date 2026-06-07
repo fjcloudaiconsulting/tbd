@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import { btnPrimary, btnSecondary, card, error as errorCls, input, label } from "@/lib/styles";
 import type { Plan } from "@/lib/types";
 
@@ -19,6 +20,10 @@ export default function ChangePlanModal({ orgId, currentPlanSlug, onClose, onCha
   const [errorMsg, setErrorMsg] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  const dialogRef = useRef<HTMLFormElement>(null);
+
+  useFocusTrap({ active: true, containerRef: dialogRef });
+
   useEffect(() => {
     apiFetch<Plan[]>("/api/v1/plans/all").then((all) => {
       setPlans(all);
@@ -26,6 +31,19 @@ export default function ChangePlanModal({ orgId, currentPlanSlug, onClose, onCha
       if (current) setPlanId(current.id);
     });
   }, [currentPlanSlug]);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -48,12 +66,24 @@ export default function ChangePlanModal({ orgId, currentPlanSlug, onClose, onCha
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4">
-      <form onSubmit={handleSubmit} className={`${card} w-full max-w-[min(28rem,calc(100vw-2rem))] p-6`}>
-        <h2 className="mb-4 text-lg font-semibold">Change plan</h2>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4"
+      onClick={onClose}
+    >
+      <form
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="change-plan-modal-title"
+        onSubmit={handleSubmit}
+        onClick={(e) => e.stopPropagation()}
+        className={`${card} w-full max-w-[min(28rem,calc(100vw-2rem))] p-6`}
+      >
+        <h2 id="change-plan-modal-title" className="mb-4 text-lg font-semibold">Change plan</h2>
         {errorMsg && <div className={`${errorCls} mb-3`}>{errorMsg}</div>}
-        <label className={label}>Plan</label>
+        <label htmlFor="change-plan-select" className={label}>Plan</label>
         <select
+          id="change-plan-select"
           value={planId}
           onChange={(e) => setPlanId(e.target.value === "" ? "" : Number(e.target.value))}
           className={input}
