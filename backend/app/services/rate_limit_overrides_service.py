@@ -43,9 +43,25 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.rate_limit_override import RateLimitOverride
+from app.services.list_query import resolve_order_by
 
 
 logger = structlog.stdlib.get_logger()
+
+
+# Closed whitelist of sortable columns for the admin rate-limit-override
+# list. Keys are the public sort tokens the frontend sends; values are
+# the column to order by. Anything not here is a 400 (see
+# ``list_query.resolve_order_by``).
+_SORTABLE = {
+    "created_at": RateLimitOverride.created_at,
+    "endpoint_pattern": RateLimitOverride.endpoint_pattern,
+    "max_requests": RateLimitOverride.max_requests,
+    "period_seconds": RateLimitOverride.period_seconds,
+    "expires_at": RateLimitOverride.expires_at,
+    "org_id": RateLimitOverride.org_id,
+    "user_id": RateLimitOverride.user_id,
+}
 
 # Sentinel stored in Redis when a lookup hits no row. Distinct from
 # the wire format of a real override ("<max>/<period>") so the
@@ -168,11 +184,17 @@ async def list_overrides(
     org_id: Optional[int] = None,
     user_id: Optional[int] = None,
     endpoint_pattern: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[Sequence[RateLimitOverride], int]:
     """List overrides with optional scope filters. Returns
     ``(items, total)`` to support a paginated admin table.
+
+    ``sort_by`` is resolved against a closed whitelist (see
+    ``_SORTABLE``); an unknown key raises ``ValidationError`` (router →
+    400). Defaults to ``created_at`` desc with an ``id`` desc tiebreaker.
     """
     base = select(RateLimitOverride)
     filters_q = base
@@ -195,10 +217,17 @@ async def list_overrides(
     total_result = await db.execute(count_q)
     total = int(total_result.scalar() or 0)
 
+    order_by = resolve_order_by(
+        sort_by,
+        sort_dir,
+        allowed=_SORTABLE,
+        default_key="created_at",
+        default_dir="desc",
+        tiebreaker=RateLimitOverride.id.desc(),
+    )
+
     rows_result = await db.execute(
-        filters_q.order_by(
-            RateLimitOverride.created_at.desc(), RateLimitOverride.id.desc()
-        )
+        filters_q.order_by(*order_by)
         .limit(limit)
         .offset(offset)
     )

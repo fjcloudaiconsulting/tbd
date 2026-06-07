@@ -614,3 +614,83 @@ async def test_endpoint_catalogue_non_superadmin_403(session_factory):
             "/api/v1/admin/rate-limit-overrides/endpoint-catalogue"
         )
         assert resp.status_code == 403, who
+
+
+# ── sort contract (shared list contract) ────────────────────────────────────
+
+
+def _seed_two_overrides(client, seeded: dict) -> None:
+    """Two org-scoped overrides with distinct endpoint_pattern +
+    max_requests so sort assertions have something to order."""
+    client.post(
+        "/api/v1/admin/rate-limit-overrides",
+        json={
+            "org_id": seeded["org_id"],
+            "endpoint_pattern": "reports.query",
+            "max_requests": 100,
+            "period_seconds": 60,
+        },
+    )
+    client.post(
+        "/api/v1/admin/rate-limit-overrides",
+        json={
+            "org_id": seeded["org_id"],
+            "endpoint_pattern": "accounts.adjust_balance",
+            "max_requests": 5,
+            "period_seconds": 60,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_sort_endpoint_pattern_asc(session_factory):
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    _seed_two_overrides(client, seeded)
+    resp = client.get(
+        "/api/v1/admin/rate-limit-overrides",
+        params={"sort_by": "endpoint_pattern", "sort_dir": "asc"},
+    )
+    assert resp.status_code == 200
+    patterns = [r["endpoint_pattern"] for r in resp.json()["items"]]
+    assert patterns == sorted(patterns)
+
+
+@pytest.mark.asyncio
+async def test_list_sort_max_requests_desc(session_factory):
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    _seed_two_overrides(client, seeded)
+    resp = client.get(
+        "/api/v1/admin/rate-limit-overrides",
+        params={"sort_by": "max_requests", "sort_dir": "desc"},
+    )
+    assert resp.status_code == 200
+    maxes = [r["max_requests"] for r in resp.json()["items"]]
+    assert maxes == sorted(maxes, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_list_invalid_sort_by_returns_400(session_factory):
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    resp = client.get(
+        "/api/v1/admin/rate-limit-overrides", params={"sort_by": "not_a_column"}
+    )
+    assert resp.status_code == 400
+    assert "invalid_sort_by" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_invalid_sort_dir_returns_400(session_factory):
+    seeded = await _seed(session_factory)
+    app = _make_app(session_factory, _resolver_for(seeded, "superadmin"))
+    client = TestClient(app)
+    resp = client.get(
+        "/api/v1/admin/rate-limit-overrides", params={"sort_dir": "sideways"}
+    )
+    assert resp.status_code == 400
+    assert "invalid_sort_dir" in resp.json()["detail"]
