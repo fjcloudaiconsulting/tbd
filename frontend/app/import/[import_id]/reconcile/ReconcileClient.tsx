@@ -297,7 +297,7 @@ export default function ReconcileClient({
                   aria-label="Reconciliation progress"
                 >
                   <div
-                    className="h-full bg-accent transition-all"
+                    className="h-full bg-accent transition-[width]"
                     style={{
                       width:
                         progress.total === 0

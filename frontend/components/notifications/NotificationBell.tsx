@@ -165,7 +165,7 @@ export default function NotificationBell() {
         }
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="relative rounded-md p-2 text-text-muted transition-colors hover:text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+        className="relative rounded-md p-2 text-text-muted transition-colors hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
         data-testid="notification-bell"
       >
         {unseen > 0 ? (

@@ -251,21 +251,21 @@ function RecurringTable({
                     {paused ? (
                       <button
                         onClick={() => onResume?.(r)}
-                        className="min-h-[44px] text-xs text-text-muted hover:text-accent"
+                        className="min-h-[44px] md:min-h-0 text-xs text-text-muted hover:text-accent"
                       >
                         Resume
                       </button>
                     ) : (
                       <button
                         onClick={() => onStop?.(r)}
-                        className="min-h-[44px] text-xs text-text-muted hover:text-accent"
+                        className="min-h-[44px] md:min-h-0 text-xs text-text-muted hover:text-accent"
                       >
                         Stop
                       </button>
                     )}
                     <button
                       onClick={() => onDelete(r.id)}
-                      className="min-h-[44px] text-xs text-text-muted hover:text-danger"
+                      className="min-h-[44px] md:min-h-0 text-xs text-text-muted hover:text-danger"
                     >
                       Delete
                     </button>
