@@ -132,7 +132,7 @@ def test_middleware_clears_contextvars_between_requests():
 
 def test_middleware_binds_client_ip_for_every_request():
     """``client_ip`` is bound onto contextvars for ANY request — no
-    auth dependency required. Anonymous routes like ``/auth/register``
+    auth dependency required. Anonymous routes like ``/api/v1/auth/register``
     resolve no ``get_current_user`` dep, so binding here (not in the
     dep) is what makes bot-signup waves IP-clusterable.
     """
@@ -153,7 +153,7 @@ def test_middleware_binds_do_connecting_ip_on_anonymous_route(monkeypatch):
     honours ``do-connecting-ip`` unconditionally. An anonymous request
     carrying that header must surface the real client IP in
     ``client_ip`` — identical precedence to the authed audit path —
-    so the access-log line for ``/auth/register`` is IP-clusterable.
+    so the access-log line for ``/api/v1/auth/register`` is IP-clusterable.
     """
     monkeypatch.setenv("PFV_RUNTIME", "app_platform")
     captured: list[dict] = []
