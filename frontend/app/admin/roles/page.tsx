@@ -266,7 +266,9 @@ export default function AdminRolesPage() {
     });
   }, [data]);
 
-  const total = sortedItems.length;
+  // Honor the list envelope's total (equals items length today since roles
+  // are fully listed, but keeps the UI correct if server-side paging lands).
+  const total = data?.total ?? 0;
   const pageItems = useMemo(
     () => paginate(sortedItems, page, pageSize),
     [sortedItems, page, pageSize],

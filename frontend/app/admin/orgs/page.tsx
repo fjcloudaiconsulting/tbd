@@ -159,8 +159,10 @@ function AdminOrgsPageContent() {
     }
   }, [loading, user, router]);
 
-  // Debounce search input; resets offset to 0 on a new query. Skip the
-  // first run so a seeded non-zero offset isn't clobbered on mount.
+  // Debounce search input; resets offset to 0 only when the trimmed query
+  // actually changes. On mount, qInput and q are both seeded from the same
+  // URL params, so next === prev and the seeded offset is left intact (no
+  // explicit first-run guard needed).
   useEffect(() => {
     const handle = setTimeout(() => {
       setQ((prev) => {

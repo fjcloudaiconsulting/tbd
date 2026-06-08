@@ -59,8 +59,6 @@ _SORTABLE = {
     "max_requests": RateLimitOverride.max_requests,
     "period_seconds": RateLimitOverride.period_seconds,
     "expires_at": RateLimitOverride.expires_at,
-    "org_id": RateLimitOverride.org_id,
-    "user_id": RateLimitOverride.user_id,
 }
 
 # Sentinel stored in Redis when a lookup hits no row. Distinct from
