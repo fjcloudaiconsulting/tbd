@@ -145,32 +145,58 @@ async def _with_dispatch_timeout(awaitable):
 def _stream_with_dispatch_timeout(
     stream: "AsyncIterator[StreamChunk]",
 ) -> "AsyncIterator[StreamChunk]":
-    """Bound each ``__anext__`` of a provider stream by the wall clock.
+    """Bound the wait for EACH chunk of a provider stream by the wall
+    clock — NOT the total stream duration.
 
     A stream can't be wrapped in a single ``wait_for`` — it's an async
     iterator, not one awaitable. Instead we bound the wait for each
-    chunk: if any single chunk takes longer than the ceiling, the pull
-    is cancelled and surfaced as the same ``provider_timeout``
+    chunk: if any single ``__anext__`` takes longer than the ceiling,
+    the pull is cancelled and surfaced as the same ``provider_timeout``
     ``AIProviderError`` the non-stream paths raise. Inter-chunk gaps on
     a healthy stream are far below the bound, so this only fires on a
     genuinely stalled stream.
+
+    Deliberate limitation: because the bound is per-chunk, a provider
+    that dribbles one chunk just under the ceiling forever is NOT
+    caught — only a fully stalled stream (no chunk inside the bound)
+    trips it. This is intentional: a slow-but-healthy stream should
+    keep flowing rather than be killed for failing to finish by some
+    total deadline. Only a hang is an error here.
+
+    Resource lifecycle: the underlying provider ``stream`` is an async
+    generator whose ``yield``s sit inside an ``async with
+    httpx.AsyncClient()`` block. On a mid-stream timeout (we raise) or
+    an early consumer break (``call_llm_stream`` breaks on
+    ``chunk.done``, throwing ``GeneratorExit`` into this generator), we
+    MUST close the source iterator so that ``async with`` unwinds and
+    the HTTP connection is released promptly instead of waiting on GC.
+    The ``finally`` below awaits ``aclose`` when the iterator exposes
+    it (every provider async generator does).
     """
 
     async def _bounded() -> AsyncIterator[StreamChunk]:
         iterator = stream.__aiter__()
-        while True:
-            try:
-                chunk = await asyncio.wait_for(
-                    iterator.__anext__(),
-                    timeout=settings.ai_dispatch_timeout_s,
-                )
-            except StopAsyncIteration:
-                return
-            except (asyncio.TimeoutError, TimeoutError) as exc:
-                raise AIProviderError(
-                    code=DISPATCH_TIMEOUT_ERROR_CODE
-                ) from exc
-            yield chunk
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        iterator.__anext__(),
+                        timeout=settings.ai_dispatch_timeout_s,
+                    )
+                except StopAsyncIteration:
+                    return
+                except (asyncio.TimeoutError, TimeoutError) as exc:
+                    raise AIProviderError(
+                        code=DISPATCH_TIMEOUT_ERROR_CODE
+                    ) from exc
+                yield chunk
+        finally:
+            # Finalize the provider stream (closes its httpx client) on
+            # any exit: mid-stream timeout, early consumer break
+            # (GeneratorExit), or normal completion.
+            aclose = getattr(iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     return _bounded()
 
