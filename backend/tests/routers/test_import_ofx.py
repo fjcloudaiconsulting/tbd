@@ -339,7 +339,10 @@ class _FakeOFX:
 
 @pytest.mark.asyncio
 async def test_ofx_preview_too_many_rows_returns_413(session_factory):
-    """Post-parse row cap (>10 000) → 413 (spec §1.5).
+    """Post-parse row cap (> MAX_ROWS) → 413 (spec §1.5).
+
+    The cap is the DoS stopgap at ``import_ofx_service.MAX_ROWS`` (2 000).
+    One row over the cap must be rejected with 413.
 
     We stub ``_parse_in_executor`` so the test does not depend on
     ofxtools' wall-clock parse speed. Slow CI runners would otherwise
@@ -349,8 +352,10 @@ async def test_ofx_preview_too_many_rows_returns_413(session_factory):
     seed = await _seed(session_factory)
     app = _make_app(session_factory)
 
+    over = import_ofx_service.MAX_ROWS + 1  # 2 001
+
     def fake_parse(_raw: bytes):
-        return _FakeOFX(10_001)
+        return _FakeOFX(over)
 
     with patch.object(import_ofx_service, "_parse_in_executor", fake_parse):
         with TestClient(app) as client:
@@ -361,8 +366,33 @@ async def test_ofx_preview_too_many_rows_returns_413(session_factory):
             )
     assert resp.status_code == 413
     detail = resp.json()["detail"]
-    assert "10001" in detail or "10000" in detail
+    assert str(over) in detail or str(import_ofx_service.MAX_ROWS) in detail
     assert "transactions" in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_ofx_preview_at_row_cap_is_accepted(session_factory):
+    """Exactly MAX_ROWS rows (2 000) is at the boundary and must NOT 413.
+
+    Pairs with ``test_ofx_preview_too_many_rows_returns_413`` to pin the
+    DoS-stopgap cap at exactly ``import_ofx_service.MAX_ROWS``.
+    """
+    seed = await _seed(session_factory)
+    app = _make_app(session_factory)
+
+    at_cap = import_ofx_service.MAX_ROWS  # 2 000
+
+    def fake_parse(_raw: bytes):
+        return _FakeOFX(at_cap)
+
+    with patch.object(import_ofx_service, "_parse_in_executor", fake_parse):
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/v1/import/ofx/preview",
+                files={"file": ("ok.ofx", io.BytesIO(b"<OFX>stub</OFX>"), "application/x-ofx")},
+                data={"account_id": str(seed["account_id"])},
+            )
+    assert resp.status_code != 413
 
 
 # ── Auth gate ──
