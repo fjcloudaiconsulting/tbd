@@ -320,6 +320,69 @@ async def test_adapter_failure_writes_failed_ledger_row_and_reraises(
     assert rows[0].est_cost_cents == 0
 
 
+# ---------- dispatch timeout (wall-clock bound) ----------------------
+
+
+@pytest.mark.asyncio
+async def test_slow_provider_times_out_cleanly(
+    db: AsyncSession,
+    org: Organization,
+    admin_user,
+    credential,
+    default_routing,
+    monkeypatch,
+):
+    """A provider call that exceeds the architect-mandated wall-clock
+    bound is cancelled cleanly: it maps to a SYSTEM failure
+    (``AIDispatchFailed`` code ``provider_timeout``), writes a failure
+    ledger row, and surfaces as a 5xx via ``http_for_dispatch_error``.
+    The raw provider payload is never echoed.
+    """
+    import asyncio
+
+    # Shrink the bound so the test stays fast.
+    monkeypatch.setattr(app_settings, "ai_dispatch_timeout_s", 0.05)
+
+    async def _slow_chat(*args, **kwargs):
+        # Sleeps well past the 0.05s bound; wait_for must cancel it.
+        await asyncio.sleep(5)
+        return LLMResponse(
+            content="never", prompt_tokens=1, completion_tokens=1, model="gpt-4o-mini"
+        )
+
+    adapter = MagicMock()
+    adapter.chat = _slow_chat
+
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AIDispatchFailed) as exc_info:
+            await call_llm(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                request_payload={"messages": []},
+            )
+
+    assert exc_info.value.code == "provider_timeout"
+
+    # Maps to a system 5xx (502 bad gateway via the default branch).
+    http_exc = ai_dispatch.http_for_dispatch_error(exc_info.value)
+    assert http_exc.status_code >= 500
+    # No raw provider data echoed — only the typed code.
+    assert http_exc.detail == {"code": "provider_timeout"}
+
+    # A failure ledger row is written (system failure, audited).
+    rows = (
+        await db.execute(select(AIUsageLedger).where(AIUsageLedger.org_id == org.id))
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].success is False
+    assert rows[0].error_class == "provider_timeout"
+    assert rows[0].prompt_tokens == 0
+    assert rows[0].est_cost_cents == 0
+
+
 # ---------- soft cap notification + Redis dedupe ---------------------
 
 
