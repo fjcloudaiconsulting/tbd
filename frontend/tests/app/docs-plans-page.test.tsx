@@ -90,9 +90,11 @@ describe("docs structured data (JSON-LD)", () => {
     ).map((s) => JSON.parse(s.textContent ?? "{}"));
   }
 
-  // Same Organization @id the landing page declares, so the docs entities
-  // link into the one canonical Organization node.
+  // Same node @ids the landing page declares, so the docs entities link
+  // into the one canonical site graph. isPartOf → WebSite (a CreativeWork,
+  // per schema.org); publisher → Organization.
   const orgId = "https://thebetterdecision.com/#organization";
+  const websiteId = "https://thebetterdecision.com/#website";
 
   it("/docs emits a TechArticle + BreadcrumbList linked to the Organization @id", async () => {
     const { container } = render(await DocsPage());
@@ -104,7 +106,7 @@ describe("docs structured data (JSON-LD)", () => {
     const article = blocks.find((b) => b["@type"] === "TechArticle");
     expect(article.url).toBe("https://thebetterdecision.com/docs/");
     expect(article.inLanguage).toBe("en");
-    expect(article.isPartOf).toEqual({ "@id": orgId });
+    expect(article.isPartOf).toEqual({ "@id": websiteId });
     expect(article.publisher).toEqual({ "@id": orgId });
     // No fabricated authorship fields.
     expect(article.author).toBeUndefined();
@@ -122,7 +124,7 @@ describe("docs structured data (JSON-LD)", () => {
     const blocks = parseLd(container);
     const article = blocks.find((b) => b["@type"] === "TechArticle");
     expect(article.url).toBe("https://thebetterdecision.com/docs/plans/");
-    expect(article.isPartOf).toEqual({ "@id": orgId });
+    expect(article.isPartOf).toEqual({ "@id": websiteId });
     expect(article.publisher).toEqual({ "@id": orgId });
 
     const crumb = blocks.find((b) => b["@type"] === "BreadcrumbList");

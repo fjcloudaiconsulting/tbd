@@ -28,7 +28,11 @@ export const metadata: Metadata = {
 // graph links: this doc resolves to the one canonical Organization
 // node. URLs point at the apex (the canonical home for shared pages).
 // We omit author / datePublished — there is no truthful value for them.
+// isPartOf points at the WebSite node (schema.org expects a CreativeWork
+// there, not the Organization); publisher stays the Organization. Both
+// @ids match the landing page's nodes so the graph resolves to one site.
 const orgId = `${apexUrl}/#organization`;
+const websiteId = `${apexUrl}/#website`;
 
 const techArticleLd = {
   "@context": "https://schema.org",
@@ -37,7 +41,7 @@ const techArticleLd = {
   description,
   url: apexCanonical("/docs"),
   inLanguage: "en",
-  isPartOf: { "@id": orgId },
+  isPartOf: { "@id": websiteId },
   publisher: { "@id": orgId },
 };
 

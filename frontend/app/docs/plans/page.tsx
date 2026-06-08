@@ -27,7 +27,11 @@ export const metadata: Metadata = {
 // Reuse the SAME Organization @id the landing page declares so the
 // graph links to the one canonical Organization node. URLs point at
 // the apex. We omit author / datePublished — no truthful value exists.
+// isPartOf points at the WebSite node (schema.org expects a CreativeWork,
+// not the Organization); publisher stays the Organization. Both @ids
+// match the landing page's nodes so the graph resolves to one site.
 const orgId = `${apexUrl}/#organization`;
+const websiteId = `${apexUrl}/#website`;
 
 const techArticleLd = {
   "@context": "https://schema.org",
@@ -36,7 +40,7 @@ const techArticleLd = {
   description,
   url: apexCanonical("/docs/plans"),
   inLanguage: "en",
-  isPartOf: { "@id": orgId },
+  isPartOf: { "@id": websiteId },
   publisher: { "@id": orgId },
 };
 
