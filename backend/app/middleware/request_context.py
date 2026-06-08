@@ -25,6 +25,15 @@ Per HTTP request, this middleware:
   ``request.state.request_id`` works in any FastAPI handler.
 - Echoes the value back as ``X-Request-Id`` on the response so
   callers (frontend, ops) can correlate.
+- Resolves the real client IP via the shared ``get_client_ip``
+  helper and binds it onto structlog contextvars as ``client_ip``.
+  Done HERE (not in ``deps.get_current_user``) so it lands on EVERY
+  access-log line, including anonymous routes like
+  ``/api/v1/auth/register`` and ``/api/v1/auth/login`` that never
+  resolve the auth dependency. The helper applies the same DO ingress
+  precedence (``do-connecting-ip``) and trusted-proxy XFF walk that
+  authed routes use for audit logging, so anonymous bot-signup waves
+  can be IP-clustered the same way.
 
 User / org / role context is bound LATER, inside
 ``deps.get_current_user``. With pure-ASGI semantics here, that
@@ -36,7 +45,10 @@ import re
 import uuid
 
 import structlog
+from starlette.requests import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app.rate_limit import get_client_ip
 
 
 # Bounded length on the inbound side. Past this we generate a fresh
@@ -103,6 +115,15 @@ class RequestContextMiddleware:
 
         request_id = _coerce_request_id(inbound)
         structlog.contextvars.bind_contextvars(request_id=request_id)
+
+        # Resolve the real client IP and bind it for every request,
+        # authed or not. ``get_client_ip`` only reads ``request.headers``
+        # and ``request.client``, both derivable from the ASGI scope
+        # without consuming ``receive`` — so a header-only ``Request``
+        # is sufficient and keeps the body stream untouched.
+        structlog.contextvars.bind_contextvars(
+            client_ip=get_client_ip(Request(scope))
+        )
 
         # Make request.state.request_id available without re-deriving.
         # ``scope.setdefault`` keeps any state dict Starlette already
