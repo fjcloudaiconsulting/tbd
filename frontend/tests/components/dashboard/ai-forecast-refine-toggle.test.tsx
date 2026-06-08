@@ -154,7 +154,17 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
     const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
     fireEvent.click(confirmBtn);
 
-    // Accept-by-default, so Apply reflects the full adjustment.
+    // Accept-by-default is set in an effect after the modal mounts. Wait for
+    // that effect to settle (the row checkbox checked) before clicking Apply,
+    // otherwise Apply can fire with an empty accepted set and revert every
+    // adjustment to baseline (the order-dependent full-suite race).
+    await waitFor(() =>
+      expect(
+        screen.getByRole("checkbox", {
+          name: /Apply adjustment for Groceries/i,
+        }),
+      ).toBeChecked(),
+    );
     const applyBtn = await screen.findByTestId("forecast-refine-apply");
     fireEvent.click(applyBtn);
 
@@ -238,6 +248,16 @@ describe("AIForecastRefineToggle - tooltip details", () => {
     fireEvent.click(confirmBtn);
 
     // Accept the adjustments in the review step to reach the refined view.
+    // Wait for the accept-by-default effect to settle (checkbox checked)
+    // before clicking Apply, otherwise Apply can fire with an empty accepted
+    // set and the refined view would carry no adjustments to list.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("checkbox", {
+          name: /Apply adjustment for Groceries/i,
+        }),
+      ).toBeChecked(),
+    );
     const applyBtn = await screen.findByTestId("forecast-refine-apply");
     fireEvent.click(applyBtn);
 
