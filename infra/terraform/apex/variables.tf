@@ -49,3 +49,9 @@ variable "noncurrent_version_expiration_days" {
   type        = number
   default     = 90
 }
+
+variable "orphaned_static_expiration_days" {
+  description = "Days after which current _next/static/ objects expire. Hashed chunks orphaned by a Next.js rename never become noncurrent versions (the key changes entirely), so the noncurrent-version rule never prunes them. The apex deploy re-uploads every in-use chunk, refreshing its mtime, so a window this wide only reaps chunks no recent build referenced. Matches noncurrent_version_expiration_days for a generous safety margin."
+  type        = number
+  default     = 90
+}

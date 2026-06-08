@@ -142,6 +142,25 @@ resource "aws_s3_bucket_lifecycle_configuration" "apex" {
       days_after_initiation = 7
     }
   }
+
+  # Reap hashed _next/static/ chunks orphaned by a Next.js rename. The deploy
+  # uploads new hashed assets without --delete (PR #267, to avoid 404ing
+  # browser-cached HTML mid-deploy), so renamed chunks keep a distinct, current
+  # key forever and the noncurrent-version rule above never touches them. Every
+  # in-use chunk is re-uploaded on each deploy, refreshing its mtime, so this
+  # expiration only reaps chunks absent from recent build output.
+  rule {
+    id     = "expire-orphaned-next-static"
+    status = "Enabled"
+
+    filter {
+      prefix = "_next/static/"
+    }
+
+    expiration {
+      days = var.orphaned_static_expiration_days
+    }
+  }
 }
 
 ###############################################################################
