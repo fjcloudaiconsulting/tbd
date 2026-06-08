@@ -36,6 +36,7 @@ from app.schemas.rate_limit_override import (
 )
 from app.services import audit_service
 from app.services import rate_limit_overrides_service as svc
+from app.services.exceptions import ValidationError
 
 
 logger = structlog.stdlib.get_logger()
@@ -103,6 +104,8 @@ async def list_overrides_endpoint(
     org_id: Optional[int] = Query(default=None, ge=1),
     user_id: Optional[int] = Query(default=None, ge=1),
     endpoint_pattern: Optional[str] = Query(default=None, max_length=80),
+    sort_by: Optional[str] = Query(default=None),
+    sort_dir: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     _current_user: User = Depends(require_superadmin),
@@ -113,14 +116,19 @@ async def list_overrides_endpoint(
     ``AuditEventListResponse`` shape so the admin table can reuse the
     same pagination component.
     """
-    rows, total = await svc.list_overrides(
-        db,
-        org_id=org_id,
-        user_id=user_id,
-        endpoint_pattern=endpoint_pattern,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        rows, total = await svc.list_overrides(
+            db,
+            org_id=org_id,
+            user_id=user_id,
+            endpoint_pattern=endpoint_pattern,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail) from exc
     return {
         "items": [RateLimitOverrideResponse.model_validate(r) for r in rows],
         "total": total,

@@ -13,13 +13,14 @@ from __future__ import annotations
 import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.permissions import require_permission
 from app.database import get_db
 from app.schemas.audit import AuditEventListResponse, AuditEventResponse
 from app.services import audit_service
+from app.services.exceptions import ValidationError
 
 
 router = APIRouter(prefix="/api/v1/admin/audit", tags=["admin-audit"])
@@ -40,21 +41,28 @@ async def list_audit_events(
     outcome: Literal["success", "failure"] | None = Query(default=None),
     from_dt: datetime.datetime | None = Query(default=None),
     to_dt: datetime.datetime | None = Query(default=None),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> AuditEventListResponse:
-    rows, total = await audit_service.list_audit_events(
-        db,
-        actor_user_id=actor_user_id,
-        target_org_id=target_org_id,
-        event_type=event_type,
-        outcome=outcome,
-        from_dt=from_dt,
-        to_dt=to_dt,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        rows, total = await audit_service.list_audit_events(
+            db,
+            actor_user_id=actor_user_id,
+            target_org_id=target_org_id,
+            event_type=event_type,
+            outcome=outcome,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail) from exc
     return AuditEventListResponse(
         items=[AuditEventResponse.model_validate(r) for r in rows],
         total=total,

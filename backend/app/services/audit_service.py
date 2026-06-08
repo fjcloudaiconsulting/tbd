@@ -31,9 +31,22 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.audit_event import AuditEvent, AuditOutcome
+from app.services.list_query import resolve_order_by
 
 
 logger = structlog.stdlib.get_logger()
+
+
+# Closed whitelist of sortable columns for the admin audit list. Keys are
+# the public sort tokens the frontend sends; values are the column to
+# order by. Anything not here is a 400 (see ``list_query.resolve_order_by``).
+_SORTABLE = {
+    "created_at": AuditEvent.created_at,
+    "event_type": AuditEvent.event_type,
+    "outcome": AuditEvent.outcome,
+    "actor_email": AuditEvent.actor_email,
+    "target_org_name": AuditEvent.target_org_name,
+}
 
 
 def _build_audit_event(
@@ -182,13 +195,18 @@ async def list_audit_events(
     outcome: Optional[str] = None,
     from_dt: Optional[datetime] = None,
     to_dt: Optional[datetime] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[AuditEvent], int]:
     """Return ``(rows, total)`` for the admin audit table.
 
-    Ordered by ``created_at DESC`` (then id DESC for stable sort
-    across same-timestamp events).
+    Default ordering is ``created_at DESC`` (then id DESC for stable
+    sort across same-timestamp events). ``sort_by`` is resolved against
+    a closed whitelist (see ``_SORTABLE``); an unknown key raises
+    ``ValidationError`` (router → 400). ``id`` desc is always appended as
+    the stable tiebreaker.
     """
     where = []
     if actor_user_id is not None:
@@ -218,8 +236,17 @@ async def list_audit_events(
 
     total = (await db.execute(count_q)).scalar_one()
 
+    order_by = resolve_order_by(
+        sort_by,
+        sort_dir,
+        allowed=_SORTABLE,
+        default_key="created_at",
+        default_dir="desc",
+        tiebreaker=AuditEvent.id.desc(),
+    )
+
     rows_result = await db.execute(
-        base.order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+        base.order_by(*order_by)
         .limit(limit)
         .offset(offset)
     )

@@ -17,9 +17,11 @@ vi.mock("@/components/auth/AuthProvider", async () => {
 });
 
 const replaceMock = vi.fn();
+const currentSearchParams = new URLSearchParams();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
   usePathname: () => "/admin/orgs",
+  useSearchParams: () => currentSearchParams,
 }));
 
 

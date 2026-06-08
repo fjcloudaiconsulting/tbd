@@ -29,6 +29,7 @@ from app.models.subscription import Plan, Subscription, SubscriptionStatus
 from app.models.transaction import Transaction
 from app.models.user import Organization, User
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.list_query import resolve_order_by
 from app.services.org_data_service import wipe_org_data
 
 
@@ -52,6 +53,8 @@ async def list_orgs(
     db: AsyncSession,
     *,
     q: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict:
@@ -61,6 +64,11 @@ async def list_orgs(
     plus correlated user-count subqueries — bounded query cost
     regardless of page size. `last_user_created_at` is a soft proxy
     ("Newest member") for activity until L4.7 audit log lands.
+
+    ``sort_by`` is resolved against a closed whitelist (see below); an
+    unknown key raises ``ValidationError`` (router → 400). When omitted,
+    defaults to ``created_at`` desc. ``Organization.id`` desc is appended
+    as a stable tiebreaker so pagination is deterministic.
     """
     user_count_sq = (
         select(func.count())
@@ -82,6 +90,22 @@ async def list_orgs(
         .correlate(Organization)
         .scalar_subquery()
     )
+
+    # Closed whitelist of sortable columns. Keys are the public sort
+    # tokens the frontend sends; values are the column/expression to
+    # order by. Subquery aggregates (user_count / last member) order on
+    # the bare subquery expression — MySQL and SQLite both accept a
+    # scalar subquery in ORDER BY. Anything not here is a 400 (see
+    # ``list_query.resolve_order_by``).
+    sortable = {
+        "name": Organization.name,
+        "created_at": Organization.created_at,
+        "plan_slug": Plan.slug,
+        "subscription_status": Subscription.status,
+        "user_count": user_count_sq,
+        "active_user_count": active_user_count_sq,
+        "last_user_created_at": newest_member_sq,
+    }
 
     stmt = (
         select(
@@ -107,9 +131,18 @@ async def list_orgs(
         total_stmt = total_stmt.where(Organization.name.ilike(f"%{q}%"))
     total = (await db.scalar(total_stmt)) or 0
 
+    order_by = resolve_order_by(
+        sort_by,
+        sort_dir,
+        allowed=sortable,
+        default_key="created_at",
+        default_dir="desc",
+        tiebreaker=Organization.id.desc(),
+    )
+
     rows = (
         await db.execute(
-            stmt.order_by(Organization.created_at.desc())
+            stmt.order_by(*order_by)
             .limit(limit)
             .offset(offset)
         )

@@ -38,6 +38,23 @@ from app.models.subscription import (
 from app.models.user import Organization, User
 from app.services.admin_users_search_service import _normalize_like
 from app.services.exceptions import NotFoundError
+from app.services.list_query import resolve_order_by
+
+
+# Closed whitelist of sortable columns for the subscriptions list. Keys
+# are the public sort tokens the frontend sends; values are the column
+# to order by. ``org_name`` / ``plan_slug`` / ``plan_name`` sort on the
+# joined Organization / Plan columns. Anything not here is a 400 (see
+# ``list_query.resolve_order_by``).
+_SORTABLE = {
+    "org_name": Organization.name,
+    "plan_slug": Plan.slug,
+    "plan_name": Plan.name,
+    "status": Subscription.status,
+    "created_at": Subscription.created_at,
+    "trial_end": Subscription.trial_end,
+    "current_period_end": Subscription.current_period_end,
+}
 
 
 # How far ahead "trial expiring soon" looks. Locked at 7 days to match
@@ -84,6 +101,8 @@ async def list_subscriptions(
     status_filter: Optional[str] = None,
     plan_filter: Optional[str] = None,
     q: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -168,9 +187,19 @@ async def list_subscriptions(
         count_q = count_q.where(clause)
 
     total = (await db.execute(count_q)).scalar_one()
+
+    order_by = resolve_order_by(
+        sort_by,
+        sort_dir,
+        allowed=_SORTABLE,
+        default_key="created_at",
+        default_dir="desc",
+        tiebreaker=Subscription.id.desc(),
+    )
+
     rows = (
         await db.execute(
-            base.order_by(Subscription.created_at.desc(), Subscription.id.desc())
+            base.order_by(*order_by)
             .limit(limit)
             .offset(offset)
         )

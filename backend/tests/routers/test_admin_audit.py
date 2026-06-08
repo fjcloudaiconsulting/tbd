@@ -180,6 +180,73 @@ async def test_get_audit_list_pagination(session_factory):
         assert len(body2["items"]) == 1
 
 
+# ── sort contract (shared list contract) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_audit_list_sort_event_type_asc(session_factory):
+    await _seed(session_factory)
+    await _seed_events(session_factory, 5)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/audit",
+            params={"sort_by": "event_type", "sort_dir": "asc"},
+        )
+    assert res.status_code == 200
+    types = [item["event_type"] for item in res.json()["items"]]
+    assert types == sorted(types)
+
+
+@pytest.mark.asyncio
+async def test_get_audit_list_sort_actor_email_desc(session_factory):
+    await _seed(session_factory)
+    await _seed_events(session_factory, 5)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/audit",
+            params={"sort_by": "actor_email", "sort_dir": "desc"},
+        )
+    assert res.status_code == 200
+    emails = [item["actor_email"] for item in res.json()["items"]]
+    assert emails == sorted(emails, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_get_audit_list_default_sort_is_created_at_desc(session_factory):
+    await _seed(session_factory)
+    await _seed_events(session_factory, 4)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/audit")
+    assert res.status_code == 200
+    created = [item["created_at"] for item in res.json()["items"]]
+    assert created == sorted(created, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_get_audit_list_invalid_sort_by_returns_400(session_factory):
+    await _seed(session_factory)
+    await _seed_events(session_factory, 1)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/audit", params={"sort_by": "not_a_column"})
+    assert res.status_code == 400
+    assert "invalid_sort_by" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_get_audit_list_invalid_sort_dir_returns_400(session_factory):
+    await _seed(session_factory)
+    await _seed_events(session_factory, 1)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/audit", params={"sort_dir": "sideways"})
+    assert res.status_code == 400
+    assert "invalid_sort_dir" in res.json()["detail"]
+
+
 # ── outcome filter validation (PR-C / PR #139 #3) ──────────────────────────
 
 

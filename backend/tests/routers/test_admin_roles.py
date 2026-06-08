@@ -186,6 +186,9 @@ async def test_list_roles_returns_seeded_frozen(session_factory):
     assert res.status_code == 200
     body = res.json()
     assert len(body["items"]) == 1
+    # ``total`` mirrors the other admin-table list envelopes so the FE
+    # can reuse the shared <Pagination> component.
+    assert body["total"] == 1
     item = body["items"][0]
     assert item["slug"] == "superadmin"
     assert item["is_system_frozen"] is True

@@ -8,6 +8,8 @@ import { apiFetch } from "@/lib/api";
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(),
+  usePathname: () => "/admin/subscriptions",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("@/components/AppShell", () => ({

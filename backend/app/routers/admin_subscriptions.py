@@ -45,7 +45,7 @@ from app.schemas.admin_subscriptions import (
     SubscriptionListResponse,
 )
 from app.services import admin_subscription_service, audit_service
-from app.services.exceptions import NotFoundError
+from app.services.exceptions import NotFoundError, ValidationError
 
 
 logger = structlog.stdlib.get_logger()
@@ -179,19 +179,26 @@ async def list_subscriptions(
     ),
     plan: Optional[str] = Query(default=None, max_length=80),
     q: Optional[str] = Query(default=None, max_length=120),
+    sort_by: Optional[str] = Query(default=None),
+    sort_dir: Optional[str] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> SubscriptionListResponse:
-    payload = await admin_subscription_service.list_subscriptions(
-        db,
-        status_filter=status_filter,
-        plan_filter=plan,
-        q=q,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        payload = await admin_subscription_service.list_subscriptions(
+            db,
+            status_filter=status_filter,
+            plan_filter=plan,
+            q=q,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
     await _emit_view_audit(
         event_type="admin.subscriptions.viewed",
         actor=current_user,
