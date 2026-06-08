@@ -21,6 +21,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import settings as app_settings
 from app.models import Base
+from app.models.ai_usage_ledger import AIUsageLedger
+from app.models.org_ai_caps import OrgAIDefaultCaps
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.org_ai_routing import OrgAIDefaultRouting
 from app.models.user import Organization, Role, User
@@ -250,3 +252,137 @@ async def test_estimate_refine_no_history_returns_insufficient_history(
     assert called["dispatch"] is False
     assert est.can_proceed is False
     assert est.reason == "insufficient_history"
+
+
+# ---------- spend-cap pre-check on estimate ---------------------------
+#
+# These mirror the hard-cap enforcement in ai_dispatch.call_llm_structured
+# (cost_so_far >= hard_cap -> refuse) so the /estimate preflight and the
+# real dispatch agree on whether a refine can run. The estimate must also
+# refuse when the projected cost would push the org over the remaining
+# budget, so the UI never offers Confirm when Confirm would hard-fail.
+
+
+def _patch_estimate_internals(monkeypatch, *, est_cost_cents: int):
+    """Stub the no-DB estimate inputs so the cap pre-check is the only
+    variable under test. compute_forecast / history / index are faked, and
+    estimate_cost_cents is pinned to a deterministic projected cost.
+    """
+    async def fake_compute_forecast(db, org_id, period_start=None):
+        return _FAKE_BASELINE
+
+    async def fake_build_history(db, *, org_id, period_start, months=12):
+        return _FAKE_HISTORY
+
+    async def fake_category_index(db, *, org_id):
+        return {1: "Rent", 2: "Food"}
+
+    monkeypatch.setattr(svc.forecast_service, "compute_forecast", fake_compute_forecast)
+    monkeypatch.setattr(svc, "_build_category_history", fake_build_history)
+    monkeypatch.setattr(svc, "_category_index", fake_category_index)
+    monkeypatch.setattr(svc, "estimate_cost_cents", lambda **kw: est_cost_cents)
+
+
+async def _seed_cap_and_spend(
+    db_session: AsyncSession,
+    *,
+    org_id: int,
+    hard_cap_cents: int,
+    spent_cents: int,
+):
+    """Create an org hard cap and a settled ledger row of ``spent_cents``."""
+    db_session.add(
+        OrgAIDefaultCaps(
+            org_id=org_id, soft_cap_cents=None, hard_cap_cents=hard_cap_cents
+        )
+    )
+    if spent_cents > 0:
+        db_session.add(
+            AIUsageLedger(
+                org_id=org_id,
+                credential_id=None,
+                feature_key=svc.ROUTING_KEY,
+                model="gpt-4o-mini",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                est_cost_cents=spent_cents,
+                latency_ms=0,
+                success=True,
+            )
+        )
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_estimate_refine_at_hard_cap_refuses(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """Org sitting exactly AT its hard cap must get can_proceed=False, even
+    if the projected cost is tiny. Boundary mirrors dispatch's
+    ``cost_so_far >= hard_cap`` (remaining == 0).
+    """
+    _patch_estimate_internals(monkeypatch, est_cost_cents=1)
+    await _seed_cap_and_spend(
+        db_session, org_id=seeded_org.id, hard_cap_cents=500, spent_cents=500
+    )
+
+    est = await svc.estimate_refine(
+        db_session,
+        org_id=seeded_org.id,
+        period_start=None,
+        timeframe_months=6,
+        scope=Scope.TOP_20,
+    )
+    assert est.can_proceed is False
+    assert est.reason == "ai_cap_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_estimate_refine_projected_cost_over_remaining_refuses(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """Org has headroom, but the projected cost is larger than what's left
+    before the hard cap. Confirm would hard-fail, so the estimate refuses.
+
+    remaining = 500 - 450 = 50; projected = 80 > 50 -> refuse.
+    """
+    _patch_estimate_internals(monkeypatch, est_cost_cents=80)
+    await _seed_cap_and_spend(
+        db_session, org_id=seeded_org.id, hard_cap_cents=500, spent_cents=450
+    )
+
+    est = await svc.estimate_refine(
+        db_session,
+        org_id=seeded_org.id,
+        period_start=None,
+        timeframe_months=6,
+        scope=Scope.TOP_20,
+    )
+    assert est.can_proceed is False
+    assert est.reason == "ai_cap_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_estimate_refine_ample_budget_allows(
+    monkeypatch, db_session: AsyncSession, seeded_org: Organization
+):
+    """Org with plenty of remaining budget can proceed (regression).
+
+    remaining = 5000 - 100 = 4900; projected = 80 << 4900 -> allow.
+    """
+    _patch_estimate_internals(monkeypatch, est_cost_cents=80)
+    await _seed_cap_and_spend(
+        db_session, org_id=seeded_org.id, hard_cap_cents=5000, spent_cents=100
+    )
+
+    est = await svc.estimate_refine(
+        db_session,
+        org_id=seeded_org.id,
+        period_start=None,
+        timeframe_months=6,
+        scope=Scope.TOP_20,
+    )
+    assert est.can_proceed is True
+    assert est.reason is None
+    assert est.est_cost_cents == 80
