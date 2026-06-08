@@ -685,12 +685,21 @@ async def estimate_refine(
     Returns a ``ForecastRefineEstimate`` with ``can_proceed=False`` when:
     - No transaction history exists for the org (``reason="insufficient_history"``)
     - No routing is configured (``reason="ai_routing_not_configured"``)
+    - The org has no remaining hard-cap budget for this call
+      (``reason="ai_cap_exceeded"``)
 
-    KNOWN LIMITATION: checks routing but does NOT pre-check the AI spend
-    cap, so an org at its hard cap can see ``can_proceed=True``. On
-    Confirm the dispatch enforces the cap and returns a graceful baseline
-    fallback with ``fallback_reason="ai_cap_exceeded"`` -- no overspend
-    occurs. Follow-up: add a cap pre-check here.
+    Spend-cap pre-check: this mirrors the hard-cap enforcement in
+    ``ai_dispatch.call_llm_structured`` so the quoted estimate and the
+    real dispatch agree. Dispatch refuses (``AICapExceeded``) when the
+    org's already-spent cost for the period is at or over the hard cap
+    (``cost_so_far >= hard_cap``). The estimate refuses on that same
+    boundary AND when the *projected* cost of this call would push the
+    period total past the hard cap (``cost_so_far + est_cost >
+    hard_cap``), i.e. there isn't enough remaining budget to run it. That
+    way the UI never offers Confirm when Confirm would hard-fail at the
+    dispatch chokepoint. Caps + spend are resolved with the same
+    ``ROUTING_KEY`` feature key and calendar-month window the dispatcher
+    uses.
     """
     baseline = await forecast_service.compute_forecast(
         db, org_id, period_start=period_start
@@ -736,10 +745,39 @@ async def estimate_refine(
     cost = estimate_cost_cents(
         model=model, prompt_tokens=est_prompt, completion_tokens=est_out
     )
+    est_cost = int(cost)
+
+    # Spend-cap pre-check. Resolve the effective hard cap and the
+    # period's already-spent cost through the SAME helpers the dispatcher
+    # uses (same ROUTING_KEY feature key, same calendar-month window) so
+    # estimate and execution can't disagree. Refuse when the org is at or
+    # over the hard cap (mirrors dispatch's ``cost_so_far >= hard_cap``),
+    # or when this call's projected cost would push the period total past
+    # the hard cap (no remaining budget for it).
+    resolved = await ai_dispatch._resolve_caps(
+        db, org_id=org_id, feature_key=ROUTING_KEY
+    )
+    if resolved.hard_cap_cents is not None:
+        cost_so_far = await ai_dispatch._aggregate_cost_cents(
+            db, org_id=org_id, since=ai_dispatch._month_start()
+        )
+        if (
+            cost_so_far >= resolved.hard_cap_cents
+            or cost_so_far + est_cost > resolved.hard_cap_cents
+        ):
+            return ForecastRefineEstimate(
+                est_prompt_tokens=est_prompt,
+                est_output_tokens=est_out,
+                est_cost_cents=est_cost,
+                duration_band=_duration_band(scope),
+                can_proceed=False,
+                reason="ai_cap_exceeded",
+            )
+
     return ForecastRefineEstimate(
         est_prompt_tokens=est_prompt,
         est_output_tokens=est_out,
-        est_cost_cents=int(cost),
+        est_cost_cents=est_cost,
         duration_band=_duration_band(scope),
         can_proceed=True,
         reason=None,
