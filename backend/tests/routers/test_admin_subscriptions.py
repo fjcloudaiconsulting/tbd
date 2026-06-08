@@ -227,6 +227,61 @@ async def test_list_rejects_unknown_status_with_422(session_factory):
     assert res.status_code == 422
 
 
+# ── sort contract (shared list contract) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_sort_org_name_asc(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/subscriptions",
+            params={"sort_by": "org_name", "sort_dir": "asc"},
+        )
+    assert res.status_code == 200
+    names = [row["org_name"] for row in res.json()["items"]]
+    assert names == sorted(names)
+
+
+@pytest.mark.asyncio
+async def test_list_sort_org_name_desc_reverses(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/subscriptions",
+            params={"sort_by": "org_name", "sort_dir": "desc"},
+        )
+    assert res.status_code == 200
+    names = [row["org_name"] for row in res.json()["items"]]
+    assert names == sorted(names, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_list_invalid_sort_by_returns_400(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/subscriptions", params={"sort_by": "not_a_column"}
+        )
+    assert res.status_code == 400
+    assert "invalid_sort_by" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_invalid_sort_dir_returns_400(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/subscriptions", params={"sort_dir": "sideways"}
+        )
+    assert res.status_code == 400
+    assert "invalid_sort_dir" in res.json()["detail"]
+
+
 @pytest.mark.asyncio
 async def test_detail_returns_full_envelope(session_factory):
     seeded = await _seed(session_factory)

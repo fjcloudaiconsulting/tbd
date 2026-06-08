@@ -24,6 +24,7 @@ const replaceMock = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
   usePathname: () => "/admin/audit",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 const SUPERADMIN = {

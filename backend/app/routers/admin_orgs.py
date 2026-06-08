@@ -77,11 +77,18 @@ def _request_id() -> str | None:
 )
 async def list_orgs(
     q: str | None = Query(default=None, max_length=120),
+    sort_by: str | None = Query(default=None),
+    sort_dir: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    return await admin_orgs_service.list_orgs(db, q=q, limit=limit, offset=offset)
+    try:
+        return await admin_orgs_service.list_orgs(
+            db, q=q, sort_by=sort_by, sort_dir=sort_dir, limit=limit, offset=offset
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail) from exc
 
 
 @router.get(

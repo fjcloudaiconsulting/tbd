@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
+import Pagination from "@/components/ui/Pagination";
+import SortableHeader from "@/components/ui/SortableHeader";
 import Spinner from "@/components/ui/Spinner";
+import { pageCount } from "@/lib/hooks/use-table-state";
+import type { SortDir } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -25,7 +29,23 @@ import type {
   SubscriptionStatus,
 } from "@/lib/types";
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 50;
+const DEFAULT_SORT_BY = "created_at";
+const DEFAULT_SORT_DIR: SortDir = "desc";
+
+// Backend-whitelisted sort keys. Unknown keys 400, so we clamp a seeded
+// URL value back to the default rather than send garbage.
+const SORT_FIELDS = [
+  "org_name",
+  "plan_slug",
+  "status",
+  "trial_end",
+  "current_period_end",
+  "created_at",
+] as const;
+type SortField = (typeof SORT_FIELDS)[number];
+
+const PAGE_SIZE_VALUES = [10, 25, 50, 100] as const;
 
 // Status filter chips. ``null`` represents "All", which clears the
 // filter — kept first in the list so an admin paging through the
@@ -169,8 +189,51 @@ function PlanDistribution({ kpis }: { kpis: AdminSubscriptionKPIs }) {
 }
 
 export default function AdminSubscriptionsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center">
+          <Spinner />
+        </div>
+      }
+    >
+      <AdminSubscriptionsPageContent />
+    </Suspense>
+  );
+}
+
+function AdminSubscriptionsPageContent() {
   const { user, loading } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const initialPageSize = (() => {
+    const raw = searchParams.get("page_size");
+    if (raw === null || raw === "") return DEFAULT_PAGE_SIZE;
+    const n = Number(raw);
+    return (PAGE_SIZE_VALUES as readonly number[]).includes(n)
+      ? n
+      : DEFAULT_PAGE_SIZE;
+  })();
+  const initialOffset = (() => {
+    const raw = searchParams.get("offset");
+    if (raw === null || raw === "") return 0;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.floor(n / initialPageSize) * initialPageSize;
+  })();
+  const initialSortBy: SortField = (() => {
+    const raw = searchParams.get("sort_by");
+    return raw && (SORT_FIELDS as readonly string[]).includes(raw)
+      ? (raw as SortField)
+      : DEFAULT_SORT_BY;
+  })();
+  const initialSortDir: SortDir = (() => {
+    const raw = searchParams.get("sort_dir");
+    return raw === "asc" || raw === "desc" ? raw : DEFAULT_SORT_DIR;
+  })();
+
   const [data, setData] = useState<AdminSubscriptionListResponse | null>(null);
   const [kpis, setKpis] = useState<AdminSubscriptionKPIs | null>(null);
   const [error, setError] = useState("");
@@ -178,7 +241,10 @@ export default function AdminSubscriptionsPage() {
   const [statusFilter, setStatusFilter] =
     useState<SubscriptionStatus | null>(null);
   const [planFilter, setPlanFilter] = useState<string | null>(null);
-  const [offset, setOffset] = useState(0);
+  const [offset, setOffset] = useState(initialOffset);
+  const [sortBy, setSortBy] = useState<SortField>(initialSortBy);
+  const [sortDir, setSortDir] = useState<SortDir>(initialSortDir);
+  const [pageSize, setPageSize] = useState(initialPageSize);
   const [fetching, setFetching] = useState(true);
 
   useEffect(() => {
@@ -213,8 +279,10 @@ export default function AdminSubscriptionsPage() {
     }
     setFetching(true);
     const params = new URLSearchParams({
-      limit: String(PAGE_SIZE),
+      limit: String(pageSize),
       offset: String(offset),
+      sort_by: sortBy,
+      sort_dir: sortDir,
     });
     if (q.trim()) params.set("q", q.trim());
     if (statusFilter) params.set("status", statusFilter);
@@ -225,7 +293,46 @@ export default function AdminSubscriptionsPage() {
       .then((d) => setData(d))
       .catch((err) => setError(extractErrorMessage(err, "Failed to load")))
       .finally(() => setFetching(false));
-  }, [loading, user, q, statusFilter, planFilter, offset]);
+  }, [loading, user, q, statusFilter, planFilter, offset, sortBy, sortDir, pageSize]);
+
+  // Clamp an over-offset URL back to the last valid page once data lands.
+  useEffect(() => {
+    if (!data) return;
+    if (offset > 0 && offset >= data.total) {
+      const lastOffset = Math.max(0, (pageCount(data.total, pageSize) - 1) * pageSize);
+      if (lastOffset !== offset) setOffset(lastOffset);
+    }
+  }, [data, offset, pageSize]);
+
+  // Mirror sort + pagination state back to the URL (router.replace,
+  // scroll:false). q / status / plan stay local-only — they are
+  // filter chips whose state does not need to survive a refresh here.
+  useEffect(() => {
+    if (loading || !user || !hasPlatformPermission(user, "subscriptions.view")) {
+      return;
+    }
+    const params = new URLSearchParams();
+    if (offset > 0) params.set("offset", String(offset));
+    if (sortBy !== DEFAULT_SORT_BY) params.set("sort_by", sortBy);
+    if (sortDir !== DEFAULT_SORT_DIR) params.set("sort_dir", sortDir);
+    if (pageSize !== DEFAULT_PAGE_SIZE) params.set("page_size", String(pageSize));
+    const query = params.toString();
+    const current = searchParams.toString();
+    if (query === current) return;
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, user, offset, sortBy, sortDir, pageSize, pathname, router]);
+
+  const handleSort = useCallback(
+    (field: string) => {
+      if (!(SORT_FIELDS as readonly string[]).includes(field)) return;
+      const f = field as SortField;
+      setSortBy(f);
+      setSortDir(f === sortBy ? (sortDir === "asc" ? "desc" : "asc") : "asc");
+      setOffset(0);
+    },
+    [sortBy, sortDir],
+  );
 
   const planChips = useMemo(() => {
     if (!kpis) return [] as { slug: string; name: string; count: number }[];
@@ -362,12 +469,48 @@ export default function AdminSubscriptionsPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-y border-border text-left text-xs uppercase tracking-wider text-text-muted">
-                <th className="px-6 py-3">Organization</th>
-                <th className="px-6 py-3">Plan</th>
-                <th className="px-6 py-3">Status</th>
-                <th className="px-6 py-3">Trial ends</th>
-                <th className="px-6 py-3">Period ends</th>
-                <th className="px-6 py-3">Created</th>
+                <SortableHeader
+                  label="Organization"
+                  field="org_name"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Plan"
+                  field="plan_slug"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Status"
+                  field="status"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Trial ends"
+                  field="trial_end"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Period ends"
+                  field="current_period_end"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Created"
+                  field="created_at"
+                  activeField={sortBy}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
               </tr>
             </thead>
             <tbody>
@@ -431,30 +574,18 @@ export default function AdminSubscriptionsPage() {
           </table>
         </div>
 
-        {data && data.total > PAGE_SIZE && (
-          <div className="flex items-center justify-between px-6 py-3 text-xs text-text-muted">
-            <span>
-              {offset + 1}–{Math.min(offset + PAGE_SIZE, data.total)} of{" "}
-              {data.total}
-            </span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={offset === 0}
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                className="rounded-md border border-border px-3 py-1 disabled:opacity-50"
-              >
-                Prev
-              </button>
-              <button
-                type="button"
-                disabled={offset + PAGE_SIZE >= data.total}
-                onClick={() => setOffset(offset + PAGE_SIZE)}
-                className="rounded-md border border-border px-3 py-1 disabled:opacity-50"
-              >
-                Next
-              </button>
-            </div>
+        {data && (data.total > pageSize || offset > 0) && (
+          <div className="px-6">
+            <Pagination
+              page={Math.max(1, Math.floor(offset / pageSize) + 1)}
+              pageSize={pageSize}
+              total={data.total}
+              onPageChange={(n) => setOffset((n - 1) * pageSize)}
+              onPageSizeChange={(n) => {
+                setPageSize(n);
+                setOffset(0);
+              }}
+            />
           </div>
         )}
       </div>

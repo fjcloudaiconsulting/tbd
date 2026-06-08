@@ -4,7 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
+import Pagination from "@/components/ui/Pagination";
 import Spinner from "@/components/ui/Spinner";
+import { paginate } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -219,6 +221,13 @@ export default function AdminRolesPage() {
   const [fetching, setFetching] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [reloadCounter, setReloadCounter] = useState(0);
+  // Client-side pagination over the fully-listed roles set. Roles are a
+  // tiny, semantically-ordered list (frozen-first, then name) so column
+  // sort is intentionally not surfaced here; the shared <Pagination>
+  // keeps the table consistent with the other admin tables and degrades
+  // to nothing when there is only one page.
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   useEffect(() => {
     if (loading) return;
@@ -256,6 +265,14 @@ export default function AdminRolesPage() {
       return a.name.localeCompare(b.name);
     });
   }, [data]);
+
+  // Honor the list envelope's total (equals items length today since roles
+  // are fully listed, but keeps the UI correct if server-side paging lands).
+  const total = data?.total ?? 0;
+  const pageItems = useMemo(
+    () => paginate(sortedItems, page, pageSize),
+    [sortedItems, page, pageSize],
+  );
 
   if (loading || !user || !hasPlatformPermission(user, "roles.manage")) {
     return (
@@ -311,7 +328,7 @@ export default function AdminRolesPage() {
                   </td>
                 </tr>
               )}
-              {!fetching && sortedItems.length === 0 && (
+              {!fetching && total === 0 && (
                 <tr>
                   <td
                     colSpan={5}
@@ -322,7 +339,7 @@ export default function AdminRolesPage() {
                 </tr>
               )}
               {!fetching &&
-                sortedItems.map((row) => (
+                pageItems.map((row) => (
                   <tr
                     key={row.id}
                     className="border-b border-border-subtle"
@@ -368,6 +385,21 @@ export default function AdminRolesPage() {
             </tbody>
           </table>
         </div>
+
+        {data && total > pageSize && (
+          <div className="px-6">
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPageChange={setPage}
+              onPageSizeChange={(n) => {
+                setPageSize(n);
+                setPage(1);
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {showCreate && catalog && (
