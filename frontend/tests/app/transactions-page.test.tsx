@@ -216,6 +216,32 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
       expect(typeNodes.some((el) => el.tagName === "SELECT")).toBe(false);
       expect(typeNodes[0].getAttribute("title")).toMatch(/transfer leg/i);
     });
+
+    // Editing a transfer leg renames the category control to "Transfer category"
+    // and surfaces helper text clarifying the both-type constraint that the
+    // picker (typeFilter="BOTH") enforces.
+    const catControls = await screen.findAllByLabelText("Transfer category");
+    expect(catControls.length).toBeGreaterThan(0);
+    const helperNotes = screen.getAllByText(
+      /only accept categories that work for both income and expense/i
+    );
+    expect(helperNotes.length).toBeGreaterThan(0);
+    // The plain "Category" label must not be used while editing a transfer leg.
+    expect(screen.queryByLabelText("Category")).toBeNull();
+
+    // a11y: the picker combobox must be programmatically associated with the
+    // helper text via aria-describedby so screen-reader users hear the
+    // both-type constraint when the field is focused. Each rendered control
+    // points at its own helper paragraph (which carries the matching id).
+    catControls.forEach((control) => {
+      const describedBy = control.getAttribute("aria-describedby");
+      expect(describedBy).toBeTruthy();
+      const helper = document.getElementById(describedBy as string);
+      expect(helper).not.toBeNull();
+      expect(helper?.textContent).toMatch(
+        /only accept categories that work for both income and expense/i
+      );
+    });
   });
 
   it("Saving an edit on a linked row omits 'type' from the PUT body", async () => {
@@ -275,6 +301,36 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     const body = JSON.parse((putCall[1] as RequestInit).body as string);
     expect(body).not.toHaveProperty("type");
     expect(body.description).toBe("Linked out edited");
+  });
+
+  it("Editing a regular row keeps the plain Category label and no transfer helper text", async () => {
+    const tx = makeTx({
+      id: 60, account_id: ACCT_A.id, account_name: ACCT_A.name,
+      type: "expense", amount: 40, description: "Groceries run",
+      linked_transaction_id: null,
+    });
+    setupApiFetch([tx]);
+
+    render(<TransactionsPage />);
+
+    await screen.findAllByText("Groceries run");
+
+    const editButtons = await screen.findAllByRole("button", { name: /^Edit: Groceries run$/i });
+    expect(editButtons.length).toBeGreaterThan(0);
+    fireEvent.click(editButtons[0]);
+
+    // A regular row uses the plain "Category" label.
+    const catControls = await screen.findAllByLabelText("Category");
+    expect(catControls.length).toBeGreaterThan(0);
+    // The transfer-only label and helper text must not appear.
+    expect(screen.queryByLabelText("Transfer category")).toBeNull();
+    expect(
+      screen.queryByText(/only accept categories that work for both income and expense/i)
+    ).toBeNull();
+    // Regular rows have no helper text, so the picker must not be wired to one.
+    catControls.forEach((control) => {
+      expect(control.getAttribute("aria-describedby")).toBeNull();
+    });
   });
 
   it("Per-row action column renders all actions on a single un-linked row (responsive layout)", async () => {
