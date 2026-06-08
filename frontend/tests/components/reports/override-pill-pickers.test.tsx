@@ -7,7 +7,6 @@
  * survive the swap.
  */
 import { renderWithSWR, fireEvent, screen } from "../../utils/render-with-swr";
-import { SWRConfig } from "swr";
 
 import ConfigRail from "@/components/reports/ConfigRail";
 import { apiFetch } from "@/lib/api";
@@ -164,14 +163,12 @@ describe("Override pill — picker-based filters", () => {
     // widget value, since picker click → onUpdate flows through the
     // parent in real use.
     rerender(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <ConfigRail
-          widget={makeWidget({ account_ids: [] })}
-          canvasFilters={{ account_ids: [1] }}
-          onUpdate={onUpdate}
-          onClose={() => {}}
-        />
-      </SWRConfig>,
+      <ConfigRail
+        widget={makeWidget({ account_ids: [] })}
+        canvasFilters={{ account_ids: [1] }}
+        onUpdate={onUpdate}
+        onClose={() => {}}
+      />,
     );
     // Empty widget account_ids means inherit — pill stays off.
     expect(screen.queryAllByTestId("override-pill").length).toBe(0);

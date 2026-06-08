@@ -6,9 +6,15 @@ import { SWRConfig } from "swr";
  * Renders `ui` inside a fresh-cache `<SWRConfig>` so each test gets an
  * isolated SWR cache. SWR's default cache is module-scoped, which would
  * let one test's resolved data leak into a later test that mounts the
- * same hook. The `provider: () => new Map()` factory hands every mount a
- * brand-new Map, and `dedupingInterval: 0` disables request coalescing so
- * back-to-back renders in a single test each issue their own fetch.
+ * same hook. A per-call `Map` isolates the cache, and `dedupingInterval: 0`
+ * disables request coalescing so back-to-back renders in a single test each
+ * issue their own fetch.
+ *
+ * The returned `rerender` is overridden to re-wrap in the SAME `<SWRConfig>`,
+ * so call sites can do `rerender(<Foo … />)` without re-introducing an inline
+ * wrapper. The cache Map is created once per call and reused across rerenders
+ * (the provider is only read on mount; a fresh Map would silently reset SWR
+ * state mid-test).
  *
  * This is the single shared replacement for the ~20 hand-rolled
  * `renderIsolated` / inline `<SWRConfig value={{ provider: () => new Map() }}>`
@@ -21,12 +27,17 @@ export function renderWithSWR(
   ui: ReactElement,
   options?: RenderOptions,
 ): RenderResult {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui as ReactNode}
-    </SWRConfig>,
-    options,
+  const cache = new Map();
+  const withSWR = (node: ReactNode) => (
+    <SWRConfig value={{ provider: () => cache, dedupingInterval: 0 }}>
+      {node}
+    </SWRConfig>
   );
+  const result = render(withSWR(ui), options);
+  return {
+    ...result,
+    rerender: (node: ReactNode) => result.rerender(withSWR(node)),
+  };
 }
 
 export { screen, waitFor, fireEvent, act, within } from "@testing-library/react";

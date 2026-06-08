@@ -8,7 +8,6 @@
  * ``dimensions[0]``, so they expose no secondary picker.
  */
 import { renderWithSWR, fireEvent, screen } from "../../utils/render-with-swr";
-import { SWRConfig } from "swr";
 
 import ConfigRail from "@/components/reports/ConfigRail";
 import { apiFetch } from "@/lib/api";
@@ -221,14 +220,12 @@ describe("ConfigRail — secondary dimension picker visibility", () => {
     expect(afterSet.config.dimensions).toEqual(["category", "account"]);
 
     rerender(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <ConfigRail
-          widget={afterSet}
-          canvasFilters={{}}
-          onUpdate={(w) => updates.push(w)}
-          onClose={() => {}}
-        />
-      </SWRConfig>,
+      <ConfigRail
+        widget={afterSet}
+        canvasFilters={{}}
+        onUpdate={(w) => updates.push(w)}
+        onClose={() => {}}
+      />,
     );
 
     fireEvent.change(screen.getByLabelText("Break down by"), {
