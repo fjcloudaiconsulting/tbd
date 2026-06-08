@@ -1,6 +1,10 @@
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import {
+  renderWithSWR,
+  screen,
+  fireEvent,
+  waitFor,
+} from "../utils/render-with-swr";
 
 import ReconcileClient from "@/app/import/[import_id]/reconcile/ReconcileClient";
 import { apiFetch } from "@/lib/api";
@@ -12,11 +16,7 @@ import type { ImportBatchDetail } from "@/lib/types";
 function renderClient(
   props: React.ComponentProps<typeof ReconcileClient>,
 ) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      <ReconcileClient {...props} />
-    </SWRConfig>,
-  );
+  return renderWithSWR(<ReconcileClient {...props} />);
 }
 
 vi.mock("@/components/AppShell", () => ({

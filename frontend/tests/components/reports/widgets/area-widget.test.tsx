@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
 
 import AreaWidget from "@/components/reports/widgets/AreaWidget";
 import type { AreaWidget as AreaWidgetType } from "@/lib/reports/types";
@@ -8,14 +7,6 @@ import { runQuery } from "@/lib/reports/api";
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
 }));
-
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
 
 function makeWidget(): AreaWidgetType {
   return {
@@ -48,7 +39,7 @@ describe("AreaWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 2 },
     });
 
-    renderIsolated(<AreaWidget widget={makeWidget()} />);
+    renderWithSWR(<AreaWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.queryByTestId("area-widget-loading")).toBeNull(),
@@ -63,7 +54,7 @@ describe("AreaWidget", () => {
       meta: { row_count: 0, truncated: false, query_ms: 0 },
     });
 
-    renderIsolated(<AreaWidget widget={makeWidget()} />);
+    renderWithSWR(<AreaWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("area-widget-empty")).toBeInTheDocument(),
@@ -73,7 +64,7 @@ describe("AreaWidget", () => {
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("nope"));
 
-    renderIsolated(<AreaWidget widget={makeWidget()} />);
+    renderWithSWR(<AreaWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("area-widget-error")).toBeInTheDocument(),

@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
 
 import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
 import type { SparklineWidget as SparklineWidgetType } from "@/lib/reports/types";
@@ -8,14 +7,6 @@ import { runQuery } from "@/lib/reports/api";
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
 }));
-
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
 
 function makeWidget(): SparklineWidgetType {
   return {
@@ -50,7 +41,7 @@ describe("SparklineWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<SparklineWidget widget={makeWidget()} />);
+    renderWithSWR(<SparklineWidget widget={makeWidget()} />);
 
     const value = await screen.findByTestId("sparkline-widget-value");
     // Last row was 220 -> headline shows it.
@@ -63,7 +54,7 @@ describe("SparklineWidget", () => {
       meta: { row_count: 0, truncated: false, query_ms: 0 },
     });
 
-    renderIsolated(<SparklineWidget widget={makeWidget()} />);
+    renderWithSWR(<SparklineWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("sparkline-widget-empty")).toBeInTheDocument(),
@@ -73,7 +64,7 @@ describe("SparklineWidget", () => {
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("nope"));
 
-    renderIsolated(<SparklineWidget widget={makeWidget()} />);
+    renderWithSWR(<SparklineWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("sparkline-widget-error")).toBeInTheDocument(),

@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
 
 import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
 import type { StackedBarWidget as StackedBarWidgetType } from "@/lib/reports/types";
@@ -8,14 +7,6 @@ import { runQuery } from "@/lib/reports/api";
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
 }));
-
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
 
 function makeWidget(overrides: Partial<StackedBarWidgetType["config"]> = {}): StackedBarWidgetType {
   return {
@@ -49,7 +40,7 @@ describe("StackedBarWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 2 },
     });
 
-    renderIsolated(<StackedBarWidget widget={makeWidget()} />);
+    renderWithSWR(<StackedBarWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.queryByTestId("stacked-bar-widget-loading")).toBeNull(),
@@ -64,7 +55,7 @@ describe("StackedBarWidget", () => {
       meta: { row_count: 0, truncated: false, query_ms: 0 },
     });
 
-    renderIsolated(<StackedBarWidget widget={makeWidget()} />);
+    renderWithSWR(<StackedBarWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(
@@ -76,7 +67,7 @@ describe("StackedBarWidget", () => {
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("nope"));
 
-    renderIsolated(<StackedBarWidget widget={makeWidget()} />);
+    renderWithSWR(<StackedBarWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(
@@ -91,7 +82,7 @@ describe("StackedBarWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(
+    renderWithSWR(
       <StackedBarWidget
         widget={makeWidget({
           measures: [

@@ -7,8 +7,7 @@
  * explainer. We assert the tooltip triggers render (by their ARIA
  * label from the content map) rather than driving the portal open.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, fireEvent, screen } from "../../utils/render-with-swr";
 
 import ConfigRail from "@/components/reports/ConfigRail";
 import { apiFetch } from "@/lib/api";
@@ -18,14 +17,6 @@ import type { BarWidget, LineWidget } from "@/lib/reports/types";
 vi.mock("@/lib/api", () => ({
   apiFetch: vi.fn(),
 }));
-
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
 
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
@@ -64,7 +55,7 @@ function makeLine(): LineWidget {
 
 describe("ConfigRail — help tooltips", () => {
   it("renders the aggregation tooltip trigger for a single-measure widget", () => {
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeBar()}
         canvasFilters={{}}
@@ -82,7 +73,7 @@ describe("ConfigRail — help tooltips", () => {
 
   it("swaps the aggregation tooltip to match the selected aggregation", () => {
     const updates: BarWidget[] = [];
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeBar()}
         canvasFilters={{}}
@@ -98,7 +89,7 @@ describe("ConfigRail — help tooltips", () => {
   });
 
   it("renders the master-category explainer next to the dimension label", () => {
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeBar()}
         canvasFilters={{}}
@@ -116,7 +107,7 @@ describe("ConfigRail — help tooltips", () => {
   });
 
   it("renders a per-series aggregation tooltip for multi-series widgets", () => {
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeLine()}
         canvasFilters={{}}

@@ -1,5 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import TagFilter from "@/components/reports/filters/TagFilter";
 import { apiFetch } from "@/lib/api";
@@ -13,14 +12,6 @@ const TAGS = [
   { id: 2, name: "essentials", name_normalized: "essentials", usage_count: 2 },
 ];
 
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
-
 describe("TagFilter", () => {
   const apiFetchMock = vi.mocked(apiFetch);
 
@@ -31,7 +22,7 @@ describe("TagFilter", () => {
   it("fetches tags on mount and renders chips", async () => {
     apiFetchMock.mockResolvedValueOnce(TAGS);
 
-    renderIsolated(
+    renderWithSWR(
       <TagFilter value={[]} match="all" onChange={() => {}} />,
     );
 
@@ -48,7 +39,7 @@ describe("TagFilter", () => {
     apiFetchMock.mockResolvedValueOnce(TAGS);
     const onChange = vi.fn();
 
-    renderIsolated(
+    renderWithSWR(
       <TagFilter value={[]} match="all" onChange={onChange} />,
     );
 
@@ -64,7 +55,7 @@ describe("TagFilter", () => {
     apiFetchMock.mockResolvedValueOnce(TAGS);
     const onChange = vi.fn();
 
-    renderIsolated(
+    renderWithSWR(
       <TagFilter
         value={["groceries", "essentials"]}
         match="all"
@@ -84,7 +75,7 @@ describe("TagFilter", () => {
     apiFetchMock.mockResolvedValueOnce(TAGS);
     const onChange = vi.fn();
 
-    renderIsolated(
+    renderWithSWR(
       <TagFilter
         value={["groceries"]}
         match="all"
@@ -103,7 +94,7 @@ describe("TagFilter", () => {
   it("renders an error state when the fetch fails", async () => {
     apiFetchMock.mockRejectedValueOnce(new Error("boom"));
 
-    renderIsolated(
+    renderWithSWR(
       <TagFilter value={[]} match="all" onChange={() => {}} />,
     );
 

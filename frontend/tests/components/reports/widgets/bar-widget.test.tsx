@@ -1,5 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import BarWidget from "@/components/reports/widgets/BarWidget";
 import type { BarWidget as BarWidgetType } from "@/lib/reports/types";
@@ -22,14 +21,6 @@ vi.mock("@/lib/reports/csv", async (importOriginal) => {
 // chart body. We assert on the data-binding path (chart container
 // present, no error / empty state) and on the DOM legend the widget
 // renders itself (outside the SVG) when a break-down dimension is set.
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
-
 function makeWidget(
   overrides: Partial<BarWidgetType["config"]> = {},
 ): BarWidgetType {
@@ -68,7 +59,7 @@ describe("BarWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 4 },
     });
 
-    renderIsolated(<BarWidget widget={makeWidget()} />);
+    renderWithSWR(<BarWidget widget={makeWidget()} />);
 
     await waitFor(() => {
       // Empty / loading states must NOT be shown when rows arrive.
@@ -87,7 +78,7 @@ describe("BarWidget", () => {
       meta: { row_count: 0, truncated: false, query_ms: 2 },
     });
 
-    renderIsolated(<BarWidget widget={makeWidget()} />);
+    renderWithSWR(<BarWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("bar-widget-empty")).toBeInTheDocument(),
@@ -97,7 +88,7 @@ describe("BarWidget", () => {
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("nope"));
 
-    renderIsolated(<BarWidget widget={makeWidget()} />);
+    renderWithSWR(<BarWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("bar-widget-error")).toBeInTheDocument(),
@@ -113,7 +104,7 @@ describe("BarWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 4 },
     });
 
-    renderIsolated(<BarWidget widget={makeWidget()} />);
+    renderWithSWR(<BarWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.queryByTestId("bar-widget-loading")).toBeNull(),
@@ -133,7 +124,7 @@ describe("BarWidget", () => {
       meta: { row_count: 4, truncated: false, query_ms: 6 },
     });
 
-    renderIsolated(
+    renderWithSWR(
       <BarWidget widget={makeWidget({ dimensions: ["category", "account"] })} />,
     );
 
@@ -170,7 +161,7 @@ describe("BarWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 4 },
     });
 
-    renderIsolated(<BarWidget widget={makeWidget()} />);
+    renderWithSWR(<BarWidget widget={makeWidget()} />);
 
     const exportBtn = await screen.findByTestId("widget-csv-export");
     expect(exportBtn).toBeInTheDocument();
@@ -194,7 +185,7 @@ describe("BarWidget", () => {
       meta: { row_count: 3, truncated: false, query_ms: 6 },
     });
 
-    renderIsolated(
+    renderWithSWR(
       <BarWidget widget={makeWidget({ dimensions: ["category", "account"] })} />,
     );
 
@@ -216,7 +207,7 @@ describe("BarWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<BarWidget widget={makeWidget()} editMode />);
+    renderWithSWR(<BarWidget widget={makeWidget()} editMode />);
 
     await waitFor(() =>
       expect(screen.queryByTestId("bar-widget-loading")).toBeNull(),

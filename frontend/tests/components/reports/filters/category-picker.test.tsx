@@ -1,5 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
 import { apiFetch } from "@/lib/api";
@@ -67,14 +66,6 @@ const CATEGORIES: Category[] = [
   },
 ];
 
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
-
 describe("CategoryPicker", () => {
   const apiFetchMock = vi.mocked(apiFetch);
 
@@ -85,7 +76,7 @@ describe("CategoryPicker", () => {
   it("fetches categories on mount and renders the master/sub tree", async () => {
     apiFetchMock.mockResolvedValueOnce(CATEGORIES);
 
-    renderIsolated(<CategoryPicker value={[]} onChange={() => {}} />);
+    renderWithSWR(<CategoryPicker value={[]} onChange={() => {}} />);
 
     expect(await screen.findByTestId("category-master-10")).toBeInTheDocument();
     expect(screen.getByTestId("category-master-20")).toBeInTheDocument();
@@ -98,7 +89,7 @@ describe("CategoryPicker", () => {
     apiFetchMock.mockResolvedValueOnce(CATEGORIES);
     const onChange = vi.fn();
 
-    renderIsolated(<CategoryPicker value={[]} onChange={onChange} />);
+    renderWithSWR(<CategoryPicker value={[]} onChange={onChange} />);
 
     const masterFood = await screen.findByTestId("category-master-10");
     fireEvent.click(masterFood);
@@ -111,7 +102,7 @@ describe("CategoryPicker", () => {
   it("leaves the master partial-checked when only one sub is unselected", async () => {
     apiFetchMock.mockResolvedValueOnce(CATEGORIES);
 
-    renderIsolated(
+    renderWithSWR(
       <CategoryPicker value={[10, 11]} onChange={() => {}} />,
     );
 
@@ -126,7 +117,7 @@ describe("CategoryPicker", () => {
   it("filters the tree by the search input", async () => {
     apiFetchMock.mockResolvedValueOnce(CATEGORIES);
 
-    renderIsolated(<CategoryPicker value={[]} onChange={() => {}} />);
+    renderWithSWR(<CategoryPicker value={[]} onChange={() => {}} />);
 
     await screen.findByTestId("category-master-10");
     fireEvent.change(screen.getByTestId("category-picker-search"), {
@@ -145,7 +136,7 @@ describe("CategoryPicker", () => {
   it("renders an error state when the fetch fails", async () => {
     apiFetchMock.mockRejectedValueOnce(new Error("boom"));
 
-    renderIsolated(<CategoryPicker value={[]} onChange={() => {}} />);
+    renderWithSWR(<CategoryPicker value={[]} onChange={() => {}} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("category-picker-error")).toBeInTheDocument(),

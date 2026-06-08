@@ -1,5 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import TableWidget from "@/components/reports/widgets/TableWidget";
 import type { TableWidget as TableWidgetType } from "@/lib/reports/types";
@@ -14,14 +13,6 @@ vi.mock("@/lib/reports/csv", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/reports/csv")>();
   return { ...actual, downloadCsv: vi.fn() };
 });
-
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
 
 function makeWidget(overrides: Partial<TableWidgetType["config"]> = {}): TableWidgetType {
   return {
@@ -59,7 +50,7 @@ describe("TableWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     expect(await screen.findByText("Food")).toBeInTheDocument();
     expect(screen.getByText("Transport")).toBeInTheDocument();
@@ -71,7 +62,7 @@ describe("TableWidget", () => {
       meta: { row_count: 0, truncated: false, query_ms: 0 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("table-widget-empty")).toBeInTheDocument(),
@@ -81,7 +72,7 @@ describe("TableWidget", () => {
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("nope"));
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("table-widget-error")).toBeInTheDocument(),
@@ -98,7 +89,7 @@ describe("TableWidget", () => {
       meta: { row_count: 3, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     await screen.findByText("Food");
     // First click on a fresh header => sortKey=category, dir=desc
@@ -130,7 +121,7 @@ describe("TableWidget", () => {
       meta: { row_count: 75, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     await screen.findByText("Cat 0");
     expect(
@@ -151,7 +142,7 @@ describe("TableWidget", () => {
       meta: { row_count: 3, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     const totalRow = await screen.findByTestId("table-widget-total-row");
     // Dimension cell reads "Total".
@@ -172,7 +163,7 @@ describe("TableWidget", () => {
       meta: { row_count: 75, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget({ format: "number" })} />);
+    renderWithSWR(<TableWidget widget={makeWidget({ format: "number" })} />);
 
     const totalRow = await screen.findByTestId("table-widget-total-row");
     expect(totalRow).toHaveTextContent("Total");
@@ -188,7 +179,7 @@ describe("TableWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(
+    renderWithSWR(
       <TableWidget
         widget={makeWidget({
           format: "number",
@@ -229,7 +220,7 @@ describe("TableWidget", () => {
         meta: { row_count: 2, truncated: false, query_ms: 1 },
       });
 
-    renderIsolated(
+    renderWithSWR(
       <TableWidget
         widget={makeWidget({
           format: "number",
@@ -256,7 +247,7 @@ describe("TableWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(
+    renderWithSWR(
       <TableWidget
         widget={makeWidget({
           measures: [
@@ -280,7 +271,7 @@ describe("TableWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     const exportBtn = await screen.findByTestId("widget-csv-export");
     await waitFor(() => expect(exportBtn).not.toBeDisabled());
@@ -313,7 +304,7 @@ describe("TableWidget", () => {
         meta: { row_count: 2, truncated: false, query_ms: 1 },
       });
 
-    renderIsolated(
+    renderWithSWR(
       <TableWidget
         widget={makeWidget({
           measures: [
@@ -340,7 +331,7 @@ describe("TableWidget", () => {
       meta: { row_count: 1, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} editMode />);
+    renderWithSWR(<TableWidget widget={makeWidget()} editMode />);
 
     await screen.findByText("Food");
     expect(screen.queryByTestId("widget-csv-export")).toBeNull();
@@ -358,7 +349,7 @@ describe("TableWidget", () => {
       meta: { row_count: 30, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     // Wait for data and confirm 25 rows visible on the first page.
     await screen.findByText("Cat 0");
@@ -393,7 +384,7 @@ describe("TableWidget", () => {
       meta: { row_count: 30, truncated: false, query_ms: 1 },
     });
 
-    renderIsolated(<TableWidget widget={makeWidget()} />);
+    renderWithSWR(<TableWidget widget={makeWidget()} />);
 
     await screen.findByText("Cat 0");
     // Previous should be disabled on page 1.
