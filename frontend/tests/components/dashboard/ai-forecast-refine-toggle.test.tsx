@@ -129,7 +129,7 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
     expect(screen.queryByTestId("ai-forecast-refined-panel")).toBeNull();
     expect(screen.queryByTestId("ai-refined-badge")).toBeNull();
     // The adjusted category is listed for review, accepted by default
-    // (the accept-by-default state is set in an effect, so wait for it).
+    // (seeded on first render by the lazy initializer).
     await waitFor(() =>
       expect(
         screen.getByRole("checkbox", {
@@ -154,10 +154,8 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
     const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
     fireEvent.click(confirmBtn);
 
-    // Accept-by-default is set in an effect after the modal mounts. Wait for
-    // that effect to settle (the row checkbox checked) before clicking Apply,
-    // otherwise Apply can fire with an empty accepted set and revert every
-    // adjustment to baseline (the order-dependent full-suite race).
+    // Accept-by-default is seeded on first render, so the row checkbox is
+    // already checked before Apply.
     await waitFor(() =>
       expect(
         screen.getByRole("checkbox", {
@@ -194,9 +192,8 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
     const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
     fireEvent.click(confirmBtn);
 
-    // Skip the single adjustment, then apply. Wait for the accept-by-default
-    // effect to settle (checkbox checked) before unchecking it, otherwise the
-    // effect could re-check it after our click.
+    // Skip the single adjustment, then apply. The checkbox is checked on
+    // first render (lazy initializer), so we can uncheck it directly.
     const checkbox = await screen.findByRole("checkbox", {
       name: /Apply adjustment for Groceries/i,
     });
@@ -248,9 +245,7 @@ describe("AIForecastRefineToggle - tooltip details", () => {
     fireEvent.click(confirmBtn);
 
     // Accept the adjustments in the review step to reach the refined view.
-    // Wait for the accept-by-default effect to settle (checkbox checked)
-    // before clicking Apply, otherwise Apply can fire with an empty accepted
-    // set and the refined view would carry no adjustments to list.
+    // The checkbox is checked on first render (lazy initializer).
     await waitFor(() =>
       expect(
         screen.getByRole("checkbox", {

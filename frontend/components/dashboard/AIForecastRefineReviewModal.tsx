@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import type { RefinedForecastResponse } from "@/components/dashboard/AIForecastRefineToggle";
 import { formatAmount } from "@/lib/format";
@@ -41,15 +41,15 @@ export default function AIForecastRefineReviewModal({
     [refined.categories],
   );
 
-  const [acceptedIds, setAcceptedIds] = useState<Set<number>>(new Set());
-
-  useEffect(() => {
-    if (!open) return;
-    // Accept-by-default: each adjustment is opt-out, matching the
-    // rebalance diff-review UX. The user can skip individual rows
-    // before clicking Apply.
-    setAcceptedIds(new Set(adjustments.map((a) => a.category_id)));
-  }, [open, adjustments]);
+  // Accept-by-default: each adjustment is opt-out, matching the
+  // rebalance diff-review UX. The user can skip individual rows before
+  // clicking Apply. Seeded lazily on mount so the first render already
+  // has every row accepted (no empty frame where a fast Apply click would
+  // submit zero rows). The parent mounts this modal fresh per review, so
+  // the initializer always reflects the current adjustments.
+  const [acceptedIds, setAcceptedIds] = useState<Set<number>>(
+    () => new Set(adjustments.map((a) => a.category_id)),
+  );
 
   function toggleRow(categoryId: number) {
     setAcceptedIds((prev) => {
