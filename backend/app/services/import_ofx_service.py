@@ -8,7 +8,8 @@ L3.2 import contracts (see spec
   1. Hard 5 MB upload cap, enforced *before* parsing begins.
   2. 10-second parse timeout via ``asyncio.wait_for`` so a pathological
      file can't pin an ASGI worker.
-  3. 10 000-row hard cap on the parsed transaction list (413 on excess).
+  3. 2 000-row hard cap on the parsed transaction list (413 on excess).
+     Lowered from 10 000 as a DoS stopgap (see ``MAX_ROWS``).
 
 Isolation rationale: in-process bounded, NOT subprocess. ``ofxtools``
 is pure-Python with no native dependencies, uses ``defusedxml`` for
@@ -45,7 +46,7 @@ logger = structlog.get_logger()
 # ── Spec-locked bounds (L3.2 §1.2 + §1.4) ──
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 DEFAULT_TIMEOUT_S = 10.0
-MAX_ROWS = 10_000
+MAX_ROWS = 2_000  # DoS stopgap: lowered from 10k to shrink concurrent-parse blast radius
 
 
 def _coerce_account_type(value: object) -> str | None:
