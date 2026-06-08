@@ -219,8 +219,11 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
 
     // Open the desktop transfer-row category combobox by focusing its input.
     // Both desktop + mobile CategorySelects render in jsdom; target the
-    // desktop one by its id.
-    const combos = await screen.findAllByRole("combobox", { name: "Category" });
+    // desktop one by its id. On a transfer leg the control's accessible
+    // name is "Transfer category" (it is plain "Category" on regular rows).
+    const combos = await screen.findAllByRole("combobox", {
+      name: "Transfer category",
+    });
     const combo = combos.find((c) => c.id === "edit-cat-200") as HTMLInputElement;
     expect(combo).toBeTruthy();
     fireEvent.focus(combo);
@@ -291,7 +294,10 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
 
-    const combos = await screen.findAllByRole("combobox", { name: "Category" });
+    // Transfer legs label the control "Transfer category" (see sibling test).
+    const combos = await screen.findAllByRole("combobox", {
+      name: "Transfer category",
+    });
     const combo = combos.find((c) => c.id === "edit-cat-200") as HTMLInputElement;
     expect(combo).toBeTruthy();
     fireEvent.focus(combo);
