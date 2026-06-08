@@ -2,7 +2,8 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
-import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
+import { readNonce } from "@/lib/nonce";
+import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 
 const description =
   "How the Plans simulation sandbox works: plan types, verdict colors, the math, and the contribution curve.";
@@ -22,6 +23,54 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
+// Structured data for rich results + AI-engine entity resolution.
+// Reuse the SAME Organization @id the landing page declares so the
+// graph links to the one canonical Organization node. URLs point at
+// the apex. We omit author / datePublished — no truthful value exists.
+// isPartOf points at the WebSite node (schema.org expects a CreativeWork,
+// not the Organization); publisher stays the Organization. Both @ids
+// match the landing page's nodes so the graph resolves to one site.
+const orgId = `${apexUrl}/#organization`;
+const websiteId = `${apexUrl}/#website`;
+
+const techArticleLd = {
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  headline: "Plans guide",
+  description,
+  url: apexCanonical("/docs/plans"),
+  inLanguage: "en",
+  isPartOf: { "@id": websiteId },
+  publisher: { "@id": orgId },
+};
+
+const breadcrumbLd = {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  itemListElement: [
+    {
+      "@type": "ListItem",
+      position: 1,
+      name: "Home",
+      item: apexCanonical("/"),
+    },
+    {
+      "@type": "ListItem",
+      position: 2,
+      name: "Docs",
+      item: apexCanonical("/docs"),
+    },
+    {
+      "@type": "ListItem",
+      position: 3,
+      name: "Plans",
+      item: apexCanonical("/docs/plans"),
+    },
+  ],
+};
+
+const structuredData = [techArticleLd, breadcrumbLd];
+
 const sections = [
   { id: "what-is-plans", label: "What is Plans?" },
   { id: "verdict-colors", label: "The verdict colors" },
@@ -30,9 +79,24 @@ const sections = [
   { id: "curve", label: "The contribution curve" },
 ];
 
-export default function PlansDocsPage() {
+export default async function PlansDocsPage() {
+  // Per-request CSP nonce so the JSON-LD inline scripts pass the strict
+  // prod CSP. readNonce() returns "" on the apex static export (no
+  // request context); conditionally spread the prop, same as app/page.tsx.
+  const nonce = await readNonce();
+  const nonceProp = nonce ? { nonce } : {};
   return (
     <div className="relative min-h-screen px-4 py-12">
+      {structuredData.map((block) => (
+        <script
+          key={block["@type"]}
+          type="application/ld+json"
+          {...nonceProp}
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(block).replace(/<\/script>/gi, "<\\/script>"),
+          }}
+        />
+      ))}
       <ThemeToggle className="absolute right-6 top-6" />
       <article className="mx-auto max-w-2xl">
         <header className="mb-10">

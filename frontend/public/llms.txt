@@ -1,0 +1,16 @@
+# The Better Decision
+
+> The Better Decision is a personal finance app for households and individuals. Know your current balances, plan ahead for what's coming, and track where your money goes, without spreadsheet fatigue.
+
+The Better Decision tracks accounts, transactions, budgets, and forecasts, all scoped to your organization. Categories are the backbone: budgets and forecasts ride on top of them, and most reporting is grouped by category. The app is pre-launch and free while in beta.
+
+## Docs
+
+- [Docs (user manual)](https://thebetterdecision.com/docs/): Core concepts, common workflows, and admin tasks. Covers accounts, transactions, transfers, recurring templates, categories, budgets, and forecasts.
+- [Plans guide](https://thebetterdecision.com/docs/plans/): How the Plans simulation sandbox works. Model a trip, a purchase, retirement, or a custom life event without touching real transactions.
+
+## Pages
+
+- [Home](https://thebetterdecision.com/): Product overview, how it works, and frequently asked questions.
+- [Privacy](https://thebetterdecision.com/privacy/): How personal and financial data is handled.
+- [Terms](https://thebetterdecision.com/terms/): Terms of use.
