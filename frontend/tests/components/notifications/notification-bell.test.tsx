@@ -1,12 +1,11 @@
 import React from "react";
 import {
+  renderWithSWR,
   act,
   fireEvent,
-  render,
   screen,
   waitFor,
-} from "@testing-library/react";
-import { SWRConfig } from "swr";
+} from "../../utils/render-with-swr";
 
 // vitest.setup.ts mocks ``@/components/notifications/NotificationBell``
 // globally so AppShell-mounting page tests don't trip on the
@@ -51,15 +50,10 @@ function mkNotification(
 }
 
 function renderBell() {
-  return render(
-    // Disable de-duping cache so each test gets a clean slate of
-    // SWR state — without this, the in-memory cache from a prior
-    // test bleeds into the next render and the mocked apiFetch is
-    // never re-invoked.
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      <NotificationBell />
-    </SWRConfig>,
-  );
+  // renderWithSWR disables de-duping and hands a fresh cache to each
+  // test so SWR state from a prior render can't bleed into the next
+  // mount (which would stop the mocked apiFetch from being re-invoked).
+  return renderWithSWR(<NotificationBell />);
 }
 
 /**

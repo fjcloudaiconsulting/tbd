@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, screen, waitFor } from "../../../utils/render-with-swr";
 
 import PieWidget from "@/components/reports/widgets/PieWidget";
 import type { PieWidget as PieWidgetType } from "@/lib/reports/types";
@@ -8,14 +7,6 @@ import { runQuery } from "@/lib/reports/api";
 vi.mock("@/lib/reports/api", () => ({
   runQuery: vi.fn(),
 }));
-
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
 
 function makeWidget(overrides: Partial<PieWidgetType["config"]> = {}): PieWidgetType {
   return {
@@ -52,7 +43,7 @@ describe("PieWidget", () => {
       meta: { row_count: 2, truncated: false, query_ms: 3 },
     });
 
-    renderIsolated(<PieWidget widget={makeWidget()} />);
+    renderWithSWR(<PieWidget widget={makeWidget()} />);
 
     await waitFor(() => {
       expect(screen.queryByTestId("pie-widget-empty")).toBeNull();
@@ -68,7 +59,7 @@ describe("PieWidget", () => {
       meta: { row_count: 0, truncated: false, query_ms: 0 },
     });
 
-    renderIsolated(<PieWidget widget={makeWidget()} />);
+    renderWithSWR(<PieWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("pie-widget-empty")).toBeInTheDocument(),
@@ -78,7 +69,7 @@ describe("PieWidget", () => {
   it("renders an inline error when the query fails", async () => {
     runQueryMock.mockRejectedValueOnce(new Error("nope"));
 
-    renderIsolated(<PieWidget widget={makeWidget()} />);
+    renderWithSWR(<PieWidget widget={makeWidget()} />);
 
     await waitFor(() =>
       expect(screen.getByTestId("pie-widget-error")).toBeInTheDocument(),

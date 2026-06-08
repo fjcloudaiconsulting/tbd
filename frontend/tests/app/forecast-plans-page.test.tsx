@@ -1,6 +1,11 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import {
+  renderWithSWR,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "../utils/render-with-swr";
 
 import ForecastPlansClient from "@/app/forecast-plans/ForecastPlansClient";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -167,14 +172,12 @@ function renderClient(plan: ForecastPlan | null) {
   // Each render gets a fresh SWR cache so state doesn't leak between
   // tests (the default cache is module-scoped and would let an earlier
   // empty-plan test paint stale data into a later with-items test).
-  return render(
-    <SWRConfig value={{ provider: () => new Map() }}>
-      <ForecastPlansClient
-        initialPeriods={[PERIOD]}
-        initialCategories={CATEGORIES}
-        initialPlan={plan}
-      />
-    </SWRConfig>,
+  return renderWithSWR(
+    <ForecastPlansClient
+      initialPeriods={[PERIOD]}
+      initialCategories={CATEGORIES}
+      initialPlan={plan}
+    />,
   );
 }
 
@@ -1010,14 +1013,12 @@ describe("ForecastPlansClient — dropdown + refresh", () => {
       },
     );
 
-    render(
-      <SWRConfig value={{ provider: () => new Map() }}>
-        <ForecastPlansClient
-          initialPeriods={initialPeriods}
-          initialCategories={CATEGORIES}
-          initialPlan={planForCurrent}
-        />
-      </SWRConfig>,
+    renderWithSWR(
+      <ForecastPlansClient
+        initialPeriods={initialPeriods}
+        initialCategories={CATEGORIES}
+        initialPlan={planForCurrent}
+      />,
     );
 
     // Wait for ensure-future + the periods re-fetch to settle. The

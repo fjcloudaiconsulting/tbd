@@ -6,8 +6,7 @@
  * ``WidgetFilters`` shape — these tests pin the equality semantics
  * survive the swap.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR, fireEvent, screen } from "../../utils/render-with-swr";
 
 import ConfigRail from "@/components/reports/ConfigRail";
 import { apiFetch } from "@/lib/api";
@@ -58,14 +57,6 @@ const ACCOUNTS: Account[] = [
   },
 ];
 
-function renderIsolated(ui: React.ReactElement) {
-  return render(
-    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      {ui}
-    </SWRConfig>,
-  );
-}
-
 function makeWidget(filters: BarWidget["config"]["filters"] = undefined): BarWidget {
   return {
     id: "w_bar",
@@ -107,7 +98,7 @@ describe("Override pill — picker-based filters", () => {
   });
 
   it("does NOT show the pill when the widget category selection matches the canvas selection", async () => {
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeWidget({ category_ids: [1, 2] })}
         canvasFilters={{ category_ids: [2, 1] }}
@@ -127,7 +118,7 @@ describe("Override pill — picker-based filters", () => {
   });
 
   it("DOES show the pill when the widget category selection differs from the canvas", async () => {
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeWidget({ category_ids: [1] })}
         canvasFilters={{ category_ids: [2] }}
@@ -141,7 +132,7 @@ describe("Override pill — picker-based filters", () => {
   });
 
   it("does NOT show the pill when the widget account selection matches the canvas selection", async () => {
-    renderIsolated(
+    renderWithSWR(
       <ConfigRail
         widget={makeWidget({ account_ids: [1] })}
         canvasFilters={{ account_ids: [1] }}
@@ -156,7 +147,7 @@ describe("Override pill — picker-based filters", () => {
 
   it("DOES show the pill once the user toggles a different account chip", async () => {
     const onUpdate = vi.fn();
-    const { rerender } = renderIsolated(
+    const { rerender } = renderWithSWR(
       <ConfigRail
         widget={makeWidget({ account_ids: [1] })}
         canvasFilters={{ account_ids: [1] }}
@@ -172,14 +163,12 @@ describe("Override pill — picker-based filters", () => {
     // widget value, since picker click → onUpdate flows through the
     // parent in real use.
     rerender(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <ConfigRail
-          widget={makeWidget({ account_ids: [] })}
-          canvasFilters={{ account_ids: [1] }}
-          onUpdate={onUpdate}
-          onClose={() => {}}
-        />
-      </SWRConfig>,
+      <ConfigRail
+        widget={makeWidget({ account_ids: [] })}
+        canvasFilters={{ account_ids: [1] }}
+        onUpdate={onUpdate}
+        onClose={() => {}}
+      />,
     );
     // Empty widget account_ids means inherit — pill stays off.
     expect(screen.queryAllByTestId("override-pill").length).toBe(0);

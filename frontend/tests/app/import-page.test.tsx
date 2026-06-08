@@ -1,6 +1,6 @@
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SWRConfig } from "swr";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import ImportPage from "@/app/import/page";
 import { apiFetch } from "@/lib/api";
@@ -560,11 +560,7 @@ describe("ImportPage transfer pill column", () => {
       return Promise.resolve(undefined);
     }) as never);
 
-    render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <ImportPage />
-      </SWRConfig>,
-    );
+    renderWithSWR(<ImportPage />);
     const uploadButton = await screen.findByRole("button", {
       name: /upload & preview/i,
     });
@@ -605,11 +601,7 @@ describe("ImportPage transfer pill column", () => {
       return Promise.resolve(undefined);
     }) as never);
 
-    render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <ImportPage />
-      </SWRConfig>,
-    );
+    renderWithSWR(<ImportPage />);
     const uploadButton = await screen.findByRole("button", {
       name: /upload & preview/i,
     });
@@ -736,11 +728,7 @@ describe("ImportPage transfer pill column", () => {
       return Promise.resolve(undefined);
     }) as never);
 
-    render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <ImportPage />
-      </SWRConfig>,
-    );
+    renderWithSWR(<ImportPage />);
     const uploadButton = await screen.findByRole("button", {
       name: /upload & preview/i,
     });
@@ -806,11 +794,7 @@ describe("ImportPage transfer pill column", () => {
       return Promise.resolve(undefined);
     }) as never);
 
-    render(
-      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-        <ImportPage />
-      </SWRConfig>,
-    );
+    renderWithSWR(<ImportPage />);
     const uploadButton = await screen.findByRole("button", {
       name: /upload & preview/i,
     });
