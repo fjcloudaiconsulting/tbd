@@ -18,6 +18,7 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -46,6 +47,7 @@ from app.models.user import Organization, Role, User
 from app.services.ai_credential_crypto import encrypt
 from app.services.ai_dispatch import (
     AICapabilityNotSupported,
+    AIDispatchFailed,
     call_llm_embed,
     call_llm_function,
     call_llm_stream,
@@ -645,6 +647,104 @@ async def test_call_llm_stream_falls_back_to_char_estimate_when_no_usage(
     assert len(rows) == 1
     # Estimated 10 completion tokens (40 chars / 4).
     assert rows[0].completion_tokens == 10
+
+
+class _SpyStream:
+    """Async iterator that wraps a provider stream and records whether
+    its ``aclose`` was explicitly awaited.
+
+    A plain async-generator's ``finally`` also runs when the GC
+    finalizes it, which would make a "did it close?" assertion pass
+    even if the dispatch wrapper leaked the iterator. This spy only
+    flips ``aclose_awaited`` when ``aclose()`` is *called* on it, so the
+    test proves the wrapper finalizes the provider stream promptly
+    rather than relying on garbage collection.
+    """
+
+    def __init__(self, chunks_before_stall, stall_seconds):
+        self._chunks = list(chunks_before_stall)
+        self._stall_seconds = stall_seconds
+        self._idx = 0
+        self.aclose_awaited = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._idx < len(self._chunks):
+            chunk = self._chunks[self._idx]
+            self._idx += 1
+            return chunk
+        # Stall well past the shrunk bound before the next chunk.
+        await asyncio.sleep(self._stall_seconds)
+        raise StopAsyncIteration
+
+    async def aclose(self):
+        self.aclose_awaited = True
+
+
+@pytest.mark.asyncio
+async def test_call_llm_stream_stalled_stream_times_out_and_closes_iterator(
+    db: AsyncSession, org, admin_user, credential, default_routing, monkeypatch
+):
+    """A stream that yields a couple of chunks then stalls mid-stream
+    must surface ``provider_timeout``: the already-yielded chunks reach
+    the consumer, a single failure ledger row is written, and the
+    underlying provider stream's ``aclose`` is awaited so the leaked
+    httpx connection is finalized promptly (fix for the resource-leak
+    bug in ``_stream_with_dispatch_timeout``).
+    """
+    # Shrink the wall-clock bound so the mid-stream stall trips it fast.
+    monkeypatch.setattr(app_settings, "ai_dispatch_timeout_s", 0.05)
+
+    spy = _SpyStream(
+        chunks_before_stall=[
+            StreamChunk(delta_text="Hello ", done=False),
+            StreamChunk(delta_text="world ", done=False),
+        ],
+        stall_seconds=5,
+    )
+
+    def fake_stream(*, model, messages, max_tokens=None):
+        # Returns the spy iterator directly (not a generator) so the
+        # dispatch wrapper's __aiter__()/aclose() target our spy.
+        return spy
+
+    adapter = MagicMock()
+    adapter.stream = fake_stream
+
+    received = []
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AIDispatchFailed) as exc_info:
+            async for chunk in call_llm_stream(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                messages=[{"role": "user", "content": "hi"}],
+            ):
+                received.append(chunk)
+
+    # (a) the already-yielded chunks reached the consumer.
+    assert [c.delta_text for c in received] == ["Hello ", "world "]
+    # (b) the timeout surfaced as the typed provider_timeout failure.
+    assert exc_info.value.code == "provider_timeout"
+    # (c) exactly one failure ledger row, error_class=provider_timeout.
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].success is False
+    assert rows[0].error_class == "provider_timeout"
+    # (d) the underlying provider stream was finalized: aclose() was
+    # explicitly awaited by the dispatch wrapper, not left to the GC.
+    assert spy.aclose_awaited is True, (
+        "provider stream iterator must be closed (aclose awaited) on a "
+        "mid-stream timeout so the httpx connection isn't leaked"
+    )
 
 
 # ---------- Structured-output token aggregation ---------------------

@@ -114,6 +114,17 @@ class Settings(BaseSettings):
     # re-prompt with the current version.
     ai_native_current_consent_version: str = "ai-tos-2026-05-22"
 
+    # Wall-clock bound on a single LLM dispatch call inside
+    # ``ai_dispatch``. The per-provider HTTP adapters carry their own
+    # coarse connect/read timeouts (10 s validate, 30-60 s chat), but a
+    # slow or hung provider can still pin a dispatch worker for the full
+    # adapter budget. This tighter wall-clock ceiling wraps every adapter
+    # call in ``asyncio.wait_for`` so a single call can never exceed it.
+    # On timeout the dispatcher records a system-failure ledger row and
+    # raises ``AIDispatchFailed("provider_timeout")`` (5xx). Architect-
+    # mandated reliability bound (AI tier decision, 2026-05-22).
+    ai_dispatch_timeout_s: float = 5.0
+
     # Google SSO
     google_client_id: str = ""
     google_client_secret: str = ""
