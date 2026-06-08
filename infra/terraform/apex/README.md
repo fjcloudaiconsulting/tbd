@@ -41,8 +41,9 @@ Set in TFC (`FlamaCorp/pfv-apex` -> Variables); never committed.
 | `TFC_AWS_RUN_ROLE_ARN` | Env | no | After bootstrap, the `tfc_role_arn` output. Tells TFC to assume that role via workload identity. |
 
 Defaults for `aws_region`, `domain`, `github_repo`, `tfc_organization`,
-`tfc_workspace_pattern`, and `noncurrent_version_expiration_days` live in
-`variables.tf` and rarely need overriding.
+`tfc_workspace_pattern`, `noncurrent_version_expiration_days`, and
+`orphaned_static_expiration_days` live in `variables.tf` and rarely need
+overriding.
 
 ## Outputs (consumed by other PRs)
 
