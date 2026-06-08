@@ -37,6 +37,7 @@ interface Props {
   typeFilter?: "INCOME" | "EXPENSE" | "BOTH";
   className?: string;
   "aria-label"?: string;
+  "aria-describedby"?: string;
   onCategoryCreated?: (cat: Category) => void;
   /**
    * Category IDs that should still appear in the dropdown but render as
@@ -57,7 +58,7 @@ interface Props {
   masterOnly?: boolean;
 }
 
-export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, onCategoryCreated, disabledIds, masterOnly = false }: Props) {
+export default function CategorySelect({ id, categories, value, onChange, filterType, typeFilter, className = "", "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, onCategoryCreated, disabledIds, masterOnly = false }: Props) {
   const disabledSet = useMemo(() => {
     if (!disabledIds) return null;
     return disabledIds instanceof Set ? disabledIds : new Set(disabledIds);
@@ -231,6 +232,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
         aria-controls={`${id}-listbox`}
         aria-activedescendant={activeDescendant}
         aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
       />
       <input type="hidden" name={`${id}-value`} value={value} required />
 

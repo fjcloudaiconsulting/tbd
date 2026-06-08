@@ -228,6 +228,20 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     expect(helperNotes.length).toBeGreaterThan(0);
     // The plain "Category" label must not be used while editing a transfer leg.
     expect(screen.queryByLabelText("Category")).toBeNull();
+
+    // a11y: the picker combobox must be programmatically associated with the
+    // helper text via aria-describedby so screen-reader users hear the
+    // both-type constraint when the field is focused. Each rendered control
+    // points at its own helper paragraph (which carries the matching id).
+    catControls.forEach((control) => {
+      const describedBy = control.getAttribute("aria-describedby");
+      expect(describedBy).toBeTruthy();
+      const helper = document.getElementById(describedBy as string);
+      expect(helper).not.toBeNull();
+      expect(helper?.textContent).toMatch(
+        /only accept categories that work for both income and expense/i
+      );
+    });
   });
 
   it("Saving an edit on a linked row omits 'type' from the PUT body", async () => {
@@ -313,6 +327,10 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     expect(
       screen.queryByText(/only accept categories that work for both income and expense/i)
     ).toBeNull();
+    // Regular rows have no helper text, so the picker must not be wired to one.
+    catControls.forEach((control) => {
+      expect(control.getAttribute("aria-describedby")).toBeNull();
+    });
   });
 
   it("Per-row action column renders all actions on a single un-linked row (responsive layout)", async () => {

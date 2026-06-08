@@ -1129,9 +1129,9 @@ function TransactionsPageContent() {
                             </div>
                             <div>
                               <label htmlFor={`edit-cat-${tx.id}`} className={label}>{isTransfer ? "Transfer category" : "Category"}</label>
-                              <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
+                              <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-${tx.id}-help` : undefined} id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                               {isTransfer && (
-                                <p className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
+                                <p id={`edit-cat-${tx.id}-help`} className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
                               )}
                               {categorizeAi?.entitled && !editPartner ? (
                                 <div className="mt-1">
@@ -1447,9 +1447,9 @@ function TransactionsPageContent() {
                               </div>
                               <div>
                                 <label htmlFor={`edit-cat-mobile-${tx.id}`} className={label}>{isTransfer ? "Transfer category" : "Category"}</label>
-                                <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
+                                <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-mobile-${tx.id}-help` : undefined} id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
                                 {isTransfer && (
-                                  <p className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
+                                  <p id={`edit-cat-mobile-${tx.id}-help`} className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
                                 )}
                                 {categorizeAi?.entitled && !editPartner ? (
                                   <div className="mt-1">
