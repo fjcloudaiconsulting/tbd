@@ -108,7 +108,7 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
     );
   });
 
-  it("shows the AI-refined badge after Confirm completes", async () => {
+  it("opens the review step after Confirm; nothing is reflected until Apply", async () => {
     // First call: estimate. Second call: refine.
     mockedFetch
       .mockResolvedValueOnce(estimateFixture())
@@ -121,6 +121,43 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
     const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
     fireEvent.click(confirmBtn);
 
+    // The review modal opens with the per-row diff. The refined badge is
+    // NOT yet shown — nothing applies until the user clicks Apply.
+    await waitFor(() =>
+      expect(screen.getByTestId("forecast-refine-diff-table")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("ai-forecast-refined-panel")).toBeNull();
+    expect(screen.queryByTestId("ai-refined-badge")).toBeNull();
+    // The adjusted category is listed for review, accepted by default
+    // (the accept-by-default state is set in an effect, so wait for it).
+    await waitFor(() =>
+      expect(
+        screen.getByRole("checkbox", {
+          name: /Apply adjustment for Groceries/i,
+        }),
+      ).toBeChecked(),
+    );
+    expect(screen.getByTestId("forecast-refine-row-1")).toHaveAttribute(
+      "data-row-accepted",
+      "yes",
+    );
+  });
+
+  it("shows the AI-refined badge after the user accepts and applies", async () => {
+    mockedFetch
+      .mockResolvedValueOnce(estimateFixture())
+      .mockResolvedValueOnce(refinedFixture());
+
+    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
+    fireEvent.click(screen.getByTestId("ai-forecast-refine-toggle"));
+
+    const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
+    fireEvent.click(confirmBtn);
+
+    // Accept-by-default, so Apply reflects the full adjustment.
+    const applyBtn = await screen.findByTestId("forecast-refine-apply");
+    fireEvent.click(applyBtn);
+
     await waitFor(() =>
       expect(screen.getByTestId("ai-forecast-refined-panel")).toBeInTheDocument(),
     );
@@ -129,6 +166,62 @@ describe("AIForecastRefineToggle - idle and apply flow", () => {
     // Delta vs. baseline surfaced.
     expect(screen.getByText(/\+20\.00 vs\. baseline/)).toBeInTheDocument();
     expect(screen.getByText(/1 category adjusted/)).toBeInTheDocument();
+    // Refine endpoint hit exactly once — Apply does NOT re-call the AI.
+    const refineCalls = mockedFetch.mock.calls.filter(
+      (c) => c[0] === "/api/v1/ai/forecast/refine",
+    );
+    expect(refineCalls).toHaveLength(1);
+  });
+
+  it("skipping a row reverts that category to baseline (zero net delta)", async () => {
+    mockedFetch
+      .mockResolvedValueOnce(estimateFixture())
+      .mockResolvedValueOnce(refinedFixture());
+
+    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
+    fireEvent.click(screen.getByTestId("ai-forecast-refine-toggle"));
+
+    const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
+    fireEvent.click(confirmBtn);
+
+    // Skip the single adjustment, then apply. Wait for the accept-by-default
+    // effect to settle (checkbox checked) before unchecking it, otherwise the
+    // effect could re-check it after our click.
+    const checkbox = await screen.findByRole("checkbox", {
+      name: /Apply adjustment for Groceries/i,
+    });
+    await waitFor(() => expect(checkbox).toBeChecked());
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByTestId("forecast-refine-apply"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-forecast-refined-panel")).toBeInTheDocument(),
+    );
+    // With the only adjustment skipped, the displayed delta is zero and
+    // no categories count as adjusted.
+    expect(screen.getByText(/\+0\.00 vs\. baseline/)).toBeInTheDocument();
+    expect(screen.queryByText(/category adjusted/)).toBeNull();
+  });
+
+  it("Cancel on the review modal discards the result (back to idle)", async () => {
+    mockedFetch
+      .mockResolvedValueOnce(estimateFixture())
+      .mockResolvedValueOnce(refinedFixture());
+
+    render(<AIForecastRefineToggle periodStart="2026-05-01" />);
+    fireEvent.click(screen.getByTestId("ai-forecast-refine-toggle"));
+
+    const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
+    fireEvent.click(confirmBtn);
+
+    await screen.findByTestId("forecast-refine-diff-table");
+    fireEvent.click(screen.getByRole("button", { name: /^Cancel$/ }));
+
+    // Back to the idle CTA, nothing reflected.
+    await waitFor(() =>
+      expect(screen.getByTestId("ai-forecast-refine-toggle")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("ai-refined-badge")).toBeNull();
   });
 });
 
@@ -143,6 +236,10 @@ describe("AIForecastRefineToggle - tooltip details", () => {
 
     const confirmBtn = await screen.findByRole("button", { name: /confirm/i });
     fireEvent.click(confirmBtn);
+
+    // Accept the adjustments in the review step to reach the refined view.
+    const applyBtn = await screen.findByTestId("forecast-refine-apply");
+    fireEvent.click(applyBtn);
 
     await waitFor(() =>
       expect(screen.getByTestId("ai-forecast-refined-panel")).toBeInTheDocument(),

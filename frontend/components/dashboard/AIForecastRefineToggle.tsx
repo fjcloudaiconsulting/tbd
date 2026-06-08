@@ -5,6 +5,7 @@ import { Sparkles, AlertTriangle } from "lucide-react";
 import { ApiResponseError } from "@/lib/api";
 import { card } from "@/lib/styles";
 import { AIForecastRefinePanel } from "@/components/dashboard/AIForecastRefinePanel";
+import AIForecastRefineReviewModal from "@/components/dashboard/AIForecastRefineReviewModal";
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
@@ -75,6 +76,44 @@ export interface AIForecastRefineToggleProps {
 }
 
 /**
+ * Recompute a display-only refined forecast from the subset of category
+ * adjustments the user accepted in the review step. Skipped categories
+ * fall back to their baseline (multiplier reset to 1, refined = baseline),
+ * and the headline refined-expense total is re-derived so the badge delta
+ * reflects only what the user accepted. Nothing here persists; this is a
+ * pure transform over the in-memory response.
+ */
+export function applyAcceptedAdjustments(
+  refined: RefinedForecastResponse,
+  acceptedCategoryIds: Set<number>,
+): RefinedForecastResponse {
+  const baselineExpense = Number(refined.baseline_forecast_expense);
+  let acceptedDelta = 0;
+  const categories = refined.categories.map((c) => {
+    const wasAdjusted = c.multiplier !== 1;
+    const accepted = acceptedCategoryIds.has(c.category_id);
+    if (wasAdjusted && !accepted) {
+      // Skipped: revert this category to its baseline.
+      return {
+        ...c,
+        multiplier: 1,
+        refined_forecast: c.baseline_forecast,
+      };
+    }
+    if (wasAdjusted && accepted) {
+      acceptedDelta +=
+        Number(c.refined_forecast) - Number(c.baseline_forecast);
+    }
+    return c;
+  });
+  return {
+    ...refined,
+    categories,
+    refined_forecast_expense: (baselineExpense + acceptedDelta).toFixed(2),
+  };
+}
+
+/**
  * AI-refined forecast toggle + badge.
  *
  * Opt-in: clicking "Apply AI refinement" hits
@@ -93,6 +132,10 @@ export default function AIForecastRefineToggle({
   visible = true,
 }: AIForecastRefineToggleProps) {
   const [refined, setRefined] = useState<RefinedForecastResponse | null>(null);
+  // Raw AI result awaiting per-row review. While this is set the review
+  // modal is open and nothing is reflected on the forecast yet.
+  const [pendingReview, setPendingReview] =
+    useState<RefinedForecastResponse | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
   const [gateBlocked, setGateBlocked] = useState(false);
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -118,11 +161,29 @@ export default function AIForecastRefineToggle({
     );
   }
 
-  // When the panel calls onApplied (after a successful Confirm), store the
-  // result and close the panel so the refined-result view renders below.
+  // When the panel calls onApplied (after a successful Confirm), open the
+  // review step instead of reflecting the result immediately. The user
+  // accepts/skips each adjustment before anything shows on the forecast.
+  // If the backend fell back to baseline (ai_applied=false), there is
+  // nothing to review, so surface the fallback result straight away.
   const handleApplied = (result: RefinedForecastResponse) => {
-    setRefined(result);
     setPanelOpen(false);
+    const hasAdjustments =
+      result.provenance.ai_applied &&
+      result.categories.some((c) => c.multiplier !== 1);
+    if (hasAdjustments) {
+      setPendingReview(result);
+    } else {
+      setRefined(result);
+    }
+  };
+
+  // The review modal returns the accepted category ids. Recompute the
+  // display-only refined forecast from that subset and surface it.
+  const handleReviewApply = (acceptedCategoryIds: Set<number>) => {
+    if (!pendingReview) return;
+    setRefined(applyAcceptedAdjustments(pendingReview, acceptedCategoryIds));
+    setPendingReview(null);
   };
 
   // The panel's estimate call may 403 (feature gate closed) — propagate that
@@ -135,6 +196,18 @@ export default function AIForecastRefineToggle({
 
   // Idle state — invite the user to configure and confirm.
   if (refined === null) {
+    // Review step: the AI returned adjustments; the user reviews them
+    // per-row before anything is reflected on the forecast.
+    if (pendingReview) {
+      return (
+        <AIForecastRefineReviewModal
+          open
+          refined={pendingReview}
+          onApply={handleReviewApply}
+          onClose={() => setPendingReview(null)}
+        />
+      );
+    }
     if (panelOpen) {
       return (
         <AIForecastRefinePanel
