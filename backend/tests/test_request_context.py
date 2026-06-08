@@ -127,6 +127,44 @@ def test_middleware_clears_contextvars_between_requests():
     assert "first.req" not in captured[1].values()
 
 
+# ── client_ip is bound unconditionally, incl. anonymous routes ───────────
+
+
+def test_middleware_binds_client_ip_for_every_request():
+    """``client_ip`` is bound onto contextvars for ANY request — no
+    auth dependency required. Anonymous routes like ``/api/v1/auth/register``
+    resolve no ``get_current_user`` dep, so binding here (not in the
+    dep) is what makes bot-signup waves IP-clusterable.
+    """
+    captured: list[dict] = []
+    with TestClient(_build_app(captured)) as client:
+        res = client.get("/echo")
+    assert res.status_code == 200
+    # TestClient's default peer is the loopback address; the resolver
+    # returns it as the client IP when no trusted-proxy/DO context
+    # applies. The point of this assertion is that the KEY is present
+    # on an unauthenticated request.
+    assert "client_ip" in captured[-1]
+    assert captured[-1]["client_ip"]
+
+
+def test_middleware_binds_do_connecting_ip_on_anonymous_route(monkeypatch):
+    """On DO App Platform (``PFV_RUNTIME=app_platform``) the resolver
+    honours ``do-connecting-ip`` unconditionally. An anonymous request
+    carrying that header must surface the real client IP in
+    ``client_ip`` — identical precedence to the authed audit path —
+    so the access-log line for ``/api/v1/auth/register`` is IP-clusterable.
+    """
+    monkeypatch.setenv("PFV_RUNTIME", "app_platform")
+    captured: list[dict] = []
+    with TestClient(_build_app(captured)) as client:
+        res = client.get(
+            "/echo", headers={"do-connecting-ip": "203.0.113.7"}
+        )
+    assert res.status_code == 200
+    assert captured[-1].get("client_ip") == "203.0.113.7"
+
+
 # ── Critical regression: handler-bound contextvars survive ────────────────
 
 
