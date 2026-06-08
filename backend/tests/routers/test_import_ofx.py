@@ -372,10 +372,12 @@ async def test_ofx_preview_too_many_rows_returns_413(session_factory):
 
 @pytest.mark.asyncio
 async def test_ofx_preview_at_row_cap_is_accepted(session_factory):
-    """Exactly MAX_ROWS rows (2 000) is at the boundary and must NOT 413.
+    """Exactly MAX_ROWS rows (2 000) is at the boundary and must not return 413.
 
     Pairs with ``test_ofx_preview_too_many_rows_returns_413`` to pin the
-    DoS-stopgap cap at exactly ``import_ofx_service.MAX_ROWS``.
+    DoS-stopgap cap at exactly ``import_ofx_service.MAX_ROWS``. Asserting
+    the real 200 success (not merely "not 413") proves the at-cap file is
+    genuinely accepted, and that all MAX_ROWS rows survive to the preview.
     """
     seed = await _seed(session_factory)
     app = _make_app(session_factory)
@@ -392,7 +394,8 @@ async def test_ofx_preview_at_row_cap_is_accepted(session_factory):
                 files={"file": ("ok.ofx", io.BytesIO(b"<OFX>stub</OFX>"), "application/x-ofx")},
                 data={"account_id": str(seed["account_id"])},
             )
-    assert resp.status_code != 413
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["total_rows"] == import_ofx_service.MAX_ROWS
 
 
 # ── Auth gate ──
