@@ -74,6 +74,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import redis_client
+from app.config import settings
 from app.models.ai_usage_ledger import AIUsageLedger
 from app.models.notification import NotificationCategory
 from app.models.org_ai_caps import OrgAIDefaultCaps, OrgAIFeatureCaps
@@ -105,7 +106,73 @@ from app.services.notification_templates import ai_cap_soft_warning
 STRUCTURED_OUTPUT_MAX_RETRIES = 2
 
 
+# Typed error code for a dispatch that blew the wall-clock bound. Routed
+# through ``AIProviderError`` so the existing per-capability except
+# handlers write a system-failure ledger row and re-raise it as
+# ``AIDispatchFailed("provider_timeout")`` (a 5xx). Audit semantics:
+# ``ai_dispatch_failed:provider_timeout`` is a SYSTEM failure, not a
+# user-state precondition (see reference_ai_audit_outcome_semantics).
+DISPATCH_TIMEOUT_ERROR_CODE = "provider_timeout"
+
+
 logger = structlog.stdlib.get_logger()
+
+
+async def _with_dispatch_timeout(awaitable):
+    """Bound a single provider awaitable by the configured wall clock.
+
+    The per-provider HTTP adapters carry their own coarse connect/read
+    timeouts (10 s validate, 30-60 s chat-stream), but those are too
+    loose to stop a slow or hung provider from pinning a dispatch
+    worker. ``settings.ai_dispatch_timeout_s`` (default 5 s) is the hard
+    ceiling on any one adapter call; on expiry the underlying coroutine
+    is cancelled and we raise a sanitized ``AIProviderError`` so the
+    caller's existing failure path writes the ledger row and re-raises
+    as ``AIDispatchFailed("provider_timeout")``.
+
+    The raw provider payload is never carried through — only the typed
+    ``provider_timeout`` code, same posture as the rest of the adapter
+    error surface.
+    """
+    try:
+        return await asyncio.wait_for(
+            awaitable, timeout=settings.ai_dispatch_timeout_s
+        )
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        raise AIProviderError(code=DISPATCH_TIMEOUT_ERROR_CODE) from exc
+
+
+def _stream_with_dispatch_timeout(
+    stream: "AsyncIterator[StreamChunk]",
+) -> "AsyncIterator[StreamChunk]":
+    """Bound each ``__anext__`` of a provider stream by the wall clock.
+
+    A stream can't be wrapped in a single ``wait_for`` — it's an async
+    iterator, not one awaitable. Instead we bound the wait for each
+    chunk: if any single chunk takes longer than the ceiling, the pull
+    is cancelled and surfaced as the same ``provider_timeout``
+    ``AIProviderError`` the non-stream paths raise. Inter-chunk gaps on
+    a healthy stream are far below the bound, so this only fires on a
+    genuinely stalled stream.
+    """
+
+    async def _bounded() -> AsyncIterator[StreamChunk]:
+        iterator = stream.__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    iterator.__anext__(),
+                    timeout=settings.ai_dispatch_timeout_s,
+                )
+            except StopAsyncIteration:
+                return
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                raise AIProviderError(
+                    code=DISPATCH_TIMEOUT_ERROR_CODE
+                ) from exc
+            yield chunk
+
+    return _bounded()
 
 
 # 35-day TTL so the marker spans an entire monthly billing window
@@ -648,10 +715,12 @@ async def call_llm(
     # 5. Time + dispatch.
     start = time.perf_counter()
     try:
-        response: LLMResponse = await adapter.chat(  # type: ignore[attr-defined]
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
+        response: LLMResponse = await _with_dispatch_timeout(
+            adapter.chat(  # type: ignore[attr-defined]
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+            )
         )
     except NativeNotAvailable:
         # Don't write a ledger row — the call never reached a provider
@@ -1051,11 +1120,13 @@ async def call_llm_structured(
 
     for attempt in range(STRUCTURED_OUTPUT_MAX_RETRIES + 1):
         try:
-            response: LLMResponse = await prepared.adapter.chat_structured(
-                model=prepared.model,
-                messages=attempt_messages,
-                schema=response_schema,
-                max_tokens=max_tokens,
+            response: LLMResponse = await _with_dispatch_timeout(
+                prepared.adapter.chat_structured(
+                    model=prepared.model,
+                    messages=attempt_messages,
+                    schema=response_schema,
+                    max_tokens=max_tokens,
+                )
             )
         except NativeNotAvailable:
             logger.info(
@@ -1248,8 +1319,8 @@ async def call_llm_embed(
 
     start = time.perf_counter()
     try:
-        response: EmbedResponse = await prepared.adapter.embed(
-            texts=texts, model=embed_model
+        response: EmbedResponse = await _with_dispatch_timeout(
+            prepared.adapter.embed(texts=texts, model=embed_model)
         )
     except NativeNotAvailable:
         raise
@@ -1355,11 +1426,13 @@ async def call_llm_function(
 
     start = time.perf_counter()
     try:
-        response: FunctionCallResponse = await prepared.adapter.function_call(
-            model=prepared.model,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
+        response: FunctionCallResponse = await _with_dispatch_timeout(
+            prepared.adapter.function_call(
+                model=prepared.model,
+                messages=messages,
+                tools=tools,
+                max_tokens=max_tokens,
+            )
         )
     except NativeNotAvailable:
         raise
@@ -1477,10 +1550,12 @@ async def call_llm_stream(
     final_usage: Optional[TokenUsage] = None
     start = time.perf_counter()
     try:
-        async for chunk in prepared.adapter.stream(
-            model=prepared.model,
-            messages=messages,
-            max_tokens=max_tokens,
+        async for chunk in _stream_with_dispatch_timeout(
+            prepared.adapter.stream(
+                model=prepared.model,
+                messages=messages,
+                max_tokens=max_tokens,
+            )
         ):
             if chunk.done:
                 final_usage = chunk.final_usage
