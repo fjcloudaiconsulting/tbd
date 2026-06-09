@@ -820,6 +820,98 @@ describe("ReportEditorPage", () => {
     expect(toast).toHaveAttribute("role", "status");
   });
 
+  it("after a successful save lands on the read-only view (stays on the report, not the list) and Edit re-enters the builder", async () => {
+    mockUser(true);
+    // Blank report → opens in edit mode so the user can build.
+    getReportMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "My report",
+      description: null,
+      layout_json: { version: 1, widgets: [] },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:00",
+    });
+    // The save persists a layout that carries the bar widget the user
+    // added, so the read-only view has content to render.
+    saveLayoutMock.mockResolvedValue({
+      id: 10,
+      owner_user_id: 1,
+      org_id: 1,
+      visibility: "private",
+      name: "My report",
+      description: null,
+      layout_json: {
+        version: 1,
+        widgets: [
+          {
+            id: "w_bar",
+            type: "bar",
+            title: "New bar chart",
+            grid: { x: 0, y: 0, w: 6, h: 4 },
+            config: {
+              dataset: "transactions",
+              measure: { agg: "sum", field: "amount" },
+              dimensions: ["category"],
+              sort: { by: "value", dir: "desc" },
+              limit: 10,
+              format: "currency",
+            },
+          },
+        ],
+      },
+      canvas_filters_json: {},
+      schema_version: 1,
+      created_at: "2026-05-22T10:00:00",
+      updated_at: "2026-05-22T10:00:01",
+    } as never);
+
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("report-editor");
+    // Build a change so Save is enabled.
+    fireEvent.click(screen.getByTestId("report-editor-add-widget"));
+    fireEvent.click(screen.getByTestId("widget-picker-option-bar"));
+    await waitFor(() =>
+      expect(screen.getByTestId("bar-widget")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId("report-editor-save"));
+    await waitFor(() => expect(saveLayoutMock).toHaveBeenCalledTimes(1));
+
+    // Stayed on the report (no navigation to the list) and dropped into
+    // the read-only view: the Edit/Done toggle reads "Edit" and the
+    // edit-only affordances are gone.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("report-editor-toggle-edit"),
+      ).toHaveTextContent("Edit"),
+    );
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("report-editor-add-widget")).toBeNull();
+    expect(screen.queryByTestId("report-editor-save")).toBeNull();
+    expect(screen.queryByTestId("report-editor-cancel")).toBeNull();
+    // The saved widget still renders in the read-only view.
+    expect(screen.getByTestId("bar-widget")).toBeInTheDocument();
+    // No config rail in view mode.
+    expect(screen.queryByTestId("config-rail")).toBeNull();
+
+    // Edit re-enters the builder: edit-only affordances return.
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+    expect(screen.getByTestId("report-editor-add-widget")).toBeInTheDocument();
+    expect(screen.getByTestId("report-editor-toggle-edit")).toHaveTextContent(
+      "Done",
+    );
+    // Re-entered cleanly: not dirty, so Save is disabled and Cancel hidden.
+    expect(screen.getByTestId("report-editor-save")).toBeDisabled();
+    expect(screen.queryByTestId("report-editor-cancel")).toBeNull();
+  });
+
   it("on small screens renders a read-only widget stack with no edit affordances", async () => {
     mockMatchMedia(true);
     mockUser(true);

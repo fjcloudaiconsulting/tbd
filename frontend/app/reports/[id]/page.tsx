@@ -454,6 +454,13 @@ export default function ReportEditorPage({ params }: PageProps) {
       setDirty(false);
       setLastSavedAt(new Date());
       setShowSavedToast(true);
+      // Post-save presentation: land the user on a read-only view of the
+      // just-saved report (charts render, no drag handles / edit chrome)
+      // rather than leaving them in the builder or navigating to the list.
+      // ``report`` now holds the saved snapshot, so the view renders the
+      // persisted layout; the "Edit" toggle re-enters the builder.
+      setSelectedWidgetId(null);
+      setEditMode(false);
     } catch (err) {
       const e = err as Error;
       setSaveError(e.message || "Couldn't save layout");
