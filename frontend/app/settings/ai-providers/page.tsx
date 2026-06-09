@@ -3,9 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import SettingsLayout from "@/components/SettingsLayout";
 import Spinner from "@/components/ui/Spinner";
+import Pagination from "@/components/ui/Pagination";
+import SortableHeader from "@/components/ui/SortableHeader";
+import { useTableState } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isAdmin } from "@/lib/auth";
+import type { ListEnvelope } from "@/lib/types";
 import {
   btnPrimary,
   btnSecondary,
@@ -120,10 +124,23 @@ const ROUTABLE_FEATURES: { key: string; label: string }[] = [
 const NEEDS_BASE_URL: Provider[] = ["ollama", "openai_compatible"];
 const ALLOWS_BEARER: Provider[] = ["ollama"];
 
+// Backend-whitelisted sort keys for /api/v1/settings/ai-providers. Limited
+// to the UI-exposed sortable columns.
+const CREDENTIAL_SORT_FIELDS = ["provider", "label", "created_at"] as const;
+type CredentialSortField = (typeof CREDENTIAL_SORT_FIELDS)[number];
+
 
 export default function AiProvidersPage() {
   const { user, loading } = useAuth();
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [credentialsTotal, setCredentialsTotal] = useState(0);
+  const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
+    useTableState<CredentialSortField>({
+      key: "ai-providers",
+      defaultSortField: "created_at",
+      defaultSortDir: "desc",
+      allowedSortFields: CREDENTIAL_SORT_FIELDS,
+    });
   const [providerOptions, setProviderOptions] = useState<ProviderOption[]>([]);
   const [routing, setRouting] = useState<RoutingBundle | null>(null);
   const [caps, setCaps] = useState<CapsBundle | null>(null);
@@ -139,18 +156,32 @@ export default function AiProvidersPage() {
       // settled (not all) — routing/caps endpoints may 404 on first
       // visit before the tables have any rows, and a failure there
       // shouldn't blank out the credentials table.
+      const credParams = new URLSearchParams({
+        sort_by: sortField,
+        sort_dir: sortDir,
+        limit: String(pageSize),
+        offset: String((page - 1) * pageSize),
+      });
       const [credsRes, optsRes, routingRes, capsRes] = await Promise.allSettled([
-        apiFetch<Credential[]>("/api/v1/settings/ai-providers"),
+        apiFetch<ListEnvelope<Credential>>(
+          `/api/v1/settings/ai-providers?${credParams.toString()}`
+        ),
         apiFetch<ProviderOptionsResponse>(
           "/api/v1/settings/ai-providers/options"
         ),
         apiFetch<RoutingBundle>("/api/v1/settings/ai-providers/routing"),
         apiFetch<CapsBundle>("/api/v1/settings/ai-providers/caps"),
       ]);
-      if (credsRes.status === "fulfilled" && Array.isArray(credsRes.value)) {
-        setCredentials(credsRes.value);
+      if (
+        credsRes.status === "fulfilled" &&
+        credsRes.value &&
+        Array.isArray(credsRes.value.items)
+      ) {
+        setCredentials(credsRes.value.items);
+        setCredentialsTotal(credsRes.value.total);
       } else {
         setCredentials([]);
+        setCredentialsTotal(0);
       }
       if (
         optsRes.status === "fulfilled" &&
@@ -178,7 +209,16 @@ export default function AiProvidersPage() {
     } finally {
       setListLoading(false);
     }
-  }, []);
+  }, [sortField, sortDir, page, pageSize]);
+
+  const handleSort = useCallback(
+    (field: string) => {
+      if (!(CREDENTIAL_SORT_FIELDS as readonly string[]).includes(field)) return;
+      const f = field as CredentialSortField;
+      setSort(f, f === sortField && sortDir === "asc" ? "desc" : "asc");
+    },
+    [sortField, sortDir, setSort],
+  );
 
   useEffect(() => {
     if (!loading && user && isAdmin(user)) {
@@ -280,8 +320,20 @@ export default function AiProvidersPage() {
             <table className="w-full text-sm" data-testid="credentials-table">
               <thead>
                 <tr className="border-b border-border text-left text-text-muted">
-                  <th className="px-4 py-2">Provider</th>
-                  <th className="px-4 py-2">Label</th>
+                  <SortableHeader
+                    label="Provider"
+                    field="provider"
+                    activeField={sortField}
+                    dir={sortDir}
+                    onSort={handleSort}
+                  />
+                  <SortableHeader
+                    label="Label"
+                    field="label"
+                    activeField={sortField}
+                    dir={sortDir}
+                    onSort={handleSort}
+                  />
                   <th className="px-4 py-2">Key</th>
                   <th className="px-4 py-2">Status</th>
                   <th className="px-4 py-2">Models</th>
@@ -335,6 +387,17 @@ export default function AiProvidersPage() {
               </tbody>
             </table>
           </div>
+          {(credentialsTotal > pageSize || page > 1) && (
+            <div className="px-4 pb-2">
+              <Pagination
+                page={page}
+                pageSize={pageSize}
+                total={credentialsTotal}
+                onPageChange={setPage}
+                onPageSizeChange={setPageSize}
+              />
+            </div>
+          )}
         </div>
       )}
 
