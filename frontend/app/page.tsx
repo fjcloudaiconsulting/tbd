@@ -84,8 +84,9 @@ const softwareApplicationLd = {
   url: apexHome,
   author: { "@id": orgId },
   publisher: { "@id": orgId },
-  // featureList holds ONLY shipped features (mirrors app/features/page.tsx's
-  // shippedFeatures). Roadmap items are excluded by design and guarded by
+  // featureList holds ONLY shipped features (same shipped-only scope as
+  // app/features/page.tsx's shippedFeatures; wording need not match verbatim).
+  // Roadmap items are excluded by design and guarded by
   // tests/features-no-roadmap-in-featurelist.test.tsx.
   featureList: [
     "Cash-flow forecasting with what-if scenarios",

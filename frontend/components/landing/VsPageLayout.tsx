@@ -6,7 +6,6 @@
 // content stays distinct (so the cluster is not thin/doorway).
 import Link from "next/link";
 import type { ReactNode } from "react";
-import type { FaqEntry } from "./faqData";
 import ComparisonTable from "./ComparisonTable";
 import { type Competitor, competitorMeta } from "@/lib/comparison";
 import { btnPrimary } from "@/lib/styles";
@@ -25,7 +24,7 @@ export default function VsPageLayout({
   competitor: Exclude<Competitor, "tbd">;
   title: string;
   intro: ReactNode;
-  faq: ReadonlyArray<{ q: string; a: string } & Partial<FaqEntry>>;
+  faq: ReadonlyArray<{ q: string; a: string }>;
   nonce: string;
 }) {
   const nonceProp = nonce ? { nonce } : {};
