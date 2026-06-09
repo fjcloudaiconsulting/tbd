@@ -171,7 +171,7 @@ async def test_tab_preview_happy_path(session_factory):
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["total_rows"] == 5
+    assert body["total_rows"] == 6
     assert body["account_id"] == seed["account_id"]
     assert body["file_name"] == "abn_sample.tab"
     assert body["source_format"] == "tab"
@@ -186,6 +186,13 @@ async def test_tab_preview_happy_path(session_factory):
     salary = next(r for r in body["rows"] if r["counterparty"] == "EXAMPLE EMPLOYER NV")
     assert salary["type"] == "income"
     assert Decimal(salary["amount"]) == Decimal("2500.00")
+
+    # iDEAL/Wero row: the extra unpaired ``Wero`` token must NOT prevent
+    # NAME extraction (the headline bug this PR fixed), exercised end-to-end
+    # through the endpoint with a slash-bearing REMI value.
+    ideal = next(r for r in body["rows"] if r["counterparty"] == "Online Shop B.V.")
+    assert ideal["type"] == "expense"
+    assert Decimal(ideal["amount"]) == Decimal("20.00")
 
 
 # ── Auth gate ──

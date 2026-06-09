@@ -111,7 +111,12 @@ async def preview_tab_import(
     try:
         content = raw.decode("utf-8")
     except UnicodeDecodeError:
-        content = raw.decode("cp1252")
+        try:
+            content = raw.decode("cp1252")
+        except UnicodeDecodeError:
+            raise ValidationError(
+                "File is not valid UTF-8 or Windows-1252 text"
+            )
 
     try:
         parsed_rows = parse_tab(content)

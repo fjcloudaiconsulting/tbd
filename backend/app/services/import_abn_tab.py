@@ -201,10 +201,22 @@ def parse_tab(content: str) -> list[ParsedRow]:
 
         tx_type = "expense" if signed_amount < 0 else "income"
         amount = abs(signed_amount)
+        if amount == 0:
+            # No money moved (ABN emits zero-amount balance-marker /
+            # reversal rows). Skip rather than import a zero transaction
+            # or trip the confirm-time ``amount > 0`` guard. Mirrors the
+            # OFX parser (import_ofx_service.py).
+            continue
 
         description, counterparty, extracted_tags = parse_abn_description(
             description_raw
         )
+        if not description:
+            # A blank description column means a malformed/marker line.
+            # Fail loud (mirrors parse_csv) rather than silently importing
+            # a nameless transaction — losing a row silently is worse for a
+            # finance import than a clear, locatable error.
+            raise ParseError("Empty description", row_number=row_number)
 
         raw_data: dict = {
             "account_number": account_number,

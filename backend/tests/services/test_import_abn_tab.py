@@ -259,9 +259,9 @@ def test_parse_tab_handles_cp1252_decoded_accents() -> None:
 def test_parse_tab_fixture_full_coverage() -> None:
     content = (FIXTURES / "abn_sample.tab").read_bytes().decode("utf-8")
     rows = parse_tab(content)
-    assert len(rows) == 5
+    assert len(rows) == 6
 
-    # SEPA debit, POS, ATM, SEPA credit, fallback.
+    # SEPA debit, POS, ATM, SEPA credit, fallback, iDEAL/Wero.
     assert rows[0].type == "expense"
     assert rows[0].counterparty == "WATER COMPANY BV"
     assert rows[1].counterparty == "SUPERMARKET LOC 529"
@@ -270,3 +270,40 @@ def test_parse_tab_fixture_full_coverage() -> None:
     assert rows[3].counterparty == "EXAMPLE EMPLOYER NV"
     assert rows[4].counterparty is None
     assert "Maandelijkse kosten" in rows[4].description
+    # iDEAL/Wero row parsed through parse_tab (not just the unit helper):
+    # NAME extracted despite the unpaired Wero token + slash-bearing REMI.
+    assert rows[5].counterparty == "Online Shop B.V."
+    assert rows[5].raw_data["REMI"] == "order 123 / ref 456"
+
+
+# ── parse_tab: skips zero-amount rows, raises on empty description ──
+
+
+def test_parse_tab_skips_zero_amount_rows() -> None:
+    zero = _line(
+        "845455273", "EUR", "20260220", "0,00", "0,00", "20260220", "0,00",
+        "/TRTP/SEPA/NAME/MARKER",
+    )
+    good = _line(
+        "845455273", "EUR", "20260221", "0,00", "0,00", "20260221", "-9,99",
+        "/TRTP/SEPA/NAME/REAL MERCHANT",
+    )
+    rows = parse_tab(f"{zero}\r\n{good}")
+    # The zero-amount marker row is dropped (mirrors the OFX parser);
+    # never imported and never trips the confirm-time amount>0 guard.
+    assert len(rows) == 1
+    assert rows[0].counterparty == "REAL MERCHANT"
+
+
+def test_parse_tab_empty_description_raises_with_row_number() -> None:
+    good = _line(
+        "845455273", "EUR", "20260220", "0,00", "0,00", "20260220", "-1,00",
+        "/TRTP/SEPA/NAME/MERCHANT",
+    )
+    blank = _line(
+        "845455273", "EUR", "20260221", "0,00", "0,00", "20260221", "-2,00", "   ",
+    )
+    with pytest.raises(ParseError) as exc:
+        parse_tab(f"{good}\r\n{blank}")
+    assert exc.value.row_number == 2
+    assert "description" in str(exc.value).lower()

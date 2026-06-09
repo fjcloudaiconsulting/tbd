@@ -185,9 +185,10 @@ async def create_import_batch(
         try:
             source_format_enum = ImportSourceFormat(source_format)
         except ValueError as exc:
+            allowed = ", ".join(repr(e.value) for e in ImportSourceFormat)
             raise ValidationError(
                 f"unknown source_format {source_format!r}; "
-                "expected one of 'csv' or 'ofx'"
+                f"expected one of {allowed}"
             ) from exc
     else:
         source_format_enum = source_format
