@@ -93,16 +93,27 @@ def parse_abn_description(raw: str) -> tuple[str, str | None, dict]:
     # ── Branch 1: SEPA ──
     if stripped.startswith("/TRTP/"):
         tags: dict[str, str] = {}
-        # Drop the leading empty segment from the leading slash, then pair
-        # the remaining ``TAG``, ``value`` tokens.
-        parts = stripped.split("/")[1:]
-        i = 0
-        while i < len(parts):
-            tag = parts[i].strip()
-            value = parts[i + 1].strip() if i + 1 < len(parts) else ""
-            if tag:
-                tags[tag] = value
-            i += 2
+        # Walk the ``/``-delimited tokens treating KNOWN tags as the only
+        # keys; everything between two tags is that tag's value. Naive
+        # every-2-pairing breaks on real exports because (a) iDEAL rows
+        # carry an extra unpaired token (``/TRTP/iDEAL/Wero/IBAN/...``)
+        # that shifts the alignment so ``NAME`` lands in a value slot, and
+        # (b) ``REMI`` values legitimately contain ``/`` (dates, URLs).
+        # Tag-as-delimiter handles both. ``ULTD`` can recur with an empty
+        # value (``/ORDP//ID/``); last write wins, which is fine here.
+        tokens = stripped.split("/")[1:]
+        current_key: str | None = None
+        buffer: list[str] = []
+        for tok in tokens:
+            if tok in _SEPA_TAGS:
+                if current_key is not None:
+                    tags[current_key] = "/".join(buffer).strip()
+                current_key = tok
+                buffer = []
+            else:
+                buffer.append(tok)
+        if current_key is not None:
+            tags[current_key] = "/".join(buffer).strip()
 
         name = tags.get("NAME", "").strip()
         counterparty = name or None

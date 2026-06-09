@@ -43,6 +43,35 @@ def test_sepa_name_becomes_counterparty_and_description() -> None:
     assert tags["IBAN"] == "NL00TEST0123456789"
 
 
+def test_sepa_ideal_wero_extracts_name_despite_extra_token() -> None:
+    # iDEAL rows carry an unpaired ``Wero`` token (/TRTP/iDEAL/Wero/IBAN/...)
+    # that shifts naive every-2 pairing so NAME lands in a value slot.
+    # Tag-as-delimiter parsing must still find the real counterparty.
+    raw = (
+        "/TRTP/iDEAL/Wero/IBAN/NL04TEST2017400157/BIC/ADYBNL2A/"
+        "NAME/DHL eCommerce .Services. B.V./REMI/order ref/EREF/2026"
+    )
+    description, counterparty, tags = parse_abn_description(raw)
+    assert counterparty == "DHL eCommerce .Services. B.V."
+    assert description == "DHL eCommerce .Services. B.V."
+    assert tags["TRTP"] == "iDEAL/Wero"
+
+
+def test_sepa_remi_value_with_slashes_preserved_and_alignment_kept() -> None:
+    # REMI values legitimately contain slashes (date ranges, URLs). The
+    # value must be kept whole AND later tags must stay correctly aligned.
+    raw = (
+        "/TRTP/SEPA Incasso/CSID/NL47ZZZ370924590000/NAME/Basic Fit B.V./"
+        "MARF/C31001922/REMI/23-02-2026 / 22-03-2026/IBAN/NL24TEST0168476207/"
+        "BIC/RABONL2U/EREF/NOC31001922-0141"
+    )
+    description, counterparty, tags = parse_abn_description(raw)
+    assert counterparty == "Basic Fit B.V."
+    assert tags["REMI"] == "23-02-2026 / 22-03-2026"
+    assert tags["IBAN"] == "NL24TEST0168476207"
+    assert tags["EREF"] == "NOC31001922-0141"
+
+
 def test_sepa_without_name_falls_back_to_collapsed_raw() -> None:
     raw = "/TRTP/SEPA Overboeking/REMI/some reference text"
     description, counterparty, tags = parse_abn_description(raw)
