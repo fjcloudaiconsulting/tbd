@@ -205,8 +205,40 @@ function ImportPageContent() {
     formData.append("file", file);
     formData.append("account_id", accountId.toString());
 
+    // Route by file extension first, then content-sniff as a fallback.
+    // Rule: an explicit ``.tab``/``.csv`` extension is ALWAYS respected
+    // (no sniffing, no behavior change). Only for AMBIGUOUS names (``.txt``,
+    // no extension, etc.) do we peek at the file head — a real ABN AMRO export
+    // the browser/OS saved as ``.txt`` would otherwise hit the CSV parser and
+    // yield a confusing error. ABN ``.TAB`` rows have exactly 8 tab-separated
+    // fields, so a first non-empty line that splits into 8 tab-delimited
+    // columns routes to the tab parser; anything else (or any read error)
+    // defaults to CSV. Both endpoints share the multipart request and
+    // ImportPreviewResponse shape; confirm echoes ``source_format``.
+    const lowerName = file.name.toLowerCase();
+    let previewEndpoint: string;
+    if (lowerName.endsWith(".tab")) {
+      previewEndpoint = "/api/v1/import/tab/preview";
+    } else if (lowerName.endsWith(".csv")) {
+      // Explicit CSV is always respected, even if the content contains tabs.
+      previewEndpoint = "/api/v1/import/preview";
+    } else {
+      // Ambiguous extension: sniff only the head of the file. Default to CSV
+      // on any error so a malformed/unreadable file still hits the CSV path.
+      previewEndpoint = "/api/v1/import/preview";
+      try {
+        const head = await file.slice(0, 4096).text();
+        const firstLine = head.split("\n").find((line) => line.trim() !== "");
+        if (firstLine !== undefined && firstLine.split("\t").length === 8) {
+          previewEndpoint = "/api/v1/import/tab/preview";
+        }
+      } catch {
+        // Keep the CSV default on any read/decode error.
+      }
+    }
+
     try {
-      const data = await apiFetch<ImportPreviewResponse>("/api/v1/import/preview", {
+      const data = await apiFetch<ImportPreviewResponse>(previewEndpoint, {
         method: "POST",
         body: formData,
         timeoutMs: IMPORT_REQUEST_TIMEOUT_MS,
@@ -413,7 +445,7 @@ function ImportPageContent() {
       {step === "upload" && categories && categories.length > 0 && (
         <div className={card}>
           <div className={cardHeader}>
-            <h2 className={cardTitle}>Upload CSV File</h2>
+            <h2 className={cardTitle}>Upload File</h2>
           </div>
           <div className="space-y-4 p-6">
             <div>
@@ -433,11 +465,11 @@ function ImportPageContent() {
               </select>
             </div>
             <div>
-              <label htmlFor="import-csv-file" className={label}>CSV File</label>
+              <label htmlFor="import-csv-file" className={label}>CSV or ABN AMRO .TAB File</label>
               <input
                 id="import-csv-file"
                 type="file"
-                accept=".csv"
+                accept=".csv,.tab,.TAB"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                 className="block w-full text-sm text-text-secondary file:mr-4 file:rounded-md file:border-0 file:bg-accent file:px-4 file:py-2 file:text-sm file:font-medium file:text-accent-text hover:file:bg-accent-hover"
               />

@@ -834,6 +834,202 @@ describe("ImportPage transfer pill column", () => {
     expect(pill).not.toHaveTextContent(/Will create transfer to Savings/i);
   });
 
+  it("routes a .tab file to the ABN AMRO tab preview endpoint", async () => {
+    const preview = { ...basePreview([baseRow({ row_number: 1 })]), file_name: "extrato.tab" };
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([ACCOUNT]);
+      if (url === "/api/v1/categories")
+        return Promise.resolve([CATEGORY_EXP, CATEGORY_INC]);
+      if (url === "/api/v1/import/tab/preview") return Promise.resolve(preview);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<ImportPage />);
+
+    const uploadButton = await screen.findByRole("button", {
+      name: /upload & preview/i,
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    // Uppercase extension exercises the case-insensitive match.
+    const file = new File(["...\t...\n"], "extrato.TAB", { type: "" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(uploadButton);
+
+    await screen.findByText("extrato.tab");
+
+    // The preview request went to the tab endpoint, NOT the CSV one.
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/import/tab/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/v1/import/preview",
+      expect.anything(),
+    );
+  });
+
+  it("Confirm payload carries source_format='tab' for a .tab import", async () => {
+    // Regression guard: the confirm body echoes preview.source_format. A .tab
+    // preview returns source_format="tab", and that value must reach the
+    // confirm POST so the batch is not silently stamped as "csv" by the
+    // ?? "csv" fallback in the page.
+    const preview = {
+      ...basePreview([baseRow({ row_number: 1, description: "ABN row" })]),
+      file_name: "extrato.tab",
+      source_format: "tab" as const,
+    };
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([ACCOUNT]);
+      if (url === "/api/v1/categories")
+        return Promise.resolve([CATEGORY_EXP, CATEGORY_INC]);
+      if (url === "/api/v1/import/tab/preview") return Promise.resolve(preview);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<ImportPage />);
+
+    const uploadButton = await screen.findByRole("button", {
+      name: /upload & preview/i,
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(["...\t...\n"], "extrato.tab", { type: "" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(uploadButton);
+
+    await screen.findByText("extrato.tab");
+
+    // Provide a default category so the confirm button is enabled.
+    const selects = document.querySelectorAll("select");
+    const defaultCatSelect = selects[selects.length - 1] as HTMLSelectElement;
+    fireEvent.change(defaultCatSelect, { target: { value: "5" } });
+
+    // Stub the confirm response so the click resolves cleanly.
+    apiFetchMock.mockResolvedValueOnce({
+      imported_count: 1,
+      paired_count: 0,
+      dropped_duplicate_count: 0,
+      skipped_count: 0,
+      error_count: 0,
+      errors: [],
+    } as never);
+
+    const confirmBtn = screen.getByRole("button", { name: /import 1 transaction/i });
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      const confirmCall = apiFetchMock.mock.calls.find(
+        ([url]) => url === "/api/v1/import/confirm",
+      );
+      expect(confirmCall).toBeDefined();
+    });
+
+    const confirmCall = apiFetchMock.mock.calls.find(
+      ([url]) => url === "/api/v1/import/confirm",
+    )!;
+    const body = JSON.parse((confirmCall[1] as RequestInit).body as string);
+
+    expect(body.source_format).toBe("tab");
+    expect(body.file_name).toBe("extrato.tab");
+  });
+
+  it("sniffs an ambiguous .txt file with 8 tab fields to the tab endpoint", async () => {
+    // A real ABN AMRO export saved by the browser/OS as .txt. The extension
+    // is ambiguous, so the head is sniffed: the first non-empty line has
+    // exactly 8 tab-separated fields → tab endpoint.
+    const preview = { ...basePreview([baseRow({ row_number: 1 })]), file_name: "extrato.txt" };
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([ACCOUNT]);
+      if (url === "/api/v1/categories")
+        return Promise.resolve([CATEGORY_EXP, CATEGORY_INC]);
+      if (url === "/api/v1/import/tab/preview") return Promise.resolve(preview);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<ImportPage />);
+
+    const uploadButton = await screen.findByRole("button", {
+      name: /upload & preview/i,
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    // 8 tab-separated fields, no .csv/.tab extension to force the sniff path.
+    const tabLine = ["a", "b", "c", "d", "e", "f", "g", "h"].join("\t") + "\n";
+    const file = new File([tabLine], "extrato.txt", { type: "text/plain" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(uploadButton);
+
+    await screen.findByText("extrato.txt");
+
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/import/tab/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/v1/import/preview",
+      expect.anything(),
+    );
+  });
+
+  it("respects an explicit .csv extension even when content contains tabs", async () => {
+    // A .csv whose body happens to contain 8 tab-separated fields. The
+    // explicit extension wins — no sniffing — so it routes to the CSV parser.
+    const preview = basePreview([baseRow({ row_number: 1 })]);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([ACCOUNT]);
+      if (url === "/api/v1/categories")
+        return Promise.resolve([CATEGORY_EXP, CATEGORY_INC]);
+      if (url === "/api/v1/import/preview") return Promise.resolve(preview);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<ImportPage />);
+
+    const uploadButton = await screen.findByRole("button", {
+      name: /upload & preview/i,
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const tabLine = ["a", "b", "c", "d", "e", "f", "g", "h"].join("\t") + "\n";
+    const file = new File([tabLine], "test.csv", { type: "text/csv" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(uploadButton);
+
+    await screen.findByText("test.csv");
+
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/import/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/v1/import/tab/preview",
+      expect.anything(),
+    );
+  });
+
+  it("routes a .csv file to the CSV preview endpoint", async () => {
+    // renderAndPreview drops a test.csv file; assert it hits the CSV endpoint
+    // and never the tab endpoint.
+    const preview = basePreview([baseRow({ row_number: 1 })]);
+
+    await renderAndPreview(preview);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/import/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/v1/import/tab/preview",
+      expect.anything(),
+    );
+  });
+
   it("import preview is called with IMPORT_REQUEST_TIMEOUT_MS (15s)", async () => {
     const preview = basePreview([baseRow({ row_number: 1 })]);
 

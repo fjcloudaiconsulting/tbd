@@ -251,10 +251,10 @@ export interface ImportPreviewResponse {
   multi_candidate_count: number;
   duplicate_of_linked_count: number;
 
-  // L3.2 Wave 2B: ``'csv'`` or ``'ofx'``. The frontend echoes this in
-  // the confirm payload so the backend can stamp the new
-  // ``import_batches`` row with the correct origin.
-  source_format?: "csv" | "ofx";
+  // L3.2 Wave 2B: ``'csv'``, ``'ofx'`` or ``'tab'`` (ABN AMRO). The
+  // frontend echoes this in the confirm payload so the backend can stamp
+  // the new ``import_batches`` row with the correct origin.
+  source_format?: "csv" | "ofx" | "tab";
 }
 
 export interface ImportConfirmRow {
@@ -285,7 +285,7 @@ export interface ImportConfirmRequest {
   // the backend always opens an ``import_batches`` header row for the
   // imported transactions.
   file_name: string;
-  source_format: "csv" | "ofx";
+  source_format: "csv" | "ofx" | "tab";
 }
 
 export interface ImportRowError {
@@ -567,7 +567,7 @@ export type ReconciliationState =
   | "accepted"
   | "rejected";
 
-export type ImportSourceFormat = "csv" | "ofx";
+export type ImportSourceFormat = "csv" | "ofx" | "tab";
 
 export interface ImportBatchHeader {
   id: number;
