@@ -8,6 +8,8 @@ import { metadata as privacyMetadata } from "@/app/privacy/page";
 import { metadata as termsMetadata } from "@/app/terms/page";
 import { metadata as docsMetadata } from "@/app/docs/page";
 import { metadata as docsPlansMetadata } from "@/app/docs/plans/page";
+import { metadata as featuresMetadata } from "@/app/features/page";
+import { metadata as compareMetadata } from "@/app/compare/page";
 
 const indexableMetadatas: ReadonlyArray<[string, Metadata]> = [
   ["/", rootMetadata],
@@ -16,6 +18,8 @@ const indexableMetadatas: ReadonlyArray<[string, Metadata]> = [
   ["/terms", termsMetadata],
   ["/docs", docsMetadata],
   ["/docs/plans", docsPlansMetadata],
+  ["/features", featuresMetadata],
+  ["/compare", compareMetadata],
 ] as const;
 
 describe("indexable public routes opt back into index", () => {
