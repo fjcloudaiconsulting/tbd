@@ -48,6 +48,9 @@ ALLOWED_ROUTE_DIRS=(
   "privacy"
   "terms"
   "docs"
+  "features"
+  "compare"
+  "vs"
 )
 
 # Positive allowlist: app-level files (siblings of route directories)
@@ -80,6 +83,9 @@ ALLOWED_OUTPUT_GLOBS=(
   "privacy"
   "terms"
   "docs"
+  "features"
+  "compare"
+  "vs"
   "_next"
   "_meta.json"
   "robots.txt"
@@ -299,6 +305,10 @@ cat > "${FRONTEND_DIR}/out-apex/sitemap.xml" <<EOF
   <url><loc>${APEX_URL}/terms/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/docs/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/docs/plans/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
+  <url><loc>${APEX_URL}/features/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
+  <url><loc>${APEX_URL}/compare/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
+  <url><loc>${APEX_URL}/vs/spreadsheets/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
+  <url><loc>${APEX_URL}/vs/ynab/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
 </urlset>
 EOF
 

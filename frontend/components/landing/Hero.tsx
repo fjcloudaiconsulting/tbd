@@ -22,11 +22,9 @@ export default function Hero() {
             Only better ones.
           </h1>
           <p className="mt-6 max-w-lg text-base leading-relaxed text-text-secondary lg:text-lg">
-            {BRAND_NAME}
-            {" "}
-            is a finance app for normal people. Know what you have,
-            what&rsquo;s coming, and where it goes, without the
-            spreadsheet fatigue.
+            See what is coming, not just what happened. {BRAND_NAME}{" "}
+            forecasts your cash flow and plans your budget in one calm app,
+            EU-hosted, for normal people.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Link

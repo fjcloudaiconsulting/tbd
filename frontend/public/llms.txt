@@ -12,5 +12,9 @@ The Better Decision tracks accounts, transactions, budgets, and forecasts, all s
 ## Pages
 
 - [Home](https://thebetterdecision.com/): Product overview, how it works, and frequently asked questions.
+- [Features](https://thebetterdecision.com/features/): Everything the app does, including bring-your-own and local AI, plus what is on the roadmap.
+- [Compare](https://thebetterdecision.com/compare/): How The Better Decision compares with YNAB, PocketSmith, Monarch, and spreadsheets.
+- [vs Spreadsheets](https://thebetterdecision.com/vs/spreadsheets/): Why a forecasting app beats a manual budgeting spreadsheet, and where spreadsheets still win.
+- [vs YNAB](https://thebetterdecision.com/vs/ynab/): A YNAB alternative built around forecasting and EU data residency, and where YNAB still wins.
 - [Privacy](https://thebetterdecision.com/privacy/): How personal and financial data is handled.
 - [Terms](https://thebetterdecision.com/terms/): Terms of use.

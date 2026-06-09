@@ -8,6 +8,12 @@ import { metadata as privacyMetadata } from "@/app/privacy/page";
 import { metadata as termsMetadata } from "@/app/terms/page";
 import { metadata as docsMetadata } from "@/app/docs/page";
 import { metadata as docsPlansMetadata } from "@/app/docs/plans/page";
+import { metadata as featuresMetadata } from "@/app/features/page";
+import { metadata as compareMetadata } from "@/app/compare/page";
+import { metadata as vsSpreadsheetsMetadata } from "@/app/vs/spreadsheets/page";
+import { metadata as vsYnabMetadata } from "@/app/vs/ynab/page";
+import { metadata as vsPocketsmithMetadata } from "@/app/vs/pocketsmith/page";
+import { metadata as vsMonarchMetadata } from "@/app/vs/monarch/page";
 
 const indexableMetadatas: ReadonlyArray<[string, Metadata]> = [
   ["/", rootMetadata],
@@ -16,6 +22,8 @@ const indexableMetadatas: ReadonlyArray<[string, Metadata]> = [
   ["/terms", termsMetadata],
   ["/docs", docsMetadata],
   ["/docs/plans", docsPlansMetadata],
+  ["/features", featuresMetadata],
+  ["/compare", compareMetadata],
 ] as const;
 
 describe("indexable public routes opt back into index", () => {
@@ -27,5 +35,23 @@ describe("indexable public routes opt back into index", () => {
 describe("low-value auth routes stay out of the index", () => {
   it("/login is noindex (bare sign-in form, no search value)", () => {
     expect(loginMetadata.robots).toEqual({ index: false, follow: true });
+  });
+});
+
+describe("published /vs pages are indexable", () => {
+  it.each([
+    ["/vs/spreadsheets", vsSpreadsheetsMetadata],
+    ["/vs/ynab", vsYnabMetadata],
+  ] as const)("%s indexes", (_r, meta) => {
+    expect(meta.robots).toEqual({ index: true, follow: true });
+  });
+});
+
+describe("staggered /vs pages stay out of the index until launch", () => {
+  it.each([
+    ["/vs/pocketsmith", vsPocketsmithMetadata],
+    ["/vs/monarch", vsMonarchMetadata],
+  ] as const)("%s is noindex", (_r, meta) => {
+    expect(meta.robots).toEqual({ index: false, follow: false });
   });
 });

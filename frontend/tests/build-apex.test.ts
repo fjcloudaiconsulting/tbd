@@ -190,6 +190,22 @@ describe("apex build target — scripts/build-apex.sh", () => {
   });
 });
 
+describe("apex build allowlist covers new marketing routes", () => {
+  const script = readText("scripts/build-apex.sh");
+  it.each(["features", "compare", "vs"])("ALLOWED_ROUTE_DIRS includes %s", (d) => {
+    expect(script).toMatch(new RegExp(`ALLOWED_ROUTE_DIRS=\\([^)]*"${d}"`, "s"));
+  });
+  it.each(["features", "compare", "vs"])("ALLOWED_OUTPUT_GLOBS includes %s", (d) => {
+    expect(script).toMatch(new RegExp(`ALLOWED_OUTPUT_GLOBS=\\([^)]*"${d}"`, "s"));
+  });
+  it.each(["/features/", "/compare/", "/vs/spreadsheets/", "/vs/ynab/"])(
+    "apex sitemap heredoc lists %s",
+    (route) => {
+      expect(script).toContain(`${"${APEX_URL}"}${route}</loc>`);
+    },
+  );
+});
+
 describe("apex build target — next.config.apex.ts", () => {
   const config = readText("next.config.apex.ts");
 
