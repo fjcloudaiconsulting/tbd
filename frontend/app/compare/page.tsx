@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { readNonce } from "@/lib/nonce";
 import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
 import ComparisonTable from "@/components/landing/ComparisonTable";
+import MarketingShell from "@/components/landing/MarketingShell";
 import { competitorOrder } from "@/lib/comparison";
 
 const description =
@@ -57,6 +58,7 @@ export default async function ComparePage() {
   const nonce = await readNonce();
   const nonceProp = nonce ? { nonce } : {};
   return (
+    <MarketingShell>
     <main className="mx-auto max-w-5xl px-6 py-20 lg:py-24">
       {structuredData.map((block) => (
         <script
@@ -92,5 +94,6 @@ export default async function ComparePage() {
         .
       </p>
     </main>
+    </MarketingShell>
   );
 }

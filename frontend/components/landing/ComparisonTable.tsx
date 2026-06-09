@@ -4,6 +4,7 @@
 // never rides on color or glyph alone (WCAG 2.2 AA). Server-rendered, no client JS.
 import {
   type Competitor,
+  capabilityDimensions,
   comparisonMatrix,
   competitorMeta,
   dimensionLabels,
@@ -72,18 +73,21 @@ export default function ComparisonTable({
               </th>
               {competitors.map((c) => {
                 const cell = comparisonMatrix[dim][c];
+                const isCapability = capabilityDimensions.has(dim);
                 return (
                   <td
                     key={c}
                     className="px-4 py-3 align-top text-text-secondary"
                   >
                     <span className="flex items-start gap-2">
-                      <span className="mt-0.5 text-text-muted">
-                        <SupportGlyph supported={cell.supported} />
-                        <span className="sr-only">
-                          {supportLabel[cell.supported]}
+                      {isCapability && (
+                        <span className="mt-0.5 text-text-muted">
+                          <SupportGlyph supported={cell.supported} />
+                          <span className="sr-only">
+                            {supportLabel[cell.supported]}
+                          </span>
                         </span>
-                      </span>
+                      )}
                       <span>{cell.value}</span>
                     </span>
                   </td>

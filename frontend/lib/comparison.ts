@@ -48,6 +48,20 @@ export const dimensionOrder: ReadonlyArray<Dimension> = [
   "price",
 ];
 
+// Capability dimensions render a yes/no/partial support glyph + sr-only label,
+// because they describe whether a tool CAN do something. `price` is omitted on
+// purpose: it is informational (an amount, not a capability), so it renders
+// value-only. Marking a competitor's paid pricing with an X would be both
+// semantically wrong for screen readers and editorializing.
+export const capabilityDimensions: ReadonlySet<Dimension> = new Set([
+  "forecasting",
+  "budgeting",
+  "bankSync",
+  "householdSharing",
+  "euResidency",
+  "privacyFirstAi",
+]);
+
 export const dimensionLabels: Record<Dimension, string> = {
   forecasting: "Cash-flow forecasting",
   budgeting: "Budgeting",

@@ -5,6 +5,7 @@ import VsPageLayout from "@/components/landing/VsPageLayout";
 
 vi.mock("@/lib/links", () => ({
   signupHref: () => "/register",
+  signinHref: () => "/login",
   ctaHref: (p: string) => p,
   IS_APEX_BUILD: false,
 }));

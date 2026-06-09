@@ -1,6 +1,7 @@
 // frontend/app/features/page.tsx
 import Link from "next/link";
 import type { Metadata } from "next";
+import MarketingShell from "@/components/landing/MarketingShell";
 import { readNonce } from "@/lib/nonce";
 import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 
@@ -99,6 +100,7 @@ export default async function FeaturesPage() {
   const nonce = await readNonce();
   const nonceProp = nonce ? { nonce } : {};
   return (
+    <MarketingShell>
     <main className="mx-auto max-w-4xl px-6 py-20 lg:py-24">
       {structuredData.map((block) => (
         <script
@@ -158,5 +160,6 @@ export default async function FeaturesPage() {
         .
       </p>
     </main>
+    </MarketingShell>
   );
 }

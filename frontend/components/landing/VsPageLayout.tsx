@@ -7,6 +7,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import ComparisonTable from "./ComparisonTable";
+import MarketingShell from "./MarketingShell";
 import { type Competitor, competitorMeta } from "@/lib/comparison";
 import { btnPrimary } from "@/lib/styles";
 import { signupHref } from "@/lib/links";
@@ -51,6 +52,7 @@ export default function VsPageLayout({
   const structuredData = [faqLd, breadcrumbLd];
 
   return (
+    <MarketingShell>
     <main className="mx-auto max-w-3xl px-6 py-20 lg:py-24">
       {structuredData.map((block) => (
         <script
@@ -129,5 +131,6 @@ export default function VsPageLayout({
         </p>
       </section>
     </main>
+    </MarketingShell>
   );
 }

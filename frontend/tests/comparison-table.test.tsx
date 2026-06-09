@@ -35,4 +35,16 @@ describe("ComparisonTable", () => {
     expect(within(getByRole("table")).getAllByText(/^(Yes|No|Partial)$/).length)
       .toBeGreaterThan(0);
   });
+
+  it("does not emit a yes/no/partial support label for the Price row", () => {
+    const { getByRole } = render(
+      <ComparisonTable competitors={["tbd", "ynab"]} />,
+    );
+    const priceHeader = within(getByRole("table")).getByText("Price");
+    const priceRow = priceHeader.closest("tr");
+    expect(priceRow).not.toBeNull();
+    // Price is informational, not a capability: no glyph + sr-only Yes/No/Partial.
+    expect(within(priceRow as HTMLElement).queryAllByText(/^(Yes|No|Partial)$/))
+      .toHaveLength(0);
+  });
 });
