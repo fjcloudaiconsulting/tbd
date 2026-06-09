@@ -63,6 +63,13 @@ const PRO_PLAN = {
   },
 };
 
+// /api/v1/plans/all now returns a ListEnvelope; the table sends sort +
+// pagination query params, so match on the path prefix not an exact URL.
+const isPlansAll = (url: unknown): url is string =>
+  typeof url === "string" && url.startsWith("/api/v1/plans/all");
+const plansEnvelope = (items: unknown[]) =>
+  Promise.resolve({ items, total: items.length, limit: 25, offset: 0 });
+
 describe("/system/plans page — Features section + Duplicate", () => {
   const apiFetchMock = vi.mocked(apiFetch);
   const useAuthMock = vi.mocked(useAuth);
@@ -83,7 +90,7 @@ describe("/system/plans page — Features section + Duplicate", () => {
 
   it("renders one Features row per catalog key in the editor", async () => {
     apiFetchMock.mockImplementation(((url: string) => {
-      if (url === "/api/v1/plans/all") return Promise.resolve([PRO_PLAN]);
+      if (isPlansAll(url)) return plansEnvelope([PRO_PLAN]);
       return Promise.resolve(undefined);
     }) as never);
 
@@ -102,7 +109,7 @@ describe("/system/plans page — Features section + Duplicate", () => {
 
   it("Edit Save sends features without slug", async () => {
     apiFetchMock.mockImplementation(((url: string) => {
-      if (url === "/api/v1/plans/all") return Promise.resolve([PRO_PLAN]);
+      if (isPlansAll(url)) return plansEnvelope([PRO_PLAN]);
       return Promise.resolve(undefined);
     }) as never);
 
@@ -154,7 +161,7 @@ describe("/system/plans page — Features section + Duplicate", () => {
     expect(container).toBeEmptyDOMElement();
     // /api/v1/plans/all must NOT be called when the user is gated out.
     const planFetches = apiFetchMock.mock.calls.filter(
-      ([url]) => typeof url === "string" && url === "/api/v1/plans/all",
+      ([url]) => isPlansAll(url),
     );
     expect(planFetches).toHaveLength(0);
   });
@@ -174,7 +181,7 @@ describe("/system/plans page — Features section + Duplicate", () => {
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/login"));
     expect(container).toBeEmptyDOMElement();
     const planFetches = apiFetchMock.mock.calls.filter(
-      ([url]) => typeof url === "string" && url === "/api/v1/plans/all",
+      ([url]) => isPlansAll(url),
     );
     expect(planFetches).toHaveLength(0);
   });
@@ -190,7 +197,7 @@ describe("/system/plans page — Features section + Duplicate", () => {
       refreshMe: vi.fn(),
     } as never);
     apiFetchMock.mockImplementation(((url: string) => {
-      if (url === "/api/v1/plans/all") return Promise.resolve([PRO_PLAN]);
+      if (isPlansAll(url)) return plansEnvelope([PRO_PLAN]);
       return Promise.resolve(undefined);
     }) as never);
 
@@ -198,12 +205,15 @@ describe("/system/plans page — Features section + Duplicate", () => {
 
     expect(await screen.findByText("Plan Management")).toBeInTheDocument();
     expect(replaceMock).not.toHaveBeenCalled();
-    expect(apiFetchMock).toHaveBeenCalledWith("/api/v1/plans/all");
+    const planFetches = apiFetchMock.mock.calls.filter(([url]) =>
+      isPlansAll(url),
+    );
+    expect(planFetches.length).toBeGreaterThan(0);
   });
 
   it("Duplicate row action opens the Duplicate plan modal", async () => {
     apiFetchMock.mockImplementation(((url: string) => {
-      if (url === "/api/v1/plans/all") return Promise.resolve([PRO_PLAN]);
+      if (isPlansAll(url)) return plansEnvelope([PRO_PLAN]);
       return Promise.resolve(undefined);
     }) as never);
 

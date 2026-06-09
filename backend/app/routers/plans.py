@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,10 +7,27 @@ from app.database import get_db
 from app.deps import get_current_user
 from app.models.subscription import Plan, Subscription
 from app.models.user import User
+from app.schemas.common import ListEnvelope
 from app.schemas.subscription import PlanCreate, PlanDuplicateRequest, PlanResponse, PlanUpdate
+from app.services.exceptions import ValidationError
+from app.services.list_query import resolve_order_by
 from app.services.plan_service import canonicalize_features
 
 router = APIRouter(prefix="/api/v1/plans", tags=["plans"])
+
+
+# Closed sort whitelist for the system/plans admin table. Keys are the
+# public sort tokens the frontend sends; values are the columns to order
+# by. Limited to the columns the UI actually exposes as headers. Anything
+# else is a 400 (see ``list_query.resolve_order_by``).
+_PLAN_SORT_COLUMNS = {
+    "name": Plan.name,
+    "price_monthly": Plan.price_monthly,
+    "price_yearly": Plan.price_yearly,
+    "max_users": Plan.max_users,
+    "retention_days": Plan.retention_days,
+    "is_active": Plan.is_active,
+}
 
 
 @router.get("", response_model=list[PlanResponse])
@@ -27,15 +44,48 @@ async def list_plans(
 
 @router.get(
     "/all",
-    response_model=list[PlanResponse],
+    response_model=ListEnvelope[PlanResponse],
     dependencies=[Depends(require_permission("plans.manage"))],
 )
 async def list_all_plans(
+    sort_by: str | None = Query(default=None),
+    sort_dir: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all plans including inactive. Requires plans.manage."""
-    result = await db.execute(select(Plan).order_by(Plan.sort_order))
-    return result.scalars().all()
+    """List all plans including inactive. Requires plans.manage.
+
+    Returns the standard ``ListEnvelope`` so the system/plans table can
+    sort and page server-side. Default order is ``sort_order`` asc (the
+    operator-curated display order) with ``id`` asc as a stable
+    tiebreaker; an explicit ``sort_by`` overrides it against the closed
+    whitelist.
+    """
+    total = (await db.scalar(select(func.count()).select_from(Plan))) or 0
+
+    if sort_by:
+        try:
+            order_by = resolve_order_by(
+                sort_by,
+                sort_dir,
+                allowed=_PLAN_SORT_COLUMNS,
+                default_key="name",
+                default_dir="asc",
+                tiebreaker=Plan.id.asc(),
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail
+            ) from exc
+    else:
+        order_by = [Plan.sort_order.asc(), Plan.id.asc()]
+
+    result = await db.execute(
+        select(Plan).order_by(*order_by).limit(limit).offset(offset)
+    )
+    items = result.scalars().all()
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get(
