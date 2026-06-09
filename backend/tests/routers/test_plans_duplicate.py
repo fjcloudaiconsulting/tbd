@@ -216,3 +216,53 @@ async def test_duplicate_requires_plans_manage(session_factory):
             json={"name": "Pro - ACME", "slug": "pro-acme"},
         )
     assert res.status_code == 403
+
+
+# ── GET /plans/all ListEnvelope: sort + pagination (Tables PR2) ────────────
+
+
+@pytest.mark.asyncio
+async def test_list_all_returns_list_envelope(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/plans/all")
+    assert res.status_code == 200
+    body = res.json()
+    assert set(body.keys()) == {"items", "total", "limit", "offset"}
+    assert body["total"] == 2  # pro + enterprise
+    # Default order is sort_order asc: Pro (10) before Enterprise (20).
+    assert [p["slug"] for p in body["items"]] == ["pro", "enterprise"]
+
+
+@pytest.mark.asyncio
+async def test_list_all_sort_by_name_and_page(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/plans/all?sort_by=name&sort_dir=asc&limit=1&offset=0"
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 2
+    assert body["limit"] == 1
+    assert [p["name"] for p in body["items"]] == ["Enterprise"]
+
+
+@pytest.mark.asyncio
+async def test_list_all_unknown_sort_is_400(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/plans/all?sort_by=features")
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_all_requires_plans_manage(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _plain_user_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/plans/all")
+    assert res.status_code == 403

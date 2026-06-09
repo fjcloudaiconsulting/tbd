@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import redis_client
@@ -21,6 +21,7 @@ from app.deps import get_session_factory
 from app.models.org_ai_credential import AiProvider
 from app.models.user import User
 from app.rate_limit import get_client_ip
+from app.schemas.common import ListEnvelope
 from app.schemas.org_ai_credential import (
     OrgAICredentialCreate,
     OrgAICredentialResponse,
@@ -55,6 +56,7 @@ from app.services.ai_routing_service import (
     CrossOrgRoutingDenied,
     UnknownFeatureName,
 )
+from app.services.exceptions import ValidationError
 
 
 logger = structlog.stdlib.get_logger()
@@ -99,15 +101,40 @@ async def get_provider_options(
     }
 
 
-@router.get("", response_model=list[OrgAICredentialResponse])
+@router.get("", response_model=ListEnvelope[OrgAICredentialResponse])
 async def list_credentials(
+    sort_by: Optional[str] = Query(default=None),
+    sort_dir: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_org_admin),
-) -> list[OrgAICredentialResponse]:
-    rows = await ai_credential_service.list_credentials_for_org(
+) -> ListEnvelope[OrgAICredentialResponse]:
+    """Org-scoped AI credentials as a ``ListEnvelope`` so the
+    settings/ai-providers credentials table can sort + page server-side.
+    Org-scoped count + page share the same filter."""
+    total = await ai_credential_service.count_credentials_for_org(
         db, org_id=current_user.org_id
     )
-    return [OrgAICredentialResponse.model_validate(r) for r in rows]
+    try:
+        rows = await ai_credential_service.list_credentials_for_org(
+            db,
+            org_id=current_user.org_id,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail
+        ) from exc
+    return ListEnvelope[OrgAICredentialResponse](
+        items=[OrgAICredentialResponse.model_validate(r) for r in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post(

@@ -181,11 +181,17 @@ describe("AdminOrgDetailPage — Danger zone gating", () => {
           { id: 2, slug: "pro", name: "Pro" },
         ]);
       }
-      if (url === "/api/v1/plans/all") {
-        return Promise.resolve([
-          { id: 1, slug: "free", name: "Free" },
-          { id: 2, slug: "pro", name: "Pro" },
-        ]);
+      if (typeof url === "string" && url.startsWith("/api/v1/plans/all")) {
+        // ChangePlanModal now consumes the ListEnvelope from /plans/all.
+        return Promise.resolve({
+          items: [
+            { id: 1, slug: "free", name: "Free" },
+            { id: 2, slug: "pro", name: "Pro" },
+          ],
+          total: 2,
+          limit: 200,
+          offset: 0,
+        });
       }
       return Promise.resolve(undefined);
     }) as never);

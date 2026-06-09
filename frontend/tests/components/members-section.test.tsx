@@ -9,6 +9,22 @@ vi.mock("@/lib/api", async () => {
 });
 
 
+// Members + invitations now return ListEnvelope and the tables append sort
+// + pagination query params, so match the GETs by path prefix. POST stays an
+// exact match (no query params), and DELETE hits the /{id} subpath.
+const isMembersGet = (url: unknown): boolean =>
+  typeof url === "string" && url.startsWith("/api/v1/orgs/members?");
+const isInvitationsGet = (url: unknown, opts?: RequestInit): boolean =>
+  typeof url === "string" &&
+  url.startsWith("/api/v1/orgs/invitations?") &&
+  (!opts || opts.method !== "POST");
+const envelope = (items: unknown[]) => ({
+  items,
+  total: items.length,
+  limit: 25,
+  offset: 0,
+});
+
 describe("MembersSection", () => {
   const apiFetchMock = vi.mocked(apiFetch);
 
@@ -18,16 +34,16 @@ describe("MembersSection", () => {
 
   it("renders members + invitations and submits invite to the right endpoint", async () => {
     apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
-      if (url === "/api/v1/orgs/members") {
-        return Promise.resolve([
+      if (isMembersGet(url)) {
+        return Promise.resolve(envelope([
           { id: 1, username: "owner", email: "o@a.io", role: "owner", is_active: true },
           { id: 2, username: "alice", email: "a@a.io", role: "member", is_active: true },
-        ]);
+        ]));
       }
-      if (url === "/api/v1/orgs/invitations" && (!opts || opts.method !== "POST")) {
-        return Promise.resolve([
+      if (isInvitationsGet(url, opts)) {
+        return Promise.resolve(envelope([
           { id: 10, email: "pending@a.io", role: "member", created_at: "", expires_at: "", inviter_username: "owner", status: "pending" },
-        ]);
+        ]));
       }
       if (url === "/api/v1/orgs/invitations" && opts?.method === "POST") {
         return Promise.resolve({});
@@ -59,11 +75,11 @@ describe("MembersSection", () => {
 
   it("hides invite form and remove buttons for plain MEMBER role", async () => {
     apiFetchMock.mockImplementation(((url: string) => {
-      if (url === "/api/v1/orgs/members") {
-        return Promise.resolve([
+      if (isMembersGet(url)) {
+        return Promise.resolve(envelope([
           { id: 5, username: "boss", email: "boss@a.io", role: "owner", is_active: true },
           { id: 6, username: "self", email: "self@a.io", role: "member", is_active: true },
-        ]);
+        ]));
       }
       return Promise.resolve(undefined);
     }) as never);
@@ -84,14 +100,16 @@ describe("MembersSection", () => {
       { id: 99, email: "todelete@a.io", role: "member" },
     ];
     apiFetchMock.mockImplementation(((url: string, opts?: RequestInit) => {
-      if (url === "/api/v1/orgs/members") {
-        return Promise.resolve([
+      if (isMembersGet(url)) {
+        return Promise.resolve(envelope([
           { id: 1, username: "admin", email: "ad@a.io", role: "admin", is_active: true },
-        ]);
+        ]));
       }
-      if (url === "/api/v1/orgs/invitations" && (!opts || opts.method !== "POST")) {
+      if (isInvitationsGet(url, opts)) {
         return Promise.resolve(
-          invitationsList.map((i) => ({ ...i, created_at: "", expires_at: "", inviter_username: "admin", status: "pending" })),
+          envelope(
+            invitationsList.map((i) => ({ ...i, created_at: "", expires_at: "", inviter_username: "admin", status: "pending" })),
+          ),
         );
       }
       if (url === "/api/v1/orgs/invitations/99" && opts?.method === "DELETE") {

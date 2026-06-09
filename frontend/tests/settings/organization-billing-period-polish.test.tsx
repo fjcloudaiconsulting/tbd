@@ -54,8 +54,8 @@ function baseFixtures() {
       return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
     }
     if (url === "/api/v1/settings") return Promise.resolve([]);
-    if (url === "/api/v1/orgs/members") return Promise.resolve([]);
-    if (url === "/api/v1/orgs/invitations") return Promise.resolve([]);
+    if (typeof url === "string" && url.startsWith("/api/v1/orgs/members?")) return Promise.resolve({ items: [], total: 0, limit: 25, offset: 0 });
+    if (typeof url === "string" && url.startsWith("/api/v1/orgs/invitations?")) return Promise.resolve({ items: [], total: 0, limit: 25, offset: 0 });
     if (url === "/api/v1/category-rules") return Promise.resolve([]);
     return Promise.resolve({});
   }) as never);

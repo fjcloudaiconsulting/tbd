@@ -1,3 +1,14 @@
+// Shared paginated list envelope. Mirrors the backend Pydantic
+// `ListEnvelope` ({items, total, limit, offset}) that every sortable +
+// paginated list endpoint returns. Use this anywhere a list endpoint
+// drives a `useTableState` + `Pagination` table.
+export interface ListEnvelope<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface User {
   id: number;
   username: string;

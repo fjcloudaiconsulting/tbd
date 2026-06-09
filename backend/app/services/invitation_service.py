@@ -35,7 +35,24 @@ from app.schemas.auth import (
 )
 from app.security import decode_token, hash_password
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.list_query import resolve_order_by
 from app.services.user_service import normalize_email as _normalize_email_shared
+
+
+# Closed sort whitelists for the org Members + Pending-invitations tables
+# (settings/organization). Keys are the public sort tokens the frontend
+# sends; values are the columns to order by. Limited to UI-exposed columns.
+_INVITATION_SORT_COLUMNS = {
+    "email": Invitation.email,
+    "role": Invitation.role,
+    "created_at": Invitation.created_at,
+    "expires_at": Invitation.expires_at,
+}
+_MEMBER_SORT_COLUMNS = {
+    "username": User.username,
+    "email": User.email,
+    "role": User.role,
+}
 
 
 class InvitationUnavailable(Exception):
@@ -140,24 +157,65 @@ async def create_invitation(
     return inv
 
 
+def _pending_invitation_filters(org_id: int):
+    """The pending-invitation WHERE clauses, shared by the page query and
+    the COUNT so ``total`` can never drift from ``items`` (org-scoping
+    contract in ``app.services.list_query``)."""
+    now = utcnow_naive()
+    return (
+        Invitation.org_id == org_id,
+        Invitation.accepted_at.is_(None),
+        Invitation.revoked_at.is_(None),
+        Invitation.expires_at > now,
+    )
+
+
 async def list_pending_invitations(
-    db: AsyncSession, *, org_id: int
+    db: AsyncSession,
+    *,
+    org_id: int,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[Invitation]:
     """Pending = not accepted, not revoked, not expired. Lazy expiry —
     rows past `expires_at` are filtered out here even if `open_email` is
-    still set."""
-    now = utcnow_naive()
-    result = await db.execute(
-        select(Invitation)
-        .where(
-            Invitation.org_id == org_id,
-            Invitation.accepted_at.is_(None),
-            Invitation.revoked_at.is_(None),
-            Invitation.expires_at > now,
-        )
-        .order_by(Invitation.created_at.desc())
+    still set.
+
+    ``sort_by`` is resolved against the closed ``_INVITATION_SORT_COLUMNS``
+    whitelist (unknown key raises ``ValidationError`` → router 400);
+    default is ``created_at`` desc with ``id`` desc as a stable
+    tiebreaker. ``limit``/``offset`` page the result when supplied.
+    """
+    order_by = resolve_order_by(
+        sort_by,
+        sort_dir,
+        allowed=_INVITATION_SORT_COLUMNS,
+        default_key="created_at",
+        default_dir="desc",
+        tiebreaker=Invitation.id.desc(),
     )
+    stmt = (
+        select(Invitation)
+        .where(*_pending_invitation_filters(org_id))
+        .order_by(*order_by)
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_pending_invitations(db: AsyncSession, *, org_id: int) -> int:
+    """COUNT over the same filters as ``list_pending_invitations``."""
+    return (
+        await db.scalar(
+            select(func.count())
+            .select_from(Invitation)
+            .where(*_pending_invitation_filters(org_id))
+        )
+    ) or 0
 
 
 async def revoke_invitation(
@@ -349,14 +407,50 @@ def _decode_id_or_raise(token: str) -> int:
 # ── members ────────────────────────────────────────────────────────────────
 
 
-async def list_members(db: AsyncSession, *, org_id: int) -> list[User]:
-    """Active users in this org, deterministic order for the UI."""
-    result = await db.execute(
+async def list_members(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[User]:
+    """Active users in this org, deterministic order for the UI.
+
+    ``sort_by`` is resolved against the closed ``_MEMBER_SORT_COLUMNS``
+    whitelist (unknown key raises ``ValidationError`` → router 400);
+    default is ``username`` asc with ``id`` asc as a stable tiebreaker.
+    ``limit``/``offset`` page the result when supplied.
+    """
+    order_by = resolve_order_by(
+        sort_by,
+        sort_dir,
+        allowed=_MEMBER_SORT_COLUMNS,
+        default_key="username",
+        default_dir="asc",
+        tiebreaker=User.id.asc(),
+    )
+    stmt = (
         select(User)
         .where(User.org_id == org_id, User.is_active.is_(True))
-        .order_by(User.username)
+        .order_by(*order_by)
     )
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_members(db: AsyncSession, *, org_id: int) -> int:
+    """COUNT over the same filters as ``list_members``."""
+    return (
+        await db.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(User.org_id == org_id, User.is_active.is_(True))
+        )
+    ) or 0
 
 
 async def remove_member(

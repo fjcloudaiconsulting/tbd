@@ -194,7 +194,7 @@ async def test_get_invitations_lists_pending(session_factory):
     with TestClient(app) as client:
         res = client.get("/api/v1/orgs/invitations")
     assert res.status_code == 200
-    assert [i["email"] for i in res.json()] == ["p@acme.io"]
+    assert [i["email"] for i in res.json()["items"]] == ["p@acme.io"]
 
 
 # ── DELETE /invitations/{id} ───────────────────────────────────────────────
@@ -389,7 +389,7 @@ async def test_get_members_visible_to_member(session_factory):
     with TestClient(app) as client:
         res = client.get("/api/v1/orgs/members")
     assert res.status_code == 200
-    usernames = sorted(u["username"] for u in res.json())
+    usernames = sorted(u["username"] for u in res.json()["items"])
     assert usernames == ["owner", "reg"]
 
 
@@ -412,3 +412,73 @@ async def test_delete_member_owner_removes_member(session_factory):
     with TestClient(app) as client:
         res = client.delete(f"/api/v1/orgs/members/{m_id}")
     assert res.status_code == 204
+
+
+# ── ListEnvelope: sort + pagination contract (Tables PR2) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_members_list_envelope_sort_and_page(session_factory):
+    """Members endpoint returns {items,total,limit,offset}, sorts by a
+    whitelisted column, and pages."""
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        for name in ("zeb", "amy", "bob"):
+            db.add(
+                User(
+                    org_id=seed["org_id"], username=name, email=f"{name}@acme.io",
+                    password_hash=hash_password("pw-12345"),
+                    role=Role.MEMBER, is_active=True, email_verified=True,
+                )
+            )
+        await db.commit()
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/orgs/members?sort_by=username&sort_dir=asc&limit=2&offset=0"
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 4  # owner + amy + bob + zeb
+    assert body["limit"] == 2
+    assert body["offset"] == 0
+    assert [m["username"] for m in body["items"]] == ["amy", "bob"]
+
+
+@pytest.mark.asyncio
+async def test_members_list_unknown_sort_is_400(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/orgs/members?sort_by=password_hash")
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_invitations_list_envelope_sort_and_total(session_factory):
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        for email in ("c@acme.io", "a@acme.io", "b@acme.io"):
+            await invitation_service.create_invitation(
+                db, org_id=seed["org_id"], created_by=seed["owner_id"],
+                email=email, role=Role.MEMBER,
+            )
+        await db.commit()
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/orgs/invitations?sort_by=email&sort_dir=asc"
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 3
+    assert [i["email"] for i in body["items"]] == ["a@acme.io", "b@acme.io", "c@acme.io"]
+
+
+@pytest.mark.asyncio
+async def test_invitations_list_unknown_sort_is_400(session_factory):
+    await _seed(session_factory)
+    app = make_app(session_factory, _user_factory(Role.OWNER))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/orgs/invitations?sort_by=org_id")
+    assert res.status_code == 400

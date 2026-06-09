@@ -50,6 +50,16 @@ const SAMPLE_ROW = {
   created_by_user_id: 1,
 };
 
+// GET /api/v1/admin/announcements now returns a ListEnvelope and the table
+// appends sort + pagination query params, so match on the path prefix.
+const isAnnouncementsGet = (url: unknown, options?: RequestInit): boolean =>
+  typeof url === "string" &&
+  url.startsWith("/api/v1/admin/announcements") &&
+  !url.includes("/api/v1/admin/announcements/") &&
+  !options?.method;
+const annEnvelope = (items: unknown[]) =>
+  Promise.resolve({ items, total: items.length, limit: 25, offset: 0 });
+
 describe("/system/announcements page", () => {
   const apiFetchMock = vi.mocked(apiFetch);
   const useAuthMock = vi.mocked(useAuth);
@@ -106,7 +116,7 @@ describe("/system/announcements page", () => {
   it("lists existing rows for a superadmin", async () => {
     setSuperadmin();
     apiFetchMock.mockImplementation(((url: string) => {
-      if (url === "/api/v1/admin/announcements") return Promise.resolve([SAMPLE_ROW]);
+      if (isAnnouncementsGet(url)) return annEnvelope([SAMPLE_ROW]);
       return Promise.resolve(undefined);
     }) as never);
     render(<SystemAnnouncementsPage />);
@@ -117,8 +127,8 @@ describe("/system/announcements page", () => {
   it("POSTs the form payload when creating a new announcement", async () => {
     setSuperadmin();
     apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
-      if (url === "/api/v1/admin/announcements" && !options?.method) {
-        return Promise.resolve([]);
+      if (isAnnouncementsGet(url, options)) {
+        return annEnvelope([]);
       }
       if (url === "/api/v1/admin/announcements" && options?.method === "POST") {
         return Promise.resolve(SAMPLE_ROW);
@@ -157,7 +167,12 @@ describe("/system/announcements page", () => {
 
   it("pre-fills the form when editing", async () => {
     setSuperadmin();
-    apiFetchMock.mockResolvedValueOnce([SAMPLE_ROW]);
+    apiFetchMock.mockResolvedValueOnce({
+      items: [SAMPLE_ROW],
+      total: 1,
+      limit: 25,
+      offset: 0,
+    } as never);
     render(<SystemAnnouncementsPage />);
     const editBtn = await screen.findByTestId("announcement-edit");
     fireEvent.click(editBtn);

@@ -96,10 +96,22 @@ const fixtureCredential = {
 // for the modal picker to render. The factory below mocks the URL the
 // caller hit so tests can stay focused on the credentials behavior they
 // were written for.
+// GET /api/v1/settings/ai-providers now returns a ListEnvelope and the
+// credentials table appends sort + pagination query params, so the list GET
+// matches by path prefix. POST stays an exact endsWith match.
+const isCredentialsListGet = (url: string): boolean =>
+  url.includes("/api/v1/settings/ai-providers?");
+const credentialsEnvelope = (items: unknown[]) => ({
+  items,
+  total: items.length,
+  limit: 25,
+  offset: 0,
+});
+
 function mockAuxiliaryEndpoints(credentials: unknown[]) {
   vi.mocked(apiFetch).mockImplementation(async (url: string) => {
-    if (url.endsWith("/api/v1/settings/ai-providers")) {
-      return credentials as never;
+    if (isCredentialsListGet(url)) {
+      return credentialsEnvelope(credentials) as never;
     }
     if (url.endsWith("/options")) {
       return {
@@ -174,8 +186,8 @@ describe("AiProvidersPage", () => {
           creds = [fixtureCredential];
           return fixtureCredential as never;
         }
-        if (url.endsWith("/api/v1/settings/ai-providers")) {
-          return creds as never;
+        if (isCredentialsListGet(url)) {
+          return credentialsEnvelope(creds) as never;
         }
         if (url.endsWith("/options")) {
           return {
@@ -234,8 +246,8 @@ describe("AiProvidersPage", () => {
         ) {
           throw new Error("credential_validation_failed: Unauthorized");
         }
-        if (url.endsWith("/api/v1/settings/ai-providers")) {
-          return [] as never;
+        if (isCredentialsListGet(url)) {
+          return credentialsEnvelope([]) as never;
         }
         if (url.endsWith("/options")) {
           return {
@@ -305,8 +317,8 @@ describe("AiProvidersPage", () => {
           body: (init?.body as string) ?? null,
           method: init?.method ?? "GET",
         });
-        if (url.endsWith("/api/v1/settings/ai-providers")) {
-          return [fixtureCredential] as never;
+        if (isCredentialsListGet(url)) {
+          return credentialsEnvelope([fixtureCredential]) as never;
         }
         if (url.endsWith("/options")) {
           return {

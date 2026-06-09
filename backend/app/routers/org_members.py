@@ -18,6 +18,7 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import _clear_legacy_refresh_cookie, _issue_refresh_session
 from app.schemas.auth import TokenResponse
+from app.schemas.common import ListEnvelope
 from app.schemas.invitation import (
     InvitationAcceptRequest,
     InvitationCreateRequest,
@@ -32,7 +33,7 @@ from app.security import (
 )
 from app.services import invitation_service
 from app.services.email_service import send_invitation_email
-from app.services.exceptions import ConflictError, NotFoundError
+from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 
 router = APIRouter(prefix="/api/v1/orgs", tags=["org-members"])
@@ -122,15 +123,40 @@ async def create_invitation(
     return snapshot
 
 
-@router.get("/invitations", response_model=list[InvitationResponse])
+@router.get("/invitations", response_model=ListEnvelope[InvitationResponse])
 async def list_invitations(
+    sort_by: str | None = Query(default=None),
+    sort_dir: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_org_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = await invitation_service.list_pending_invitations(
-        db, org_id=current_user.org_id,
+    """Pending invitations for the caller's org as a ``ListEnvelope`` so
+    the settings/organization invitations table can sort + page
+    server-side. Org-scoped count + page share the same filters."""
+    total = await invitation_service.count_pending_invitations(
+        db, org_id=current_user.org_id
     )
-    return [_serialize_invitation(r) for r in rows]
+    try:
+        rows = await invitation_service.list_pending_invitations(
+            db,
+            org_id=current_user.org_id,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail
+        ) from exc
+    return {
+        "items": [_serialize_invitation(r) for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.delete("/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -223,13 +249,38 @@ async def accept_invitation(
     return TokenResponse(access_token=access)
 
 
-@router.get("/members", response_model=list[MemberResponse])
+@router.get("/members", response_model=ListEnvelope[MemberResponse])
 async def list_members(
+    sort_by: str | None = Query(default=None),
+    sort_dir: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = await invitation_service.list_members(db, org_id=current_user.org_id)
-    return [_serialize_member(r) for r in rows]
+    """Active members of the caller's org as a ``ListEnvelope`` so the
+    settings/organization members table can sort + page server-side.
+    Org-scoped count + page share the same filters."""
+    total = await invitation_service.count_members(db, org_id=current_user.org_id)
+    try:
+        rows = await invitation_service.list_members(
+            db,
+            org_id=current_user.org_id,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail
+        ) from exc
+    return {
+        "items": [_serialize_member(r) for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.delete("/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)

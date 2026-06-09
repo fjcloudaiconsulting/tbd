@@ -1,13 +1,17 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import Pagination from "@/components/ui/Pagination";
+import SortableHeader from "@/components/ui/SortableHeader";
+import { useTableState } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { isSuperadmin } from "@/lib/auth";
+import type { ListEnvelope } from "@/lib/types";
 import {
   btnPrimary,
   btnSecondary,
@@ -61,6 +65,17 @@ const STATUS_BADGE: Record<Status, string> = {
   inactive: "bg-danger-dim text-danger",
 };
 
+// Backend-whitelisted sort keys for /api/v1/admin/announcements. Limited
+// to the columns the table exposes; the derived status badge sorts on the
+// is_active proxy.
+const ANNOUNCEMENT_SORT_FIELDS = [
+  "title",
+  "severity",
+  "is_active",
+  "created_at",
+] as const;
+type AnnouncementSortField = (typeof ANNOUNCEMENT_SORT_FIELDS)[number];
+
 // HTML datetime-local <input> expects "YYYY-MM-DDTHH:MM"; the API
 // returns ISO with seconds + maybe timezone. Strip the suffix so the
 // edit form can pre-fill cleanly. Empty string for null.
@@ -84,6 +99,14 @@ export default function SystemAnnouncementsPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const [items, setItems] = useState<Announcement[]>([]);
+  const [total, setTotal] = useState(0);
+  const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
+    useTableState<AnnouncementSortField>({
+      key: "system-announcements",
+      defaultSortField: "created_at",
+      defaultSortDir: "desc",
+      allowedSortFields: ANNOUNCEMENT_SORT_FIELDS,
+    });
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [creating, setCreating] = useState(false);
@@ -111,18 +134,36 @@ export default function SystemAnnouncementsPage() {
     }
   }, [loading, user, canManage, router]);
 
-  useEffect(() => {
-    if (canManage) void loadItems();
-  }, [canManage]);
-
-  async function loadItems() {
+  const loadItems = useCallback(async () => {
     try {
-      const data = await apiFetch<Announcement[]>("/api/v1/admin/announcements");
-      setItems(data);
+      const params = new URLSearchParams({
+        sort_by: sortField,
+        sort_dir: sortDir,
+        limit: String(pageSize),
+        offset: String((page - 1) * pageSize),
+      });
+      const data = await apiFetch<ListEnvelope<Announcement>>(
+        `/api/v1/admin/announcements?${params.toString()}`,
+      );
+      setItems(data.items);
+      setTotal(data.total);
     } catch (err) {
       setError(extractErrorMessage(err));
     }
-  }
+  }, [sortField, sortDir, page, pageSize]);
+
+  useEffect(() => {
+    if (canManage) void loadItems();
+  }, [canManage, loadItems]);
+
+  const handleSort = useCallback(
+    (field: string) => {
+      if (!(ANNOUNCEMENT_SORT_FIELDS as readonly string[]).includes(field)) return;
+      const f = field as AnnouncementSortField;
+      setSort(f, f === sortField && sortDir === "asc" ? "desc" : "asc");
+    },
+    [sortField, sortDir, setSort],
+  );
 
   function resetForm() {
     setFormTitle("");
@@ -331,15 +372,27 @@ export default function SystemAnnouncementsPage() {
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-border text-left">
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-                  Title
-                </th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-                  Severity
-                </th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-                  Status
-                </th>
+                <SortableHeader
+                  label="Title"
+                  field="title"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Severity"
+                  field="severity"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Status"
+                  field="is_active"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
                 <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                   Window
                 </th>
@@ -405,6 +458,17 @@ export default function SystemAnnouncementsPage() {
             </tbody>
           </table>
         </div>
+        {(total > pageSize || page > 1) && (
+          <div className="px-4">
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+            />
+          </div>
+        )}
       </div>
 
       <ConfirmModal

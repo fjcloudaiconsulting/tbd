@@ -16,8 +16,8 @@ from __future__ import annotations
 from typing import Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
@@ -30,7 +30,10 @@ from app.schemas.announcement import (
     AnnouncementCreate,
     AnnouncementUpdate,
 )
+from app.schemas.common import ListEnvelope
 from app.services import audit_service
+from app.services.exceptions import ValidationError
+from app.services.list_query import resolve_order_by
 
 
 logger = structlog.stdlib.get_logger()
@@ -69,20 +72,55 @@ def _audit_detail(row: Announcement) -> dict:
     }
 
 
-@router.get("", response_model=list[AnnouncementAdminResponse])
+# Closed sort whitelist for the system/announcements admin table. Keys
+# are the public sort tokens the frontend sends. The UI exposes Title,
+# Severity, Status (derived from is_active + window), and Created columns;
+# is_active is the closest sortable proxy for the derived status badge.
+_ANNOUNCEMENT_SORT_COLUMNS = {
+    "title": Announcement.title,
+    "severity": Announcement.severity,
+    "is_active": Announcement.is_active,
+    "created_at": Announcement.created_at,
+}
+
+
+@router.get("", response_model=ListEnvelope[AnnouncementAdminResponse])
 async def list_announcements(
+    sort_by: Optional[str] = Query(default=None),
+    sort_dir: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     _current_user: User = Depends(require_superadmin),
     db: AsyncSession = Depends(get_db),
 ):
     """List every announcement regardless of active state or window.
 
-    The admin UI filters client-side; backend returns the full set
-    ordered newest first.
+    Returns the standard ``ListEnvelope`` so the system/announcements
+    table can sort and page server-side. Default order is newest first
+    (``created_at`` desc) with ``id`` desc as a stable tiebreaker; an
+    explicit ``sort_by`` overrides it against the closed whitelist.
     """
+    total = (await db.scalar(select(func.count()).select_from(Announcement))) or 0
+
+    try:
+        order_by = resolve_order_by(
+            sort_by,
+            sort_dir,
+            allowed=_ANNOUNCEMENT_SORT_COLUMNS,
+            default_key="created_at",
+            default_dir="desc",
+            tiebreaker=Announcement.id.desc(),
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=exc.detail
+        ) from exc
+
     result = await db.execute(
-        select(Announcement).order_by(Announcement.created_at.desc(), Announcement.id.desc())
+        select(Announcement).order_by(*order_by).limit(limit).offset(offset)
     )
-    return list(result.scalars().all())
+    items = list(result.scalars().all())
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.post(
