@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import AnswerLead from "@/components/landing/AnswerLead";
 import Faq from "@/components/landing/Faq";
+import EverythingInTheApp from "@/components/landing/EverythingInTheApp";
 import { faqEntries } from "@/components/landing/faqData";
 import FeatureTiles from "@/components/landing/FeatureTiles";
 import Hero from "@/components/landing/Hero";
@@ -83,6 +84,19 @@ const softwareApplicationLd = {
   url: apexHome,
   author: { "@id": orgId },
   publisher: { "@id": orgId },
+  // featureList holds ONLY shipped features (mirrors app/features/page.tsx's
+  // shippedFeatures). Roadmap items are excluded by design and guarded by
+  // tests/features-no-roadmap-in-featurelist.test.tsx.
+  featureList: [
+    "Cash-flow forecasting with what-if scenarios",
+    "Category budgets and forecast plans",
+    "Recurring income and bills",
+    "CSV and OFX import",
+    "Reports by category",
+    "Shared household organization with roles",
+    "EU-hosted, never used to train AI",
+    "Optional bring-your-own or local AI with spend caps",
+  ],
   offers: {
     "@type": "Offer",
     price: "0",
@@ -169,6 +183,7 @@ export default async function LandingPage() {
           <AnswerLead />
           <FeatureTiles />
           <ScreenshotShowcase />
+          <EverythingInTheApp />
           <HowItWorks />
           <Faq />
           <SecondCta />
