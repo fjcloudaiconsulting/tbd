@@ -273,3 +273,23 @@ async def test_tab_preview_oversize_returns_400(session_factory):
         )
     assert resp.status_code == 400
     assert "too large" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_tab_preview_undecodable_returns_400(session_factory):
+    """Bytes invalid in both UTF-8 and cp1252 surface a clean 400, not a 500.
+
+    0x81 is an invalid UTF-8 start byte AND an undefined cp1252 code point,
+    so the router's decode guard must translate it to a ValidationError.
+    """
+    seed = await _seed(session_factory)
+    app = _make_app(session_factory, user_id=seed["user_id"])
+    payload = b"\x81\x81\x81"
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/import/tab/preview",
+            files={"file": ("weird.tab", io.BytesIO(payload), "text/plain")},
+            data={"account_id": str(seed["account_id"])},
+        )
+    assert resp.status_code == 400
+    assert "utf-8" in resp.json()["detail"].lower()

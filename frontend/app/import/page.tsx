@@ -205,13 +205,37 @@ function ImportPageContent() {
     formData.append("file", file);
     formData.append("account_id", accountId.toString());
 
-    // Route by file extension: ABN AMRO ``.TAB`` exports go to the
-    // tab-separated parser, everything else (ING etc.) to the CSV parser.
-    // Both endpoints share the multipart request and ImportPreviewResponse
-    // shape; the confirm flow echoes ``source_format`` from the response.
-    const previewEndpoint = file.name.toLowerCase().endsWith(".tab")
-      ? "/api/v1/import/tab/preview"
-      : "/api/v1/import/preview";
+    // Route by file extension first, then content-sniff as a fallback.
+    // Rule: an explicit ``.tab``/``.csv`` extension is ALWAYS respected
+    // (no sniffing, no behavior change). Only for AMBIGUOUS names (``.txt``,
+    // no extension, etc.) do we peek at the file head — a real ABN AMRO export
+    // the browser/OS saved as ``.txt`` would otherwise hit the CSV parser and
+    // yield a confusing error. ABN ``.TAB`` rows have exactly 8 tab-separated
+    // fields, so a first non-empty line that splits into 8 tab-delimited
+    // columns routes to the tab parser; anything else (or any read error)
+    // defaults to CSV. Both endpoints share the multipart request and
+    // ImportPreviewResponse shape; confirm echoes ``source_format``.
+    const lowerName = file.name.toLowerCase();
+    let previewEndpoint: string;
+    if (lowerName.endsWith(".tab")) {
+      previewEndpoint = "/api/v1/import/tab/preview";
+    } else if (lowerName.endsWith(".csv")) {
+      // Explicit CSV is always respected, even if the content contains tabs.
+      previewEndpoint = "/api/v1/import/preview";
+    } else {
+      // Ambiguous extension: sniff only the head of the file. Default to CSV
+      // on any error so a malformed/unreadable file still hits the CSV path.
+      previewEndpoint = "/api/v1/import/preview";
+      try {
+        const head = await file.slice(0, 4096).text();
+        const firstLine = head.split("\n").find((line) => line.trim() !== "");
+        if (firstLine !== undefined && firstLine.split("\t").length === 8) {
+          previewEndpoint = "/api/v1/import/tab/preview";
+        }
+      } catch {
+        // Keep the CSV default on any read/decode error.
+      }
+    }
 
     try {
       const data = await apiFetch<ImportPreviewResponse>(previewEndpoint, {

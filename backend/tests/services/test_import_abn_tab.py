@@ -72,6 +72,24 @@ def test_sepa_remi_value_with_slashes_preserved_and_alignment_kept() -> None:
     assert tags["EREF"] == "NOC31001922-0141"
 
 
+def test_sepa_double_name_prefers_ultimate_creditor() -> None:
+    # Payment-processor direct debits carry the processor as the first NAME
+    # and the real merchant as a second NAME after ULTD. The trailing NAME
+    # (ultimate creditor) is the merchant the user recognizes and is the
+    # one we surface. Deliberate last-write-wins (see parse_abn_description).
+    raw = (
+        "/TRTP/SEPA Incasso/CSID/NL29ZZZ501527690000/NAME/Stichting Pay.nl/"
+        "MARF/IO-4917/REMI/Pay.nl inzake Acme / Id 2117978 / https://acme.nl/"
+        "IBAN/NL35TEST0117776878/BIC/RABONL2U/EREF/DZ9T-DNN/ULTD//NAME/Acme Studio"
+    )
+    description, counterparty, tags = parse_abn_description(raw)
+    assert counterparty == "Acme Studio"
+    assert description == "Acme Studio"
+    # The slash-laden REMI is preserved whole and IBAN stays aligned.
+    assert tags["REMI"] == "Pay.nl inzake Acme / Id 2117978 / https://acme.nl"
+    assert tags["IBAN"] == "NL35TEST0117776878"
+
+
 def test_sepa_without_name_falls_back_to_collapsed_raw() -> None:
     raw = "/TRTP/SEPA Overboeking/REMI/some reference text"
     description, counterparty, tags = parse_abn_description(raw)

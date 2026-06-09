@@ -99,8 +99,14 @@ def parse_abn_description(raw: str) -> tuple[str, str | None, dict]:
         # carry an extra unpaired token (``/TRTP/iDEAL/Wero/IBAN/...``)
         # that shifts the alignment so ``NAME`` lands in a value slot, and
         # (b) ``REMI`` values legitimately contain ``/`` (dates, URLs).
-        # Tag-as-delimiter handles both. ``ULTD`` can recur with an empty
-        # value (``/ORDP//ID/``); last write wins, which is fine here.
+        # Tag-as-delimiter handles both. A tag can recur: payment-processor
+        # direct debits carry the processor as the first ``NAME`` and the
+        # actual merchant as a second ``NAME`` after ``ULTD`` (e.g.
+        # ``/NAME/Stichting Pay.nl/.../ULTD//NAME/Impressive Dance Studio's``).
+        # Last write wins ON PURPOSE: the trailing NAME is the ultimate
+        # creditor, which is the merchant the user recognizes — strictly
+        # more useful as the counterparty than the processor. Pinned by
+        # test_sepa_double_name_prefers_ultimate_creditor.
         tokens = stripped.split("/")[1:]
         current_key: str | None = None
         buffer: list[str] = []

@@ -936,6 +936,82 @@ describe("ImportPage transfer pill column", () => {
     expect(body.file_name).toBe("extrato.tab");
   });
 
+  it("sniffs an ambiguous .txt file with 8 tab fields to the tab endpoint", async () => {
+    // A real ABN AMRO export saved by the browser/OS as .txt. The extension
+    // is ambiguous, so the head is sniffed: the first non-empty line has
+    // exactly 8 tab-separated fields → tab endpoint.
+    const preview = { ...basePreview([baseRow({ row_number: 1 })]), file_name: "extrato.txt" };
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([ACCOUNT]);
+      if (url === "/api/v1/categories")
+        return Promise.resolve([CATEGORY_EXP, CATEGORY_INC]);
+      if (url === "/api/v1/import/tab/preview") return Promise.resolve(preview);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<ImportPage />);
+
+    const uploadButton = await screen.findByRole("button", {
+      name: /upload & preview/i,
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    // 8 tab-separated fields, no .csv/.tab extension to force the sniff path.
+    const tabLine = ["a", "b", "c", "d", "e", "f", "g", "h"].join("\t") + "\n";
+    const file = new File([tabLine], "extrato.txt", { type: "text/plain" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(uploadButton);
+
+    await screen.findByText("extrato.txt");
+
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/import/tab/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/v1/import/preview",
+      expect.anything(),
+    );
+  });
+
+  it("respects an explicit .csv extension even when content contains tabs", async () => {
+    // A .csv whose body happens to contain 8 tab-separated fields. The
+    // explicit extension wins — no sniffing — so it routes to the CSV parser.
+    const preview = basePreview([baseRow({ row_number: 1 })]);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([ACCOUNT]);
+      if (url === "/api/v1/categories")
+        return Promise.resolve([CATEGORY_EXP, CATEGORY_INC]);
+      if (url === "/api/v1/import/preview") return Promise.resolve(preview);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<ImportPage />);
+
+    const uploadButton = await screen.findByRole("button", {
+      name: /upload & preview/i,
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const tabLine = ["a", "b", "c", "d", "e", "f", "g", "h"].join("\t") + "\n";
+    const file = new File([tabLine], "test.csv", { type: "text/csv" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(uploadButton);
+
+    await screen.findByText("test.csv");
+
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/import/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/v1/import/tab/preview",
+      expect.anything(),
+    );
+  });
+
   it("routes a .csv file to the CSV preview endpoint", async () => {
     // renderAndPreview drops a test.csv file; assert it hits the CSV endpoint
     // and never the tab endpoint.

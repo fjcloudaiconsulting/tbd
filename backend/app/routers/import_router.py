@@ -6,6 +6,8 @@ the 501 reconciliation stub with a working state-machine handler. See
 spec at ``~/.claude/projects/-Users-fjorge-src-pfv/specs/2026-05-12-l3-2-import-contracts.md``.
 """
 
+from typing import Callable
+
 import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +29,7 @@ from app.services import import_service, reconciliation_service
 from app.services.exceptions import MissingCategoryTypeError, ValidationError
 from app.services.import_abn_tab import parse_tab
 from app.services.import_ofx_service import parse_ofx
-from app.services.import_parser import ParseError, parse_csv
+from app.services.import_parser import ParsedRow, ParseError, parse_csv
 
 logger = structlog.get_logger()
 
@@ -53,6 +55,71 @@ def _missing_category_type_response(exc: MissingCategoryTypeError) -> HTTPExcept
     )
 
 
+def _decode_tab_bytes(raw: bytes) -> str:
+    """Decode ABN ``.TAB`` upload bytes: UTF-8, then cp1252 (Dutch accents).
+
+    If both fail the upload is not text we can read; surface a clean 400
+    rather than letting an unguarded decode raise an unhandled 500.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            return raw.decode("cp1252")
+        except UnicodeDecodeError:
+            raise ValidationError("File is not valid UTF-8 or Windows-1252 text")
+
+
+async def _preview_text_upload(
+    *,
+    file: UploadFile,
+    account_id: int,
+    current_user: User,
+    db: AsyncSession,
+    decode: Callable[[bytes], str],
+    parse: Callable[[str], list[ParsedRow]],
+    source_format: str,
+) -> ImportPreviewResponse:
+    """Shared scaffold for the text-based preview endpoints (CSV, TAB).
+
+    Both read the upload, enforce the 5 MB cap, decode, parse, translate a
+    ``ParseError`` into a 400 (with a ``Row N:`` prefix when the parser
+    pinpoints the offending row), then run ``build_preview`` and surface a
+    Layer-B ``MissingCategoryTypeError`` as a structured 400. Only the
+    decode strategy, parser, and ``source_format`` differ.
+
+    OFX is deliberately NOT routed through here: its size/row caps raise
+    413 (not 400) from inside ``parse_ofx``, and it runs under an async
+    parse timeout, so it keeps its own handler below.
+    """
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValidationError(
+            f"File too large ({len(raw)} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)"
+        )
+    content = decode(raw)
+
+    try:
+        parsed_rows = parse(content)
+    except ParseError as exc:
+        detail = str(exc)
+        if exc.row_number:
+            detail = f"Row {exc.row_number}: {detail}"
+        raise ValidationError(detail)
+
+    try:
+        return await import_service.build_preview(
+            db,
+            org_id=current_user.org_id,
+            account_id=account_id,
+            file_name=file.filename or f"unknown.{source_format}",
+            parsed_rows=parsed_rows,
+            source_format=source_format,
+        )
+    except MissingCategoryTypeError as exc:
+        raise _missing_category_type_response(exc) from exc
+
+
 @router.post("/preview", response_model=ImportPreviewResponse)
 async def preview_import(
     file: UploadFile = File(...),
@@ -64,30 +131,15 @@ async def preview_import(
 
     The file is parsed in memory — no persistence happens at this stage.
     """
-    raw = await file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise ValidationError(f"File too large ({len(raw)} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
-    content = raw.decode("utf-8-sig")  # handles BOM
-
-    try:
-        parsed_rows = parse_csv(content)
-    except ParseError as exc:
-        detail = str(exc)
-        if exc.row_number:
-            detail = f"Row {exc.row_number}: {detail}"
-        raise ValidationError(detail)
-
-    try:
-        return await import_service.build_preview(
-            db,
-            org_id=current_user.org_id,
-            account_id=account_id,
-            file_name=file.filename or "unknown.csv",
-            parsed_rows=parsed_rows,
-            source_format="csv",
-        )
-    except MissingCategoryTypeError as exc:
-        raise _missing_category_type_response(exc) from exc
+    return await _preview_text_upload(
+        file=file,
+        account_id=account_id,
+        current_user=current_user,
+        db=db,
+        decode=lambda raw: raw.decode("utf-8-sig"),  # handles BOM
+        parse=parse_csv,
+        source_format="csv",
+    )
 
 
 @router.post("/tab/preview", response_model=ImportPreviewResponse)
@@ -99,44 +151,20 @@ async def preview_tab_import(
 ):
     """Upload an ABN AMRO ``.TAB`` file and get a preview.
 
-    Mirrors the CSV ``/preview`` path: same 5 MB upload guard, same
-    ``ParseError → ValidationError`` / ``MissingCategoryTypeError → 400``
-    translation, same in-memory (no-persistence) preview. Decodes as
-    UTF-8 and falls back to cp1252 (Dutch names/accents) on a decode
-    error. Spec: ``specs/2026-06-09-abn-tab-import.md``.
+    Shares the text-upload scaffold with the CSV path (5 MB cap,
+    ``ParseError`` row-prefixed 400, ``MissingCategoryTypeError`` 400). The
+    only ABN-specific piece is the UTF-8 → cp1252 decode. Spec:
+    ``specs/2026-06-09-abn-tab-import.md``.
     """
-    raw = await file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise ValidationError(f"File too large ({len(raw)} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
-    try:
-        content = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        try:
-            content = raw.decode("cp1252")
-        except UnicodeDecodeError:
-            raise ValidationError(
-                "File is not valid UTF-8 or Windows-1252 text"
-            )
-
-    try:
-        parsed_rows = parse_tab(content)
-    except ParseError as exc:
-        detail = str(exc)
-        if exc.row_number:
-            detail = f"Row {exc.row_number}: {detail}"
-        raise ValidationError(detail)
-
-    try:
-        return await import_service.build_preview(
-            db,
-            org_id=current_user.org_id,
-            account_id=account_id,
-            file_name=file.filename or "unknown.tab",
-            parsed_rows=parsed_rows,
-            source_format="tab",
-        )
-    except MissingCategoryTypeError as exc:
-        raise _missing_category_type_response(exc) from exc
+    return await _preview_text_upload(
+        file=file,
+        account_id=account_id,
+        current_user=current_user,
+        db=db,
+        decode=_decode_tab_bytes,
+        parse=parse_tab,
+        source_format="tab",
+    )
 
 
 @router.post("/confirm", response_model=ImportConfirmResponse)
