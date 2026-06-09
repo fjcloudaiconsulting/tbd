@@ -834,6 +834,60 @@ describe("ImportPage transfer pill column", () => {
     expect(pill).not.toHaveTextContent(/Will create transfer to Savings/i);
   });
 
+  it("routes a .tab file to the ABN AMRO tab preview endpoint", async () => {
+    const preview = { ...basePreview([baseRow({ row_number: 1 })]), file_name: "extrato.tab" };
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([ACCOUNT]);
+      if (url === "/api/v1/categories")
+        return Promise.resolve([CATEGORY_EXP, CATEGORY_INC]);
+      if (url === "/api/v1/import/tab/preview") return Promise.resolve(preview);
+      return Promise.resolve(undefined);
+    }) as never);
+
+    render(<ImportPage />);
+
+    const uploadButton = await screen.findByRole("button", {
+      name: /upload & preview/i,
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    // Uppercase extension exercises the case-insensitive match.
+    const file = new File(["...\t...\n"], "extrato.TAB", { type: "" });
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(uploadButton);
+
+    await screen.findByText("extrato.tab");
+
+    // The preview request went to the tab endpoint, NOT the CSV one.
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/import/tab/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/v1/import/preview",
+      expect.anything(),
+    );
+  });
+
+  it("routes a .csv file to the CSV preview endpoint", async () => {
+    // renderAndPreview drops a test.csv file; assert it hits the CSV endpoint
+    // and never the tab endpoint.
+    const preview = basePreview([baseRow({ row_number: 1 })]);
+
+    await renderAndPreview(preview);
+
+    const apiFetchMock = vi.mocked(apiFetch);
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      "/api/v1/import/preview",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/v1/import/tab/preview",
+      expect.anything(),
+    );
+  });
+
   it("import preview is called with IMPORT_REQUEST_TIMEOUT_MS (15s)", async () => {
     const preview = basePreview([baseRow({ row_number: 1 })]);
 

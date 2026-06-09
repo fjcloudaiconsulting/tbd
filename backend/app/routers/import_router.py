@@ -25,6 +25,7 @@ from app.schemas.import_schemas import (
 )
 from app.services import import_service, reconciliation_service
 from app.services.exceptions import MissingCategoryTypeError, ValidationError
+from app.services.import_abn_tab import parse_tab
 from app.services.import_ofx_service import parse_ofx
 from app.services.import_parser import ParseError, parse_csv
 
@@ -84,6 +85,50 @@ async def preview_import(
             file_name=file.filename or "unknown.csv",
             parsed_rows=parsed_rows,
             source_format="csv",
+        )
+    except MissingCategoryTypeError as exc:
+        raise _missing_category_type_response(exc) from exc
+
+
+@router.post("/tab/preview", response_model=ImportPreviewResponse)
+async def preview_tab_import(
+    file: UploadFile = File(...),
+    account_id: int = Form(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload an ABN AMRO ``.TAB`` file and get a preview.
+
+    Mirrors the CSV ``/preview`` path: same 5 MB upload guard, same
+    ``ParseError → ValidationError`` / ``MissingCategoryTypeError → 400``
+    translation, same in-memory (no-persistence) preview. Decodes as
+    UTF-8 and falls back to cp1252 (Dutch names/accents) on a decode
+    error. Spec: ``specs/2026-06-09-abn-tab-import.md``.
+    """
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise ValidationError(f"File too large ({len(raw)} bytes, max {MAX_UPLOAD_BYTES // 1024 // 1024} MB)")
+    try:
+        content = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        content = raw.decode("cp1252")
+
+    try:
+        parsed_rows = parse_tab(content)
+    except ParseError as exc:
+        detail = str(exc)
+        if exc.row_number:
+            detail = f"Row {exc.row_number}: {detail}"
+        raise ValidationError(detail)
+
+    try:
+        return await import_service.build_preview(
+            db,
+            org_id=current_user.org_id,
+            account_id=account_id,
+            file_name=file.filename or "unknown.tab",
+            parsed_rows=parsed_rows,
+            source_format="tab",
         )
     except MissingCategoryTypeError as exc:
         raise _missing_category_type_response(exc) from exc

@@ -132,7 +132,7 @@ class ImportConfirmRequest(BaseModel):
     # ``Literal`` so Pydantic surfaces a typed 422 at the wire boundary
     # instead of letting the service reach a ValidationError on unknown
     # values.
-    source_format: Literal["csv", "ofx"]
+    source_format: Literal["csv", "ofx", "tab"]
 
     model_config = ConfigDict(extra="forbid")
 

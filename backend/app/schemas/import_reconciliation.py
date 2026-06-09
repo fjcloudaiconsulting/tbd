@@ -85,6 +85,7 @@ class ImportSourceFormat(str, enum.Enum):
 
     CSV = "csv"
     OFX = "ofx"
+    TAB = "tab"  # ABN AMRO tab-separated export (spec 2026-06-09-abn-tab-import)
 
 
 # ── Import-batch header (response shape) ──

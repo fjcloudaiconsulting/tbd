@@ -205,8 +205,16 @@ function ImportPageContent() {
     formData.append("file", file);
     formData.append("account_id", accountId.toString());
 
+    // Route by file extension: ABN AMRO ``.TAB`` exports go to the
+    // tab-separated parser, everything else (ING etc.) to the CSV parser.
+    // Both endpoints share the multipart request and ImportPreviewResponse
+    // shape; the confirm flow echoes ``source_format`` from the response.
+    const previewEndpoint = file.name.toLowerCase().endsWith(".tab")
+      ? "/api/v1/import/tab/preview"
+      : "/api/v1/import/preview";
+
     try {
-      const data = await apiFetch<ImportPreviewResponse>("/api/v1/import/preview", {
+      const data = await apiFetch<ImportPreviewResponse>(previewEndpoint, {
         method: "POST",
         body: formData,
         timeoutMs: IMPORT_REQUEST_TIMEOUT_MS,
@@ -413,7 +421,7 @@ function ImportPageContent() {
       {step === "upload" && categories && categories.length > 0 && (
         <div className={card}>
           <div className={cardHeader}>
-            <h2 className={cardTitle}>Upload CSV File</h2>
+            <h2 className={cardTitle}>Upload File</h2>
           </div>
           <div className="space-y-4 p-6">
             <div>
@@ -433,11 +441,11 @@ function ImportPageContent() {
               </select>
             </div>
             <div>
-              <label htmlFor="import-csv-file" className={label}>CSV File</label>
+              <label htmlFor="import-csv-file" className={label}>CSV or ABN AMRO .TAB File</label>
               <input
                 id="import-csv-file"
                 type="file"
-                accept=".csv"
+                accept=".csv,.tab,.TAB"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                 className="block w-full text-sm text-text-secondary file:mr-4 file:rounded-md file:border-0 file:bg-accent file:px-4 file:py-2 file:text-sm file:font-medium file:text-accent-text hover:file:bg-accent-hover"
               />
