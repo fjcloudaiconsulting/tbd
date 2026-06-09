@@ -645,3 +645,46 @@ async def test_update_null_error_is_returned_before_db_write(session_factory):
         assert fresh is not None
         assert fresh.title == "Untouched"
         assert fresh.body != "would-be-applied"
+
+
+# ── admin list: ListEnvelope sort + pagination (Tables PR2) ──────────────
+
+
+@pytest.mark.asyncio
+async def test_admin_list_returns_list_envelope(session_factory):
+    await _seed_users(session_factory)
+    await _seed_announcement(session_factory, title="alpha")
+    await _seed_announcement(session_factory, title="bravo")
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/announcements")
+    assert res.status_code == 200
+    body = res.json()
+    assert set(body.keys()) == {"items", "total", "limit", "offset"}
+    assert body["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_list_sort_by_title_and_page(session_factory):
+    await _seed_users(session_factory)
+    await _seed_announcement(session_factory, title="charlie")
+    await _seed_announcement(session_factory, title="alpha")
+    await _seed_announcement(session_factory, title="bravo")
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/announcements?sort_by=title&sort_dir=asc&limit=2&offset=0"
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 3
+    assert [a["title"] for a in body["items"]] == ["alpha", "bravo"]
+
+
+@pytest.mark.asyncio
+async def test_admin_list_unknown_sort_is_400(session_factory):
+    await _seed_users(session_factory)
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/announcements?sort_by=body")
+    assert res.status_code == 400

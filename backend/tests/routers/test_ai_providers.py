@@ -186,7 +186,9 @@ async def test_list_returns_sanitized_response_no_encrypted_fields(
 
     list_resp = client.get("/api/v1/settings/ai-providers")
     assert list_resp.status_code == 200
-    items = list_resp.json()
+    list_body = list_resp.json()
+    assert list_body["total"] == 1
+    items = list_body["items"]
     assert len(items) == 1
     assert "encrypted_api_key" not in items[0]
     assert items[0]["last_four"] == "abcd"
@@ -353,7 +355,8 @@ async def test_bad_validation_returns_400_and_no_row_persisted(session_factory):
     assert resp.status_code == 400
     assert resp.json()["detail"]["code"] == "credential_validation_failed"
     listr = client.get("/api/v1/settings/ai-providers")
-    assert listr.json() == []
+    assert listr.json()["items"] == []
+    assert listr.json()["total"] == 0
 
 
 # ----------------------------------------------------------------
@@ -571,3 +574,17 @@ async def test_validate_falls_open_when_redis_unavailable(
             org_id=1, credential_id=1
         )
     assert ok is True
+
+
+async def test_list_unknown_sort_is_400(session_factory):
+    """Closed sort whitelist: an unknown sort_by is a 400, never a
+    silent fallback (Tables PR2)."""
+    ids = await _seed(session_factory)
+
+    async def resolver(_factory):
+        return await _get_user(session_factory, ids["owner_a"])
+
+    app = _make_app(session_factory, resolver)
+    client = TestClient(app)
+    resp = client.get("/api/v1/settings/ai-providers?sort_by=encrypted_api_key")
+    assert resp.status_code == 400

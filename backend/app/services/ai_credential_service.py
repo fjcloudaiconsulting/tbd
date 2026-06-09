@@ -13,7 +13,7 @@ from typing import Optional
 
 import structlog
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.org_ai_credential import AiProvider, OrgAICredential
@@ -26,6 +26,18 @@ from app.services.ai_credential_crypto import (
     last_four,
 )
 from app.services.ai_providers import ValidateResult, get_adapter
+from app.services.list_query import resolve_order_by
+
+
+# Closed sort whitelist for the settings/ai-providers credentials table.
+# Keys are the public sort tokens the frontend sends; values are the
+# columns to order by. Limited to UI-exposed columns (Provider, Label),
+# plus created_at as the default ordering key.
+_CREDENTIAL_SORT_COLUMNS = {
+    "provider": OrgAICredential.provider,
+    "label": OrgAICredential.label,
+    "created_at": OrgAICredential.created_at,
+}
 
 
 logger = structlog.stdlib.get_logger()
@@ -58,14 +70,49 @@ async def _run_validate(
 
 
 async def list_credentials_for_org(
-    db: AsyncSession, *, org_id: int
+    db: AsyncSession,
+    *,
+    org_id: int,
+    sort_by: str | None = None,
+    sort_dir: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[OrgAICredential]:
-    result = await db.execute(
+    """Org-scoped credentials.
+
+    ``sort_by`` is resolved against the closed ``_CREDENTIAL_SORT_COLUMNS``
+    whitelist (unknown key raises ``ValidationError`` → router 400);
+    default is ``created_at`` desc with ``id`` desc as a stable
+    tiebreaker. ``limit``/``offset`` page the result when supplied.
+    """
+    order_by = resolve_order_by(
+        sort_by,
+        sort_dir,
+        allowed=_CREDENTIAL_SORT_COLUMNS,
+        default_key="created_at",
+        default_dir="desc",
+        tiebreaker=OrgAICredential.id.desc(),
+    )
+    stmt = (
         select(OrgAICredential)
         .where(OrgAICredential.org_id == org_id)
-        .order_by(OrgAICredential.created_at.desc())
+        .order_by(*order_by)
     )
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def count_credentials_for_org(db: AsyncSession, *, org_id: int) -> int:
+    """COUNT over the same filter as ``list_credentials_for_org``."""
+    return (
+        await db.scalar(
+            select(func.count())
+            .select_from(OrgAICredential)
+            .where(OrgAICredential.org_id == org_id)
+        )
+    ) or 0
 
 
 async def get_credential_for_org(
