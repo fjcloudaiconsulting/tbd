@@ -110,12 +110,19 @@ def test_multi_series_line_valid():
 
 
 def test_unknown_config_extra_is_tolerated():
-    """Forward-compat: an unmodelled optional visual knob does not 422."""
+    """Forward-compat: an unmodelled optional visual knob does not 422 AND
+    survives validation (must NOT be silently stripped — these are real,
+    widget-consumed knobs like smooth/top_n/stacked/compare_prior_period)."""
     layout = _line_layout()
     layout["widgets"][0]["config"]["smooth"] = True
     layout["widgets"][0]["config"]["some_future_knob"] = {"a": 1}
     body = ReportCreate(name="r", layout_json=layout)
+    cfg = body.layout_json["widgets"][0]["config"]
     assert body.layout_json["widgets"][0]["type"] == "line"
+    # The validator must validate for side-effect only and preserve the
+    # original dict verbatim — not round-trip through model_dump.
+    assert cfg["smooth"] is True
+    assert cfg["some_future_knob"] == {"a": 1}
 
 
 def test_valid_canvas_filters():

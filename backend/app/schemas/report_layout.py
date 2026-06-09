@@ -297,28 +297,36 @@ def validate_layout_json(value: dict[str, Any]) -> dict[str, Any]:
     """Validate a ``layout_json`` payload.
 
     Empty dict (a blank / new report) passes through untouched. A
-    populated dict is validated against ``LayoutJson`` and round-tripped
-    back to a plain dict (so the DB column stores canonical JSON, not a
-    Pydantic model). Raises ``ValueError`` on any malformed shape; the
-    Pydantic field validator that calls this surfaces it as a 422.
+    populated dict is validated against ``LayoutJson`` (raises
+    ``ValueError`` on any malformed shape; the Pydantic field validator
+    that calls this surfaces it as a 422) and then the ORIGINAL dict is
+    returned verbatim. We validate for the side-effect only — we must NOT
+    round-trip through ``model_dump``, because the widget configs use
+    ``extra="ignore"`` and dumping would silently DROP unmodeled-but-real
+    visual knobs (``compare_prior_period``, ``top_n``, ``smooth``,
+    ``stacked``, and any forward-compat field), persisting a stripped
+    layout. Returning the input preserves strict validation of what we
+    model while keeping everything else intact.
     """
     if not isinstance(value, dict):
         raise ValueError("layout_json must be a JSON object")
     if value == {}:
         return value
-    model = LayoutJson.model_validate(value)
-    return model.model_dump(mode="json", exclude_none=True)
+    LayoutJson.model_validate(value)
+    return value
 
 
 def validate_canvas_filters_json(value: dict[str, Any]) -> dict[str, Any]:
     """Validate a ``canvas_filters_json`` payload.
 
     Empty dict passes through. A populated dict is validated against
-    ``CanvasFilters`` and round-tripped to a plain dict.
+    ``CanvasFilters`` and the ORIGINAL dict is returned verbatim (validate
+    for side-effect only — see ``validate_layout_json`` for why we do not
+    round-trip through ``model_dump``).
     """
     if not isinstance(value, dict):
         raise ValueError("canvas_filters_json must be a JSON object")
     if value == {}:
         return value
-    model = CanvasFilters.model_validate(value)
-    return model.model_dump(mode="json", exclude_none=True)
+    CanvasFilters.model_validate(value)
+    return value
