@@ -146,13 +146,14 @@ async function waitForStableTxList() {
   // spinner -> table settle (this is the same settle pattern the sibling
   // transactions-page test relies on). Once a row is visible the page is in
   // its non-fetching branch, so the shared Pagination has mounted too.
-  await screen.findAllByText("Row 1", undefined, { timeout: 4000 });
-  await waitFor(
-    () => {
-      expect(screen.getByLabelText(/per page/i)).toBeInTheDocument();
-    },
-    { timeout: 4000 },
-  );
+  await screen.findAllByText("Row 1", undefined, { timeout: 8000 });
+  // The shared Pagination (which owns the "Per page" / "Next page"
+  // controls) mounts one React tick after the rows, once `total` state
+  // propagates. Under parallel-worker CI load that tick can lag, so settle
+  // on the control asynchronously with a generous timeout. A synchronous
+  // getByLabelText here (or at the interaction sites below) races and
+  // intermittently fails the whole file in full-suite order.
+  await screen.findByLabelText(/per page/i, undefined, { timeout: 8000 });
 }
 
 describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", () => {
@@ -192,7 +193,9 @@ describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", 
     render(<TransactionsPage />);
     await waitForStableTxList();
 
-    fireEvent.click(screen.getByLabelText("Next page"));
+    fireEvent.click(
+      await screen.findByLabelText("Next page", undefined, { timeout: 8000 }),
+    );
 
     await waitFor(() => {
       expect(
@@ -209,7 +212,9 @@ describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", 
 
     // First move off page 0 so a later offset=0 fetch is unambiguously the
     // sort's doing, not the initial load.
-    fireEvent.click(screen.getByLabelText("Next page"));
+    fireEvent.click(
+      await screen.findByLabelText("Next page", undefined, { timeout: 8000 }),
+    );
     await waitFor(() => {
       expect(listUrls().some((u) => u.includes("offset=25"))).toBe(true);
     });
@@ -233,9 +238,10 @@ describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", 
     render(<TransactionsPage />);
     await waitForStableTxList();
 
-    fireEvent.change(screen.getByLabelText(/per page/i), {
-      target: { value: "50" },
-    });
+    fireEvent.change(
+      await screen.findByLabelText(/per page/i, undefined, { timeout: 8000 }),
+      { target: { value: "50" } },
+    );
 
     await waitFor(() => {
       expect(
@@ -251,9 +257,10 @@ describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", 
     await waitForStableTxList();
 
     // Change the page size; this writes to localStorage.
-    fireEvent.change(screen.getByLabelText(/per page/i), {
-      target: { value: "50" },
-    });
+    fireEvent.change(
+      await screen.findByLabelText(/per page/i, undefined, { timeout: 8000 }),
+      { target: { value: "50" } },
+    );
     await waitFor(() => {
       expect(
         listUrls().some((u) => u.includes("limit=50")),
@@ -300,7 +307,9 @@ describe("TransactionsPage — server-side pagination/sort/selection (Task 4)", 
     });
 
     // Navigate to the next page; selection must clear (count text gone).
-    fireEvent.click(screen.getByLabelText("Next page"));
+    fireEvent.click(
+      await screen.findByLabelText("Next page", undefined, { timeout: 8000 }),
+    );
 
     await waitFor(() => {
       expect(screen.queryAllByText(/^\d+ selected$/).length).toBe(0);
