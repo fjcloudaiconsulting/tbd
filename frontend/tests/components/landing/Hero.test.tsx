@@ -23,7 +23,7 @@ describe("<Hero />", () => {
   it("uses spec sub-copy without em-dashes", () => {
     render(<Hero />);
     const sub = screen.getByText(
-      /The Better Decision is a finance app for normal people/i,
+      /forecasts your cash flow and plans your budget in one calm app/i,
     );
     expect(sub).toBeInTheDocument();
     // Hard guarantee: no em-dash anywhere in the hero (locked policy).
