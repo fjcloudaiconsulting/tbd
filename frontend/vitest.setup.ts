@@ -1,5 +1,22 @@
 import "@testing-library/jest-dom/vitest";
 
+// jsdom's Blob/File do not implement the async ``Blob.text()`` reader that
+// every real browser provides. The import page's file-format sniff calls
+// ``await file.slice(0, 4096).text()`` to peek at an ambiguous upload, so
+// without this polyfill that call throws in tests (and the sniff would
+// silently fall back to CSV for every file). Back it with the FileReader
+// jsdom *does* implement so sliced content round-trips correctly.
+if (typeof Blob !== "undefined" && typeof Blob.prototype.text !== "function") {
+  Blob.prototype.text = function text(this: Blob): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(this);
+    });
+  };
+}
+
 // Reset localStorage between tests so persisted sort/filter state from a
 // previous test doesn't bleed into the next render. The persistence hooks
 // (lib/hooks/use-persisted-sort, use-persisted-filters) read on mount, so
