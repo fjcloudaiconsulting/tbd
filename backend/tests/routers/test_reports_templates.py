@@ -32,8 +32,35 @@ from tests.routers.test_reports import (  # noqa: F401 — reuse fixtures
 )
 
 
-_LAYOUT = {"version": 1, "widgets": [{"id": "w1", "type": "kpi"}]}
-_FILTERS = {"date_range": {"kind": "relative", "preset": "last_30_days"}}
+def _kpi_widget(widget_id: str) -> dict:
+    """A canonical, fully-valid KPI widget.
+
+    Shaped so it round-trips through the strict layout validator
+    unchanged (no ``None`` fields that ``exclude_none`` would drop), so
+    fixtures can assert ``stored == fixture`` against persisted state.
+    """
+    return {
+        "id": widget_id,
+        "type": "kpi",
+        "title": "Net",
+        "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+        "config": {
+            "dataset": "transactions",
+            "measure": {"agg": "sum", "field": "amount"},
+            "format": "currency",
+        },
+    }
+
+
+def _layout(widget_id: str = "w1") -> dict:
+    return {"version": 1, "widgets": [_kpi_widget(widget_id)]}
+
+
+_LAYOUT = _layout("w1")
+# Absolute date window — mirrors what ``DatePresetChips`` actually stores
+# (presets resolve to an absolute {start, end} at click time; the canvas
+# never persists relative preset strings).
+_FILTERS = {"date_range": {"start": "2026-01-01", "end": "2026-01-31"}}
 
 
 async def _versions_for(session_factory, report_id):
@@ -87,7 +114,7 @@ async def test_save_creates_version_and_caps_at_five(session_factory):
         # 6 distinct saves; only the 4 most recent non-originals survive.
         saved_layouts = []
         for i in range(6):
-            layout = {"version": 1, "widgets": [{"id": f"w{i}", "type": "kpi"}]}
+            layout = _layout(f"w{i}")
             saved_layouts.append(layout)
             patched = client.patch(f"/api/v1/reports/{report_id}", json={
                 "layout_json": layout,
@@ -207,7 +234,7 @@ async def test_list_versions(session_factory):
 
         for i in range(2):
             patched = client.patch(f"/api/v1/reports/{report_id}", json={
-                "layout_json": {"version": 1, "widgets": [{"id": f"s{i}"}]},
+                "layout_json": _layout(f"s{i}"),
             })
             assert patched.status_code == 200, patched.text
 
@@ -230,8 +257,8 @@ async def test_list_versions(session_factory):
 async def test_restore_version_sets_live_and_does_not_add_version(session_factory):
     await _seed(session_factory)
     app = _make_app(session_factory, _resolver("user_a"))
-    layout_v2 = {"version": 1, "widgets": [{"id": "v2"}]}
-    layout_v3 = {"version": 1, "widgets": [{"id": "v3"}]}
+    layout_v2 = _layout("v2")
+    layout_v3 = _layout("v3")
     with TestClient(app) as client:
         res = client.post("/api/v1/reports", json={
             "name": "Restore Report",
@@ -253,11 +280,13 @@ async def test_restore_version_sets_live_and_does_not_add_version(session_factor
                 await db.execute(
                     select(ReportVersion).where(
                         ReportVersion.report_id == report_id,
-                        ReportVersion.layout_json == layout_v2,
                     )
                 )
             ).scalars().all()
-            target = rows[0].id
+            # Match in Python (dict equality is order-independent; a SQL
+            # JSON-text equality is sensitive to the validator's canonical
+            # key ordering).
+            target = next(r.id for r in rows if r.layout_json == layout_v2)
 
         restored = client.post(
             f"/api/v1/reports/{report_id}/versions/{target}/restore"
@@ -416,10 +445,10 @@ async def test_templates_endpoint_404_when_flag_off(session_factory, monkeypatch
 # ─── POST /api/v1/reports/{id}/reset ────────────────────────────────
 
 
-_LAYOUT_A = {"version": 1, "widgets": [{"id": "w1", "type": "kpi"}]}
-_FILTERS_X = {"date_range": {"kind": "relative", "preset": "last_30_days"}}
+_LAYOUT_A = _layout("w1")
+_FILTERS_X = {"date_range": {"start": "2026-01-01", "end": "2026-01-31"}}
 _LAYOUT_B = {"version": 1, "widgets": []}
-_FILTERS_Y = {"date_range": {"kind": "relative", "preset": "last_7_days"}}
+_FILTERS_Y = {"date_range": {"start": "2026-02-01", "end": "2026-02-07"}}
 
 
 @pytest.mark.asyncio

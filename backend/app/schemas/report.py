@@ -8,9 +8,10 @@ Architect-locked decisions:
 
 - ``visibility`` is a closed enum (``private`` / ``org``).
 - ``name`` required, length bounded.
-- ``layout_json`` + ``canvas_filters_json`` are passthrough dicts in
-  PR1. PR2 lands the strict layout-schema validator; for now we only
-  require well-formed JSON objects.
+- ``layout_json`` + ``canvas_filters_json`` are strictly validated on
+  write against ``app.schemas.report_layout`` (the populated shape mirrors
+  ``frontend/lib/reports/types.ts``). An empty dict (a blank / new report)
+  is allowed; any populated-but-malformed layout is rejected 422.
 - Create / Update reject unknown keys via ``extra="forbid"``.
 """
 from __future__ import annotations
@@ -18,9 +19,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.report import ReportVisibility
+from app.schemas.report_layout import (
+    validate_canvas_filters_json,
+    validate_layout_json,
+)
 
 
 NAME_MIN_LENGTH = 1
@@ -36,6 +41,16 @@ class ReportCreate(BaseModel):
     visibility: ReportVisibility = ReportVisibility.PRIVATE
     layout_json: dict[str, Any] = Field(default_factory=dict)
     canvas_filters_json: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("layout_json")
+    @classmethod
+    def _check_layout(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return validate_layout_json(v)
+
+    @field_validator("canvas_filters_json")
+    @classmethod
+    def _check_canvas_filters(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return validate_canvas_filters_json(v)
 
 
 class ReportUpdate(BaseModel):
@@ -55,6 +70,24 @@ class ReportUpdate(BaseModel):
     visibility: Optional[ReportVisibility] = None
     layout_json: Optional[dict[str, Any]] = None
     canvas_filters_json: Optional[dict[str, Any]] = None
+
+    @field_validator("layout_json")
+    @classmethod
+    def _check_layout(cls, v: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        # ``None`` (absent key) is left for the router's explicit-null
+        # guard; only a present dict is validated here.
+        if v is None:
+            return v
+        return validate_layout_json(v)
+
+    @field_validator("canvas_filters_json")
+    @classmethod
+    def _check_canvas_filters(
+        cls, v: Optional[dict[str, Any]]
+    ) -> Optional[dict[str, Any]]:
+        if v is None:
+            return v
+        return validate_canvas_filters_json(v)
 
 
 class ReportTemplate(BaseModel):
