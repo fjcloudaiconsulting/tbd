@@ -2,6 +2,10 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
+import Pagination from "@/components/ui/Pagination";
+import SortableHeader from "@/components/ui/SortableHeader";
+import { useTableState } from "@/lib/hooks/use-table-state";
+import type { ListEnvelope } from "@/lib/types";
 import {
   btnPrimary,
   btnSecondary,
@@ -33,6 +37,19 @@ type Invitation = {
   status: "pending";
 };
 
+// Backend-whitelisted sort keys. Unknown keys 400, so each table sends
+// only columns it exposes as headers.
+const MEMBER_SORT_FIELDS = ["username", "email", "role"] as const;
+type MemberSortField = (typeof MEMBER_SORT_FIELDS)[number];
+
+const INVITATION_SORT_FIELDS = [
+  "email",
+  "role",
+  "created_at",
+  "expires_at",
+] as const;
+type InvitationSortField = (typeof INVITATION_SORT_FIELDS)[number];
+
 export default function MembersSection({
   currentUserId,
   currentRole,
@@ -41,7 +58,9 @@ export default function MembersSection({
   currentRole: MemberRole;
 }) {
   const [members, setMembers] = useState<Member[]>([]);
+  const [membersTotal, setMembersTotal] = useState(0);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [invitationsTotal, setInvitationsTotal] = useState(0);
   const [error, setError] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"member" | "admin">("member");
@@ -49,24 +68,93 @@ export default function MembersSection({
 
   const isAdmin = currentRole === "owner" || currentRole === "admin";
 
+  const membersTable = useTableState<MemberSortField>({
+    key: "org-members",
+    defaultSortField: "username",
+    defaultSortDir: "asc",
+    allowedSortFields: MEMBER_SORT_FIELDS,
+  });
+  const invitationsTable = useTableState<InvitationSortField>({
+    key: "org-invitations",
+    defaultSortField: "created_at",
+    defaultSortDir: "desc",
+    allowedSortFields: INVITATION_SORT_FIELDS,
+  });
+
   const refresh = useCallback(async () => {
     try {
+      const memberParams = new URLSearchParams({
+        sort_by: membersTable.sortField,
+        sort_dir: membersTable.sortDir,
+        limit: String(membersTable.pageSize),
+        offset: String((membersTable.page - 1) * membersTable.pageSize),
+      });
+      const inviteParams = new URLSearchParams({
+        sort_by: invitationsTable.sortField,
+        sort_dir: invitationsTable.sortDir,
+        limit: String(invitationsTable.pageSize),
+        offset: String((invitationsTable.page - 1) * invitationsTable.pageSize),
+      });
       const [m, inv] = await Promise.all([
-        apiFetch<Member[]>("/api/v1/orgs/members"),
+        apiFetch<ListEnvelope<Member>>(
+          `/api/v1/orgs/members?${memberParams.toString()}`,
+        ),
         isAdmin
-          ? apiFetch<Invitation[]>("/api/v1/orgs/invitations")
-          : Promise.resolve([] as Invitation[]),
+          ? apiFetch<ListEnvelope<Invitation>>(
+              `/api/v1/orgs/invitations?${inviteParams.toString()}`,
+            )
+          : Promise.resolve({ items: [], total: 0, limit: 0, offset: 0 }),
       ]);
-      setMembers(m ?? []);
-      setInvitations(inv ?? []);
+      setMembers(m?.items ?? []);
+      setMembersTotal(m?.total ?? 0);
+      setInvitations(inv?.items ?? []);
+      setInvitationsTotal(inv?.total ?? 0);
     } catch (err) {
       setError(extractErrorMessage(err, "Failed to load members"));
     }
-  }, [isAdmin]);
+  }, [
+    isAdmin,
+    membersTable.sortField,
+    membersTable.sortDir,
+    membersTable.page,
+    membersTable.pageSize,
+    invitationsTable.sortField,
+    invitationsTable.sortDir,
+    invitationsTable.page,
+    invitationsTable.pageSize,
+  ]);
 
   useEffect(() => {
     refresh().catch(() => {});
   }, [refresh]);
+
+  const handleMemberSort = useCallback(
+    (field: string) => {
+      if (!(MEMBER_SORT_FIELDS as readonly string[]).includes(field)) return;
+      const f = field as MemberSortField;
+      membersTable.setSort(
+        f,
+        f === membersTable.sortField && membersTable.sortDir === "asc"
+          ? "desc"
+          : "asc",
+      );
+    },
+    [membersTable],
+  );
+
+  const handleInvitationSort = useCallback(
+    (field: string) => {
+      if (!(INVITATION_SORT_FIELDS as readonly string[]).includes(field)) return;
+      const f = field as InvitationSortField;
+      invitationsTable.setSort(
+        f,
+        f === invitationsTable.sortField && invitationsTable.sortDir === "asc"
+          ? "desc"
+          : "asc",
+      );
+    },
+    [invitationsTable],
+  );
 
   async function handleInvite(e: FormEvent) {
     e.preventDefault();
@@ -123,9 +211,27 @@ export default function MembersSection({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-text-muted">
-              <th className="py-2 pr-4">Username</th>
-              <th className="py-2 pr-4">Email</th>
-              <th className="py-2 pr-4">Role</th>
+              <SortableHeader
+                label="Username"
+                field="username"
+                activeField={membersTable.sortField}
+                dir={membersTable.sortDir}
+                onSort={handleMemberSort}
+              />
+              <SortableHeader
+                label="Email"
+                field="email"
+                activeField={membersTable.sortField}
+                dir={membersTable.sortDir}
+                onSort={handleMemberSort}
+              />
+              <SortableHeader
+                label="Role"
+                field="role"
+                activeField={membersTable.sortField}
+                dir={membersTable.sortDir}
+                onSort={handleMemberSort}
+              />
               {isAdmin && <th className="py-2" />}
             </tr>
           </thead>
@@ -135,11 +241,11 @@ export default function MembersSection({
                 isAdmin && m.id !== currentUserId && !(currentRole !== "owner" && m.role === "owner");
               return (
                 <tr key={m.id} className="border-b border-border-subtle">
-                  <td className="py-2 pr-4 text-text-primary">{m.username}</td>
-                  <td className="py-2 pr-4 text-text-secondary">{m.email}</td>
-                  <td className="py-2 pr-4 text-text-secondary">{m.role}</td>
+                  <td className="px-3 py-2 text-text-primary">{m.username}</td>
+                  <td className="px-3 py-2 text-text-secondary">{m.email}</td>
+                  <td className="px-3 py-2 text-text-secondary">{m.role}</td>
                   {isAdmin && (
-                    <td className="py-2 text-right">
+                    <td className="px-3 py-2 text-right">
                       {canRemove && (
                         <button
                           type="button"
@@ -157,6 +263,15 @@ export default function MembersSection({
             })}
           </tbody>
         </table>
+        {(membersTotal > membersTable.pageSize || membersTable.page > 1) && (
+          <Pagination
+            page={membersTable.page}
+            pageSize={membersTable.pageSize}
+            total={membersTotal}
+            onPageChange={membersTable.setPage}
+            onPageSizeChange={membersTable.setPageSize}
+          />
+        )}
       </div>
 
       {isAdmin && (
@@ -167,26 +282,67 @@ export default function MembersSection({
           {invitations.length === 0 ? (
             <p className="text-sm text-text-muted">No pending invitations.</p>
           ) : (
-            <ul className="divide-y divide-border-subtle">
-              {invitations.map((inv) => (
-                <li
-                  key={inv.id}
-                  className="flex items-center justify-between py-2 text-sm"
-                >
-                  <span className="text-text-secondary">
-                    {inv.email} <span className="text-text-muted">&middot; {inv.role}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleRevoke(inv.id)}
-                    aria-label={`Revoke invitation for ${inv.email}`}
-                    className="text-xs text-text-muted hover:text-danger"
-                  >
-                    Revoke
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-text-muted">
+                    <SortableHeader
+                      label="Email"
+                      field="email"
+                      activeField={invitationsTable.sortField}
+                      dir={invitationsTable.sortDir}
+                      onSort={handleInvitationSort}
+                    />
+                    <SortableHeader
+                      label="Role"
+                      field="role"
+                      activeField={invitationsTable.sortField}
+                      dir={invitationsTable.sortDir}
+                      onSort={handleInvitationSort}
+                    />
+                    <SortableHeader
+                      label="Expires"
+                      field="expires_at"
+                      activeField={invitationsTable.sortField}
+                      dir={invitationsTable.sortDir}
+                      onSort={handleInvitationSort}
+                    />
+                    <th className="py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {invitations.map((inv) => (
+                    <tr key={inv.id} className="border-b border-border-subtle">
+                      <td className="px-3 py-2 text-text-secondary">{inv.email}</td>
+                      <td className="px-3 py-2 text-text-secondary">{inv.role}</td>
+                      <td className="px-3 py-2 text-text-secondary">
+                        {inv.expires_at ? inv.expires_at.slice(0, 10) : "(none)"}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleRevoke(inv.id)}
+                          aria-label={`Revoke invitation for ${inv.email}`}
+                          className="text-xs text-text-muted hover:text-danger"
+                        >
+                          Revoke
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {(invitationsTotal > invitationsTable.pageSize ||
+            invitationsTable.page > 1) && (
+            <Pagination
+              page={invitationsTable.page}
+              pageSize={invitationsTable.pageSize}
+              total={invitationsTotal}
+              onPageChange={invitationsTable.setPage}
+              onPageSizeChange={invitationsTable.setPageSize}
+            />
           )}
 
           <form

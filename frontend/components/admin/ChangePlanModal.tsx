@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import { btnPrimary, btnSecondary, card, error as errorCls, input, label } from "@/lib/styles";
-import type { Plan } from "@/lib/types";
+import type { ListEnvelope, Plan } from "@/lib/types";
 
 interface Props {
   orgId: number;
@@ -25,7 +25,10 @@ export default function ChangePlanModal({ orgId, currentPlanSlug, onClose, onCha
   useFocusTrap({ active: true, containerRef: dialogRef });
 
   useEffect(() => {
-    apiFetch<Plan[]>("/api/v1/plans/all").then((all) => {
+    // /plans/all returns a ListEnvelope; the picker wants every plan, so
+    // request the endpoint's max page size (plans are few — well under it).
+    apiFetch<ListEnvelope<Plan>>("/api/v1/plans/all?limit=200").then((res) => {
+      const all = res.items;
       setPlans(all);
       const current = all.find((p) => p.slug === currentPlanSlug);
       if (current) setPlanId(current.id);

@@ -1,10 +1,13 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import DuplicatePlanModal from "@/components/system/DuplicatePlanModal";
+import Pagination from "@/components/ui/Pagination";
+import SortableHeader from "@/components/ui/SortableHeader";
+import { useTableState } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -21,7 +24,7 @@ import {
   success as successCls,
   pageTitle,
 } from "@/lib/styles";
-import type { FeatureKey, Plan, PlanFeatures } from "@/lib/types";
+import type { FeatureKey, ListEnvelope, Plan, PlanFeatures } from "@/lib/types";
 
 const DEFAULT_FEATURES: PlanFeatures = {
   "ai.budget": false,
@@ -36,10 +39,30 @@ interface PlanWithCount extends Plan {
   org_count?: number;
 }
 
+// Backend-whitelisted sort keys for /api/v1/plans/all. Limited to the
+// columns the table exposes as headers.
+const PLAN_SORT_FIELDS = [
+  "name",
+  "price_monthly",
+  "price_yearly",
+  "max_users",
+  "retention_days",
+  "is_active",
+] as const;
+type PlanSortField = (typeof PLAN_SORT_FIELDS)[number];
+
 export default function SystemPlansPage() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const [plans, setPlans] = useState<PlanWithCount[]>([]);
+  const [total, setTotal] = useState(0);
+  const { sortField, sortDir, setSort, page, setPage, pageSize, setPageSize } =
+    useTableState<PlanSortField>({
+      key: "system-plans",
+      defaultSortField: "name",
+      defaultSortDir: "asc",
+      allowedSortFields: PLAN_SORT_FIELDS,
+    });
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [editing, setEditing] = useState<PlanWithCount | null>(null);
@@ -85,18 +108,36 @@ export default function SystemPlansPage() {
     }
   }, [loading, user, canManagePlans, router]);
 
-  useEffect(() => {
-    if (canManagePlans) loadPlans();
-  }, [canManagePlans]);
-
-  async function loadPlans() {
+  const loadPlans = useCallback(async () => {
     try {
-      const data = await apiFetch<PlanWithCount[]>("/api/v1/plans/all");
-      setPlans(data);
+      const params = new URLSearchParams({
+        sort_by: sortField,
+        sort_dir: sortDir,
+        limit: String(pageSize),
+        offset: String((page - 1) * pageSize),
+      });
+      const data = await apiFetch<ListEnvelope<PlanWithCount>>(
+        `/api/v1/plans/all?${params.toString()}`,
+      );
+      setPlans(data.items);
+      setTotal(data.total);
     } catch (err) {
       setError(extractErrorMessage(err));
     }
-  }
+  }, [sortField, sortDir, page, pageSize]);
+
+  useEffect(() => {
+    if (canManagePlans) void loadPlans();
+  }, [canManagePlans, loadPlans]);
+
+  const handleSort = useCallback(
+    (field: string) => {
+      if (!(PLAN_SORT_FIELDS as readonly string[]).includes(field)) return;
+      const f = field as PlanSortField;
+      setSort(f, f === sortField && sortDir === "asc" ? "desc" : "asc");
+    },
+    [sortField, sortDir, setSort],
+  );
 
   function resetForm() {
     setFormName("");
@@ -298,12 +339,48 @@ export default function SystemPlansPage() {
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-border text-left">
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">Plan</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">Monthly</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">Yearly</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">Max Users</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">Retention</th>
-                <th className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-text-muted">Status</th>
+                <SortableHeader
+                  label="Plan"
+                  field="name"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Monthly"
+                  field="price_monthly"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Yearly"
+                  field="price_yearly"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Max Users"
+                  field="max_users"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Retention"
+                  field="retention_days"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Status"
+                  field="is_active"
+                  activeField={sortField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
                 <th className="px-4 py-3" />
               </tr>
             </thead>
@@ -340,6 +417,17 @@ export default function SystemPlansPage() {
             </tbody>
           </table>
         </div>
+        {(total > pageSize || page > 1) && (
+          <div className="px-4">
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+            />
+          </div>
+        )}
       </div>
 
       <ConfirmModal
