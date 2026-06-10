@@ -127,8 +127,16 @@ def _extract_detail(report_body: Any) -> Optional[dict[str, Any]]:
         bounded = _bounded(report_body[raw_key])
         if bounded is None:
             continue
-        # First writer wins: if both the kebab and camel alias for the
-        # same normalized key are present, keep the first non-empty one.
+        # Skip empty/blank strings so an empty legacy alias (e.g.
+        # ``blocked-uri: ""``) can't shadow a meaningful camelCase alias
+        # (``blockedURL: "https://real"``). ``setdefault`` keeps the
+        # first PRESENT value, so without this guard an empty string
+        # would win purely because its key is iterated first.
+        if isinstance(bounded, str) and not bounded.strip():
+            continue
+        # First non-empty writer wins: if both the kebab and camel alias
+        # for the same normalized key are present, keep the first one
+        # that carries a non-empty value.
         detail.setdefault(norm_key, bounded)
     return detail
 
@@ -174,6 +182,17 @@ async def csp_report(request: Request) -> Response:
     unparseable report. Uses an independent session for the audit write
     (via ``record_audit_event``) so it doesn't depend on a request-
     scoped DB dependency on this anonymous route.
+
+    **Audit outcome is always ``failure`` by design.** A CSP report is,
+    by definition, a policy breach, so every row is recorded with
+    ``outcome="failure"``. Because this is a public, anonymous, and
+    potentially high-volume source, audit alerting and the default
+    ``/admin/audit`` failure views MUST scope OUT
+    ``event_type="security.csp_violation"`` — otherwise this stream
+    dilutes the genuine admin-failure signal those views exist to
+    surface. (The outcome value is intentionally not softened to keep
+    the violation semantics honest; the filtering lives in the
+    consumers, not here.)
     """
     # Pull the session factory directly (not via Depends) so this stays
     # a zero-dependency public route — nothing here resolves auth.
@@ -240,6 +259,10 @@ async def csp_report(request: Request) -> Response:
             target_org_name=None,
             request_id=request_id,
             ip_address=client_ip,
+            # Always "failure": a CSP violation is a policy breach. See the
+            # endpoint docstring — audit alerting / default /admin/audit
+            # failure views must scope OUT this event_type so this
+            # high-volume anonymous source doesn't dilute real admin signal.
             outcome="failure",
             detail=detail or None,
         )

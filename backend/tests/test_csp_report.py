@@ -19,6 +19,8 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -31,6 +33,7 @@ import app.routers.security as security_router_module
 from app.deps import get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
+from app.rate_limit import limiter
 from app.routers.security import CSP_VIOLATION_EVENT_TYPE, router as security_router
 
 
@@ -50,6 +53,17 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
         await engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def reset_limiter():
+    """Each test starts and ends with an empty rate-limiter state. The
+    SlowAPI ``Limiter`` is a module-level singleton; without an explicit
+    reset the per-IP counter from one test bleeds into the next and a
+    perfectly good test fails with a stale 429."""
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
 @pytest_asyncio.fixture
 async def client(session_factory, monkeypatch) -> AsyncIterator[AsyncClient]:
     # The router pulls the session factory by CALLING get_session_factory()
@@ -60,6 +74,11 @@ async def client(session_factory, monkeypatch) -> AsyncIterator[AsyncClient]:
     )
 
     app = FastAPI()
+    # Wire the shared limiter so ``@limiter.limit("60/minute")`` on the
+    # route surfaces 429s through the handler chain (mirrors prod wiring
+    # in app.main and the pattern in test_rate_limit_sensitive_endpoints).
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.include_router(security_router)
     transport = ASGITransport(app=app)
@@ -239,3 +258,56 @@ async def test_client_ip_recorded(client, session_factory):
     # ip_address is resolved via get_client_ip; in the ASGI test client
     # request.client is populated, so a non-null value lands.
     assert rows[0].ip_address is not None
+
+
+@pytest.mark.asyncio
+async def test_empty_alias_does_not_shadow_nonempty_alias(client, session_factory):
+    """An empty legacy alias must not win over a non-empty camelCase one.
+
+    Both ``blocked-uri`` (kebab) and ``blockedURL`` (camel) normalize to
+    ``blocked_uri``. The kebab key is iterated first, but its value is an
+    empty string, so the non-empty camelCase value must be the one that
+    lands (the "first NON-empty writer wins" rule).
+    """
+    body = {
+        "csp-report": {
+            "violated-directive": "script-src",
+            "blocked-uri": "",
+            "blockedURL": "https://real.example.com/x.js",
+        }
+    }
+    resp = await client.post(
+        "/api/v1/security/csp-report",
+        json=body,
+        headers={"content-type": "application/csp-report"},
+    )
+    assert resp.status_code == 204
+
+    rows = await _audit_rows(session_factory)
+    assert len(rows) == 1
+    assert rows[0].detail["blocked_uri"] == "https://real.example.com/x.js"
+
+
+@pytest.mark.asyncio
+async def test_csp_report_rate_limited(client, session_factory):
+    """The route carries ``@limiter.limit("60/minute")``: the 61st POST
+    from the same IP within the minute returns 429.
+
+    Mirrors the wiring in test_rate_limit_sensitive_endpoints.py — the
+    ``reset_limiter`` autouse fixture clears the per-IP counter, the
+    ``client`` fixture wires ``app.state.limiter`` + the
+    ``RateLimitExceeded`` handler, and each accepted call increments the
+    counter. If the slowapi limiter were disabled/failing-open in this
+    env the first 60 calls would still pass, so this asserts the
+    configured limit is actually enforced.
+    """
+    body = {"csp-report": {"violated-directive": "img-src"}}
+
+    # 60 reports within the minute are accepted (204).
+    for i in range(60):
+        resp = await client.post("/api/v1/security/csp-report", json=body)
+        assert resp.status_code == 204, f"call {i} unexpectedly {resp.status_code}"
+
+    # 61st within the same minute for the same IP → 429.
+    throttled = await client.post("/api/v1/security/csp-report", json=body)
+    assert throttled.status_code == 429
