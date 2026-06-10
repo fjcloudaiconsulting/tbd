@@ -21,7 +21,7 @@ plus the ACM-emitted validation CNAMEs).
 | `aws_cloudfront_distribution` | Edge distribution with HTTPS, HSTS, www -> apex redirect, standard access logging to `apex_logs` |
 | `aws_cloudfront_origin_access_control` | OAC (NOT legacy OAI) so only this distribution can read the bucket |
 | `aws_cloudfront_function` | Viewer-request function: (1) `www` -> apex 301 redirect, then (2) S3 directory-index rewrite (`/privacy/` -> `/privacy/index.html`) |
-| `aws_cloudfront_response_headers_policy` | Security headers: Content-Security-Policy, HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy |
+| `aws_cloudfront_response_headers_policy` | Security headers: Content-Security-Policy (with cross-origin CSP violation reporting via `report-uri`), HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy |
 | `aws_acm_certificate` + `_validation` | DNS-validated cert in `us-east-1` (CloudFront requirement) for apex + www |
 | `aws_route53_record.apex_acm_validation` | ACM `_<token>.<domain>` validation CNAMEs in the existing zone. **Does NOT touch the apex A record.** |
 | `aws_iam_openid_connect_provider.github` | Trust for GitHub Actions OIDC tokens |
@@ -256,6 +256,29 @@ mint per-request nonces and `script-src`/`style-src` allow `'unsafe-inline'`.
 The only external origins permitted are Google Fonts (`fonts.googleapis.com`
 for `style-src`, `fonts.gstatic.com` for `font-src`); everything else is
 same-origin.
+
+### CSP violation reporting
+
+The apex CSP reports violations **cross-origin** to the app's public,
+unauthenticated sink at `https://app.<domain>/api/v1/security/csp-report`
+(`backend/app/routers/security.py`, the endpoint PR #431 shipped, which writes
+violations to `audit_events`). The apex has no same-origin backend
+(`build-apex.sh` hard-fails on any `/api/v1` reference), so unlike the Next.js
+app, which reports same-origin, it has to point at the app host.
+
+Reports are delivered via the legacy `report-uri` directive **only**. That path
+is fire-and-forget: the browser POSTs the violation report cross-origin with no
+CORS preflight and ignores the response, so no cross-origin allowlist on the
+endpoint is needed and `connect-src` stays `'self'`. `report-uri` is honored by
+Chrome, Safari, and Firefox.
+
+The modern Reporting API (`report-to` + the `Reporting-Endpoints` header) is
+**intentionally omitted** here. A cross-origin Reporting API endpoint *is*
+CORS-gated (the browser sends a preflight before delivering reports), so
+enabling it would require adding the apex origin
+(`https://thebetterdecision.com`) to the app backend's `BACKEND_CORS_ORIGINS`
+allowlist. That is a backend trust-surface change, out of scope for this
+infra-only landing change.
 
 ### Access logging
 
