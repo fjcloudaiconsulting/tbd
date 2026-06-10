@@ -60,4 +60,9 @@ variable "access_log_expiration_days" {
   description = "Days after which CloudFront access log objects expire from the dedicated logs bucket. Standard CloudFront logs are operational telemetry (not records of intent), so a 90-day window is enough for incident forensics and traffic analysis while capping storage growth."
   type        = number
   default     = 90
+
+  validation {
+    condition     = var.access_log_expiration_days >= 1
+    error_message = "access_log_expiration_days must be at least 1."
+  }
 }

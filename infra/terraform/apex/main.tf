@@ -217,7 +217,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "apex" {
 # Block Public Access must leave `block_public_acls` / `ignore_public_acls`
 # OFF so the delivery ACL grant lands. (The origin bucket uses the stricter
 # BucketOwnerEnforced + full BPA; these two buckets intentionally differ.)
-# `aws_cloudfront_distribution.logging_config` wires the grant automatically.
+# The delivery grant is set EXPLICITLY via `aws_s3_bucket_acl.apex_logs`
+# rather than relying on the deprecated implicit auto-grant, which can fail
+# at apply with InvalidArgument.
 ###############################################################################
 
 resource "aws_s3_bucket" "apex_logs" {
@@ -253,6 +255,58 @@ resource "aws_s3_bucket_public_access_block" "apex_logs" {
   block_public_policy     = true
   ignore_public_acls      = false
   restrict_public_buckets = true
+}
+
+# CloudFront standard logging delivers via an ACL grant to a fixed AWS-owned
+# canonical user (the log-delivery account), not a service principal. The
+# deprecated implicit behavior where enabling logging_config auto-grants this
+# can fail at apply with InvalidArgument, so we grant it explicitly here.
+# `aws_canonical_user_id` resolves the calling account's canonical id so the
+# bucket OWNER keeps FULL_CONTROL alongside the log-delivery grant.
+data "aws_canonical_user_id" "current" {}
+
+# CloudFront standard-logging delivery canonical user id (a fixed, global,
+# AWS-published value). FULL_CONTROL lets the log-delivery account write and
+# set ACLs on the log objects it delivers.
+locals {
+  cloudfront_log_delivery_canonical_id = "c4c1ede66af53448b93c283ce9448c4ba468c9432aa01d700d3878632f77d2d0"
+}
+
+# Explicit ACL granting the bucket owner FULL_CONTROL and the CloudFront
+# log-delivery account FULL_CONTROL. This replaces the deprecated implicit
+# auto-grant that logging_config used to perform on enable.
+resource "aws_s3_bucket_acl" "apex_logs" {
+  bucket = aws_s3_bucket.apex_logs.id
+
+  access_control_policy {
+    owner {
+      id = data.aws_canonical_user_id.current.id
+    }
+
+    grant {
+      grantee {
+        type = "CanonicalUser"
+        id   = data.aws_canonical_user_id.current.id
+      }
+      permission = "FULL_CONTROL"
+    }
+
+    grant {
+      grantee {
+        type = "CanonicalUser"
+        id   = local.cloudfront_log_delivery_canonical_id
+      }
+      permission = "FULL_CONTROL"
+    }
+  }
+
+  # Ownership controls (ACLs enabled) and the public-access-block must exist
+  # before the ACL is applied, and the ACL must exist before CloudFront's first
+  # log delivery (sequenced via the distribution's depends_on).
+  depends_on = [
+    aws_s3_bucket_ownership_controls.apex_logs,
+    aws_s3_bucket_public_access_block.apex_logs,
+  ]
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "apex_logs" {
@@ -560,7 +614,7 @@ resource "aws_cloudfront_distribution" "apex" {
   # at its default (false): the apex is a cookieless static site, so logging
   # cookies would only add noise.
   logging_config {
-    bucket = aws_s3_bucket.apex_logs.bucket_domain_name
+    bucket = aws_s3_bucket.apex_logs.bucket_regional_domain_name
     prefix = "apex/"
   }
 
@@ -620,14 +674,15 @@ resource "aws_cloudfront_distribution" "apex" {
     minimum_protocol_version = "TLSv1.2_2021"
   }
 
-  # The logs bucket's ownership controls (ACLs enabled) and BPA settings must
-  # be in place before CloudFront attempts its first log delivery; otherwise
-  # the log-delivery ACL grant CloudFront writes on enable is rejected and the
-  # distribution create/update errors. Sequencing here makes that explicit
-  # instead of relying on the implicit bucket_domain_name reference alone.
+  # The logs bucket's ownership controls (ACLs enabled), BPA settings, and the
+  # explicit log-delivery ACL grant must all be in place before CloudFront
+  # attempts its first log delivery; otherwise the delivery write is rejected
+  # and the distribution create/update errors. Sequencing here makes that
+  # explicit instead of relying on the implicit domain-name reference alone.
   depends_on = [
     aws_s3_bucket_ownership_controls.apex_logs,
     aws_s3_bucket_public_access_block.apex_logs,
+    aws_s3_bucket_acl.apex_logs,
   ]
 
   tags = {
