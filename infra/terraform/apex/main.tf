@@ -32,6 +32,13 @@ locals {
   # config; the format matches the AWS console convention.
   s3_origin_id = "S3-${local.bucket_name}"
 
+  # Dedicated bucket for CloudFront standard (access) logs. Kept separate
+  # from the origin bucket so log writes never collide with the static
+  # export surface and so the two have independent lifecycle + ownership
+  # settings (the origin enforces BucketOwnerEnforced; the logs bucket must
+  # allow ACLs for CloudFront's log-delivery principal — see below).
+  logs_bucket_name = "${replace(var.domain, ".", "-")}-apex-logs"
+
   # GitHub Actions OIDC subject claim: ONLY push-to-main can assume the
   # deploy role. PR-context tokens have a different sub (`pull_request`)
   # and are rejected by the trust policy's StringEquals match. PR previews,
@@ -43,6 +50,42 @@ locals {
   # suffix; we accept plan + apply so PR speculative plans and merge applies
   # both work. Workspace pattern uses TFC's glob support.
   tfc_sub_pattern = "organization:${var.tfc_organization}:project:*:workspace:${var.tfc_workspace_pattern}:run_phase:*"
+
+  # Content-Security-Policy for the apex static export. Derived directly from
+  # what build-apex.sh's output actually loads (frontend/scripts/build-apex.sh
+  # + frontend/app/layout.tsx + frontend/app/page.tsx). It is INTENTIONALLY
+  # distinct from the Next.js app's nonce-based CSP
+  # (frontend/lib/security-headers.ts): the apex is a `output: 'export'` static
+  # build with NO request-time runtime, so it cannot mint per-request nonces.
+  # layout.tsx's theme-bootstrap inline <script> and page.tsx's JSON-LD
+  # <script type="application/ld+json"> blocks ship WITHOUT a nonce attribute on
+  # the static export (readNonce() returns ""), and Next.js itself injects
+  # un-nonced inline hydration bootstrap scripts. So script-src/style-src MUST
+  # allow 'unsafe-inline' here (and NOT 'strict-dynamic', which would void
+  # 'unsafe-inline').
+  #
+  # External origins the apex genuinely loads, and nothing more:
+  #   * https://fonts.googleapis.com -> Google Fonts <link rel=stylesheet> (style-src)
+  #   * https://fonts.gstatic.com    -> the font files that stylesheet pulls (font-src)
+  # og:image (/og.png) and every other asset are same-origin ('self'). There is
+  # NO analytics, CDN, Cloudflare Turnstile, or backend connect on the apex
+  # surface: build-apex.sh's post-build guard hard-fails on any /api/v1
+  # reference, and the auth pages that load Turnstile are staged out of the
+  # apex build by the default-deny route allowlist.
+  apex_csp = join("; ", [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "style-src-attr 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "upgrade-insecure-requests",
+  ])
 }
 
 # Existing hosted zone for the apex domain. We do not create the zone here;
@@ -159,6 +202,87 @@ resource "aws_s3_bucket_lifecycle_configuration" "apex" {
 
     expiration {
       days = var.orphaned_static_expiration_days
+    }
+  }
+}
+
+###############################################################################
+# CLOUDFRONT ACCESS LOGS BUCKET
+# Dedicated, private bucket for CloudFront standard (legacy) access logs.
+#
+# CloudFront standard logging delivers log files using an ACL grant to the
+# `awslogsdelivery` AWS-owned account (the canonical-user-id path), NOT a
+# service-principal bucket policy. That means this bucket MUST have ACLs
+# enabled — object_ownership = "BucketOwnerPreferred", and the account-level
+# Block Public Access must leave `block_public_acls` / `ignore_public_acls`
+# OFF so the delivery ACL grant lands. (The origin bucket uses the stricter
+# BucketOwnerEnforced + full BPA; these two buckets intentionally differ.)
+# `aws_cloudfront_distribution.logging_config` wires the grant automatically.
+###############################################################################
+
+resource "aws_s3_bucket" "apex_logs" {
+  bucket = local.logs_bucket_name
+
+  tags = {
+    Name = local.logs_bucket_name
+    role = "apex-cloudfront-logs"
+  }
+}
+
+# ACLs enabled. CloudFront standard log delivery writes via an ACL grant to
+# the log-delivery account; BucketOwnerEnforced (which disables ACLs) would
+# reject the grant and break log delivery. BucketOwnerPreferred keeps the
+# bucket owner as the owner of delivered objects while still permitting ACLs.
+resource "aws_s3_bucket_ownership_controls" "apex_logs" {
+  bucket = aws_s3_bucket.apex_logs.id
+
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+# Block PUBLIC access while still permitting the CloudFront log-delivery ACL
+# grant. The two *_acls flags are left false because disabling them entirely
+# (as the origin bucket does) would also block the non-public delivery grant.
+# block_public_policy + restrict_public_buckets stay on, so no public policy
+# or public bucket exposure is possible regardless of the ACL grant.
+resource "aws_s3_bucket_public_access_block" "apex_logs" {
+  bucket = aws_s3_bucket.apex_logs.id
+
+  block_public_acls       = false
+  block_public_policy     = true
+  ignore_public_acls      = false
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "apex_logs" {
+  bucket = aws_s3_bucket.apex_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "apex_logs" {
+  bucket = aws_s3_bucket.apex_logs.id
+
+  rule {
+    id     = "expire-access-logs"
+    status = "Enabled"
+
+    filter {
+      prefix = "apex/"
+    }
+
+    expiration {
+      days = var.access_log_expiration_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
@@ -319,15 +443,21 @@ resource "aws_cloudfront_origin_access_control" "apex" {
   signing_protocol                  = "sigv4"
 }
 
-# Response headers policy: HSTS, X-Content-Type-Options, X-Frame-Options,
-# Referrer-Policy, Permissions-Policy. These are baseline web security
-# headers; CSP is intentionally omitted from this PR because the static
-# export's CSP needs to be authored alongside PR-C's build output.
+# Response headers policy: CSP, HSTS, X-Content-Type-Options, X-Frame-Options,
+# Referrer-Policy, Permissions-Policy. Baseline web security headers for the
+# apex static landing distribution. The CSP value is assembled in the locals
+# block at the top of this file (local.apex_csp); see the rationale there for
+# why it is intentionally distinct from the Next.js app's nonce-based CSP.
 resource "aws_cloudfront_response_headers_policy" "apex" {
   name    = "${local.bucket_name}-security-headers"
   comment = "Baseline security headers for the apex landing distribution."
 
   security_headers_config {
+    content_security_policy {
+      content_security_policy = local.apex_csp
+      override                = true
+    }
+
     strict_transport_security {
       access_control_max_age_sec = 63072000 # 2 years
       include_subdomains         = true
@@ -422,6 +552,18 @@ resource "aws_cloudfront_distribution" "apex" {
 
   aliases = [local.apex_fqdn, local.www_fqdn]
 
+  # CloudFront standard (access) logging to the dedicated logs bucket. The
+  # `bucket` argument expects the S3 bucket DOMAIN name (not the bare id or
+  # ARN). Logs land under the apex/ prefix so the bucket can host other
+  # CloudFront log streams later without key collisions, and so the lifecycle
+  # rule (which filters on prefix = "apex/") matches. include_cookies is left
+  # at its default (false): the apex is a cookieless static site, so logging
+  # cookies would only add noise.
+  logging_config {
+    bucket = aws_s3_bucket.apex_logs.bucket_domain_name
+    prefix = "apex/"
+  }
+
   origin {
     domain_name              = aws_s3_bucket.apex.bucket_regional_domain_name
     origin_id                = local.s3_origin_id
@@ -477,6 +619,16 @@ resource "aws_cloudfront_distribution" "apex" {
     ssl_support_method       = "sni-only"
     minimum_protocol_version = "TLSv1.2_2021"
   }
+
+  # The logs bucket's ownership controls (ACLs enabled) and BPA settings must
+  # be in place before CloudFront attempts its first log delivery; otherwise
+  # the log-delivery ACL grant CloudFront writes on enable is rejected and the
+  # distribution create/update errors. Sequencing here makes that explicit
+  # instead of relying on the implicit bucket_domain_name reference alone.
+  depends_on = [
+    aws_s3_bucket_ownership_controls.apex_logs,
+    aws_s3_bucket_public_access_block.apex_logs,
+  ]
 
   tags = {
     Name = "${var.domain}-apex"
@@ -693,9 +845,10 @@ resource "aws_iam_role" "tfc_apex_provisioner" {
 }
 
 data "aws_iam_policy_document" "tfc_apex_provisioner" {
-  # S3 management on THIS bucket only.
+  # S3 management on THIS module's buckets only: the static-origin bucket and
+  # the dedicated CloudFront access-logs bucket.
   statement {
-    sid    = "ManageApexBucket"
+    sid    = "ManageApexBuckets"
     effect = "Allow"
     actions = [
       "s3:*",
@@ -703,6 +856,8 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
     resources = [
       aws_s3_bucket.apex.arn,
       "${aws_s3_bucket.apex.arn}/*",
+      aws_s3_bucket.apex_logs.arn,
+      "${aws_s3_bucket.apex_logs.arn}/*",
     ]
   }
 
