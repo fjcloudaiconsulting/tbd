@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import Pagination from "@/components/ui/Pagination";
+import SortableHeader from "@/components/ui/SortableHeader";
 import Spinner from "@/components/ui/Spinner";
-import { paginate } from "@/lib/hooks/use-table-state";
+import { pageCount } from "@/lib/hooks/use-table-state";
+import type { SortDir } from "@/lib/hooks/use-table-state";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -25,11 +27,29 @@ import type {
   PermissionCatalogResponse,
   RoleCreatePayload,
   RoleDetail,
-  RoleListItem,
   RoleListResponse,
+  RoleSortField,
 } from "@/lib/types";
 
 const SLUG_PATTERN = /^[a-z][a-z0-9_]{2,63}$/;
+
+const DEFAULT_PAGE_SIZE = 25;
+// Default sort is the semantic frozen-first / name order, expressed by
+// the backend when no explicit sort_by is sent. We surface that as the
+// "unsorted" header state (no active column) so the page mirrors the
+// server's default ordering until the user clicks a column.
+const DEFAULT_SORT_DIR: SortDir = "asc";
+
+// Backend-whitelisted sort keys. Unknown keys 400, so we clamp a seeded
+// URL value back to the default (no active sort) rather than send garbage.
+const SORT_FIELDS = [
+  "name",
+  "slug",
+  "permission_count",
+  "is_system_frozen",
+] as const;
+
+const PAGE_SIZE_VALUES = [10, 25, 50, 100] as const;
 
 interface CreateModalProps {
   catalog: PermissionCatalogResponse;
@@ -213,21 +233,69 @@ function CreateRoleModal({ catalog, onClose, onCreated }: CreateModalProps) {
 }
 
 export default function AdminRolesPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center">
+          <Spinner />
+        </div>
+      }
+    >
+      <AdminRolesPageContent />
+    </Suspense>
+  );
+}
+
+// Admin roles list. URL-synced server-side sort + pagination mirrors
+// /admin/orgs/page.tsx (the reference implementation). The query string
+// is the source of truth for offset / sort / page_size; we seed React
+// state from it on first render and mirror state back via router.replace
+// so a refreshed or shared URL keeps the table state. The default order
+// (no sort_by sent) is the backend's frozen-first / name ordering.
+function AdminRolesPageContent() {
   const { user, loading } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const initialPageSize = (() => {
+    const raw = searchParams.get("page_size");
+    if (raw === null || raw === "") return DEFAULT_PAGE_SIZE;
+    const n = Number(raw);
+    return (PAGE_SIZE_VALUES as readonly number[]).includes(n)
+      ? n
+      : DEFAULT_PAGE_SIZE;
+  })();
+  const initialOffset = (() => {
+    const raw = searchParams.get("offset");
+    if (raw === null || raw === "") return 0;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.floor(n / initialPageSize) * initialPageSize;
+  })();
+  // sortBy is null when no explicit sort is active (backend default order).
+  const initialSortBy: RoleSortField | null = (() => {
+    const raw = searchParams.get("sort_by");
+    return raw && (SORT_FIELDS as readonly string[]).includes(raw)
+      ? (raw as RoleSortField)
+      : null;
+  })();
+  const initialSortDir: SortDir = (() => {
+    const raw = searchParams.get("sort_dir");
+    return raw === "asc" || raw === "desc" ? raw : DEFAULT_SORT_DIR;
+  })();
+
+  const [offset, setOffset] = useState(initialOffset);
+  const [sortBy, setSortBy] = useState<RoleSortField | null>(initialSortBy);
+  const [sortDir, setSortDir] = useState<SortDir>(initialSortDir);
+  const [pageSize, setPageSize] = useState(initialPageSize);
+
   const [data, setData] = useState<RoleListResponse | null>(null);
   const [catalog, setCatalog] = useState<PermissionCatalogResponse | null>(null);
   const [error, setError] = useState("");
   const [fetching, setFetching] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [reloadCounter, setReloadCounter] = useState(0);
-  // Client-side pagination over the fully-listed roles set. Roles are a
-  // tiny, semantically-ordered list (frozen-first, then name) so column
-  // sort is intentionally not surfaced here; the shared <Pagination>
-  // keeps the table consistent with the other admin tables and degrades
-  // to nothing when there is only one page.
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
 
   useEffect(() => {
     if (loading) return;
@@ -240,39 +308,81 @@ export default function AdminRolesPage() {
     }
   }, [loading, user, router]);
 
+  // Load the permission catalog once (needed for the create modal). Kept
+  // separate from the paginated roles fetch so paging doesn't re-pull it.
+  useEffect(() => {
+    if (loading || !user || !hasPlatformPermission(user, "roles.manage")) return;
+    apiFetch<PermissionCatalogResponse>("/api/v1/admin/permissions")
+      .then((perms) => setCatalog(perms))
+      .catch((err) => setError(extractErrorMessage(err, "Failed to load")));
+  }, [loading, user]);
+
+  // Fetch a page of roles whenever sort / offset / pageSize changes (or a
+  // create reloads the list). Only sends sort_by/sort_dir when a column is
+  // active, so the default order stays the backend's frozen-first ordering.
   useEffect(() => {
     if (loading || !user || !hasPlatformPermission(user, "roles.manage")) return;
     setFetching(true);
-    Promise.all([
-      apiFetch<RoleListResponse>("/api/v1/admin/roles"),
-      apiFetch<PermissionCatalogResponse>("/api/v1/admin/permissions"),
-    ])
-      .then(([roles, perms]) => {
-        setData(roles);
-        setCatalog(perms);
-      })
+    setError("");
+    const params = new URLSearchParams({
+      limit: String(pageSize),
+      offset: String(offset),
+    });
+    if (sortBy) {
+      params.set("sort_by", sortBy);
+      params.set("sort_dir", sortDir);
+    }
+    apiFetch<RoleListResponse>(`/api/v1/admin/roles?${params.toString()}`)
+      .then((d) => setData(d))
       .catch((err) => setError(extractErrorMessage(err, "Failed to load")))
       .finally(() => setFetching(false));
-  }, [loading, user, reloadCounter]);
+  }, [loading, user, offset, sortBy, sortDir, pageSize, reloadCounter]);
 
-  const sortedItems: RoleListItem[] = useMemo(() => {
-    if (!data) return [];
-    return [...data.items].sort((a, b) => {
-      // Frozen first, then by name.
-      if (a.is_system_frozen !== b.is_system_frozen) {
-        return a.is_system_frozen ? -1 : 1;
-      }
-      return a.name.localeCompare(b.name);
-    });
-  }, [data]);
+  // Clamp an over-offset URL back to the last valid page once data lands.
+  useEffect(() => {
+    if (!data) return;
+    if (offset > 0 && offset >= data.total) {
+      const lastOffset = Math.max(
+        0,
+        (pageCount(data.total, pageSize) - 1) * pageSize,
+      );
+      if (lastOffset !== offset) setOffset(lastOffset);
+    }
+  }, [data, offset, pageSize]);
 
-  // Honor the list envelope's total (equals items length today since roles
-  // are fully listed, but keeps the UI correct if server-side paging lands).
-  const total = data?.total ?? 0;
-  const pageItems = useMemo(
-    () => paginate(sortedItems, page, pageSize),
-    [sortedItems, page, pageSize],
+  // Mirror state back to the URL (router.replace, scroll:false). Only
+  // non-default params are written so a clean URL stays clean.
+  useEffect(() => {
+    if (loading || !user || !hasPlatformPermission(user, "roles.manage")) return;
+    const params = new URLSearchParams();
+    if (offset > 0) params.set("offset", String(offset));
+    if (sortBy) {
+      params.set("sort_by", sortBy);
+      if (sortDir !== DEFAULT_SORT_DIR) params.set("sort_dir", sortDir);
+    }
+    if (pageSize !== DEFAULT_PAGE_SIZE) params.set("page_size", String(pageSize));
+    const query = params.toString();
+    const current = searchParams.toString();
+    if (query === current) return;
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, user, offset, sortBy, sortDir, pageSize, pathname, router]);
+
+  const handleSort = useCallback(
+    (field: string) => {
+      if (!(SORT_FIELDS as readonly string[]).includes(field)) return;
+      const f = field as RoleSortField;
+      setSortBy(f);
+      setSortDir(f === sortBy ? (sortDir === "asc" ? "desc" : "asc") : "asc");
+      setOffset(0);
+    },
+    [sortBy, sortDir],
   );
+
+  const total = data?.total ?? 0;
+  // SortableHeader wants a concrete active field; pass an unmatched value
+  // when no column is active so no header shows a sort arrow.
+  const activeField = sortBy ?? "";
 
   if (loading || !user || !hasPlatformPermission(user, "roles.manage")) {
     return (
@@ -310,10 +420,34 @@ export default function AdminRolesPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-y border-border text-left text-xs uppercase tracking-wider text-text-muted">
-                <th className="px-6 py-3">Name</th>
-                <th className="px-6 py-3">Slug</th>
-                <th className="px-6 py-3">Permissions</th>
-                <th className="px-6 py-3">Type</th>
+                <SortableHeader
+                  label="Name"
+                  field="name"
+                  activeField={activeField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Slug"
+                  field="slug"
+                  activeField={activeField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Permissions"
+                  field="permission_count"
+                  activeField={activeField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
+                <SortableHeader
+                  label="Type"
+                  field="is_system_frozen"
+                  activeField={activeField}
+                  dir={sortDir}
+                  onSort={handleSort}
+                />
                 <th className="px-6 py-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -339,7 +473,7 @@ export default function AdminRolesPage() {
                 </tr>
               )}
               {!fetching &&
-                pageItems.map((row) => (
+                data?.items.map((row) => (
                   <tr
                     key={row.id}
                     className="border-b border-border-subtle"
@@ -386,16 +520,16 @@ export default function AdminRolesPage() {
           </table>
         </div>
 
-        {data && total > pageSize && (
+        {data && (total > pageSize || offset > 0) && (
           <div className="px-6">
             <Pagination
-              page={page}
+              page={Math.max(1, Math.floor(offset / pageSize) + 1)}
               pageSize={pageSize}
               total={total}
-              onPageChange={setPage}
+              onPageChange={(n) => setOffset((n - 1) * pageSize)}
               onPageSizeChange={(n) => {
                 setPageSize(n);
-                setPage(1);
+                setOffset(0);
               }}
             />
           </div>

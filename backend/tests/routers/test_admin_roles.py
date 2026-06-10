@@ -195,6 +195,117 @@ async def test_list_roles_returns_seeded_frozen(session_factory):
     assert item["permission_count"] == 2
 
 
+async def _seed_role(factory, *, slug, name, frozen=False, permissions=()):
+    async with factory() as db:
+        role = PlatformRole(slug=slug, name=name, is_system_frozen=frozen)
+        db.add(role)
+        await db.flush()
+        for key in permissions:
+            db.add(RolePermission(role_id=role.id, permission_key=key))
+        await db.commit()
+        return role.id
+
+
+# ── server-side sort + pagination (shared list contract) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_roles_default_order_frozen_first(session_factory):
+    await _seed_users(session_factory)
+    await _seed_frozen_superadmin(session_factory)  # name "Superadmin"
+    await _seed_role(session_factory, slug="alpha", name="Alpha")
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get("/api/v1/admin/roles")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["total"] == 2
+    # Frozen pinned first regardless of name ("Superadmin" > "Alpha").
+    assert [i["slug"] for i in body["items"]] == ["superadmin", "alpha"]
+
+
+@pytest.mark.asyncio
+async def test_list_roles_sort_name_desc(session_factory):
+    await _seed_users(session_factory)
+    await _seed_role(session_factory, slug="alpha", name="Alpha")
+    await _seed_role(session_factory, slug="zeta", name="Zeta")
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/roles",
+            params={"sort_by": "name", "sort_dir": "desc"},
+        )
+    assert res.status_code == 200
+    names = [i["name"] for i in res.json()["items"]]
+    assert names == ["Zeta", "Alpha"]
+
+
+@pytest.mark.asyncio
+async def test_list_roles_sort_permission_count_desc(session_factory):
+    await _seed_users(session_factory)
+    await _seed_role(
+        session_factory, slug="few", name="Few", permissions=["admin.view"]
+    )
+    await _seed_role(
+        session_factory,
+        slug="many",
+        name="Many",
+        permissions=["admin.view", "orgs.view", "audit.view"],
+    )
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/roles",
+            params={"sort_by": "permission_count", "sort_dir": "desc"},
+        )
+    assert res.status_code == 200
+    slugs = [i["slug"] for i in res.json()["items"]]
+    assert slugs == ["many", "few"]
+
+
+@pytest.mark.asyncio
+async def test_list_roles_pagination_total_is_full_count(session_factory):
+    await _seed_users(session_factory)
+    for i in range(5):
+        await _seed_role(session_factory, slug=f"role_{i}", name=f"Role {i}")
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/roles",
+            params={"sort_by": "name", "sort_dir": "asc", "limit": 2, "offset": 0},
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body["items"]) == 2
+    assert body["total"] == 5
+    assert [i["name"] for i in body["items"]] == ["Role 0", "Role 1"]
+
+
+@pytest.mark.asyncio
+async def test_list_roles_invalid_sort_by_returns_400(session_factory):
+    await _seed_users(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/roles", params={"sort_by": "not_a_column"}
+        )
+    assert res.status_code == 400
+    assert "invalid_sort_by" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_roles_invalid_sort_dir_returns_400(session_factory):
+    await _seed_users(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/roles",
+            params={"sort_by": "name", "sort_dir": "sideways"},
+        )
+    assert res.status_code == 400
+    assert "invalid_sort_dir" in res.json()["detail"]
+
+
 @pytest.mark.asyncio
 async def test_create_role_persists(session_factory):
     await _seed_users(session_factory)

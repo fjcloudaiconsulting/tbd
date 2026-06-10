@@ -22,9 +22,11 @@ vi.mock("@/components/auth/AuthProvider", async () => {
 });
 
 const replaceMock = vi.fn();
+let searchParamsValue = new URLSearchParams("");
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
   usePathname: () => "/admin/roles",
+  useSearchParams: () => searchParamsValue,
 }));
 
 const SUPERADMIN = {
@@ -74,6 +76,7 @@ describe("AdminRolesPage", () => {
   beforeEach(() => {
     apiFetchMock.mockReset();
     replaceMock.mockReset();
+    searchParamsValue = new URLSearchParams("");
     useAuthMock.mockReturnValue({
       user: SUPERADMIN as never,
       loading: false,
@@ -87,7 +90,7 @@ describe("AdminRolesPage", () => {
 
   it("renders the seeded superadmin role with system badge", async () => {
     apiFetchMock.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/admin/roles") {
+      if (path.startsWith("/api/v1/admin/roles")) {
         return {
           items: [
             {
@@ -115,6 +118,78 @@ describe("AdminRolesPage", () => {
     expect(screen.getByText("6")).toBeInTheDocument();
   });
 
+  it("fetches a default page with no sort_by and renders sortable headers", async () => {
+    const calls: string[] = [];
+    apiFetchMock.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/v1/admin/roles")) {
+        calls.push(path);
+        return { items: [], total: 0 };
+      }
+      if (path === "/api/v1/admin/permissions") return CATALOG;
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    render(<AdminRolesPage />);
+
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    // Default order sends limit/offset but no sort_by (backend frozen-first).
+    expect(calls[0]).toContain("limit=25");
+    expect(calls[0]).toContain("offset=0");
+    expect(calls[0]).not.toContain("sort_by");
+    // Column headers are clickable sort buttons.
+    expect(
+      screen.getByRole("button", { name: /name/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /permissions/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("sends sort_by/sort_dir when a column header is clicked", async () => {
+    const calls: string[] = [];
+    apiFetchMock.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/v1/admin/roles")) {
+        calls.push(path);
+        return { items: [], total: 0 };
+      }
+      if (path === "/api/v1/admin/permissions") return CATALOG;
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    render(<AdminRolesPage />);
+
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole("button", { name: /^name/i }));
+
+    await waitFor(() =>
+      expect(calls.some((c) => c.includes("sort_by=name"))).toBe(true),
+    );
+    const sorted = calls.find((c) => c.includes("sort_by=name"))!;
+    expect(sorted).toContain("sort_dir=asc");
+  });
+
+  it("seeds sort + page from the URL query string", async () => {
+    searchParamsValue = new URLSearchParams(
+      "sort_by=permission_count&sort_dir=desc&page_size=10",
+    );
+    const calls: string[] = [];
+    apiFetchMock.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/v1/admin/roles")) {
+        calls.push(path);
+        return { items: [], total: 0 };
+      }
+      if (path === "/api/v1/admin/permissions") return CATALOG;
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    render(<AdminRolesPage />);
+
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    expect(calls[0]).toContain("sort_by=permission_count");
+    expect(calls[0]).toContain("sort_dir=desc");
+    expect(calls[0]).toContain("limit=10");
+  });
+
   it("redirects non-superadmin users without roles.manage away", async () => {
     useAuthMock.mockReturnValue({
       user: { ...SUPERADMIN, is_superadmin: false } as never,
@@ -135,7 +210,7 @@ describe("AdminRolesPage", () => {
 
   it("renders for a non-superadmin who carries roles.manage in permissions", async () => {
     apiFetchMock.mockImplementation(async (path: string) => {
-      if (path === "/api/v1/admin/roles") return { items: [], total: 0 };
+      if (path.startsWith("/api/v1/admin/roles")) return { items: [], total: 0 };
       if (path === "/api/v1/admin/permissions") return CATALOG;
       throw new Error(`unexpected path: ${path}`);
     });
@@ -163,7 +238,10 @@ describe("AdminRolesPage", () => {
 
   it("opens the create modal and submits a new role", async () => {
     apiFetchMock.mockImplementation(async (path: string, init?: RequestInit) => {
-      if (path === "/api/v1/admin/roles" && (!init || init.method === undefined)) {
+      if (
+        path.startsWith("/api/v1/admin/roles") &&
+        (!init || init.method === undefined)
+      ) {
         return { items: [], total: 0 };
       }
       if (path === "/api/v1/admin/permissions") return CATALOG;

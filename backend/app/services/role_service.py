@@ -32,6 +32,7 @@ from app.services.exceptions import (
     NotFoundError,
     ValidationError,
 )
+from app.services.list_query import resolve_order_by
 
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
@@ -89,19 +90,81 @@ def _to_detail(role: PlatformRole) -> dict:
     }
 
 
-async def list_roles(db: AsyncSession) -> list[dict]:
-    """Return every role with a known-permission count.
+async def list_roles(
+    db: AsyncSession,
+    *,
+    sort_by: Optional[str] = None,
+    sort_dir: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Return a page of roles with a known-permission count and the
+    full row count.
 
-    Roles will stay small (single-digit count for the foreseeable
-    future), so no pagination is necessary. We compute the count on
-    the Python side — also runs a left-outer-join to materialize the
-    permission rows in a single query.
+    Mirrors the shared admin-table list contract (orgs / subscriptions /
+    audit / rate-limit-overrides): server-side ordering + LIMIT/OFFSET,
+    returning ``(items, total)`` where ``total`` is the full count, not
+    the page length.
+
+    ``sort_by`` is resolved against a closed whitelist (see ``_SORTABLE``
+    below); an unknown key raises ``ValidationError`` (router → 400). When
+    omitted, the default order is the semantic ``frozen-first, then name``
+    so the seeded system role(s) stay pinned to the top. ``permission_count``
+    sorts on a correlated COUNT subquery (the raw stored-row count, which
+    matches the displayed count except for the transient orphan-key case).
+    ``PlatformRole.id`` asc is appended as a stable tiebreaker so pagination
+    is deterministic.
     """
+    permission_count_sq = (
+        select(func.count())
+        .select_from(RolePermission)
+        .where(RolePermission.role_id == PlatformRole.id)
+        .correlate(PlatformRole)
+        .scalar_subquery()
+    )
+
+    # Closed whitelist of sortable columns. Keys are the public sort
+    # tokens the frontend sends; values are the column/expression to
+    # order by. Anything not here is a 400 (see
+    # ``list_query.resolve_order_by``).
+    _SORTABLE = {
+        "name": PlatformRole.name,
+        "slug": PlatformRole.slug,
+        "permission_count": permission_count_sq,
+        "is_system_frozen": PlatformRole.is_system_frozen,
+    }
+
+    if sort_by:
+        order_by = resolve_order_by(
+            sort_by,
+            sort_dir,
+            allowed=_SORTABLE,
+            default_key="name",
+            default_dir="asc",
+            tiebreaker=PlatformRole.id.asc(),
+        )
+    else:
+        # ``sort_dir`` is meaningless without an explicit ``sort_by`` —
+        # reject it so a stray ``sort_dir`` can't masquerade as a no-op.
+        if sort_dir is not None:
+            raise ValidationError("invalid_sort_by")
+        order_by = [
+            PlatformRole.is_system_frozen.desc(),
+            PlatformRole.name.asc(),
+            PlatformRole.id.asc(),
+        ]
+
+    total = int(
+        (await db.scalar(select(func.count()).select_from(PlatformRole))) or 0
+    )
+
     rows = (
         await db.execute(
             select(PlatformRole)
             .options(selectinload(PlatformRole.permissions))
-            .order_by(PlatformRole.is_system_frozen.desc(), PlatformRole.name)
+            .order_by(*order_by)
+            .limit(limit)
+            .offset(offset)
         )
     ).scalars().all()
 
@@ -122,7 +185,7 @@ async def list_roles(db: AsyncSession) -> list[dict]:
                 "updated_at": role.updated_at,
             }
         )
-    return items
+    return items, total
 
 
 async def get_role(db: AsyncSession, *, role_id: int) -> dict:
