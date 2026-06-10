@@ -6,22 +6,18 @@ in-memory SQLite + dependency-override pattern matches
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from decimal import Decimal
 
 import datetime
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.database import get_db
-from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.account import Account, AccountType
 from app.models.audit_event import AuditEvent
@@ -37,6 +33,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Organization, Role, User
 from app.routers.tags import router as tags_router, transaction_tags_router
 from app.security import hash_password
+from tests.factories import make_test_app
 
 
 @pytest_asyncio.fixture
@@ -111,8 +108,22 @@ def make_app(factory, user_id: int):
     from fastapi.responses import JSONResponse
     from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
-    app = FastAPI()
+    async def resolve_user(session_factory) -> User:
+        async with session_factory() as db:
+            return (
+                await db.execute(select(User).where(User.id == user_id))
+            ).scalar_one()
 
+    app = make_test_app(
+        factory,
+        routers=[tags_router, transaction_tags_router],
+        current_user=resolve_user,
+        override_session_factory=True,
+    )
+
+    # These routers raise domain exceptions that the production app maps to
+    # HTTP status codes via app-level handlers; register the same handlers
+    # here so the status-code assertions hold against the isolated app.
     @app.exception_handler(NotFoundError)
     async def _nf(request, exc):
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -125,24 +136,6 @@ def make_app(factory, user_id: int):
     async def _ce(request, exc):
         return JSONResponse(status_code=409, content={"detail": exc.detail})
 
-    async def override_get_db() -> AsyncIterator[AsyncSession]:
-        async with factory() as session:
-            yield session
-
-    async def override_current_user() -> User:
-        async with factory() as db:
-            return (
-                await db.execute(select(User).where(User.id == user_id))
-            ).scalar_one()
-
-    def override_session_factory():
-        return factory
-
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_user] = override_current_user
-    app.dependency_overrides[get_session_factory] = override_session_factory
-    app.include_router(tags_router)
-    app.include_router(transaction_tags_router)
     return app
 
 

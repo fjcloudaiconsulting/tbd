@@ -25,8 +25,6 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.database import get_db
-from app.deps import get_current_user, get_session_factory
 from app.models import Account, AccountType, Organization
 from app.models.audit_event import AuditEvent
 from app.models.base import Base
@@ -35,6 +33,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Role, User
 from app.routers.accounts import router as accounts_router
 from app.security import hash_password
+from tests.factories import make_test_app
 
 
 @pytest_asyncio.fixture
@@ -167,17 +166,8 @@ async def seeded(session_factory) -> dict:
 
 
 def _make_app(session_factory, *, as_other_org: bool = False) -> FastAPI:
-    app = FastAPI()
-
-    async def override_get_db() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
-
-    async def override_session_factory():
-        return session_factory
-
-    async def override_current_user() -> User:
-        async with session_factory() as db:
+    async def resolve_admin(factory) -> User:
+        async with factory() as db:
             if as_other_org:
                 # No user exists for the second org; the cross-tenant
                 # tests use the admin user's org_id mismatched against
@@ -187,11 +177,12 @@ def _make_app(session_factory, *, as_other_org: bool = False) -> FastAPI:
                 await db.execute(select(User).where(User.role == Role.ADMIN))
             ).scalar_one()
 
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_session_factory] = override_session_factory
-    app.dependency_overrides[get_current_user] = override_current_user
-    app.include_router(accounts_router)
-    return app
+    return make_test_app(
+        session_factory,
+        routers=accounts_router,
+        current_user=resolve_admin,
+        override_session_factory=True,
+    )
 
 
 async def _audit_rows_for_type_changed(session_factory, account_id: int):
