@@ -485,12 +485,21 @@ async def remaining_hard_cap_cents(
     returns ``hard_cap_cents - cost_so_far``, which may be zero or
     negative when the org is at or over its cap. The dispatch refusal
     boundary is ``cost_so_far >= hard_cap`` (i.e. ``remaining <= 0``).
+
+    Resolves caps FIRST and short-circuits on the no-cap path: the
+    ``cost_so_far`` aggregation (a ``SUM`` over the ledger) is only run
+    when a hard cap actually exists, since the no-cap path discards it.
+    The two ``_prepare_dispatch`` sites keep using ``_resolve_caps_and_cost``
+    because they always need the aggregate (soft-cap warning + ledger).
     """
-    resolved, cost_so_far = await _resolve_caps_and_cost(
+    resolved = await _resolve_caps(
         db, org_id=org_id, feature_key=feature_key
     )
     if resolved.hard_cap_cents is None:
         return None
+    cost_so_far = await _aggregate_cost_cents(
+        db, org_id=org_id, since=_month_start()
+    )
     return resolved.hard_cap_cents - cost_so_far
 
 
