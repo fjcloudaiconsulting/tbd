@@ -17,10 +17,11 @@ plus the ACM-emitted validation CNAMEs).
 | Resource | Purpose |
 |---|---|
 | `aws_s3_bucket` (+ public-access-block, versioning, SSE, lifecycle, ownership) | Private origin bucket for the static export |
-| `aws_cloudfront_distribution` | Edge distribution with HTTPS, HSTS, www -> apex redirect |
+| `aws_s3_bucket.apex_logs` (+ ownership, public-access-block, ACL, SSE, lifecycle) | Dedicated private bucket for CloudFront standard (legacy) access logs. ACLs enabled (`BucketOwnerPreferred`) with an explicit ACL granting the bucket owner and the CloudFront log-delivery account `FULL_CONTROL`; public access still blocked. |
+| `aws_cloudfront_distribution` | Edge distribution with HTTPS, HSTS, www -> apex redirect, standard access logging to `apex_logs` |
 | `aws_cloudfront_origin_access_control` | OAC (NOT legacy OAI) so only this distribution can read the bucket |
 | `aws_cloudfront_function` | Viewer-request function: (1) `www` -> apex 301 redirect, then (2) S3 directory-index rewrite (`/privacy/` -> `/privacy/index.html`) |
-| `aws_cloudfront_response_headers_policy` | Security headers: HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy |
+| `aws_cloudfront_response_headers_policy` | Security headers: Content-Security-Policy, HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy |
 | `aws_acm_certificate` + `_validation` | DNS-validated cert in `us-east-1` (CloudFront requirement) for apex + www |
 | `aws_route53_record.apex_acm_validation` | ACM `_<token>.<domain>` validation CNAMEs in the existing zone. **Does NOT touch the apex A record.** |
 | `aws_iam_openid_connect_provider.github` | Trust for GitHub Actions OIDC tokens |
@@ -41,9 +42,9 @@ Set in TFC (`FlamaCorp/pfv-apex` -> Variables); never committed.
 | `TFC_AWS_RUN_ROLE_ARN` | Env | no | After bootstrap, the `tfc_role_arn` output. Tells TFC to assume that role via workload identity. |
 
 Defaults for `aws_region`, `domain`, `github_repo`, `tfc_organization`,
-`tfc_workspace_pattern`, `noncurrent_version_expiration_days`, and
-`orphaned_static_expiration_days` live in `variables.tf` and rarely need
-overriding.
+`tfc_workspace_pattern`, `noncurrent_version_expiration_days`,
+`orphaned_static_expiration_days`, and `access_log_expiration_days` live
+in `variables.tf` and rarely need overriding.
 
 ## Outputs (consumed by other PRs)
 
@@ -245,10 +246,27 @@ documented OAC as the long-term path.
 - `X-Frame-Options: DENY`
 - `Referrer-Policy: strict-origin-when-cross-origin`
 - `Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()`
+- `Content-Security-Policy` (see `local.apex_csp` in `main.tf`)
 
-CSP is intentionally **not** set in this module. PR-C will author the
-CSP alongside the static-export's actual asset graph and add it via a
-follow-up to the response-headers policy.
+CSP **is** set in this module, in `local.apex_csp`. It is authored against
+what `build-apex.sh`'s static export actually loads and is intentionally
+distinct from the Next.js app's nonce-based CSP: the apex is an
+`output: 'export'` static build with no request-time runtime, so it cannot
+mint per-request nonces and `script-src`/`style-src` allow `'unsafe-inline'`.
+The only external origins permitted are Google Fonts (`fonts.googleapis.com`
+for `style-src`, `fonts.gstatic.com` for `font-src`); everything else is
+same-origin.
+
+### Access logging
+
+CloudFront standard (legacy) access logging is enabled and delivers to the
+dedicated `apex_logs` bucket under the `apex/` prefix. Standard logging
+delivers via an ACL grant to the AWS-owned log-delivery canonical user, so the
+logs bucket keeps ACLs enabled (`BucketOwnerPreferred`) and grants the owner
+plus the log-delivery account `FULL_CONTROL` through an explicit
+`aws_s3_bucket_acl`; public access stays blocked
+(`block_public_policy`/`restrict_public_buckets` on). Log objects expire after
+`access_log_expiration_days` (default 90).
 
 ## Rollback
 
