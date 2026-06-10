@@ -1169,3 +1169,136 @@ async def test_soft_warning_marker_is_feature_specific_when_feature_has_own_soft
     # NEW notification fired — different marker scope (__default__).
     assert dispatch_mock.await_count == 2
     assert default_marker in redis_state
+
+
+# ---------- remaining_hard_cap_cents helper ---------------------------
+
+
+def _ledger_row(org_id: int, *, cents: int, feature_key: str = "chat"):
+    return AIUsageLedger(
+        org_id=org_id,
+        credential_id=None,
+        feature_key=feature_key,
+        model="gpt-4o-mini",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        est_cost_cents=cents,
+        latency_ms=0,
+        success=True,
+        error_class=None,
+        dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+
+
+@pytest.mark.asyncio
+async def test_remaining_hard_cap_none_when_no_cap_configured(
+    db: AsyncSession, org: Organization
+):
+    """No hard cap anywhere -> None sentinel (unlimited headroom)."""
+    db.add(_ledger_row(org.id, cents=50))
+    await db.commit()
+
+    remaining = await ai_dispatch.remaining_hard_cap_cents(
+        db, org_id=org.id, feature_key="chat"
+    )
+    assert remaining is None
+
+
+@pytest.mark.asyncio
+async def test_remaining_hard_cap_subtracts_period_spend(
+    db: AsyncSession, org: Organization
+):
+    """Headroom = hard_cap - cost_so_far for the current month."""
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=None,
+            hard_cap_cents=500,
+            period="monthly",
+        )
+    )
+    db.add(_ledger_row(org.id, cents=120))
+    db.add(_ledger_row(org.id, cents=80))
+    await db.commit()
+
+    remaining = await ai_dispatch.remaining_hard_cap_cents(
+        db, org_id=org.id, feature_key="chat"
+    )
+    assert remaining == 300
+
+
+@pytest.mark.asyncio
+async def test_remaining_hard_cap_zero_at_boundary(
+    db: AsyncSession, org: Organization
+):
+    """Spend exactly at the cap -> remaining 0 (dispatch refusal boundary)."""
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=None,
+            hard_cap_cents=500,
+            period="monthly",
+        )
+    )
+    db.add(_ledger_row(org.id, cents=500))
+    await db.commit()
+
+    remaining = await ai_dispatch.remaining_hard_cap_cents(
+        db, org_id=org.id, feature_key="chat"
+    )
+    assert remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_remaining_hard_cap_negative_when_over(
+    db: AsyncSession, org: Organization
+):
+    """Over the cap -> negative headroom (no clamping)."""
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=None,
+            hard_cap_cents=100,
+            period="monthly",
+        )
+    )
+    db.add(_ledger_row(org.id, cents=180))
+    await db.commit()
+
+    remaining = await ai_dispatch.remaining_hard_cap_cents(
+        db, org_id=org.id, feature_key="chat"
+    )
+    assert remaining == -80
+
+
+@pytest.mark.asyncio
+async def test_remaining_hard_cap_feature_cap_tighter_wins(
+    db: AsyncSession, org: Organization
+):
+    """Tighter feature hard cap wins over the default, same as dispatch."""
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=None,
+            hard_cap_cents=1000,
+            period="monthly",
+        )
+    )
+    db.add(
+        OrgAIFeatureCaps(
+            org_id=org.id,
+            feature_key="chat",
+            soft_cap_cents=None,
+            hard_cap_cents=200,
+            period="monthly",
+        )
+    )
+    db.add(_ledger_row(org.id, cents=50))
+    await db.commit()
+
+    remaining = await ai_dispatch.remaining_hard_cap_cents(
+        db, org_id=org.id, feature_key="chat"
+    )
+    # 200 (feature wins) - 50 spent = 150
+    assert remaining == 150

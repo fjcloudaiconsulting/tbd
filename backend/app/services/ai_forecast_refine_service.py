@@ -755,35 +755,30 @@ async def estimate_refine(
     )
     est_cost = int(cost)
 
-    # Spend-cap pre-check. Resolve the effective hard cap and the
-    # period's already-spent cost through the SAME helpers the dispatcher
-    # uses (same ROUTING_KEY feature key, same calendar-month window).
-    # This is INTENTIONALLY STRICTER than dispatch: dispatch only refuses
-    # on ``cost_so_far >= hard_cap`` (no projected-cost gate today), so we
-    # refuse on that same boundary AND when this call's projected cost
-    # would push the period total past the hard cap (which dispatch would
-    # otherwise run, overspending). Best-effort: spend can shift between
-    # here and dispatch (concurrent calls, ledger writes), so the dispatch
+    # Spend-cap pre-check. Read the remaining hard-cap headroom through the
+    # SAME helper the dispatcher uses (same ROUTING_KEY feature key, same
+    # calendar-month window). ``None`` means no hard cap is configured, so
+    # there is no gate. This is INTENTIONALLY STRICTER than dispatch:
+    # dispatch only refuses when the headroom is exhausted
+    # (``remaining <= 0``, i.e. ``cost_so_far >= hard_cap``; no
+    # projected-cost gate today), so we refuse on that same boundary AND
+    # when this call's projected cost would not fit in the remaining
+    # headroom (``est_cost > remaining``), which dispatch would otherwise
+    # run, overspending. Best-effort: spend can shift between here and
+    # dispatch (concurrent calls, ledger writes), so the dispatch
     # chokepoint stays the authority.
-    resolved = await ai_dispatch._resolve_caps(
+    remaining = await ai_dispatch.remaining_hard_cap_cents(
         db, org_id=org_id, feature_key=ROUTING_KEY
     )
-    if resolved.hard_cap_cents is not None:
-        cost_so_far = await ai_dispatch._aggregate_cost_cents(
-            db, org_id=org_id, since=ai_dispatch._month_start()
+    if remaining is not None and (remaining <= 0 or est_cost > remaining):
+        return ForecastRefineEstimate(
+            est_prompt_tokens=est_prompt,
+            est_output_tokens=est_out,
+            est_cost_cents=est_cost,
+            duration_band=_duration_band(scope),
+            can_proceed=False,
+            reason="ai_cap_exceeded",
         )
-        if (
-            cost_so_far >= resolved.hard_cap_cents
-            or cost_so_far + est_cost > resolved.hard_cap_cents
-        ):
-            return ForecastRefineEstimate(
-                est_prompt_tokens=est_prompt,
-                est_output_tokens=est_out,
-                est_cost_cents=est_cost,
-                duration_band=_duration_band(scope),
-                can_proceed=False,
-                reason="ai_cap_exceeded",
-            )
 
     return ForecastRefineEstimate(
         est_prompt_tokens=est_prompt,
