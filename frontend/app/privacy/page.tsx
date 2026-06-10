@@ -46,7 +46,7 @@ export default function PrivacyPolicyPage() {
           <section>
             <p>
               The Better Decision (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is a personal finance
-              application operated by Flamarion Jorge. We care about your
+              application operated by FJ Cloud &amp; AI Consulting. We care about your
               privacy and keep what we collect to the minimum needed to run
               the service. This policy explains what we collect, why, how
               long we keep it, and your rights.
