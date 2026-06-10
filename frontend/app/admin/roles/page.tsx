@@ -462,7 +462,7 @@ function AdminRolesPageContent() {
                   </td>
                 </tr>
               )}
-              {!fetching && total === 0 && (
+              {!fetching && data?.items.length === 0 && (
                 <tr>
                   <td
                     colSpan={5}

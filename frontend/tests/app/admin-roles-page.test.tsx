@@ -190,6 +190,47 @@ describe("AdminRolesPage", () => {
     expect(calls[0]).toContain("limit=10");
   });
 
+  it("does not flash the empty row for an over-offset page that clamps to a populated page", async () => {
+    // total > 0 but the seeded offset is past the end, so the first fetch
+    // returns an empty items page. The clamp effect refetches the last valid
+    // page (which has items). Gating the empty row on the CURRENT page's items
+    // (parity with /admin/orgs) plus !fetching means the "No roles defined."
+    // row never appears while data exists.
+    searchParamsValue = new URLSearchParams("offset=9999&page_size=10");
+    apiFetchMock.mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/v1/admin/roles")) {
+        // Over-offset request -> empty page; clamped request -> populated page.
+        if (path.includes("offset=9999")) {
+          return { items: [], total: 3 };
+        }
+        return {
+          items: [
+            {
+              id: 1,
+              slug: "superadmin",
+              name: "Superadmin",
+              description: null,
+              is_system_frozen: true,
+              permission_count: 6,
+              created_at: "2026-05-07T09:00:00",
+              updated_at: "2026-05-07T09:00:00",
+            },
+          ],
+          total: 3,
+        };
+      }
+      if (path === "/api/v1/admin/permissions") return CATALOG;
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    render(<AdminRolesPage />);
+
+    // The clamped page renders its real rows...
+    await screen.findByText("Superadmin");
+    // ...and the empty-state row never appears.
+    expect(screen.queryByText("No roles defined.")).toBeNull();
+  });
+
   it("redirects non-superadmin users without roles.manage away", async () => {
     useAuthMock.mockReturnValue({
       user: { ...SUPERADMIN, is_superadmin: false } as never,
