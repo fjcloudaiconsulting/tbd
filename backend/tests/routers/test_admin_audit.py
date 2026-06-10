@@ -9,24 +9,20 @@ Pins:
 from __future__ import annotations
 
 import datetime
-from collections.abc import AsyncIterator
-
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.database import get_db
-from app.deps import get_current_user
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
 from app.models.user import Organization, Role, User
 from app.routers.admin_audit import router as admin_audit_router
 from app.security import hash_password
+from tests.factories import make_test_app
 
 
 @pytest_asyncio.fixture
@@ -53,19 +49,11 @@ async def session_factory():
 
 
 def make_app(session_factory, current_user_resolver):
-    app = FastAPI()
-
-    async def override_get_db() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
-
-    async def override_current_user() -> User:
-        return await current_user_resolver(session_factory)
-
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_user] = override_current_user
-    app.include_router(admin_audit_router)
-    return app
+    return make_test_app(
+        session_factory,
+        routers=admin_audit_router,
+        current_user=current_user_resolver,
+    )
 
 
 async def _seed(factory) -> dict:

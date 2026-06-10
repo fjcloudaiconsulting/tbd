@@ -20,7 +20,6 @@ from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
@@ -32,8 +31,6 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app._time import utcnow_naive
-from app.database import get_db
-from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.announcement import (
     Announcement,
@@ -45,6 +42,7 @@ from app.models.user import Organization, Role, User
 from app.routers.admin_announcements import router as admin_router
 from app.routers.announcements import router as user_router
 from app.security import hash_password
+from tests.factories import make_test_app
 
 
 @pytest_asyncio.fixture
@@ -71,24 +69,12 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
 
 
 def _make_app(session_factory, current_user_resolver):
-    app = FastAPI()
-
-    async def override_get_db() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
-
-    async def override_current_user() -> User:
-        return await current_user_resolver(session_factory)
-
-    def override_session_factory():
-        return session_factory
-
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_user] = override_current_user
-    app.dependency_overrides[get_session_factory] = override_session_factory
-    app.include_router(user_router)
-    app.include_router(admin_router)
-    return app
+    return make_test_app(
+        session_factory,
+        routers=[user_router, admin_router],
+        current_user=current_user_resolver,
+        override_session_factory=True,
+    )
 
 
 async def _seed_users(factory) -> dict:

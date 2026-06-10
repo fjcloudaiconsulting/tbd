@@ -30,8 +30,6 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.database import get_db
-from app.deps import get_current_user
 from app.models import Account, AccountType, Category, Organization
 from app.models.audit_event import AuditEvent
 from app.models.base import Base
@@ -50,6 +48,7 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.models.user import Role, User
 from app.routers.categories import router as categories_router
 from app.security import hash_password
+from tests.factories import make_test_app
 
 
 @pytest_asyncio.fixture
@@ -77,25 +76,19 @@ async def session_factory():
         await engine.dispose()
 
 
+async def _resolve_superadmin(factory) -> User:
+    async with factory() as db:
+        return (
+            await db.execute(select(User).where(User.is_superadmin.is_(True)))
+        ).scalar_one()
+
+
 def make_app(session_factory) -> FastAPI:
-    app = FastAPI()
-
-    async def override_get_db() -> AsyncIterator[AsyncSession]:
-        async with session_factory() as session:
-            yield session
-
-    async def override_current_user() -> User:
-        async with session_factory() as db:
-            return (
-                await db.execute(
-                    select(User).where(User.is_superadmin.is_(True))
-                )
-            ).scalar_one()
-
-    app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_user] = override_current_user
-    app.include_router(categories_router)
-    return app
+    return make_test_app(
+        session_factory,
+        routers=categories_router,
+        current_user=_resolve_superadmin,
+    )
 
 
 async def _seed_basic(factory) -> dict:
