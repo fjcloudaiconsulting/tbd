@@ -27,6 +27,41 @@
 
 const isDev = process.env.NODE_ENV !== "production";
 
+/**
+ * Same-origin path the backend exposes for CSP violation reports
+ * (``backend/app/routers/security.py``). nginx (dev) / DO ingress
+ * (prod) routes ``/api/*`` to the backend, so this resolves on the
+ * same host the page was served from — no cross-origin reporting,
+ * nothing extra to allowlist in ``connect-src``.
+ */
+const CSP_REPORT_PATH = "/api/v1/security/csp-report";
+
+/**
+ * Named reporting group referenced by the ``report-to`` CSP directive
+ * and defined by the ``Reporting-Endpoints`` response header. The two
+ * MUST agree on this token for the modern Reporting API path to work.
+ */
+const CSP_REPORT_GROUP = "csp-endpoint";
+
+/**
+ * Reporting directives appended to every CSP. ``report-uri`` is the
+ * legacy directive (still honored by current browsers and the only one
+ * Safari supports); ``report-to`` is the modern Reporting API directive
+ * and pairs with the ``Reporting-Endpoints`` header below. Emitting
+ * both maximizes coverage across browsers.
+ */
+const cspReportDirectives = [
+  `report-uri ${CSP_REPORT_PATH}`,
+  `report-to ${CSP_REPORT_GROUP}`,
+];
+
+/**
+ * Value for the ``Reporting-Endpoints`` response header, which maps the
+ * ``report-to`` group name to a same-origin URL. Structured-header
+ * syntax: ``group="url"``.
+ */
+export const reportingEndpointsHeader = `${CSP_REPORT_GROUP}="${CSP_REPORT_PATH}"`;
+
 // If the frontend is deployed with a cross-origin API URL (e.g.,
 // separate DO App Platform components), allow that origin in
 // connect-src so api.ts fetch() calls aren't blocked. Empty string →
@@ -103,6 +138,7 @@ export function buildCspDirectives(nonce: string): string {
     "form-action 'self'",
     "object-src 'none'",
     "upgrade-insecure-requests",
+    ...cspReportDirectives,
   ].join("; ");
 }
 
@@ -133,6 +169,7 @@ export const cspDirectives = [
   "form-action 'self'",
   "object-src 'none'",
   "upgrade-insecure-requests",
+  ...cspReportDirectives,
 ].join("; ");
 
 /**
@@ -141,6 +178,10 @@ export const cspDirectives = [
  */
 export const securityHeaders: { key: string; value: string }[] = [
   { key: "Content-Security-Policy", value: cspDirectives },
+  // Maps the ``report-to`` group name to the same-origin report sink.
+  // Required for the modern Reporting API delivery path; the legacy
+  // ``report-uri`` directive works without it.
+  { key: "Reporting-Endpoints", value: reportingEndpointsHeader },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
