@@ -91,6 +91,40 @@ describe("Notification preferences settings page", () => {
     expect(security).toBeDisabled();
   });
 
+  it("clicking the locked security toggle is a no-op and never PUTs email_security: false", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    render(<NotificationsPage />);
+
+    const security = await screen.findByRole("switch", {
+      name: /security email notifications/i,
+    });
+    expect(security).toHaveAttribute("aria-checked", "true");
+
+    // The user tries to switch security off; the locked toggle must ignore it.
+    fireEvent.click(security);
+    expect(security).toHaveAttribute("aria-checked", "true");
+
+    // Saving afterwards keeps email_security on; no PUT ever carries false.
+    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenLastCalledWith(
+        "/api/v1/notifications/preferences",
+        expect.objectContaining({ method: "PUT" }),
+      ),
+    );
+    const [, opts] = vi.mocked(apiFetch).mock.calls.at(-1)!;
+    const sent = JSON.parse((opts as { body: string }).body);
+    expect(sent.email_security).toBe(true);
+
+    // Belt and suspenders: no PUT call anywhere carried email_security: false.
+    for (const [, callOpts] of vi.mocked(apiFetch).mock.calls) {
+      const body = (callOpts as { body?: string } | undefined)?.body;
+      if (body) expect(JSON.parse(body).email_security).not.toBe(false);
+    }
+  });
+
   it("toggles a category and PUTs the full preference shape", async () => {
     vi.mocked(apiFetch)
       .mockResolvedValueOnce(makePrefs())
