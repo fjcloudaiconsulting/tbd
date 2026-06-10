@@ -452,6 +452,57 @@ async def _aggregate_cost_cents(
     return int(total or 0)
 
 
+async def _resolve_caps_and_cost(
+    db: AsyncSession, *, org_id: int, feature_key: str
+) -> tuple[_ResolvedCaps, int]:
+    """Resolve effective caps + the org's spend in the current period.
+
+    Single source of truth for the (resolve caps, aggregate cost over the
+    current calendar month) pair that both the dispatch chokepoint and the
+    estimate pre-check need. Same feature-key cap resolution, same
+    ``_month_start`` boundary, same aggregation window as before.
+    """
+    resolved = await _resolve_caps(
+        db, org_id=org_id, feature_key=feature_key
+    )
+    cost_so_far = await _aggregate_cost_cents(
+        db, org_id=org_id, since=_month_start()
+    )
+    return resolved, cost_so_far
+
+
+async def remaining_hard_cap_cents(
+    db: AsyncSession, *, org_id: int, feature_key: str
+) -> Optional[int]:
+    """Remaining hard-cap headroom (cents) for (org_id, feature_key).
+
+    Composes the same internals the dispatcher uses to gate spend:
+    resolve the effective hard cap (default + feature, tighter wins) and
+    subtract the org's already-spent cost for the current calendar month.
+
+    Returns ``None`` when no hard cap is configured — the sentinel for
+    "unlimited headroom" that callers already treat as no gate. Otherwise
+    returns ``hard_cap_cents - cost_so_far``, which may be zero or
+    negative when the org is at or over its cap. The dispatch refusal
+    boundary is ``cost_so_far >= hard_cap`` (i.e. ``remaining <= 0``).
+
+    Resolves caps FIRST and short-circuits on the no-cap path: the
+    ``cost_so_far`` aggregation (a ``SUM`` over the ledger) is only run
+    when a hard cap actually exists, since the no-cap path discards it.
+    The two ``_prepare_dispatch`` sites keep using ``_resolve_caps_and_cost``
+    because they always need the aggregate (soft-cap warning + ledger).
+    """
+    resolved = await _resolve_caps(
+        db, org_id=org_id, feature_key=feature_key
+    )
+    if resolved.hard_cap_cents is None:
+        return None
+    cost_so_far = await _aggregate_cost_cents(
+        db, org_id=org_id, since=_month_start()
+    )
+    return resolved.hard_cap_cents - cost_so_far
+
+
 # --- Soft-cap warning -------------------------------------------------
 
 
@@ -690,11 +741,8 @@ async def call_llm(
         raise NoRoutingConfigured()
 
     # 2. Pre-check caps.
-    resolved = await _resolve_caps(
+    resolved, cost_so_far = await _resolve_caps_and_cost(
         db, org_id=org_id, feature_key=feature_key
-    )
-    cost_so_far = await _aggregate_cost_cents(
-        db, org_id=org_id, since=_month_start()
     )
     if (
         resolved.hard_cap_cents is not None
@@ -976,11 +1024,8 @@ async def _prepare_dispatch(
                 capability=capability, feature_key=feature_key
             )
 
-    resolved = await _resolve_caps(
+    resolved, cost_so_far = await _resolve_caps_and_cost(
         db, org_id=org_id, feature_key=feature_key
-    )
-    cost_so_far = await _aggregate_cost_cents(
-        db, org_id=org_id, since=_month_start()
     )
     if (
         resolved.hard_cap_cents is not None
