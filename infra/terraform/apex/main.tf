@@ -78,12 +78,20 @@ locals {
   # backend/app/routers/security.py). The apex has NO same-origin backend
   # (build-apex.sh hard-fails on any /api/v1 reference), so unlike the Next.js
   # app (frontend/lib/security-headers.ts, which reports same-origin) it must
-  # send reports to the app host. report-uri is the legacy directive
-  # (Chrome/Safari); report-to is the modern Reporting API directive and pairs
-  # with the Reporting-Endpoints header in the response-headers policy below.
-  # Report delivery does NOT require CORS: browsers POST CSP reports without a
-  # preflight, so no cross-origin allowlist on the endpoint is needed (and the
-  # report POST does not relax connect-src, which stays 'self').
+  # send reports to the app host.
+  #
+  # We use ONLY the legacy report-uri directive. It is fire-and-forget: the
+  # browser POSTs the violation report cross-origin with no CORS preflight and
+  # ignores the response, so no cross-origin allowlist on the endpoint is
+  # required. report-uri is honored by Chrome, Safari, and Firefox.
+  #
+  # The modern Reporting API (report-to + the Reporting-Endpoints header) is
+  # INTENTIONALLY omitted here. A cross-origin Reporting API endpoint IS
+  # CORS-gated (the browser sends a preflight before delivering reports), so
+  # enabling it would require adding the apex origin
+  # (https://thebetterdecision.com) to the app backend's BACKEND_CORS_ORIGINS
+  # allowlist. That is a backend trust-surface change, out of scope for this
+  # infra-only landing change.
   apex_csp = join("; ", [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline'",
@@ -98,7 +106,6 @@ locals {
     "object-src 'none'",
     "upgrade-insecure-requests",
     "report-uri https://app.${var.domain}/api/v1/security/csp-report",
-    "report-to apex-csp",
   ])
 }
 
@@ -564,17 +571,12 @@ resource "aws_cloudfront_response_headers_policy" "apex" {
       override = true
     }
 
-    # Reporting-Endpoints maps the `report-to apex-csp` group declared in
-    # local.apex_csp to the cross-origin app report sink. Structured-header
-    # syntax: group="url" (value quoted). Mirrors how
-    # frontend/lib/security-headers.ts builds reportingEndpointsHeader, except
-    # the URL is cross-origin to the app host because the apex has no
-    # same-origin backend.
-    items {
-      header   = "Reporting-Endpoints"
-      value    = "apex-csp=\"https://app.${var.domain}/api/v1/security/csp-report\""
-      override = true
-    }
+    # No Reporting-Endpoints header: the apex CSP reports violations via the
+    # legacy report-uri directive only (see local.apex_csp). The modern
+    # Reporting API (report-to + Reporting-Endpoints) is intentionally omitted
+    # because a cross-origin reporting endpoint is CORS-gated and would require
+    # adding the apex origin to the app backend's BACKEND_CORS_ORIGINS
+    # allowlist, which is out of scope for this infra-only change.
   }
 }
 
