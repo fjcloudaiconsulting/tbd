@@ -208,6 +208,59 @@ async def test_trial_expiring_template_singular(
     assert "1 days" not in msg["subject"]
 
 
+@pytest.mark.asyncio
+async def test_account_deleted_template(captured_send: list[dict[str, Any]]):
+    ok = await email_service.send_account_deleted_email(
+        "gone@example.com",
+        username="gone",
+        actor_email="admin@platform.io",
+        ip_address="203.0.113.7",
+    )
+    assert ok is True
+    msg = captured_send[0]
+
+    _assert_brand_chrome(msg["body_html"])
+    _assert_brand_voice(msg["subject"], msg["body_html"], msg["body_text"])
+
+    assert msg["subject"] == (
+        "[The Better Decision] Your account has been deleted"
+    )
+    assert "gone" in msg["body_html"]
+    assert "admin@platform.io" in msg["body_html"]
+    assert "203.0.113.7" in msg["body_text"]
+
+
+@pytest.mark.asyncio
+async def test_account_deleted_template_unknown_ip(
+    captured_send: list[dict[str, Any]],
+):
+    await email_service.send_account_deleted_email(
+        "gone@example.com",
+        username="gone",
+        actor_email="admin@platform.io",
+        ip_address=None,
+    )
+    msg = captured_send[0]
+    assert "an unknown location" in msg["body_html"]
+    assert "an unknown location" in msg["body_text"]
+
+
+@pytest.mark.asyncio
+async def test_account_deleted_escapes_username_and_actor_for_xss(
+    captured_send: list[dict[str, Any]],
+):
+    """Attacker-controlled username / actor email must be HTML-escaped."""
+    await email_service.send_account_deleted_email(
+        "gone@example.com",
+        username="<script>alert(1)</script>",
+        actor_email='<b>x</b>@evil.io',
+        ip_address="<i>ip</i>",
+    )
+    msg = captured_send[0]
+    assert "<script>alert(1)</script>" not in msg["body_html"]
+    assert "&lt;script&gt;" in msg["body_html"]
+
+
 # ─── Security tests ───
 
 

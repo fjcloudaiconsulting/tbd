@@ -10,10 +10,17 @@ import structlog
 from app.auth.org_permissions import require_org_owner
 from app.database import get_db
 from app.deps import get_session_factory
+from app.models.notification import NotificationCategory
 from app.models.user import Organization, User
 from app.rate_limit import get_client_ip
 from app.schemas.org_data import OrgDataResetRequest, OrgDataResetResponse
-from app.services import audit_service, org_data_service, org_reset_lock_service
+from app.services import (
+    audit_service,
+    notification_service,
+    org_data_service,
+    org_reset_lock_service,
+)
+from app.services.notification_templates import org_data_reset as _tpl_org_data_reset
 
 logger = structlog.stdlib.get_logger()
 
@@ -136,7 +143,7 @@ async def reset_org_data(
         org_name=org_name,
         deleted_rows_by_table=counts,
     )
-    await audit_service.record_audit_event(
+    audit_event_id = await audit_service.record_audit_event(
         session_factory,
         event_type="org.data.reset",
         actor_user_id=actor_user_id,
@@ -151,4 +158,24 @@ async def reset_org_data(
             "deleted_rows_by_table": counts,
         },
     )
+
+    # PR4 of the notification train: fan out an in-app ``org_admin``
+    # notification to every active admin of the org whose data was
+    # reset. Fires only after the audit row is durably persisted
+    # (mirrors the PR3 "dispatch after audit" idiom). The reset commits
+    # per batch internally, so the notification rows need their own
+    # commit here.
+    if audit_event_id is not None:
+        title, body, link_url = _tpl_org_data_reset(actor_email=actor_email)
+        await notification_service.dispatch_notification_to_org_admins(
+            db,
+            org_id=org_id,
+            category=NotificationCategory.ORG_ADMIN,
+            event_type="org.data_reset",
+            title=title,
+            body=body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await db.commit()
     return {"deleted_rows_by_table": counts}

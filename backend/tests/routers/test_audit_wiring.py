@@ -113,7 +113,16 @@ async def _seed(factory) -> dict:
             role=Role.OWNER, is_superadmin=False, is_active=True,
             email_verified=True,
         )
-        db.add_all([sa, target_owner])
+        # A plain MEMBER in the target org whose role can be promoted —
+        # the PR4 ``account.role_changed`` notification target.
+        target_member = User(
+            org_id=target.id, username="target_member",
+            email="member@target.io",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.MEMBER, is_superadmin=False, is_active=True,
+            email_verified=True,
+        )
+        db.add_all([sa, target_owner, target_member])
         await db.commit()
         target_sub = Subscription(
             org_id=target.id, plan_id=plan.id,
@@ -134,6 +143,7 @@ async def _seed(factory) -> dict:
             "target_id": target.id,
             "target_name": target.name,
             "target_owner_id": target_owner.id,
+            "target_member_id": target_member.id,
         }
 
 
@@ -286,6 +296,149 @@ async def test_subscription_override_status_only_skips_plan_changed_audit(
         "admin.org.plan.changed leaked on a status-only override — "
         "the conditional gate on 'plan_id' in before is broken"
     )
+
+
+@pytest.mark.asyncio
+async def test_role_change_dispatches_account_notification_to_target(
+    session_factory,
+):
+    """PR4: a member role change dispatches an ``account.role_changed``
+    in-app notification to the TARGET member (the one whose role
+    changed), NOT the actor or the rest of the org."""
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/orgs/{seed['target_id']}/members/"
+            f"{seed['target_member_id']}",
+            json={"role": "admin"},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "account.role_changed"
+                )
+            )
+        ).scalars().all()
+        audit_rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type
+                    == "admin.org.member.role_changed"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 1
+    notif = notifs[0]
+    # Target member, not the actor and not the org owner.
+    assert notif.user_id == seed["target_member_id"]
+    assert notif.category == NotificationCategory.ACCOUNT
+    assert "admin" in notif.body
+    # Forensic correlation: the row carries the role-change audit id.
+    assert len(audit_rows) == 1
+    assert notif.audit_event_id == audit_rows[0].id
+
+
+@pytest.mark.asyncio
+async def test_deactivation_does_not_dispatch_role_changed(session_factory):
+    """A deactivation (not a role change) must NOT fan out an
+    ``account.role_changed`` notification — the dispatch is gated on
+    the role-change event_type only."""
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/orgs/{seed['target_id']}/members/"
+            f"{seed['target_member_id']}",
+            json={"is_active": False},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "account.role_changed"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 0
+
+
+@pytest.mark.asyncio
+async def test_plan_change_link_url_none_when_billing_ui_disabled(
+    session_factory, monkeypatch,
+):
+    """G9: when the customer-facing billing UI is hidden, the
+    plan-change notification's ``link_url`` is dropped to None so the
+    bell row doesn't render a "Go" that 404s."""
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        pro = Plan(slug="pro", name="Pro")
+        db.add(pro)
+        await db.commit()
+        pro_plan_id = pro.id
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/subscription",
+            json={"plan_id": pro_plan_id},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notif = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalar_one()
+    assert notif.link_url is None
+
+
+@pytest.mark.asyncio
+async def test_plan_change_link_url_present_when_billing_ui_enabled(
+    session_factory, monkeypatch,
+):
+    """Inverse of the gate: with the billing UI enabled, the
+    plan-change notification keeps its link_url."""
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", True)
+
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        pro = Plan(slug="pro", name="Pro")
+        db.add(pro)
+        await db.commit()
+        pro_plan_id = pro.id
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/subscription",
+            json={"plan_id": pro_plan_id},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notif = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalar_one()
+    assert notif.link_url is not None
 
 
 @pytest.mark.asyncio

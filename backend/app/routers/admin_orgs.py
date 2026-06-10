@@ -25,6 +25,7 @@ import structlog
 
 from app.auth.feature_catalog import ALL_FEATURE_KEYS
 from app.auth.permissions import require_permission
+from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models.feature_override import OrgFeatureOverride
@@ -49,6 +50,7 @@ from app.services import (
 )
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.notification_templates import (
+    account_role_changed as _tpl_account_role_changed,
     admin_org_plan_changed as _tpl_admin_org_plan_changed,
 )
 
@@ -207,6 +209,12 @@ async def update_org_subscription(
                 new_plan_name=new_plan_name,
                 actor_email=current_user.email,
             )
+            # G9 (2nd-arch delta): the plan-change notification links to
+            # a billing surface that 404s when the customer-facing
+            # billing UI is hidden (the pre-payment default). Drop the
+            # link in that mode so the row renders without a dead "Go".
+            if not settings.billing_ui_enabled:
+                link_url = None
             await notification_service.dispatch_notification_to_org_admins(
                 db,
                 org_id=org_id,
@@ -927,7 +935,7 @@ async def update_org_member(
             after=after,
             changed_fields=changes,
         )
-        await audit_service.record_audit_event(
+        audit_event_id = await audit_service.record_audit_event(
             session_factory,
             event_type=event_type,
             actor_user_id=current_user.id,
@@ -939,6 +947,30 @@ async def update_org_member(
             outcome="success",
             detail=detail,
         )
+
+        # PR4 of the notification train: when the change was a role
+        # change, dispatch an in-app ``account`` notification to the
+        # TARGET member (the user whose role changed), NOT the actor.
+        # Mirrors the PR3 "dispatch after the audit row commits" idiom
+        # — only fire once the audit row is durably persisted.
+        if (
+            event_type == "admin.org.member.role_changed"
+            and audit_event_id is not None
+        ):
+            title, body, link_url = _tpl_account_role_changed(
+                new_role=str(after["role"]),
+            )
+            await notification_service.dispatch_notification(
+                db,
+                user_id=target.id,
+                category=NotificationCategory.ACCOUNT,
+                event_type="account.role_changed",
+                title=title,
+                body=body,
+                link_url=link_url,
+                audit_event_id=audit_event_id,
+            )
+            await db.commit()
 
     return member_payload
 

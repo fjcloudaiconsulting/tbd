@@ -136,3 +136,68 @@ def admin_org_plan_changed(
         f"Your organization's plan was updated by {actor_email}."
     )
     return (title, body, "/admin/organizations")
+
+
+# ── PR4 of notification train: second hook batch templates ─────────
+
+
+def account_role_changed(
+    *, new_role: str
+) -> tuple[str, str, Optional[str]]:
+    """Copy for ``account.role_changed`` (account category).
+
+    Target is the member whose role changed (NOT the actor). The new
+    role is interpolated so the recipient can confirm what they were
+    moved to at a glance. Encourages contacting an admin if the change
+    was unexpected, since the member cannot self-revert a role change.
+
+    Args:
+        new_role: the role the member was changed TO (e.g. ``"admin"``).
+    """
+    title = "Your role was changed"
+    body = (
+        f"Your role in the organization was changed to {new_role}. "
+        "If this wasn't expected, contact an organization admin."
+    )
+    return (title, body, None)
+
+
+def org_renamed(
+    *, old_name: str, new_name: str
+) -> tuple[str, str, Optional[str]]:
+    """Copy for ``org.renamed`` (org_admin category).
+
+    Broadcast to every active org admin (Role.OWNER + Role.ADMIN) of
+    the renamed org. Both the old and new names are surfaced so admins
+    can confirm the change without bouncing to the audit log.
+
+    Args:
+        old_name: the organization's previous name.
+        new_name: the organization's new name.
+    """
+    title = "Your organization was renamed"
+    body = (
+        f"Your organization was renamed from {old_name} to {new_name}."
+    )
+    return (title, body, None)
+
+
+def org_data_reset(
+    *, actor_email: str
+) -> tuple[str, str, Optional[str]]:
+    """Copy for ``org.data_reset`` (org_admin category).
+
+    Broadcast to every active org admin of the org whose data was
+    reset. The actor's email is surfaced so admins can attribute the
+    (destructive) reset without bouncing to the audit log.
+
+    Args:
+        actor_email: email of the owner who triggered the reset.
+    """
+    title = "Organization data was reset"
+    body = (
+        f"Your organization's data was reset by {actor_email}. "
+        "Accounts, transactions, budgets, and related records were "
+        "removed and defaults restored."
+    )
+    return (title, body, None)
