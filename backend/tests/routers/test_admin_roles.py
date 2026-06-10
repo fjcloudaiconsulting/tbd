@@ -307,6 +307,18 @@ async def test_list_roles_invalid_sort_dir_returns_400(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_list_roles_sort_dir_without_sort_by_returns_400(session_factory):
+    await _seed_users(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.get(
+            "/api/v1/admin/roles", params={"sort_dir": "asc"}
+        )
+    assert res.status_code == 400
+    assert "sort_dir_requires_sort_by" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_create_role_persists(session_factory):
     await _seed_users(session_factory)
     app = make_app(session_factory, _superadmin_resolver())

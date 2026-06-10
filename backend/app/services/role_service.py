@@ -146,8 +146,9 @@ async def list_roles(
     else:
         # ``sort_dir`` is meaningless without an explicit ``sort_by`` —
         # reject it so a stray ``sort_dir`` can't masquerade as a no-op.
+        # Name the real offender (``sort_dir``), not ``sort_by``.
         if sort_dir is not None:
-            raise ValidationError("invalid_sort_by")
+            raise ValidationError("sort_dir_requires_sort_by")
         order_by = [
             PlatformRole.is_system_frozen.desc(),
             PlatformRole.name.asc(),

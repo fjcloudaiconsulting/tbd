@@ -457,8 +457,9 @@ async def test_list_roles_invalid_sort_by_raises(db_session):
 
 @pytest.mark.asyncio
 async def test_list_roles_sort_dir_without_sort_by_raises(db_session):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as exc:
         await role_service.list_roles(db_session, sort_dir="asc")
+    assert str(exc.value.detail) == "sort_dir_requires_sort_by"
 
 
 @pytest.mark.asyncio
