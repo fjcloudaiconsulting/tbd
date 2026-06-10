@@ -23,6 +23,7 @@ from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent
 from app.models.user import Organization, Role, User
+from app.routers import admin_users as admin_users_module
 from app.routers.admin_users import router as admin_users_router
 from app.security import hash_password
 
@@ -234,3 +235,87 @@ async def test_delete_user_returns_404_when_target_missing(session_factory) -> N
     with TestClient(app) as client:
         res = client.delete("/api/v1/admin/users/99999")
     assert res.status_code == 404
+
+
+# ── account.deleted final email (PR4) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_user_sends_account_deleted_email_after_audit(
+    session_factory, monkeypatch,
+) -> None:
+    """Hard-deleting a user schedules ``send_account_deleted_email`` with
+    the snapshot email AFTER the audit row is written."""
+    seed = await _seed(session_factory)
+
+    calls: list[tuple] = []
+
+    async def _fake_send(to, username):
+        calls.append((to, username))
+        return True
+
+    monkeypatch.setattr(
+        admin_users_module.email_service,
+        "send_account_deleted_email",
+        _fake_send,
+    )
+
+    app = _make_app(session_factory, actor_user_id=seed["actor_id"])
+    with TestClient(app) as client:
+        res = client.delete(f"/api/v1/admin/users/{seed['inactive_id']}")
+    assert res.status_code == 200
+
+    # Audit row landed.
+    rows = await _audit_events(session_factory, "admin.user.deleted")
+    assert len(rows) == 1
+    # Email task ran (BackgroundTasks fire on response close in TestClient)
+    # with the deleted user's snapshot address. The actor's identity is
+    # NOT passed to the email anymore (privacy); it lives in the audit row.
+    assert len(calls) == 1
+    to, username = calls[0]
+    assert to == "ghost@acme.io"
+    assert username == "ghost"
+    # The acting admin's email is still captured in the audit row, just not
+    # forwarded to the deleted (external) recipient.
+    assert rows[0].actor_email == "root@platform.io"
+
+
+@pytest.mark.asyncio
+async def test_delete_user_does_not_send_email_when_audit_fails(
+    session_factory, monkeypatch,
+) -> None:
+    """If the audit write fails (record_audit_event returns None), the
+    final email task is NEVER scheduled — the enqueue is gated on the
+    audit success path (2nd-arch delta section 1, hard rule)."""
+    seed = await _seed(session_factory)
+
+    calls: list[tuple] = []
+
+    async def _fake_send(to, username):
+        calls.append((to, username))
+        return True
+
+    monkeypatch.setattr(
+        admin_users_module.email_service,
+        "send_account_deleted_email",
+        _fake_send,
+    )
+
+    # Force the success-path audit write to "fail" — record_audit_event
+    # logs+swallows on error and returns None, so we simulate that here.
+    async def _audit_returns_none(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        admin_users_module.audit_service,
+        "record_audit_event",
+        _audit_returns_none,
+    )
+
+    app = _make_app(session_factory, actor_user_id=seed["actor_id"])
+    with TestClient(app) as client:
+        res = client.delete(f"/api/v1/admin/users/{seed['inactive_id']}")
+    # The delete itself already committed, so the request still succeeds.
+    assert res.status_code == 200
+    # But no email was scheduled, because the audit write returned None.
+    assert calls == []

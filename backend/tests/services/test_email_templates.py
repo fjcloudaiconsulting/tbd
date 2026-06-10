@@ -208,6 +208,49 @@ async def test_trial_expiring_template_singular(
     assert "1 days" not in msg["subject"]
 
 
+@pytest.mark.asyncio
+async def test_account_deleted_template(captured_send: list[dict[str, Any]]):
+    ok = await email_service.send_account_deleted_email(
+        "gone@example.com",
+        username="gone",
+    )
+    assert ok is True
+    msg = captured_send[0]
+
+    _assert_brand_chrome(msg["body_html"])
+    _assert_brand_voice(msg["subject"], msg["body_html"], msg["body_text"])
+
+    assert msg["subject"] == (
+        "[The Better Decision] Your account has been deleted"
+    )
+    assert "gone" in msg["body_html"]
+    # Privacy: the acting administrator's email / IP must NOT leak to the
+    # now-external recipient. Those identifiers live in the audit row only.
+    assert "admin@platform.io" not in msg["body_html"]
+    assert "admin@platform.io" not in msg["body_text"]
+    assert "203.0.113.7" not in msg["body_html"]
+    assert "203.0.113.7" not in msg["body_text"]
+
+
+@pytest.mark.asyncio
+async def test_account_deleted_escapes_username_for_xss(
+    captured_send: list[dict[str, Any]],
+):
+    """Attacker-controlled username must be HTML-escaped in the body, and
+    the actor's identity must not appear at all."""
+    await email_service.send_account_deleted_email(
+        "gone@example.com",
+        username="<script>alert(1)</script>",
+    )
+    msg = captured_send[0]
+    # The username is still rendered (greeting) but escaped.
+    assert "<script>alert(1)</script>" not in msg["body_html"]
+    assert "&lt;script&gt;" in msg["body_html"]
+    # No actor email / IP disclosure path remains in either body.
+    assert "@evil.io" not in msg["body_html"]
+    assert "@evil.io" not in msg["body_text"]
+
+
 # ─── Security tests ───
 
 

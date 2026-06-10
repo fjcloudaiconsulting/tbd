@@ -35,6 +35,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
+from app.models.notification import Notification, NotificationCategory
 from app.models.user import Organization, Role, User
 from app.routers.orgs import router as orgs_router
 from app.security import hash_password
@@ -514,3 +515,44 @@ async def test_rename_org_service_preflight_case_insensitive_still_blocks(
                 db, org_id=seed["org_a_id"], new_name="ACME",
             )
         assert exc.value.status_code == 409
+
+
+# ── PR4: org.renamed fanout to org admins ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rename_org_fans_out_org_admin_notification(session_factory):
+    """A successful rename fans out an ``org.renamed`` in-app
+    notification to every active org admin (OWNER + ADMIN), NOT the
+    plain MEMBER, carrying old + new name and the audit id."""
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _resolver_for(Role.OWNER))
+
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/orgs/{seed['org_a_id']}/rename",
+            json={"name": "Acme Inc"},
+        )
+    assert res.status_code == 200, res.text
+
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "org.renamed"
+                )
+            )
+        ).scalars().all()
+        audit_rows = (
+            await db.execute(
+                select(AuditEvent).where(AuditEvent.event_type == "org.rename")
+            )
+        ).scalars().all()
+
+    recipients = {n.user_id for n in notifs}
+    # OWNER + ADMIN get it; the plain MEMBER does not.
+    assert recipients == {seed["owner_id"], seed["admin_id"]}
+    assert all(n.category == NotificationCategory.ORG_ADMIN for n in notifs)
+    assert all(ORG_A_NAME in n.body and "Acme Inc" in n.body for n in notifs)
+    assert len(audit_rows) == 1
+    assert all(n.audit_event_id == audit_rows[0].id for n in notifs)

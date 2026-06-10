@@ -19,8 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_session_factory
 from app.models import Base
+from app.models.audit_event import AuditEvent
+from app.models.notification import Notification, NotificationCategory
 from app.models.subscription import (
     BillingInterval,
     Plan,
@@ -362,6 +364,71 @@ async def test_reset_releases_lock_on_success(session_factory):
         assert await org_reset_lock_service.is_reset_locked(
             db, org_id=seed["org_id"]
         ) is False
+
+
+# ── PR4: org.data_reset fanout to org admins ──────────────────────────────
+
+
+def _make_app_with_factory(session_factory, current_user_resolver):
+    """App builder that ALSO overrides ``get_session_factory`` so the
+    real ``record_audit_event`` writes into the test sqlite (and returns
+    a real audit_event_id, which the PR4 fanout gates on)."""
+    app = FastAPI()
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    async def override_current_user() -> User:
+        return await current_user_resolver(session_factory)
+
+    def override_session_factory():
+        return session_factory
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_current_user
+    app.dependency_overrides[get_session_factory] = override_session_factory
+    app.include_router(org_data_router)
+    return app
+
+
+@pytest.mark.asyncio
+async def test_reset_fans_out_org_admin_notification(session_factory):
+    """A successful org-data reset fans out an ``org.data_reset`` in-app
+    notification to every active org admin (OWNER + ADMIN), NOT the
+    plain MEMBER, with the audit id for correlation."""
+    seed = await _seed(session_factory)
+    app = _make_app_with_factory(session_factory, _resolver_for(Role.OWNER))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/orgs/data/reset",
+            json={"confirm_phrase": f"RESET {ORG_NAME}"},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "org.data_reset"
+                )
+            )
+        ).scalars().all()
+        audit_rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "org.data.reset"
+                )
+            )
+        ).scalars().all()
+
+    # OWNER + ADMIN receive it; the plain MEMBER does not.
+    recipients = {n.user_id for n in notifs}
+    assert recipients == {seed["owner_id"], seed["admin_id"]}
+    assert all(n.category == NotificationCategory.ORG_ADMIN for n in notifs)
+    assert all("o@acme.io" in n.body for n in notifs)
+    assert len(audit_rows) == 1
+    assert all(n.audit_event_id == audit_rows[0].id for n in notifs)
 
 
 @pytest.mark.asyncio

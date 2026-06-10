@@ -26,10 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.auth.org_permissions import require_org_owner
 from app.database import get_db
 from app.deps import get_session_factory
+from app.models.notification import NotificationCategory
 from app.models.user import Organization, User
 from app.rate_limit import get_client_ip, limiter
 from app.schemas.orgs import OrgRenameRequest, OrgResponse
-from app.services import audit_service, org_service
+from app.services import audit_service, notification_service, org_service
+from app.services.notification_templates import org_renamed as _tpl_org_renamed
 
 logger = structlog.stdlib.get_logger()
 
@@ -100,7 +102,7 @@ async def rename_org_endpoint(
         # .target_org_id`` is satisfied at INSERT time and stays
         # satisfied forever (unlike the org-delete path, which
         # needed the audit row to survive a cascade-NULL).
-        audit_service.add_audit_event_to_session(
+        audit_row = audit_service.add_audit_event_to_session(
             db,
             event_type="org.rename",
             actor_user_id=actor_user_id,
@@ -112,6 +114,11 @@ async def rename_org_endpoint(
             outcome="success",
             detail={"old_name": old_name, "new_name": new_name},
         )
+        # Populate the audit row's PK before commit so we can carry it
+        # into the notification rows for forensic correlation (G5)
+        # without a post-commit lazy refresh (MissingGreenlet hazard).
+        await db.flush()
+        audit_event_id = audit_row.id
 
         try:
             await db.commit()
@@ -162,6 +169,24 @@ async def rename_org_endpoint(
         old_name=old_name,
         new_name=new_name,
     )
+
+    # PR4 of the notification train: fan out an in-app ``org_admin``
+    # notification to every active admin of the renamed org. Fires
+    # after the rename + audit row committed (the audit row's id is
+    # carried for forensic correlation). The fanout writes notification
+    # rows into the request session, so it needs its own commit.
+    title, body, link_url = _tpl_org_renamed(old_name=old_name, new_name=new_name)
+    await notification_service.dispatch_notification_to_org_admins(
+        db,
+        org_id=target_org_id,
+        category=NotificationCategory.ORG_ADMIN,
+        event_type="org.renamed",
+        title=title,
+        body=body,
+        link_url=link_url,
+        audit_event_id=audit_event_id,
+    )
+    await db.commit()
 
     org = (
         await db.execute(
