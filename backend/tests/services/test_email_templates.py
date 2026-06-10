@@ -213,8 +213,6 @@ async def test_account_deleted_template(captured_send: list[dict[str, Any]]):
     ok = await email_service.send_account_deleted_email(
         "gone@example.com",
         username="gone",
-        actor_email="admin@platform.io",
-        ip_address="203.0.113.7",
     )
     assert ok is True
     msg = captured_send[0]
@@ -226,39 +224,31 @@ async def test_account_deleted_template(captured_send: list[dict[str, Any]]):
         "[The Better Decision] Your account has been deleted"
     )
     assert "gone" in msg["body_html"]
-    assert "admin@platform.io" in msg["body_html"]
-    assert "203.0.113.7" in msg["body_text"]
+    # Privacy: the acting administrator's email / IP must NOT leak to the
+    # now-external recipient. Those identifiers live in the audit row only.
+    assert "admin@platform.io" not in msg["body_html"]
+    assert "admin@platform.io" not in msg["body_text"]
+    assert "203.0.113.7" not in msg["body_html"]
+    assert "203.0.113.7" not in msg["body_text"]
 
 
 @pytest.mark.asyncio
-async def test_account_deleted_template_unknown_ip(
+async def test_account_deleted_escapes_username_for_xss(
     captured_send: list[dict[str, Any]],
 ):
-    await email_service.send_account_deleted_email(
-        "gone@example.com",
-        username="gone",
-        actor_email="admin@platform.io",
-        ip_address=None,
-    )
-    msg = captured_send[0]
-    assert "an unknown location" in msg["body_html"]
-    assert "an unknown location" in msg["body_text"]
-
-
-@pytest.mark.asyncio
-async def test_account_deleted_escapes_username_and_actor_for_xss(
-    captured_send: list[dict[str, Any]],
-):
-    """Attacker-controlled username / actor email must be HTML-escaped."""
+    """Attacker-controlled username must be HTML-escaped in the body, and
+    the actor's identity must not appear at all."""
     await email_service.send_account_deleted_email(
         "gone@example.com",
         username="<script>alert(1)</script>",
-        actor_email='<b>x</b>@evil.io',
-        ip_address="<i>ip</i>",
     )
     msg = captured_send[0]
+    # The username is still rendered (greeting) but escaped.
     assert "<script>alert(1)</script>" not in msg["body_html"]
     assert "&lt;script&gt;" in msg["body_html"]
+    # No actor email / IP disclosure path remains in either body.
+    assert "@evil.io" not in msg["body_html"]
+    assert "@evil.io" not in msg["body_text"]
 
 
 # ─── Security tests ───

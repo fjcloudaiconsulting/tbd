@@ -250,8 +250,8 @@ async def test_delete_user_sends_account_deleted_email_after_audit(
 
     calls: list[tuple] = []
 
-    async def _fake_send(to, username, actor_email, ip_address):
-        calls.append((to, username, actor_email, ip_address))
+    async def _fake_send(to, username):
+        calls.append((to, username))
         return True
 
     monkeypatch.setattr(
@@ -269,12 +269,15 @@ async def test_delete_user_sends_account_deleted_email_after_audit(
     rows = await _audit_events(session_factory, "admin.user.deleted")
     assert len(rows) == 1
     # Email task ran (BackgroundTasks fire on response close in TestClient)
-    # with the deleted user's snapshot address.
+    # with the deleted user's snapshot address. The actor's identity is
+    # NOT passed to the email anymore (privacy); it lives in the audit row.
     assert len(calls) == 1
-    to, username, actor_email, _ip = calls[0]
+    to, username = calls[0]
     assert to == "ghost@acme.io"
     assert username == "ghost"
-    assert actor_email == "root@platform.io"
+    # The acting admin's email is still captured in the audit row, just not
+    # forwarded to the deleted (external) recipient.
+    assert rows[0].actor_email == "root@platform.io"
 
 
 @pytest.mark.asyncio
@@ -288,8 +291,8 @@ async def test_delete_user_does_not_send_email_when_audit_fails(
 
     calls: list[tuple] = []
 
-    async def _fake_send(to, username, actor_email, ip_address):
-        calls.append((to, username, actor_email, ip_address))
+    async def _fake_send(to, username):
+        calls.append((to, username))
         return True
 
     monkeypatch.setattr(

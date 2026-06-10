@@ -515,8 +515,6 @@ async def delete_user(
             email_service.send_account_deleted_email,
             snapshot["email"],
             snapshot["username"],
-            actor_email,
-            request_ip,
         )
 
     return {

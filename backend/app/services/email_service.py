@@ -378,8 +378,6 @@ async def send_trial_expiring_email(to: str, days_left: int, org_name: str) -> b
 async def send_account_deleted_email(
     to: str,
     username: str,
-    actor_email: str,
-    ip_address: str | None,
 ) -> bool:
     """Send a final transactional email after an account is hard-deleted.
 
@@ -389,6 +387,13 @@ async def send_account_deleted_email(
     AFTER both the delete commit and the audit-row commit succeed (see
     ``routers/admin_users.py``); a failure here is logged via the
     existing ``email_send_failed`` event and never rolls back the delete.
+
+    Privacy posture: the recipient is now an EXTERNAL party (their account
+    is gone), so the body deliberately does NOT name the acting
+    administrator's email or request IP. Those identifiers stay in the
+    ``audit_events`` row only (see ``routers/admin_users.py``), where they
+    serve compliance / forensic lookups without being disclosed to the
+    deleted user. The email says only that an administrator acted.
 
     GDPR posture: this is one final transactional email for a security
     event (an admin acting on the account), sent under legitimate
@@ -400,18 +405,14 @@ async def send_account_deleted_email(
     Args:
         to: the deleted user's last-known email address (audit snapshot).
         username: the deleted user's username, for a personal greeting.
-        actor_email: email of the admin who performed the deletion.
-        ip_address: the actor's request IP, when available.
     """
     username_safe = html.escape(username)
-    actor_safe = html.escape(actor_email)
-    where = html.escape(ip_address) if ip_address else "an unknown location"
     subject = "[The Better Decision] Your account has been deleted"
     body_html = _render_html(
         heading="Your account has been deleted",
         paragraphs=[
             f"Hi {username_safe}, your The Better Decision account was "
-            f"deleted by an administrator ({actor_safe}) from {where}.",
+            "deleted by an administrator.",
             "Your data has been removed and you can no longer sign in. "
             "If you did not expect this, contact support so we can help.",
         ],
@@ -423,7 +424,7 @@ async def send_account_deleted_email(
     body_text = (
         "Your account has been deleted\n\n"
         f"Hi {username}, your The Better Decision account was deleted by "
-        f"an administrator ({actor_email}) from {ip_address or 'an unknown location'}.\n\n"
+        "an administrator.\n\n"
         "Your data has been removed and you can no longer sign in. If you "
         "did not expect this, contact support so we can help.\n\n"
         "This is a one-time security notice. We will not send further "
