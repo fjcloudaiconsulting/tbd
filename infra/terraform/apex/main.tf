@@ -72,6 +72,26 @@ locals {
   # surface: build-apex.sh's post-build guard hard-fails on any /api/v1
   # reference, and the auth pages that load Turnstile are staged out of the
   # apex build by the default-deny route allowlist.
+  #
+  # CSP violation reporting points CROSS-ORIGIN at the app's public,
+  # unauthenticated report sink (https://app.${var.domain}/api/v1/security/csp-report,
+  # backend/app/routers/security.py). The apex has NO same-origin backend
+  # (build-apex.sh hard-fails on any /api/v1 reference), so unlike the Next.js
+  # app (frontend/lib/security-headers.ts, which reports same-origin) it must
+  # send reports to the app host.
+  #
+  # We use ONLY the legacy report-uri directive. It is fire-and-forget: the
+  # browser POSTs the violation report cross-origin with no CORS preflight and
+  # ignores the response, so no cross-origin allowlist on the endpoint is
+  # required. report-uri is honored by Chrome, Safari, and Firefox.
+  #
+  # The modern Reporting API (report-to + the Reporting-Endpoints header) is
+  # INTENTIONALLY omitted here. A cross-origin Reporting API endpoint IS
+  # CORS-gated (the browser sends a preflight before delivering reports), so
+  # enabling it would require adding the apex origin
+  # (https://thebetterdecision.com) to the app backend's BACKEND_CORS_ORIGINS
+  # allowlist. That is a backend trust-surface change, out of scope for this
+  # infra-only landing change.
   apex_csp = join("; ", [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline'",
@@ -85,6 +105,7 @@ locals {
     "form-action 'self'",
     "object-src 'none'",
     "upgrade-insecure-requests",
+    "report-uri https://app.${var.domain}/api/v1/security/csp-report",
   ])
 }
 
@@ -549,6 +570,13 @@ resource "aws_cloudfront_response_headers_policy" "apex" {
       value    = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
       override = true
     }
+
+    # No Reporting-Endpoints header: the apex CSP reports violations via the
+    # legacy report-uri directive only (see local.apex_csp). The modern
+    # Reporting API (report-to + Reporting-Endpoints) is intentionally omitted
+    # because a cross-origin reporting endpoint is CORS-gated and would require
+    # adding the apex origin to the app backend's BACKEND_CORS_ORIGINS
+    # allowlist, which is out of scope for this infra-only change.
   }
 }
 
