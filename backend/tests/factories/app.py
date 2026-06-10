@@ -31,6 +31,7 @@ Example::
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Union
 
@@ -124,9 +125,14 @@ def _make_current_user_resolver(
     Normalises the three accepted ``current_user`` shapes (instance, zero-arg
     callable, one-arg ``(factory)`` callable — each sync or async) into a
     single async override that returns a ``User``.
-    """
-    import inspect
 
+    Resolver contract: a ``current_user`` resolver must be a plain 0- or
+    1-positional-arg callable (sync or async); the 1-arg form receives the
+    ``session_factory``. We decide arity by counting only *required positional*
+    parameters (POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD with no default), so
+    incidental shapes like ``def r(*args)`` or ``def r(factory=None)`` resolve
+    as zero-arg and are not mis-routed the session_factory.
+    """
     if isinstance(current_user, User):
 
         async def override_current_user() -> User:
@@ -134,10 +140,18 @@ def _make_current_user_resolver(
 
         return override_current_user
 
-    # It's a callable. Decide whether it wants the session_factory argument.
+    # It's a callable. Decide whether it wants the session_factory argument by
+    # counting only required positional params (no default). ``*args``,
+    # ``**kwargs``, keyword-only, and defaulted params do not count.
     try:
         sig = inspect.signature(current_user)
-        wants_factory = len(sig.parameters) >= 1
+        required_positional = [
+            p
+            for p in sig.parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            and p.default is p.empty
+        ]
+        wants_factory = len(required_positional) >= 1
     except (TypeError, ValueError):  # builtins / un-introspectable callables
         wants_factory = False
 
