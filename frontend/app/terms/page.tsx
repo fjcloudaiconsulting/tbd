@@ -45,7 +45,7 @@ export default function TermsOfServicePage() {
             <p>
               Welcome to The Better Decision. These Terms of Service (&ldquo;Terms&rdquo;)
               govern your use of The Better Decision personal finance application
-              operated by Flamarion Jorge. By creating an account or using
+              operated by FJ Cloud &amp; AI Consulting. By creating an account or using
               the service you agree to these Terms.
             </p>
           </section>
