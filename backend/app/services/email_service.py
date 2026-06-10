@@ -373,3 +373,61 @@ async def send_trial_expiring_email(to: str, days_left: int, org_name: str) -> b
         "switch over on its own."
     )
     return await send_email(to, subject, body_html, body_text)
+
+
+async def send_account_deleted_email(
+    to: str,
+    username: str,
+) -> bool:
+    """Send a final transactional email after an account is hard-deleted.
+
+    This is the only customer-facing signal for an account deletion: the
+    user row (and its in-app notification feed) is already gone, so the
+    email to the last-known address is the sole safety net. It is sent
+    AFTER both the delete commit and the audit-row commit succeed (see
+    ``routers/admin_users.py``); a failure here is logged via the
+    existing ``email_send_failed`` event and never rolls back the delete.
+
+    Privacy posture: the recipient is now an EXTERNAL party (their account
+    is gone), so the body deliberately does NOT name the acting
+    administrator's email or request IP. Those identifiers stay in the
+    ``audit_events`` row only (see ``routers/admin_users.py``), where they
+    serve compliance / forensic lookups without being disclosed to the
+    deleted user. The email says only that an administrator acted.
+
+    GDPR posture: this is one final transactional email for a security
+    event (an admin acting on the account), sent under legitimate
+    interest, NOT marketing. It mirrors the password-change notification
+    pattern. We do not store the recipient address beyond the audit
+    snapshot that already exists for compliance reasons; nothing here
+    creates new retained personal data.
+
+    Args:
+        to: the deleted user's last-known email address (audit snapshot).
+        username: the deleted user's username, for a personal greeting.
+    """
+    username_safe = html.escape(username)
+    subject = "[The Better Decision] Your account has been deleted"
+    body_html = _render_html(
+        heading="Your account has been deleted",
+        paragraphs=[
+            f"Hi {username_safe}, your The Better Decision account was "
+            "deleted by an administrator.",
+            "Your data has been removed and you can no longer sign in. "
+            "If you did not expect this, contact support so we can help.",
+        ],
+        footnote=(
+            "This is a one-time security notice. We will not send further "
+            "messages to this address regarding the deleted account."
+        ),
+    )
+    body_text = (
+        "Your account has been deleted\n\n"
+        f"Hi {username}, your The Better Decision account was deleted by "
+        "an administrator.\n\n"
+        "Your data has been removed and you can no longer sign in. If you "
+        "did not expect this, contact support so we can help.\n\n"
+        "This is a one-time security notice. We will not send further "
+        "messages to this address regarding the deleted account."
+    )
+    return await send_email(to, subject, body_html, body_text)

@@ -29,7 +29,11 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent, AuditOutcome
-from app.models.notification import Notification, NotificationCategory
+from app.models.notification import (
+    Notification,
+    NotificationCategory,
+    UserNotificationPreferences,
+)
 from app.models.subscription import (
     BillingInterval,
     Plan,
@@ -113,7 +117,16 @@ async def _seed(factory) -> dict:
             role=Role.OWNER, is_superadmin=False, is_active=True,
             email_verified=True,
         )
-        db.add_all([sa, target_owner])
+        # A plain MEMBER in the target org whose role can be promoted —
+        # the PR4 ``account.role_changed`` notification target.
+        target_member = User(
+            org_id=target.id, username="target_member",
+            email="member@target.io",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.MEMBER, is_superadmin=False, is_active=True,
+            email_verified=True,
+        )
+        db.add_all([sa, target_owner, target_member])
         await db.commit()
         target_sub = Subscription(
             org_id=target.id, plan_id=plan.id,
@@ -134,6 +147,7 @@ async def _seed(factory) -> dict:
             "target_id": target.id,
             "target_name": target.name,
             "target_owner_id": target_owner.id,
+            "target_member_id": target_member.id,
         }
 
 
@@ -286,6 +300,300 @@ async def test_subscription_override_status_only_skips_plan_changed_audit(
         "admin.org.plan.changed leaked on a status-only override — "
         "the conditional gate on 'plan_id' in before is broken"
     )
+
+
+@pytest.mark.asyncio
+async def test_role_change_dispatches_account_notification_to_target(
+    session_factory,
+):
+    """PR4: a member role change dispatches an ``account.role_changed``
+    in-app notification to the TARGET member (the one whose role
+    changed), NOT the actor or the rest of the org."""
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/orgs/{seed['target_id']}/members/"
+            f"{seed['target_member_id']}",
+            json={"role": "admin"},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "account.role_changed"
+                )
+            )
+        ).scalars().all()
+        audit_rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type
+                    == "admin.org.member.role_changed"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 1
+    notif = notifs[0]
+    # Target member, not the actor and not the org owner.
+    assert notif.user_id == seed["target_member_id"]
+    assert notif.category == NotificationCategory.ACCOUNT
+    assert "admin" in notif.body
+    # Forensic correlation: the row carries the role-change audit id.
+    assert len(audit_rows) == 1
+    assert notif.audit_event_id == audit_rows[0].id
+
+
+@pytest.mark.asyncio
+async def test_role_change_suppressed_when_target_opted_out_of_account(
+    session_factory,
+):
+    """PR4 preference opt-out: when the TARGET member has opted out of
+    ACCOUNT in-app notifications (``in_app_account=False``), the role
+    change writes ZERO ``account.role_changed`` rows for that target.
+
+    This exercises the ``dispatch_notification`` -> ``_in_app_preference_allows``
+    skip path. Without the preference check, the role change would still
+    dispatch a row (as ``test_role_change_dispatches_account_notification_to_target``
+    proves with the default-allow row), so a passing assertion of zero rows
+    here genuinely depends on the opt-out being honored.
+    """
+    seed = await _seed(session_factory)
+    # Seed an explicit opt-out preference row for the target member.
+    # ACCOUNT defaults to in_app_account=True, so flipping it to False is
+    # what suppresses the dispatch — if the skip path were ignored, a row
+    # would be written and the len()==0 assertion below would fail.
+    async with session_factory() as db:
+        db.add(
+            UserNotificationPreferences(
+                user_id=seed["target_member_id"],
+                email_security=True,
+                email_account=True,
+                email_org_admin=True,
+                email_org_activity=False,
+                in_app_security=True,
+                in_app_account=False,
+                in_app_org_admin=True,
+                in_app_org_activity=False,
+            )
+        )
+        await db.commit()
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/orgs/{seed['target_id']}/members/"
+            f"{seed['target_member_id']}",
+            json={"role": "admin"},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "account.role_changed",
+                    Notification.user_id == seed["target_member_id"],
+                )
+            )
+        ).scalars().all()
+        # The role change itself still happened + was audited; only the
+        # in-app notification was suppressed.
+        audit_rows = (
+            await db.execute(
+                select(AuditEvent).where(
+                    AuditEvent.event_type
+                    == "admin.org.member.role_changed"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 0, (
+        "account.role_changed row written despite in_app_account=False — "
+        "the preference opt-out skip path was bypassed"
+    )
+    assert len(audit_rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_deactivation_does_not_dispatch_role_changed(session_factory):
+    """A deactivation (not a role change) must NOT fan out an
+    ``account.role_changed`` notification — the dispatch is gated on
+    the role-change event_type only."""
+    seed = await _seed(session_factory)
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/orgs/{seed['target_id']}/members/"
+            f"{seed['target_member_id']}",
+            json={"is_active": False},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "account.role_changed"
+                )
+            )
+        ).scalars().all()
+    assert len(notifs) == 0
+
+
+@pytest.mark.asyncio
+async def test_plan_change_fanout_excludes_org_admin_opted_out(
+    session_factory,
+):
+    """PR4 preference opt-out (fanout): the org_admin broadcast on a
+    plan change must EXCLUDE an admin who has opted out of ORG_ADMIN
+    in-app notifications (``in_app_org_admin=False``), while a
+    non-opted-out OWNER still receives the row.
+
+    This exercises the per-recipient ``_in_app_preference_allows`` skip
+    inside ``dispatch_notification_to_org_admins``. The seeded
+    ``target_owner`` (OWNER, no preference row -> default-allow) is the
+    positive control; the extra ADMIN seeded here with the opt-out is the
+    one that must be absent from the recipients set. If the skip were
+    ignored, the opted-out admin's id WOULD appear and the set-equality
+    assertion below would fail.
+    """
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        pro = Plan(slug="pro", name="Pro")
+        db.add(pro)
+        await db.commit()
+        pro_plan_id = pro.id
+
+        # An extra ADMIN in the SAME target org who has opted out of
+        # org_admin in-app notifications. They are an eligible fanout
+        # recipient by role (OWNER ∪ ADMIN) but must be filtered by the
+        # preference check.
+        opted_out_admin = User(
+            org_id=seed["target_id"], username="muted_admin",
+            email="muted@target.io",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.ADMIN, is_superadmin=False, is_active=True,
+            email_verified=True,
+        )
+        db.add(opted_out_admin)
+        await db.commit()
+        opted_out_admin_id = opted_out_admin.id
+        db.add(
+            UserNotificationPreferences(
+                user_id=opted_out_admin_id,
+                email_security=True,
+                email_account=True,
+                email_org_admin=True,
+                email_org_activity=False,
+                in_app_security=True,
+                in_app_account=True,
+                in_app_org_admin=False,
+                in_app_org_activity=False,
+            )
+        )
+        await db.commit()
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/subscription",
+            json={"plan_id": pro_plan_id},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notifs = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalars().all()
+
+    recipients = {n.user_id for n in notifs}
+    # The non-opted-out OWNER is in; the opted-out ADMIN is filtered out.
+    assert seed["target_owner_id"] in recipients
+    assert opted_out_admin_id not in recipients, (
+        "opted-out admin received the org_admin fanout despite "
+        "in_app_org_admin=False — the per-recipient preference skip "
+        "in dispatch_notification_to_org_admins was bypassed"
+    )
+    assert recipients == {seed["target_owner_id"]}
+
+
+@pytest.mark.asyncio
+async def test_plan_change_link_url_none_when_billing_ui_disabled(
+    session_factory, monkeypatch,
+):
+    """G9: when the customer-facing billing UI is hidden, the
+    plan-change notification's ``link_url`` is dropped to None so the
+    bell row doesn't render a "Go" that 404s."""
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        pro = Plan(slug="pro", name="Pro")
+        db.add(pro)
+        await db.commit()
+        pro_plan_id = pro.id
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/subscription",
+            json={"plan_id": pro_plan_id},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notif = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalar_one()
+    assert notif.link_url is None
+
+
+@pytest.mark.asyncio
+async def test_plan_change_link_url_present_when_billing_ui_enabled(
+    session_factory, monkeypatch,
+):
+    """Inverse of the gate: with the billing UI enabled, the
+    plan-change notification keeps its link_url."""
+    from app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", True)
+
+    seed = await _seed(session_factory)
+    async with session_factory() as db:
+        pro = Plan(slug="pro", name="Pro")
+        db.add(pro)
+        await db.commit()
+        pro_plan_id = pro.id
+
+    app = make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/admin/orgs/{seed['target_id']}/subscription",
+            json={"plan_id": pro_plan_id},
+        )
+    assert res.status_code == 200
+
+    async with session_factory() as db:
+        notif = (
+            await db.execute(
+                select(Notification).where(
+                    Notification.event_type == "admin.org.plan.changed"
+                )
+            )
+        ).scalar_one()
+    assert notif.link_url is not None
 
 
 @pytest.mark.asyncio

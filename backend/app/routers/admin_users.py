@@ -26,7 +26,15 @@ from threading import Lock
 from typing import Literal, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth.permissions import require_permission
@@ -39,6 +47,7 @@ from app.services import (
     admin_users_search_service,
     admin_users_service,
     audit_service,
+    email_service,
     user_merge_service,
 )
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
@@ -384,6 +393,7 @@ async def get_user_detail(
 async def delete_user(
     user_id: int,
     request: Request,
+    background_tasks: BackgroundTasks,
     actor: User = Depends(require_permission("users.delete")),
     db: AsyncSession = Depends(get_db),
     session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
@@ -468,7 +478,8 @@ async def delete_user(
         )
 
     snapshot = result["snapshot"]
-    await audit_service.record_audit_event(
+    request_ip = get_client_ip(request)
+    audit_event_id = await audit_service.record_audit_event(
         session_factory,
         event_type="admin.user.deleted",
         actor_user_id=actor_id,
@@ -479,7 +490,7 @@ async def delete_user(
         target_org_id=snapshot["org_id"],
         target_org_name=None,
         request_id=_request_id(),
-        ip_address=get_client_ip(request),
+        ip_address=request_ip,
         outcome="success",
         detail={
             "target_user_id": snapshot["id"],
@@ -489,6 +500,22 @@ async def delete_user(
             "fk_cleanup_counts": result["fk_cleanup_counts"],
         },
     )
+
+    # PR4 (section 1 of the 2nd-arch delta): send the final transactional
+    # "account deleted" email to the deleted user's last-known address.
+    # NO in-app row — the user is gone. The enqueue lives on the audit
+    # SUCCESS path ONLY: ``record_audit_event`` returns the row id on a
+    # successful commit and ``None`` when the audit insert/commit failed
+    # (it logs + swallows rather than raising). Gating on a non-None id
+    # is the locked rule — "after the audit commit only; if the audit
+    # write fails, no email task is enqueued." Not in a ``finally``, not
+    # before the audit, not in parallel.
+    if audit_event_id is not None:
+        background_tasks.add_task(
+            email_service.send_account_deleted_email,
+            snapshot["email"],
+            snapshot["username"],
+        )
 
     return {
         "deleted_user_id": snapshot["id"],
