@@ -9,6 +9,7 @@ import { pageTitle } from "@/lib/styles";
 const tabs = [
   { href: "/settings", label: "Profile", minRole: "member" as const },
   { href: "/settings/security", label: "Security", minRole: "member" as const },
+  { href: "/settings/notifications", label: "Notifications", minRole: "member" as const },
   { href: "/settings/organization", label: "Organization", minRole: "admin" as const },
   { href: "/settings/ai-providers", label: "AI Providers", minRole: "admin" as const },
   { href: "/settings/billing", label: "Billing", minRole: "owner" as const },
