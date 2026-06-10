@@ -72,6 +72,18 @@ locals {
   # surface: build-apex.sh's post-build guard hard-fails on any /api/v1
   # reference, and the auth pages that load Turnstile are staged out of the
   # apex build by the default-deny route allowlist.
+  #
+  # CSP violation reporting points CROSS-ORIGIN at the app's public,
+  # unauthenticated report sink (https://app.${var.domain}/api/v1/security/csp-report,
+  # backend/app/routers/security.py). The apex has NO same-origin backend
+  # (build-apex.sh hard-fails on any /api/v1 reference), so unlike the Next.js
+  # app (frontend/lib/security-headers.ts, which reports same-origin) it must
+  # send reports to the app host. report-uri is the legacy directive
+  # (Chrome/Safari); report-to is the modern Reporting API directive and pairs
+  # with the Reporting-Endpoints header in the response-headers policy below.
+  # Report delivery does NOT require CORS: browsers POST CSP reports without a
+  # preflight, so no cross-origin allowlist on the endpoint is needed (and the
+  # report POST does not relax connect-src, which stays 'self').
   apex_csp = join("; ", [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline'",
@@ -85,6 +97,8 @@ locals {
     "form-action 'self'",
     "object-src 'none'",
     "upgrade-insecure-requests",
+    "report-uri https://app.${var.domain}/api/v1/security/csp-report",
+    "report-to apex-csp",
   ])
 }
 
@@ -547,6 +561,18 @@ resource "aws_cloudfront_response_headers_policy" "apex" {
     items {
       header   = "Permissions-Policy"
       value    = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+      override = true
+    }
+
+    # Reporting-Endpoints maps the `report-to apex-csp` group declared in
+    # local.apex_csp to the cross-origin app report sink. Structured-header
+    # syntax: group="url" (value quoted). Mirrors how
+    # frontend/lib/security-headers.ts builds reportingEndpointsHeader, except
+    # the URL is cross-origin to the app host because the apex has no
+    # same-origin backend.
+    items {
+      header   = "Reporting-Endpoints"
+      value    = "apex-csp=\"https://app.${var.domain}/api/v1/security/csp-report\""
       override = true
     }
   }

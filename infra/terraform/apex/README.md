@@ -21,7 +21,7 @@ plus the ACM-emitted validation CNAMEs).
 | `aws_cloudfront_distribution` | Edge distribution with HTTPS, HSTS, www -> apex redirect, standard access logging to `apex_logs` |
 | `aws_cloudfront_origin_access_control` | OAC (NOT legacy OAI) so only this distribution can read the bucket |
 | `aws_cloudfront_function` | Viewer-request function: (1) `www` -> apex 301 redirect, then (2) S3 directory-index rewrite (`/privacy/` -> `/privacy/index.html`) |
-| `aws_cloudfront_response_headers_policy` | Security headers: Content-Security-Policy, HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy |
+| `aws_cloudfront_response_headers_policy` | Security headers: Content-Security-Policy (with cross-origin CSP violation reporting), HSTS, X-Frame-Options, Referrer-Policy, Permissions-Policy, Reporting-Endpoints |
 | `aws_acm_certificate` + `_validation` | DNS-validated cert in `us-east-1` (CloudFront requirement) for apex + www |
 | `aws_route53_record.apex_acm_validation` | ACM `_<token>.<domain>` validation CNAMEs in the existing zone. **Does NOT touch the apex A record.** |
 | `aws_iam_openid_connect_provider.github` | Trust for GitHub Actions OIDC tokens |
@@ -247,6 +247,7 @@ documented OAC as the long-term path.
 - `Referrer-Policy: strict-origin-when-cross-origin`
 - `Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()`
 - `Content-Security-Policy` (see `local.apex_csp` in `main.tf`)
+- `Reporting-Endpoints: apex-csp="https://app.<domain>/api/v1/security/csp-report"` (pairs with the CSP `report-to apex-csp` group)
 
 CSP **is** set in this module, in `local.apex_csp`. It is authored against
 what `build-apex.sh`'s static export actually loads and is intentionally
@@ -256,6 +257,20 @@ mint per-request nonces and `script-src`/`style-src` allow `'unsafe-inline'`.
 The only external origins permitted are Google Fonts (`fonts.googleapis.com`
 for `style-src`, `fonts.gstatic.com` for `font-src`); everything else is
 same-origin.
+
+### CSP violation reporting
+
+The apex CSP reports violations **cross-origin** to the app's public,
+unauthenticated sink at `https://app.<domain>/api/v1/security/csp-report`
+(`backend/app/routers/security.py`, the endpoint PR #431 shipped, which writes
+violations to `audit_events`). The apex has no same-origin backend
+(`build-apex.sh` hard-fails on any `/api/v1` reference), so unlike the Next.js
+app, which reports same-origin, it has to point at the app host. Two directives
+are emitted for browser coverage: `report-uri` (legacy, Chrome/Safari) and
+`report-to apex-csp` (modern Reporting API), the latter paired with the
+`Reporting-Endpoints` response header above. Report delivery does **not**
+require CORS, browsers POST CSP reports without a preflight, so no cross-origin
+allowlist on the endpoint is needed and `connect-src` stays `'self'`.
 
 ### Access logging
 
