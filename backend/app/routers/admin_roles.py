@@ -16,7 +16,7 @@ fetches the live grouped catalog at render time.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import structlog
 
@@ -76,14 +76,37 @@ async def list_permission_catalog() -> PermissionCatalogResponse:
     response_model=RoleListResponse,
     dependencies=[Depends(require_permission("roles.manage"))],
 )
-async def list_roles(db: AsyncSession = Depends(get_db)) -> RoleListResponse:
-    items = await role_service.list_roles(db)
-    # Roles are fully listed (no offset/limit), so ``total`` is simply
-    # the row count. The envelope now matches the other admin tables so
-    # the FE can reuse the shared <Pagination> component.
+async def list_roles(
+    sort_by: str | None = Query(default=None),
+    sort_dir: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> RoleListResponse:
+    """Paginated role list for the admin table.
+
+    Matches the shared admin-table list contract: server-side
+    sort + LIMIT/OFFSET, returning ``{items, total}`` where ``total``
+    is the full count so the FE can drive the shared <Pagination>
+    component. Default order is frozen-first then name; an explicit
+    ``sort_by`` routes through the closed sort whitelist (unknown key →
+    400).
+    """
+    try:
+        items, total = await role_service.list_roles(
+            db,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            limit=limit,
+            offset=offset,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     return RoleListResponse(
         items=[RoleListItem(**item) for item in items],
-        total=len(items),
+        total=total,
     )
 
 
