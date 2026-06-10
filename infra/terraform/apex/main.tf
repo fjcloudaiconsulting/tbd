@@ -229,6 +229,15 @@ resource "aws_s3_bucket" "apex_logs" {
     Name = local.logs_bucket_name
     role = "apex-cloudfront-logs"
   }
+
+  # Gate creation behind the IAM-propagation window. The provisioner role's
+  # inline policy is widened to allow s3:CreateBucket on this bucket in the
+  # SAME apply; without this dependency Terraform races the policy update and
+  # CreateBucket 403s while the assumed-role session still sees the old policy
+  # (same eventual-consistency failure the Route 53 writes hit on PR #270).
+  # No cycle: the policy references this bucket by constructed ARN string, not
+  # by resource attribute, so there is no policy -> bucket edge to close.
+  depends_on = [time_sleep.iam_policy_propagation]
 }
 
 # ACLs enabled. CloudFront standard log delivery writes via an ACL grant to
@@ -911,8 +920,17 @@ data "aws_iam_policy_document" "tfc_apex_provisioner" {
     resources = [
       aws_s3_bucket.apex.arn,
       "${aws_s3_bucket.apex.arn}/*",
-      aws_s3_bucket.apex_logs.arn,
-      "${aws_s3_bucket.apex_logs.arn}/*",
+      # Referenced by constructed ARN (not aws_s3_bucket.apex_logs.arn) on
+      # purpose: a resource reference would make this policy depend on the
+      # logs bucket, so Terraform would create the bucket BEFORE the policy
+      # that grants s3:CreateBucket is in effect -> AccessDenied on first
+      # apply. With a static ARN the policy has no edge to the bucket, the
+      # bucket instead depends on time_sleep.iam_policy_propagation, and the
+      # ordering becomes: widen policy -> wait for IAM propagation -> create
+      # bucket. The name is fixed (local.logs_bucket_name) so the ARN is
+      # fully known at plan time.
+      "arn:aws:s3:::${local.logs_bucket_name}",
+      "arn:aws:s3:::${local.logs_bucket_name}/*",
     ]
   }
 
