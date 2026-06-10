@@ -376,8 +376,90 @@ async def test_list_roles_orders_frozen_first(db_session):
     )
     await db_session.commit()
 
-    items = await role_service.list_roles(db_session)
+    items, total = await role_service.list_roles(db_session)
     assert [r["slug"] for r in items][0] == "superadmin"
+    assert total == 2
+
+
+@pytest.mark.asyncio
+async def test_list_roles_explicit_sort_by_name_desc(db_session):
+    await _seed_frozen_superadmin(db_session)  # name "Superadmin"
+    await role_service.create_role(
+        db_session, slug="ops", name="Ops", description=None, permissions=[]
+    )
+    await role_service.create_role(
+        db_session, slug="alpha", name="Alpha", description=None, permissions=[]
+    )
+    await db_session.commit()
+
+    items, total = await role_service.list_roles(
+        db_session, sort_by="name", sort_dir="desc"
+    )
+    assert [r["name"] for r in items] == ["Superadmin", "Ops", "Alpha"]
+    assert total == 3
+
+
+@pytest.mark.asyncio
+async def test_list_roles_sort_by_permission_count(db_session):
+    await role_service.create_role(
+        db_session,
+        slug="few",
+        name="Few",
+        description=None,
+        permissions=["admin.view"],
+    )
+    await role_service.create_role(
+        db_session,
+        slug="many",
+        name="Many",
+        description=None,
+        permissions=["admin.view", "orgs.view", "audit.view"],
+    )
+    await db_session.commit()
+
+    items, _ = await role_service.list_roles(
+        db_session, sort_by="permission_count", sort_dir="desc"
+    )
+    assert [r["slug"] for r in items] == ["many", "few"]
+
+
+@pytest.mark.asyncio
+async def test_list_roles_pagination_returns_full_total(db_session):
+    for i in range(5):
+        await role_service.create_role(
+            db_session,
+            slug=f"role_{i}",
+            name=f"Role {i}",
+            description=None,
+            permissions=[],
+        )
+    await db_session.commit()
+
+    items, total = await role_service.list_roles(
+        db_session, sort_by="name", sort_dir="asc", limit=2, offset=0
+    )
+    assert len(items) == 2
+    assert total == 5
+    assert [r["name"] for r in items] == ["Role 0", "Role 1"]
+
+    page2, total2 = await role_service.list_roles(
+        db_session, sort_by="name", sort_dir="asc", limit=2, offset=2
+    )
+    assert [r["name"] for r in page2] == ["Role 2", "Role 3"]
+    assert total2 == 5
+
+
+@pytest.mark.asyncio
+async def test_list_roles_invalid_sort_by_raises(db_session):
+    with pytest.raises(ValidationError):
+        await role_service.list_roles(db_session, sort_by="not_a_column")
+
+
+@pytest.mark.asyncio
+async def test_list_roles_sort_dir_without_sort_by_raises(db_session):
+    with pytest.raises(ValidationError) as exc:
+        await role_service.list_roles(db_session, sort_dir="asc")
+    assert str(exc.value.detail) == "sort_dir_requires_sort_by"
 
 
 @pytest.mark.asyncio

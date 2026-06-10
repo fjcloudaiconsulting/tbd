@@ -521,6 +521,14 @@ export interface RoleListResponse {
   total: number;
 }
 
+// Backend-whitelisted sort keys for the admin roles table. Unknown keys
+// 400, so the page clamps a seeded URL value back to the default.
+export type RoleSortField =
+  | "name"
+  | "slug"
+  | "permission_count"
+  | "is_system_frozen";
+
 export interface RoleDetail {
   id: number;
   slug: string;

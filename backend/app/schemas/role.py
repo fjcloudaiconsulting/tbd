@@ -30,11 +30,11 @@ class RoleListItem(BaseModel):
 
 
 class RoleListResponse(BaseModel):
-    # ``total`` lets the admin roles table reuse the shared <Pagination>
-    # component (matching the orgs / subscriptions / audit envelope).
-    # Roles are a small, fully-listed set today, so ``total`` always
-    # equals ``len(items)``; the field exists so the FE never has to
-    # special-case its absence if server-side paging lands later.
+    # ``total`` is the full row count (not the page length) so the admin
+    # roles table can drive the shared <Pagination> component, matching
+    # the orgs / subscriptions / audit / rate-limit-overrides envelope.
+    # The list endpoint is server-side sorted + paginated, so ``items``
+    # holds a single page while ``total`` reflects every role.
     items: list[RoleListItem]
     total: int
 
