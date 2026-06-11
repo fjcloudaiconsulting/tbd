@@ -124,13 +124,20 @@ class Settings(BaseSettings):
     # raises ``AIDispatchFailed("provider_timeout")`` (5xx). Architect-
     # mandated reliability bound (AI tier decision, 2026-05-22).
     #
-    # The original 5 s ceiling proved too tight in production: a full
-    # structured-output completion (plus up to two schema retries) for a
-    # real provider routinely exceeds it, so every dispatch flat-lined at
-    # ~5000 ms and all AI features returned the "temporarily unavailable"
-    # empty state. 30 s covers a real round-trip while still bounding a
-    # hung provider well under the adapter's coarse read budget. Tunable
-    # via ``AI_DISPATCH_TIMEOUT_S``.
+    # NOTE: this bounds a SINGLE provider attempt, not the whole dispatch.
+    # ``call_llm_structured`` wraps each attempt in ``_with_dispatch_timeout``
+    # *inside* the retry loop (``STRUCTURED_OUTPUT_MAX_RETRIES`` + 1 = up to
+    # 3 attempts), so the worst-case wall clock for a structured dispatch is
+    # ~3x this value (~90 s at 30 s). That still sits under DO/Cloudflare's
+    # 100 s origin-response ceiling, so the request is not truncated upstream.
+    #
+    # The original 5 s ceiling proved too tight in production: a single
+    # structured-output completion for a real provider routinely exceeds
+    # 5 s, so every attempt flat-lined at ~5000 ms and all AI features
+    # returned the "temporarily unavailable" empty state. 30 s/attempt
+    # covers a real round-trip while still bounding a hung provider well
+    # under the adapter's coarse read budget. Tunable via
+    # ``AI_DISPATCH_TIMEOUT_S``.
     ai_dispatch_timeout_s: float = 30.0
 
     # Google SSO
