@@ -25,7 +25,11 @@ import dynamic from "next/dynamic";
 import { useMemo } from "react";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
-import { dimensionHeader, pivotBySecondaryDimension } from "@/lib/reports/series";
+import {
+  dimensionHeader,
+  measureFieldLabel,
+  pivotBySecondaryDimension,
+} from "@/lib/reports/series";
 import type {
   BarWidget as BarWidgetType,
   CanvasFilters,
@@ -105,7 +109,7 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
   // CSV export. Single-series: [dimension, measure]. Sliced (break-down
   // by a secondary dimension): [primary dimension, ...one column per
   // secondary value], mirroring the stacked segments.
-  const measureLabel = widget.config.measure.field;
+  const measureLabel = measureFieldLabel(widget.config.measure.field);
   const csvDataset = sliced
     ? {
         headers: [dimensionHeader(primaryKey), ...secondaryValues],
@@ -164,6 +168,7 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
             sliced={sliced}
             secondaryValues={secondaryValues}
             seriesKeys={seriesKeys}
+            valueName={measureLabel}
           />
         )}
       </div>

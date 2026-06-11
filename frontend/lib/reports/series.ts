@@ -8,6 +8,7 @@
 import type {
   Dimension,
   Measure,
+  MeasureField,
   QueryRow,
   ReportsQueryResponse,
   SeriesConfig,
@@ -43,6 +44,26 @@ export function dimensionHeader(key: string): string {
 }
 
 /**
+ * Friendly display label for a measure field. ``measure.field`` is a raw
+ * DB key ("amount", "id", "category_id", "account_id"); surfaced bare it
+ * reads "amount: 1234" or "account_id: 3" in chart tooltips and CSV
+ * headers. Single source of truth for the human label — consumed by
+ * ``seriesLabel`` (multi-series chart names), the single-series bar
+ * tooltip + CSV header (``BarWidget``), and the ConfigRail field picker.
+ */
+export const MEASURE_FIELD_LABELS: Record<MeasureField, string> = {
+  amount: "Amount",
+  id: "Row count",
+  category_id: "Category",
+  account_id: "Account",
+};
+
+/** Display label for a measure field, falling back to the raw key. */
+export function measureFieldLabel(field: MeasureField): string {
+  return MEASURE_FIELD_LABELS[field] ?? field;
+}
+
+/**
  * Stable human label for a series. Uses the optional ``label`` if
  * present; otherwise falls back to "<Agg> of <field>". A single-
  * series widget shows just the field name to avoid the noisy
@@ -54,8 +75,9 @@ export function seriesLabel(
   total: number,
 ): string {
   if (s.label && s.label.trim()) return s.label.trim();
-  if (total === 1) return s.measure.field;
-  return `${HUMAN_AGG[s.measure.agg]} of ${s.measure.field}`;
+  const fieldLabel = measureFieldLabel(s.measure.field);
+  if (total === 1) return fieldLabel;
+  return `${HUMAN_AGG[s.measure.agg]} of ${fieldLabel}`;
 }
 
 /**
