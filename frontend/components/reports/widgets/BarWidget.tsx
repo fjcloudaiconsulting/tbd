@@ -164,6 +164,7 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
             sliced={sliced}
             secondaryValues={secondaryValues}
             seriesKeys={seriesKeys}
+            valueName={measureLabel}
           />
         )}
       </div>
