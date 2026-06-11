@@ -56,8 +56,8 @@ from app.schemas.report import (
     ReportUpdate,
     ReportVersionSummary,
 )
+from app.reports.sources import all_sources, get_source
 from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse
-from app.services.reports_query_service import execute_query
 
 
 logger = structlog.stdlib.get_logger()
@@ -152,6 +152,17 @@ async def _snapshot_version(
         await db.delete(stale)
 
 
+async def _run_source_query(db, ast: ReportsQuery, *, org_id: int):
+    """Resolve the AST's dataset to a registered ReportSource and run it.
+
+    Unknown dataset is impossible from the wire (the Dataset enum is
+    closed and Pydantic-validated), so a KeyError here is a server bug,
+    not user input — let it surface as 500.
+    """
+    source = get_source(ast.dataset.value)
+    return await source.build_rows(db, org_id, ast)
+
+
 @router.post(
     "/query",
     response_model=ReportsQueryResponse,
@@ -166,9 +177,9 @@ async def run_query(
     """Execute a validated AST against the caller's org data.
 
     ``org_id`` is injected from ``current_user``; the AST has no way to
-    express it. See ``app/services/reports_query_service.py``.
+    express it. Dispatch is through the source registry on ``body.dataset``.
     """
-    rows, meta = await execute_query(db, body, org_id=current_user.org_id)
+    rows, meta = await _run_source_query(db, body, org_id=current_user.org_id)
     return ReportsQueryResponse(rows=rows, meta=meta)
 
 

@@ -38,3 +38,35 @@ def test_transactions_source_catalog_matches_ast_enums():
     for m in src.measures():
         assert m.agg in agg_values, f"bad agg: {m.agg}"
         assert m.field in field_values, f"bad field: {m.field}"
+
+
+@pytest.mark.asyncio
+async def test_run_query_dispatches_via_registry(monkeypatch):
+    """The route resolves the source from the AST dataset and calls its
+    build_rows — proving the indirection, not a direct execute_query call."""
+    from app.routers import reports as reports_router
+    from app.schemas.reports_query import (
+        Aggregation, Dataset, Dimension, Measure, MeasureField, ReportsQuery,
+    )
+
+    called = {}
+
+    async def fake_build_rows(self, db, org_id, query):
+        called["org_id"] = org_id
+        called["dataset"] = query.dataset.value
+        return ([{"category": "Food", "value": 12}], {"row_count": 1, "truncated": False, "query_ms": 1})
+
+    src = reports_router.get_source("transactions")
+    # TransactionsSource.build_rows is defined on the class, not the instance.
+    # Patching on the class means Python's descriptor protocol passes self as
+    # the first argument, so fake_build_rows takes (self, db, org_id, query).
+    monkeypatch.setattr(type(src), "build_rows", fake_build_rows)
+
+    ast = ReportsQuery(
+        dataset=Dataset.TRANSACTIONS,
+        measure=Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
+        dimensions=[Dimension.CATEGORY],
+    )
+    rows, meta = await reports_router._run_source_query(object(), ast, org_id=42)
+    assert called == {"org_id": 42, "dataset": "transactions"}
+    assert rows[0]["category"] == "Food" and meta["row_count"] == 1
