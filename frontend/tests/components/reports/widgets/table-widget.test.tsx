@@ -280,10 +280,10 @@ describe("TableWidget", () => {
     expect(downloadMock).toHaveBeenCalledTimes(1);
     const [filename, csv] = downloadMock.mock.calls[0];
     expect(filename).toBe("top-categories.csv");
-    // Header uses the human dimension label "Category" + the measure
-    // field "amount"; the Total row sums the additive column (280).
+    // Header uses the human dimension label "Category" + the friendly
+    // measure label "Amount"; the Total row sums the additive column (280).
     expect(csv).toBe(
-      "Category,amount\r\nFood,200\r\nTransport,80\r\nTotal,280",
+      "Category,Amount\r\nFood,200\r\nTransport,80\r\nTotal,280",
     );
   });
 
