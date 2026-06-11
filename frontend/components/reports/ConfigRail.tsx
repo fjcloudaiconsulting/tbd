@@ -49,6 +49,7 @@ import type {
   WidgetFilters,
 } from "@/lib/reports/types";
 import { isFieldOverridden } from "@/lib/reports/resolve";
+import { MEASURE_FIELD_LABELS } from "@/lib/reports/series";
 
 interface Props {
   widget: Widget;
@@ -72,12 +73,11 @@ const AGG_HELP_KEY: Record<Aggregation, HelpTooltipKey> = {
   distinct: "reports.agg.distinct",
 };
 
-const FIELD_OPTIONS: Array<{ value: MeasureField; label: string }> = [
-  { value: "amount", label: "Amount" },
-  { value: "id", label: "Row count (id)" },
-  { value: "category_id", label: "Category" },
-  { value: "account_id", label: "Account" },
-];
+// Derived from the shared measure-field label map so the editor picker,
+// chart tooltips, and CSV headers can never drift apart.
+const FIELD_OPTIONS: Array<{ value: MeasureField; label: string }> = (
+  Object.keys(MEASURE_FIELD_LABELS) as MeasureField[]
+).map((value) => ({ value, label: MEASURE_FIELD_LABELS[value] }));
 
 const DIMENSION_OPTIONS: Array<{ value: Dimension; label: string }> = [
   { value: "category", label: "Category" },

@@ -172,7 +172,9 @@ describe("BarWidget", () => {
     expect(downloadMock).toHaveBeenCalledTimes(1);
     const [filename, csv] = downloadMock.mock.calls[0];
     expect(filename).toBe("spend-by-category.csv");
-    expect(csv).toBe("Category,amount\r\nFood,200\r\nTransport,80");
+    // Header uses the friendly measure label ("Amount"), not the raw
+    // "amount" field key — same humanized label the bar tooltip shows.
+    expect(csv).toBe("Category,Amount\r\nFood,200\r\nTransport,80");
   });
 
   it("exports one column per account when broken down by a secondary dimension", async () => {

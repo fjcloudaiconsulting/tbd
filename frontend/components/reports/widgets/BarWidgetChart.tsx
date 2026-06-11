@@ -41,6 +41,13 @@ export interface BarWidgetChartProps {
   sliced: boolean;
   secondaryValues: string[];
   seriesKeys: string[];
+  /**
+   * Human label for the single-series measure, surfaced as the bar's
+   * tooltip ``name`` so hovering shows e.g. "Amount: 1234" instead of
+   * the bare "value" dataKey. Sliced bars already carry per-segment
+   * ``name`` from their secondary value.
+   */
+  valueName: string;
 }
 
 export default function BarWidgetChart({
@@ -48,6 +55,7 @@ export default function BarWidgetChart({
   sliced,
   secondaryValues,
   seriesKeys,
+  valueName,
 }: BarWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -75,6 +83,7 @@ export default function BarWidgetChart({
         ) : (
           <Bar
             dataKey="value"
+            name={valueName}
             fill={chartColor.spent}
             radius={[4, 4, 0, 0]}
             animationDuration={220}
