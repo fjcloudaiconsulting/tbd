@@ -14,7 +14,7 @@ from typing import Protocol, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.reports_query import QueryMeta, ReportsQuery
+from app.schemas.reports_query import ReportsQuery
 
 
 @dataclass(frozen=True)
@@ -44,4 +44,4 @@ class ReportSource(Protocol):
 
     async def build_rows(
         self, db: AsyncSession, org_id: int, query: ReportsQuery
-    ) -> tuple[list[dict], QueryMeta]: ...
+    ) -> tuple[list[dict], dict]: ...  # meta dict carries row_count, truncated, query_ms — coerced to QueryMeta at the router

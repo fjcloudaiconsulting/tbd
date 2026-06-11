@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.reports.sources import register
 from app.reports.sources.base import ReportSource, SourceDimension, SourceMeasure
-from app.schemas.reports_query import QueryMeta, ReportsQuery
+from app.schemas.reports_query import ReportsQuery
 from app.services.reports_query_service import execute_query
 
 _DIMENSIONS = [
@@ -45,7 +45,7 @@ class TransactionsSource:
 
     async def build_rows(
         self, db: AsyncSession, org_id: int, query: ReportsQuery
-    ) -> tuple[list[dict], QueryMeta]:
+    ) -> tuple[list[dict], dict]:  # meta dict carries row_count, truncated, query_ms — coerced to QueryMeta at the router
         return await execute_query(db, query, org_id=org_id)
 
 
