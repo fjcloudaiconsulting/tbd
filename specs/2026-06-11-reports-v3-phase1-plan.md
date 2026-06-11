@@ -12,7 +12,7 @@
 - `backend/app/services/reports_query_service.py` — `execute_query(db, ast: ReportsQuery, *, org_id: int) -> tuple[list[dict], QueryMeta]`; the compiler this phase wraps. **Read it fully first.**
 - `backend/app/schemas/reports_query.py` — the AST: `Dataset`, `Aggregation`, `MeasureField`, `Dimension`, `Measure`, `ReportsQuery`, `QueryMeta`, `ReportsQueryResponse`.
 - `backend/app/routers/reports.py:155-172` — the existing `run_query` route that calls `execute_query`; this is the call site we redirect through the registry.
-- `backend/app/tests/` — find the existing reports query test module (e.g. `test_reports_query_service.py` / `test_reports_query.py`) for the parity baseline.
+- `backend/tests/services/test_reports_query_service.py` + `backend/tests/routers/test_reports.py` — the existing parity baseline (must stay green unchanged). New tests go in `backend/tests/services/` (unit) and `backend/tests/routers/` (endpoint).
 
 ---
 
