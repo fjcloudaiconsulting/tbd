@@ -87,6 +87,20 @@ services:
       # this explicit mount, edits require `docker compose up --build`
       # to take effect.
       - ./frontend/next.config.ts:/app/next.config.ts
+      # Same trap for the vitest config + setup and tsconfig: all three are
+      # COPYed at build time, so without these mounts an edit silently runs
+      # the stale baked copy until a rebuild. (A pre-#422 image missing the
+      # Blob.text polyfill made the import-page sniff test fail locally
+      # while CI — which always builds fresh — stayed green.) tsconfig is
+      # read live by `docker compose exec frontend npx tsc --noEmit`, where
+      # a stale copy could silently mask or invent type errors.
+      # eslint.config.mjs shares the trap but is deliberately left out — it
+      # changes ~never and isn't part of the local edit/test/typecheck loop.
+      # package.json / package-lock.json are intentionally NOT mounted: they
+      # require a rebuild (npm install bakes node_modules before the COPY).
+      - ./frontend/vitest.config.ts:/app/vitest.config.ts
+      - ./frontend/vitest.setup.ts:/app/vitest.setup.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
 
   nginx:
     image: nginx:alpine
