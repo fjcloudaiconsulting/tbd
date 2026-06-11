@@ -146,6 +146,14 @@ services:
       - key: AI_NATIVE_ENABLED
         scope: RUN_AND_BUILD_TIME
         value: "false"
+      # Wall-clock ceiling on a single AI dispatch adapter ATTEMPT (the
+      # structured path retries up to 3x, so worst case ~90 s, still under
+      # DO/Cloudflare's 100 s origin ceiling). The 5 s code default was too
+      # tight for a real structured-output completion (every attempt timed
+      # out); 30 s restores AI features while still bounding a hung provider.
+      - key: AI_DISPATCH_TIMEOUT_S
+        scope: RUN_AND_BUILD_TIME
+        value: "30"
       # Pinned ToS version. Bump to force every org to re-consent on
       # the next admin-UI mount. Existing rows are never auto-upgraded.
       - key: AI_NATIVE_CURRENT_CONSENT_VERSION
