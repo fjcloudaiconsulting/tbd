@@ -123,7 +123,15 @@ class Settings(BaseSettings):
     # On timeout the dispatcher records a system-failure ledger row and
     # raises ``AIDispatchFailed("provider_timeout")`` (5xx). Architect-
     # mandated reliability bound (AI tier decision, 2026-05-22).
-    ai_dispatch_timeout_s: float = 5.0
+    #
+    # The original 5 s ceiling proved too tight in production: a full
+    # structured-output completion (plus up to two schema retries) for a
+    # real provider routinely exceeds it, so every dispatch flat-lined at
+    # ~5000 ms and all AI features returned the "temporarily unavailable"
+    # empty state. 30 s covers a real round-trip while still bounding a
+    # hung provider well under the adapter's coarse read budget. Tunable
+    # via ``AI_DISPATCH_TIMEOUT_S``.
+    ai_dispatch_timeout_s: float = 30.0
 
     # Google SSO
     google_client_id: str = ""
