@@ -87,6 +87,13 @@ services:
       # this explicit mount, edits require `docker compose up --build`
       # to take effect.
       - ./frontend/next.config.ts:/app/next.config.ts
+      # Same trap for the vitest config + setup: they are COPYed at build
+      # time, so without these mounts an edit to either silently runs the
+      # stale baked copy until a rebuild. (A pre-#422 image missing the
+      # Blob.text polyfill made the import-page sniff test fail locally
+      # while CI — which always builds fresh — stayed green.)
+      - ./frontend/vitest.config.ts:/app/vitest.config.ts
+      - ./frontend/vitest.setup.ts:/app/vitest.setup.ts
 
   nginx:
     image: nginx:alpine
