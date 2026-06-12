@@ -105,6 +105,7 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
 
   const rows = sliced ? stackedRows : simpleRows;
   const hasRows = rows.length > 0;
+  const format = widget.config.format ?? "number";
 
   // CSV export. Single-series: [dimension, measure]. Sliced (break-down
   // by a secondary dimension): [primary dimension, ...one column per
@@ -169,6 +170,7 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
             secondaryValues={secondaryValues}
             seriesKeys={seriesKeys}
             valueName={measureLabel}
+            format={format}
           />
         )}
       </div>

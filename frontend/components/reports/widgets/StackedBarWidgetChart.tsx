@@ -17,6 +17,7 @@ import {
 } from "recharts";
 
 import { chartColor } from "@/lib/chart-colors";
+import { formatMeasureValue } from "@/lib/reports/series";
 
 // Canonical categorical chart palette (theme tokens, mirrors the
 // dashboard). chart-5 (danger/red) sits last so neutral series don't
@@ -34,6 +35,8 @@ export interface StackedBarWidgetChartProps {
   seriesKeys: string[];
   labels: string[];
   stackId?: string;
+  /** Display format for the measure value (tooltip + value axis). */
+  format: "currency" | "number" | "percent";
 }
 
 export default function StackedBarWidgetChart({
@@ -41,6 +44,7 @@ export default function StackedBarWidgetChart({
   seriesKeys,
   labels,
   stackId,
+  format,
 }: StackedBarWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -51,8 +55,14 @@ export default function StackedBarWidgetChart({
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
           interval={0}
         />
-        <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
-        <Tooltip cursor={{ fill: "var(--color-border)", opacity: 0.3 }} />
+        <YAxis
+          tick={{ fill: chartColor.axisTick, fontSize: 11 }}
+          tickFormatter={(v) => formatMeasureValue(Number(v), format)}
+        />
+        <Tooltip
+          cursor={{ fill: "var(--color-border)", opacity: 0.3 }}
+          formatter={(v) => formatMeasureValue(Number(v), format)}
+        />
         {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         {seriesKeys.map((key, i) => (
           <Bar

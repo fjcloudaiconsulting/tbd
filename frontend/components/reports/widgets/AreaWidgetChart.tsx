@@ -19,6 +19,7 @@ import {
 } from "recharts";
 
 import { chartColor } from "@/lib/chart-colors";
+import { formatMeasureValue } from "@/lib/reports/series";
 
 // Canonical categorical chart palette (theme tokens, mirrors the
 // dashboard). chart-5 (danger/red) sits last so neutral series don't
@@ -36,6 +37,8 @@ export interface AreaWidgetChartProps {
   seriesKeys: string[];
   labels: string[];
   stackId?: string;
+  /** Display format for the measure value (tooltip + value axis). */
+  format: "currency" | "number" | "percent";
 }
 
 export default function AreaWidgetChart({
@@ -43,6 +46,7 @@ export default function AreaWidgetChart({
   seriesKeys,
   labels,
   stackId,
+  format,
 }: AreaWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -53,8 +57,14 @@ export default function AreaWidgetChart({
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
           interval={0}
         />
-        <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
-        <Tooltip cursor={{ stroke: "var(--color-border)" }} />
+        <YAxis
+          tick={{ fill: chartColor.axisTick, fontSize: 11 }}
+          tickFormatter={(v) => formatMeasureValue(Number(v), format)}
+        />
+        <Tooltip
+          cursor={{ stroke: "var(--color-border)" }}
+          formatter={(v) => formatMeasureValue(Number(v), format)}
+        />
         {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         {seriesKeys.map((key, i) => (
           <Area

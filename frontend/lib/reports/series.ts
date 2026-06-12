@@ -5,6 +5,7 @@
  * series fires N parallel queries and stitches the rows here by the
  * shared dimension key.
  */
+import { formatAmount } from "@/lib/format";
 import type {
   Dimension,
   Measure,
@@ -61,6 +62,19 @@ export const MEASURE_FIELD_LABELS: Record<MeasureField, string> = {
 /** Display label for a measure field, falling back to the raw key. */
 export function measureFieldLabel(field: MeasureField): string {
   return MEASURE_FIELD_LABELS[field] ?? field;
+}
+
+/** Format a measure value for display in widget tooltips, axes and cells.
+ *  Grouped numbers, no currency symbol — matches the app's `formatAmount`
+ *  convention. Currency symbols are deferred to the future multi-currency
+ *  work (currency will be configured per account). */
+export function formatMeasureValue(
+  value: number,
+  format: "currency" | "number" | "percent",
+): string {
+  if (format === "percent") return `${value.toFixed(1)}%`;
+  if (format === "currency") return formatAmount(value); // grouped, 2dp, no symbol
+  return value.toLocaleString();
 }
 
 /**
