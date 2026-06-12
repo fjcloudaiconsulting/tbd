@@ -191,7 +191,7 @@ describe("ReportEditorPage", () => {
       screen.getByText(/Add a widget to see your data/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/apply to every widget/i),
+      screen.getByText(/canvas date applies to every widget/i),
     ).toBeInTheDocument();
 
     // Add widget opens the picker dialog.
@@ -1050,6 +1050,48 @@ describe("ReportEditorPage", () => {
     // geometry/width is unchanged (the reflow regression guard).
     expect(flexRow.children).toHaveLength(1);
     expect(flexRow.children[0]).toBe(canvasCol);
+  });
+
+  it("clicking a widget filter chip selects the widget and opens the popover on Filters", async () => {
+    mockUser(true);
+    // Widget carries a txn_type filter → renders a filter chip.
+    getReportMock.mockResolvedValue({
+      ...REPORT_WITH_WIDGET,
+      layout_json: {
+        version: 1 as const,
+        widgets: [
+          {
+            id: "w_kpi",
+            type: "kpi" as const,
+            title: "Total",
+            grid: { x: 0, y: 0, w: 3, h: 2 },
+            config: {
+              dataset: "transactions" as const,
+              measure: { agg: "sum" as const, field: "amount" as const },
+              format: "currency" as const,
+              filters: { txn_type: "expense" as const },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
+
+    // View mode opens for a report with widgets; enter edit mode so the
+    // chip's real handler is wired (view mode passes a no-op).
+    await screen.findByTestId("kpi-widget");
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+
+    // Chip renders in the shell header. Click it → widget selected +
+    // popover deep-links to the Filters tab.
+    fireEvent.click(screen.getByTestId("widget-filter-chip-txn_type"));
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-editor-popover")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("tab", { name: /filters/i }),
+    ).toHaveAttribute("aria-selected", "true");
   });
 
   it("edits a widget through the popover and the change round-trips into the saved layout", async () => {

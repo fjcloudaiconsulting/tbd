@@ -24,9 +24,12 @@
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import useSWR from "swr";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { apiFetch } from "@/lib/api";
+import type { Account, Category } from "@/lib/types";
 import {
   deleteReport,
   duplicateReport,
@@ -49,6 +52,7 @@ import Canvas from "@/components/reports/Canvas";
 import HistoryPanel from "@/components/reports/HistoryPanel";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
+import type { TabKey } from "@/components/reports/WidgetEditorPopover";
 import { useWidgetAnchor } from "@/lib/reports/use-widget-anchor";
 import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
@@ -302,10 +306,30 @@ export default function ReportEditorPage({ params }: PageProps) {
   const { user, loading: authLoading, featureReportsV2 } = useAuth();
   const isSmallScreen = useIsSmallScreen();
 
+  // Accounts + categories for the filter-chip name lookups. Reuse the
+  // EXACT SWR keys ``AccountFilter`` / ``CategoryPicker`` use so the
+  // cache is shared (no extra network round-trip) and ids resolve to
+  // names in the chip header. Default to [] (count-fallback) while warm.
+  const { data: accounts } = useSWR<Account[]>(
+    "/api/v1/accounts?for=reports-filter",
+    () => apiFetch<Account[]>("/api/v1/accounts"),
+    { revalidateOnFocus: false },
+  );
+  const { data: categories } = useSWR<Category[]>(
+    "/api/v1/categories?for=reports-filter",
+    () => apiFetch<Category[]>("/api/v1/categories"),
+    { revalidateOnFocus: false },
+  );
+
   const [report, setReport] = useState<ReportSummary | null>(null);
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
+  // Deep-link request: a filter-chip click sets this to "filters" so the
+  // popover opens on its Filters tab. Cleared the instant the popover
+  // consumes it (consume-and-clear handshake), so every chip click is a
+  // fresh null → "filters" transition.
+  const [requestedTab, setRequestedTab] = useState<TabKey | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -416,7 +440,19 @@ export default function ReportEditorPage({ params }: PageProps) {
 
   // Stable identities so the popover's effects (keyed on ``onClose``) and
   // ``buildWidgetMutations`` don't re-run on every parent render.
-  const closePopover = useCallback(() => setSelectedWidgetId(null), []);
+  const closePopover = useCallback(() => {
+    setSelectedWidgetId(null);
+    // Belt-and-suspenders: the consume callback is the real clear, but
+    // also drop any pending request on close so a stale chip request
+    // can't leak into the next selection.
+    setRequestedTab(null);
+  }, []);
+
+  // Chip click: select the widget AND request the Filters tab.
+  const selectWidgetFilters = useCallback((widgetId: string) => {
+    setSelectedWidgetId(widgetId);
+    setRequestedTab("filters");
+  }, []);
 
   const updateWidget = useCallback((nextWidget: Widget) => {
     setLayout((prev) => ({
@@ -775,9 +811,9 @@ export default function ReportEditorPage({ params }: PageProps) {
                 This report has no widgets yet
               </p>
               <p className="mx-auto mt-1 max-w-md text-sm text-text-muted">
-                Add a widget to see your data. Canvas filters (date,
-                accounts, categories) apply to every widget, so a report
-                with no widgets shows nothing.
+                Add a widget to see your data. The canvas date applies to
+                every widget; accounts and categories are per-widget, so a
+                report with no widgets shows nothing.
               </p>
               <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                 {/* "Add widget" is owner-only: a non-owner viewing a shared
@@ -828,6 +864,17 @@ export default function ReportEditorPage({ params }: PageProps) {
                   editMode={editModeActive}
                   onSelect={() => setSelectedWidgetId(w.id)}
                   onRemove={() => removeWidget(w.id)}
+                  widget={w}
+                  canvasFilters={canvasFilters}
+                  accounts={accounts ?? []}
+                  categories={categories ?? []}
+                  // View-mode orphan-selection guard: the popover is gated
+                  // on ``editModeActive``, so in view mode a chip click
+                  // would draw a selection ring with no editor behind it.
+                  // Chips still render (informational) but are inert.
+                  onSelectFilters={
+                    editModeActive ? () => selectWidgetFilters(w.id) : () => {}
+                  }
                 >
                   {renderWidgetByType(w, canvasFilters, editModeActive)}
                 </WidgetShell>
@@ -846,6 +893,8 @@ export default function ReportEditorPage({ params }: PageProps) {
           widget={selectedWidget}
           canvasFilters={canvasFilters}
           anchorEl={anchorEl}
+          requestedTab={requestedTab ?? undefined}
+          onTabConsumed={() => setRequestedTab(null)}
           onUpdate={updateWidget}
           onClose={closePopover}
         />
