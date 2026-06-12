@@ -15,7 +15,7 @@
  * there is nothing saved to act on yet. Those live on the saved-report
  * editor at `/reports/[id]`.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -32,6 +32,7 @@ import type {
 import Canvas from "@/components/reports/Canvas";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
+import { useWidgetAnchor } from "@/lib/reports/use-widget-anchor";
 import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
 import {
@@ -50,7 +51,6 @@ export default function ReportDraftPage() {
   const [layout, setLayout] = useState<LayoutJson | null>(null);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
-  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -115,27 +115,20 @@ export default function ReportDraftPage() {
     [layout, selectedWidgetId],
   );
 
-  // Resolve the selected widget's shell DOM node into ``anchorEl`` for the
-  // popover anchor. The draft page is ALWAYS in edit mode, so there is no
-  // ``editModeActive`` gate here (unlike the saved-report editor). Runs
-  // post-commit, so the popover mounts on the render after selection.
-  useEffect(() => {
-    if (!selectedWidgetId) {
-      setAnchorEl(null);
-      return;
-    }
-    setAnchorEl(
-      document.querySelector(
-        `[data-widget-shell="${selectedWidgetId}"]`,
-      ) as HTMLElement | null,
-    );
-  }, [selectedWidgetId, layout?.widgets]);
+  // Resolve the selected widget's shell into the popover anchor. The draft
+  // page is ALWAYS in edit mode, so ``enabled`` is hardwired ``true`` (no
+  // ``editModeActive`` gate, unlike the saved-report editor).
+  const anchorEl = useWidgetAnchor(selectedWidgetId, true, layout?.widgets);
 
   function updateLayout(next: LayoutJson) {
     setLayout(next);
   }
 
-  function updateWidget(nextWidget: Widget) {
+  // Stable identities so the popover's effects (keyed on ``onClose``) and
+  // ``buildWidgetMutations`` don't re-run on every parent render.
+  const closePopover = useCallback(() => setSelectedWidgetId(null), []);
+
+  const updateWidget = useCallback((nextWidget: Widget) => {
     setLayout((prev) =>
       prev
         ? {
@@ -146,7 +139,7 @@ export default function ReportDraftPage() {
           }
         : prev,
     );
-  }
+  }, []);
 
   function addWidget(type: WidgetType) {
     const id = newWidgetId();
@@ -339,7 +332,7 @@ export default function ReportDraftPage() {
             canvasFilters={canvasFilters}
             anchorEl={anchorEl}
             onUpdate={updateWidget}
-            onClose={() => setSelectedWidgetId(null)}
+            onClose={closePopover}
           />
         )}
 
