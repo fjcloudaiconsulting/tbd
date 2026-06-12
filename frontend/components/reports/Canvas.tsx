@@ -24,6 +24,7 @@ import "react-resizable/css/styles.css";
 import { Responsive, WidthProvider, type Layout } from "react-grid-layout";
 
 import type { LayoutJson, Widget } from "@/lib/reports/types";
+import { widgetsFromLayout, gridChanged } from "@/lib/reports/layout";
 
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
@@ -63,15 +64,8 @@ export default function Canvas({
 
   function handleLayoutChange(next: Layout[]) {
     if (!editMode) return;
-    const byId = new Map(next.map((l) => [l.i, l]));
-    const updated: Widget[] = items.map((w) => {
-      const l = byId.get(w.id);
-      if (!l) return w;
-      return {
-        ...w,
-        grid: { x: l.x, y: l.y, w: l.w, h: l.h },
-      };
-    });
+    const updated = widgetsFromLayout(items, next);
+    if (!gridChanged(items, updated)) return; // swallow mount-time / no-op emissions
     onLayoutChange({ ...layout, widgets: updated });
   }
 
@@ -83,6 +77,8 @@ export default function Canvas({
         breakpoints={BREAKPOINTS}
         cols={COLS}
         rowHeight={60}
+        compactType={null}
+        preventCollision
         isDraggable={editMode}
         isResizable={editMode}
         draggableHandle="[data-grid-drag-handle]"
