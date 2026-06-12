@@ -31,7 +31,7 @@ import type {
 } from "@/lib/reports/types";
 import Canvas from "@/components/reports/Canvas";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
-import ConfigRail from "@/components/reports/ConfigRail";
+import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
 import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
 import {
@@ -50,6 +50,7 @@ export default function ReportDraftPage() {
   const [layout, setLayout] = useState<LayoutJson | null>(null);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -113,6 +114,22 @@ export default function ReportDraftPage() {
     () => layout?.widgets.find((w) => w.id === selectedWidgetId) ?? null,
     [layout, selectedWidgetId],
   );
+
+  // Resolve the selected widget's shell DOM node into ``anchorEl`` for the
+  // popover anchor. The draft page is ALWAYS in edit mode, so there is no
+  // ``editModeActive`` gate here (unlike the saved-report editor). Runs
+  // post-commit, so the popover mounts on the render after selection.
+  useEffect(() => {
+    if (!selectedWidgetId) {
+      setAnchorEl(null);
+      return;
+    }
+    setAnchorEl(
+      document.querySelector(
+        `[data-widget-shell="${selectedWidgetId}"]`,
+      ) as HTMLElement | null,
+    );
+  }, [selectedWidgetId, layout?.widgets]);
 
   function updateLayout(next: LayoutJson) {
     setLayout(next);
@@ -264,7 +281,10 @@ export default function ReportDraftPage() {
         </div>
 
         <div className="flex flex-1 overflow-hidden">
-          <div className="flex-1 overflow-y-auto px-4 py-4">
+          <div
+            data-testid="report-canvas-column"
+            className="flex-1 overflow-y-auto px-4 py-4"
+          >
             {layout.widgets.length === 0 ? (
               <div
                 data-testid="report-draft-empty"
@@ -307,15 +327,21 @@ export default function ReportDraftPage() {
               />
             )}
           </div>
-          {selectedWidget && (
-            <ConfigRail
-              widget={selectedWidget}
-              canvasFilters={canvasFilters}
-              onUpdate={updateWidget}
-              onClose={() => setSelectedWidgetId(null)}
-            />
-          )}
         </div>
+
+        {/* Widget editor — anchored floating popover portaled to the body,
+            never a flex sibling of the canvas, so the canvas does not reflow
+            when a widget is selected. The draft page is always in edit mode,
+            so the gate is ``selectedWidget && anchorEl`` only. */}
+        {selectedWidget && anchorEl && (
+          <WidgetEditorPopover
+            widget={selectedWidget}
+            canvasFilters={canvasFilters}
+            anchorEl={anchorEl}
+            onUpdate={updateWidget}
+            onClose={() => setSelectedWidgetId(null)}
+          />
+        )}
 
         <WidgetPicker
           open={pickerOpen}
