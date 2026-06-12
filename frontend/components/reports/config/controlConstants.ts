@@ -1,11 +1,10 @@
 /**
  * Shared control constants + type guards for the widget editor.
  *
- * Extracted verbatim from ``ConfigRail.tsx`` so the popover tabs
- * (``DataTab`` / ``StyleTab``), the measure/filter editors, and (in the
- * extraction PR) ``ConfigRail`` itself all read from one source. Keeping
- * these in one module means the picker options, the multi-series cap, and
- * the single-agg lock can never drift between the rail and the popover.
+ * Extracted verbatim from the original widget config rail so the popover
+ * tabs (``DataTab`` / ``StyleTab``) and the measure/filter editors all read
+ * from one source. Keeping these in one module means the picker options, the
+ * multi-series cap, and the single-agg lock can never drift between editors.
  */
 import type { HelpTooltipKey } from "@/lib/help/tooltips";
 import type {

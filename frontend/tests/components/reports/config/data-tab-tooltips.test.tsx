@@ -1,5 +1,5 @@
 /**
- * Widget-editor help tooltips (re-homed from config-rail-tooltips).
+ * Widget-editor help tooltips (re-homed from the original rail tooltips test).
  *
  * Jargon in the widget config controls gets inline ``HelpTooltip`` info
  * icons: the aggregation selector explains Sum / Count / Average /

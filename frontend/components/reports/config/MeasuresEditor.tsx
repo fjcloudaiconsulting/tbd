@@ -3,7 +3,7 @@
 /**
  * Multi-series measure editor (one row per ``config.measures`` entry, with
  * add/remove and a per-type cap) for line / area / stacked_bar / table.
- * Extracted verbatim from ``ConfigRail``.
+ * Extracted verbatim from the original widget config rail.
  */
 import HelpTooltip from "@/components/help/HelpTooltip";
 import {

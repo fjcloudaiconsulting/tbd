@@ -1,5 +1,5 @@
 /**
- * Single- and multi-series measure editors extracted from ConfigRail.
+ * Single- and multi-series measure editors extracted from the original config rail.
  * These pin the onChange payloads and the add/remove/cap behaviour that
  * downstream tabs (and the old rail) depend on.
  */
