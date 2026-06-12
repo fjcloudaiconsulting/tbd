@@ -1094,6 +1094,62 @@ describe("ReportEditorPage", () => {
     ).toHaveAttribute("aria-selected", "true");
   });
 
+  it("a SECOND chip click on the already-selected widget returns the popover to Filters", async () => {
+    // Page-level analog of the popover unit test's consume-and-clear: a
+    // second chip click on the SAME widget (after the user navigated away
+    // to Data) must re-deep-link to the Filters tab. This exercises the
+    // requestedTab handshake end-to-end through the page wiring.
+    mockUser(true);
+    getReportMock.mockResolvedValue({
+      ...REPORT_WITH_WIDGET,
+      layout_json: {
+        version: 1 as const,
+        widgets: [
+          {
+            id: "w_kpi",
+            type: "kpi" as const,
+            title: "Total",
+            grid: { x: 0, y: 0, w: 3, h: 2 },
+            config: {
+              dataset: "transactions" as const,
+              measure: { agg: "sum" as const, field: "amount" as const },
+              format: "currency" as const,
+              filters: { txn_type: "expense" as const },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+
+    // First chip click → popover opens deep-linked to Filters.
+    fireEvent.click(screen.getByTestId("widget-filter-chip-txn_type"));
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-editor-popover")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("tab", { name: /filters/i }),
+    ).toHaveAttribute("aria-selected", "true");
+
+    // User manually switches to the Data tab.
+    fireEvent.click(screen.getByRole("tab", { name: /data/i }));
+    expect(
+      screen.getByRole("tab", { name: /data/i }),
+    ).toHaveAttribute("aria-selected", "true");
+
+    // Second chip click on the SAME (already-selected) widget → back to Filters.
+    fireEvent.click(screen.getByTestId("widget-filter-chip-txn_type"));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("tab", { name: /filters/i }),
+      ).toHaveAttribute("aria-selected", "true"),
+    );
+  });
+
   it("edits a widget through the popover and the change round-trips into the saved layout", async () => {
     mockUser(true);
     getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);

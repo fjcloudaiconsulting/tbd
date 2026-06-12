@@ -24,12 +24,10 @@
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import useSWR from "swr";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { apiFetch } from "@/lib/api";
-import type { Account, Category } from "@/lib/types";
+import { useFilterChipState } from "@/lib/reports/use-filter-chip-state";
 import {
   deleteReport,
   duplicateReport,
@@ -52,7 +50,6 @@ import Canvas from "@/components/reports/Canvas";
 import HistoryPanel from "@/components/reports/HistoryPanel";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
-import type { TabKey } from "@/components/reports/WidgetEditorPopover";
 import { useWidgetAnchor } from "@/lib/reports/use-widget-anchor";
 import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
@@ -306,30 +303,21 @@ export default function ReportEditorPage({ params }: PageProps) {
   const { user, loading: authLoading, featureReportsV2 } = useAuth();
   const isSmallScreen = useIsSmallScreen();
 
-  // Accounts + categories for the filter-chip name lookups. Reuse the
-  // EXACT SWR keys ``AccountFilter`` / ``CategoryPicker`` use so the
-  // cache is shared (no extra network round-trip) and ids resolve to
-  // names in the chip header. Default to [] (count-fallback) while warm.
-  const { data: accounts } = useSWR<Account[]>(
-    "/api/v1/accounts?for=reports-filter",
-    () => apiFetch<Account[]>("/api/v1/accounts"),
-    { revalidateOnFocus: false },
-  );
-  const { data: categories } = useSWR<Category[]>(
-    "/api/v1/categories?for=reports-filter",
-    () => apiFetch<Category[]>("/api/v1/categories"),
-    { revalidateOnFocus: false },
-  );
-
   const [report, setReport] = useState<ReportSummary | null>(null);
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
-  // Deep-link request: a filter-chip click sets this to "filters" so the
-  // popover opens on its Filters tab. Cleared the instant the popover
-  // consumes it (consume-and-clear handshake), so every chip click is a
-  // fresh null → "filters" transition.
-  const [requestedTab, setRequestedTab] = useState<TabKey | null>(null);
+  // Shared filter-chip wiring: accounts/categories name lookups (shared
+  // SWR cache), the popover Filters-tab deep-link request, and the
+  // select-with-Filters chip handler. ``setSelectedWidgetId`` is a stable
+  // useState setter so the hook's callbacks keep a stable identity.
+  const {
+    accounts,
+    categories,
+    requestedTab,
+    selectWidgetFilters,
+    clearRequestedTab,
+  } = useFilterChipState(setSelectedWidgetId);
   const [editMode, setEditMode] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -445,14 +433,8 @@ export default function ReportEditorPage({ params }: PageProps) {
     // Belt-and-suspenders: the consume callback is the real clear, but
     // also drop any pending request on close so a stale chip request
     // can't leak into the next selection.
-    setRequestedTab(null);
-  }, []);
-
-  // Chip click: select the widget AND request the Filters tab.
-  const selectWidgetFilters = useCallback((widgetId: string) => {
-    setSelectedWidgetId(widgetId);
-    setRequestedTab("filters");
-  }, []);
+    clearRequestedTab();
+  }, [clearRequestedTab]);
 
   const updateWidget = useCallback((nextWidget: Widget) => {
     setLayout((prev) => ({
@@ -524,6 +506,10 @@ export default function ReportEditorPage({ params }: PageProps) {
   // reflects the most recent successful load/save.
   function handleCancelEdit() {
     if (report) hydrateFromReport(report);
+    // Mirror handleSave: clear any open selection + pending tab request so
+    // dropping to view mode never leaves a selection ring with no popover.
+    setSelectedWidgetId(null);
+    clearRequestedTab();
     setEditMode(false);
     setSaveError(null);
   }
@@ -866,15 +852,14 @@ export default function ReportEditorPage({ params }: PageProps) {
                   onRemove={() => removeWidget(w.id)}
                   widget={w}
                   canvasFilters={canvasFilters}
-                  accounts={accounts ?? []}
-                  categories={categories ?? []}
-                  // View-mode orphan-selection guard: the popover is gated
-                  // on ``editModeActive``, so in view mode a chip click
-                  // would draw a selection ring with no editor behind it.
-                  // Chips still render (informational) but are inert.
-                  onSelectFilters={
-                    editModeActive ? () => selectWidgetFilters(w.id) : () => {}
-                  }
+                  accounts={accounts}
+                  categories={categories}
+                  // WidgetShell gates chip interactivity on its ``editMode``
+                  // prop (``editModeActive`` here): in view mode the chips
+                  // render as inert informational spans, so this handler is
+                  // only ever invoked in edit mode — no orphan-selection
+                  // guard needed.
+                  onSelectFilters={() => selectWidgetFilters(w.id)}
                 >
                   {renderWidgetByType(w, canvasFilters, editModeActive)}
                 </WidgetShell>
@@ -894,7 +879,7 @@ export default function ReportEditorPage({ params }: PageProps) {
           canvasFilters={canvasFilters}
           anchorEl={anchorEl}
           requestedTab={requestedTab ?? undefined}
-          onTabConsumed={() => setRequestedTab(null)}
+          onTabConsumed={clearRequestedTab}
           onUpdate={updateWidget}
           onClose={closePopover}
         />
