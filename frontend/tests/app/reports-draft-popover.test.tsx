@@ -157,6 +157,23 @@ describe("ReportDraftPage popover (/reports/new)", () => {
     );
   });
 
+  it("clicking a widget filter chip opens the popover on the Filters tab", async () => {
+    mockUser(true);
+
+    render(<ReportDraftPage />);
+
+    // The seeded starter widget carries a txn_type filter → a chip.
+    await screen.findByText("Spend by category");
+    fireEvent.click(screen.getByTestId("widget-filter-chip-txn_type"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-editor-popover")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("tab", { name: /filters/i }),
+    ).toHaveAttribute("aria-selected", "true");
+  });
+
   it("opening the widget editor popover does not reflow the canvas (draft editor)", async () => {
     mockUser(true);
 

@@ -18,9 +18,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import useSWR from "swr";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { apiFetch } from "@/lib/api";
+import type { Account, Category } from "@/lib/types";
 import { createReport, listTemplates } from "@/lib/reports/api";
 import { blankDraftSeed } from "@/lib/reports/draft";
 import type {
@@ -32,6 +35,7 @@ import type {
 import Canvas from "@/components/reports/Canvas";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
+import type { TabKey } from "@/components/reports/WidgetEditorPopover";
 import { useWidgetAnchor } from "@/lib/reports/use-widget-anchor";
 import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
@@ -47,10 +51,27 @@ export default function ReportDraftPage() {
   const templateKey = searchParams.get("template");
   const { user, loading: authLoading, featureReportsV2 } = useAuth();
 
+  // Accounts + categories for the filter-chip name lookups. Same SWR
+  // keys as ``AccountFilter`` / ``CategoryPicker`` so the cache is shared
+  // (no extra network round-trip). Default [] → count-fallback while warm.
+  const { data: accounts } = useSWR<Account[]>(
+    "/api/v1/accounts?for=reports-filter",
+    () => apiFetch<Account[]>("/api/v1/accounts"),
+    { revalidateOnFocus: false },
+  );
+  const { data: categories } = useSWR<Category[]>(
+    "/api/v1/categories?for=reports-filter",
+    () => apiFetch<Category[]>("/api/v1/categories"),
+    { revalidateOnFocus: false },
+  );
+
   const [name, setName] = useState("Untitled report");
   const [layout, setLayout] = useState<LayoutJson | null>(null);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
+  // Deep-link request for the popover's Filters tab (filter-chip click).
+  // Consume-and-clear: cleared the instant the popover honors it.
+  const [requestedTab, setRequestedTab] = useState<TabKey | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -126,7 +147,17 @@ export default function ReportDraftPage() {
 
   // Stable identities so the popover's effects (keyed on ``onClose``) and
   // ``buildWidgetMutations`` don't re-run on every parent render.
-  const closePopover = useCallback(() => setSelectedWidgetId(null), []);
+  const closePopover = useCallback(() => {
+    setSelectedWidgetId(null);
+    setRequestedTab(null); // belt-and-suspenders; consume callback is the real clear
+  }, []);
+
+  // Chip click: select the widget AND request the Filters tab. The draft
+  // page is always edit mode, so this is always the real handler.
+  const selectWidgetFilters = useCallback((widgetId: string) => {
+    setSelectedWidgetId(widgetId);
+    setRequestedTab("filters");
+  }, []);
 
   const updateWidget = useCallback((nextWidget: Widget) => {
     setLayout((prev) =>
@@ -287,8 +318,8 @@ export default function ReportDraftPage() {
                   This draft has no widgets yet
                 </p>
                 <p className="mx-auto mt-1 max-w-md text-sm text-text-muted">
-                  Add a widget to see your data. Canvas filters (date,
-                  accounts, categories) apply to every widget.
+                  Add a widget to see your data. The canvas date applies to
+                  every widget; accounts and categories are per-widget.
                 </p>
                 <div className="mt-4 flex items-center justify-center">
                   <button
@@ -313,6 +344,12 @@ export default function ReportDraftPage() {
                     editMode
                     onSelect={() => setSelectedWidgetId(w.id)}
                     onRemove={() => removeWidget(w.id)}
+                    widget={w}
+                    canvasFilters={canvasFilters}
+                    accounts={accounts ?? []}
+                    categories={categories ?? []}
+                    // Always edit mode here → the chip's real handler.
+                    onSelectFilters={() => selectWidgetFilters(w.id)}
                   >
                     {renderWidgetByType(w, canvasFilters, true)}
                   </WidgetShell>
@@ -331,6 +368,8 @@ export default function ReportDraftPage() {
             widget={selectedWidget}
             canvasFilters={canvasFilters}
             anchorEl={anchorEl}
+            requestedTab={requestedTab ?? undefined}
+            onTabConsumed={() => setRequestedTab(null)}
             onUpdate={updateWidget}
             onClose={closePopover}
           />
