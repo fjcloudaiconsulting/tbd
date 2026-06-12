@@ -897,6 +897,10 @@ export default function DashboardPage() {
                               opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
                           ))}
                         </Pie>
+                        {/* Single-series pie: recharts renders the slice
+                            name itself, so a value `formatter` is enough.
+                            SeriesTooltip is only needed for the multi-series
+                            bar charts where the name node failed to render. */}
                         <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ fontSize: "12px" }} />
                       </PieChart>
                     </ResponsiveContainer>

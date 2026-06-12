@@ -72,11 +72,11 @@ export function SeriesTooltip({
         borderRadius: 8,
         padding: "8px 10px",
         fontSize: 11,
-        boxShadow: "0 4px 14px rgba(0,0,0,0.12)",
+        boxShadow: "var(--shadow-card)",
         minWidth: 120,
       }}
     >
-      {label != null && (
+      {!!label && (
         <div
           style={{
             fontWeight: 600,
@@ -89,7 +89,7 @@ export function SeriesTooltip({
       )}
       {rows.map(({ entry, series }, i) => (
         <div
-          key={i}
+          key={String(entry.dataKey ?? i)}
           style={{
             display: "flex",
             alignItems: "center",
@@ -98,7 +98,7 @@ export function SeriesTooltip({
           }}
         >
           <span
-            aria-hidden
+            aria-hidden="true"
             style={{
               width: 9,
               height: 9,

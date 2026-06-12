@@ -66,4 +66,24 @@ describe("SeriesTooltip", () => {
     expect(screen.getByText("Spent")).toBeInTheDocument();
     expect(screen.queryByText("$9.00")).not.toBeInTheDocument();
   });
+
+  it("renders nothing when every row resolves to null", () => {
+    const { container } = render(
+      <SeriesTooltip
+        active
+        label="X"
+        payload={[{ dataKey: "a", value: 1 }]}
+        resolve={() => null}
+        format={fmt}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders nothing for an empty payload", () => {
+    const { container } = render(
+      <SeriesTooltip active payload={[]} resolve={() => null} format={fmt} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
 });
