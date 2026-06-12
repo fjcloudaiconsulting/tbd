@@ -384,10 +384,11 @@ describe("ReportEditorPage", () => {
     await screen.findByTestId("kpi-widget");
     fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
 
-    // Click the widget shell to select it; the popover mounts on the next
-    // render (after the anchorEl effect resolves the shell node).
-    const shell = screen.getByTestId("kpi-widget");
-    fireEvent.click(shell);
+    // Click the rendered widget to select it; the popover mounts on the next
+    // render (after ``useWidgetAnchor`` resolves the widget's shell node via
+    // querySelector). The Canvas stub renders the widget directly, so this
+    // click stands in for clicking the widget's shell on the real grid.
+    fireEvent.click(screen.getByTestId("kpi-widget"));
 
     await waitFor(() =>
       expect(screen.getByTestId("widget-editor-popover")).toBeInTheDocument(),
@@ -1049,5 +1050,41 @@ describe("ReportEditorPage", () => {
     // geometry/width is unchanged (the reflow regression guard).
     expect(flexRow.children).toHaveLength(1);
     expect(flexRow.children[0]).toBe(canvasCol);
+  });
+
+  it("edits a widget through the popover and the change round-trips into the saved layout", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+    saveLayoutMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
+
+    // Report has a widget → opens in view mode; enter edit mode and select.
+    await screen.findByTestId("kpi-widget");
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+    fireEvent.click(screen.getByTestId("kpi-widget"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-editor-popover")).toBeInTheDocument(),
+    );
+
+    // The title control lives in the Style tab — switch to it, then rename
+    // the widget through the popover's title input.
+    fireEvent.click(screen.getByRole("tab", { name: /style/i }));
+    const titleInput = screen.getByLabelText("Widget title");
+    expect(titleInput).toHaveValue("Total");
+    fireEvent.change(titleInput, { target: { value: "Net total" } });
+    // The popover reflects the new value immediately (controlled input fed
+    // by the page's updateWidget state).
+    expect(screen.getByLabelText("Widget title")).toHaveValue("Net total");
+
+    // Persist and assert the edit reached the saved layout — i.e. the
+    // popover's onUpdate path actually mutated widget state on the page.
+    fireEvent.click(screen.getByTestId("report-editor-save"));
+    await waitFor(() => expect(saveLayoutMock).toHaveBeenCalledTimes(1));
+    const [, savedLayout] = saveLayoutMock.mock.calls[0];
+    expect(savedLayout.widgets).toHaveLength(1);
+    expect(savedLayout.widgets[0].id).toBe("w_kpi");
+    expect(savedLayout.widgets[0].title).toBe("Net total");
   });
 });

@@ -21,7 +21,7 @@
  * button in the header; the rollout-table PR2 row says "Save layout
  * (PATCH)" — both align with explicit-save.
  */
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -49,6 +49,7 @@ import Canvas from "@/components/reports/Canvas";
 import HistoryPanel from "@/components/reports/HistoryPanel";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
+import { useWidgetAnchor } from "@/lib/reports/use-widget-anchor";
 import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
 import KPIWidget from "@/components/reports/widgets/KPIWidget";
@@ -305,7 +306,6 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
-  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -401,29 +401,24 @@ export default function ReportEditorPage({ params }: PageProps) {
   // resizing back up to desktop (as an owner) restores what they had open.
   const editModeActive = editMode && !isSmallScreen && canEdit;
 
-  // Resolve the selected widget's shell DOM node into ``anchorEl`` so the
-  // popover can float anchored to it. Keyed on the selected id and the
-  // widget list (a re-render of the canvas re-creates the shell node), so
-  // the anchor stays fresh. Runs post-commit, so the popover mounts on the
-  // render AFTER selection — page-level tests must ``waitFor`` it.
-  useEffect(() => {
-    if (!editModeActive || !selectedWidgetId) {
-      setAnchorEl(null);
-      return;
-    }
-    setAnchorEl(
-      document.querySelector(
-        `[data-widget-shell="${selectedWidgetId}"]`,
-      ) as HTMLElement | null,
-    );
-  }, [editModeActive, selectedWidgetId, layout.widgets]);
+  // Resolve the selected widget's shell into the popover anchor. Edit here
+  // is gated on ``editModeActive`` (desktop + owner + edit toggle).
+  const anchorEl = useWidgetAnchor(
+    selectedWidgetId,
+    editModeActive,
+    layout.widgets,
+  );
 
   function updateLayout(next: LayoutJson) {
     setLayout(next);
     setDirty(true);
   }
 
-  function updateWidget(nextWidget: Widget) {
+  // Stable identities so the popover's effects (keyed on ``onClose``) and
+  // ``buildWidgetMutations`` don't re-run on every parent render.
+  const closePopover = useCallback(() => setSelectedWidgetId(null), []);
+
+  const updateWidget = useCallback((nextWidget: Widget) => {
     setLayout((prev) => ({
       ...prev,
       widgets: prev.widgets.map((w) =>
@@ -431,7 +426,7 @@ export default function ReportEditorPage({ params }: PageProps) {
       ),
     }));
     setDirty(true);
-  }
+  }, []);
 
   function addWidget(type: WidgetType) {
     const id = newWidgetId();
@@ -845,14 +840,14 @@ export default function ReportEditorPage({ params }: PageProps) {
       {/* Widget editor — an anchored floating popover portaled to the body,
           NOT a flex sibling of the canvas, so selecting a widget never
           reflows / re-clamps the canvas grid. Gated on a resolved
-          ``anchorEl`` (set post-commit by the effect above). */}
+          ``anchorEl`` (set post-commit by ``useWidgetAnchor``). */}
       {editModeActive && selectedWidget && anchorEl && (
         <WidgetEditorPopover
           widget={selectedWidget}
           canvasFilters={canvasFilters}
           anchorEl={anchorEl}
           onUpdate={updateWidget}
-          onClose={() => setSelectedWidgetId(null)}
+          onClose={closePopover}
         />
       )}
 
