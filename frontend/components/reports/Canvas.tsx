@@ -38,6 +38,12 @@ interface Props {
   renderWidget: (widget: Widget) => React.ReactNode;
 }
 
+// The editor canvas is desktop-only — true mobile widths render the
+// read-only stack in the page, never this grid. So sm/xs/xxs are only
+// reached in the 640–767px "narrow desktop / settings-panel-open" gap.
+// Their exact column counts only affect how a narrow *view* reflows;
+// editing never persists from them (handleLayoutChange gates on a 12-col
+// breakpoint), so a clamped sm/xs layout can never corrupt the stored one.
 const COLS = { lg: 12, md: 12, sm: 6, xs: 1, xxs: 1 } as const;
 const BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 } as const;
 
@@ -87,10 +93,16 @@ export default function Canvas({
     <div data-testid="reports-canvas" className="w-full">
       <ResponsiveGridLayout
         className="layout"
+        // Pre-seed every breakpoint with the same layout so RGL never
+        // falls through to findOrGenerateResponsiveLayout, which would run
+        // compact() and emit a spurious onLayoutChange.
         layouts={{ lg: rgLayout, md: rgLayout, sm: rgLayout, xs: rgLayout, xxs: rgLayout }}
         breakpoints={BREAKPOINTS}
         cols={COLS}
         rowHeight={60}
+        // null + preventCollision = literal placement: widgets never
+        // auto-compact, and a drag/resize into an occupied cell snaps back
+        // to the last valid position instead of displacing the neighbour.
         compactType={null}
         preventCollision
         isDraggable={editMode}

@@ -1,7 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
 
-// Capture the props react-grid-layout receives + expose its onLayoutChange.
+// WidthProvider is stubbed as identity and Responsive is replaced with a
+// prop-capturing stub: jsdom can't measure container width, so we can't
+// exercise RGL's real ResizeObserver mount emission. Instead we drive
+// `captured.onLayoutChange` / `captured.onBreakpointChange` manually to
+// unit-test the guard logic in isolation.
 let captured: any = null;
 vi.mock("react-grid-layout", () => {
   const React = require("react");
@@ -30,6 +34,19 @@ function renderCanvas(onLayoutChange = vi.fn()) {
 }
 
 describe("Canvas literal layout", () => {
+  beforeEach(() => {
+    captured = null; // reset so a test that forgets to render fails loudly
+  });
+
+  it("ignores layout emissions when not in edit mode", () => {
+    const cb = vi.fn();
+    render(
+      <Canvas layout={layout} editMode={false} onLayoutChange={cb} renderWidget={() => <div>w</div>} />,
+    );
+    captured.onLayoutChange([{ i: "a", x: 3, y: 0, w: 4, h: 4 }]); // genuine move
+    expect(cb).not.toHaveBeenCalled();
+  });
+
   it("passes compactType=null and preventCollision to react-grid-layout", () => {
     renderCanvas();
     expect(captured.compactType).toBeNull();

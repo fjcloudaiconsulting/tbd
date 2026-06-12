@@ -22,6 +22,16 @@ describe("widgetsFromLayout", () => {
     const out = widgetsFromLayout(items, [{ i: "ghost", x: 9, y: 9, w: 1, h: 1 }]);
     expect(out[0].grid).toEqual({ x: 0, y: 0, w: 4, h: 4 });
   });
+
+  it("returns exactly items.length widgets, ignoring extra phantom rgl items", () => {
+    const items = [w("a", 0, 0)];
+    const out = widgetsFromLayout(items, [
+      { i: "a", x: 1, y: 0, w: 4, h: 4 },
+      { i: "phantom", x: 5, y: 5, w: 2, h: 2 },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].grid).toEqual({ x: 1, y: 0, w: 4, h: 4 });
+  });
 });
 
 describe("gridChanged", () => {
