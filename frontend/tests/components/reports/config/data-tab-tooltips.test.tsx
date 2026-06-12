@@ -1,15 +1,18 @@
 /**
- * ConfigRail help tooltips (Reports v2 polish).
+ * Widget-editor help tooltips (re-homed from config-rail-tooltips).
  *
- * Jargon in the widget config rail gets inline ``HelpTooltip`` info
+ * Jargon in the widget config controls gets inline ``HelpTooltip`` info
  * icons: the aggregation selector explains Sum / Count / Average /
  * Distinct, and the dimension labels carry the master-category
- * explainer. We assert the tooltip triggers render (by their ARIA
- * label from the content map) rather than driving the portal open.
+ * explainer. These now live on the extracted ``DataTab`` (agg + dimension
+ * tooltips) and ``MeasuresEditor`` (per-series agg tooltip). We assert the
+ * tooltip triggers render (by their ARIA label from the content map)
+ * rather than driving the portal open.
  */
-import { renderWithSWR, fireEvent, screen } from "../../utils/render-with-swr";
+import { renderWithSWR, fireEvent, screen } from "../../../utils/render-with-swr";
 
-import ConfigRail from "@/components/reports/ConfigRail";
+import DataTab from "@/components/reports/config/DataTab";
+import MeasuresEditor from "@/components/reports/config/MeasuresEditor";
 import { apiFetch } from "@/lib/api";
 import { HELP_TOOLTIPS } from "@/lib/help/tooltips";
 import type { BarWidget, LineWidget } from "@/lib/reports/types";
@@ -53,16 +56,9 @@ function makeLine(): LineWidget {
   };
 }
 
-describe("ConfigRail — help tooltips", () => {
+describe("Widget editor — help tooltips", () => {
   it("renders the aggregation tooltip trigger for a single-measure widget", () => {
-    renderWithSWR(
-      <ConfigRail
-        widget={makeBar()}
-        canvasFilters={{}}
-        onUpdate={() => {}}
-        onClose={() => {}}
-      />,
-    );
+    renderWithSWR(<DataTab widget={makeBar()} onUpdate={() => {}} />);
     // Bar defaults to Sum → the Sum explainer trigger is present.
     expect(
       screen.getByRole("button", {
@@ -74,11 +70,9 @@ describe("ConfigRail — help tooltips", () => {
   it("swaps the aggregation tooltip to match the selected aggregation", () => {
     const updates: BarWidget[] = [];
     renderWithSWR(
-      <ConfigRail
+      <DataTab
         widget={makeBar()}
-        canvasFilters={{}}
         onUpdate={(w) => updates.push(w as BarWidget)}
-        onClose={() => {}}
       />,
     );
     fireEvent.change(screen.getByLabelText("Aggregation"), {
@@ -89,14 +83,7 @@ describe("ConfigRail — help tooltips", () => {
   });
 
   it("renders the master-category explainer next to the dimension label", () => {
-    renderWithSWR(
-      <ConfigRail
-        widget={makeBar()}
-        canvasFilters={{}}
-        onUpdate={() => {}}
-        onClose={() => {}}
-      />,
-    );
+    renderWithSWR(<DataTab widget={makeBar()} onUpdate={() => {}} />);
     // Bar exposes both the Primary dimension and the Break-down (optional)
     // labels, so the master-category explainer renders on each.
     expect(
@@ -107,13 +94,9 @@ describe("ConfigRail — help tooltips", () => {
   });
 
   it("renders a per-series aggregation tooltip for multi-series widgets", () => {
+    const line = makeLine();
     renderWithSWR(
-      <ConfigRail
-        widget={makeLine()}
-        canvasFilters={{}}
-        onUpdate={() => {}}
-        onClose={() => {}}
-      />,
+      <MeasuresEditor widget={line} onChange={() => {}} />,
     );
     // The line series defaults to Distinct count → its explainer shows.
     expect(
