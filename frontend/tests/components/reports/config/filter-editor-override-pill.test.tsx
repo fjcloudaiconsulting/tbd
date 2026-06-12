@@ -1,16 +1,16 @@
 /**
  * Regression: the "Overrides canvas" pill fires when the widget-level
  * filter actually DIFFERS from the canvas-level value (and never when
- * they match). PR2 fixed the equality bug for the comma-list inputs;
- * PR3 swaps those for picker components. The pickers feed the same
- * ``WidgetFilters`` shape — these tests pin the equality semantics
- * survive the swap.
+ * they match). Re-homed from override-pill-pickers onto the extracted
+ * ``FilterEditor``, which owns the override pill and the picker filters.
+ * The pickers feed the same ``WidgetFilters`` shape — these tests pin the
+ * equality semantics survive on the extracted component.
  */
-import { renderWithSWR, fireEvent, screen } from "../../utils/render-with-swr";
+import { renderWithSWR, screen } from "../../../utils/render-with-swr";
 
-import ConfigRail from "@/components/reports/ConfigRail";
+import FilterEditor from "@/components/reports/config/FilterEditor";
 import { apiFetch } from "@/lib/api";
-import type { BarWidget } from "@/lib/reports/types";
+import type { CanvasFilters, WidgetFilters } from "@/lib/reports/types";
 import type { Category, Account } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
@@ -57,24 +57,6 @@ const ACCOUNTS: Account[] = [
   },
 ];
 
-function makeWidget(filters: BarWidget["config"]["filters"] = undefined): BarWidget {
-  return {
-    id: "w_bar",
-    type: "bar",
-    title: "Spend by category",
-    grid: { x: 0, y: 0, w: 6, h: 4 },
-    config: {
-      dataset: "transactions",
-      measure: { agg: "sum", field: "amount" },
-      dimensions: ["category"],
-      sort: { by: "value", dir: "desc" },
-      limit: 10,
-      format: "currency",
-      filters,
-    },
-  };
-}
-
 function mockApi() {
   const apiFetchMock = vi.mocked(apiFetch);
   apiFetchMock.mockImplementation((path) => {
@@ -91,6 +73,20 @@ function mockApi() {
   });
 }
 
+function renderEditor(
+  filters: WidgetFilters,
+  canvasFilters: CanvasFilters,
+  onChange: (next: WidgetFilters) => void = () => {},
+) {
+  return renderWithSWR(
+    <FilterEditor
+      filters={filters}
+      canvasFilters={canvasFilters}
+      onChange={onChange}
+    />,
+  );
+}
+
 describe("Override pill — picker-based filters", () => {
   beforeEach(() => {
     vi.mocked(apiFetch).mockReset();
@@ -98,14 +94,7 @@ describe("Override pill — picker-based filters", () => {
   });
 
   it("does NOT show the pill when the widget category selection matches the canvas selection", async () => {
-    renderWithSWR(
-      <ConfigRail
-        widget={makeWidget({ category_ids: [1, 2] })}
-        canvasFilters={{ category_ids: [2, 1] }}
-        onUpdate={() => {}}
-        onClose={() => {}}
-      />,
-    );
+    renderEditor({ category_ids: [1, 2] }, { category_ids: [2, 1] });
 
     // Wait a tick for the SWR fetches to resolve so the picker has
     // populated the tree (pill renders synchronously off the prop
@@ -118,59 +107,39 @@ describe("Override pill — picker-based filters", () => {
   });
 
   it("DOES show the pill when the widget category selection differs from the canvas", async () => {
-    renderWithSWR(
-      <ConfigRail
-        widget={makeWidget({ category_ids: [1] })}
-        canvasFilters={{ category_ids: [2] }}
-        onUpdate={() => {}}
-        onClose={() => {}}
-      />,
-    );
+    renderEditor({ category_ids: [1] }, { category_ids: [2] });
     await screen.findByTestId("category-picker");
     const pills = screen.queryAllByTestId("override-pill");
     expect(pills.length).toBeGreaterThanOrEqual(1);
   });
 
   it("does NOT show the pill when the widget account selection matches the canvas selection", async () => {
-    renderWithSWR(
-      <ConfigRail
-        widget={makeWidget({ account_ids: [1] })}
-        canvasFilters={{ account_ids: [1] }}
-        onUpdate={() => {}}
-        onClose={() => {}}
-      />,
-    );
+    renderEditor({ account_ids: [1] }, { account_ids: [1] });
     await screen.findByTestId("account-filter");
     const pills = screen.queryAllByTestId("override-pill");
     expect(pills.length).toBe(0);
   });
 
-  it("DOES show the pill once the user toggles a different account chip", async () => {
-    const onUpdate = vi.fn();
-    const { rerender } = renderWithSWR(
-      <ConfigRail
-        widget={makeWidget({ account_ids: [1] })}
-        canvasFilters={{ account_ids: [1] }}
-        onUpdate={onUpdate}
-        onClose={() => {}}
-      />,
-    );
+  it("DOES show the pill when the widget account selection differs from the canvas", async () => {
+    renderEditor({ account_ids: [2] }, { account_ids: [1] });
+    await screen.findByTestId("account-filter");
+    const pills = screen.queryAllByTestId("override-pill");
+    expect(pills.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps the pill off when widget account_ids is empty (inherit)", async () => {
+    const onChange = vi.fn();
+    const { rerender } = renderEditor({ account_ids: [1] }, { account_ids: [1] }, onChange);
 
     await screen.findByTestId("account-filter");
-    // Deselect the matching account — now widget=[] (inherit, no pill)
-    // and then re-select but with a different list. Simulate the
-    // "different list" case directly by rerendering with the updated
-    // widget value, since picker click → onUpdate flows through the
-    // parent in real use.
+    // Empty widget account_ids means inherit — pill stays off.
     rerender(
-      <ConfigRail
-        widget={makeWidget({ account_ids: [] })}
+      <FilterEditor
+        filters={{ account_ids: [] }}
         canvasFilters={{ account_ids: [1] }}
-        onUpdate={onUpdate}
-        onClose={() => {}}
+        onChange={onChange}
       />,
     );
-    // Empty widget account_ids means inherit — pill stays off.
     expect(screen.queryAllByTestId("override-pill").length).toBe(0);
   });
 });
