@@ -22,6 +22,7 @@ import { useMemo, useState } from "react";
 import { useSeriesQueries } from "@/lib/reports/useReportQuery";
 import {
   DIMENSION_HEADERS,
+  formatMeasureValue,
   mergeSeriesRowsForTable,
   seriesLabel,
 } from "@/lib/reports/series";
@@ -295,13 +296,5 @@ function formatCell(
   if (v === null || v === undefined) return "";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return String(v);
-  if (format === "currency") {
-    return n.toLocaleString(undefined, {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 2,
-    });
-  }
-  if (format === "percent") return `${n.toFixed(1)}%`;
-  return n.toLocaleString();
+  return formatMeasureValue(n, format);
 }

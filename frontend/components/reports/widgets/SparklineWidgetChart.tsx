@@ -8,17 +8,25 @@
  */
 import { Line, LineChart, ResponsiveContainer, Tooltip } from "recharts";
 
+import { formatMeasureValue } from "@/lib/reports/series";
+
 export interface SparklineWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
+  /** Display format for the measure value (tooltip only — sparkline has no axis). */
+  format: "currency" | "number" | "percent";
 }
 
 export default function SparklineWidgetChart({
   rows,
+  format,
 }: SparklineWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={rows} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
-        <Tooltip cursor={false} />
+        <Tooltip
+          cursor={false}
+          formatter={(v) => formatMeasureValue(Number(v), format)}
+        />
         <Line
           type="monotone"
           dataKey="value"

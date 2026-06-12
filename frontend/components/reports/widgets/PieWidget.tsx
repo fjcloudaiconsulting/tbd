@@ -49,6 +49,7 @@ export default function PieWidget({ widget, canvasFilters, editMode }: Props) {
     value: typeof r.value === "number" ? r.value : Number(r.value ?? 0),
   }));
   const rows = topNWithOther(rawRows, topN);
+  const format = widget.config.format ?? "number";
 
   // CSV export mirrors the displayed slices (after the top-N "Other"
   // roll-up): [dimension, measure].
@@ -99,7 +100,7 @@ export default function PieWidget({ widget, canvasFilters, editMode }: Props) {
             No data
           </div>
         ) : (
-          <PieWidgetChart rows={rows} />
+          <PieWidgetChart rows={rows} format={format} />
         )}
       </div>
     </div>

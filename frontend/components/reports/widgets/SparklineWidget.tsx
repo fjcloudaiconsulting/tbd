@@ -17,7 +17,7 @@
 import dynamic from "next/dynamic";
 
 import { useReportQuery } from "@/lib/reports/useReportQuery";
-import { dimensionHeader } from "@/lib/reports/series";
+import { dimensionHeader, formatMeasureValue } from "@/lib/reports/series";
 import type {
   CanvasFilters,
   SparklineWidget as SparklineWidgetType,
@@ -107,27 +107,13 @@ export default function SparklineWidget({
             data-testid="sparkline-widget-value"
             className="text-xl font-semibold text-text-primary"
           >
-            {formatValue(lastValue ?? 0, format)}
+            {formatMeasureValue(lastValue ?? 0, format)}
           </div>
           <div className="-mx-1 h-10">
-            <SparklineWidgetChart rows={rows} />
+            <SparklineWidgetChart rows={rows} format={format} />
           </div>
         </>
       )}
     </div>
   );
-}
-
-function formatValue(value: number, format: "currency" | "number" | "percent") {
-  if (format === "currency") {
-    return value.toLocaleString(undefined, {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 0,
-    });
-  }
-  if (format === "percent") {
-    return `${value.toFixed(1)}%`;
-  }
-  return value.toLocaleString();
 }

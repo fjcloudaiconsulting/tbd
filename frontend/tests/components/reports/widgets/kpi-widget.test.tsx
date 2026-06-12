@@ -41,10 +41,12 @@ describe("KPIWidget", () => {
     renderWithSWR(<KPIWidget widget={makeWidget()} />);
 
     const value = await screen.findByTestId("kpi-widget-value");
-    // Currency formatting renders the symbol; assert the digits are
-    // present so the test is locale-tolerant.
-    expect(value.textContent).toContain("1,234");
-    expect(value.textContent).toContain("56");
+    // Grouped, 2dp, NO currency symbol (symbols deferred to the future
+    // multi-currency work). Assert the grouped digits and the absence
+    // of any "$"/"USD".
+    expect(value.textContent).toContain("1,234.56");
+    expect(value.textContent).not.toContain("$");
+    expect(value.textContent).not.toContain("USD");
   });
 
   it("renders a delta vs the supplied prior-period value when compare_prior_period is on", async () => {
