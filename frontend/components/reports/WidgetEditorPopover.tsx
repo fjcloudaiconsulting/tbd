@@ -66,8 +66,11 @@ export default function WidgetEditorPopover({
     refs.setReference(anchorEl);
   }, [anchorEl, refs]);
 
-  // querySelector anchor staleness guard: if the resolved node detaches
-  // (widget removed / canvas re-rendered the shell), close (deselect).
+  // querySelector anchor staleness guard: ``useWidgetAnchor`` resolves the
+  // shell node by querySelector, so a node captured in a prior render can be
+  // stale by the time the popover anchors to it (e.g. the widget was removed
+  // between resolution and this commit). If the captured node is no longer
+  // attached to the document, deselect rather than anchor to a dead node.
   useEffect(() => {
     if (anchorEl && !anchorEl.isConnected) onClose();
   }, [anchorEl, onClose]);
@@ -138,10 +141,19 @@ export default function WidgetEditorPopover({
                   tabIndex={active ? 0 : -1}
                   onClick={() => setTab(t.key)}
                   onKeyDown={(e) => {
-                    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                    let nextIndex: number;
+                    if (e.key === "ArrowLeft") {
+                      nextIndex = (i - 1 + tabs.length) % tabs.length;
+                    } else if (e.key === "ArrowRight") {
+                      nextIndex = (i + 1) % tabs.length;
+                    } else if (e.key === "Home") {
+                      nextIndex = 0;
+                    } else if (e.key === "End") {
+                      nextIndex = tabs.length - 1;
+                    } else {
+                      return;
+                    }
                     e.preventDefault();
-                    const delta = e.key === "ArrowRight" ? 1 : -1;
-                    const nextIndex = (i + delta + tabs.length) % tabs.length;
                     const next = tabs[nextIndex];
                     setTab(next.key);
                     document
