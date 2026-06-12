@@ -20,6 +20,10 @@ import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { chartColor } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
+import {
+  resolveBudgetSeries,
+  resolveForecastSeries,
+} from "@/lib/reports/chart-series-tooltip";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import OnTrackTile from "@/components/dashboard/OnTrackTile";
 import AIForecastRefineToggle from "@/components/dashboard/AIForecastRefineToggle";
@@ -1054,16 +1058,7 @@ export default function DashboardPage() {
                       <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
                       <Tooltip
                         content={
-                          <SeriesTooltip
-                            format={formatAmount}
-                            resolve={(entry) =>
-                              entry.dataKey === "spent"
-                                ? { label: "Spent", color: chartColor.spent }
-                                : entry.dataKey === "remaining"
-                                  ? { label: "Remaining", color: chartColor.remaining }
-                                  : null
-                            }
-                          />
+                          <SeriesTooltip format={formatAmount} resolve={resolveBudgetSeries} />
                         }
                       />
                       {/* D5 follow-up: shared BudgetSpentBarShape so
@@ -1125,27 +1120,7 @@ export default function DashboardPage() {
                           <YAxis type="category" dataKey="name" width={90} tick={{ fill: chartColor.axisTick, fontSize: 10 }} />
                           <Tooltip
                             content={
-                              <SeriesTooltip
-                                format={formatAmount}
-                                resolve={(entry) => {
-                                  if (entry.dataKey === "planned") {
-                                    return { label: "Planned", color: chartColor.planned };
-                                  }
-                                  if (entry.dataKey === "actual") {
-                                    const row = entry.payload as
-                                      | { planned?: number; actual?: number }
-                                      | undefined;
-                                    const isOver = row
-                                      ? Number(row.actual) > Number(row.planned)
-                                      : false;
-                                    return {
-                                      label: "Actual",
-                                      color: isOver ? chartColor.over : chartColor.actual,
-                                    };
-                                  }
-                                  return null;
-                                }}
-                              />
+                              <SeriesTooltip format={formatAmount} resolve={resolveForecastSeries} />
                             }
                           />
                           <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={220}

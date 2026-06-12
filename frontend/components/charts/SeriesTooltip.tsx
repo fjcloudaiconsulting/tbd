@@ -81,7 +81,7 @@ export function SeriesTooltip({
           style={{
             fontWeight: 600,
             marginBottom: 4,
-            color: "var(--color-text)",
+            color: "var(--color-text-primary)",
           }}
         >
           {label}
@@ -115,7 +115,7 @@ export function SeriesTooltip({
               marginLeft: "auto",
               paddingLeft: 12,
               fontVariantNumeric: "tabular-nums",
-              color: "var(--color-text)",
+              color: "var(--color-text-primary)",
             }}
           >
             {format(Number(entry.value))}

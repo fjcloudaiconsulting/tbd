@@ -20,6 +20,7 @@ import {
 import { formatAmount } from "@/lib/format";
 import { chartColor } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
+import { resolveForecastSeries } from "@/lib/reports/chart-series-tooltip";
 
 export interface ForecastPlanChartDatum {
   categoryId: number;
@@ -51,27 +52,7 @@ export default function ForecastPlanChart({
         />
         <Tooltip
           content={
-            <SeriesTooltip
-              format={formatAmount}
-              resolve={(entry) => {
-                if (entry.dataKey === "planned") {
-                  return { label: "Planned", color: chartColor.planned };
-                }
-                if (entry.dataKey === "actual") {
-                  const row = entry.payload as
-                    | { planned?: number; actual?: number }
-                    | undefined;
-                  const isOver = row
-                    ? Number(row.actual) > Number(row.planned)
-                    : false;
-                  return {
-                    label: "Actual",
-                    color: isOver ? chartColor.over : chartColor.actual,
-                  };
-                }
-                return null;
-              }}
-            />
+            <SeriesTooltip format={formatAmount} resolve={resolveForecastSeries} />
           }
         />
         <Bar

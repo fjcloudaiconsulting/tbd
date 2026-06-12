@@ -20,6 +20,7 @@ import { formatAmount } from "@/lib/format";
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
+import { resolveBudgetSeries } from "@/lib/reports/chart-series-tooltip";
 
 export interface BudgetOverviewDatum {
   name: string;
@@ -45,16 +46,7 @@ export default function BudgetOverviewChart({
         <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
         <Tooltip
           content={
-            <SeriesTooltip
-              format={formatAmount}
-              resolve={(entry) =>
-                entry.dataKey === "spent"
-                  ? { label: "Spent", color: chartColor.spent }
-                  : entry.dataKey === "over"
-                    ? { label: "Over budget", color: chartColor.over }
-                    : { label: "Remaining", color: chartColor.remaining }
-              }
-            />
+            <SeriesTooltip format={formatAmount} resolve={resolveBudgetSeries} />
           }
         />
         {/* D5 fix: shared BudgetSpentBarShape recomputes corner radii
