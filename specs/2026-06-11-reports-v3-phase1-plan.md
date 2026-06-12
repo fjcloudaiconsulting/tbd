@@ -6,6 +6,8 @@
 
 **Architecture:** The `POST /api/v1/reports/query` AST already carries a `dataset` discriminator (`ReportsQuery.dataset`, today a single-value enum). Phase 1 inserts a registry indirection: the router dispatches on `dataset` to a registered `ReportSource`, and Phase 1 registers exactly one — `TransactionsSource` — which delegates to the existing `execute_query` compiler. A new `/sources` endpoint returns each registered source's dimensions + measures (derived from the existing closed enums) so the frontend can later drive the editor from data. No enum widening, no per-source measure validation, and no new wire fields yet — those land in Phase 5 when a second source exists. This phase is pure, behavior-preserving indirection + a read-only catalog.
 
+**Phase 2 sequencing note:** Phase 2's frontend data-layer swap uses the EXISTING `dataset` wire field on `POST /reports/query` (mapping the widget's current `dataset` through the registry); the new `source` field on widget config and `Dataset` enum widening land in Phase 5. Phase 2 must NOT send a `source` key — it does not exist on the wire schema yet and would 422.
+
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy 2.0 async, Pydantic v2, pytest (async). Tests run in an **isolated compose project** per the parallel-agent rule: `docker compose -p team-reportsv3-p1 up -d backend mysql redis`, then `docker compose -p team-reportsv3-p1 exec backend pytest ...`.
 
 **Reference files (read before starting):**

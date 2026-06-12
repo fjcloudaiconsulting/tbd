@@ -39,6 +39,25 @@ def test_transactions_source_catalog_matches_ast_enums():
         assert m.agg in agg_values, f"bad agg: {m.agg}"
         assert m.field in field_values, f"bad field: {m.field}"
 
+    # exact catalog contract (not just subset)
+    assert dim_keys == {"category", "category_master", "account", "tag",
+                        "txn_type", "status", "month", "week", "day"}
+    assert {m.key for m in src.measures()} == {"sum_amount", "avg_amount", "count_rows"}
+    by_key = {m.key: m for m in src.measures()}
+    assert (by_key["avg_amount"].agg, by_key["avg_amount"].field, by_key["avg_amount"].format) == ("avg", "amount", "currency")
+    assert (by_key["count_rows"].agg, by_key["count_rows"].field, by_key["count_rows"].format) == ("count", "id", "number")
+
+
+def test_every_dataset_enum_value_has_a_registered_source():
+    from app.reports import sources as source_registry
+    from app.schemas.reports_query import Dataset
+    registered = {s.key for s in source_registry.all_sources()}
+    enum_values = {d.value for d in Dataset}
+    assert enum_values == registered, (
+        f"Dataset enum and registry drifted: "
+        f"enum-only={enum_values - registered}, registry-only={registered - enum_values}"
+    )
+
 
 @pytest.mark.asyncio
 async def test_run_query_dispatches_via_registry(monkeypatch):

@@ -160,3 +160,30 @@ async def test_sources_endpoint_404_when_flag_off(session_factory, monkeypatch):
     with TestClient(app) as client:
         resp = client.get("/api/v1/reports/sources")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sources_anonymous_returns_401(session_factory):
+    """Flag ON, no Authorization header: the bearer scheme fires and
+    the request is rejected 401/403 (NOT 404) before any handler runs.
+
+    A bare FastAPI app with the router included — no
+    ``get_current_user`` override — exercises the production bearer
+    gate end-to-end. Mirrors test_reports.py::test_anonymous_request_returns_401.
+    """
+    await _seed(session_factory)
+    app = FastAPI()
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.include_router(reports_router)
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports/sources")
+    # FastAPI's HTTPBearer with auto_error=True returns 403 when the
+    # Authorization header is missing; both 401 / 403 are acceptable
+    # auth-rejection codes here. The point is the route did NOT reach
+    # the handler.
+    assert res.status_code in (401, 403)

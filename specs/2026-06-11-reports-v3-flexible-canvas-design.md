@@ -100,7 +100,7 @@ Every `build_rows` is org-scoped; the registry never bypasses `org_id`.
 
 ## Error handling
 
-- `/reports/query` validates `source` against the registry → 400 on unknown source; validates requested dimensions/measures belong to that source → 400 with the offending key.
+- `/reports/query` validates `source`/`dataset` at the wire via the closed Pydantic `Dataset` enum → **422** on any unknown value (Pydantic rejects it before the handler runs; there is no 400 path). A registry miss — e.g. the enum is widened in Phase 5 but the source isn't registered yet — surfaces as **500** (server bug, not user input). Requested dimensions/measures outside a source's catalog → 422 (per-source validation, Phase 5).
 - A widget whose source/measure no longer resolves renders an inline "this widget needs attention" state (not a crashed canvas), and the popover surfaces what's invalid.
 - Net worth / recurring with an empty range return an empty series, not an error.
 
