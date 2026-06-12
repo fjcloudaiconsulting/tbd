@@ -28,6 +28,7 @@ private -> hard delete) is a follow-up PR. PR1 only ensures the FK is
 ``ON DELETE RESTRICT`` so a code path that bypasses the service layer
 fails loud instead of silently dropping reports.
 """
+import dataclasses
 from typing import Optional
 
 import structlog
@@ -56,8 +57,13 @@ from app.schemas.report import (
     ReportUpdate,
     ReportVersionSummary,
 )
+from app.reports.sources import all_sources, get_source
+from app.schemas.report_sources import (
+    SourceCatalogEntry,
+    SourceDimensionOut,
+    SourceMeasureOut,
+)
 from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse
-from app.services.reports_query_service import execute_query
 
 
 logger = structlog.stdlib.get_logger()
@@ -152,6 +158,17 @@ async def _snapshot_version(
         await db.delete(stale)
 
 
+async def _run_source_query(db: AsyncSession, ast: ReportsQuery, *, org_id: int):
+    """Resolve the AST's dataset to a registered ReportSource and run it.
+
+    Unknown dataset is impossible from the wire (the Dataset enum is
+    closed and Pydantic-validated), so a KeyError here is a server bug,
+    not user input — let it surface as 500.
+    """
+    source = get_source(ast.dataset.value)
+    return await source.build_rows(db, org_id, ast)
+
+
 @router.post(
     "/query",
     response_model=ReportsQueryResponse,
@@ -166,9 +183,9 @@ async def run_query(
     """Execute a validated AST against the caller's org data.
 
     ``org_id`` is injected from ``current_user``; the AST has no way to
-    express it. See ``app/services/reports_query_service.py``.
+    express it. Dispatch is through the source registry on ``body.dataset``.
     """
-    rows, meta = await execute_query(db, body, org_id=current_user.org_id)
+    rows, meta = await _run_source_query(db, body, org_id=current_user.org_id)
     return ReportsQueryResponse(rows=rows, meta=meta)
 
 
@@ -232,6 +249,28 @@ async def list_templates(current_user: User = Depends(get_current_user)):
     backend.
     """
     return [ReportTemplate(**t) for t in get_report_templates()]
+
+
+@router.get("/sources", response_model=list[SourceCatalogEntry])
+async def list_sources(current_user: User = Depends(get_current_user)):
+    """Catalog of reportable sources with their dimensions + measures.
+
+    Drives the widget editor's source/dimension/measure pickers so the
+    frontend hardcodes nothing about a source's shape. Auth-gated +
+    behind the reports-v2 flag like every route on this router.
+
+    Registered ABOVE ``GET /{report_id}`` so the literal ``/sources``
+    path is not captured by the ``{report_id}`` integer matcher.
+    """
+    return [
+        SourceCatalogEntry(
+            key=s.key,
+            label=s.label,
+            dimensions=[SourceDimensionOut(**dataclasses.asdict(d)) for d in s.dimensions()],
+            measures=[SourceMeasureOut(**dataclasses.asdict(m)) for m in s.measures()],
+        )
+        for s in all_sources()
+    ]
 
 
 @router.get("/{report_id}", response_model=ReportResponse)
