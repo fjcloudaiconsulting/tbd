@@ -147,8 +147,10 @@ describe("TableWidget", () => {
     const totalRow = await screen.findByTestId("table-widget-total-row");
     // Dimension cell reads "Total".
     expect(totalRow).toHaveTextContent("Total");
-    // 200 + 80 + 20 = 300, formatted as currency.
-    expect(totalRow).toHaveTextContent("$300.00");
+    // 200 + 80 + 20 = 300, grouped 2dp with NO currency symbol
+    // (symbols deferred to the future multi-currency work).
+    expect(totalRow).toHaveTextContent("300.00");
+    expect(totalRow.textContent).not.toContain("$");
   });
 
   it("sums ALL rows in the total even across multiple pages", async () => {

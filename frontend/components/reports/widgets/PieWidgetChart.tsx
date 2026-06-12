@@ -8,6 +8,8 @@
  */
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
+import { formatMeasureValue } from "@/lib/reports/series";
+
 // Canonical categorical chart palette (theme tokens, mirrors the
 // dashboard donut). Slices cycle through chart-1..chart-5; the explicit
 // "Other" roll-up below stays on the neutral border track.
@@ -21,9 +23,11 @@ const PIE_COLORS = [
 
 export interface PieWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
+  /** Display format for the measure value (tooltip only — pie has no axis). */
+  format: "currency" | "number" | "percent";
 }
 
-export default function PieWidgetChart({ rows }: PieWidgetChartProps) {
+export default function PieWidgetChart({ rows, format }: PieWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <PieChart>
@@ -47,7 +51,7 @@ export default function PieWidgetChart({ rows }: PieWidgetChartProps) {
             />
           ))}
         </Pie>
-        <Tooltip />
+        <Tooltip formatter={(v) => formatMeasureValue(Number(v), format)} />
         <Legend
           verticalAlign="bottom"
           wrapperStyle={{ fontSize: 11 }}
