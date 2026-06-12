@@ -94,6 +94,9 @@ export default function WidgetShell({
         canvasFilters={canvasFilters}
         accounts={accounts}
         categories={categories}
+        // Interactive (editable) chips only in edit mode; in view mode the
+        // chips render as inert, non-focusable informational spans.
+        interactive={editMode}
         onSelectFilters={onSelectFilters}
       />
       <div className="min-h-0 w-full flex-1">{children}</div>

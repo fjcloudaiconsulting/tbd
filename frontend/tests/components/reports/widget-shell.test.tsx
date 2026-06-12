@@ -1,8 +1,11 @@
 /**
  * WidgetShell — mounts the per-widget filter-chip header above the
- * widget body in BOTH view and edit mode, and wires chip clicks to
- * ``onSelectFilters`` (which the page uses to select the widget and
- * deep-link the popover to the Filters tab).
+ * widget body in BOTH view and edit mode. The chips are INTERACTIVE only
+ * in edit mode: ``WidgetShell`` passes ``interactive={editMode}`` to
+ * ``WidgetFilterChips``. In edit mode a chip is a button wired to
+ * ``onSelectFilters`` (select the widget + deep-link the popover's
+ * Filters tab); in view mode the chips render as inert informational
+ * spans (no false "edit" affordance for keyboard users).
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 
@@ -43,25 +46,33 @@ function renderShell(editMode: boolean, onSelectFilters = () => {}) {
 }
 
 describe("WidgetShell filter chips", () => {
-  it("renders filter chips in view mode and fires onSelectFilters", () => {
+  it("renders chips as inert spans in view mode (no onSelectFilters)", () => {
     const onSelectFilters = vi.fn();
     renderShell(false, onSelectFilters);
-    fireEvent.click(screen.getByTestId("widget-filter-chip-txn_type"));
+    const chip = screen.getByTestId("widget-filter-chip-txn_type");
+    expect(chip.tagName).toBe("SPAN");
+    fireEvent.click(chip);
+    expect(onSelectFilters).not.toHaveBeenCalled();
+  });
+
+  it("renders interactive chip buttons in edit mode and fires onSelectFilters", () => {
+    const onSelectFilters = vi.fn();
+    renderShell(true, onSelectFilters);
+    const chip = screen.getByTestId("widget-filter-chip-txn_type");
+    expect(chip.tagName).toBe("BUTTON");
+    fireEvent.click(chip);
     expect(onSelectFilters).toHaveBeenCalledOnce();
   });
 
-  it("renders filter chips in edit mode too", () => {
-    renderShell(true);
-    expect(screen.getByTestId("widget-filter-chip-txn_type")).toBeInTheDocument();
-  });
-
-  it("does not fire the shell onSelect when a chip is clicked", () => {
+  it("does not fire the shell onSelect when an edit-mode chip button is clicked", () => {
+    // The chip button stops propagation so its select-with-Filters action
+    // wins over the shell's plain onSelect.
     const onSelect = vi.fn();
     render(
       <WidgetShell
         widgetId="w1"
         selected={false}
-        editMode={false}
+        editMode
         onSelect={onSelect}
         onSelectFilters={() => {}}
         widget={barWith({ txn_type: "expense" })}

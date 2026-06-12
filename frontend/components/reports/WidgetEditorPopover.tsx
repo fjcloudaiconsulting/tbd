@@ -114,8 +114,13 @@ export default function WidgetEditorPopover({
       setTab(requestedTab);
       onTabConsumed?.();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- onTabConsumed
-    // is read in the body, not a dependency; we act only on requestedTab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional:
+    // honor a request ONLY on a requestedTab transition. ``onTabConsumed``
+    // is a page callback whose identity isn't guaranteed stable across
+    // renders; listing it would re-fire this effect on its identity change
+    // (re-consuming a request that's already been honored). We deliberately
+    // read the latest ``onTabConsumed`` from the closure and key only on
+    // ``requestedTab``.
   }, [requestedTab]);
 
   const dismiss = useDismiss(context, {
