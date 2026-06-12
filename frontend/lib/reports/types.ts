@@ -110,9 +110,13 @@ export interface CanvasDateRange {
 }
 
 export interface CanvasFilters {
+  // Phase 4b: the canvas filter bar shrank to a shared DATE control
+  // only. Accounts and categories are now edited per-widget (in the
+  // widget popover's Filters tab), so they no longer live here.
+  // Saved ``canvas_filters_json`` blobs that still carry the old
+  // ``account_ids`` / ``category_ids`` keys are tolerated by the
+  // ``as CanvasFilters`` hydrate cast and simply never read.
   date_range?: CanvasDateRange;
-  account_ids?: number[];
-  category_ids?: number[];
 }
 
 // ─── widget layout / config ─────────────────────────────────────

@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { isFieldOverridden, resolveFilters } from "@/lib/reports/resolve";
+import {
+  isFieldOverridden,
+  pickDateRange,
+  resolveFilters,
+} from "@/lib/reports/resolve";
 import type { CanvasFilters, WidgetFilters } from "@/lib/reports/types";
 
 /**
- * Locked rule (spec §4): the "Overrides canvas" pill fires ONLY
- * when BOTH widget and canvas have a meaningful value AND the
- * values differ. Identical values must NOT show the pill.
+ * Phase 4b model: ``date_range`` is the ONLY canvas-shared field, so
+ * it's the only field that can be an "override". Accounts and
+ * categories are now widget-only — ``CanvasFilters`` no longer carries
+ * them — so ``isFieldOverridden`` must always return false for them.
  *
- * These tests pin the five canonical cases across each field type:
+ * The date_range cases pin the five canonical override cases:
  *   1. identical -> no pill
  *   2. different by one element -> pill
  *   3. partial overlap -> pill
@@ -64,73 +69,29 @@ describe("isFieldOverridden", () => {
     });
   });
 
-  describe("account_ids", () => {
-    it("returns false when both lists contain the same ids regardless of order", () => {
-      const canvas: CanvasFilters = { account_ids: [3, 1, 2] };
-      const widget: WidgetFilters = { account_ids: [1, 2, 3] };
-      expect(isFieldOverridden("account_ids", widget, canvas)).toBe(false);
+  describe("account_ids (widget-only, never a canvas override)", () => {
+    // Accounts no longer live on the canvas, so a widget account list
+    // is never an "override" — the pill must never fire for it.
+    it("returns false even when a widget account list is set", () => {
+      const widget: WidgetFilters = { account_ids: [1, 2] };
+      expect(isFieldOverridden("account_ids", widget, {})).toBe(false);
     });
 
-    it("returns true when the widget list has an extra id", () => {
-      const canvas: CanvasFilters = { account_ids: [1, 2] };
-      const widget: WidgetFilters = { account_ids: [1, 2, 3] };
-      expect(isFieldOverridden("account_ids", widget, canvas)).toBe(true);
-    });
-
-    it("returns true when the lists partially overlap", () => {
-      const canvas: CanvasFilters = { account_ids: [1, 2, 3] };
-      const widget: WidgetFilters = { account_ids: [2, 3, 4] };
-      expect(isFieldOverridden("account_ids", widget, canvas)).toBe(true);
-    });
-
-    it("returns false when canvas has account_ids but the widget doesn't", () => {
-      const canvas: CanvasFilters = { account_ids: [1, 2, 3] };
-      const widget: WidgetFilters = {};
-      expect(isFieldOverridden("account_ids", widget, canvas)).toBe(false);
-    });
-
-    it("returns false when only the widget has account_ids (no canvas value)", () => {
-      const canvas: CanvasFilters = {};
-      const widget: WidgetFilters = { account_ids: [5] };
-      expect(isFieldOverridden("account_ids", widget, canvas)).toBe(false);
-    });
-
-    it("treats an empty widget account_ids array as inherit (no pill)", () => {
-      const canvas: CanvasFilters = { account_ids: [1, 2, 3] };
+    it("returns false for an empty widget account list", () => {
       const widget: WidgetFilters = { account_ids: [] };
-      expect(isFieldOverridden("account_ids", widget, canvas)).toBe(false);
+      expect(isFieldOverridden("account_ids", widget, {})).toBe(false);
     });
   });
 
-  describe("category_ids", () => {
-    it("returns false when both lists contain the same ids regardless of order", () => {
-      const canvas: CanvasFilters = { category_ids: [10, 20, 30] };
-      const widget: WidgetFilters = { category_ids: [30, 20, 10] };
-      expect(isFieldOverridden("category_ids", widget, canvas)).toBe(false);
+  describe("category_ids (widget-only, never a canvas override)", () => {
+    it("returns false even when a widget category list is set", () => {
+      const widget: WidgetFilters = { category_ids: [10, 20] };
+      expect(isFieldOverridden("category_ids", widget, {})).toBe(false);
     });
 
-    it("returns true when one id differs", () => {
-      const canvas: CanvasFilters = { category_ids: [10, 20] };
-      const widget: WidgetFilters = { category_ids: [10, 21] };
-      expect(isFieldOverridden("category_ids", widget, canvas)).toBe(true);
-    });
-
-    it("returns true on partial overlap", () => {
-      const canvas: CanvasFilters = { category_ids: [10, 20, 30] };
-      const widget: WidgetFilters = { category_ids: [20, 30, 40] };
-      expect(isFieldOverridden("category_ids", widget, canvas)).toBe(true);
-    });
-
-    it("returns false when canvas has category_ids but the widget doesn't", () => {
-      const canvas: CanvasFilters = { category_ids: [10, 20] };
-      const widget: WidgetFilters = {};
-      expect(isFieldOverridden("category_ids", widget, canvas)).toBe(false);
-    });
-
-    it("returns false when only the widget has category_ids", () => {
-      const canvas: CanvasFilters = {};
-      const widget: WidgetFilters = { category_ids: [10] };
-      expect(isFieldOverridden("category_ids", widget, canvas)).toBe(false);
+    it("returns false for an empty widget category list", () => {
+      const widget: WidgetFilters = { category_ids: [] };
+      expect(isFieldOverridden("category_ids", widget, {})).toBe(false);
     });
   });
 
@@ -263,6 +224,28 @@ describe("resolveFilters — tag emission", () => {
       op: "in",
       value: ["essentials"],
       tag_match: "all",
+    });
+  });
+});
+
+describe("resolveFilters — widget-only accounts/categories", () => {
+  it("emits account_id/category_id filters from the WIDGET (canvas no longer contributes)", () => {
+    const out = resolveFilters(
+      { date_range: { start: "2026-01-01", end: "2026-01-31" } },
+      { account_ids: [7], category_ids: [9] },
+    );
+    expect(out).toContainEqual({ field: "account_id", op: "in", value: [7] });
+    expect(out).toContainEqual({ field: "category_id", op: "in", value: [9] });
+  });
+});
+
+describe("pickDateRange (exported single source of truth)", () => {
+  it("prefers the widget date, falls back to canvas", () => {
+    expect(
+      pickDateRange({ start: "2026-02-01" }, { start: "2026-01-01" }),
+    ).toEqual({ start: "2026-02-01" });
+    expect(pickDateRange(undefined, { start: "2026-01-01" })).toEqual({
+      start: "2026-01-01",
     });
   });
 });
