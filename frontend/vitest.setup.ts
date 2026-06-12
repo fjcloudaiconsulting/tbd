@@ -80,3 +80,12 @@ vi.mock("@/components/notifications/NotificationBell", () => ({
 vi.mock("@/lib/hooks/use-ai-status", () => ({
   useAiStatus: () => undefined,
 }));
+
+// floating-ui's autoUpdate calls ResizeObserver; jsdom 26 has none.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
