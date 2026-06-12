@@ -71,6 +71,7 @@ export default function BarWidgetChart({
           interval={0}
         />
         <YAxis
+          width={80}
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
           tickFormatter={(v) => formatMeasureValue(Number(v), format)}
         />

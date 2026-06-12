@@ -72,6 +72,10 @@ export function formatMeasureValue(
   value: number,
   format: "currency" | "number" | "percent",
 ): string {
+  // Recharts hands tick/tooltip values in as `any`; a degenerate
+  // undefined/NaN would otherwise surface as the literal "NaN". Mirror
+  // the Number.isFinite guard KPIWidget/TableWidget already apply.
+  if (!Number.isFinite(value)) return "";
   if (format === "percent") return `${value.toFixed(1)}%`;
   if (format === "currency") return formatAmount(value); // grouped, 2dp, no symbol
   return value.toLocaleString();
