@@ -2,9 +2,12 @@
 
 /**
  * The widget-editor mutation closures, extracted verbatim from
- * ``ConfigRail`` into one shared hook so ``DataTab`` / ``StyleTab`` / the
- * popover and (during the extraction PR) ``ConfigRail`` itself all call the
- * identical logic. Each setter early-returns on the same type guards it did
+ * ``ConfigRail`` into one shared plain factory so ``DataTab`` / ``StyleTab``
+ * / the popover and (during the extraction PR) ``ConfigRail`` itself all
+ * call the identical logic. It calls no React hooks (callers invoke it
+ * unconditionally at render), so it is named ``build*`` rather than
+ * ``use*`` to keep the rules-of-hooks linter off a non-hook. Each setter
+ * early-returns on the same type guards it did
  * inline (these guards are load-bearing — e.g. ``setSingleMeasure``
  * early-returns on ``isMultiSeries`` and ``setSecondaryDimension``
  * early-returns on ``kpi`` / ``isSingleAggLocked``).
@@ -29,7 +32,7 @@ import type {
   WidgetFilters,
 } from "@/lib/reports/types";
 
-export function useWidgetMutations(
+export function buildWidgetMutations(
   widget: Widget,
   onUpdate: (next: Widget) => void,
 ) {

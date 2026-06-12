@@ -9,7 +9,7 @@
  * (``FloatingFocusManager``), the role/aria contract (``useRole``), tab
  * state, and which tabs/sub-controls a widget type shows. Every *mutation*
  * is delegated to the extracted control components (``DataTab`` /
- * ``StyleTab`` / ``FilterEditor`` via ``useWidgetMutations``).
+ * ``StyleTab`` / ``FilterEditor`` via ``buildWidgetMutations``).
  */
 import { useEffect, useId, useState } from "react";
 import {
@@ -28,7 +28,7 @@ import {
 import DataTab from "@/components/reports/config/DataTab";
 import StyleTab from "@/components/reports/config/StyleTab";
 import FilterEditor from "@/components/reports/config/FilterEditor";
-import { useWidgetMutations } from "@/components/reports/config/useWidgetMutations";
+import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
 import type { CanvasFilters, Widget } from "@/lib/reports/types";
 
 interface Props {
@@ -72,6 +72,12 @@ export default function WidgetEditorPopover({
     if (anchorEl && !anchorEl.isConnected) onClose();
   }, [anchorEl, onClose]);
 
+  // Reset to the default tab when the selected widget identity changes,
+  // so opening a different widget never lands on a stale tab.
+  useEffect(() => {
+    setTab("data");
+  }, [widget.id]);
+
   const dismiss = useDismiss(context, {
     outsidePress: true,
     escapeKey: true,
@@ -79,7 +85,7 @@ export default function WidgetEditorPopover({
   const role = useRole(context, { role: "dialog" });
   const { getFloatingProps } = useInteractions([dismiss, role]);
 
-  const { setFilters } = useWidgetMutations(widget, onUpdate);
+  const { setFilters } = buildWidgetMutations(widget, onUpdate);
 
   if (!anchorEl) return null;
 
@@ -93,15 +99,15 @@ export default function WidgetEditorPopover({
     <FloatingPortal>
       <FloatingFocusManager context={context} modal={false} initialFocus={-1}>
         <div
-          // refs.setFloating is floating-ui's ref-setter callback (its
-          // documented API), not a `.current` read; the React 19
-          // react-hooks/refs rule can't distinguish the two and misfires.
+          // react-hooks/refs flags reading `refs.setFloating` in render,
+          // but floating-ui's `setFloating` is a documented ref-SETTER
+          // callback meant to be passed straight to `ref=` (not a
+          // `.current` read), so the rule is a false positive here.
           // eslint-disable-next-line react-hooks/refs
           ref={refs.setFloating}
           style={floatingStyles}
           {...getFloatingProps()}
           data-testid="widget-editor-popover"
-          role="dialog"
           aria-label="Widget settings"
           className="z-50 flex max-h-[80vh] w-80 flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-lg"
         >
@@ -119,7 +125,7 @@ export default function WidgetEditorPopover({
           </div>
 
           <div role="tablist" aria-label="Widget settings tabs" className="flex border-b border-border">
-            {tabs.map((t) => {
+            {tabs.map((t, i) => {
               const active = tab === t.key;
               return (
                 <button
@@ -129,7 +135,19 @@ export default function WidgetEditorPopover({
                   id={`${baseId}-tab-${t.key}`}
                   aria-selected={active}
                   aria-controls={`${baseId}-panel-${t.key}`}
+                  tabIndex={active ? 0 : -1}
                   onClick={() => setTab(t.key)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                    e.preventDefault();
+                    const delta = e.key === "ArrowRight" ? 1 : -1;
+                    const nextIndex = (i + delta + tabs.length) % tabs.length;
+                    const next = tabs[nextIndex];
+                    setTab(next.key);
+                    document
+                      .getElementById(`${baseId}-tab-${next.key}`)
+                      ?.focus();
+                  }}
                   className={
                     active
                       ? "flex-1 border-b-2 border-accent px-3 py-2 text-xs font-medium text-text-primary"

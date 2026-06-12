@@ -31,9 +31,8 @@ import Section from "@/components/reports/config/Section";
 import SingleMeasureEditor from "@/components/reports/config/SingleMeasureEditor";
 import MeasuresEditor from "@/components/reports/config/MeasuresEditor";
 import FilterEditor from "@/components/reports/config/FilterEditor";
-import { isMultiSeries } from "@/components/reports/config/controlConstants";
-import { useWidgetMutations } from "@/components/reports/config/useWidgetMutations";
-import { DIMENSION_OPTIONS } from "@/components/reports/config/controlConstants";
+import { isMultiSeries, DIMENSION_OPTIONS } from "@/components/reports/config/controlConstants";
+import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
 import type {
   BarConfig,
   CanvasFilters,
@@ -73,7 +72,7 @@ export default function ConfigRail({
     setComparePrior,
     setTopN,
     setStacked,
-  } = useWidgetMutations(widget, onUpdate);
+  } = buildWidgetMutations(widget, onUpdate);
 
   return (
     <aside

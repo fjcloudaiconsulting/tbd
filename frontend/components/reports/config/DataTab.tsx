@@ -5,7 +5,7 @@
  * primary/secondary dimension selects. Per-type sub-control visibility
  * lives here (it branches on ``widget.type``). All control logic is
  * extracted verbatim from ``ConfigRail``; mutations come from
- * ``useWidgetMutations``.
+ * ``buildWidgetMutations``.
  */
 import Section from "@/components/reports/config/Section";
 import SingleMeasureEditor from "@/components/reports/config/SingleMeasureEditor";
@@ -14,7 +14,7 @@ import {
   DIMENSION_OPTIONS,
   isMultiSeries,
 } from "@/components/reports/config/controlConstants";
-import { useWidgetMutations } from "@/components/reports/config/useWidgetMutations";
+import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
 import type {
   BarConfig,
   Dimension,
@@ -37,7 +37,7 @@ export default function DataTab({
     setSeries,
     setPrimaryDimension,
     setSecondaryDimension,
-  } = useWidgetMutations(widget, onUpdate);
+  } = buildWidgetMutations(widget, onUpdate);
 
   return (
     <>

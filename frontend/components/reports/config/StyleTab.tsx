@@ -6,10 +6,10 @@
  * The stacked branch keeps ConfigRail's exact label split ("Stack mode"
  * for stacked_bar vs "Stack series" for area), the default split
  * (``stacked !== false`` vs ``Boolean(stacked)``), and the shared
- * ``aria-label="Stack series"``. Mutations come from ``useWidgetMutations``.
+ * ``aria-label="Stack series"``. Mutations come from ``buildWidgetMutations``.
  */
 import Section from "@/components/reports/config/Section";
-import { useWidgetMutations } from "@/components/reports/config/useWidgetMutations";
+import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
 import type {
   AreaConfig,
   KPIConfig,
@@ -25,10 +25,8 @@ export default function StyleTab({
   widget: Widget;
   onUpdate: (next: Widget) => void;
 }) {
-  const { setTitle, setComparePrior, setTopN, setStacked } = useWidgetMutations(
-    widget,
-    onUpdate,
-  );
+  const { setTitle, setComparePrior, setTopN, setStacked } =
+    buildWidgetMutations(widget, onUpdate);
 
   return (
     <>
