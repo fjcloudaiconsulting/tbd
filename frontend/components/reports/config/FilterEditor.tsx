@@ -68,9 +68,6 @@ export default function FilterEditor({
       <div className="flex flex-col gap-1">
         <div className="flex items-center text-xs text-text-secondary">
           Accounts
-          {isFieldOverridden("account_ids", filters, canvasFilters) && (
-            <OverridePill />
-          )}
         </div>
         <AccountFilter
           value={filters.account_ids ?? []}
@@ -88,9 +85,6 @@ export default function FilterEditor({
       <div className="flex flex-col gap-1">
         <div className="flex items-center text-xs text-text-secondary">
           Categories
-          {isFieldOverridden("category_ids", filters, canvasFilters) && (
-            <OverridePill />
-          )}
         </div>
         <CategoryPicker
           value={filters.category_ids ?? []}
