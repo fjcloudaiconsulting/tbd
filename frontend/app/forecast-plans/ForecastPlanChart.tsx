@@ -19,6 +19,8 @@ import {
 
 import { formatAmount } from "@/lib/format";
 import { chartColor } from "@/lib/chart-colors";
+import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
+import { resolveForecastSeries } from "@/lib/reports/chart-series-tooltip";
 
 export interface ForecastPlanChartDatum {
   categoryId: number;
@@ -49,11 +51,9 @@ export default function ForecastPlanChart({
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
         />
         <Tooltip
-          formatter={(v, name) => [
-            formatAmount(Number(v)),
-            name === "planned" ? <span style={{ color: chartColor.planned }}>Planned</span> : <span style={{ color: chartColor.actual }}>Actual</span>,
-          ]}
-          contentStyle={{ fontSize: "11px" }}
+          content={
+            <SeriesTooltip format={formatAmount} resolve={resolveForecastSeries} />
+          }
         />
         <Bar
           dataKey="planned"

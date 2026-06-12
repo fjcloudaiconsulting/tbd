@@ -19,6 +19,11 @@ import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { chartColor } from "@/lib/chart-colors";
+import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
+import {
+  resolveBudgetSeries,
+  resolveForecastSeries,
+} from "@/lib/reports/chart-series-tooltip";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
 import OnTrackTile from "@/components/dashboard/OnTrackTile";
 import AIForecastRefineToggle from "@/components/dashboard/AIForecastRefineToggle";
@@ -892,6 +897,10 @@ export default function DashboardPage() {
                               opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
                           ))}
                         </Pie>
+                        {/* Single-series pie: recharts renders the slice
+                            name itself, so a value `formatter` is enough.
+                            SeriesTooltip is only needed for the multi-series
+                            bar charts where the name node failed to render. */}
                         <Tooltip formatter={(v) => formatAmount(Number(v))} contentStyle={{ fontSize: "12px" }} />
                       </PieChart>
                     </ResponsiveContainer>
@@ -1052,11 +1061,9 @@ export default function DashboardPage() {
                       <XAxis type="number" hide />
                       <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
                       <Tooltip
-                        formatter={(v, name) => [
-                          formatAmount(Number(v)),
-                          name === "spent" ? <span style={{ color: chartColor.spent }}>Spent</span> : <span style={{ color: chartColor.remaining }}>Remaining</span>,
-                        ]}
-                        contentStyle={{ fontSize: "11px" }}
+                        content={
+                          <SeriesTooltip format={formatAmount} resolve={resolveBudgetSeries} />
+                        }
                       />
                       {/* D5 follow-up: shared BudgetSpentBarShape so
                           the spent bar rounds its right edge at >=100%
@@ -1116,22 +1123,9 @@ export default function DashboardPage() {
                           <XAxis type="number" hide />
                           <YAxis type="category" dataKey="name" width={90} tick={{ fill: chartColor.axisTick, fontSize: 10 }} />
                           <Tooltip
-                            formatter={(v, name, item) => {
-                              if (name === "planned") {
-                                return [
-                                  formatAmount(Number(v)),
-                                  <span key="planned" style={{ color: chartColor.planned }}>Planned</span>,
-                                ];
-                              }
-                              const row = (item as { payload?: { planned: number; actual: number } } | undefined)?.payload;
-                              const isOver = row ? row.actual > row.planned : false;
-                              const labelColor = isOver ? chartColor.over : chartColor.actual;
-                              return [
-                                formatAmount(Number(v)),
-                                <span key="actual" style={{ color: labelColor }}>Actual</span>,
-                              ];
-                            }}
-                            contentStyle={{ fontSize: "11px" }}
+                            content={
+                              <SeriesTooltip format={formatAmount} resolve={resolveForecastSeries} />
+                            }
                           />
                           <Bar dataKey="planned" fill={chartColor.planned} radius={[4, 4, 4, 4]} animationDuration={220}
                             cursor="pointer"
