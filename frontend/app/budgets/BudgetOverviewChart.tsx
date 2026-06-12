@@ -19,6 +19,8 @@ import {
 import { formatAmount } from "@/lib/format";
 import { chartColor } from "@/lib/chart-colors";
 import { BudgetSpentBarShape, type BudgetSpentBarShapeProps } from "@/lib/chart-shapes";
+import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
+import { resolveBudgetSeries } from "@/lib/reports/chart-series-tooltip";
 
 export interface BudgetOverviewDatum {
   name: string;
@@ -43,13 +45,9 @@ export default function BudgetOverviewChart({
         <XAxis type="number" hide />
         <YAxis type="category" dataKey="name" width={100} tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
         <Tooltip
-          formatter={(v, name) => [
-            formatAmount(Number(v)),
-            name === "spent" ? <span style={{ color: chartColor.spent }}>Spent</span>
-              : name === "over" ? <span style={{ color: chartColor.over }}>Over budget</span>
-              : <span style={{ color: chartColor.remaining }}>Remaining</span>,
-          ]}
-          contentStyle={{ fontSize: "11px" }}
+          content={
+            <SeriesTooltip format={formatAmount} resolve={resolveBudgetSeries} />
+          }
         />
         {/* D5 fix: shared BudgetSpentBarShape recomputes corner radii
             per-row so a stack at >=100% utilization (no remaining
