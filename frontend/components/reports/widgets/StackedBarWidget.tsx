@@ -57,6 +57,7 @@ export default function StackedBarWidget({
   );
 
   const dimensionKey = widget.config.dimensions[0] ?? "dimension";
+  const format = widget.config.format ?? "number";
   const seriesKeys = widget.config.measures.map((_, i) => `s${i}`);
   const rows = mergeSeriesRows(series, dimensionKey, seriesKeys);
   const labels = widget.config.measures.map((m, i) =>
@@ -120,6 +121,7 @@ export default function StackedBarWidget({
             seriesKeys={seriesKeys}
             labels={labels}
             stackId={stackId}
+            format={format}
           />
         )}
       </div>

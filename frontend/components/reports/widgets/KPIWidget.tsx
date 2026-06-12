@@ -11,6 +11,7 @@
  * handle, title bar) wraps it.
  */
 import { useReportQuery } from "@/lib/reports/useReportQuery";
+import { formatMeasureValue } from "@/lib/reports/series";
 import type { CanvasFilters, KPIWidget as KPIWidgetType } from "@/lib/reports/types";
 import WidgetCsvButton from "./WidgetCsvButton";
 import type { CsvCell } from "@/lib/reports/csv";
@@ -95,7 +96,7 @@ export default function KPIWidget({
             data-testid="kpi-widget-value"
             className="text-2xl font-semibold text-text-primary"
           >
-            {formatValue(value, format)}
+            {formatMeasureValue(value, format)}
           </div>
           {showDelta && delta !== null && (
             <div
@@ -124,18 +125,4 @@ function readValue(
   if (v === null || v === undefined) return null;
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : null;
-}
-
-function formatValue(value: number, format: "currency" | "number" | "percent") {
-  if (format === "currency") {
-    return value.toLocaleString(undefined, {
-      style: "currency",
-      currency: "USD",
-      maximumFractionDigits: 2,
-    });
-  }
-  if (format === "percent") {
-    return `${value.toFixed(1)}%`;
-  }
-  return value.toLocaleString();
 }

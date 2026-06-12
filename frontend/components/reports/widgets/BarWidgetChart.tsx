@@ -17,6 +17,7 @@ import {
 } from "recharts";
 
 import { chartColor } from "@/lib/chart-colors";
+import { formatMeasureValue } from "@/lib/reports/series";
 
 // Canonical categorical chart palette (theme tokens, mirrors the
 // dashboard). chart-5 (danger/red) sits last so neutral break-down
@@ -48,6 +49,8 @@ export interface BarWidgetChartProps {
    * ``name`` from their secondary value.
    */
   valueName: string;
+  /** Display format for the measure value (tooltip + value axis). */
+  format: "currency" | "number" | "percent";
 }
 
 export default function BarWidgetChart({
@@ -56,6 +59,7 @@ export default function BarWidgetChart({
   secondaryValues,
   seriesKeys,
   valueName,
+  format,
 }: BarWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -66,8 +70,15 @@ export default function BarWidgetChart({
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
           interval={0}
         />
-        <YAxis tick={{ fill: chartColor.axisTick, fontSize: 11 }} />
-        <Tooltip cursor={{ fill: "var(--color-border)", opacity: 0.3 }} />
+        <YAxis
+          width={80}
+          tick={{ fill: chartColor.axisTick, fontSize: 11 }}
+          tickFormatter={(v) => formatMeasureValue(Number(v), format)}
+        />
+        <Tooltip
+          cursor={{ fill: "var(--color-border)", opacity: 0.3 }}
+          formatter={(v) => formatMeasureValue(Number(v), format)}
+        />
         {sliced ? (
           secondaryValues.map((sv, i) => (
             <Bar
