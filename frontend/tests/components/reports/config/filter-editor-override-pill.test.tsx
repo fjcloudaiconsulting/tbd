@@ -120,6 +120,13 @@ describe("Override pill — picker-based filters", () => {
     expect(pills.length).toBe(0);
   });
 
+  it("DOES show the pill when the widget account selection differs from the canvas", async () => {
+    renderEditor({ account_ids: [2] }, { account_ids: [1] });
+    await screen.findByTestId("account-filter");
+    const pills = screen.queryAllByTestId("override-pill");
+    expect(pills.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("keeps the pill off when widget account_ids is empty (inherit)", async () => {
     const onChange = vi.fn();
     const { rerender } = renderEditor({ account_ids: [1] }, { account_ids: [1] }, onChange);

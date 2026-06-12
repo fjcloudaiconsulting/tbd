@@ -53,7 +53,9 @@ function mockApi() {
       return Promise.resolve(ACCOUNTS) as Promise<unknown>;
     }
     if (String(path).startsWith("/api/v1/tags")) {
-      return Promise.resolve([]) as Promise<unknown>;
+      return Promise.resolve([
+        { id: 1, name: "groceries", name_normalized: "groceries", usage_count: 3 },
+      ]) as Promise<unknown>;
     }
     return Promise.resolve([]);
   });
@@ -117,5 +119,40 @@ describe("FilterEditor", () => {
       target: { value: "5" },
     });
     expect(calls.at(-1)?.amount_range).toEqual({ min: 5 });
+  });
+
+  it("merges amount max while preserving an existing min", async () => {
+    const calls: WidgetFilters[] = [];
+    render({ amount_range: { min: 5 } }, {}, (next) => calls.push(next));
+    await screen.findByTestId("category-picker");
+    fireEvent.change(screen.getByLabelText("Widget amount max"), {
+      target: { value: "20" },
+    });
+    expect(calls.at(-1)?.amount_range).toEqual({ min: 5, max: 20 });
+  });
+
+  it("reports the chosen txn_type on change", async () => {
+    const calls: WidgetFilters[] = [];
+    render({}, {}, (next) => calls.push(next));
+    await screen.findByTestId("category-picker");
+    fireEvent.click(screen.getByLabelText("Widget transaction type Expense"));
+    expect(calls.at(-1)?.txn_type).toBe("expense");
+  });
+
+  it("clears txn_type back to undefined when 'Any' is chosen", async () => {
+    const calls: WidgetFilters[] = [];
+    render({ txn_type: "expense" }, {}, (next) => calls.push(next));
+    await screen.findByTestId("category-picker");
+    fireEvent.click(screen.getByLabelText("Widget transaction type Any"));
+    expect(calls.at(-1)?.txn_type).toBeUndefined();
+  });
+
+  it("reports tag_names + tag_match when a tag chip is selected", async () => {
+    const calls: WidgetFilters[] = [];
+    render({}, {}, (next) => calls.push(next));
+    const chip = await screen.findByTestId("tag-filter-chip-groceries");
+    fireEvent.click(chip);
+    expect(calls.at(-1)?.tag_names).toEqual(["groceries"]);
+    expect(calls.at(-1)?.tag_match).toBe("all");
   });
 });

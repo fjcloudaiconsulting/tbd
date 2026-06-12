@@ -15,6 +15,7 @@ import type {
   LineWidget,
   PieWidget,
   SparklineWidget,
+  StackedBarWidget,
   TableWidget,
   Widget,
 } from "@/lib/reports/types";
@@ -127,6 +128,20 @@ function makeTable(): TableWidget {
       dataset: "transactions",
       measures: [{ measure: { agg: "sum", field: "amount" } }],
       dimensions: ["category"],
+    },
+  };
+}
+
+function makeStacked(): StackedBarWidget {
+  return {
+    id: "w_stacked",
+    type: "stacked_bar",
+    title: "Stacked",
+    grid: { x: 0, y: 0, w: 6, h: 4 },
+    config: {
+      dataset: "transactions",
+      measures: [{ measure: { agg: "sum", field: "amount" } }],
+      dimensions: ["month"],
     },
   };
 }
@@ -248,5 +263,103 @@ describe("WidgetEditorPopover", () => {
     renderPopover(makeBar(), { onClose });
     fireEvent.click(screen.getByRole("button", { name: /close/i }));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("renders nothing when anchorEl is null", () => {
+    renderWithSWR(
+      <WidgetEditorPopover
+        widget={makeBar()}
+        canvasFilters={{}}
+        anchorEl={null}
+        onUpdate={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId("widget-editor-popover")).not.toBeInTheDocument();
+  });
+
+  it("closes when the anchor detaches (staleness guard)", () => {
+    const onClose = vi.fn();
+    const detached = document.createElement("div");
+    // Intentionally NOT appended to the document → not connected.
+    renderWithSWR(
+      <WidgetEditorPopover
+        widget={makeBar()}
+        canvasFilters={{}}
+        anchorEl={detached}
+        onUpdate={() => {}}
+        onClose={onClose}
+      />,
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("resets to the Data tab when the selected widget changes", () => {
+    const { rerender } = renderPopover(makeBar());
+    fireEvent.click(screen.getByRole("tab", { name: /style/i }));
+    expect(screen.getByLabelText("Widget title")).toBeInTheDocument();
+
+    rerender(
+      <WidgetEditorPopover
+        widget={makeKpi()}
+        canvasFilters={{}}
+        anchorEl={anchorEl}
+        onUpdate={() => {}}
+        onClose={() => {}}
+      />,
+    );
+    // Back on Data: the Style-only title input is gone, Data source is shown.
+    expect(screen.queryByLabelText("Widget title")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Data source")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /data/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+  });
+
+  it("ArrowRight moves the tab selection (roving)", () => {
+    renderPopover(makeBar());
+    const dataTab = screen.getByRole("tab", { name: /data/i });
+    dataTab.focus();
+    fireEvent.keyDown(dataTab, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: /filters/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("tab", { name: /filters/i })).toHaveAttribute(
+      "tabindex",
+      "0",
+    );
+    expect(dataTab).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("title edit on the Style tab fires onUpdate with the new title", () => {
+    const onUpdate = vi.fn();
+    renderPopover(makeBar(), { onUpdate });
+    fireEvent.click(screen.getByRole("tab", { name: /style/i }));
+    fireEvent.change(screen.getByLabelText("Widget title"), {
+      target: { value: "Spending" },
+    });
+    expect(onUpdate).toHaveBeenCalled();
+    const last = onUpdate.mock.calls.at(-1)?.[0] as Widget;
+    expect(last.title).toBe("Spending");
+  });
+
+  it("changing the aggregation on the Data tab fires onUpdate", () => {
+    const onUpdate = vi.fn();
+    renderPopover(makeBar(), { onUpdate });
+    fireEvent.change(screen.getByLabelText("Aggregation"), {
+      target: { value: "count" },
+    });
+    expect(onUpdate).toHaveBeenCalled();
+    const last = onUpdate.mock.calls.at(-1)?.[0] as BarWidget;
+    expect(last.config.measure).toEqual({ agg: "count", field: "amount" });
+  });
+
+  it("stacked_bar: Style tab shows the 'Stack mode' control", () => {
+    renderPopover(makeStacked());
+    fireEvent.click(screen.getByRole("tab", { name: /style/i }));
+    expect(screen.getByText("Stack mode")).toBeInTheDocument();
+    expect(screen.getByLabelText("Stack series")).toBeInTheDocument();
   });
 });

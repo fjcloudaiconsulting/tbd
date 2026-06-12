@@ -205,3 +205,54 @@ describe("DataTab — secondary dimension picker visibility", () => {
     expect(afterClear.config.dimensions).toEqual(["category"]);
   });
 });
+
+describe("DataTab — measure editor + dimension by widget type", () => {
+  // Multi-series types render the MeasuresEditor (with the add button);
+  // single-measure types render SingleMeasureEditor (no add button).
+  const MULTI: Array<{ name: string; widget: Widget }> = [
+    { name: "line", widget: makeLine() },
+    { name: "area", widget: makeArea() },
+    { name: "stacked_bar", widget: makeStacked() },
+    { name: "table", widget: makeTable() },
+  ];
+
+  for (const { name, widget } of MULTI) {
+    it(`renders the multi-series MeasuresEditor for ${name}`, () => {
+      renderWithSWR(<DataTab widget={widget} onUpdate={() => {}} />);
+      expect(screen.getByTestId("measure-add")).toBeInTheDocument();
+    });
+  }
+
+  it("renders a single measure editor (no add button) for bar", () => {
+    renderWithSWR(<DataTab widget={makeBar()} onUpdate={() => {}} />);
+    expect(screen.getByLabelText("Aggregation")).toBeInTheDocument();
+    expect(screen.queryByTestId("measure-add")).not.toBeInTheDocument();
+  });
+
+  it("renders no dimension control for kpi", () => {
+    renderWithSWR(<DataTab widget={makeKpi()} onUpdate={() => {}} />);
+    expect(
+      screen.queryByLabelText("Primary dimension"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Secondary dimension"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Break down by")).not.toBeInTheDocument();
+  });
+
+  for (const { name, widget } of [
+    { name: "pie", widget: makePie() },
+    { name: "sparkline", widget: makeSparkline() },
+  ]) {
+    it(`renders only a single (primary) dimension for ${name}`, () => {
+      renderWithSWR(<DataTab widget={widget} onUpdate={() => {}} />);
+      expect(screen.getByLabelText("Primary dimension")).toBeInTheDocument();
+      expect(
+        screen.queryByLabelText("Secondary dimension"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Break down by")).not.toBeInTheDocument();
+      // single-measure: no add-series button
+      expect(screen.queryByTestId("measure-add")).not.toBeInTheDocument();
+    });
+  }
+});
