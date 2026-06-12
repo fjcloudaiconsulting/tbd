@@ -1,36 +1,56 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
+import type { ReactNode } from "react";
+
+import type { LayoutJson } from "@/lib/reports/types";
+
+// The props the mocked react-grid-layout captures so tests can drive its
+// callbacks directly.
+interface CapturedProps {
+  compactType: unknown;
+  preventCollision?: boolean;
+  onLayoutChange: (
+    layout: Array<{ i: string; x: number; y: number; w: number; h: number }>,
+  ) => void;
+  onBreakpointChange: (breakpoint: string, cols: number) => void;
+  children?: ReactNode;
+}
 
 // WidthProvider is stubbed as identity and Responsive is replaced with a
 // prop-capturing stub: jsdom can't measure container width, so we can't
 // exercise RGL's real ResizeObserver mount emission. Instead we drive
-// `captured.onLayoutChange` / `captured.onBreakpointChange` manually to
+// `props.onLayoutChange` / `props.onBreakpointChange` manually to
 // unit-test the guard logic in isolation.
-let captured: any = null;
-vi.mock("react-grid-layout", () => {
-  const React = require("react");
-  const Responsive = (props: any) => {
+let captured: CapturedProps | null = null;
+vi.mock("react-grid-layout", () => ({
+  Responsive: (props: CapturedProps) => {
     captured = props;
-    return React.createElement("div", { "data-testid": "rgl" }, props.children);
-  };
-  return { Responsive, WidthProvider: (C: any) => C, default: { Responsive } };
-});
+    return <div data-testid="rgl">{props.children}</div>;
+  },
+  WidthProvider: <T,>(c: T): T => c,
+}));
 
 import Canvas from "@/components/reports/Canvas";
-import type { LayoutJson } from "@/lib/reports/types";
 
 const layout: LayoutJson = {
   version: 1,
   widgets: [
     { id: "a", type: "kpi", title: "A", grid: { x: 0, y: 0, w: 4, h: 4 }, config: {} },
-  ] as any,
+  ] as unknown as LayoutJson["widgets"],
 };
 
-function renderCanvas(onLayoutChange = vi.fn()) {
+function renderCanvas(editMode = true) {
+  const onLayoutChange = vi.fn();
   render(
-    <Canvas layout={layout} editMode onLayoutChange={onLayoutChange} renderWidget={() => <div>w</div>} />,
+    <Canvas
+      layout={layout}
+      editMode={editMode}
+      onLayoutChange={onLayoutChange}
+      renderWidget={() => <div>w</div>}
+    />,
   );
-  return onLayoutChange;
+  if (!captured) throw new Error("react-grid-layout stub did not capture props");
+  return { props: captured, onLayoutChange };
 }
 
 describe("Canvas literal layout", () => {
@@ -39,57 +59,54 @@ describe("Canvas literal layout", () => {
   });
 
   it("ignores layout emissions when not in edit mode", () => {
-    const cb = vi.fn();
-    render(
-      <Canvas layout={layout} editMode={false} onLayoutChange={cb} renderWidget={() => <div>w</div>} />,
-    );
-    captured.onLayoutChange([{ i: "a", x: 3, y: 0, w: 4, h: 4 }]); // genuine move
-    expect(cb).not.toHaveBeenCalled();
+    const { props, onLayoutChange } = renderCanvas(false);
+    props.onLayoutChange([{ i: "a", x: 3, y: 0, w: 4, h: 4 }]); // genuine move
+    expect(onLayoutChange).not.toHaveBeenCalled();
   });
 
   it("passes compactType=null and preventCollision to react-grid-layout", () => {
-    renderCanvas();
-    expect(captured.compactType).toBeNull();
-    expect(captured.preventCollision).toBe(true);
+    const { props } = renderCanvas();
+    expect(props.compactType).toBeNull();
+    expect(props.preventCollision).toBe(true);
   });
 
   it("does NOT call onLayoutChange for a mount/no-op emission (same grid)", () => {
-    const cb = renderCanvas();
-    captured.onLayoutChange([{ i: "a", x: 0, y: 0, w: 4, h: 4 }]); // identical → ignored
-    expect(cb).not.toHaveBeenCalled();
+    const { props, onLayoutChange } = renderCanvas();
+    props.onLayoutChange([{ i: "a", x: 0, y: 0, w: 4, h: 4 }]); // identical → ignored
+    expect(onLayoutChange).not.toHaveBeenCalled();
   });
 
   it("DOES call onLayoutChange when a widget actually moves", () => {
-    const cb = renderCanvas();
-    captured.onLayoutChange([{ i: "a", x: 3, y: 0, w: 4, h: 4 }]); // moved → propagate
-    expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb.mock.calls[0][0].widgets[0].grid.x).toBe(3);
+    const { props, onLayoutChange } = renderCanvas();
+    props.onLayoutChange([{ i: "a", x: 3, y: 0, w: 4, h: 4 }]); // moved → propagate
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    expect(onLayoutChange.mock.calls[0][0].widgets[0].grid.x).toBe(3);
   });
 
   it("DOES call onLayoutChange on a resize-only change (h only)", () => {
-    const cb = renderCanvas();
-    captured.onLayoutChange([{ i: "a", x: 0, y: 0, w: 4, h: 6 }]); // resized → propagate
-    expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb.mock.calls[0][0].widgets[0].grid.h).toBe(6);
+    const { props, onLayoutChange } = renderCanvas();
+    props.onLayoutChange([{ i: "a", x: 0, y: 0, w: 4, h: 6 }]); // resized → propagate
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    expect(onLayoutChange.mock.calls[0][0].widgets[0].grid.h).toBe(6);
   });
 
   it("does NOT persist a clamped layout emitted at a narrow (<12 col) breakpoint", () => {
-    const cb = renderCanvas();
+    const { props, onLayoutChange } = renderCanvas();
     // RGL switches to the sm breakpoint (6 cols) and clamps the widget's
     // width — a responsive view, not an edit. onBreakpointChange fires
     // synchronously before onLayoutChange in the same cycle.
-    captured.onBreakpointChange("sm", 6);
-    captured.onLayoutChange([{ i: "a", x: 0, y: 0, w: 2, h: 4 }]); // clamped → ignored
-    expect(cb).not.toHaveBeenCalled();
+    props.onBreakpointChange("sm", 6);
+    props.onLayoutChange([{ i: "a", x: 0, y: 0, w: 2, h: 4 }]); // clamped → ignored
+    expect(onLayoutChange).not.toHaveBeenCalled();
   });
 
   it("resumes persisting after returning to a 12-col breakpoint", () => {
-    const cb = renderCanvas();
-    captured.onBreakpointChange("sm", 6);
-    captured.onLayoutChange([{ i: "a", x: 0, y: 0, w: 2, h: 4 }]); // ignored (narrow)
-    captured.onBreakpointChange("lg", 12);
-    captured.onLayoutChange([{ i: "a", x: 1, y: 0, w: 4, h: 4 }]); // real edit at lg
-    expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb.mock.calls[0][0].widgets[0].grid.x).toBe(1);
+    const { props, onLayoutChange } = renderCanvas();
+    props.onBreakpointChange("sm", 6);
+    props.onLayoutChange([{ i: "a", x: 0, y: 0, w: 2, h: 4 }]); // ignored (narrow)
+    props.onBreakpointChange("lg", 12);
+    props.onLayoutChange([{ i: "a", x: 1, y: 0, w: 4, h: 4 }]); // real edit at lg
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    expect(onLayoutChange.mock.calls[0][0].widgets[0].grid.x).toBe(1);
   });
 });
