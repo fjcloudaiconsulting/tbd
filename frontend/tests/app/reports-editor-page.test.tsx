@@ -232,9 +232,10 @@ describe("ReportEditorPage", () => {
     );
     // Picker dismisses after pick.
     expect(screen.queryByTestId("widget-picker")).toBeNull();
-    // The newly added widget is selected → ConfigRail mounts.
+    // The newly added widget is selected → the editor popover mounts on
+    // the render after the anchorEl effect resolves the shell node.
     await waitFor(() =>
-      expect(screen.getByTestId("config-rail")).toBeInTheDocument(),
+      expect(screen.getByTestId("widget-editor-popover")).toBeInTheDocument(),
     );
   });
 
@@ -379,17 +380,21 @@ describe("ReportEditorPage", () => {
     renderWithSWR(<ReportEditorPage params={makeParams()} />);
 
     // Report has widgets → opens in view mode. Enter edit mode so the
-    // config rail can mount on widget selection.
+    // editor popover can mount on widget selection.
     await screen.findByTestId("kpi-widget");
     fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
 
-    // Click the widget shell to select it; config rail mounts.
+    // Click the widget shell to select it; the popover mounts on the next
+    // render (after the anchorEl effect resolves the shell node).
     const shell = screen.getByTestId("kpi-widget");
     fireEvent.click(shell);
 
     await waitFor(() =>
-      expect(screen.getByTestId("config-rail")).toBeInTheDocument(),
+      expect(screen.getByTestId("widget-editor-popover")).toBeInTheDocument(),
     );
+    // The override pill now lives in the Filters tab, not an always-visible
+    // rail — switch to it before asserting.
+    fireEvent.click(screen.getByRole("tab", { name: /filters/i }));
     // Override pill appears on the overridden date field.
     expect(screen.getByTestId("override-pill")).toBeInTheDocument();
   });
@@ -898,8 +903,8 @@ describe("ReportEditorPage", () => {
     expect(screen.queryByTestId("report-editor-cancel")).toBeNull();
     // The saved widget still renders in the read-only view.
     expect(screen.getByTestId("bar-widget")).toBeInTheDocument();
-    // No config rail in view mode.
-    expect(screen.queryByTestId("config-rail")).toBeNull();
+    // No editor popover in view mode.
+    expect(screen.queryByTestId("widget-editor-popover")).toBeNull();
 
     // Edit re-enters the builder: edit-only affordances return.
     fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
@@ -1009,5 +1014,40 @@ describe("ReportEditorPage", () => {
       expect(replaceMock).toHaveBeenCalledWith("/dashboard"),
     );
     expect(getReportMock).not.toHaveBeenCalled();
+  });
+
+  it("opening the widget editor popover does not reflow the canvas (saved editor)", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
+
+    // Report has a widget → opens in view mode; enter edit mode.
+    await screen.findByTestId("kpi-widget");
+    fireEvent.click(screen.getByTestId("report-editor-toggle-edit"));
+
+    // Before selection: the canvas column is the SOLE element-child of the
+    // flex row (no rail sibling stealing width).
+    const canvasCol = screen.getByTestId("report-canvas-column");
+    const flexRow = canvasCol.parentElement!;
+    expect(flexRow.children).toHaveLength(1);
+    expect(flexRow.children[0]).toBe(canvasCol);
+
+    // Select the widget → the popover mounts on the next render.
+    fireEvent.click(screen.getByTestId("kpi-widget"));
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-editor-popover")).toBeInTheDocument(),
+    );
+
+    // The popover is portaled to document.body, NOT inside the canvas column.
+    expect(
+      canvasCol.contains(screen.getByTestId("widget-editor-popover")),
+    ).toBe(false);
+
+    // After selection: the canvas column is STILL the only element-child of
+    // the flex row — the popover never became a flex sibling, so the canvas
+    // geometry/width is unchanged (the reflow regression guard).
+    expect(flexRow.children).toHaveLength(1);
+    expect(flexRow.children[0]).toBe(canvasCol);
   });
 });

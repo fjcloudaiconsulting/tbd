@@ -2,8 +2,8 @@
 
 /**
  * Single-measure editor (Aggregation + Field) for the single-measure
- * widget types (kpi, bar, pie, sparkline). Extracted verbatim from
- * ``ConfigRail``.
+ * widget types (kpi, bar, pie, sparkline). Extracted verbatim from the
+ * original widget config rail.
  */
 import Section from "@/components/reports/config/Section";
 import {

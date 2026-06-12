@@ -3,7 +3,7 @@
 /**
  * Per-widget filter override editor (date / accounts / categories /
  * txn_type / amount_range / tags) plus the "Overrides canvas" pill.
- * Extracted verbatim from ``ConfigRail``. The pill fires when a widget
+ * Extracted verbatim from the original widget config rail. The pill fires when a widget
  * field DIFFERS from the canvas value on the same field, via
  * ``isFieldOverridden`` from ``lib/reports/resolve`` (not reimplemented).
  */

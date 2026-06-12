@@ -50,7 +50,7 @@ export function dimensionHeader(key: string): string {
  * reads "amount: 1234" or "account_id: 3" in chart tooltips and CSV
  * headers. Single source of truth for the human label — consumed by
  * ``seriesLabel`` (multi-series chart names), the single-series bar
- * tooltip + CSV header (``BarWidget``), and the ConfigRail field picker.
+ * tooltip + CSV header (``BarWidget``), and the widget-editor field picker.
  */
 export const MEASURE_FIELD_LABELS: Record<MeasureField, string> = {
   amount: "Amount",

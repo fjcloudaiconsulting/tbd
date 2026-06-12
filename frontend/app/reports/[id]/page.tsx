@@ -48,7 +48,7 @@ import ConfirmModal from "@/components/ui/ConfirmModal";
 import Canvas from "@/components/reports/Canvas";
 import HistoryPanel from "@/components/reports/HistoryPanel";
 import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
-import ConfigRail from "@/components/reports/ConfigRail";
+import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
 import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
 import KPIWidget from "@/components/reports/widgets/KPIWidget";
@@ -305,6 +305,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -399,6 +400,23 @@ export default function ReportEditorPage({ params }: PageProps) {
   // build unsavable local changes. ``editMode`` is preserved in state so
   // resizing back up to desktop (as an owner) restores what they had open.
   const editModeActive = editMode && !isSmallScreen && canEdit;
+
+  // Resolve the selected widget's shell DOM node into ``anchorEl`` so the
+  // popover can float anchored to it. Keyed on the selected id and the
+  // widget list (a re-render of the canvas re-creates the shell node), so
+  // the anchor stays fresh. Runs post-commit, so the popover mounts on the
+  // render AFTER selection — page-level tests must ``waitFor`` it.
+  useEffect(() => {
+    if (!editModeActive || !selectedWidgetId) {
+      setAnchorEl(null);
+      return;
+    }
+    setAnchorEl(
+      document.querySelector(
+        `[data-widget-shell="${selectedWidgetId}"]`,
+      ) as HTMLElement | null,
+    );
+  }, [editModeActive, selectedWidgetId, layout.widgets]);
 
   function updateLayout(next: LayoutJson) {
     setLayout(next);
@@ -749,7 +767,10 @@ export default function ReportEditorPage({ params }: PageProps) {
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 overflow-y-auto px-4 py-4">
+        <div
+          data-testid="report-canvas-column"
+          className="flex-1 overflow-y-auto px-4 py-4"
+        >
           {layout.widgets.length === 0 ? (
             <div
               data-testid="report-editor-empty"
@@ -819,15 +840,21 @@ export default function ReportEditorPage({ params }: PageProps) {
             />
           )}
         </div>
-        {editModeActive && selectedWidget && (
-          <ConfigRail
-            widget={selectedWidget}
-            canvasFilters={canvasFilters}
-            onUpdate={updateWidget}
-            onClose={() => setSelectedWidgetId(null)}
-          />
-        )}
       </div>
+
+      {/* Widget editor — an anchored floating popover portaled to the body,
+          NOT a flex sibling of the canvas, so selecting a widget never
+          reflows / re-clamps the canvas grid. Gated on a resolved
+          ``anchorEl`` (set post-commit by the effect above). */}
+      {editModeActive && selectedWidget && anchorEl && (
+        <WidgetEditorPopover
+          widget={selectedWidget}
+          canvasFilters={canvasFilters}
+          anchorEl={anchorEl}
+          onUpdate={updateWidget}
+          onClose={() => setSelectedWidgetId(null)}
+        />
+      )}
 
         <WidgetPicker
           open={pickerOpen}

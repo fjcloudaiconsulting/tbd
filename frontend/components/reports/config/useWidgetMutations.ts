@@ -1,10 +1,10 @@
 "use client";
 
 /**
- * The widget-editor mutation closures, extracted verbatim from
- * ``ConfigRail`` into one shared plain factory so ``DataTab`` / ``StyleTab``
- * / the popover and (during the extraction PR) ``ConfigRail`` itself all
- * call the identical logic. It calls no React hooks (callers invoke it
+ * The widget-editor mutation closures, extracted verbatim from the original
+ * widget config rail into one shared plain factory so ``DataTab`` /
+ * ``StyleTab`` / the popover all call the identical logic. It calls no React
+ * hooks (callers invoke it
  * unconditionally at render), so it is named ``build*`` rather than
  * ``use*`` to keep the rules-of-hooks linter off a non-hook. Each setter
  * early-returns on the same type guards it did

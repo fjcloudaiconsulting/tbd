@@ -4,8 +4,8 @@
  * Data tab of the widget editor: data source, measure(s), and the
  * primary/secondary dimension selects. Per-type sub-control visibility
  * lives here (it branches on ``widget.type``). All control logic is
- * extracted verbatim from ``ConfigRail``; mutations come from
- * ``buildWidgetMutations``.
+ * extracted verbatim from the original widget config rail; mutations come
+ * from ``buildWidgetMutations``.
  */
 import Section from "@/components/reports/config/Section";
 import SingleMeasureEditor from "@/components/reports/config/SingleMeasureEditor";

@@ -35,6 +35,12 @@ export default function WidgetShell({
       data-widget-shell={widgetId}
       data-selected={selected}
       onClick={onSelect}
+      // The selected widget anchors the widget-editor dialog (popover);
+      // announce that relationship for assistive tech. Known limitation:
+      // this is a div, not a button, so the haspopup/expanded contract is
+      // best-effort — consistent with the existing click-to-select pattern.
+      aria-haspopup="dialog"
+      aria-expanded={selected}
       className={`relative flex h-full flex-col rounded-lg ${
         selected ? "ring-2 ring-accent" : ""
       }`}

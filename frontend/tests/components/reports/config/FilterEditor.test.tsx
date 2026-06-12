@@ -1,5 +1,5 @@
 /**
- * Per-widget FilterEditor extracted from ConfigRail. Pins the six filter
+ * Per-widget FilterEditor extracted from the original config rail. Pins the six filter
  * fields render, the override-pill parity (driven by resolve.ts'
  * isFieldOverridden, not reimplemented), and the amount-range merge.
  */
