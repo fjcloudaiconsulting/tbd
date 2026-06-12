@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { describeWidgetFilters } from "@/lib/reports/describe-filters";
-import { buildPresetRanges } from "@/components/reports/filters/DatePresetChips";
+import { buildPresetRanges } from "@/lib/reports/date-presets";
 import type { BarWidget, WidgetFilters } from "@/lib/reports/types";
 import type { Account, Category } from "@/lib/types";
 
@@ -142,6 +142,53 @@ describe("describeWidgetFilters", () => {
       NOW,
     );
     expect(chips.find((c) => c.key === "accounts")?.label).toBe("2 accounts");
+  });
+
+  it("uses the singular count noun when a single account id is unresolved", () => {
+    const chips = describeWidgetFilters(
+      bar({ account_ids: [99] }),
+      {},
+      { accounts: ACCTS, categories: [] },
+      NOW,
+    );
+    expect(chips.find((c) => c.key === "accounts")?.label).toBe("1 account");
+  });
+
+  it("counts unresolved ids in +N when SOME names resolve (no underreport)", () => {
+    // ids [1, 99]: only id 1 ("Checking") resolves. The widget still
+    // filters on 2 accounts, so the chip must read "Checking +1" — NOT a
+    // bare "Checking" that hides the second (unresolved) id.
+    const chips = describeWidgetFilters(
+      bar({ account_ids: [1, 99] }),
+      {},
+      { accounts: ACCTS, categories: [] },
+      NOW,
+    );
+    expect(chips.find((c) => c.key === "accounts")?.label).toBe("Checking +1");
+  });
+
+  it("counts MULTIPLE unresolved ids in +N alongside a resolved name", () => {
+    // ids [1, 98, 99]: only id 1 resolves; "+2" must cover both unresolved.
+    const chips = describeWidgetFilters(
+      bar({ account_ids: [1, 98, 99] }),
+      {},
+      { accounts: ACCTS, categories: [] },
+      NOW,
+    );
+    expect(chips.find((c) => c.key === "accounts")?.label).toBe("Checking +2");
+  });
+
+  it("counts a leading-unresolved id in +N (resolved name need not be first)", () => {
+    // ids [99, 1]: id 99 is unresolved, id 1 ("Checking") resolves second.
+    // The shown name is the first RESOLVED one, and +N still counts all
+    // other ids → "Checking +1".
+    const chips = describeWidgetFilters(
+      bar({ account_ids: [99, 1] }),
+      {},
+      { accounts: ACCTS, categories: [] },
+      NOW,
+    );
+    expect(chips.find((c) => c.key === "accounts")?.label).toBe("Checking +1");
   });
 
   it("resolves category ids to names", () => {

@@ -14,7 +14,7 @@
  * pickers warm). When no name resolves (deleted/inactive id), the chip
  * falls back to a plain count label so it never blocks on load.
  */
-import { buildPresetRanges } from "@/components/reports/filters/DatePresetChips";
+import { buildPresetRanges } from "@/lib/reports/date-presets";
 import { isFieldOverridden, pickDateRange } from "@/lib/reports/resolve";
 import type {
   CanvasDateRange,
@@ -131,8 +131,10 @@ function truncatedList(names: string[]): string {
   return rest > 0 ? `${first} +${rest}` : first;
 }
 
-// Resolve ids → names against a lookup keyed by ``id``. Unresolved ids
-// are dropped; if none resolve, fall back to a count label
+// Resolve ids → names against a lookup keyed by ``id``. Shows the first
+// resolved name plus a ``+N`` count of EVERY other id — resolved or not —
+// so the chip never underreports how many ids the widget actually
+// filters on. When NO id resolves, fall back to a plain count label
 // (``"2 accounts"``) so the chip is never empty.
 function nameLabel<T extends { id: number; name: string }>(
   ids: number[],
@@ -141,13 +143,14 @@ function nameLabel<T extends { id: number; name: string }>(
   plural: string,
 ): string {
   const byId = new Map(lookup.map((x) => [x.id, x.name]));
-  const names = ids
-    .map((id) => byId.get(id))
-    .filter((n): n is string => n !== undefined);
-  if (names.length === 0) {
+  const firstName = ids.map((id) => byId.get(id)).find((n) => n !== undefined);
+  if (firstName === undefined) {
     return `${ids.length} ${ids.length === 1 ? singular : plural}`;
   }
-  return truncatedList(names);
+  // ``+N`` counts every id beyond the one shown, including unresolved
+  // ids, so the count matches the real number of filtered ids.
+  const rest = ids.length - 1;
+  return rest > 0 ? `${firstName} +${rest}` : firstName;
 }
 
 const PRESET_LABELS: Record<
