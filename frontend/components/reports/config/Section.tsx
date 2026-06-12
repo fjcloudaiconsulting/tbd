@@ -2,7 +2,7 @@
 
 /**
  * Labelled section wrapper shared by every widget-editor control block
- * (extracted verbatim from ``ConfigRail``). Renders an uppercase label
+ * (extracted verbatim from the original widget config rail). Renders an uppercase label
  * with an optional ``HelpTooltip`` info icon, then the control children.
  */
 import HelpTooltip from "@/components/help/HelpTooltip";

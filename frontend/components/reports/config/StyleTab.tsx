@@ -3,7 +3,7 @@
 /**
  * Style tab of the widget editor: title plus the widget-type-specific
  * knobs (KPI compare-to-prior, Pie top-N, Area/StackedBar stack toggle).
- * The stacked branch keeps ConfigRail's exact label split ("Stack mode"
+ * The stacked branch keeps the original exact label split ("Stack mode"
  * for stacked_bar vs "Stack series" for area), the default split
  * (``stacked !== false`` vs ``Boolean(stacked)``), and the shared
  * ``aria-label="Stack series"``. Mutations come from ``buildWidgetMutations``.

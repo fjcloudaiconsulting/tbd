@@ -1,6 +1,6 @@
 /**
  * The extracted mutation closures must produce the SAME onUpdate payloads
- * they did inline in ConfigRail. Renders a tiny harness that calls the
+ * they did inline in the original config rail. Renders a tiny harness that calls the
  * setters and records every payload. ``buildWidgetMutations`` is a plain
  * factory (no React hooks) — the harness invokes it unconditionally per
  * render, exactly like every real caller.

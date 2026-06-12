@@ -1,6 +1,6 @@
 /**
- * Secondary dimension picker visibility (re-homed from
- * config-rail-secondary-dimension onto the extracted ``DataTab``, which
+ * Secondary dimension picker visibility (re-homed from the original
+ * rail's secondary-dimension test onto the extracted ``DataTab``, which
  * owns the primary/secondary dimension selects and their per-type
  * visibility).
  *

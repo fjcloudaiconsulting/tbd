@@ -1,5 +1,6 @@
 /**
- * Locks the move of the widget-config control constants out of ConfigRail.
+ * Locks the move of the widget-config control constants out of the
+ * original config rail and into the shared module.
  */
 import {
   AGG_OPTIONS,
