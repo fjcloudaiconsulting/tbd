@@ -31,24 +31,37 @@ import FilterEditor from "@/components/reports/config/FilterEditor";
 import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
 import type { CanvasFilters, Widget } from "@/lib/reports/types";
 
+export type TabKey = "data" | "filters" | "style";
+
 interface Props {
   widget: Widget;
   canvasFilters: CanvasFilters;
   anchorEl: HTMLElement | null;
+  /**
+   * A deep-link request to open on a specific tab (e.g. a filter chip
+   * requesting "filters"). Honored once and immediately cleared via
+   * ``onTabConsumed`` — see the consume-and-clear handshake below.
+   */
+  requestedTab?: TabKey;
+  /** Called the instant ``requestedTab`` is honored, so the page can
+   *  clear it back to null (making every chip click a fresh request). */
+  onTabConsumed?: () => void;
   onUpdate: (next: Widget) => void;
   onClose: () => void;
 }
-
-type TabKey = "data" | "filters" | "style";
 
 export default function WidgetEditorPopover({
   widget,
   canvasFilters,
   anchorEl,
+  requestedTab,
+  onTabConsumed,
   onUpdate,
   onClose,
 }: Props) {
-  const [tab, setTab] = useState<TabKey>("data");
+  // Lazy init handles the fresh-mount case (a chip click that mounts the
+  // popover straight onto Filters).
+  const [tab, setTab] = useState<TabKey>(() => requestedTab ?? "data");
   const baseId = useId();
 
   const { refs, floatingStyles, context } = useFloating({
@@ -75,11 +88,40 @@ export default function WidgetEditorPopover({
     if (anchorEl && !anchorEl.isConnected) onClose();
   }, [anchorEl, onClose]);
 
-  // Reset to the default tab when the selected widget identity changes,
-  // so opening a different widget never lands on a stale tab.
+  // Consume-and-clear handshake — TWO separate effects (a single
+  // combined effect is racy; see the requested-tab test for the two
+  // races this avoids).
+  //
+  // Reset effect — keyed on the widget IDENTITY only. Resets the tab
+  // when a different widget is selected (honoring a fresh requestedTab
+  // at switch time). Crucially it is NOT keyed on ``requestedTab``, so
+  // when the page clears requestedTab (filters → null) this effect does
+  // NOT re-fire and clobber the active tab back to Data.
   useEffect(() => {
-    setTab("data");
+    setTab(requestedTab ?? "data");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional:
+    // reset only on widget-identity change; requestedTab is read at
+    // switch time, not a dependency (adding it causes a clobber-to-Data).
   }, [widget.id]);
+
+  // Honor-request effect — keyed on ``requestedTab`` only. When a chip
+  // click sets requestedTab (a genuine null → "filters" transition,
+  // because the page clears it on consume), switch to that tab and
+  // immediately signal consumption so the page resets it to null. This
+  // makes a SECOND chip click on the already-selected widget work.
+  useEffect(() => {
+    if (requestedTab) {
+      setTab(requestedTab);
+      onTabConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional:
+    // honor a request ONLY on a requestedTab transition. ``onTabConsumed``
+    // is a page callback whose identity isn't guaranteed stable across
+    // renders; listing it would re-fire this effect on its identity change
+    // (re-consuming a request that's already been honored). We deliberately
+    // read the latest ``onTabConsumed`` from the closure and key only on
+    // ``requestedTab``.
+  }, [requestedTab]);
 
   const dismiss = useDismiss(context, {
     outsidePress: true,
