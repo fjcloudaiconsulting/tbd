@@ -1,10 +1,10 @@
 /**
- * Regression: the "Overrides canvas" pill fires when the widget-level
- * filter actually DIFFERS from the canvas-level value (and never when
- * they match). Re-homed from override-pill-pickers onto the extracted
- * ``FilterEditor``, which owns the override pill and the picker filters.
- * The pickers feed the same ``WidgetFilters`` shape — these tests pin the
- * equality semantics survive on the extracted component.
+ * Phase 4b: ``date_range`` is the ONLY canvas-shared field, so it's the
+ * only field whose widget value can "override" the canvas and show the
+ * "Overrides canvas" pill. Accounts and categories are widget-only now
+ * (the canvas no longer carries them), so ``isFieldOverridden`` always
+ * returns false for them and their override pills never render — pinned
+ * below. The surviving override case is date_range.
  */
 import { renderWithSWR, screen } from "../../../utils/render-with-swr";
 
@@ -87,59 +87,51 @@ function renderEditor(
   );
 }
 
-describe("Override pill — picker-based filters", () => {
+describe("Override pill — phase 4b (date-only canvas)", () => {
   beforeEach(() => {
     vi.mocked(apiFetch).mockReset();
     mockApi();
   });
 
-  it("does NOT show the pill when the widget category selection matches the canvas selection", async () => {
-    renderEditor({ category_ids: [1, 2] }, { category_ids: [2, 1] });
-
-    // Wait a tick for the SWR fetches to resolve so the picker has
-    // populated the tree (pill renders synchronously off the prop
-    // values).
+  it("NEVER shows the pill for category — categories are widget-only (match)", async () => {
+    renderEditor({ category_ids: [1, 2] }, {});
     await screen.findByTestId("category-picker");
-    // Pill is keyed by data-testid="override-pill"; assert none on
-    // category_ids equality.
-    const pills = screen.queryAllByTestId("override-pill");
-    expect(pills.length).toBe(0);
-  });
-
-  it("DOES show the pill when the widget category selection differs from the canvas", async () => {
-    renderEditor({ category_ids: [1] }, { category_ids: [2] });
-    await screen.findByTestId("category-picker");
-    const pills = screen.queryAllByTestId("override-pill");
-    expect(pills.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("does NOT show the pill when the widget account selection matches the canvas selection", async () => {
-    renderEditor({ account_ids: [1] }, { account_ids: [1] });
-    await screen.findByTestId("account-filter");
-    const pills = screen.queryAllByTestId("override-pill");
-    expect(pills.length).toBe(0);
-  });
-
-  it("DOES show the pill when the widget account selection differs from the canvas", async () => {
-    renderEditor({ account_ids: [2] }, { account_ids: [1] });
-    await screen.findByTestId("account-filter");
-    const pills = screen.queryAllByTestId("override-pill");
-    expect(pills.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("keeps the pill off when widget account_ids is empty (inherit)", async () => {
-    const onChange = vi.fn();
-    const { rerender } = renderEditor({ account_ids: [1] }, { account_ids: [1] }, onChange);
-
-    await screen.findByTestId("account-filter");
-    // Empty widget account_ids means inherit — pill stays off.
-    rerender(
-      <FilterEditor
-        filters={{ account_ids: [] }}
-        canvasFilters={{ account_ids: [1] }}
-        onChange={onChange}
-      />,
-    );
     expect(screen.queryAllByTestId("override-pill").length).toBe(0);
+  });
+
+  it("NEVER shows the pill for category — categories are widget-only (set)", async () => {
+    renderEditor({ category_ids: [1] }, {});
+    await screen.findByTestId("category-picker");
+    expect(screen.queryAllByTestId("override-pill").length).toBe(0);
+  });
+
+  it("NEVER shows the pill for account — accounts are widget-only (match)", async () => {
+    renderEditor({ account_ids: [1] }, {});
+    await screen.findByTestId("account-filter");
+    expect(screen.queryAllByTestId("override-pill").length).toBe(0);
+  });
+
+  it("NEVER shows the pill for account — accounts are widget-only (set)", async () => {
+    renderEditor({ account_ids: [1] }, {});
+    await screen.findByTestId("account-filter");
+    expect(screen.queryAllByTestId("override-pill").length).toBe(0);
+  });
+
+  it("does NOT show the pill when the widget date matches the canvas date", async () => {
+    renderEditor(
+      { date_range: { start: "2026-01-01", end: "2026-01-31" } },
+      { date_range: { start: "2026-01-01", end: "2026-01-31" } },
+    );
+    await screen.findByTestId("account-filter");
+    expect(screen.queryAllByTestId("override-pill").length).toBe(0);
+  });
+
+  it("DOES show the pill when the widget date differs from the canvas date", async () => {
+    renderEditor(
+      { date_range: { start: "2026-02-01", end: "2026-02-28" } },
+      { date_range: { start: "2026-01-01", end: "2026-01-31" } },
+    );
+    await screen.findByTestId("account-filter");
+    expect(screen.queryAllByTestId("override-pill").length).toBeGreaterThanOrEqual(1);
   });
 });

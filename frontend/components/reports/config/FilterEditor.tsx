@@ -1,11 +1,16 @@
 "use client";
 
 /**
- * Per-widget filter override editor (date / accounts / categories /
- * txn_type / amount_range / tags) plus the "Overrides canvas" pill.
- * Extracted verbatim from the original widget config rail. The pill fires when a widget
- * field DIFFERS from the canvas value on the same field, via
+ * Per-widget filter editor (date / accounts / categories / txn_type /
+ * amount_range / tags).
+ *
+ * Phase 4b: ``date_range`` is the ONLY canvas-shared field, so it is the
+ * only field that can carry the "Overrides canvas" pill — the pill fires
+ * when the widget date DIFFERS from the canvas date, via
  * ``isFieldOverridden`` from ``lib/reports/resolve`` (not reimplemented).
+ * Accounts, categories, txn_type, amount_range and tags are all
+ * widget-only now (the canvas can't hold them), so they NEVER show the
+ * override pill — they're plain per-widget controls.
  */
 import { useId } from "react";
 
@@ -68,9 +73,6 @@ export default function FilterEditor({
       <div className="flex flex-col gap-1">
         <div className="flex items-center text-xs text-text-secondary">
           Accounts
-          {isFieldOverridden("account_ids", filters, canvasFilters) && (
-            <OverridePill />
-          )}
         </div>
         <AccountFilter
           value={filters.account_ids ?? []}
@@ -88,9 +90,6 @@ export default function FilterEditor({
       <div className="flex flex-col gap-1">
         <div className="flex items-center text-xs text-text-secondary">
           Categories
-          {isFieldOverridden("category_ids", filters, canvasFilters) && (
-            <OverridePill />
-          )}
         </div>
         <CategoryPicker
           value={filters.category_ids ?? []}

@@ -13,12 +13,23 @@
 import { ReactNode } from "react";
 import { GripVertical, X } from "lucide-react";
 
+import WidgetFilterChips from "@/components/reports/WidgetFilterChips";
+import type { CanvasFilters, Widget } from "@/lib/reports/types";
+import type { Account, Category } from "@/lib/types";
+
 interface Props {
   widgetId: string;
   selected: boolean;
   editMode: boolean;
   onSelect: () => void;
   onRemove?: () => void;
+  /** Widget + canvas + lookups feed the effective filter-chip header. */
+  widget: Widget;
+  canvasFilters: CanvasFilters;
+  accounts: Account[];
+  categories: Category[];
+  /** Select the widget + open the popover's Filters tab (chip click). */
+  onSelectFilters: () => void;
   children: ReactNode;
 }
 
@@ -28,6 +39,11 @@ export default function WidgetShell({
   editMode,
   onSelect,
   onRemove,
+  widget,
+  canvasFilters,
+  accounts,
+  categories,
+  onSelectFilters,
   children,
 }: Props) {
   return (
@@ -69,7 +85,21 @@ export default function WidgetShell({
           )}
         </div>
       )}
-      <div className="h-full w-full">{children}</div>
+      {/* Effective filter-chip header — visible in both view and edit
+          mode (status-is-data informational). Left-aligned so it never
+          collides with the absolutely-positioned edit overlay top-right.
+          Renders nothing when the widget has no set filters. */}
+      <WidgetFilterChips
+        widget={widget}
+        canvasFilters={canvasFilters}
+        accounts={accounts}
+        categories={categories}
+        // Interactive (editable) chips only in edit mode; in view mode the
+        // chips render as inert, non-focusable informational spans.
+        interactive={editMode}
+        onSelectFilters={onSelectFilters}
+      />
+      <div className="min-h-0 w-full flex-1">{children}</div>
     </div>
   );
 }

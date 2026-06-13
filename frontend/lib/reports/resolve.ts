@@ -1,10 +1,11 @@
 /**
  * Filter-resolution utilities.
  *
- * The architect-locked hybrid scope (spec §4): canvas-wide cascades,
- * per-widget overrides win on a per-field basis. ``resolveFilters``
- * walks each widget-filter field and decides whether to use the
- * widget value (if present) or fall back to the canvas value.
+ * Phase 4b scope: ``date_range`` is the ONLY canvas-shared field.
+ * The shared canvas date cascades to every widget that doesn't
+ * override it; accounts, categories, and all other filters are
+ * widget-only. ``resolveFilters`` reads the widget value directly for
+ * those and only inherits the date from the canvas.
  *
  * Output is a list of AST filter primitives the backend understands
  * (date BETWEEN, account_id IN, category_id IN, etc.). The compiler
@@ -40,15 +41,11 @@ export function isFieldOverridden(
   const widgetVal = widgetFilters[field];
   if (!hasMeaningfulValue(field, widgetVal)) return false;
 
-  // Tag fields aren't on canvas at all (canvas only has date_range,
-  // account_ids, category_ids), so a widget value there isn't an
-  // override of canvas. Same for txn_type / amount_range.
-  if (
-    field === "tag_names" ||
-    field === "tag_match" ||
-    field === "txn_type" ||
-    field === "amount_range"
-  ) {
+  // Phase 4b: ``date_range`` is the ONLY field the canvas still shares.
+  // Every other field (accounts, categories, tags, txn_type, amount)
+  // is widget-only — the canvas can't hold it, so a widget value is
+  // never an "override" of canvas. Short-circuit them all to false.
+  if (field !== "date_range") {
     return false;
   }
 
@@ -56,7 +53,7 @@ export function isFieldOverridden(
   if (!hasMeaningfulValue(field, canvasVal)) return false;
 
   // Both sides have a value. Pill fires only if they differ.
-  return !valuesEqual(field, widgetVal, canvasVal, widgetFilters);
+  return !valuesEqual(widgetVal, canvasVal);
 }
 
 function hasMeaningfulValue(
@@ -76,48 +73,14 @@ function hasMeaningfulValue(
   return true;
 }
 
-function valuesEqual(
-  field: keyof WidgetFilters,
-  widgetVal: unknown,
-  canvasVal: unknown,
-  widgetFilters: WidgetFilters,
-): boolean {
-  if (field === "date_range") {
-    const a = widgetVal as { start?: string; end?: string };
-    const b = canvasVal as { start?: string; end?: string };
-    return (a.start ?? null) === (b.start ?? null)
-      && (a.end ?? null) === (b.end ?? null);
-  }
-  if (field === "account_ids" || field === "category_ids") {
-    return sameSet(widgetVal as number[], canvasVal as number[]);
-  }
-  if (field === "amount_range") {
-    const a = widgetVal as { min?: number; max?: number };
-    const b = canvasVal as { min?: number; max?: number };
-    return (a.min ?? null) === (b.min ?? null)
-      && (a.max ?? null) === (b.max ?? null);
-  }
-  if (field === "tag_names") {
-    if (!sameSet(widgetVal as string[], canvasVal as string[])) return false;
-    // tag_match flips "all" vs "any" semantics, so an identical tag
-    // list with a different match mode is still an override. Canvas
-    // doesn't model tag_match, so any widget-side tag_match value
-    // other than the implicit default counts as a difference.
-    const widgetMatch = widgetFilters.tag_match ?? "all";
-    return widgetMatch === "all";
-  }
-  // txn_type / tag_match handled above as widget-only; fall back to
-  // strict equality for safety.
-  return widgetVal === canvasVal;
-}
-
-function sameSet<T extends number | string>(a: T[], b: T[]): boolean {
-  if (a.length !== b.length) return false;
-  const bSet = new Set<T>(b);
-  for (const x of a) {
-    if (!bSet.has(x)) return false;
-  }
-  return true;
+// Phase 4b: ``date_range`` is the only field reaching this helper —
+// ``isFieldOverridden`` short-circuits every other field to false
+// before getting here. So this only needs the date comparison.
+function valuesEqual(widgetVal: unknown, canvasVal: unknown): boolean {
+  const a = widgetVal as { start?: string; end?: string };
+  const b = canvasVal as { start?: string; end?: string };
+  return (a.start ?? null) === (b.start ?? null)
+    && (a.end ?? null) === (b.end ?? null);
 }
 
 /**
@@ -145,12 +108,14 @@ export function resolveFilters(
     out.push({ field: "date", op: "lte", value: dr.end });
   }
 
-  const accountIds = pickList(widget?.account_ids, canvas?.account_ids);
+  // Phase 4b: accounts/categories are widget-only — read the widget
+  // value directly, no canvas fallback.
+  const accountIds = widget?.account_ids;
   if (accountIds && accountIds.length > 0) {
     out.push({ field: "account_id", op: "in", value: accountIds });
   }
 
-  const categoryIds = pickList(widget?.category_ids, canvas?.category_ids);
+  const categoryIds = widget?.category_ids;
   if (categoryIds && categoryIds.length > 0) {
     out.push({ field: "category_id", op: "in", value: categoryIds });
   }
@@ -189,18 +154,17 @@ export function resolveFilters(
   return out;
 }
 
-function pickDateRange(
+/**
+ * The single source of truth for the date inherit/override decision:
+ * the widget date wins when it has a start or end, otherwise the
+ * shared canvas date cascades. Exported so the chip-describe helper
+ * (``describe-filters.ts``) reuses this exact logic rather than
+ * reimplementing it.
+ */
+export function pickDateRange(
   widget: CanvasFilters["date_range"] | undefined,
   canvas: CanvasFilters["date_range"] | undefined,
 ): CanvasFilters["date_range"] | undefined {
   if (widget && (widget.start || widget.end)) return widget;
-  return canvas;
-}
-
-function pickList<T>(
-  widget: T[] | undefined,
-  canvas: T[] | undefined,
-): T[] | undefined {
-  if (widget && widget.length > 0) return widget;
   return canvas;
 }

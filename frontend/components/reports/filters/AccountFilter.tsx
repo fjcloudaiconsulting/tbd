@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * Account filter — chip picker over the org's accounts. Replaces the
- * PR2 comma-list ``account_ids`` input on both the canvas filters bar
- * and the per-widget config rail.
+ * Account filter — chip picker over the org's accounts. Used in the
+ * per-widget Filters tab (phase 4b made accounts widget-only; the
+ * canvas filter bar is date-only).
  *
  * Fetches the org's accounts on mount via SWR and renders each as a
  * toggleable chip. Selecting / deselecting a chip flips its id in

@@ -27,6 +27,7 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useFilterChipState } from "@/lib/reports/use-filter-chip-state";
 import {
   deleteReport,
   duplicateReport,
@@ -306,6 +307,17 @@ export default function ReportEditorPage({ params }: PageProps) {
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
+  // Shared filter-chip wiring: accounts/categories name lookups (shared
+  // SWR cache), the popover Filters-tab deep-link request, and the
+  // select-with-Filters chip handler. ``setSelectedWidgetId`` is a stable
+  // useState setter so the hook's callbacks keep a stable identity.
+  const {
+    accounts,
+    categories,
+    requestedTab,
+    selectWidgetFilters,
+    clearRequestedTab,
+  } = useFilterChipState(setSelectedWidgetId);
   const [editMode, setEditMode] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -416,7 +428,13 @@ export default function ReportEditorPage({ params }: PageProps) {
 
   // Stable identities so the popover's effects (keyed on ``onClose``) and
   // ``buildWidgetMutations`` don't re-run on every parent render.
-  const closePopover = useCallback(() => setSelectedWidgetId(null), []);
+  const closePopover = useCallback(() => {
+    setSelectedWidgetId(null);
+    // Belt-and-suspenders: the consume callback is the real clear, but
+    // also drop any pending request on close so a stale chip request
+    // can't leak into the next selection.
+    clearRequestedTab();
+  }, [clearRequestedTab]);
 
   const updateWidget = useCallback((nextWidget: Widget) => {
     setLayout((prev) => ({
@@ -488,6 +506,10 @@ export default function ReportEditorPage({ params }: PageProps) {
   // reflects the most recent successful load/save.
   function handleCancelEdit() {
     if (report) hydrateFromReport(report);
+    // Mirror handleSave: clear any open selection + pending tab request so
+    // dropping to view mode never leaves a selection ring with no popover.
+    setSelectedWidgetId(null);
+    clearRequestedTab();
     setEditMode(false);
     setSaveError(null);
   }
@@ -775,9 +797,9 @@ export default function ReportEditorPage({ params }: PageProps) {
                 This report has no widgets yet
               </p>
               <p className="mx-auto mt-1 max-w-md text-sm text-text-muted">
-                Add a widget to see your data. Canvas filters (date,
-                accounts, categories) apply to every widget, so a report
-                with no widgets shows nothing.
+                Add a widget to see your data. The canvas date applies to
+                every widget; accounts and categories are per-widget, so a
+                report with no widgets shows nothing.
               </p>
               <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                 {/* "Add widget" is owner-only: a non-owner viewing a shared
@@ -828,6 +850,16 @@ export default function ReportEditorPage({ params }: PageProps) {
                   editMode={editModeActive}
                   onSelect={() => setSelectedWidgetId(w.id)}
                   onRemove={() => removeWidget(w.id)}
+                  widget={w}
+                  canvasFilters={canvasFilters}
+                  accounts={accounts}
+                  categories={categories}
+                  // WidgetShell gates chip interactivity on its ``editMode``
+                  // prop (``editModeActive`` here): in view mode the chips
+                  // render as inert informational spans, so this handler is
+                  // only ever invoked in edit mode — no orphan-selection
+                  // guard needed.
+                  onSelectFilters={() => selectWidgetFilters(w.id)}
                 >
                   {renderWidgetByType(w, canvasFilters, editModeActive)}
                 </WidgetShell>
@@ -846,6 +878,8 @@ export default function ReportEditorPage({ params }: PageProps) {
           widget={selectedWidget}
           canvasFilters={canvasFilters}
           anchorEl={anchorEl}
+          requestedTab={requestedTab ?? undefined}
+          onTabConsumed={clearRequestedTab}
           onUpdate={updateWidget}
           onClose={closePopover}
         />

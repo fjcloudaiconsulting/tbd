@@ -21,6 +21,7 @@ import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useFilterChipState } from "@/lib/reports/use-filter-chip-state";
 import { createReport, listTemplates } from "@/lib/reports/api";
 import { blankDraftSeed } from "@/lib/reports/draft";
 import type {
@@ -51,6 +52,17 @@ export default function ReportDraftPage() {
   const [layout, setLayout] = useState<LayoutJson | null>(null);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
+  // Shared filter-chip wiring: accounts/categories name lookups (shared
+  // SWR cache), the popover Filters-tab deep-link request, and the
+  // select-with-Filters chip handler. The draft page is ALWAYS edit mode,
+  // so ``selectWidgetFilters`` is always the real handler.
+  const {
+    accounts,
+    categories,
+    requestedTab,
+    selectWidgetFilters,
+    clearRequestedTab,
+  } = useFilterChipState(setSelectedWidgetId);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -126,7 +138,10 @@ export default function ReportDraftPage() {
 
   // Stable identities so the popover's effects (keyed on ``onClose``) and
   // ``buildWidgetMutations`` don't re-run on every parent render.
-  const closePopover = useCallback(() => setSelectedWidgetId(null), []);
+  const closePopover = useCallback(() => {
+    setSelectedWidgetId(null);
+    clearRequestedTab(); // belt-and-suspenders; consume callback is the real clear
+  }, [clearRequestedTab]);
 
   const updateWidget = useCallback((nextWidget: Widget) => {
     setLayout((prev) =>
@@ -287,8 +302,8 @@ export default function ReportDraftPage() {
                   This draft has no widgets yet
                 </p>
                 <p className="mx-auto mt-1 max-w-md text-sm text-text-muted">
-                  Add a widget to see your data. Canvas filters (date,
-                  accounts, categories) apply to every widget.
+                  Add a widget to see your data. The canvas date applies to
+                  every widget; accounts and categories are per-widget.
                 </p>
                 <div className="mt-4 flex items-center justify-center">
                   <button
@@ -313,6 +328,12 @@ export default function ReportDraftPage() {
                     editMode
                     onSelect={() => setSelectedWidgetId(w.id)}
                     onRemove={() => removeWidget(w.id)}
+                    widget={w}
+                    canvasFilters={canvasFilters}
+                    accounts={accounts}
+                    categories={categories}
+                    // Always edit mode here → the chip's real handler.
+                    onSelectFilters={() => selectWidgetFilters(w.id)}
                   >
                     {renderWidgetByType(w, canvasFilters, true)}
                   </WidgetShell>
@@ -331,6 +352,8 @@ export default function ReportDraftPage() {
             widget={selectedWidget}
             canvasFilters={canvasFilters}
             anchorEl={anchorEl}
+            requestedTab={requestedTab ?? undefined}
+            onTabConsumed={clearRequestedTab}
             onUpdate={updateWidget}
             onClose={closePopover}
           />

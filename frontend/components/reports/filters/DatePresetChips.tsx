@@ -15,6 +15,15 @@
 import { useMemo } from "react";
 
 import type { CanvasDateRange } from "@/lib/reports/types";
+import {
+  buildPresetRanges,
+  matchPreset,
+  type PresetKey,
+} from "@/lib/reports/date-presets";
+
+// Re-export so existing importers of ``buildPresetRanges`` from this
+// component keep working; the canonical home is now ``lib/reports/date-presets``.
+export { buildPresetRanges } from "@/lib/reports/date-presets";
 
 interface Props {
   value: CanvasDateRange | undefined;
@@ -25,8 +34,6 @@ interface Props {
   /** Label prefix applied to aria-labels (e.g. "Canvas" vs "Widget"). */
   ariaPrefix?: string;
 }
-
-type PresetKey = "this_month" | "last_month" | "ytd" | "last_12_months" | "custom";
 
 const PRESETS: Array<{ key: PresetKey; label: string }> = [
   { key: "this_month", label: "This month" },
@@ -142,55 +149,4 @@ export default function DatePresetChips({
       )}
     </div>
   );
-}
-
-function isoDate(d: Date): string {
-  // Build YYYY-MM-DD from local-clock components so a UTC-shifting
-  // ``toISOString`` doesn't shove the date back by a day in negative-
-  // offset timezones.
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function startOfMonth(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-
-function endOfMonth(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
-}
-
-export function buildPresetRanges(
-  now: Date,
-): Record<Exclude<PresetKey, "custom">, CanvasDateRange> {
-  const startThisMonth = startOfMonth(now);
-  const endThisMonth = endOfMonth(now);
-
-  const startLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  const endLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
-
-  const startOfYear = new Date(now.getFullYear(), 0, 1);
-
-  const startLast12 = new Date(now.getFullYear() - 1, now.getMonth(), 1);
-
-  return {
-    this_month: { start: isoDate(startThisMonth), end: isoDate(endThisMonth) },
-    last_month: { start: isoDate(startLastMonth), end: isoDate(endLastMonth) },
-    ytd: { start: isoDate(startOfYear), end: isoDate(now) },
-    last_12_months: { start: isoDate(startLast12), end: isoDate(now) },
-  };
-}
-
-function matchPreset(
-  value: CanvasDateRange | undefined,
-  ranges: Record<Exclude<PresetKey, "custom">, CanvasDateRange>,
-): PresetKey | null {
-  if (!value || (!value.start && !value.end)) return null;
-  for (const k of Object.keys(ranges) as Array<keyof typeof ranges>) {
-    const r = ranges[k];
-    if (r.start === value.start && r.end === value.end) return k;
-  }
-  return "custom";
 }
