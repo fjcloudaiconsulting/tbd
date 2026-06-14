@@ -497,7 +497,13 @@ export default function ReportEditorPage({ params }: PageProps) {
       setTitleDraft(report.name);
       return;
     }
-    if (trimmed === report.name) return;
+    if (trimmed === report.name) {
+      // Unchanged once trimmed: normalize the visible draft back to the
+      // canonical name so surrounding whitespace the user typed (e.g.
+      // "My Report ") doesn't linger in the input.
+      setTitleDraft(report.name);
+      return;
+    }
     const prevName = report.name;
     titleCommitInFlight.current = true;
     try {
@@ -688,8 +694,9 @@ export default function ReportEditorPage({ params }: PageProps) {
                 }
               }}
               aria-label="Report title"
+              placeholder="Report title"
               data-testid="report-editor-title"
-              className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-semibold text-text-primary hover:border-border focus:border-border focus:bg-bg focus:outline-none"
+              className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-semibold text-text-primary hover:border-border focus:border-border focus:bg-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
             />
           ) : (
             <span className="text-sm font-semibold text-text-primary">

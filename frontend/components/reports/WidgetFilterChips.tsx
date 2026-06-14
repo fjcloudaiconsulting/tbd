@@ -16,6 +16,8 @@
  * nothing when the widget has no set filters.
  */
 import { describeWidgetFilters } from "@/lib/reports/describe-filters";
+import { sourceSupportsDateFilter } from "@/lib/reports/resolve";
+import { useReportSources } from "@/lib/reports/use-report-sources";
 import type { CanvasFilters, Widget } from "@/lib/reports/types";
 import type { Account, Category } from "@/lib/types";
 
@@ -50,10 +52,23 @@ export default function WidgetFilterChips({
   interactive,
   onSelectFilters,
 }: Props) {
-  const chips = describeWidgetFilters(widget, canvasFilters, {
-    accounts,
-    categories,
-  });
+  // A date-less source (accounts) gets no date chip — the resolver
+  // already drops the date filter at query time, so the chip would
+  // show but do nothing. Threaded into ``describeWidgetFilters`` so the
+  // chips never claim a filter the widget doesn't actually run.
+  const { sources } = useReportSources();
+  const supportsDate = sourceSupportsDateFilter(
+    sources,
+    widget.config.dataset,
+  );
+
+  const chips = describeWidgetFilters(
+    widget,
+    canvasFilters,
+    { accounts, categories },
+    undefined,
+    supportsDate,
+  );
 
   if (chips.length === 0) return null;
 

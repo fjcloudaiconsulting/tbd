@@ -13,6 +13,7 @@ import DataTab from "@/components/reports/config/DataTab";
 import type {
   BarWidget,
   KPIWidget,
+  LineWidget,
   SourceCatalogEntry,
   Widget,
 } from "@/lib/reports/types";
@@ -36,7 +37,15 @@ const CATALOG: SourceCatalogEntry[] = [
       { key: "avg_amount", label: "Average amount", agg: "avg", field: "amount", format: "currency" },
       { key: "count_rows", label: "Transaction count", agg: "count", field: "id", format: "number" },
     ],
-    filters: [],
+    filters: [
+      { field: "date", label: "Date", ops: ["between"], kind: "time" },
+      { field: "amount", label: "Amount", ops: ["between"], kind: "amount" },
+      { field: "category_id", label: "Category", ops: ["in"], kind: "category" },
+      { field: "account_id", label: "Account", ops: ["in"], kind: "account" },
+      { field: "txn_type", label: "Type", ops: ["eq"], kind: "type" },
+      { field: "status", label: "Status", ops: ["eq"], kind: "status" },
+      { field: "tag_name", label: "Tag", ops: ["in"], kind: "tag" },
+    ],
   },
   {
     key: "accounts",
@@ -50,7 +59,16 @@ const CATALOG: SourceCatalogEntry[] = [
       { key: "avg_balance", label: "Average balance", agg: "avg", field: "balance", format: "currency" },
       { key: "count_accounts", label: "Account count", agg: "count", field: "id", format: "number" },
     ],
-    filters: [],
+    // Accounts publishes account_id but NOT category_id / txn_type /
+    // amount / date / tag_name — a transactions widget's leftover
+    // filters on those fields must be pruned on switch.
+    filters: [
+      { field: "account_id", label: "Account", ops: ["in"], kind: "account" },
+      { field: "account_type", label: "Account type", ops: ["in"], kind: "account_type" },
+      { field: "currency", label: "Currency", ops: ["in"], kind: "currency" },
+      { field: "account_active", label: "Status", ops: ["eq"], kind: "boolean" },
+      { field: "balance", label: "Balance", ops: ["between"], kind: "number" },
+    ],
   },
 ];
 
@@ -99,6 +117,24 @@ function makeAccountsBar(): BarWidget {
       dataset: "accounts",
       measure: { agg: "sum", field: "balance" },
       dimensions: ["account_type"],
+    },
+  };
+}
+
+/** A multi-series (line) transactions widget with two amount series. */
+function makeLine(): LineWidget {
+  return {
+    id: "w_line",
+    type: "line",
+    title: "Line",
+    grid: { x: 0, y: 0, w: 6, h: 4 },
+    config: {
+      dataset: "transactions",
+      measures: [
+        { measure: { agg: "sum", field: "amount" } },
+        { measure: { agg: "avg", field: "amount" } },
+      ],
+      dimensions: ["month"],
     },
   };
 }
@@ -195,28 +231,108 @@ it("switch back accounts→transactions resets dims + measure to valid defaults"
   expect(next.config.measure).toEqual({ agg: "sum", field: "amount" });
 });
 
+it("multi-series widget: switching to accounts collapses measures to one valid accounts series", () => {
+  const onUpdate = vi.fn();
+  renderWithSWR(<DataTab widget={makeLine()} onUpdate={onUpdate} />);
+
+  fireEvent.change(screen.getByLabelText("Data source"), {
+    target: { value: "accounts" },
+  });
+
+  expect(onUpdate).toHaveBeenCalledTimes(1);
+  const next = onUpdate.mock.calls[0][0] as LineWidget;
+  expect(next.config.dataset).toBe("accounts");
+  // Both source series referenced ``amount`` (a transactions-only field)
+  // → collapse to a single valid accounts series (sum_balance).
+  expect(next.config.measures).toHaveLength(1);
+  const accountsFields = new Set(["balance", "id"]);
+  for (const s of next.config.measures) {
+    expect(accountsFields.has(s.measure.field)).toBe(true);
+  }
+  expect(next.config.measures[0].measure).toEqual({
+    agg: "sum",
+    field: "balance",
+  });
+  // ``month`` isn't an accounts dimension → dropped, refilled with the
+  // accounts source's first dimension key.
+  expect(next.config.dimensions).not.toContain("month");
+  expect(next.config.dimensions[0]).toBe("account_type");
+});
+
+it("prunes stale per-widget filters the new source doesn't publish on switch", () => {
+  const onUpdate = vi.fn();
+  const widget: BarWidget = {
+    ...makeBar(),
+    config: {
+      ...makeBar().config,
+      filters: {
+        // Survives: accounts publishes ``account_id``.
+        account_ids: [1, 2],
+        // All pruned: accounts publishes none of these fields.
+        category_ids: [9],
+        txn_type: "expense",
+        amount_range: { min: 10 },
+        tag_names: ["foo"],
+        tag_match: "any",
+        date_range: { start: "2026-01-01", end: "2026-01-31" },
+      },
+    },
+  };
+  renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
+
+  fireEvent.change(screen.getByLabelText("Data source"), {
+    target: { value: "accounts" },
+  });
+
+  const next = onUpdate.mock.calls[0][0] as BarWidget;
+  expect(next.config.dataset).toBe("accounts");
+  // Only ``account_ids`` (→ account_id, published by accounts) survives.
+  expect(next.config.filters).toEqual({ account_ids: [1, 2] });
+});
+
+it("drops the whole filters blob when no widget filter survives the switch", () => {
+  const onUpdate = vi.fn();
+  const widget: BarWidget = {
+    ...makeBar(),
+    config: {
+      ...makeBar().config,
+      filters: { category_ids: [9], txn_type: "expense" },
+    },
+  };
+  renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
+
+  fireEvent.change(screen.getByLabelText("Data source"), {
+    target: { value: "accounts" },
+  });
+
+  const next = onUpdate.mock.calls[0][0] as BarWidget;
+  // category_ids + txn_type both unpublished by accounts → no filters.
+  expect(next.config.filters).toBeUndefined();
+});
+
 it("persisted accounts widget rendered before /sources resolves has no value/options mismatch", () => {
   // Catalog still loading: sources empty. The accounts widget's stored
   // dimension (``account_type``) and field (``balance``) must still have a
-  // matching <option> so no React "value not in options" warning fires.
+  // matching <option> so the rendered selects' values are valid options.
   vi.mocked(useReportSources).mockReturnValue({
     sources: [],
     isLoading: true,
   });
-  const warn = vi.spyOn(console, "error").mockImplementation(() => {});
 
   renderWithSWR(<DataTab widget={makeAccountsBar()} onUpdate={vi.fn()} />);
 
+  // Assert positively that every controlled select's value is one of its
+  // own option values — a real "value not in options" mismatch would
+  // leave the select with an empty/absent value here.
   const dimSelect = screen.getByLabelText("Primary dimension") as HTMLSelectElement;
   expect(dimSelect.value).toBe("account_type");
   expect(
-    Array.from(dimSelect.options).some((o) => o.value === "account_type"),
-  ).toBe(true);
-  // No controlled-select value/options mismatch warning.
-  expect(warn).not.toHaveBeenCalledWith(
-    expect.stringContaining("value"),
-    expect.anything(),
-    expect.anything(),
-  );
-  warn.mockRestore();
+    Array.from(dimSelect.options).map((o) => o.value),
+  ).toContain(dimSelect.value);
+
+  const fieldSelect = screen.getByLabelText("Field") as HTMLSelectElement;
+  expect(fieldSelect.value).toBe("balance");
+  expect(
+    Array.from(fieldSelect.options).map((o) => o.value),
+  ).toContain(fieldSelect.value);
 });

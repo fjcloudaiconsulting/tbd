@@ -15,6 +15,7 @@ import {
   isMultiSeries,
   isSingleAggLocked,
 } from "@/components/reports/config/controlConstants";
+import { pruneFiltersToSource } from "@/lib/reports/resolve";
 import type {
   AreaConfig,
   BarConfig,
@@ -124,10 +125,18 @@ export function buildWidgetMutations(
    * - Dimensions: keep the ones the new source carries (in order); drop
    *   the rest, refilling the primary slot with the source's first
    *   dimension key. KPI widgets carry no dimensions.
+   * - Per-widget filters: prune ``config.filters`` to only the filter
+   *   fields the new source publishes (``pruneFiltersToSource``). A
+   *   leftover ``category_ids`` / ``txn_type`` / date filter from a
+   *   transactions widget would otherwise 422 against the accounts
+   *   source's ``validate()`` at the next query.
    */
   function setDataset(dataset: Dataset, entry: SourceCatalogEntry) {
     const measureFields = new Set(entry.measures.map((m) => m.field));
     const firstMeasure = entry.measures[0];
+    // Filter fields the NEW source publishes. ``config.filters`` is
+    // pruned to these so no stale per-widget filter survives a switch.
+    const publishedFilterFields = entry.filters.map((f) => f.field);
     // First valid measure for this source (default after a field-invalid
     // switch). ``entry.measures`` is always non-empty for a real source;
     // guard for the degenerate empty-catalog case so we never write an
@@ -145,9 +154,10 @@ export function buildWidgetMutations(
         resetMeasure && !measureFields.has(cfg.measure.field)
           ? resetMeasure
           : cfg.measure;
+      const filters = pruneFiltersToSource(cfg.filters, publishedFilterFields);
       const next: Widget = {
         ...widget,
-        config: { ...cfg, dataset, measure },
+        config: { ...cfg, dataset, measure, filters },
       };
       onUpdate(next);
       return;
@@ -181,9 +191,10 @@ export function buildWidgetMutations(
         allValid || !resetMeasure
           ? mcfg.measures
           : [{ measure: resetMeasure }];
+      const filters = pruneFiltersToSource(mcfg.filters, publishedFilterFields);
       const next: Widget = {
         ...widget,
-        config: { ...mcfg, dataset, dimensions: dims, measures },
+        config: { ...mcfg, dataset, dimensions: dims, measures, filters },
       } as Widget;
       onUpdate(next);
       return;
@@ -194,9 +205,10 @@ export function buildWidgetMutations(
       resetMeasure && !measureFields.has(scfg.measure.field)
         ? resetMeasure
         : scfg.measure;
+    const filters = pruneFiltersToSource(scfg.filters, publishedFilterFields);
     const next: Widget = {
       ...widget,
-      config: { ...scfg, dataset, dimensions: dims, measure },
+      config: { ...scfg, dataset, dimensions: dims, measure, filters },
     } as Widget;
     onUpdate(next);
   }

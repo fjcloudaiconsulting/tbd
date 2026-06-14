@@ -187,6 +187,59 @@ export function resolveFilters(
 }
 
 /**
+ * Maps each ``WidgetFilters`` key to the backend filter ``field`` it
+ * compiles to (see ``resolveFilters`` above for the actual emission).
+ * The single source of truth for the WidgetFilters↔source-field
+ * mapping, reused by ``pruneFiltersToSource`` so the prune logic can
+ * never drift from what the resolver emits.
+ *
+ * ``tag_match`` is a knob on the ``tag_name`` filter (not its own
+ * field), so it shares ``tag_name``'s mapping and is pruned in lockstep
+ * with ``tag_names``.
+ */
+const FILTER_KEY_TO_SOURCE_FIELD: Record<keyof WidgetFilters, string> = {
+  date_range: "date",
+  account_ids: "account_id",
+  category_ids: "category_id",
+  txn_type: "txn_type",
+  amount_range: "amount",
+  tag_names: "tag_name",
+  tag_match: "tag_name",
+};
+
+/**
+ * Prunes a widget's per-widget ``WidgetFilters`` down to only the
+ * filters the given source publishes. Any key whose backend filter
+ * field isn't in ``publishedFields`` is dropped, so switching a widget's
+ * source (e.g. transactions → accounts) can't strand a filter the new
+ * source's ``validate()`` would 422 (a leftover ``category_ids`` /
+ * ``txn_type`` / ``amount_range`` on an accounts widget).
+ *
+ * ``publishedFields`` is the new source's published filter fields —
+ * ``entry.filters.map((f) => f.field)``. Returns a NEW object (never
+ * mutates the input); returns ``undefined`` when the pruned result is
+ * empty so we don't persist an empty ``{}`` filters blob.
+ */
+export function pruneFiltersToSource(
+  filters: WidgetFilters | undefined,
+  publishedFields: string[],
+): WidgetFilters | undefined {
+  if (!filters) return undefined;
+  const allowed = new Set(publishedFields);
+  const out: WidgetFilters = {};
+  let kept = 0;
+  for (const key of Object.keys(filters) as Array<keyof WidgetFilters>) {
+    const field = FILTER_KEY_TO_SOURCE_FIELD[key];
+    if (!field || !allowed.has(field)) continue;
+    // ``tag_match`` rides along only when ``tag_names`` survives — its
+    // field is ``tag_name``, already gated by the same membership check.
+    Object.assign(out, { [key]: filters[key] });
+    kept += 1;
+  }
+  return kept > 0 ? out : undefined;
+}
+
+/**
  * The single source of truth for the date inherit/override decision:
  * the widget date wins when it has a start or end, otherwise the
  * shared canvas date cascades. Exported so the chip-describe helper
