@@ -83,3 +83,74 @@ async def test_reconcile_consistent_opening_plus_settled_txns(db_session):
     assert stored == Decimal("1150.00")
     assert computed == Decimal("1150.00")
     assert consistent is True
+
+
+async def _seed_two(db, *, opening_a: str, opening_b: str):
+    """Seed an org with two accounts (nonzero openings) + a Transfer category."""
+    org = Organization(name="T", billing_cycle_day=1)
+    db.add(org); await db.flush()
+    at = AccountType(org_id=org.id, name="Bank", slug="bank", is_system=True)
+    db.add(at); await db.flush()
+    acct_a = Account(org_id=org.id, name="A", account_type_id=at.id,
+                     balance=Decimal(opening_a), currency="EUR",
+                     opening_balance=Decimal(opening_a),
+                     opening_balance_date=date(2026, 1, 1))
+    acct_b = Account(org_id=org.id, name="B", account_type_id=at.id,
+                     balance=Decimal(opening_b), currency="EUR",
+                     opening_balance=Decimal(opening_b),
+                     opening_balance_date=date(2026, 1, 1))
+    db.add(acct_a); db.add(acct_b)
+    db.add(Category(org_id=org.id, name="Transfer", slug="transfer",
+                    type=CategoryType.BOTH, is_system=True))
+    await db.flush(); await db.commit()
+    return org, acct_a, acct_b
+
+
+@pytest.mark.asyncio
+async def test_reconcile_consistent_with_transfer_legs(db_session):
+    """A transfer creates settled EXPENSE+INCOME legs counted by reconcile.
+    Both source and destination accounts must stay consistent: each balance
+    moved by the transfer amount, and computed includes the matching leg."""
+    db = db_session
+    org, acct_a, acct_b = await _seed_two(db, opening_a="1000.00", opening_b="400.00")
+
+    from app.schemas.transaction import TransferCreate
+    await ts.create_transfer(db, org.id, TransferCreate(
+        from_account_id=acct_a.id, to_account_id=acct_b.id,
+        amount=Decimal("250.00"), status="settled", date=date(2026, 6, 1)))
+    await db.refresh(acct_a)
+    await db.refresh(acct_b)
+
+    # Source: 1000 - 250 = 750 (expense leg). Dest: 400 + 250 = 650 (income leg).
+    s_a, c_a, ok_a = await ts.reconcile_account(db, org.id, acct_a)
+    assert s_a == Decimal("750.00")
+    assert c_a == Decimal("750.00")
+    assert ok_a is True
+
+    s_b, c_b, ok_b = await ts.reconcile_account(db, org.id, acct_b)
+    assert s_b == Decimal("650.00")
+    assert c_b == Decimal("650.00")
+    assert ok_b is True
+
+
+@pytest.mark.asyncio
+async def test_reconcile_consistent_after_negative_opening_delta(db_session):
+    """Lowering opening_balance (1000 -> 300) must shift balance down by 700 and
+    keep reconcile consistent. Mirrors the router's opening-shift path applied
+    to a freshly-seeded account (no txns: balance tracks opening directly)."""
+    db = db_session
+    org, acct = await _seed(db, opening="1000.00")
+    assert acct.balance == Decimal("1000.00")
+
+    # Apply the same shift the router's _apply_non_type_fields performs.
+    new_opening = Decimal("300.00")
+    acct.balance += new_opening - acct.opening_balance
+    acct.opening_balance = new_opening
+    await db.commit()
+    await db.refresh(acct)
+
+    assert acct.balance == Decimal("300.00")  # shifted down by 700
+    stored, computed, consistent = await ts.reconcile_account(db, org.id, acct)
+    assert stored == Decimal("300.00")
+    assert computed == Decimal("300.00")
+    assert consistent is True

@@ -350,3 +350,158 @@ def test_update_account_rejects_oversized_opening_balance(session_factory, seede
             json={"opening_balance": "999999999999.99"},
         )
     assert res.status_code == 422
+
+
+# ── Deactivate guard vs. opening-balance shift (finding 15) ─────────────────
+
+
+def test_deactivate_blocked_when_opening_shift_makes_balance_nonzero(
+    session_factory, seeded
+):
+    """A single PUT that sets opening_balance > 0 AND is_active=false must be
+    REJECTED: the post-shift balance is nonzero, so the account is not empty.
+    Under the old field order the guard ran before the shift, saw the
+    pre-shift balance (0), and wrongly let the deactivation through."""
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['account_id']}",
+            json={"opening_balance": "500.00", "is_active": False},
+        )
+    assert res.status_code == 409, res.text
+
+    # The whole PUT must roll back atomically: opening_balance and is_active
+    # both unchanged, balance still 0.
+    import asyncio
+
+    async def _reload():
+        async with session_factory() as db:
+            return await db.get(Account, seeded["account_id"])
+
+    acct = asyncio.get_event_loop().run_until_complete(_reload())
+    assert acct.is_active is True
+    assert acct.balance == Decimal("0.00")
+    assert acct.opening_balance == Decimal("0.00")
+
+
+def test_deactivate_allowed_when_opening_shift_zeroes_balance(
+    session_factory, seeded
+):
+    """A single PUT that lowers opening_balance to 0 (zeroing the live balance)
+    AND sets is_active=false must be ALLOWED: the post-shift balance is 0.
+    Under the old order the guard saw the pre-shift balance (500) and wrongly
+    raised 409."""
+    import asyncio
+
+    # Prime: balance(500) == opening(500) + 0 settled activity.
+    async def _prime():
+        async with session_factory() as db:
+            acct = await db.get(Account, seeded["account_id"])
+            acct.opening_balance = Decimal("500.00")
+            acct.balance = Decimal("500.00")
+            await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(_prime())
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['account_id']}",
+            json={"opening_balance": "0.00", "is_active": False},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["is_active"] is False
+    assert Decimal(body["balance"]) == Decimal("0.00")
+    assert Decimal(body["opening_balance"]) == Decimal("0.00")
+
+
+def test_deactivate_only_still_blocks_nonzero_account(session_factory, seeded):
+    """Guard regression: an is_active-only PUT (no opening edit) must still 409
+    when the account holds a nonzero balance — the shift is a no-op so the
+    guard sees the unchanged balance."""
+    import asyncio
+
+    async def _prime():
+        async with session_factory() as db:
+            acct = await db.get(Account, seeded["account_id"])
+            acct.opening_balance = Decimal("100.00")
+            acct.balance = Decimal("300.00")
+            await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(_prime())
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['account_id']}",
+            json={"is_active": False},
+        )
+    assert res.status_code == 409, res.text
+
+
+# ── End-to-end: both fixed paths uphold the invariant (finding 16) ──────────
+
+
+def test_opening_edit_shifts_balance_and_reconcile_stays_consistent(
+    session_factory, seeded
+):
+    """End-to-end coupling of both fixes: with real settled transactions giving
+    ``balance == opening + Σtxns``, editing opening_balance shifts the live
+    balance by the delta AND reconcile_account reports stored == computed."""
+    import asyncio
+
+    from app.schemas.transaction import TransactionCreate
+    from app.services import transaction_service as ts
+    from app.models import Category
+    from app.models.category import CategoryType
+
+    async def _prime():
+        async with session_factory() as db:
+            acct = await db.get(Account, seeded["account_id"])
+            acct.opening_balance = Decimal("1000.00")
+            acct.balance = Decimal("1000.00")
+            cat = Category(
+                org_id=seeded["org_id"], name="Gen", slug="gen",
+                type=CategoryType.BOTH, is_system=True,
+            )
+            db.add(cat)
+            await db.flush()
+            cat_id = cat.id
+            await ts.create_transaction(db, seeded["org_id"], TransactionCreate(
+                account_id=acct.id, category_id=cat_id, description="pay",
+                amount=Decimal("200.00"), type="income", status="settled",
+                date=date(2026, 6, 1)))
+            await ts.create_transaction(db, seeded["org_id"], TransactionCreate(
+                account_id=acct.id, category_id=cat_id, description="buy",
+                amount=Decimal("50.00"), type="expense", status="settled",
+                date=date(2026, 6, 2)))
+            await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(_prime())
+
+    # balance now = 1000 + 200 - 50 = 1150.
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['account_id']}",
+            json={"opening_balance": "1300.00"},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # delta = 1300 - 1000 = +300 → balance 1150 -> 1450.
+    assert Decimal(body["balance"]) == Decimal("1450.00")
+
+    from app.services import transaction_service as ts2
+
+    async def _reconcile():
+        async with session_factory() as db:
+            acct = await db.get(Account, seeded["account_id"])
+            return await ts2.reconcile_account(db, seeded["org_id"], acct)
+
+    stored, computed, consistent = asyncio.get_event_loop().run_until_complete(
+        _reconcile()
+    )
+    assert stored == Decimal("1450.00")
+    assert computed == Decimal("1450.00")
+    assert consistent is True

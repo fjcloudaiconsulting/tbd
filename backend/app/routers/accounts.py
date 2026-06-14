@@ -305,6 +305,26 @@ async def _apply_non_type_fields(
     if body.name is not None:
         account.name = body.name
 
+    # Apply the opening_balance shift BEFORE the is_active deactivate guard so
+    # the guard evaluates the FINAL (post-shift) balance. A single PUT that
+    # both edits opening_balance and deactivates must be judged on the balance
+    # the account will actually hold (finding 15): shifting up to a nonzero
+    # balance must block deactivation, and shifting down to zero must allow it.
+    if body.opening_balance is not None and body.opening_balance != account.opening_balance:
+        # Opening balance is the foundation of the live balance
+        # (balance == opening_balance + Σ settled txns). Correcting it must
+        # shift the live balance by the same delta, otherwise the cached
+        # balance silently drifts from reality (2026-06-14 incident).
+        account.balance += body.opening_balance - account.opening_balance
+        account.opening_balance = body.opening_balance
+        opening_changed = True
+    if (
+        body.opening_balance_date is not None
+        and body.opening_balance_date != account.opening_balance_date
+    ):
+        account.opening_balance_date = body.opening_balance_date
+        opening_changed = True
+
     if body.is_active is not None:
         if body.is_active is False and account.balance != 0:
             raise HTTPException(
@@ -331,21 +351,6 @@ async def _apply_non_type_fields(
             account.is_default = True
     elif body.is_default is False:
         account.is_default = False
-
-    if body.opening_balance is not None and body.opening_balance != account.opening_balance:
-        # Opening balance is the foundation of the live balance
-        # (balance == opening_balance + Σ settled txns). Correcting it must
-        # shift the live balance by the same delta, otherwise the cached
-        # balance silently drifts from reality (2026-06-14 incident).
-        account.balance += body.opening_balance - account.opening_balance
-        account.opening_balance = body.opening_balance
-        opening_changed = True
-    if (
-        body.opening_balance_date is not None
-        and body.opening_balance_date != account.opening_balance_date
-    ):
-        account.opening_balance_date = body.opening_balance_date
-        opening_changed = True
 
     return opening_changed
 
