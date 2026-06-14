@@ -15,7 +15,9 @@
  */
 import type {
   CanvasFilters,
+  Dataset,
   Filter,
+  SourceCatalogEntry,
   WidgetFilters,
 } from "./types";
 
@@ -84,18 +86,48 @@ function valuesEqual(widgetVal: unknown, canvasVal: unknown): boolean {
 }
 
 /**
+ * True when the data source ``dataset`` publishes a ``date`` filter
+ * field in its catalog entry — i.e. the source has a date column the
+ * canvas date range can scope. ``transactions`` does; ``accounts`` does
+ * not.
+ *
+ * Defaults to ``true`` when the source can't be resolved (empty catalog
+ * during the pre-load window, or a dataset missing from the catalog) so
+ * we never silently drop the transactions date filter while the catalog
+ * is still loading. The backend tolerates a stray date filter on a
+ * date-less source (it drops it server-side), so "default to supports"
+ * is the safe bias.
+ */
+export function sourceSupportsDateFilter(
+  sources: SourceCatalogEntry[] | undefined,
+  dataset: Dataset,
+): boolean {
+  if (!sources || sources.length === 0) return true;
+  const entry = sources.find((s) => s.key === dataset);
+  if (!entry) return true;
+  return entry.filters.some((f) => f.field === "date");
+}
+
+/**
  * Resolves a widget's effective filters into a list of AST filter
  * primitives. ``widget`` overrides on a per-field basis; otherwise
  * the canvas value cascades through.
+ *
+ * ``sourceSupportsDate`` gates the shared canvas date filter: when
+ * ``false`` (a date-less source such as ``accounts``), the date range
+ * is omitted entirely so we never send a filter the source can't
+ * honor. Defaults to ``true`` to preserve current behavior when the
+ * source catalog isn't available yet.
  */
 export function resolveFilters(
   canvas: CanvasFilters | undefined,
   widget: WidgetFilters | undefined,
+  sourceSupportsDate = true,
 ): Filter[] {
   const out: Filter[] = [];
   const canvasDr = canvas?.date_range;
   const widgetDr = widget?.date_range;
-  const dr = pickDateRange(widgetDr, canvasDr);
+  const dr = sourceSupportsDate ? pickDateRange(widgetDr, canvasDr) : undefined;
   if (dr && dr.start && dr.end) {
     out.push({
       field: "date",

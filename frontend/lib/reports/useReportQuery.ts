@@ -11,7 +11,8 @@ import useSWR from "swr";
 import { useMemo } from "react";
 
 import { runQuery } from "./api";
-import { resolveFilters } from "./resolve";
+import { resolveFilters, sourceSupportsDateFilter } from "./resolve";
+import { useReportSources } from "./use-report-sources";
 import type {
   CanvasFilters,
   Measure,
@@ -39,9 +40,11 @@ export function useReportQuery(
   widget: Widget,
   canvasFilters: CanvasFilters | undefined,
 ): UseReportQueryResult {
+  const { sources } = useReportSources();
+  const supportsDate = sourceSupportsDateFilter(sources, widget.config.dataset);
   const query = useMemo<ReportsQuery>(() => {
-    return buildQueryAst(widget, canvasFilters);
-  }, [widget, canvasFilters]);
+    return buildQueryAst(widget, canvasFilters, supportsDate);
+  }, [widget, canvasFilters, supportsDate]);
 
   const swrKey = ["report-query", widget.id, JSON.stringify(query)];
   const { data, error, isLoading } = useSWR<ReportsQueryResponse>(
@@ -64,10 +67,15 @@ export function useReportQuery(
 export function buildQueryAst(
   widget: Widget,
   canvasFilters: CanvasFilters | undefined,
+  sourceSupportsDate = true,
 ): ReportsQuery {
   const widgetFilters: WidgetFilters | undefined =
     "filters" in widget.config ? widget.config.filters : undefined;
-  const filters = resolveFilters(canvasFilters, widgetFilters);
+  const filters = resolveFilters(
+    canvasFilters,
+    widgetFilters,
+    sourceSupportsDate,
+  );
 
   if (widget.type === "kpi") {
     return {
@@ -145,10 +153,15 @@ export function buildSeriesQueryAst(
   widget: Widget,
   measure: Measure,
   canvasFilters: CanvasFilters | undefined,
+  sourceSupportsDate = true,
 ): ReportsQuery {
   const widgetFilters: WidgetFilters | undefined =
     "filters" in widget.config ? widget.config.filters : undefined;
-  const filters = resolveFilters(canvasFilters, widgetFilters);
+  const filters = resolveFilters(
+    canvasFilters,
+    widgetFilters,
+    sourceSupportsDate,
+  );
   const dimensions =
     "dimensions" in widget.config ? widget.config.dimensions : [];
   const sort = "sort" in widget.config ? widget.config.sort : undefined;
@@ -183,9 +196,14 @@ export function useSeriesQueries(
   isLoading: boolean;
   error: Error | undefined;
 } {
+  const { sources } = useReportSources();
+  const supportsDate = sourceSupportsDateFilter(sources, widget.config.dataset);
   const queries = useMemo(
-    () => measures.map((m) => buildSeriesQueryAst(widget, m, canvasFilters)),
-    [widget, canvasFilters, measures],
+    () =>
+      measures.map((m) =>
+        buildSeriesQueryAst(widget, m, canvasFilters, supportsDate),
+      ),
+    [widget, canvasFilters, measures, supportsDate],
   );
   const swrKey = ["report-series-query", widget.id, JSON.stringify(queries)];
   const { data, error, isLoading } = useSWR<ReportsQueryResponse[]>(
