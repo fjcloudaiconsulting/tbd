@@ -151,9 +151,10 @@ class Filter(BaseModel):
         # Type narrowing. The schema layer's job is to reject anything
         # the compiler can't safely handle.
         if op is FilterOp.BETWEEN:
-            if f not in (FilterField.DATE, FilterField.AMOUNT):
+            if f not in (FilterField.DATE, FilterField.AMOUNT, FilterField.BALANCE):
                 raise ValueError(
-                    f"op='between' only valid on date / amount; got field={f.value!r}"
+                    f"op='between' only valid on date / amount / balance; "
+                    f"got field={f.value!r}"
                 )
             if not isinstance(self.value, list) or len(self.value) != 2:
                 raise ValueError(
@@ -175,13 +176,13 @@ class Filter(BaseModel):
                         f"date BETWEEN window must be <= {MAX_DATE_WINDOW_DAYS} days "
                         "(5 years)"
                     )
-            else:  # amount
+            else:  # amount / balance (numeric pair)
                 lo, hi = self.value
                 if not isinstance(lo, (int, float, str, Decimal)) or not isinstance(
                     hi, (int, float, str, Decimal)
                 ):
                     raise ValueError(
-                        "amount BETWEEN bounds must be numeric"
+                        "numeric BETWEEN bounds must be numeric"
                     )
                 self.value = [_coerce_decimal(lo), _coerce_decimal(hi)]
 

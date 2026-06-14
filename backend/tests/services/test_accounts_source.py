@@ -164,6 +164,39 @@ async def test_sum_balance_by_currency_with_currency_filter(db_session, seeded):
     assert rows[0]["value"] == 1800.0  # 500 + 1500 - 200, all EUR
 
 
+def test_balance_between_filter_constructs():
+    """The AST Filter validator must accept ``balance BETWEEN``. Also
+    confirms scalar ``gte``/``lte`` on balance still construct."""
+    # BETWEEN — was rejected with 422 before the validator fix.
+    f = Filter(
+        field=FilterField.BALANCE,
+        op=FilterOp.BETWEEN,
+        value=[Decimal("0"), Decimal("1000")],
+    )
+    assert f.value == [Decimal("0"), Decimal("1000")]
+
+    # Scalar range ops are unaffected and should still construct.
+    Filter(field=FilterField.BALANCE, op=FilterOp.GTE, value=Decimal("0"))
+    Filter(field=FilterField.BALANCE, op=FilterOp.LTE, value=Decimal("1000"))
+
+
+@pytest.mark.asyncio
+async def test_balance_between_filter_applied(db_session, seeded):
+    """End-to-end: ``balance BETWEEN [0, 1000]`` validates and only counts
+    accounts in range (Checking 500 -> 1; Savings 1500 and OldCard -200
+    excluded)."""
+    src = _source()
+    ast = _query(
+        filters=[
+            Filter(field=FilterField.BALANCE, op=FilterOp.BETWEEN, value=[0, 1000]),
+        ],
+    )
+    src.validate(ast)  # must not raise
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert len(rows) == 1
+    assert rows[0]["value"] == 1
+
+
 @pytest.mark.asyncio
 async def test_validate_rejects_sum_amount(db_session, seeded):
     src = _source()

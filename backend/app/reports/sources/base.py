@@ -21,7 +21,7 @@ from app.schemas.reports_query import ReportsQuery
 class SourceDimension:
     key: str       # matches the AST Dimension value, e.g. "category"
     label: str     # human label for the editor, e.g. "Category"
-    kind: str      # control hint: category|account|status|type|tag|time|account_type
+    kind: str      # control hint: category|account|status|type|tag|time|account_type|currency|boolean
 
 
 @dataclass(frozen=True)
