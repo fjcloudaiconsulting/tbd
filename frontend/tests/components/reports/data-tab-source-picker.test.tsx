@@ -414,6 +414,77 @@ it("prunes tag_names + date_range but keeps category_ids on switch to recurring"
   });
 });
 
+it("clears a stale txn_type=transfer on switch to recurring (transfer invalid there)", () => {
+  const onUpdate = vi.fn();
+  const widget: BarWidget = {
+    ...makeBar(),
+    config: {
+      ...makeBar().config,
+      filters: {
+        // recurring publishes ``txn_type`` so the FIELD survives the prune,
+        // but ``transfer`` is invalid for recurring (income/expense only) —
+        // the stale VALUE must be stripped or the backend validate() 422s.
+        txn_type: "transfer",
+      },
+    },
+  };
+  renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
+
+  fireEvent.change(screen.getByLabelText("Data source"), {
+    target: { value: "recurring" },
+  });
+
+  const next = onUpdate.mock.calls[0][0] as BarWidget;
+  expect(next.config.dataset).toBe("recurring");
+  // ``txn_type`` was the only filter and its value was invalid → whole
+  // blob drops to undefined (matching pruneFiltersToSource's empty behavior).
+  expect(next.config.filters).toBeUndefined();
+});
+
+it("keeps a valid txn_type but clears transfer on switch to recurring", () => {
+  const onUpdate = vi.fn();
+  const widget: BarWidget = {
+    ...makeBar(),
+    config: {
+      ...makeBar().config,
+      filters: {
+        txn_type: "transfer",
+        // survives: recurring publishes ``category_id``.
+        category_ids: [9],
+      },
+    },
+  };
+  renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
+
+  fireEvent.change(screen.getByLabelText("Data source"), {
+    target: { value: "recurring" },
+  });
+
+  const next = onUpdate.mock.calls[0][0] as BarWidget;
+  // category_ids survives; the invalid transfer txn_type is stripped.
+  expect(next.config.filters).toEqual({ category_ids: [9] });
+});
+
+it("keeps a valid txn_type=expense on switch to recurring", () => {
+  const onUpdate = vi.fn();
+  const widget: BarWidget = {
+    ...makeBar(),
+    config: {
+      ...makeBar().config,
+      filters: { txn_type: "expense" },
+    },
+  };
+  renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
+
+  fireEvent.change(screen.getByLabelText("Data source"), {
+    target: { value: "recurring" },
+  });
+
+  const next = onUpdate.mock.calls[0][0] as BarWidget;
+  // ``expense`` is valid for recurring → preserved unchanged.
+  expect(next.config.filters).toEqual({ txn_type: "expense" });
+});
+
 it("persisted accounts widget rendered before /sources resolves has no value/options mismatch", () => {
   // Catalog still loading: sources empty. The accounts widget's stored
   // dimension (``account_type``) and field (``balance``) must still have a

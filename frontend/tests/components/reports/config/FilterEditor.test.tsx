@@ -171,6 +171,28 @@ describe("FilterEditor", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("self-heals a persisted txn_type=transfer on a recurring widget to 'Any'", async () => {
+    const calls: WidgetFilters[] = [];
+    // A widget persisted on transactions with txn_type=transfer, later
+    // switched to recurring (where transfer is hidden). The orphan value
+    // must self-correct on mount so the control never shows a phantom
+    // no-selection-with-stale-value state.
+    render({ txn_type: "transfer" }, {}, (next) => calls.push(next), "recurring");
+    await screen.findByTestId("category-picker");
+    // The self-heal effect MUST have fired (not vacuously empty) and cleared
+    // the orphan value.
+    expect(calls).toHaveLength(1);
+    expect(calls.at(-1)?.txn_type).toBeUndefined();
+  });
+
+  it("does NOT self-heal a valid txn_type=transfer on a transactions widget", async () => {
+    const calls: WidgetFilters[] = [];
+    render({ txn_type: "transfer" }, {}, (next) => calls.push(next), "transactions");
+    await screen.findByTestId("category-picker");
+    // transfer is a valid choice for transactions → no auto-clear fires.
+    expect(calls).toHaveLength(0);
+  });
+
   it("reports tag_names + tag_match when a tag chip is selected", async () => {
     const calls: WidgetFilters[] = [];
     render({}, {}, (next) => calls.push(next));

@@ -364,6 +364,38 @@ async def test_amount_between_filter(db_session, seeded):
     assert rows[0]["value"] == 2
 
 
+@pytest.mark.asyncio
+async def test_amount_gte_filter(db_session, seeded):
+    """amount GTE 1000 counts only Rent (1200) + Salary (3000). Pins the
+    comparison direction (>= not <=) on the gte branch."""
+    src = _source()
+    ast = _query(
+        filters=[
+            Filter(field=FilterField.AMOUNT, op=FilterOp.GTE, value=1000),
+        ],
+    )
+    src.validate(ast)
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert len(rows) == 1
+    assert rows[0]["value"] == 2
+
+
+@pytest.mark.asyncio
+async def test_amount_lte_filter(db_session, seeded):
+    """amount LTE 30 counts only Gym (30) + OldSub (10). Pins the comparison
+    direction (<= not >=) on the lte branch, and the boundary (30 inclusive)."""
+    src = _source()
+    ast = _query(
+        filters=[
+            Filter(field=FilterField.AMOUNT, op=FilterOp.LTE, value=30),
+        ],
+    )
+    src.validate(ast)
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert len(rows) == 1
+    assert rows[0]["value"] == 2
+
+
 # ─── op-reject (→422) ───────────────────────────────────────────────
 
 

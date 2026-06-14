@@ -12,7 +12,7 @@
  * widget-only now (the canvas can't hold them), so they NEVER show the
  * override pill — they're plain per-widget controls.
  */
-import { useId } from "react";
+import { useEffect, useId } from "react";
 
 import AccountFilter from "@/components/reports/filters/AccountFilter";
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
@@ -194,6 +194,18 @@ function TxnTypeRadioRow({
       ? ([{ value: "transfer", label: "Transfer" }] as const)
       : []),
   ];
+  // Self-heal: when a persisted ``txn_type`` value isn't among the rendered
+  // choices (e.g. ``transfer`` survives in a saved config but the widget is
+  // now on a non-transactions source where Transfer is hidden), reset it to
+  // "Any" once so the control never shows a phantom no-selection-with-stale-
+  // value state. ``onChange(undefined)`` makes ``value`` undefined, which IS
+  // in-range, so the effect won't re-fire (no loop). The transactions case
+  // keeps ``transfer`` because it's a rendered choice there.
+  const valueInRange =
+    value === undefined || choices.some((c) => c.value === value);
+  useEffect(() => {
+    if (!valueInRange) onChange(undefined);
+  }, [valueInRange, onChange]);
   return (
     <>
       <div className="text-xs text-text-secondary">Transaction type</div>
