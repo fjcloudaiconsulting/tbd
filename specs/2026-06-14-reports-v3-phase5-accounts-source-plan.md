@@ -1014,6 +1014,84 @@ git commit -m "feat(reports): resolver omits canvas date filter for date-less so
 
 ---
 
+## Task 7b: Editable report title on the existing-report page
+
+**Bundled-in request (2026-06-14):** the new-report page has an editable name input, but the saved-report page renders the title as static text — no way to rename a report after creation, even though the backend `PATCH /{report_id}` and the `updateReport(id, payload)` client already support `name`. Close the UI gap.
+
+**Files:**
+- Modify: `app/reports/[id]/page.tsx` (static title at lines ~637-639; `updateReport` import; `setReport`)
+- Test: `tests/app/report-title-edit.test.tsx` (new)
+
+- [ ] **Step 1: Write the failing test**
+
+```tsx
+// tests/app/report-title-edit.test.tsx
+// Render the report editor page in edit mode for an owned report and assert
+// the title is an editable input that PATCHes name on commit. Mock the
+// reports api module so updateReport is observable; mirror the mock setup
+// already used by the page's existing tests (check tests/app/ for the
+// report-editor render harness and reuse it — do NOT hand-roll SWR/auth).
+
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+
+const updateReport = vi.fn(async (_id: number, payload: any) => ({
+  id: 1, name: payload.name, layout_json: {}, canvas_filters_json: {},
+}));
+vi.mock("@/lib/reports/api", async (orig) => ({
+  ...(await orig<typeof import("@/lib/reports/api")>()),
+  updateReport,
+}));
+
+test("in edit mode the title is editable and commits via updateReport", async () => {
+  // ...render the page for an owned report (reuse the existing harness),
+  // enter edit mode...
+  const input = await screen.findByLabelText("Report title");
+  fireEvent.change(input, { target: { value: "Q2 spending" } });
+  fireEvent.blur(input);
+  await waitFor(() =>
+    expect(updateReport).toHaveBeenCalledWith(1, { name: "Q2 spending" }),
+  );
+});
+
+test("in view mode the title is static text, not an input", async () => {
+  // ...render the page in view mode (not edit)...
+  expect(screen.queryByLabelText("Report title")).not.toBeInTheDocument();
+});
+```
+
+> Inspect `tests/app/` for the existing report-`[id]`-page render harness (auth/SWR/router mocks) and reuse it verbatim. The two assertions above are the contract; the surrounding setup must match the project's existing report-editor tests.
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `docker compose exec frontend npx vitest run tests/app/report-title-edit.test.tsx`
+Expected: FAIL — no `Report title` input (title is a static `<span>`).
+
+- [ ] **Step 3: Implement the inline title editor**
+
+In `app/reports/[id]/page.tsx`, import `updateReport` from `@/lib/reports/api`. Replace the static title span (lines ~637-639):
+
+```tsx
+          <span className="text-sm font-semibold text-text-primary">
+            {report.name}
+          </span>
+```
+
+with an edit-mode-aware title. In `editModeActive`, render a text `<input aria-label="Report title">` seeded from `report.name`; on blur/Enter commit, if the trimmed value is non-empty AND changed, call `updateReport(report.id, { name: trimmed })`, `setReport(updated)`; empty → revert to the current name (do not persist a blank). In view mode keep the static span. Style the input to match the existing header typography (`text-sm font-semibold`), borderless until focus, so it reads as an inline-editable title, not a form field. Keep it independent of the layout `dirty`/Save flow — renaming is its own immediate PATCH (the backend already treats a rename as a non-snapshotting metadata change, per `reports.py:324-334`).
+
+- [ ] **Step 4: Run the test**
+
+Run: `docker compose exec frontend npx vitest run tests/app/report-title-edit.test.tsx`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/reports/\[id\]/page.tsx tests/app/report-title-edit.test.tsx
+git commit -m "feat(reports): inline-edit report title on the saved-report page"
+```
+
+---
+
 ## Task 8: Frontend verification gate
 
 **Files:** none — full-suite gate ([[reference_frontend_full_suite_verification]], [[reference_eslint_ci_gate_misses]]).
