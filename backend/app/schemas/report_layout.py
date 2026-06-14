@@ -44,6 +44,11 @@ from pydantic import (
     field_validator,
 )
 
+# Dataset / Aggregation / MeasureField / Dimension are the shared closed
+# enum atoms — defined once in ``reports_enums`` so the saved-layout shape
+# and the live ``/query`` AST (``reports_query``) cannot drift.
+from app.schemas.reports_enums import Aggregation, Dataset, Dimension, MeasureField
+
 
 # ─── closed enums (mirror frontend unions) ──────────────────────────
 
@@ -57,36 +62,6 @@ class WidgetType(str, enum.Enum):
     PIE = "pie"
     SPARKLINE = "sparkline"
     TABLE = "table"
-
-
-class Dataset(str, enum.Enum):
-    TRANSACTIONS = "transactions"
-
-
-class Aggregation(str, enum.Enum):
-    SUM = "sum"
-    COUNT = "count"
-    AVG = "avg"
-    DISTINCT = "distinct"
-
-
-class MeasureField(str, enum.Enum):
-    AMOUNT = "amount"
-    ID = "id"
-    CATEGORY_ID = "category_id"
-    ACCOUNT_ID = "account_id"
-
-
-class Dimension(str, enum.Enum):
-    CATEGORY = "category"
-    CATEGORY_MASTER = "category_master"
-    ACCOUNT = "account"
-    TAG = "tag"
-    TXN_TYPE = "txn_type"
-    STATUS = "status"
-    MONTH = "month"
-    WEEK = "week"
-    DAY = "day"
 
 
 class WidgetFormat(str, enum.Enum):

@@ -21,7 +21,7 @@
  * button in the header; the rollout-table PR2 row says "Save layout
  * (PATCH)" — both align with explicit-save.
  */
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -304,6 +304,14 @@ export default function ReportEditorPage({ params }: PageProps) {
   const isSmallScreen = useIsSmallScreen();
 
   const [report, setReport] = useState<ReportSummary | null>(null);
+  // Draft value of the inline-editable title. Seeded from the loaded
+  // report and re-synced whenever the report identity changes (load,
+  // restore, duplicate-in-place) — NOT on every ``report`` write, so a
+  // mid-typing PATCH response can't clobber what the user is typing.
+  const [titleDraft, setTitleDraft] = useState("");
+  // Synchronous re-entry guard so Enter-then-blur in the same tick can't
+  // fire two PATCHes — a state flag would flip a tick too late, so we use a ref.
+  const titleCommitInFlight = useRef(false);
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
@@ -341,6 +349,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   // snapshot).
   function hydrateFromReport(r: ReportSummary) {
     setReport(r);
+    setTitleDraft(r.name);
     const lj = (r.layout_json ?? {}) as Partial<LayoutJson>;
     setLayout(
       lj && Array.isArray(lj.widgets)
@@ -473,6 +482,41 @@ export default function ReportEditorPage({ params }: PageProps) {
   function updateCanvasFilters(next: CanvasFilters) {
     setCanvasFilters(next);
     setDirty(true);
+  }
+
+  // Inline title rename. Independent of the layout dirty/Save flow: a
+  // rename is its own immediate PATCH (the backend treats a name change
+  // as a non-snapshotting metadata edit). Commit on blur AND Enter; if
+  // the trimmed value is empty or unchanged, do nothing (revert blank
+  // back to the current name). On error, revert the draft to the prior
+  // name so the input never strands an unpersisted value.
+  async function commitTitle() {
+    if (!report || titleCommitInFlight.current) return;
+    const trimmed = titleDraft.trim();
+    if (!trimmed) {
+      setTitleDraft(report.name);
+      return;
+    }
+    if (trimmed === report.name) {
+      // Unchanged once trimmed: normalize the visible draft back to the
+      // canonical name so surrounding whitespace the user typed (e.g.
+      // "My Report ") doesn't linger in the input.
+      setTitleDraft(report.name);
+      return;
+    }
+    const prevName = report.name;
+    titleCommitInFlight.current = true;
+    try {
+      const updated = await updateReport(report.id, { name: trimmed });
+      setReport(updated);
+      setTitleDraft(updated.name);
+    } catch (err) {
+      setTitleDraft(prevName);
+      const e = err as Error;
+      setSaveError(e.message || "Couldn't rename report");
+    } finally {
+      titleCommitInFlight.current = false;
+    }
   }
 
   async function handleSave() {
@@ -634,9 +678,31 @@ export default function ReportEditorPage({ params }: PageProps) {
             Reports
           </Link>
           <span className="text-text-muted">/</span>
-          <span className="text-sm font-semibold text-text-primary">
-            {report.name}
-          </span>
+          {editModeActive ? (
+            <input
+              type="text"
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={commitTitle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  // Commit directly (don't rely on blur firing): then drop
+                  // focus so the field reads as committed.
+                  void commitTitle();
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label="Report title"
+              placeholder="Report title"
+              data-testid="report-editor-title"
+              className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-semibold text-text-primary hover:border-border focus:border-border focus:bg-bg focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+            />
+          ) : (
+            <span className="text-sm font-semibold text-text-primary">
+              {report.name}
+            </span>
+          )}
           {dirty && (
             <span
               data-testid="report-editor-dirty"

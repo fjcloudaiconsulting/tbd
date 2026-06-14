@@ -35,6 +35,11 @@ from pydantic import (
     model_validator,
 )
 
+# Dataset / Aggregation / MeasureField / Dimension are the shared closed
+# enum atoms — defined once in ``reports_enums`` so the live ``/query`` AST
+# and the saved-layout JSON validator (``report_layout``) cannot drift.
+from app.schemas.reports_enums import Aggregation, Dataset, Dimension, MeasureField
+
 
 # Hard caps. Module-level constants so tests can import + assert them.
 MAX_LIMIT = 500
@@ -43,61 +48,9 @@ MAX_FILTERS = 20
 MAX_DIMENSIONS = 2
 MAX_DATE_WINDOW_DAYS = 5 * 365 + 2  # 5 years inclusive of two leap days.
 
-
-class Dataset(str, enum.Enum):
-    """Closed source set. v1 only exposes ``transactions``; opening
-    new datasets is a v2 spec decision (budgets, recurring, forecast).
-    Admin / internal tables are deliberately excluded — adding one
-    here is a security review event.
-    """
-
-    TRANSACTIONS = "transactions"
-
-
-class Aggregation(str, enum.Enum):
-    """Closed aggregation set. Anything outside this enum is rejected
-    by Pydantic at schema-validation time, so the compiler never sees
-    user-supplied aggregation strings.
-    """
-
-    SUM = "sum"
-    COUNT = "count"
-    AVG = "avg"
-    # ``distinct`` is shorthand for COUNT(DISTINCT field) — the
-    # compiler expands it. Spec section 3 lists ``count_distinct``
-    # as the long form; we accept the short form on the wire for
-    # symmetry with the other aggs.
-    DISTINCT = "distinct"
-
-
-class MeasureField(str, enum.Enum):
-    """Columns an aggregation may target on the transactions source.
-    Closed enum so a misspelled field cannot reach SQL.
-    """
-
-    AMOUNT = "amount"
-    ID = "id"
-    CATEGORY_ID = "category_id"
-    ACCOUNT_ID = "account_id"
-
-
-class Dimension(str, enum.Enum):
-    """GROUP BY dimensions. Closed enum.
-
-    Time bucket dimensions (``month``, ``week``, ``day``) compile to
-    SQLAlchemy ``func.date_format`` expressions in MySQL and SQLite-
-    compatible ``strftime`` equivalents in the test harness.
-    """
-
-    CATEGORY = "category"
-    CATEGORY_MASTER = "category_master"
-    ACCOUNT = "account"
-    TAG = "tag"
-    TXN_TYPE = "txn_type"
-    STATUS = "status"
-    MONTH = "month"
-    WEEK = "week"
-    DAY = "day"
+# Fields a SUM / AVG may target. Source-agnostic numeric sanity gate — the
+# per-source validate() still rejects a field the source does not publish.
+NUMERIC_MEASURE_FIELDS = {MeasureField.AMOUNT, MeasureField.BALANCE}
 
 
 class FilterField(str, enum.Enum):
@@ -113,6 +66,10 @@ class FilterField(str, enum.Enum):
     ACCOUNT_ID = "account_id"
     TXN_TYPE = "txn_type"
     STATUS = "status"
+    ACCOUNT_TYPE = "account_type"
+    CURRENCY = "currency"
+    ACCOUNT_ACTIVE = "account_active"
+    BALANCE = "balance"
     # Tag filter uses normalized tag name (lowercased), matching the
     # transactions list semantics at
     # ``backend/app/routers/transactions.py:90`` and
@@ -145,15 +102,13 @@ class Measure(BaseModel):
 
     @model_validator(mode="after")
     def _validate_agg_field(self):
-        # SUM / AVG require a numeric column. ``amount`` is the only
-        # numeric column we expose on transactions.
         if self.agg in (Aggregation.SUM, Aggregation.AVG):
-            if self.field is not MeasureField.AMOUNT:
+            if self.field not in NUMERIC_MEASURE_FIELDS:
                 raise ValueError(
-                    f"agg={self.agg.value} requires field='amount'; "
+                    f"agg={self.agg.value} requires a numeric field "
+                    f"{sorted(f.value for f in NUMERIC_MEASURE_FIELDS)}; "
                     f"got field={self.field.value!r}"
                 )
-        # COUNT and DISTINCT accept any whitelisted field.
         return self
 
 
@@ -196,9 +151,10 @@ class Filter(BaseModel):
         # Type narrowing. The schema layer's job is to reject anything
         # the compiler can't safely handle.
         if op is FilterOp.BETWEEN:
-            if f not in (FilterField.DATE, FilterField.AMOUNT):
+            if f not in (FilterField.DATE, FilterField.AMOUNT, FilterField.BALANCE):
                 raise ValueError(
-                    f"op='between' only valid on date / amount; got field={f.value!r}"
+                    f"op='between' only valid on date / amount / balance; "
+                    f"got field={f.value!r}"
                 )
             if not isinstance(self.value, list) or len(self.value) != 2:
                 raise ValueError(
@@ -220,13 +176,13 @@ class Filter(BaseModel):
                         f"date BETWEEN window must be <= {MAX_DATE_WINDOW_DAYS} days "
                         "(5 years)"
                     )
-            else:  # amount
+            else:  # amount / balance (numeric pair)
                 lo, hi = self.value
                 if not isinstance(lo, (int, float, str, Decimal)) or not isinstance(
                     hi, (int, float, str, Decimal)
                 ):
                     raise ValueError(
-                        "amount BETWEEN bounds must be numeric"
+                        "numeric BETWEEN bounds must be numeric"
                     )
                 self.value = [_coerce_decimal(lo), _coerce_decimal(hi)]
 
@@ -349,5 +305,26 @@ def _coerce_filter_scalar(field: FilterField, value):
         if not v:
             raise ValueError("tag_name must be a non-empty string")
         return v
+    if field is FilterField.ACCOUNT_TYPE:
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("account_type must be an integer id") from exc
+    if field is FilterField.CURRENCY:
+        v = str(value).strip().upper()
+        if not (len(v) == 3 and v.isalpha()):
+            raise ValueError("currency must be a 3-letter code")
+        return v
+    if field is FilterField.ACCOUNT_ACTIVE:
+        if isinstance(value, bool):
+            return value
+        v = str(value).strip().lower()
+        if v in ("true", "1", "active"):
+            return True
+        if v in ("false", "0", "inactive"):
+            return False
+        raise ValueError("account_active must be a boolean")
+    if field is FilterField.BALANCE:
+        return _coerce_decimal(value)
     # Should be unreachable given the FilterField enum is closed.
     raise ValueError(f"unsupported filter field {field!r}")

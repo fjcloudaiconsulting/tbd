@@ -42,6 +42,11 @@ export function describeWidgetFilters(
   canvasFilters: CanvasFilters | undefined,
   lookups: Lookups,
   now?: Date,
+  // When false (a date-less source such as ``accounts``), no date chip
+  // is emitted — the resolver drops the date filter at query time, so a
+  // chip would show but do nothing. Defaults to true (transactions and
+  // the pre-catalog-load window) to preserve current behavior.
+  sourceSupportsDate = true,
 ): FilterChip[] {
   const chips: FilterChip[] = [];
 
@@ -55,7 +60,11 @@ export function describeWidgetFilters(
     widgetFilters.date_range,
     canvasFilters?.date_range,
   );
-  if (effectiveDate && (effectiveDate.start || effectiveDate.end)) {
+  if (
+    sourceSupportsDate &&
+    effectiveDate &&
+    (effectiveDate.start || effectiveDate.end)
+  ) {
     chips.push({
       key: "date",
       label: dateLabel(effectiveDate, now ?? new Date()),

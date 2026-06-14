@@ -16,10 +16,19 @@ import type { Aggregation, Measure, MeasureField } from "@/lib/reports/types";
 export default function SingleMeasureEditor({
   measure,
   onChange,
+  fieldOptions,
 }: {
   measure: Measure;
   onChange: (m: Measure) => void;
+  /**
+   * Field options narrowed to the selected data source's published
+   * measures. When omitted (catalog not yet loaded), falls back to the
+   * static ``FIELD_OPTIONS`` so the transactions path and existing tests
+   * are unchanged.
+   */
+  fieldOptions?: Array<{ value: string; label: string }>;
 }) {
+  const fields = fieldOptions ?? FIELD_OPTIONS;
   return (
     <>
       <Section label="Aggregation" help={AGG_HELP_KEY[measure.agg]}>
@@ -47,7 +56,7 @@ export default function SingleMeasureEditor({
           aria-label="Field"
           className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
         >
-          {FIELD_OPTIONS.map((opt) => (
+          {fields.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
             </option>

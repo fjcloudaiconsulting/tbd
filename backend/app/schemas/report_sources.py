@@ -15,8 +15,16 @@ class SourceMeasureOut(BaseModel):
     format: str
 
 
+class SourceFilterOut(BaseModel):
+    field: str
+    label: str
+    ops: list[str]
+    kind: str
+
+
 class SourceCatalogEntry(BaseModel):
     key: str
     label: str
     dimensions: list[SourceDimensionOut]
     measures: list[SourceMeasureOut]
+    filters: list[SourceFilterOut]

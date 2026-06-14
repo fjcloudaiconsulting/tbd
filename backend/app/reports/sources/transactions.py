@@ -10,7 +10,10 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.reports.sources import register
-from app.reports.sources.base import ReportSource, SourceDimension, SourceMeasure
+from app.reports.sources.base import (
+    ReportSource, SourceDimension, SourceFilter, SourceMeasure,
+    validate_against_catalog,
+)
 from app.schemas.reports_query import ReportsQuery
 from app.services.reports_query_service import execute_query
 
@@ -32,6 +35,16 @@ _MEASURES = [
     SourceMeasure("count_rows", "Transaction count", "count", "id", "number"),
 ]
 
+_FILTERS = [
+    SourceFilter("date", "Date", ("between", "gte", "lte"), "time"),
+    SourceFilter("amount", "Amount", ("between", "gte", "lte", "eq"), "amount"),
+    SourceFilter("category_id", "Category", ("eq", "in"), "category"),
+    SourceFilter("account_id", "Account", ("eq", "in"), "account"),
+    SourceFilter("txn_type", "Type", ("eq", "in"), "type"),
+    SourceFilter("status", "Status", ("eq",), "status"),
+    SourceFilter("tag_name", "Tag", ("eq", "in"), "tag"),
+]
+
 
 class TransactionsSource:
     key = "transactions"
@@ -42,6 +55,12 @@ class TransactionsSource:
 
     def measures(self) -> list[SourceMeasure]:
         return list(_MEASURES)
+
+    def filters(self) -> list[SourceFilter]:
+        return list(_FILTERS)
+
+    def validate(self, query: ReportsQuery) -> None:
+        validate_against_catalog(self, query)
 
     async def build_rows(
         self, db: AsyncSession, org_id: int, query: ReportsQuery
