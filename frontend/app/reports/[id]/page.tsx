@@ -310,7 +310,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   // mid-typing PATCH response can't clobber what the user is typing.
   const [titleDraft, setTitleDraft] = useState("");
   // Synchronous re-entry guard so Enter-then-blur in the same tick can't
-  // fire two PATCHes (the ``renamingTitle`` state flips a tick too late).
+  // fire two PATCHes — a state flag would flip a tick too late, so we use a ref.
   const titleCommitInFlight = useRef(false);
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
