@@ -63,7 +63,33 @@ const TRANSACTIONS_SOURCE: SourceCatalogEntry = {
   ],
 };
 
-const SOURCES: SourceCatalogEntry[] = [ACCOUNTS_SOURCE, TRANSACTIONS_SOURCE];
+const RECURRING_SOURCE: SourceCatalogEntry = {
+  key: "recurring",
+  label: "Recurring",
+  dimensions: [
+    { key: "category", label: "Category", kind: "category" },
+    { key: "frequency", label: "Frequency", kind: "category" },
+  ],
+  measures: [
+    {
+      key: "sum_amount",
+      label: "Sum of amount",
+      agg: "sum",
+      field: "amount",
+      format: "currency",
+    },
+  ],
+  // No ``date`` filter — recurring templates have no transaction date.
+  filters: [
+    { field: "amount", label: "Amount", ops: ["between"], kind: "amount" },
+  ],
+};
+
+const SOURCES: SourceCatalogEntry[] = [
+  ACCOUNTS_SOURCE,
+  TRANSACTIONS_SOURCE,
+  RECURRING_SOURCE,
+];
 
 function accountsBarWidget(): BarWidget {
   return {
@@ -75,6 +101,20 @@ function accountsBarWidget(): BarWidget {
       dataset: "accounts",
       measure: { agg: "sum", field: "balance" },
       dimensions: ["account_type"],
+    },
+  };
+}
+
+function recurringBarWidget(): BarWidget {
+  return {
+    id: "w-recurring",
+    type: "bar",
+    title: "Recurring spend by category",
+    grid: { x: 0, y: 0, w: 6, h: 4 },
+    config: {
+      dataset: "recurring",
+      measure: { agg: "sum", field: "amount" },
+      dimensions: ["category"],
     },
   };
 }
@@ -102,6 +142,10 @@ describe("sourceSupportsDateFilter", () => {
     expect(sourceSupportsDateFilter(SOURCES, "transactions")).toBe(true);
   });
 
+  it("is false for the recurring source (no date filter)", () => {
+    expect(sourceSupportsDateFilter(SOURCES, "recurring")).toBe(false);
+  });
+
   it("defaults to true when the catalog is empty (pre-load)", () => {
     expect(sourceSupportsDateFilter([], "transactions")).toBe(true);
     expect(sourceSupportsDateFilter([], "accounts")).toBe(true);
@@ -122,6 +166,16 @@ describe("buildQueryAst — dataset stamping + date-less source", () => {
       sourceSupportsDateFilter(SOURCES, "accounts"),
     );
     expect(ast.dataset).toBe("accounts");
+    expect(ast.filters.some((f) => f.field === "date")).toBe(false);
+  });
+
+  it("stamps dataset='recurring' and OMITS the canvas date filter", () => {
+    const ast = buildQueryAst(
+      recurringBarWidget(),
+      CANVAS_DATE,
+      sourceSupportsDateFilter(SOURCES, "recurring"),
+    );
+    expect(ast.dataset).toBe("recurring");
     expect(ast.filters.some((f) => f.field === "date")).toBe(false);
   });
 

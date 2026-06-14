@@ -31,6 +31,18 @@ import type {
 } from "@/lib/reports/types";
 
 /**
+ * Pre-load fallback labels for the data-source select, used only while
+ * the ``/sources`` catalog is still loading (so the control never renders
+ * empty). Once the catalog resolves the select lists every source by its
+ * own catalog label instead.
+ */
+const DATASET_FALLBACK_LABELS: Record<Dataset, string> = {
+  transactions: "Transactions",
+  accounts: "Accounts",
+  recurring: "Recurring",
+};
+
+/**
  * Catalog-free dimension options: the static ``DIMENSION_OPTIONS`` plus
  * any of the widget's CURRENT dimension keys that aren't already in that
  * list (e.g. accounts-only ``account_type`` on a persisted accounts widget
@@ -114,9 +126,7 @@ export default function DataTab({
             // Graceful fallback while the catalog loads: show the
             // widget's current source so the control never renders empty.
             <option value={widget.config.dataset}>
-              {widget.config.dataset === "accounts"
-                ? "Accounts"
-                : "Transactions"}
+              {DATASET_FALLBACK_LABELS[widget.config.dataset] ?? "Transactions"}
             </option>
           )}
         </select>

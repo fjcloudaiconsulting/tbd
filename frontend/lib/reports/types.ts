@@ -24,7 +24,7 @@ export type WidgetType =
 // values to the editor's ``addWidget`` factory.
 export type WidgetTypeV1 = WidgetType;
 
-export type Dataset = "transactions" | "accounts";
+export type Dataset = "transactions" | "accounts" | "recurring";
 
 export type Aggregation = "sum" | "count" | "avg" | "distinct";
 
@@ -47,7 +47,9 @@ export type Dimension =
   | "day"
   | "account_type"
   | "currency"
-  | "account_active";
+  | "account_active"
+  | "frequency"
+  | "recurring_active";
 
 export type FilterField =
   | "date"
