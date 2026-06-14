@@ -61,6 +61,7 @@ from app.reports.sources import all_sources, get_source
 from app.schemas.report_sources import (
     SourceCatalogEntry,
     SourceDimensionOut,
+    SourceFilterOut,
     SourceMeasureOut,
 )
 from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse
@@ -164,8 +165,16 @@ async def _run_source_query(db: AsyncSession, ast: ReportsQuery, *, org_id: int)
     Unknown dataset is impossible from the wire (the Dataset enum is
     closed and Pydantic-validated), so a KeyError here is a server bug,
     not user input — let it surface as 500.
+
+    Pydantic proves the AST is well-formed; ``source.validate`` proves it
+    stays within THIS source's published catalog. A catalog violation is
+    user input — mapped to 422 (a raw ValueError would otherwise 500).
     """
     source = get_source(ast.dataset.value)
+    try:
+        source.validate(ast)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return await source.build_rows(db, org_id, ast)
 
 
@@ -268,6 +277,7 @@ async def list_sources(current_user: User = Depends(get_current_user)):
             label=s.label,
             dimensions=[SourceDimensionOut(**dataclasses.asdict(d)) for d in s.dimensions()],
             measures=[SourceMeasureOut(**dataclasses.asdict(m)) for m in s.measures()],
+            filters=[SourceFilterOut(**dataclasses.asdict(f)) for f in s.filters()],
         )
         for s in all_sources()
     ]

@@ -151,6 +151,20 @@ async def test_sources_endpoint_lists_transactions_catalog(session_factory):
         assert "field" in m
         assert "format" in m
 
+    # Filters: every catalog entry carries a non-empty filter list whose
+    # items expose field/label/ops/kind.
+    for s in body:
+        assert isinstance(s["filters"], list)
+        assert s["filters"]
+        for f in s["filters"]:
+            assert "field" in f
+            assert "label" in f
+            assert "ops" in f and isinstance(f["ops"], list)
+            assert "kind" in f
+
+    # Transactions must publish a "date" filter.
+    assert any(f["field"] == "date" for f in tx["filters"])
+
 
 @pytest.mark.asyncio
 async def test_sources_endpoint_404_when_flag_off(session_factory, monkeypatch):

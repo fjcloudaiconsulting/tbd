@@ -33,6 +33,20 @@ class SourceMeasure:
     format: str    # currency|number|percent
 
 
+# Filter fields the shared canvas date-bar can stamp onto any widget. A
+# source that does not publish one of these (e.g. a date-less accounts
+# source) drops the stray filter at build time rather than 422-ing.
+SHARED_CANVAS_FILTER_FIELDS = frozenset({"date", "account_id", "category_id"})
+
+
+@dataclass(frozen=True)
+class SourceFilter:
+    field: str            # AST FilterField value, e.g. "currency"
+    label: str            # human label for the editor
+    ops: tuple[str, ...]  # allowed FilterOp values, e.g. ("eq", "in")
+    kind: str             # control hint: account|account_type|currency|boolean|...
+
+
 @runtime_checkable
 class ReportSource(Protocol):
     key: str
@@ -42,6 +56,38 @@ class ReportSource(Protocol):
 
     def measures(self) -> list[SourceMeasure]: ...
 
+    def filters(self) -> list[SourceFilter]: ...
+
+    def validate(self, query: ReportsQuery) -> None:
+        """Raise ValueError if the AST references a dimension / measure field /
+        filter field this source does not publish. Shared-canvas fields that
+        don't apply to this source are dropped, not rejected."""
+        ...
+
     async def build_rows(
         self, db: AsyncSession, org_id: int, query: ReportsQuery
     ) -> tuple[list[dict], dict]: ...  # meta dict carries row_count, truncated, query_ms — coerced to QueryMeta at the router
+
+
+def validate_against_catalog(source: "ReportSource", query: ReportsQuery) -> None:
+    dim_keys = {d.key for d in source.dimensions()}
+    for dim in query.dimensions:
+        if dim.value not in dim_keys:
+            raise ValueError(
+                f"source {source.key!r} does not support dimension {dim.value!r}"
+            )
+    measure_fields = {m.field for m in source.measures()}
+    if query.measure.field.value not in measure_fields:
+        raise ValueError(
+            f"source {source.key!r} does not support measure field "
+            f"{query.measure.field.value!r}"
+        )
+    filter_fields = {f.field for f in source.filters()}
+    for f in query.filters:
+        if f.field.value in filter_fields:
+            continue
+        if f.field.value in SHARED_CANVAS_FILTER_FIELDS:
+            continue  # shared-bar artifact → dropped at build time
+        raise ValueError(
+            f"source {source.key!r} does not support filter field {f.field.value!r}"
+        )
