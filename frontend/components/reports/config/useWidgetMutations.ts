@@ -18,12 +18,14 @@ import {
 import type {
   AreaConfig,
   BarConfig,
+  Dataset,
   Dimension,
   KPIConfig,
   LineConfig,
   Measure,
   PieConfig,
   SeriesConfig,
+  SourceCatalogEntry,
   SparklineConfig,
   StackedBarConfig,
   TableConfig,
@@ -108,6 +110,47 @@ export function buildWidgetMutations(
     onUpdate(next);
   }
 
+  /**
+   * Switches the widget's data source and prunes any now-invalid
+   * dimension. ``entry`` is the SELECTED source's catalog; dimensions
+   * not present in it would 422 at query time against the backend
+   * ``validate()``, so they are dropped. The primary dimension is reset
+   * to the new source's first dimension key when the current primary
+   * isn't carried by the new source (KPI widgets carry no dimensions and
+   * only get their ``dataset`` swapped).
+   */
+  function setDataset(dataset: Dataset, entry: SourceCatalogEntry) {
+    if (widget.type === "kpi") {
+      const next: Widget = {
+        ...widget,
+        config: { ...(widget.config as KPIConfig), dataset },
+      };
+      onUpdate(next);
+      return;
+    }
+    const cfg = widget.config as
+      | BarConfig
+      | LineConfig
+      | AreaConfig
+      | PieConfig
+      | SparklineConfig
+      | StackedBarConfig
+      | TableConfig;
+    const valid = new Set(entry.dimensions.map((d) => d.key));
+    const fallback = entry.dimensions[0]?.key as Dimension | undefined;
+    // Keep dimensions the new source carries, in order; drop the rest.
+    let dims = (cfg.dimensions ?? []).filter((d) => valid.has(d));
+    // The primary slot must always be filled with a valid dimension.
+    if (dims.length === 0 && fallback) {
+      dims = [fallback];
+    }
+    const next: Widget = {
+      ...widget,
+      config: { ...cfg, dataset, dimensions: dims },
+    } as Widget;
+    onUpdate(next);
+  }
+
   function setComparePrior(value: boolean) {
     if (widget.type !== "kpi") return;
     const next: Widget = {
@@ -148,6 +191,7 @@ export function buildWidgetMutations(
     setSeries,
     setPrimaryDimension,
     setSecondaryDimension,
+    setDataset,
     setComparePrior,
     setTopN,
     setStacked,

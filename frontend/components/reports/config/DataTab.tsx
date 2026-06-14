@@ -12,11 +12,14 @@ import SingleMeasureEditor from "@/components/reports/config/SingleMeasureEditor
 import MeasuresEditor from "@/components/reports/config/MeasuresEditor";
 import {
   DIMENSION_OPTIONS,
+  dimensionOptionsFor,
   isMultiSeries,
 } from "@/components/reports/config/controlConstants";
 import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
+import { useReportSources } from "@/lib/reports/use-report-sources";
 import type {
   BarConfig,
+  Dataset,
   Dimension,
   KPIConfig,
   PieConfig,
@@ -37,18 +40,48 @@ export default function DataTab({
     setSeries,
     setPrimaryDimension,
     setSecondaryDimension,
+    setDataset,
   } = buildWidgetMutations(widget, onUpdate);
+
+  const { sources } = useReportSources();
+  // The catalog entry for the widget's current source. While the
+  // catalog is still loading (``sources`` empty) this is undefined and
+  // the dimension pickers fall back to the static ``DIMENSION_OPTIONS``.
+  const selected = sources.find((s) => s.key === widget.config.dataset);
+  const dimOptions = selected
+    ? dimensionOptionsFor(selected)
+    : DIMENSION_OPTIONS;
+
+  function onSourceChange(key: string) {
+    const entry = sources.find((s) => s.key === key);
+    if (!entry) return; // unknown / not-yet-loaded source — no-op
+    setDataset(key as Dataset, entry);
+  }
 
   return (
     <>
       <Section label="Data source">
         <select
-          disabled
           value={widget.config.dataset}
+          onChange={(e) => onSourceChange(e.target.value)}
           aria-label="Data source"
-          className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-muted"
+          className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
         >
-          <option value="transactions">Transactions</option>
+          {sources.length > 0 ? (
+            sources.map((s) => (
+              <option key={s.key} value={s.key}>
+                {s.label}
+              </option>
+            ))
+          ) : (
+            // Graceful fallback while the catalog loads: show the
+            // widget's current source so the control never renders empty.
+            <option value={widget.config.dataset}>
+              {widget.config.dataset === "accounts"
+                ? "Accounts"
+                : "Transactions"}
+            </option>
+          )}
         </select>
       </Section>
 
@@ -80,7 +113,7 @@ export default function DataTab({
             aria-label="Primary dimension"
             className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
           >
-            {DIMENSION_OPTIONS.map((opt) => (
+            {dimOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
@@ -118,7 +151,7 @@ export default function DataTab({
             className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
           >
             <option value="">None</option>
-            {DIMENSION_OPTIONS.map((opt) => (
+            {dimOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>

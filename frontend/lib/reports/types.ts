@@ -24,7 +24,7 @@ export type WidgetType =
 // values to the editor's ``addWidget`` factory.
 export type WidgetTypeV1 = WidgetType;
 
-export type Dataset = "transactions";
+export type Dataset = "transactions" | "accounts";
 
 export type Aggregation = "sum" | "count" | "avg" | "distinct";
 
@@ -39,7 +39,10 @@ export type Dimension =
   | "status"
   | "month"
   | "week"
-  | "day";
+  | "day"
+  | "account_type"
+  | "currency"
+  | "account_active";
 
 export type FilterField =
   | "date"
@@ -319,4 +322,40 @@ export interface ReportUpdatePayload {
   visibility?: ReportVisibility;
   layout_json?: LayoutJson | Record<string, never>;
   canvas_filters_json?: CanvasFilters | Record<string, never>;
+}
+
+// ─── source catalog (GET /api/v1/reports/sources) ───────────────
+//
+// The self-describing data-source registry. Each entry declares the
+// dimensions, measures, and filters a source supports; the widget
+// editor drives its pickers off the selected source's catalog so a
+// widget can never offer (and then 422 on) an out-of-source field.
+
+export interface SourceCatalogFilter {
+  field: string;
+  label: string;
+  ops: string[];
+  kind: string;
+}
+
+export interface SourceCatalogDimension {
+  key: string;
+  label: string;
+  kind: string;
+}
+
+export interface SourceCatalogMeasure {
+  key: string;
+  label: string;
+  agg: string;
+  field: string;
+  format: string;
+}
+
+export interface SourceCatalogEntry {
+  key: string;
+  label: string;
+  dimensions: SourceCatalogDimension[];
+  measures: SourceCatalogMeasure[];
+  filters: SourceCatalogFilter[];
 }

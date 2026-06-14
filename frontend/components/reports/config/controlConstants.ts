@@ -13,6 +13,7 @@ import type {
   Dimension,
   LineConfig,
   MeasureField,
+  SourceCatalogEntry,
   StackedBarConfig,
   TableConfig,
   Widget,
@@ -51,6 +52,19 @@ export const DIMENSION_OPTIONS: Array<{ value: Dimension; label: string }> = [
   { value: "week", label: "Week" },
   { value: "day", label: "Day" },
 ];
+
+/**
+ * Maps a source catalog entry's dimensions to picker options
+ * (``{value: key, label}``). Used by the Data tab to drive the
+ * primary/secondary dimension selects off the SELECTED source rather
+ * than the static ``DIMENSION_OPTIONS`` fallback, so an accounts widget
+ * never offers transactions-only dimensions (and vice versa).
+ */
+export function dimensionOptionsFor(
+  entry: SourceCatalogEntry,
+): Array<{ value: string; label: string }> {
+  return entry.dimensions.map((d) => ({ value: d.key, label: d.label }));
+}
 
 export const MAX_SERIES = 5;
 export const MAX_TABLE_COLUMNS = 5;

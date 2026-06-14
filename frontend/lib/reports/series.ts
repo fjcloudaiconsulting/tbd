@@ -37,6 +37,9 @@ export const DIMENSION_HEADERS: Record<Dimension, string> = {
   month: "Month",
   week: "Week",
   day: "Day",
+  account_type: "Account type",
+  currency: "Currency",
+  account_active: "Active",
 };
 
 /** Header label for a dimension key, falling back to the raw key. */
