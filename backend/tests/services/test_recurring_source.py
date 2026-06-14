@@ -366,18 +366,20 @@ async def test_amount_between_filter(db_session, seeded):
 
 @pytest.mark.asyncio
 async def test_amount_gte_filter(db_session, seeded):
-    """amount GTE 1000 counts only Rent (1200) + Salary (3000). Pins the
-    comparison direction (>= not <=) on the gte branch."""
+    """amount GTE 30 counts Rent (1200) + Salary (3000) + Gym (30) = 3,
+    excluding OldSub (10). Threshold 30 pins the comparison direction: a
+    swapped `<= 30` would yield only {30, 10} = 2, so 3 != 2 catches a
+    gte/lte swap on the gte branch."""
     src = _source()
     ast = _query(
         filters=[
-            Filter(field=FilterField.AMOUNT, op=FilterOp.GTE, value=1000),
+            Filter(field=FilterField.AMOUNT, op=FilterOp.GTE, value=30),
         ],
     )
     src.validate(ast)
     rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
     assert len(rows) == 1
-    assert rows[0]["value"] == 2
+    assert rows[0]["value"] == 3
 
 
 @pytest.mark.asyncio
