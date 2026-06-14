@@ -2149,5 +2149,10 @@ async def reconcile_account(
             Transaction.status == TransactionStatus.SETTLED,
         )
     )
-    computed = income - expense
+    # The live balance is seeded from opening_balance at creation and then
+    # moved by each settled row, so the invariant is
+    #   balance == opening_balance + Σ settled(income − expense).
+    # computed must include opening_balance or every account with a non-zero
+    # opening is falsely flagged inconsistent (2026-06-14 incident).
+    computed = account.opening_balance + income - expense
     return account.balance, computed, account.balance == computed
