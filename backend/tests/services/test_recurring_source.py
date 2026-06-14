@@ -245,6 +245,9 @@ async def test_txn_type_dimension_keys_are_plain_strings(db_session, seeded):
     rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
     for r in rows:
         assert type(r["txn_type"]) is str
+    # Verify the actual key values, not just their type: the seed has
+    # expense + income templates (recurring never has transfer).
+    assert {r["txn_type"] for r in rows} == {"income", "expense"}
 
 
 # ─── avg + IN filters ───────────────────────────────────────────────
@@ -364,12 +367,13 @@ async def test_amount_between_filter(db_session, seeded):
 # ─── op-reject (→422) ───────────────────────────────────────────────
 
 
-def test_validate_rejects_frequency_between_op():
-    """frequency only supports eq/in. A `between` op must be rejected."""
+def test_validate_rejects_frequency_unsupported_scalar_op():
+    """frequency only supports eq/in. A schema-valid scalar op the catalog
+    does not list (gte) must be rejected."""
     src = _source()
-    # between is only schema-valid on date/amount/balance, so build a
-    # frequency `in` filter then assert the validator rejects an unsupported
-    # op by using `gte` (schema-allowed scalar) which frequency does not list.
+    # `between` is only schema-valid on date/amount/balance, so we can't use
+    # it here; use `gte` (a schema-allowed scalar op) which the frequency
+    # catalog (eq/in) does not list, and assert the validator rejects it.
     ast = _query(
         filters=[Filter(field=FilterField.FREQUENCY, op=FilterOp.GTE, value="monthly")],
     )
@@ -387,6 +391,45 @@ def test_validate_rejects_recurring_active_in_op():
     )
     with pytest.raises(ValueError):
         src.validate(ast)
+
+
+# ─── Fix 1: txn_type='transfer' is invalid for recurring ────────────
+
+
+def test_validate_rejects_txn_type_transfer_eq():
+    """RecurringTransaction.type is Enum(income, expense) — recurring has NO
+    transfer. The shared scalar coercion accepts transfer (correct for
+    transactions), so validate() must reject it here or it silently compiles
+    to type=='transfer' (empty result on MySQL)."""
+    src = _source()
+    ast = _query(
+        filters=[Filter(field=FilterField.TXN_TYPE, op=FilterOp.EQ, value="transfer")],
+    )
+    with pytest.raises(ValueError):
+        src.validate(ast)
+
+
+def test_validate_rejects_txn_type_transfer_in_list():
+    """An `in` list containing transfer must also be rejected, even when it
+    also lists a valid value (income)."""
+    src = _source()
+    ast = _query(
+        filters=[
+            Filter(field=FilterField.TXN_TYPE, op=FilterOp.IN,
+                   value=["income", "transfer"]),
+        ],
+    )
+    with pytest.raises(ValueError):
+        src.validate(ast)
+
+
+def test_validate_accepts_txn_type_income_eq():
+    """Sanity: a valid recurring txn_type (income) must NOT raise."""
+    src = _source()
+    ast = _query(
+        filters=[Filter(field=FilterField.TXN_TYPE, op=FilterOp.EQ, value="income")],
+    )
+    src.validate(ast)  # must not raise
 
 
 # ─── cross-source reject ────────────────────────────────────────────
@@ -445,6 +488,9 @@ async def test_date_filter_tolerated_and_dropped(db_session, seeded):
 
 @pytest.mark.asyncio
 async def test_sort_by_value_asc(db_session, seeded):
+    """Grouped query (dim=category) sorted ascending by value returns rows
+    ordered low → high SUM(amount). Category sums over the seed:
+    Health = Gym 30; Housing = Rent 1200 + OldSub 10 = 1210; Income = 3000."""
     src = _source()
     ast = _query(
         measure=Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
@@ -454,3 +500,69 @@ async def test_sort_by_value_asc(db_session, seeded):
     rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
     values = [r["value"] for r in rows]
     assert values == sorted(values)
+    # Boundary + value anchors (lowest / highest sum category).
+    assert rows[0]["category"] == "Health"
+    assert rows[-1]["category"] == "Income"
+    # Concrete ordered values list (SUM(amount) is coerced to float).
+    assert values == [30.0, 1210.0, 3000.0]
+
+
+@pytest.mark.asyncio
+async def test_sort_truncation_is_deterministic(db_session, seeded):
+    """Engineer a real aggregate tie AT the truncation boundary: two NEW
+    categories whose SUM(amount) is equal (each 5) and lower than every
+    seeded category, so a limit-1 ASC sort must pick between the two tied
+    rows. The func.min(id) tiebreaker guarantees the SAME single dimension
+    value across runs; deleting that ORDER BY line makes this fail (MySQL is
+    free to return either tied row)."""
+    from decimal import Decimal as _Decimal
+    from datetime import date as _date
+
+    # Engineer the tie so the category NAME order opposes the row id /
+    # insertion order: "Zeta" (inserted first → smaller min(id)) vs "Alpha"
+    # (inserted second → larger min(id)). With the func.min(id) tiebreaker
+    # the survivor is deterministic (smaller id, "Zeta"); without it the
+    # engine is free to fall back to grouping/name order ("Alpha") — so
+    # deleting the tiebreaker line flips the truncated value and fails.
+    zeta = Category(org_id=seeded["org1_id"], name="Zeta", type="expense")
+    alpha = Category(org_id=seeded["org1_id"], name="Alpha", type="expense")
+    db_session.add(zeta)
+    await db_session.flush()
+    db_session.add(alpha)
+    await db_session.flush()
+
+    accts, _ = await _ids(db_session, seeded["org1_id"])
+    checking = accts["Checking"]
+    db_session.add_all([
+        RecurringTransaction(
+            org_id=seeded["org1_id"], account_id=checking, category_id=zeta.id,
+            description="Zeta", amount=_Decimal("5"), type="expense",
+            frequency="monthly", next_due_date=_date(2026, 1, 1), is_active=True,
+        ),
+        RecurringTransaction(
+            org_id=seeded["org1_id"], account_id=checking, category_id=alpha.id,
+            description="Alpha", amount=_Decimal("5"), type="expense",
+            frequency="monthly", next_due_date=_date(2026, 1, 1), is_active=True,
+        ),
+    ])
+    await db_session.flush()
+
+    def _ast():
+        return _query(
+            measure=Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
+            dimensions=[Dimension.CATEGORY],
+            sort=SortSpec(by=SortBy.VALUE, dir=SortDir.ASC),
+            limit=1,
+        )
+
+    src = _source()
+    rows_a, _ = await src.build_rows(db_session, seeded["org1_id"], _ast())
+    rows_b, _ = await src.build_rows(db_session, seeded["org1_id"], _ast())
+    assert len(rows_a) == 1
+    assert rows_a[0]["value"] == 5.0  # the tied minimum is what gets truncated to
+    # Stable across runs ...
+    assert rows_a[0]["category"] == rows_b[0]["category"]
+    # ... and anchored to the func.min(id) winner ("Zeta", inserted first =
+    # smaller id), NOT the name-order fallback ("Alpha"). Removing the
+    # tiebreaker ORDER BY flips this to "Alpha" and fails the test.
+    assert rows_a[0]["category"] == "Zeta"

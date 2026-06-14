@@ -196,6 +196,20 @@ class RecurringSource:
 
     def validate(self, query: ReportsQuery) -> None:
         validate_against_catalog(self, query)
+        # RecurringTransaction.type is Enum(income, expense) — recurring has
+        # NO transfer. The shared txn_type scalar coercion accepts transfer
+        # (correct for transactions), so a transfer filter passes schema +
+        # catalog here and would compile to type=='transfer' (silent empty
+        # result on MySQL). Reject it authoritatively for this source only;
+        # transactions legitimately allows transfer.
+        for f in query.filters:
+            if f.field is FilterField.TXN_TYPE:
+                values = f.value if isinstance(f.value, (list, tuple)) else [f.value]
+                if any(v not in ("income", "expense") for v in values):
+                    raise ValueError(
+                        "recurring: txn_type 'transfer' is not valid for "
+                        "recurring templates"
+                    )
 
     async def build_rows(
         self, db: AsyncSession, org_id: int, query: ReportsQuery
