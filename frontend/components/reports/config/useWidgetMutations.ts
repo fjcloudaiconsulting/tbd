@@ -111,19 +111,43 @@ export function buildWidgetMutations(
   }
 
   /**
-   * Switches the widget's data source and prunes any now-invalid
-   * dimension. ``entry`` is the SELECTED source's catalog; dimensions
-   * not present in it would 422 at query time against the backend
-   * ``validate()``, so they are dropped. The primary dimension is reset
-   * to the new source's first dimension key when the current primary
-   * isn't carried by the new source (KPI widgets carry no dimensions and
-   * only get their ``dataset`` swapped).
+   * Switches the widget's data source, resetting both measure(s) and
+   * dimensions that the new source doesn't carry. ``entry`` is the
+   * SELECTED source's catalog; a measure field or dimension not published
+   * by it would 422 at query time against the backend ``validate()``.
+   *
+   * - Measure: if the current measure's field isn't one the new source
+   *   publishes, reset to the source's FIRST measure (its agg + field), so
+   *   e.g. transactions→accounts defaults to ``sum_balance``
+   *   ({agg:"sum", field:"balance"}). Multi-series widgets collapse to a
+   *   single series carrying that first measure.
+   * - Dimensions: keep the ones the new source carries (in order); drop
+   *   the rest, refilling the primary slot with the source's first
+   *   dimension key. KPI widgets carry no dimensions.
    */
   function setDataset(dataset: Dataset, entry: SourceCatalogEntry) {
+    const measureFields = new Set(entry.measures.map((m) => m.field));
+    const firstMeasure = entry.measures[0];
+    // First valid measure for this source (default after a field-invalid
+    // switch). ``entry.measures`` is always non-empty for a real source;
+    // guard for the degenerate empty-catalog case so we never write an
+    // undefined measure.
+    const resetMeasure: Measure | undefined = firstMeasure
+      ? {
+          agg: firstMeasure.agg as Measure["agg"],
+          field: firstMeasure.field as Measure["field"],
+        }
+      : undefined;
+
     if (widget.type === "kpi") {
+      const cfg = widget.config as KPIConfig;
+      const measure =
+        resetMeasure && !measureFields.has(cfg.measure.field)
+          ? resetMeasure
+          : cfg.measure;
       const next: Widget = {
         ...widget,
-        config: { ...(widget.config as KPIConfig), dataset },
+        config: { ...cfg, dataset, measure },
       };
       onUpdate(next);
       return;
@@ -144,9 +168,35 @@ export function buildWidgetMutations(
     if (dims.length === 0 && fallback) {
       dims = [fallback];
     }
+
+    if (isMultiSeries(widget)) {
+      const mcfg = cfg as LineConfig | AreaConfig | StackedBarConfig | TableConfig;
+      // Reset measures when ANY series references a field the new source
+      // doesn't publish. Collapse to a single series carrying the source's
+      // first measure (simplest fully-valid reset).
+      const allValid = mcfg.measures.every((s) =>
+        measureFields.has(s.measure.field),
+      );
+      const measures: SeriesConfig[] =
+        allValid || !resetMeasure
+          ? mcfg.measures
+          : [{ measure: resetMeasure }];
+      const next: Widget = {
+        ...widget,
+        config: { ...mcfg, dataset, dimensions: dims, measures },
+      } as Widget;
+      onUpdate(next);
+      return;
+    }
+
+    const scfg = cfg as BarConfig | PieConfig | SparklineConfig;
+    const measure =
+      resetMeasure && !measureFields.has(scfg.measure.field)
+        ? resetMeasure
+        : scfg.measure;
     const next: Widget = {
       ...widget,
-      config: { ...cfg, dataset, dimensions: dims },
+      config: { ...scfg, dataset, dimensions: dims, measure },
     } as Widget;
     onUpdate(next);
   }

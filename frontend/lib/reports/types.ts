@@ -28,7 +28,12 @@ export type Dataset = "transactions" | "accounts";
 
 export type Aggregation = "sum" | "count" | "avg" | "distinct";
 
-export type MeasureField = "amount" | "id" | "category_id" | "account_id";
+export type MeasureField =
+  | "amount"
+  | "id"
+  | "category_id"
+  | "account_id"
+  | "balance";
 
 export type Dimension =
   | "category"

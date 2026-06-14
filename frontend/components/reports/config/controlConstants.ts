@@ -66,6 +66,31 @@ export function dimensionOptionsFor(
   return entry.dimensions.map((d) => ({ value: d.key, label: d.label }));
 }
 
+/**
+ * Maps a source catalog entry's measures to FIELD picker options
+ * (``{value: field, label}``), de-duplicated to the distinct fields the
+ * source actually publishes (e.g. transactions → amount + id; accounts →
+ * balance + id), preserving catalog order. The Data tab drives the
+ * measure field selects off the SELECTED source's catalog rather than the
+ * static ``FIELD_OPTIONS`` fallback, so an accounts widget never offers a
+ * transactions-only field like ``amount`` (and then 422s at query time).
+ */
+export function measureFieldOptionsFor(
+  entry: SourceCatalogEntry,
+): Array<{ value: string; label: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ value: string; label: string }> = [];
+  for (const m of entry.measures) {
+    if (seen.has(m.field)) continue;
+    seen.add(m.field);
+    out.push({
+      value: m.field,
+      label: MEASURE_FIELD_LABELS[m.field as MeasureField] ?? m.field,
+    });
+  }
+  return out;
+}
+
 export const MAX_SERIES = 5;
 export const MAX_TABLE_COLUMNS = 5;
 

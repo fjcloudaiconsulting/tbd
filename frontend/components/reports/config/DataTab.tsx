@@ -14,7 +14,9 @@ import {
   DIMENSION_OPTIONS,
   dimensionOptionsFor,
   isMultiSeries,
+  measureFieldOptionsFor,
 } from "@/components/reports/config/controlConstants";
+import { dimensionHeader } from "@/lib/reports/series";
 import { buildWidgetMutations } from "@/components/reports/config/useWidgetMutations";
 import { useReportSources } from "@/lib/reports/use-report-sources";
 import type {
@@ -27,6 +29,26 @@ import type {
   TableConfig,
   Widget,
 } from "@/lib/reports/types";
+
+/**
+ * Catalog-free dimension options: the static ``DIMENSION_OPTIONS`` plus
+ * any of the widget's CURRENT dimension keys that aren't already in that
+ * list (e.g. accounts-only ``account_type`` on a persisted accounts widget
+ * loaded before ``/sources`` resolves). Ensures every controlled select
+ * value has a matching option even without a catalog entry.
+ */
+function dimensionOptionsWithCurrent(
+  current: Dimension[],
+): Array<{ value: string; label: string }> {
+  const out: Array<{ value: string; label: string }> = [...DIMENSION_OPTIONS];
+  const seen = new Set(out.map((o) => o.value));
+  for (const key of current) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ value: key, label: dimensionHeader(key) });
+  }
+  return out;
+}
 
 export default function DataTab({
   widget,
@@ -46,11 +68,26 @@ export default function DataTab({
   const { sources } = useReportSources();
   // The catalog entry for the widget's current source. While the
   // catalog is still loading (``sources`` empty) this is undefined and
-  // the dimension pickers fall back to the static ``DIMENSION_OPTIONS``.
+  // the pickers fall back to a catalog-free option set.
   const selected = sources.find((s) => s.key === widget.config.dataset);
+
+  // Dimension options. When a catalog entry is known, narrow to its
+  // dimensions. Otherwise (catalog still loading) fall back to the static
+  // ``DIMENSION_OPTIONS`` UNIONED with the widget's current dimensions, so
+  // a persisted accounts widget loaded before ``/sources`` resolves
+  // doesn't render a select value (e.g. ``account_type``) with no matching
+  // option — that mismatch trips React's "value not in options" warning.
+  const currentDims = (
+    (widget.config as { dimensions?: Dimension[] }).dimensions ?? []
+  ) as Dimension[];
   const dimOptions = selected
     ? dimensionOptionsFor(selected)
-    : DIMENSION_OPTIONS;
+    : dimensionOptionsWithCurrent(currentDims);
+
+  // Field options narrowed to the selected source's published measures.
+  // Undefined while the catalog loads → the editors fall back to the
+  // static ``FIELD_OPTIONS``.
+  const fieldOptions = selected ? measureFieldOptionsFor(selected) : undefined;
 
   function onSourceChange(key: string) {
     const entry = sources.find((s) => s.key === key);
@@ -92,6 +129,7 @@ export default function DataTab({
         <MeasuresEditor
           widget={widget}
           onChange={setSeries}
+          fieldOptions={fieldOptions}
         />
       ) : (
         <SingleMeasureEditor
@@ -100,6 +138,7 @@ export default function DataTab({
               .measure
           }
           onChange={setSingleMeasure}
+          fieldOptions={fieldOptions}
         />
       )}
 
