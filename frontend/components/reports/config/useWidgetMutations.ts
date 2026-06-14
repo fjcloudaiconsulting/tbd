@@ -15,15 +15,18 @@ import {
   isMultiSeries,
   isSingleAggLocked,
 } from "@/components/reports/config/controlConstants";
+import { pruneFiltersToSource } from "@/lib/reports/resolve";
 import type {
   AreaConfig,
   BarConfig,
+  Dataset,
   Dimension,
   KPIConfig,
   LineConfig,
   Measure,
   PieConfig,
   SeriesConfig,
+  SourceCatalogEntry,
   SparklineConfig,
   StackedBarConfig,
   TableConfig,
@@ -108,6 +111,108 @@ export function buildWidgetMutations(
     onUpdate(next);
   }
 
+  /**
+   * Switches the widget's data source, resetting both measure(s) and
+   * dimensions that the new source doesn't carry. ``entry`` is the
+   * SELECTED source's catalog; a measure field or dimension not published
+   * by it would 422 at query time against the backend ``validate()``.
+   *
+   * - Measure: if the current measure's field isn't one the new source
+   *   publishes, reset to the source's FIRST measure (its agg + field), so
+   *   e.g. transactions→accounts defaults to ``sum_balance``
+   *   ({agg:"sum", field:"balance"}). Multi-series widgets collapse to a
+   *   single series carrying that first measure.
+   * - Dimensions: keep the ones the new source carries (in order); drop
+   *   the rest, refilling the primary slot with the source's first
+   *   dimension key. KPI widgets carry no dimensions.
+   * - Per-widget filters: prune ``config.filters`` to only the filter
+   *   fields the new source publishes (``pruneFiltersToSource``). A
+   *   leftover ``category_ids`` / ``txn_type`` / date filter from a
+   *   transactions widget would otherwise 422 against the accounts
+   *   source's ``validate()`` at the next query.
+   */
+  function setDataset(dataset: Dataset, entry: SourceCatalogEntry) {
+    const measureFields = new Set(entry.measures.map((m) => m.field));
+    const firstMeasure = entry.measures[0];
+    // Filter fields the NEW source publishes. ``config.filters`` is
+    // pruned to these so no stale per-widget filter survives a switch.
+    const publishedFilterFields = entry.filters.map((f) => f.field);
+    // First valid measure for this source (default after a field-invalid
+    // switch). ``entry.measures`` is always non-empty for a real source;
+    // guard for the degenerate empty-catalog case so we never write an
+    // undefined measure.
+    const resetMeasure: Measure | undefined = firstMeasure
+      ? {
+          agg: firstMeasure.agg as Measure["agg"],
+          field: firstMeasure.field as Measure["field"],
+        }
+      : undefined;
+
+    if (widget.type === "kpi") {
+      const cfg = widget.config as KPIConfig;
+      const measure =
+        resetMeasure && !measureFields.has(cfg.measure.field)
+          ? resetMeasure
+          : cfg.measure;
+      const filters = pruneFiltersToSource(cfg.filters, publishedFilterFields);
+      const next: Widget = {
+        ...widget,
+        config: { ...cfg, dataset, measure, filters },
+      };
+      onUpdate(next);
+      return;
+    }
+    const cfg = widget.config as
+      | BarConfig
+      | LineConfig
+      | AreaConfig
+      | PieConfig
+      | SparklineConfig
+      | StackedBarConfig
+      | TableConfig;
+    const valid = new Set(entry.dimensions.map((d) => d.key));
+    const fallback = entry.dimensions[0]?.key as Dimension | undefined;
+    // Keep dimensions the new source carries, in order; drop the rest.
+    let dims = (cfg.dimensions ?? []).filter((d) => valid.has(d));
+    // The primary slot must always be filled with a valid dimension.
+    if (dims.length === 0 && fallback) {
+      dims = [fallback];
+    }
+
+    if (isMultiSeries(widget)) {
+      const mcfg = cfg as LineConfig | AreaConfig | StackedBarConfig | TableConfig;
+      // Reset measures when ANY series references a field the new source
+      // doesn't publish. Collapse to a single series carrying the source's
+      // first measure (simplest fully-valid reset).
+      const allValid = mcfg.measures.every((s) =>
+        measureFields.has(s.measure.field),
+      );
+      const measures: SeriesConfig[] =
+        allValid || !resetMeasure
+          ? mcfg.measures
+          : [{ measure: resetMeasure }];
+      const filters = pruneFiltersToSource(mcfg.filters, publishedFilterFields);
+      const next: Widget = {
+        ...widget,
+        config: { ...mcfg, dataset, dimensions: dims, measures, filters },
+      } as Widget;
+      onUpdate(next);
+      return;
+    }
+
+    const scfg = cfg as BarConfig | PieConfig | SparklineConfig;
+    const measure =
+      resetMeasure && !measureFields.has(scfg.measure.field)
+        ? resetMeasure
+        : scfg.measure;
+    const filters = pruneFiltersToSource(scfg.filters, publishedFilterFields);
+    const next: Widget = {
+      ...widget,
+      config: { ...scfg, dataset, dimensions: dims, measure, filters },
+    } as Widget;
+    onUpdate(next);
+  }
+
   function setComparePrior(value: boolean) {
     if (widget.type !== "kpi") return;
     const next: Widget = {
@@ -148,6 +253,7 @@ export function buildWidgetMutations(
     setSeries,
     setPrimaryDimension,
     setSecondaryDimension,
+    setDataset,
     setComparePrior,
     setTopN,
     setStacked,

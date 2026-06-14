@@ -48,6 +48,48 @@ def test_transactions_source_catalog_matches_ast_enums():
     assert (by_key["count_rows"].agg, by_key["count_rows"].field, by_key["count_rows"].format) == ("count", "id", "number")
 
 
+def test_accounts_source_catalog():
+    src = source_registry.get_source("accounts")
+    assert src.key == "accounts"
+    assert {d.key for d in src.dimensions()} == {
+        "account", "account_type", "currency", "account_active",
+    }
+    assert {m.key for m in src.measures()} == {
+        "sum_balance", "avg_balance", "count_accounts",
+    }
+    assert {f.field for f in src.filters()} == {
+        "account_id", "account_type", "currency", "account_active", "balance",
+    }
+
+
+def test_all_catalog_keys_are_known_kinds():
+    known_kinds = {
+        "category", "account", "status", "type", "tag", "time",
+        "account_type", "currency", "boolean", "amount", "number",
+    }
+    for src in source_registry.all_sources():
+        for d in src.dimensions():
+            assert d.kind in known_kinds, f"{src.key}: bad dim kind {d.kind!r}"
+        for f in src.filters():
+            assert f.kind in known_kinds, f"{src.key}: bad filter kind {f.kind!r}"
+
+
+def test_every_source_catalog_keys_subset_of_closed_enums():
+    from app.schemas.reports_query import (
+        Dimension as AstDimension,
+        FilterField as AstFilterField,
+        MeasureField as AstMeasureField,
+    )
+
+    dim_values = {d.value for d in AstDimension}
+    field_values = {f.value for f in AstMeasureField}
+    filter_values = {f.value for f in AstFilterField}
+    for src in source_registry.all_sources():
+        assert {d.key for d in src.dimensions()}.issubset(dim_values), src.key
+        assert {m.field for m in src.measures()}.issubset(field_values), src.key
+        assert {f.field for f in src.filters()}.issubset(filter_values), src.key
+
+
 def test_every_dataset_enum_value_has_a_registered_source():
     from app.reports import sources as source_registry
     from app.schemas.reports_query import Dataset

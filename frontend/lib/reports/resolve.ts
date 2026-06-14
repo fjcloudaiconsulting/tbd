@@ -15,7 +15,9 @@
  */
 import type {
   CanvasFilters,
+  Dataset,
   Filter,
+  SourceCatalogEntry,
   WidgetFilters,
 } from "./types";
 
@@ -84,18 +86,48 @@ function valuesEqual(widgetVal: unknown, canvasVal: unknown): boolean {
 }
 
 /**
+ * True when the data source ``dataset`` publishes a ``date`` filter
+ * field in its catalog entry — i.e. the source has a date column the
+ * canvas date range can scope. ``transactions`` does; ``accounts`` does
+ * not.
+ *
+ * Defaults to ``true`` when the source can't be resolved (empty catalog
+ * during the pre-load window, or a dataset missing from the catalog) so
+ * we never silently drop the transactions date filter while the catalog
+ * is still loading. The backend tolerates a stray date filter on a
+ * date-less source (it drops it server-side), so "default to supports"
+ * is the safe bias.
+ */
+export function sourceSupportsDateFilter(
+  sources: SourceCatalogEntry[] | undefined,
+  dataset: Dataset,
+): boolean {
+  if (!sources || sources.length === 0) return true;
+  const entry = sources.find((s) => s.key === dataset);
+  if (!entry) return true;
+  return entry.filters.some((f) => f.field === "date");
+}
+
+/**
  * Resolves a widget's effective filters into a list of AST filter
  * primitives. ``widget`` overrides on a per-field basis; otherwise
  * the canvas value cascades through.
+ *
+ * ``sourceSupportsDate`` gates the shared canvas date filter: when
+ * ``false`` (a date-less source such as ``accounts``), the date range
+ * is omitted entirely so we never send a filter the source can't
+ * honor. Defaults to ``true`` to preserve current behavior when the
+ * source catalog isn't available yet.
  */
 export function resolveFilters(
   canvas: CanvasFilters | undefined,
   widget: WidgetFilters | undefined,
+  sourceSupportsDate = true,
 ): Filter[] {
   const out: Filter[] = [];
   const canvasDr = canvas?.date_range;
   const widgetDr = widget?.date_range;
-  const dr = pickDateRange(widgetDr, canvasDr);
+  const dr = sourceSupportsDate ? pickDateRange(widgetDr, canvasDr) : undefined;
   if (dr && dr.start && dr.end) {
     out.push({
       field: "date",
@@ -152,6 +184,59 @@ export function resolveFilters(
   }
 
   return out;
+}
+
+/**
+ * Maps each ``WidgetFilters`` key to the backend filter ``field`` it
+ * compiles to (see ``resolveFilters`` above for the actual emission).
+ * The single source of truth for the WidgetFilters↔source-field
+ * mapping, reused by ``pruneFiltersToSource`` so the prune logic can
+ * never drift from what the resolver emits.
+ *
+ * ``tag_match`` is a knob on the ``tag_name`` filter (not its own
+ * field), so it shares ``tag_name``'s mapping and is pruned in lockstep
+ * with ``tag_names``.
+ */
+const FILTER_KEY_TO_SOURCE_FIELD: Record<keyof WidgetFilters, string> = {
+  date_range: "date",
+  account_ids: "account_id",
+  category_ids: "category_id",
+  txn_type: "txn_type",
+  amount_range: "amount",
+  tag_names: "tag_name",
+  tag_match: "tag_name",
+};
+
+/**
+ * Prunes a widget's per-widget ``WidgetFilters`` down to only the
+ * filters the given source publishes. Any key whose backend filter
+ * field isn't in ``publishedFields`` is dropped, so switching a widget's
+ * source (e.g. transactions → accounts) can't strand a filter the new
+ * source's ``validate()`` would 422 (a leftover ``category_ids`` /
+ * ``txn_type`` / ``amount_range`` on an accounts widget).
+ *
+ * ``publishedFields`` is the new source's published filter fields —
+ * ``entry.filters.map((f) => f.field)``. Returns a NEW object (never
+ * mutates the input); returns ``undefined`` when the pruned result is
+ * empty so we don't persist an empty ``{}`` filters blob.
+ */
+export function pruneFiltersToSource(
+  filters: WidgetFilters | undefined,
+  publishedFields: string[],
+): WidgetFilters | undefined {
+  if (!filters) return undefined;
+  const allowed = new Set(publishedFields);
+  const out: WidgetFilters = {};
+  let kept = 0;
+  for (const key of Object.keys(filters) as Array<keyof WidgetFilters>) {
+    const field = FILTER_KEY_TO_SOURCE_FIELD[key];
+    if (!field || !allowed.has(field)) continue;
+    // ``tag_match`` rides along only when ``tag_names`` survives — its
+    // field is ``tag_name``, already gated by the same membership check.
+    Object.assign(out, { [key]: filters[key] });
+    kept += 1;
+  }
+  return kept > 0 ? out : undefined;
 }
 
 /**

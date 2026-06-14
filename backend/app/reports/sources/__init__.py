@@ -26,3 +26,4 @@ def all_sources() -> list[ReportSource]:
 # Import concrete sources so they self-register. Kept at the bottom to
 # avoid a circular import (transactions.py imports from .base + __init__).
 from app.reports.sources import transactions as _transactions  # noqa: E402,F401
+from app.reports.sources import accounts as _accounts  # noqa: E402,F401

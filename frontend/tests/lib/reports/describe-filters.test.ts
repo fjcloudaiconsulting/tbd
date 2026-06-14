@@ -124,6 +124,34 @@ describe("describeWidgetFilters", () => {
     expect(chips.find((c) => c.key === "date")).toBeUndefined();
   });
 
+  it("omits the date chip for a date-less source even with an effective date", () => {
+    const presets = buildPresetRanges(NOW);
+    // Same inputs as the inherited-date case, but the source doesn't
+    // support a date filter (accounts) → no date chip at all.
+    const chips = describeWidgetFilters(
+      bar({}),
+      { date_range: presets.this_month },
+      NO_LOOKUPS,
+      NOW,
+      false,
+    );
+    expect(chips.find((c) => c.key === "date")).toBeUndefined();
+  });
+
+  it("keeps non-date chips when the source is date-less", () => {
+    // A date-less source still surfaces account/category/txn_type chips —
+    // only the date chip is suppressed.
+    const chips = describeWidgetFilters(
+      bar({ txn_type: "expense" }),
+      { date_range: buildPresetRanges(NOW).this_month },
+      NO_LOOKUPS,
+      NOW,
+      false,
+    );
+    expect(chips.find((c) => c.key === "date")).toBeUndefined();
+    expect(chips.find((c) => c.key === "txn_type")).toBeDefined();
+  });
+
   it("resolves account ids to names with +N truncation", () => {
     const chips = describeWidgetFilters(
       bar({ account_ids: [1, 2, 3] }),

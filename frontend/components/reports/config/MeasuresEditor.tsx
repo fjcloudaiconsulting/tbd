@@ -27,12 +27,23 @@ import type {
 export default function MeasuresEditor({
   widget,
   onChange,
+  fieldOptions,
 }: {
   widget: Widget & { config: LineConfig | AreaConfig | StackedBarConfig | TableConfig };
   onChange: (m: SeriesConfig[]) => void;
+  /**
+   * Field options narrowed to the selected data source's published
+   * measures. When omitted (catalog not yet loaded), falls back to the
+   * static ``FIELD_OPTIONS`` so the transactions path and existing tests
+   * are unchanged. Also seeds the field of a newly-added series so an
+   * accounts widget never adds a transactions-only ``amount`` row.
+   */
+  fieldOptions?: Array<{ value: string; label: string }>;
 }) {
   const measures = widget.config.measures;
   const cap = widget.type === "table" ? MAX_TABLE_COLUMNS : MAX_SERIES;
+  const fields = fieldOptions ?? FIELD_OPTIONS;
+  const defaultField = (fields[0]?.value ?? "amount") as MeasureField;
 
   function update(idx: number, next: SeriesConfig) {
     const copy = [...measures];
@@ -44,7 +55,7 @@ export default function MeasuresEditor({
     if (measures.length >= cap) return;
     onChange([
       ...measures,
-      { measure: { agg: "sum", field: "amount" } },
+      { measure: { agg: "sum", field: defaultField } },
     ]);
   }
 
@@ -125,7 +136,7 @@ export default function MeasuresEditor({
               aria-label={`Series ${idx + 1} field`}
               className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-xs text-text-primary"
             >
-              {FIELD_OPTIONS.map((opt) => (
+              {fields.map((opt) => (
                 <option key={opt.value} value={opt.value}>
                   {opt.label}
                 </option>

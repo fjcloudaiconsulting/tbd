@@ -37,6 +37,9 @@ export const DIMENSION_HEADERS: Record<Dimension, string> = {
   month: "Month",
   week: "Week",
   day: "Day",
+  account_type: "Account type",
+  currency: "Currency",
+  account_active: "Active",
 };
 
 /** Header label for a dimension key, falling back to the raw key. */
@@ -57,6 +60,7 @@ export const MEASURE_FIELD_LABELS: Record<MeasureField, string> = {
   id: "Row count",
   category_id: "Category",
   account_id: "Account",
+  balance: "Balance",
 };
 
 /** Display label for a measure field, falling back to the raw key. */
