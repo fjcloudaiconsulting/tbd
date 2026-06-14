@@ -11,7 +11,9 @@ def test_shared_enum_atoms_are_the_same_object():
 
 
 def test_dataset_values():
-    assert {d.value for d in reports_query.Dataset} == {"transactions", "accounts"}
+    assert {d.value for d in reports_query.Dataset} == {
+        "transactions", "accounts", "recurring",
+    }
 
 
 def test_accounts_dataset_and_new_dimensions_present():

@@ -14,6 +14,7 @@ class Dataset(str, enum.Enum):
 
     TRANSACTIONS = "transactions"
     ACCOUNTS = "accounts"
+    RECURRING = "recurring"
 
 
 class Aggregation(str, enum.Enum):
@@ -41,6 +42,8 @@ class Dimension(str, enum.Enum):
     ACCOUNT_TYPE = "account_type"
     CURRENCY = "currency"
     ACCOUNT_ACTIVE = "account_active"
+    FREQUENCY = "frequency"
+    RECURRING_ACTIVE = "recurring_active"
     TAG = "tag"
     TXN_TYPE = "txn_type"
     STATUS = "status"
