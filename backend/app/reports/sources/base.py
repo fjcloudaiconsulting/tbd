@@ -82,9 +82,22 @@ def validate_against_catalog(source: "ReportSource", query: ReportsQuery) -> Non
             f"source {source.key!r} does not support measure field "
             f"{query.measure.field.value!r}"
         )
-    filter_fields = {f.field for f in source.filters()}
+    # Two-tier filter validation:
+    #   1) a field the source publishes → also enforce the OP against that
+    #      SourceFilter's allowed ops, so a published field with an op the
+    #      source can't compile is rejected at 422 rather than silently
+    #      dropped (or worse, mis-applied) in build_rows.
+    #   2) else a shared-canvas field → dropped at build time (no op-check).
+    #   3) else → reject the unknown field.
+    filters_by_field = {sf.field: sf for sf in source.filters()}
     for f in query.filters:
-        if f.field.value in filter_fields:
+        sf = filters_by_field.get(f.field.value)
+        if sf is not None:
+            if f.op.value not in sf.ops:
+                raise ValueError(
+                    f"source {source.key!r} filter {f.field.value!r} does not "
+                    f"support op {f.op.value!r}"
+                )
             continue
         if f.field.value in SHARED_CANVAS_FILTER_FIELDS:
             continue  # shared-bar artifact → dropped at build time

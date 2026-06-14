@@ -26,6 +26,9 @@ from app.schemas.reports_query import (
     Measure,
     MeasureField,
     ReportsQuery,
+    SortBy,
+    SortDir,
+    SortSpec,
 )
 
 
@@ -211,3 +214,200 @@ async def test_validate_rejects_category_dimension(db_session, seeded):
     ast = _query(dimensions=[Dimension.CATEGORY])
     with pytest.raises(ValueError):
         src.validate(ast)
+
+
+# ─── helpers for IN / type filters ──────────────────────────────────
+
+
+async def _ids(db_session, org_id):
+    """Return {name -> account.id} and {slug -> account_type.id} for org1."""
+    from sqlalchemy import select as _select
+
+    acct_rows = (
+        await db_session.execute(
+            _select(Account.name, Account.id).where(Account.org_id == org_id)
+        )
+    ).all()
+    type_rows = (
+        await db_session.execute(
+            _select(AccountType.slug, AccountType.id).where(
+                AccountType.org_id == org_id
+            )
+        )
+    ).all()
+    return {n: i for n, i in acct_rows}, {s: i for s, i in type_rows}
+
+
+# ─── Fix 1: validate enforces catalog filter OPS ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_balance_eq_op(db_session, seeded):
+    """balance is published but only supports between/gte/lte. An `eq`
+    op must be rejected by validate() (→422), not silently dropped by the
+    BALANCE branch of _apply_filter."""
+    src = _source()
+    ast = _query(
+        filters=[Filter(field=FilterField.BALANCE, op=FilterOp.EQ, value=100)],
+    )
+    with pytest.raises(ValueError):
+        src.validate(ast)
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_account_active_in_op(db_session, seeded):
+    """account_active is published but only supports eq. An `in` op must
+    be rejected (it would otherwise become a constant-TRUE predicate via
+    bool([False]))."""
+    src = _source()
+    ast = _query(
+        filters=[
+            Filter(field=FilterField.ACCOUNT_ACTIVE, op=FilterOp.IN, value=[False]),
+        ],
+    )
+    with pytest.raises(ValueError):
+        src.validate(ast)
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_non_shared_field(db_session, seeded):
+    """A transactions-only field (status) that accounts does not publish
+    and is not a shared-canvas field must be rejected outright."""
+    src = _source()
+    ast = _query(
+        filters=[Filter(field=FilterField.STATUS, op=FilterOp.EQ, value="settled")],
+    )
+    with pytest.raises(ValueError):
+        src.validate(ast)
+
+
+# ─── Fix 2 / finding 6: account_active eq filter ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_account_active_eq_false_filter(db_session, seeded):
+    """account_active eq false returns only the inactive account (OldCard)."""
+    src = _source()
+    ast = _query(
+        filters=[
+            Filter(field=FilterField.ACCOUNT_ACTIVE, op=FilterOp.EQ, value=False),
+        ],
+    )
+    src.validate(ast)  # must not raise
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert len(rows) == 1
+    assert rows[0]["value"] == 1  # only OldCard is inactive
+
+
+# ─── finding 7: avg + IN filters ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_avg_balance_over_bank_accounts(db_session, seeded):
+    """avg over the two Bank accounts (Checking 500 + Savings 1500) = 1000.0."""
+    src = _source()
+    _, types = await _ids(db_session, seeded["org1_id"])
+    ast = _query(
+        measure=Measure(agg=Aggregation.AVG, field=MeasureField.BALANCE),
+        filters=[
+            Filter(
+                field=FilterField.ACCOUNT_TYPE,
+                op=FilterOp.EQ,
+                value=types["bank"],
+            ),
+        ],
+    )
+    src.validate(ast)
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert len(rows) == 1
+    assert rows[0]["value"] == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_account_id_in_filter(db_session, seeded):
+    src = _source()
+    accts, _ = await _ids(db_session, seeded["org1_id"])
+    ast = _query(
+        filters=[
+            Filter(
+                field=FilterField.ACCOUNT_ID,
+                op=FilterOp.IN,
+                value=[accts["Checking"], accts["Savings"]],
+            ),
+        ],
+    )
+    src.validate(ast)
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert rows[0]["value"] == 2
+
+
+@pytest.mark.asyncio
+async def test_currency_in_filter(db_session, seeded):
+    src = _source()
+    ast = _query(
+        filters=[
+            Filter(field=FilterField.CURRENCY, op=FilterOp.IN, value=["EUR"]),
+        ],
+    )
+    src.validate(ast)
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert rows[0]["value"] == 3  # all three org1 accounts are EUR
+
+
+@pytest.mark.asyncio
+async def test_account_type_in_filter(db_session, seeded):
+    src = _source()
+    _, types = await _ids(db_session, seeded["org1_id"])
+    ast = _query(
+        filters=[
+            Filter(
+                field=FilterField.ACCOUNT_TYPE,
+                op=FilterOp.IN,
+                value=[types["bank"]],
+            ),
+        ],
+    )
+    src.validate(ast)
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert rows[0]["value"] == 2  # Checking + Savings are Bank
+
+
+# ─── Fix 3: honor query.sort + stable tiebreaker ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_sort_by_value_asc(db_session, seeded):
+    """Grouped query (dim=account) sorted ascending by value returns rows
+    ordered low → high balance."""
+    src = _source()
+    ast = _query(
+        measure=Measure(agg=Aggregation.SUM, field=MeasureField.BALANCE),
+        dimensions=[Dimension.ACCOUNT],
+        sort=SortSpec(by=SortBy.VALUE, dir=SortDir.ASC),
+    )
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    values = [r["value"] for r in rows]
+    assert values == sorted(values)
+    # OldCard (-200) first, Savings (1500) last.
+    assert rows[0]["account"] == "OldCard"
+    assert rows[-1]["account"] == "Savings"
+
+
+@pytest.mark.asyncio
+async def test_sort_truncation_is_deterministic(db_session, seeded):
+    """With a small limit, the truncated set is identical across runs
+    (stable tiebreaker)."""
+    src = _source()
+
+    def _ast():
+        return _query(
+            measure=Measure(agg=Aggregation.SUM, field=MeasureField.BALANCE),
+            dimensions=[Dimension.ACCOUNT],
+            sort=SortSpec(by=SortBy.VALUE, dir=SortDir.ASC),
+            limit=2,
+        )
+
+    rows_a, _ = await src.build_rows(db_session, seeded["org1_id"], _ast())
+    rows_b, _ = await src.build_rows(db_session, seeded["org1_id"], _ast())
+    assert len(rows_a) == 2
+    assert [r["account"] for r in rows_a] == [r["account"] for r in rows_b]

@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from sqlalchemy import case, distinct, func, select
+from sqlalchemy import case, distinct, func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account, AccountType
@@ -100,21 +100,44 @@ def _measure_expr(measure):
 
 
 def _apply_filter(stmt, f):
+    """Compile one of this source's OWN filters into a WHERE clause.
+
+    Each branch is op-explicit and raises on an op the source does not
+    support, so a future caller that skips ``validate()`` gets a loud
+    error rather than a silently-dropped or mis-applied predicate
+    (defense-in-depth; ``validate_against_catalog`` already op-checks).
+
+    A field this source does not own (e.g. a dropped shared-canvas
+    ``date``) still falls through to a bare ``return stmt`` — that is the
+    Phase-5 shared-canvas drop contract, kept distinct from an op
+    mismatch on an OWNED field.
+    """
     field, op, value = f.field, f.op, f.value
     if field is FilterField.ACCOUNT_ID:
         if op is FilterOp.IN:
             return stmt.where(Account.id.in_(value))
-        return stmt.where(Account.id == value)
+        if op is FilterOp.EQ:
+            return stmt.where(Account.id == value)
+        raise ValueError(f"accounts: unsupported op {op.value!r} for account_id")
     if field is FilterField.ACCOUNT_TYPE:
         if op is FilterOp.IN:
             return stmt.where(Account.account_type_id.in_(value))
-        return stmt.where(Account.account_type_id == value)
+        if op is FilterOp.EQ:
+            return stmt.where(Account.account_type_id == value)
+        raise ValueError(f"accounts: unsupported op {op.value!r} for account_type")
     if field is FilterField.CURRENCY:
         if op is FilterOp.IN:
             return stmt.where(Account.currency.in_(value))
-        return stmt.where(Account.currency == value)
+        if op is FilterOp.EQ:
+            return stmt.where(Account.currency == value)
+        raise ValueError(f"accounts: unsupported op {op.value!r} for currency")
     if field is FilterField.ACCOUNT_ACTIVE:
-        return stmt.where(Account.is_active.is_(bool(value)))
+        if op is FilterOp.EQ and isinstance(value, bool):
+            return stmt.where(Account.is_active.is_(value))
+        raise ValueError(
+            f"accounts: account_active requires op 'eq' with a bool; "
+            f"got op {op.value!r} value {value!r}"
+        )
     if field is FilterField.BALANCE:
         if op is FilterOp.BETWEEN:
             lo, hi = value
@@ -123,7 +146,8 @@ def _apply_filter(stmt, f):
             return stmt.where(Account.balance >= value)
         if op is FilterOp.LTE:
             return stmt.where(Account.balance <= value)
-    return stmt  # defensive: unreachable given _OWN_FILTER_FIELDS gate
+        raise ValueError(f"accounts: unsupported op {op.value!r} for balance")
+    return stmt  # field this source doesn't own → drop (shared-canvas contract)
 
 
 class AccountsSource:
@@ -167,6 +191,31 @@ class AccountsSource:
         if dim_exprs:
             raw_group_cols = [_DIM_EXPR[dim][1] for dim in query.dimensions]
             stmt = stmt.group_by(*raw_group_cols)
+
+        # ORDER BY — mirror reports_query_service so grouped + limited
+        # results are deterministic, not arbitrarily ordered/truncated.
+        sort = query.sort
+        if sort is not None:
+            if sort.by.value == "value":
+                order_col = literal_column("value")
+            else:  # by == "dimension"
+                if not dim_exprs:
+                    raise ValueError(
+                        "sort.by='dimension' requires at least one dimension"
+                    )
+                order_col = literal_column(dim_exprs[0][0])
+            order_col = order_col.asc() if sort.dir.value == "asc" else order_col.desc()
+            stmt = stmt.order_by(order_col)
+        elif dim_exprs:
+            # Stable default order by value desc (matches transactions).
+            stmt = stmt.order_by(literal_column("value").desc())
+
+        # Deterministic tiebreaker so truncation on ties is stable across
+        # runs. Only meaningful when grouping (multiple rows): a no-dimension
+        # query is a single aggregate row where Account.id is neither
+        # selected nor grouped, so an ORDER BY on it would be invalid SQL.
+        if dim_exprs:
+            stmt = stmt.order_by(func.min(Account.id).asc())
 
         stmt = stmt.limit(min(query.limit, MAX_LIMIT))
 
