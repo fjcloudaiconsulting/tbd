@@ -82,6 +82,7 @@ function renderEditor(
     <FilterEditor
       filters={filters}
       canvasFilters={canvasFilters}
+      dataset="transactions"
       onChange={onChange}
     />,
   );

@@ -21,6 +21,7 @@ import TagFilter from "@/components/reports/filters/TagFilter";
 import { isFieldOverridden } from "@/lib/reports/resolve";
 import type {
   CanvasFilters,
+  Dataset,
   TagMatch,
   WidgetFilters,
 } from "@/lib/reports/types";
@@ -39,12 +40,21 @@ function OverridePill() {
 export default function FilterEditor({
   filters,
   canvasFilters,
+  dataset,
   onChange,
 }: {
   filters: WidgetFilters;
   canvasFilters: CanvasFilters;
+  /**
+   * The widget's data source. ``transfer`` is a transactions-only
+   * concept (``recurring`` is income/expense only, ``accounts`` has no
+   * txn_type), so the Type control only offers Transfer when the
+   * source is ``transactions`` — otherwise the backend 422s the choice.
+   */
+  dataset: Dataset;
   onChange: (next: WidgetFilters) => void;
 }) {
+  const allowTransfer = dataset === "transactions";
   return (
     <div className="flex flex-col gap-4 rounded-md border border-border bg-bg p-3">
       <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
@@ -106,6 +116,7 @@ export default function FilterEditor({
       <div className="flex flex-col gap-1">
         <TxnTypeRadioRow
           value={filters.txn_type}
+          allowTransfer={allowTransfer}
           onChange={(txn_type) => onChange({ ...filters, txn_type })}
         />
       </div>
@@ -165,9 +176,11 @@ export default function FilterEditor({
 
 function TxnTypeRadioRow({
   value,
+  allowTransfer,
   onChange,
 }: {
   value: "income" | "expense" | "transfer" | undefined;
+  allowTransfer: boolean;
   onChange: (next: "income" | "expense" | "transfer" | undefined) => void;
 }) {
   const name = useId();
@@ -175,7 +188,11 @@ function TxnTypeRadioRow({
     { value: "", label: "Any" },
     { value: "income", label: "Income" },
     { value: "expense", label: "Expense" },
-    { value: "transfer", label: "Transfer" },
+    // ``transfer`` is a transactions-only concept; omit it for sources
+    // whose ``type`` can't be a transfer (recurring / accounts).
+    ...(allowTransfer
+      ? ([{ value: "transfer", label: "Transfer" }] as const)
+      : []),
   ];
   return (
     <>

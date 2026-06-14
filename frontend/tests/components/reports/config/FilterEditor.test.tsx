@@ -7,7 +7,7 @@ import { renderWithSWR, fireEvent, screen } from "../../../utils/render-with-swr
 
 import FilterEditor from "@/components/reports/config/FilterEditor";
 import { apiFetch } from "@/lib/api";
-import type { CanvasFilters, WidgetFilters } from "@/lib/reports/types";
+import type { CanvasFilters, Dataset, WidgetFilters } from "@/lib/reports/types";
 import type { Account, Category } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
@@ -70,12 +70,14 @@ function render(
   filters: WidgetFilters,
   canvasFilters: CanvasFilters,
   onChange: (next: WidgetFilters) => void = () => {},
+  dataset: Dataset = "transactions",
 ) {
   return renderWithSWR(
     <FilterEditor
       filters={filters}
       canvasFilters={canvasFilters}
       onChange={onChange}
+      dataset={dataset}
     />,
   );
 }
@@ -145,6 +147,28 @@ describe("FilterEditor", () => {
     await screen.findByTestId("category-picker");
     fireEvent.click(screen.getByLabelText("Widget transaction type Any"));
     expect(calls.at(-1)?.txn_type).toBeUndefined();
+  });
+
+  it("offers the Transfer transaction type for a transactions widget", async () => {
+    render({}, {}, () => {}, "transactions");
+    await screen.findByTestId("category-picker");
+    expect(
+      screen.getByLabelText("Widget transaction type Transfer"),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the Transfer transaction type for a recurring widget", async () => {
+    render({}, {}, () => {}, "recurring");
+    await screen.findByTestId("category-picker");
+    expect(
+      screen.getByLabelText("Widget transaction type Income"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Widget transaction type Expense"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Widget transaction type Transfer"),
+    ).not.toBeInTheDocument();
   });
 
   it("reports tag_names + tag_match when a tag chip is selected", async () => {
