@@ -249,6 +249,37 @@ def test_update_account_opening_balance_writes_audit_row(session_factory, seeded
     assert detail["new_opening_balance_date"] == "2025-06-15"
 
 
+def test_update_opening_balance_shifts_live_balance_by_delta(session_factory, seeded):
+    """Editing opening_balance must move the live balance by the same delta so
+    the invariant ``balance == opening_balance + Σ settled txns`` holds.
+    Regression for the 2026-06-14 drift: opening edits left ``balance`` stale,
+    silently de/inflating the account."""
+    import asyncio
+
+    # Simulate an account that already carries transactions:
+    # balance(500) = opening(100) + 400 of net settled activity.
+    async def _prime():
+        async with session_factory() as db:
+            acct = await db.get(Account, seeded["account_id"])
+            acct.opening_balance = Decimal("100.00")
+            acct.balance = Decimal("500.00")
+            await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(_prime())
+
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        res = client.put(
+            f"/api/v1/accounts/{seeded['account_id']}",
+            json={"opening_balance": "300.00"},
+        )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert Decimal(body["opening_balance"]) == Decimal("300.00")
+    # delta = 300 - 100 = +200 → balance 500 -> 700; the +400 txn component is preserved.
+    assert Decimal(body["balance"]) == Decimal("700.00")
+
+
 def test_update_account_opening_balance_no_change_no_audit(session_factory, seeded):
     """Submitting the same values is a no-op — no audit row."""
     app = _make_app(session_factory)

@@ -333,6 +333,11 @@ async def _apply_non_type_fields(
         account.is_default = False
 
     if body.opening_balance is not None and body.opening_balance != account.opening_balance:
+        # Opening balance is the foundation of the live balance
+        # (balance == opening_balance + Σ settled txns). Correcting it must
+        # shift the live balance by the same delta, otherwise the cached
+        # balance silently drifts from reality (2026-06-14 incident).
+        account.balance += body.opening_balance - account.opening_balance
         account.opening_balance = body.opening_balance
         opening_changed = True
     if (
