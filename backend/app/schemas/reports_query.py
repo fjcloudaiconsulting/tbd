@@ -48,6 +48,10 @@ MAX_FILTERS = 20
 MAX_DIMENSIONS = 2
 MAX_DATE_WINDOW_DAYS = 5 * 365 + 2  # 5 years inclusive of two leap days.
 
+# Fields a SUM / AVG may target. Source-agnostic numeric sanity gate — the
+# per-source validate() still rejects a field the source does not publish.
+NUMERIC_MEASURE_FIELDS = {MeasureField.AMOUNT, MeasureField.BALANCE}
+
 
 class FilterField(str, enum.Enum):
     """Filter columns. Closed enum — ``org_id`` / ``user_id`` /
@@ -62,6 +66,10 @@ class FilterField(str, enum.Enum):
     ACCOUNT_ID = "account_id"
     TXN_TYPE = "txn_type"
     STATUS = "status"
+    ACCOUNT_TYPE = "account_type"
+    CURRENCY = "currency"
+    ACCOUNT_ACTIVE = "account_active"
+    BALANCE = "balance"
     # Tag filter uses normalized tag name (lowercased), matching the
     # transactions list semantics at
     # ``backend/app/routers/transactions.py:90`` and
@@ -94,15 +102,13 @@ class Measure(BaseModel):
 
     @model_validator(mode="after")
     def _validate_agg_field(self):
-        # SUM / AVG require a numeric column. ``amount`` is the only
-        # numeric column we expose on transactions.
         if self.agg in (Aggregation.SUM, Aggregation.AVG):
-            if self.field is not MeasureField.AMOUNT:
+            if self.field not in NUMERIC_MEASURE_FIELDS:
                 raise ValueError(
-                    f"agg={self.agg.value} requires field='amount'; "
+                    f"agg={self.agg.value} requires a numeric field "
+                    f"{sorted(f.value for f in NUMERIC_MEASURE_FIELDS)}; "
                     f"got field={self.field.value!r}"
                 )
-        # COUNT and DISTINCT accept any whitelisted field.
         return self
 
 
@@ -298,5 +304,26 @@ def _coerce_filter_scalar(field: FilterField, value):
         if not v:
             raise ValueError("tag_name must be a non-empty string")
         return v
+    if field is FilterField.ACCOUNT_TYPE:
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("account_type must be an integer id") from exc
+    if field is FilterField.CURRENCY:
+        v = str(value).strip().upper()
+        if not (len(v) == 3 and v.isalpha()):
+            raise ValueError("currency must be a 3-letter code")
+        return v
+    if field is FilterField.ACCOUNT_ACTIVE:
+        if isinstance(value, bool):
+            return value
+        v = str(value).strip().lower()
+        if v in ("true", "1", "active"):
+            return True
+        if v in ("false", "0", "inactive"):
+            return False
+        raise ValueError("account_active must be a boolean")
+    if field is FilterField.BALANCE:
+        return _coerce_decimal(value)
     # Should be unreachable given the FilterField enum is closed.
     raise ValueError(f"unsupported filter field {field!r}")

@@ -10,5 +10,12 @@ def test_shared_enum_atoms_are_the_same_object():
     assert reports_query.Aggregation is report_layout.Aggregation
 
 
-def test_dataset_values_unchanged_for_now():
-    assert {d.value for d in reports_query.Dataset} == {"transactions"}
+def test_dataset_values():
+    assert {d.value for d in reports_query.Dataset} == {"transactions", "accounts"}
+
+
+def test_accounts_dataset_and_new_dimensions_present():
+    from app.schemas.reports_query import Dataset, Dimension, MeasureField
+    assert "accounts" in {d.value for d in Dataset}
+    assert {"account_type", "currency", "account_active"}.issubset({d.value for d in Dimension})
+    assert "balance" in {f.value for f in MeasureField}
