@@ -235,6 +235,7 @@ export default function WidgetEditorPopover({
                 <FilterEditor
                   filters={widget.config.filters ?? {}}
                   canvasFilters={canvasFilters}
+                  dataset={widget.config.dataset}
                   onChange={setFilters}
                 />
               )}

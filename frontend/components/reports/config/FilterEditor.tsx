@@ -12,7 +12,7 @@
  * widget-only now (the canvas can't hold them), so they NEVER show the
  * override pill — they're plain per-widget controls.
  */
-import { useId } from "react";
+import { useEffect, useId } from "react";
 
 import AccountFilter from "@/components/reports/filters/AccountFilter";
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
@@ -21,6 +21,7 @@ import TagFilter from "@/components/reports/filters/TagFilter";
 import { isFieldOverridden } from "@/lib/reports/resolve";
 import type {
   CanvasFilters,
+  Dataset,
   TagMatch,
   WidgetFilters,
 } from "@/lib/reports/types";
@@ -39,12 +40,21 @@ function OverridePill() {
 export default function FilterEditor({
   filters,
   canvasFilters,
+  dataset,
   onChange,
 }: {
   filters: WidgetFilters;
   canvasFilters: CanvasFilters;
+  /**
+   * The widget's data source. ``transfer`` is a transactions-only
+   * concept (``recurring`` is income/expense only, ``accounts`` has no
+   * txn_type), so the Type control only offers Transfer when the
+   * source is ``transactions`` — otherwise the backend 422s the choice.
+   */
+  dataset: Dataset;
   onChange: (next: WidgetFilters) => void;
 }) {
+  const allowTransfer = dataset === "transactions";
   return (
     <div className="flex flex-col gap-4 rounded-md border border-border bg-bg p-3">
       <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
@@ -106,6 +116,7 @@ export default function FilterEditor({
       <div className="flex flex-col gap-1">
         <TxnTypeRadioRow
           value={filters.txn_type}
+          allowTransfer={allowTransfer}
           onChange={(txn_type) => onChange({ ...filters, txn_type })}
         />
       </div>
@@ -165,9 +176,11 @@ export default function FilterEditor({
 
 function TxnTypeRadioRow({
   value,
+  allowTransfer,
   onChange,
 }: {
   value: "income" | "expense" | "transfer" | undefined;
+  allowTransfer: boolean;
   onChange: (next: "income" | "expense" | "transfer" | undefined) => void;
 }) {
   const name = useId();
@@ -175,8 +188,24 @@ function TxnTypeRadioRow({
     { value: "", label: "Any" },
     { value: "income", label: "Income" },
     { value: "expense", label: "Expense" },
-    { value: "transfer", label: "Transfer" },
+    // ``transfer`` is a transactions-only concept; omit it for sources
+    // whose ``type`` can't be a transfer (recurring / accounts).
+    ...(allowTransfer
+      ? ([{ value: "transfer", label: "Transfer" }] as const)
+      : []),
   ];
+  // Self-heal: when a persisted ``txn_type`` value isn't among the rendered
+  // choices (e.g. ``transfer`` survives in a saved config but the widget is
+  // now on a non-transactions source where Transfer is hidden), reset it to
+  // "Any" once so the control never shows a phantom no-selection-with-stale-
+  // value state. ``onChange(undefined)`` makes ``value`` undefined, which IS
+  // in-range, so the effect won't re-fire (no loop). The transactions case
+  // keeps ``transfer`` because it's a rendered choice there.
+  const valueInRange =
+    value === undefined || choices.some((c) => c.value === value);
+  useEffect(() => {
+    if (!valueInRange) onChange(undefined);
+  }, [valueInRange, onChange]);
   return (
     <>
       <div className="text-xs text-text-secondary">Transaction type</div>

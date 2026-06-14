@@ -137,6 +137,30 @@ export function buildWidgetMutations(
     // Filter fields the NEW source publishes. ``config.filters`` is
     // pruned to these so no stale per-widget filter survives a switch.
     const publishedFilterFields = entry.filters.map((f) => f.field);
+
+    /**
+     * Prune the per-widget filters to the new source's published FIELDS,
+     * then normalize any stale enum VALUE that survives the field prune
+     * but is invalid for the new source. ``pruneFiltersToSource`` only
+     * drops fields; it never inspects values. The ``recurring`` source
+     * DOES publish a ``txn_type`` filter, so a stale ``txn_type:"transfer"``
+     * survives a transactions→recurring switch — but ``transfer`` is a
+     * transactions-only concept (recurring is income/expense only) and the
+     * backend ``RecurringSource.validate()`` 422s it. Strip it here so the
+     * widget never silently fails to render. ``txn_type`` is the only
+     * enum-valued filter today, so a targeted strip suffices.
+     */
+    const finalizeFilters = (
+      filters: WidgetFilters | undefined,
+    ): WidgetFilters | undefined => {
+      const pruned = pruneFiltersToSource(filters, publishedFilterFields);
+      if (!pruned) return undefined;
+      if (dataset !== "transactions" && pruned.txn_type === "transfer") {
+        const { txn_type: _drop, ...rest } = pruned;
+        return Object.keys(rest).length > 0 ? rest : undefined;
+      }
+      return pruned;
+    };
     // First valid measure for this source (default after a field-invalid
     // switch). ``entry.measures`` is always non-empty for a real source;
     // guard for the degenerate empty-catalog case so we never write an
@@ -154,7 +178,7 @@ export function buildWidgetMutations(
         resetMeasure && !measureFields.has(cfg.measure.field)
           ? resetMeasure
           : cfg.measure;
-      const filters = pruneFiltersToSource(cfg.filters, publishedFilterFields);
+      const filters = finalizeFilters(cfg.filters);
       const next: Widget = {
         ...widget,
         config: { ...cfg, dataset, measure, filters },
@@ -191,7 +215,7 @@ export function buildWidgetMutations(
         allValid || !resetMeasure
           ? mcfg.measures
           : [{ measure: resetMeasure }];
-      const filters = pruneFiltersToSource(mcfg.filters, publishedFilterFields);
+      const filters = finalizeFilters(mcfg.filters);
       const next: Widget = {
         ...widget,
         config: { ...mcfg, dataset, dimensions: dims, measures, filters },
@@ -205,7 +229,7 @@ export function buildWidgetMutations(
       resetMeasure && !measureFields.has(scfg.measure.field)
         ? resetMeasure
         : scfg.measure;
-    const filters = pruneFiltersToSource(scfg.filters, publishedFilterFields);
+    const filters = finalizeFilters(scfg.filters);
     const next: Widget = {
       ...widget,
       config: { ...scfg, dataset, dimensions: dims, measure, filters },

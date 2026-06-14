@@ -70,6 +70,8 @@ class FilterField(str, enum.Enum):
     CURRENCY = "currency"
     ACCOUNT_ACTIVE = "account_active"
     BALANCE = "balance"
+    FREQUENCY = "frequency"
+    RECURRING_ACTIVE = "recurring_active"
     # Tag filter uses normalized tag name (lowercased), matching the
     # transactions list semantics at
     # ``backend/app/routers/transactions.py:90`` and
@@ -326,5 +328,22 @@ def _coerce_filter_scalar(field: FilterField, value):
         raise ValueError("account_active must be a boolean")
     if field is FilterField.BALANCE:
         return _coerce_decimal(value)
+    if field is FilterField.FREQUENCY:
+        v = str(value).strip().lower()
+        valid = {"weekly", "biweekly", "monthly", "quarterly", "yearly"}
+        if v not in valid:
+            raise ValueError(
+                f"frequency must be one of {sorted(valid)}; got {v!r}"
+            )
+        return v
+    if field is FilterField.RECURRING_ACTIVE:
+        if isinstance(value, bool):
+            return value
+        v = str(value).strip().lower()
+        if v in ("true", "1", "active"):
+            return True
+        if v in ("false", "0", "inactive"):
+            return False
+        raise ValueError("recurring_active must be a boolean")
     # Should be unreachable given the FilterField enum is closed.
     raise ValueError(f"unsupported filter field {field!r}")

@@ -7,7 +7,7 @@ import { renderWithSWR, fireEvent, screen } from "../../../utils/render-with-swr
 
 import FilterEditor from "@/components/reports/config/FilterEditor";
 import { apiFetch } from "@/lib/api";
-import type { CanvasFilters, WidgetFilters } from "@/lib/reports/types";
+import type { CanvasFilters, Dataset, WidgetFilters } from "@/lib/reports/types";
 import type { Account, Category } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
@@ -70,12 +70,14 @@ function render(
   filters: WidgetFilters,
   canvasFilters: CanvasFilters,
   onChange: (next: WidgetFilters) => void = () => {},
+  dataset: Dataset = "transactions",
 ) {
   return renderWithSWR(
     <FilterEditor
       filters={filters}
       canvasFilters={canvasFilters}
       onChange={onChange}
+      dataset={dataset}
     />,
   );
 }
@@ -145,6 +147,50 @@ describe("FilterEditor", () => {
     await screen.findByTestId("category-picker");
     fireEvent.click(screen.getByLabelText("Widget transaction type Any"));
     expect(calls.at(-1)?.txn_type).toBeUndefined();
+  });
+
+  it("offers the Transfer transaction type for a transactions widget", async () => {
+    render({}, {}, () => {}, "transactions");
+    await screen.findByTestId("category-picker");
+    expect(
+      screen.getByLabelText("Widget transaction type Transfer"),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the Transfer transaction type for a recurring widget", async () => {
+    render({}, {}, () => {}, "recurring");
+    await screen.findByTestId("category-picker");
+    expect(
+      screen.getByLabelText("Widget transaction type Income"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Widget transaction type Expense"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Widget transaction type Transfer"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("self-heals a persisted txn_type=transfer on a recurring widget to 'Any'", async () => {
+    const calls: WidgetFilters[] = [];
+    // A widget persisted on transactions with txn_type=transfer, later
+    // switched to recurring (where transfer is hidden). The orphan value
+    // must self-correct on mount so the control never shows a phantom
+    // no-selection-with-stale-value state.
+    render({ txn_type: "transfer" }, {}, (next) => calls.push(next), "recurring");
+    await screen.findByTestId("category-picker");
+    // The self-heal effect MUST have fired (not vacuously empty) and cleared
+    // the orphan value.
+    expect(calls).toHaveLength(1);
+    expect(calls.at(-1)?.txn_type).toBeUndefined();
+  });
+
+  it("does NOT self-heal a valid txn_type=transfer on a transactions widget", async () => {
+    const calls: WidgetFilters[] = [];
+    render({ txn_type: "transfer" }, {}, (next) => calls.push(next), "transactions");
+    await screen.findByTestId("category-picker");
+    // transfer is a valid choice for transactions → no auto-clear fires.
+    expect(calls).toHaveLength(0);
   });
 
   it("reports tag_names + tag_match when a tag chip is selected", async () => {
