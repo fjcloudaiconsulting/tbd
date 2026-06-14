@@ -35,6 +35,11 @@ from pydantic import (
     model_validator,
 )
 
+# Dataset / Aggregation / MeasureField / Dimension are the shared closed
+# enum atoms — defined once in ``reports_enums`` so the live ``/query`` AST
+# and the saved-layout JSON validator (``report_layout``) cannot drift.
+from app.schemas.reports_enums import Aggregation, Dataset, Dimension, MeasureField
+
 
 # Hard caps. Module-level constants so tests can import + assert them.
 MAX_LIMIT = 500
@@ -42,62 +47,6 @@ DEFAULT_LIMIT = 100
 MAX_FILTERS = 20
 MAX_DIMENSIONS = 2
 MAX_DATE_WINDOW_DAYS = 5 * 365 + 2  # 5 years inclusive of two leap days.
-
-
-class Dataset(str, enum.Enum):
-    """Closed source set. v1 only exposes ``transactions``; opening
-    new datasets is a v2 spec decision (budgets, recurring, forecast).
-    Admin / internal tables are deliberately excluded — adding one
-    here is a security review event.
-    """
-
-    TRANSACTIONS = "transactions"
-
-
-class Aggregation(str, enum.Enum):
-    """Closed aggregation set. Anything outside this enum is rejected
-    by Pydantic at schema-validation time, so the compiler never sees
-    user-supplied aggregation strings.
-    """
-
-    SUM = "sum"
-    COUNT = "count"
-    AVG = "avg"
-    # ``distinct`` is shorthand for COUNT(DISTINCT field) — the
-    # compiler expands it. Spec section 3 lists ``count_distinct``
-    # as the long form; we accept the short form on the wire for
-    # symmetry with the other aggs.
-    DISTINCT = "distinct"
-
-
-class MeasureField(str, enum.Enum):
-    """Columns an aggregation may target on the transactions source.
-    Closed enum so a misspelled field cannot reach SQL.
-    """
-
-    AMOUNT = "amount"
-    ID = "id"
-    CATEGORY_ID = "category_id"
-    ACCOUNT_ID = "account_id"
-
-
-class Dimension(str, enum.Enum):
-    """GROUP BY dimensions. Closed enum.
-
-    Time bucket dimensions (``month``, ``week``, ``day``) compile to
-    SQLAlchemy ``func.date_format`` expressions in MySQL and SQLite-
-    compatible ``strftime`` equivalents in the test harness.
-    """
-
-    CATEGORY = "category"
-    CATEGORY_MASTER = "category_master"
-    ACCOUNT = "account"
-    TAG = "tag"
-    TXN_TYPE = "txn_type"
-    STATUS = "status"
-    MONTH = "month"
-    WEEK = "week"
-    DAY = "day"
 
 
 class FilterField(str, enum.Enum):
