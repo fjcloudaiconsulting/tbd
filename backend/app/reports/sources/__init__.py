@@ -27,3 +27,4 @@ def all_sources() -> list[ReportSource]:
 # avoid a circular import (transactions.py imports from .base + __init__).
 from app.reports.sources import transactions as _transactions  # noqa: E402,F401
 from app.reports.sources import accounts as _accounts  # noqa: E402,F401
+from app.reports.sources import recurring as _recurring  # noqa: E402,F401

@@ -62,6 +62,23 @@ def test_accounts_source_catalog():
     }
 
 
+def test_recurring_source_catalog():
+    src = source_registry.get_source("recurring")
+    assert src.key == "recurring"
+    assert src.label == "Recurring"
+    assert {d.key for d in src.dimensions()} == {
+        "category", "account", "currency", "txn_type", "frequency",
+        "recurring_active",
+    }
+    assert {m.key for m in src.measures()} == {
+        "sum_amount", "avg_amount", "count_recurring",
+    }
+    assert {f.field for f in src.filters()} == {
+        "account_id", "category_id", "currency", "txn_type", "frequency",
+        "recurring_active", "amount",
+    }
+
+
 def test_all_catalog_keys_are_known_kinds():
     known_kinds = {
         "category", "account", "status", "type", "tag", "time",

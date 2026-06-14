@@ -40,6 +40,8 @@ export const DIMENSION_HEADERS: Record<Dimension, string> = {
   account_type: "Account type",
   currency: "Currency",
   account_active: "Active",
+  frequency: "Frequency",
+  recurring_active: "Status",
 };
 
 /** Header label for a dimension key, falling back to the raw key. */
