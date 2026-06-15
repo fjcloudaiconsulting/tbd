@@ -443,6 +443,7 @@ export interface FeatureStateResponse {
 export interface TransferCandidate {
   id: number;
   date: string;
+  settled_date: string | null;
   description: string;
   amount: number;
   account_id: number;

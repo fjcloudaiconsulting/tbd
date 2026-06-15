@@ -206,7 +206,11 @@ export default function MarkAsTransferModal({
         />
         <span className="flex flex-col">
           <span>
-            {c.date} &middot; {c.description} &middot; {formatAmount(c.amount)}
+            {c.date}
+            <span className="ml-1 text-text-secondary">
+              settled {c.settled_date ?? "—"}
+            </span>{" "}
+            &middot; {c.description} &middot; {formatAmount(c.amount)}
           </span>
           <span className="text-xs text-text-secondary">
             {c.account_name} &middot; {diffText}
