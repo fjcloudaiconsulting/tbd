@@ -34,7 +34,7 @@ Add a **Settled date** alongside the existing date wherever a transaction render
 - **Dashboard "recent transactions"** (`app/dashboard/page.tsx`): show both dates (compact form acceptable — e.g. settled date primary with the original as secondary/tooltip if space-constrained, but it must be visible, not hidden).
 - **Account detail recent transactions**, **transaction detail/edit** (`TransactionForm.tsx`), **batch view**, **transfer modals** — wherever a transaction's date is shown, show the settled date too. The plan will enumerate the exact components from a frontend audit.
 - **CSV export** (transactions export): add a `settled_date` column.
-- **Column labels:** operator term is "Creation date" / "Settled date". Technically `date` is the transaction/purchase date you assign (not the DB row-creation timestamp). Final labels (e.g. "Date" / "Settled", or "Booked" / "Settled") are cosmetic — lock in the plan; both columns must be present and clearly distinct.
+- **Column labels (LOCKED):** **"Date"** = the original transaction/purchase date (`date`), **"Settled"** = `settled_date`. Both columns present and clearly distinct on every transaction-display surface.
 
 ## Components / data flow
 - One backend change of substance: swap `Transaction.date` → `effective_period_date_expr()` at the classified bucketing sites (reports, the 3 forecast services, budgets-alignment). The expression already exists and is SQLite/MySQL-portable (it's `coalesce`).
