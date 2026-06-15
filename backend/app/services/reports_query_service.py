@@ -46,6 +46,7 @@ from app.schemas.reports_query import (
     ReportsQuery,
     TagMatch,
 )
+from app.services.transaction_filters import effective_period_date_expr
 
 
 # Mapping: schema Dimension → (column expression factory, key string used
@@ -92,22 +93,25 @@ def _dimension_expr(dim: Dimension, dialect_name: str):
         return Transaction.type
     if dim is Dimension.STATUS:
         return Transaction.status
-    # Time-bucket dimensions.
+    # Time-bucket dimensions. Cash-basis: bucket by the effective settled
+    # date (coalesce(settled_date, date)) so a row dated in month X but
+    # settled in month Y is counted in Y, consistent with the list/forecast.
+    eff = effective_period_date_expr()
     if dim is Dimension.MONTH:
         if dialect_name == "sqlite":
-            return func.strftime("%Y-%m", Transaction.date)
-        return func.date_format(Transaction.date, "%Y-%m")
+            return func.strftime("%Y-%m", eff)
+        return func.date_format(eff, "%Y-%m")
     if dim is Dimension.WEEK:
         if dialect_name == "sqlite":
             # Year + ISO week. SQLite's strftime("%W") is "week of year
             # zero-padded (00..53)" — close enough for the AST contract,
             # mirrors MySQL's WEEK() default mode.
-            return func.strftime("%Y-%W", Transaction.date)
-        return func.date_format(Transaction.date, "%x-%v")
+            return func.strftime("%Y-%W", eff)
+        return func.date_format(eff, "%x-%v")
     if dim is Dimension.DAY:
         if dialect_name == "sqlite":
-            return func.strftime("%Y-%m-%d", Transaction.date)
-        return func.date_format(Transaction.date, "%Y-%m-%d")
+            return func.strftime("%Y-%m-%d", eff)
+        return func.date_format(eff, "%Y-%m-%d")
     raise ValueError(f"unsupported dimension {dim!r}")
 
 
