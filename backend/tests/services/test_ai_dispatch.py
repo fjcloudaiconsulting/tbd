@@ -335,9 +335,11 @@ async def test_projected_overspend_blocks_under_cap_no_adapter_no_ledger(
     """Under the cap, but the projected worst-case cost tips it over →
     AICapExceeded, adapter never called, no ledger row for the call.
     """
-    # hard=100, spent=97. gpt-4o-mini completion = 60 cents/1M, so
-    # max_tokens=100_000 projects 6 cents → 97 + 6 = 103 > 100 → block,
-    # even though spent (97) is still strictly under the cap.
+    # hard=100, spent=97. gpt-4o-mini completion = 60 cents/1M; prompt
+    # "hi" adds ~1 token at 15 cents/1M. estimate_cost_cents sums the
+    # prompt and completion raw cost, then ceils ONCE: max_tokens=100_000
+    # → 6_000_000 + 15 raw = 7 cents (not 6) → 97 + 7 = 104 > 100 →
+    # block, even though spent (97) is still strictly under the cap.
     await _seed_cap_and_spend(
         db, org, credential, hard_cap_cents=100, spent_cents=97
     )

@@ -1074,9 +1074,12 @@ async def _prepare_dispatch(
 
     ``messages``/``max_tokens``/``retry_multiplier`` feed the universal
     projected-overspend gate (``_enforce_cap``) after ``model`` is
-    resolved. Embedding callers with no chat payload pass ``messages=[]``
-    and ``max_tokens=None`` (projection degrades to the model output
-    ceiling); structured-output callers pass their retry budget.
+    resolved. Embedding callers synthesize a ``messages`` payload from
+    their INPUT (the texts to embed) so the gate projects the embedding
+    INPUT cost as prompt tokens, with ``max_tokens=None`` resolving to
+    the model output ceiling (0 for embedding models, which emit no
+    completion tokens); structured-output callers pass their retry
+    budget.
 
     Raises ``NoRoutingConfigured``, ``AICapExceeded``, or
     ``AICapabilityNotSupported`` before the adapter is built. The
@@ -1497,15 +1500,21 @@ async def call_llm_embed(
     caller can override with the ``model`` kwarg if a feature surface
     pins a specific model.
     """
+    # Embeddings bill on their INPUT, so feed ``texts`` to the gate as a
+    # synthetic prompt payload. ``_projected_cost_cents`` then estimates
+    # prompt tokens from the joined input and prices it at the embedding
+    # input rate; ``max_tokens=None`` resolves the model output ceiling,
+    # which is 0 for embedding models (they emit no completion tokens),
+    # so projected == the embedding INPUT cost. Without this the gate saw
+    # an empty payload (projected 0) and embeddings got exhausted-only
+    # protection, letting a bulk batch overspend by its full cost.
+    gate_messages = [{"role": "user", "content": "\n".join(texts)}]
     prepared = await _prepare_dispatch(
         db,
         org_id=org_id,
         feature_key=feature_key,
         capability="embed",
-        # Embeddings have no chat messages/max_tokens; projection
-        # degrades to the model output ceiling (zero for embedding
-        # models, which only bill input).
-        messages=[],
+        messages=gate_messages,
         max_tokens=None,
         retry_multiplier=1,
     )

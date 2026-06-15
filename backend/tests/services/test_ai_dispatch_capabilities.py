@@ -229,6 +229,24 @@ async def default_routing(
     return row
 
 
+@pytest_asyncio.fixture
+async def embed_routing(
+    db: AsyncSession, org: Organization, credential: OrgAICredential
+) -> OrgAIDefaultRouting:
+    """Routing whose model is an embedding model, so the overspend gate
+    prices the projected embedding INPUT at the embedding input rate and
+    a 0 completion ceiling (embedding models emit no completion tokens).
+    """
+    row = OrgAIDefaultRouting(
+        org_id=org.id,
+        credential_id=credential.id,
+        model="text-embedding-3-large",
+    )
+    db.add(row)
+    await db.commit()
+    return row
+
+
 # ---------- call_llm_embed -------------------------------------------
 
 
@@ -267,6 +285,172 @@ async def test_call_llm_embed_happy_path_writes_ledger(
     assert row.completion_tokens == 0
     assert row.model == "text-embedding-3-small"
     assert row.retries_used == 0
+
+
+# ---------- call_llm_embed overspend gate ----------------------------
+
+
+async def _seed_embed_cap_and_spend(
+    db: AsyncSession,
+    org,
+    credential: OrgAICredential,
+    *,
+    hard_cap_cents: int,
+    spent_cents: int,
+) -> None:
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=None,
+            hard_cap_cents=hard_cap_cents,
+            period="monthly",
+        )
+    )
+    if spent_cents > 0:
+        db.add(
+            AIUsageLedger(
+                org_id=org.id,
+                credential_id=credential.id,
+                feature_key="chat",
+                model="text-embedding-3-large",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                est_cost_cents=spent_cents,
+                latency_ms=1,
+                success=True,
+                error_class=None,
+                dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+        )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_embed_exhausted_block_no_adapter_no_ledger(
+    db: AsyncSession, org, admin_user, credential, embed_routing
+):
+    """At/over the hard cap → AICapExceeded; the embed adapter is never
+    awaited and no ledger row is written for the blocked call."""
+    await _seed_embed_cap_and_spend(
+        db, org, credential, hard_cap_cents=10, spent_cents=12
+    )
+    adapter = MagicMock()
+    adapter.embed = AsyncMock(
+        return_value=EmbedResponse(
+            vectors=[[0.1]],
+            model="text-embedding-3-large",
+            prompt_tokens=1,
+        )
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded) as exc_info:
+            await call_llm_embed(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                texts=["x"],
+            )
+    assert exc_info.value.code == "ai_hard_cap_exceeded"
+    adapter.embed.assert_not_awaited()
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1  # only the seeded prior-spend row
+    assert rows[0].est_cost_cents == 12
+
+
+@pytest.mark.asyncio
+async def test_embed_projected_overspend_blocks_under_cap_no_adapter_no_ledger(
+    db: AsyncSession, org, admin_user, credential, embed_routing
+):
+    """Under the cap, but a large embedding INPUT projects an input
+    cost that tips the org over the hard cap → AICapExceeded, adapter
+    never awaited, no ledger row.
+
+    This is the embeddings-protection fix (Fix 1): the gate now projects
+    the embedding INPUT (``texts``) as prompt tokens, priced at the
+    routing model's input rate with a 0 completion ceiling.
+    text-embedding-3-large input = 13 cents / 1M tokens. A 10M-char
+    input over the 3.5 chars/token heuristic projects
+    ceil(10_000_000 / 3.5) = 2_857_143 prompt tokens → 38 cents, which
+    tips 70 + 38 over the 100-cent hard cap.
+
+    Before Fix 1 the gate saw an empty payload (projected 0) and this
+    call would have proceeded.
+    """
+    await _seed_embed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100, spent_cents=70
+    )
+    big_text = "x" * 10_000_000
+    adapter = MagicMock()
+    adapter.embed = AsyncMock(
+        return_value=EmbedResponse(
+            vectors=[[0.1]],
+            model="text-embedding-3-large",
+            prompt_tokens=1,
+        )
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded) as exc_info:
+            await call_llm_embed(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                texts=[big_text],
+            )
+    assert exc_info.value.code == "ai_hard_cap_exceeded"
+    adapter.embed.assert_not_awaited()
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1  # only the seeded prior-spend row
+    assert rows[0].est_cost_cents == 70
+
+
+@pytest.mark.asyncio
+async def test_embed_under_cap_with_headroom_proceeds(
+    db: AsyncSession, org, admin_user, credential, embed_routing
+):
+    """Under the cap with headroom → embed proceeds and writes a row."""
+    await _seed_embed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100_000, spent_cents=0
+    )
+    adapter = MagicMock()
+    adapter.embed = AsyncMock(
+        return_value=EmbedResponse(
+            vectors=[[0.1, 0.2, 0.3]],
+            model="text-embedding-3-large",
+            prompt_tokens=7,
+        )
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm_embed(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            texts=["small input"],
+        )
+    assert result.response.vectors == [[0.1, 0.2, 0.3]]
+    adapter.embed.assert_awaited_once()
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].success is True
+    assert rows[0].prompt_tokens == 7
 
 
 # ---------- call_llm_structured retry budget -------------------------
@@ -752,6 +936,64 @@ async def test_call_llm_stream_stalled_stream_times_out_and_closes_iterator(
     )
 
 
+# ---------- Stream: overspend gate fires before first chunk ----------
+
+
+@pytest.mark.asyncio
+async def test_call_llm_stream_gate_blocks_before_first_chunk(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """A streamed call against an exhausted hard cap must raise
+    ``AICapExceeded`` the moment iteration BEGINS, before any chunk is
+    yielded. The provider stream must never be iterated and no ledger
+    row may be written.
+
+    ``call_llm_stream`` is an async generator, so the gate (run inside
+    ``_prepare_dispatch``) only executes once the consumer starts
+    iterating. The test therefore drives the ``async for`` inside the
+    ``pytest.raises`` block to prove the pre-first-yield gate fires.
+    """
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=10, spent_cents=12
+    )
+
+    iterated = False
+
+    async def fake_stream(*, model, messages, max_tokens=None):
+        nonlocal iterated
+        iterated = True
+        yield StreamChunk(delta_text="should never reach here", done=False)
+
+    adapter = MagicMock()
+    adapter.stream = fake_stream
+
+    received: list = []
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded) as exc_info:
+            async for chunk in call_llm_stream(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                messages=[{"role": "user", "content": "hi"}],
+            ):
+                received.append(chunk)
+    assert exc_info.value.code == "ai_hard_cap_exceeded"
+    # No chunk ever reached the consumer.
+    assert received == []
+    # The provider stream was never iterated.
+    assert iterated is False
+    # No ledger row for the blocked call — only the seeded prior-spend row.
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].est_cost_cents == 12
+
+
 # ---------- Structured-output token aggregation ---------------------
 
 
@@ -1159,13 +1401,16 @@ async def test_structured_retry_multiplier_blocks_when_single_would_fit(
     (retry_multiplier=1, same model/payload/cap) PROCEEDS, isolating
     the multiplier as the cause of the structured block.
     """
-    # gpt-4o-mini completion = 60 cents / 1M tokens.
-    # max_tokens=200_000 → single completion cost = 12 cents.
-    # retries+1 = STRUCTURED_OUTPUT_MAX_RETRIES + 1 = 3 → 36 cents.
+    # gpt-4o-mini completion = 60 cents / 1M tokens; prompt "x" adds ~1
+    # token at 15 cents / 1M. estimate_cost_cents sums prompt+completion
+    # raw cost and ceils ONCE: max_tokens=200_000 → 12_000_000 + 15 raw
+    # = 13 cents single (not 12, because of the prompt cent).
+    # retries+1 = STRUCTURED_OUTPUT_MAX_RETRIES + 1 = 3 → 13 x 3 = 39
+    # cents (not 36).
     assert STRUCTURED_OUTPUT_MAX_RETRIES + 1 == 3
     big_max_tokens = 200_000
     # hard=120, spent=100 → remaining=20.
-    # single 12 fits (100+12=112 <= 120); x3 = 36 → 100+36=136 > 120 block.
+    # single 13 fits (100+13=113 <= 120); x3 = 39 → 100+39=139 > 120 block.
     await _seed_cap_and_spend(
         db, org, credential, hard_cap_cents=120, spent_cents=100
     )
@@ -1186,7 +1431,7 @@ async def test_structured_retry_multiplier_blocks_when_single_would_fit(
     adapter.chat_structured.assert_not_awaited()
 
     # Control: same payload via function_call (multiplier 1) → the
-    # single 12-cent projection fits, so it PROCEEDS.
+    # single 13-cent projection fits, so it PROCEEDS.
     func_adapter = MagicMock()
     func_adapter.function_call = AsyncMock(
         return_value=FunctionCallResponse(
