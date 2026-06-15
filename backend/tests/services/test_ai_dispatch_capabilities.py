@@ -744,6 +744,117 @@ async def test_call_llm_function_happy_path(
     assert rows[0].completion_tokens == 6
 
 
+def _function_adapter() -> MagicMock:
+    adapter = MagicMock()
+    adapter.function_call = AsyncMock(
+        return_value=FunctionCallResponse(
+            tool_calls=[
+                {"name": "set_category", "arguments": {"slug": "rent"}}
+            ],
+            content="",
+            prompt_tokens=12,
+            completion_tokens=6,
+            model="gpt-4o-mini",
+        )
+    )
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_function_tool_schema_tips_projection_over_cap_no_adapter_no_ledger(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """The ``tools`` JSON schemas bill as prompt tokens, so the gate must
+    fold them into its projection. Under cap with a tiny ``messages`` but
+    a large ``tools`` payload, the projected prompt cost tips the org over
+    its hard cap -> AICapExceeded, adapter never awaited, no ledger row.
+
+    hard=100, spent=90, gpt-4o-mini (prompt 15c/1M, default 4096-token
+    completion ceiling). Tiny ``messages`` alone projects 1 cent
+    (90 + 1 = 91 < 100, so WITHOUT folding the tools the call would
+    proceed). The ~4M-char tool description projects ~1.14M prompt tokens
+    -> 18 cents, so 90 + 18 = 108 > 100 and the call blocks. Pins that
+    the tool schema now contributes to the projection.
+    """
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100, spent_cents=90
+    )
+    big_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "set_category",
+                "description": "x" * 4_000_000,
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+    adapter = _function_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded) as exc_info:
+            await call_llm_function(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                messages=[{"role": "user", "content": "classify"}],
+                tools=big_tools,
+            )
+    assert exc_info.value.code == "ai_hard_cap_exceeded"
+    adapter.function_call.assert_not_awaited()
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1  # only the seeded prior-spend row
+    assert rows[0].est_cost_cents == 90
+
+
+@pytest.mark.asyncio
+async def test_function_small_tools_under_cap_proceeds(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """Same cap headroom (hard=100, spent=90) but a small ``tools``
+    payload keeps the projection under cap -> the function call proceeds
+    and writes a ledger row. Guards against the tool-folding over-counting
+    a normal call."""
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100, spent_cents=90
+    )
+    adapter = _function_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm_function(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            messages=[{"role": "user", "content": "classify"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "set_category",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        )
+    assert result.response.tool_calls[0]["name"] == "set_category"
+    adapter.function_call.assert_awaited_once()
+    # The real adapter call still receives the original (unmodified) tools.
+    sent_tools = adapter.function_call.await_args.kwargs["tools"]
+    assert sent_tools[0]["function"]["name"] == "set_category"
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 2  # seeded prior-spend row + this successful call
+
+
 # ---------- Stream: ONE ledger row at end-of-stream ----------------
 
 

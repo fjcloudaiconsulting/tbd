@@ -1620,12 +1620,22 @@ async def call_llm_function(
     max_tokens: Optional[int] = None,
 ) -> FunctionCallDispatchResult:
     """Dispatch a function-calling chat through the chokepoint."""
+    # The provider bills the ``tools`` JSON schemas as PROMPT tokens, so
+    # fold them into the gate's projection by appending a serialized copy
+    # as a synthetic prompt message. This keeps the projected prompt cost
+    # honest for function-calling without altering the real adapter call
+    # below (which still passes the original ``messages`` + ``tools``).
+    gate_messages = (
+        messages + [{"role": "user", "content": json.dumps(tools)}]
+        if tools
+        else messages
+    )
     prepared = await _prepare_dispatch(
         db,
         org_id=org_id,
         feature_key=feature_key,
         capability="function_call",
-        messages=messages,
+        messages=gate_messages,
         max_tokens=max_tokens,
         retry_multiplier=1,
     )
