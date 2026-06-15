@@ -18,7 +18,10 @@ from app.models.transaction import Transaction, TransactionStatus, TransactionTy
 from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
 from app.services.billing_service import get_current_period, resolve_period
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
-from app.services.transaction_filters import reportable_transaction_filter
+from app.services.transaction_filters import (
+    effective_period_date_expr,
+    reportable_transaction_filter,
+)
 
 
 async def _compute_spent(
@@ -34,8 +37,12 @@ async def _compute_spent(
     sub_ids = [r[0] for r in sub_ids_result.all()]
     all_cat_ids = [master_category_id] + sub_ids
 
-    # Use settled_date for budget computation — transactions count against
-    # the billing period in which they settled, not when the purchase happened.
+    # Bucket by the shared effective_period_date_expr() (= coalesce(
+    # settled_date, date)) — transactions count against the billing period
+    # in which they settled, not when the purchase happened. For the SETTLED
+    # rows summed here settled_date is always populated, so this is
+    # behavior-identical to a raw settled_date comparison while staying
+    # aligned with the list/reports/forecast bucketing expression.
     # Transfer halves are persisted as type=expense with a non-null
     # linked_transaction_id; excluding them keeps budget spent aligned with
     # the dashboard donut when a transfer is tagged under a budgeted category.
@@ -44,12 +51,12 @@ async def _compute_spent(
         Transaction.category_id.in_(all_cat_ids),
         Transaction.type == TransactionType.EXPENSE,
         Transaction.status == TransactionStatus.SETTLED,
-        Transaction.settled_date >= period_start,
+        effective_period_date_expr() >= period_start,
         reportable_transaction_filter(),
     )
     # If period is still open (no end_date), include all from start_date onward
     if period_end is not None:
-        q = q.where(Transaction.settled_date <= period_end)
+        q = q.where(effective_period_date_expr() <= period_end)
 
     spent = await db.scalar(q)
     return Decimal(str(spent))
