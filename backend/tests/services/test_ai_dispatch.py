@@ -288,6 +288,263 @@ async def test_hard_cap_blocks_dispatch_no_adapter_call_no_ledger_row(
     assert rows[0].est_cost_cents == 12
 
 
+# ---------- projected-overspend gate (call_llm entry point) ----------
+
+
+async def _seed_cap_and_spend(
+    db: AsyncSession,
+    org: Organization,
+    credential: OrgAICredential,
+    *,
+    hard_cap_cents: int,
+    spent_cents: int,
+) -> None:
+    """Configure a hard cap and seed prior spend for the org."""
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=None,
+            hard_cap_cents=hard_cap_cents,
+            period="monthly",
+        )
+    )
+    if spent_cents > 0:
+        db.add(
+            AIUsageLedger(
+                org_id=org.id,
+                credential_id=credential.id,
+                feature_key="chat",
+                model="gpt-4o-mini",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                est_cost_cents=spent_cents,
+                latency_ms=1,
+                success=True,
+                error_class=None,
+                dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+        )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_projected_overspend_blocks_under_cap_no_adapter_no_ledger(
+    db: AsyncSession, org: Organization, admin_user, credential, default_routing
+):
+    """Under the cap, but the projected worst-case cost tips it over →
+    AICapExceeded, adapter never called, no ledger row for the call.
+    """
+    # hard=100, spent=97. gpt-4o-mini completion = 60 cents/1M, so
+    # max_tokens=100_000 projects 6 cents → 97 + 6 = 103 > 100 → block,
+    # even though spent (97) is still strictly under the cap.
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100, spent_cents=97
+    )
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded) as exc_info:
+            await call_llm(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                request_payload={
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 100_000,
+                },
+            )
+    assert exc_info.value.code == "ai_hard_cap_exceeded"
+    adapter.chat.assert_not_awaited()
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    # Only the seeded prior-spend row; no row for the blocked call.
+    assert len(rows) == 1
+    assert rows[0].est_cost_cents == 97
+
+
+@pytest.mark.asyncio
+async def test_exhausted_block_still_fires_with_empty_messages(
+    db: AsyncSession, org: Organization, admin_user, credential, default_routing
+):
+    """At/over cap with empty messages (projected == 0): the explicit
+    exhausted arm still blocks (regression guard for fail-closed)."""
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=10, spent_cents=12
+    )
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded):
+            await call_llm(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                request_payload={"messages": []},
+            )
+    adapter.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_under_cap_with_headroom_proceeds(
+    db: AsyncSession, org: Organization, admin_user, credential, default_routing
+):
+    """Plenty of headroom → the call proceeds and writes a ledger row."""
+    # hard=100_000 cents, no prior spend; projection is ~1 cent.
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100_000, spent_cents=0
+    )
+    adapter = _make_adapter(
+        LLMResponse(
+            content="ok",
+            prompt_tokens=5,
+            completion_tokens=3,
+            model="gpt-4o-mini",
+        )
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            request_payload={
+                "messages": [{"role": "user", "content": "hi"}]
+            },
+        )
+    assert result.response.content == "ok"
+    adapter.chat.assert_awaited_once()
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_no_hard_cap_no_gate(
+    db: AsyncSession, org: Organization, admin_user, credential, default_routing
+):
+    """hard_cap_cents is None → no cap configured, no gate, call runs."""
+    # No OrgAIDefaultCaps row at all → resolved.hard_cap_cents is None.
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            request_payload={
+                "messages": [{"role": "user", "content": "hi"}]
+            },
+        )
+    assert result.response.content == "hi"
+    adapter.chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_projection_failure_fails_closed_to_exhausted_only(
+    db: AsyncSession, org: Organization, admin_user, credential, default_routing
+):
+    """If projection raises, the gate degrades to exhausted-only: a
+    call with headroom still PROCEEDS (projected pinned to 0), and the
+    failure is logged — it must not 500 the hot path."""
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100, spent_cents=10
+    )
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ), patch(
+        "app.services.ai_dispatch._projected_cost_cents",
+        side_effect=RuntimeError("boom"),
+    ):
+        # spent=10 < hard=100, projected forced to 0 → not blocked.
+        result = await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            request_payload={
+                "messages": [{"role": "user", "content": "hi"}]
+            },
+        )
+    assert result.response.content == "hi"
+    adapter.chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_projection_failure_still_blocks_when_exhausted(
+    db: AsyncSession, org: Organization, admin_user, credential, default_routing
+):
+    """Projection raising must not let an already-exhausted org through:
+    the explicit exhausted arm fires even with projected pinned to 0."""
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=10, spent_cents=15
+    )
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ), patch(
+        "app.services.ai_dispatch._projected_cost_cents",
+        side_effect=RuntimeError("boom"),
+    ):
+        with pytest.raises(AICapExceeded):
+            await call_llm(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                request_payload={
+                    "messages": [{"role": "user", "content": "hi"}]
+                },
+            )
+    adapter.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_projects_via_default_pricing_and_gates(
+    db: AsyncSession, org: Organization, admin_user, credential
+):
+    """An unknown model still projects (via _default pricing) and gates.
+
+    _default pricing is 1500/6000 cents per 1M. Even a small unpinned
+    call projects well over 1 cent, so spent=99 under hard=100 blocks.
+    """
+    # Route to an unknown model.
+    db.add(
+        OrgAIDefaultRouting(
+            org_id=org.id,
+            credential_id=credential.id,
+            model="some-unknown-model-v9",
+        )
+    )
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100, spent_cents=99
+    )
+    adapter = _make_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded):
+            await call_llm(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                request_payload={
+                    "messages": [{"role": "user", "content": "hi"}]
+                },
+            )
+    adapter.chat.assert_not_awaited()
+
+
 # ---------- adapter failure ------------------------------------------
 
 

@@ -39,14 +39,19 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app.config import settings as app_settings
+from datetime import datetime, timezone
+
 from app.models import Base
 from app.models.ai_usage_ledger import AIUsageLedger
+from app.models.org_ai_caps import OrgAIDefaultCaps
 from app.models.org_ai_credential import AiProvider, OrgAICredential
 from app.models.org_ai_routing import OrgAIDefaultRouting
 from app.models.user import Organization, Role, User
 from app.services.ai_credential_crypto import encrypt
 from app.services.ai_dispatch import (
+    STRUCTURED_OUTPUT_MAX_RETRIES,
     AICapabilityNotSupported,
+    AICapExceeded,
     AIDispatchFailed,
     call_llm_embed,
     call_llm_function,
@@ -954,3 +959,262 @@ async def test_call_llm_function_routes_to_openai_compatible_when_capability_adv
 
     adapter.function_call.assert_awaited_once()
     assert result.response.tool_calls[0]["name"] == "set_category"
+
+
+# ---------- projected-overspend gate (_prepare_dispatch entry) -------
+
+
+async def _seed_cap_and_spend(
+    db: AsyncSession,
+    org,
+    credential: OrgAICredential,
+    *,
+    hard_cap_cents: int,
+    spent_cents: int,
+) -> None:
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id,
+            soft_cap_cents=None,
+            hard_cap_cents=hard_cap_cents,
+            period="monthly",
+        )
+    )
+    if spent_cents > 0:
+        db.add(
+            AIUsageLedger(
+                org_id=org.id,
+                credential_id=credential.id,
+                feature_key="chat",
+                model="gpt-4o-mini",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                est_cost_cents=spent_cents,
+                latency_ms=1,
+                success=True,
+                error_class=None,
+                dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+        )
+    await db.commit()
+
+
+def _structured_adapter() -> MagicMock:
+    adapter = MagicMock()
+    adapter.chat_structured = AsyncMock(
+        return_value=LLMResponse(
+            content='{"category": "groceries"}',
+            prompt_tokens=5,
+            completion_tokens=3,
+            model="gpt-4o-mini",
+        )
+    )
+    return adapter
+
+
+_STRUCT_SCHEMA = {
+    "type": "object",
+    "required": ["category"],
+    "properties": {"category": {"type": "string"}},
+}
+
+
+@pytest.mark.asyncio
+async def test_structured_projected_overspend_blocks_no_adapter_no_ledger(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """Structured dispatch: under cap but projected (x retries) tips it
+    over → AICapExceeded, adapter never called, no ledger row."""
+    # hard=100, spent=99; a tiny unpinned gpt-4o-mini structured call
+    # projects ~1 cent single, x3 = 3 cents → 99 + 3 > 100 → block.
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100, spent_cents=99
+    )
+    adapter = _structured_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded) as exc_info:
+            await call_llm_structured(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                messages=[{"role": "user", "content": "x"}],
+                response_schema=_STRUCT_SCHEMA,
+            )
+    assert exc_info.value.code == "ai_hard_cap_exceeded"
+    adapter.chat_structured.assert_not_awaited()
+    rows = (
+        await db.execute(
+            select(AIUsageLedger).where(AIUsageLedger.org_id == org.id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1  # only the seeded prior-spend row
+    assert rows[0].est_cost_cents == 99
+
+
+@pytest.mark.asyncio
+async def test_structured_exhausted_block_still_fires(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """Already at/over cap → exhausted arm blocks structured dispatch."""
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=10, spent_cents=12
+    )
+    adapter = _structured_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded):
+            await call_llm_structured(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                messages=[{"role": "user", "content": "x"}],
+                response_schema=_STRUCT_SCHEMA,
+            )
+    adapter.chat_structured.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_structured_under_cap_with_headroom_proceeds(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """Plenty of headroom → structured dispatch proceeds."""
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100_000, spent_cents=0
+    )
+    adapter = _structured_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm_structured(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            messages=[{"role": "user", "content": "x"}],
+            response_schema=_STRUCT_SCHEMA,
+        )
+    assert result.response.parsed == {"category": "groceries"}
+    adapter.chat_structured.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_structured_no_hard_cap_no_gate(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """No caps row → no gate; structured dispatch proceeds."""
+    adapter = _structured_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        result = await call_llm_structured(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            messages=[{"role": "user", "content": "x"}],
+            response_schema=_STRUCT_SCHEMA,
+        )
+    assert result.response.parsed == {"category": "groceries"}
+    adapter.chat_structured.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_structured_projection_failure_fails_closed(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """Projection raising degrades to exhausted-only: with headroom the
+    structured call still proceeds (projected pinned to 0), no 500."""
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=100, spent_cents=10
+    )
+    adapter = _structured_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ), patch(
+        "app.services.ai_dispatch._projected_cost_cents",
+        side_effect=RuntimeError("boom"),
+    ):
+        result = await call_llm_structured(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            messages=[{"role": "user", "content": "x"}],
+            response_schema=_STRUCT_SCHEMA,
+        )
+    assert result.response.parsed == {"category": "groceries"}
+    adapter.chat_structured.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_structured_retry_multiplier_blocks_when_single_would_fit(
+    db: AsyncSession, org, admin_user, credential, default_routing
+):
+    """The retry multiplier is load-bearing: a structured call whose
+    SINGLE projection fits under the remaining headroom but whose
+    x(retries+1) projection exceeds it must be blocked.
+
+    Proof control: an otherwise-identical function_call dispatch
+    (retry_multiplier=1, same model/payload/cap) PROCEEDS, isolating
+    the multiplier as the cause of the structured block.
+    """
+    # gpt-4o-mini completion = 60 cents / 1M tokens.
+    # max_tokens=200_000 → single completion cost = 12 cents.
+    # retries+1 = STRUCTURED_OUTPUT_MAX_RETRIES + 1 = 3 → 36 cents.
+    assert STRUCTURED_OUTPUT_MAX_RETRIES + 1 == 3
+    big_max_tokens = 200_000
+    # hard=120, spent=100 → remaining=20.
+    # single 12 fits (100+12=112 <= 120); x3 = 36 → 100+36=136 > 120 block.
+    await _seed_cap_and_spend(
+        db, org, credential, hard_cap_cents=120, spent_cents=100
+    )
+
+    adapter = _structured_adapter()
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=adapter
+    ):
+        with pytest.raises(AICapExceeded):
+            await call_llm_structured(
+                db,
+                org_id=org.id,
+                feature_key="chat",
+                messages=[{"role": "user", "content": "x"}],
+                response_schema=_STRUCT_SCHEMA,
+                max_tokens=big_max_tokens,
+            )
+    adapter.chat_structured.assert_not_awaited()
+
+    # Control: same payload via function_call (multiplier 1) → the
+    # single 12-cent projection fits, so it PROCEEDS.
+    func_adapter = MagicMock()
+    func_adapter.function_call = AsyncMock(
+        return_value=FunctionCallResponse(
+            tool_calls=[{"name": "f", "arguments": {}}],
+            content="",
+            prompt_tokens=1,
+            completion_tokens=1,
+            model="gpt-4o-mini",
+        )
+    )
+    with patch(
+        "app.services.ai_dispatch.get_adapter", return_value=func_adapter
+    ):
+        result = await call_llm_function(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            messages=[{"role": "user", "content": "x"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "f",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            max_tokens=big_max_tokens,
+        )
+    assert result.response.tool_calls[0]["name"] == "f"
+    func_adapter.function_call.assert_awaited_once()
