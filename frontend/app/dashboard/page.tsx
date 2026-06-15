@@ -1266,7 +1266,18 @@ export default function DashboardPage() {
                         href={transactionHighlightHref(tx)}
                         className="-mx-2 -my-1.5 flex min-w-0 items-center gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent sm:col-span-8 sm:my-0"
                       >
-                        <span className="w-16 shrink-0 text-xs tabular-nums text-text-secondary sm:w-auto">{tx.date.slice(5)}</span>
+                        {/* Date + Settled date. The operator requires the
+                            settled date visible wherever a transaction renders,
+                            so each row stacks the original date over the settled
+                            date (settled date when set, em-dash when still
+                            pending / unsettled). MM-DD slice matches the
+                            compact recent-list date format. */}
+                        <span className="flex w-16 shrink-0 flex-col text-xs tabular-nums text-text-secondary sm:w-auto">
+                          <span>{tx.date.slice(5)}</span>
+                          <span className="text-[10px] text-text-muted" data-testid={`dash-settled-${tx.id}`}>
+                            {tx.settled_date ? tx.settled_date.slice(5) : "—"}
+                          </span>
+                        </span>
                         <div className="min-w-0">
                           <p className="text-sm text-text-primary truncate">{tx.description}</p>
                           <p className="text-[11px] text-text-secondary truncate">{subline}</p>

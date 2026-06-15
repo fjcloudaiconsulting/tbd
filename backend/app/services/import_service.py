@@ -284,6 +284,7 @@ async def build_preview(
                     TransferCandidate(
                         id=c.id,
                         date=c.date,
+                        settled_date=c.settled_date,
                         description=c.description,
                         amount=c.amount,
                         account_id=c.account_id,

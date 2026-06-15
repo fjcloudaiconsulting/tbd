@@ -38,7 +38,10 @@ from app.services.settings_service import (
     FORECAST_GRANULARITY_SUBCATEGORY,
     get_forecast_input_granularity,
 )
-from app.services.transaction_filters import reportable_transaction_filter
+from app.services.transaction_filters import (
+    effective_period_date_expr,
+    reportable_transaction_filter,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -524,18 +527,22 @@ async def populate_from_sources(
     # in-memory SQLite).
     three_months_ago = p_start - relativedelta(months=3)
 
+    # Cash-basis: select + filter by the effective settled date so a row
+    # dated in month X but settled in month Y buckets (and windows) by Y,
+    # consistent with the list/reports/forecast.
+    eff_date = effective_period_date_expr()
     hist_q = (
         select(
             Transaction.category_id,
             Transaction.type,
-            Transaction.date,
+            eff_date.label("eff_date"),
             Transaction.amount,
         )
         .where(
             Transaction.org_id == org_id,
             Transaction.status == TransactionStatus.SETTLED,
-            Transaction.date >= three_months_ago,
-            Transaction.date < p_start,
+            eff_date >= three_months_ago,
+            eff_date < p_start,
             Transaction.type.in_(["income", "expense"]),
             reportable_transaction_filter(),
         )
@@ -546,11 +553,12 @@ async def populate_from_sources(
     # then compute monthly averages.
     # Structure: {(group_id, type): {month: total}}
     master_monthly: dict[tuple[int, str], dict[str, Decimal]] = {}
-    for cat_id, tx_type_raw, tx_date, amount in hist_result.all():
+    for cat_id, tx_type_raw, eff_dt, amount in hist_result.all():
         tx_type = tx_type_raw.value if hasattr(tx_type_raw, "value") else str(tx_type_raw)
         grp_id = group_key(cat_id)
         key = (grp_id, tx_type)
-        month = f"{tx_date.year:04d}-{tx_date.month:02d}"
+        # Bucket by the effective settled date selected above.
+        month = f"{eff_dt.year:04d}-{eff_dt.month:02d}"
         if key not in master_monthly:
             master_monthly[key] = {}
         master_monthly[key][month] = master_monthly[key].get(month, Decimal("0")) + Decimal(str(amount))
@@ -569,8 +577,8 @@ async def populate_from_sources(
             Transaction.status.in_(
                 [TransactionStatus.SETTLED, TransactionStatus.PENDING]
             ),
-            Transaction.date >= p_start,
-            Transaction.date <= p_end,
+            eff_date >= p_start,
+            eff_date <= p_end,
             Transaction.type.in_(["income", "expense"]),
             reportable_transaction_filter(),
         )

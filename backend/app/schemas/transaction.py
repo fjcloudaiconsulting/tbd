@@ -237,6 +237,7 @@ class TransferCandidate(BaseModel):
 
     id: int
     date: datetime.date
+    settled_date: Optional[datetime.date] = None
     description: str
     amount: Decimal
     account_id: int

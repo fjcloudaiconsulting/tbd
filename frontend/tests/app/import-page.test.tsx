@@ -144,6 +144,7 @@ describe("ImportPage transfer pill column", () => {
           {
             id: 99,
             date: "2026-05-01",
+            settled_date: "2026-05-01",
             description: "Counter leg",
             amount: 50,
             account_id: 2,
@@ -180,6 +181,7 @@ describe("ImportPage transfer pill column", () => {
           {
             id: 99,
             date: "2026-04-29",
+            settled_date: "2026-04-29",
             description: "Counter leg near",
             amount: 50,
             account_id: 2,
@@ -215,6 +217,7 @@ describe("ImportPage transfer pill column", () => {
           {
             id: 101,
             date: "2026-05-01",
+            settled_date: "2026-05-01",
             description: "First candidate",
             amount: 50,
             account_id: 2,
@@ -225,6 +228,7 @@ describe("ImportPage transfer pill column", () => {
           {
             id: 102,
             date: "2026-04-30",
+            settled_date: "2026-04-30",
             description: "Second candidate",
             amount: 50,
             account_id: 3,
@@ -306,6 +310,7 @@ describe("ImportPage transfer pill column", () => {
           {
             id: 99,
             date: "2026-05-01",
+            settled_date: "2026-05-01",
             description: "Counter leg",
             amount: 50,
             account_id: 2,
@@ -362,6 +367,7 @@ describe("ImportPage transfer pill column", () => {
           {
             id: 201,
             date: "2026-05-01",
+            settled_date: "2026-05-01",
             description: "Counter A",
             amount: 50,
             account_id: 2,
@@ -381,6 +387,7 @@ describe("ImportPage transfer pill column", () => {
           {
             id: 202,
             date: "2026-04-29",
+            settled_date: "2026-04-29",
             description: "Counter B",
             amount: 50,
             account_id: 2,
@@ -495,6 +502,7 @@ describe("ImportPage transfer pill column", () => {
           {
             id: 99,
             date: "2026-05-01",
+            settled_date: "2026-05-01",
             description: "Counter leg",
             amount: 50,
             account_id: 2,
@@ -546,6 +554,7 @@ describe("ImportPage transfer pill column", () => {
                 {
                   id: 99,
                   date: "2026-05-01",
+                  settled_date: "2026-05-01",
                   description: "Counter leg",
                   amount: 50,
                   account_id: 2,

@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
+from dateutil.relativedelta import relativedelta
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
@@ -209,7 +210,14 @@ async def _seed_history(
     category: Category,
     amount: Decimal,
     settled: datetime.date,
+    date: datetime.date | None = None,
 ):
+    """Seed a settled expense.
+
+    ``date`` defaults to ``settled`` (purchase == settlement). Pass a
+    distinct ``date`` to exercise the cash-basis bucketing path where the
+    purchase month and the settled month differ.
+    """
     acct = await _seed_account(db, org, user)
     tx = Transaction(
         org_id=org.id,
@@ -220,7 +228,7 @@ async def _seed_history(
         type=TransactionType.EXPENSE,
         status=TransactionStatus.SETTLED,
         settled_date=settled,
-        date=settled,
+        date=date if date is not None else settled,
     )
     db.add(tx)
     await db.commit()
@@ -530,6 +538,93 @@ async def test_service_never_mutates_budgets(
     await db.refresh(budgets["dining"])
     assert budgets["groceries"].amount == before_groceries
     assert budgets["dining"].amount == before_dining
+
+
+# ---------- cash-basis (settled-date) bucketing ----------------------
+
+
+@pytest.mark.asyncio
+async def test_history_is_bucketed_by_settled_date_not_purchase_date(
+    db: AsyncSession,
+    org: Organization,
+    user: User,
+    period: BillingPeriod,
+    categories,
+    budgets,
+):
+    """GBLT regression: ``_gather_facts`` must bucket settled history by
+    the EFFECTIVE (settled) date, not the raw purchase ``date``.
+
+    Seeds a SETTLED expense whose purchase ``date`` falls in the month
+    BEFORE the 3-month rollup's lower bound (so a raw
+    ``Transaction.date >= three_mo_lower`` filter would EXCLUDE it), but
+    whose ``settled_date`` lands squarely INSIDE the rollup window. The
+    spend MUST be summed in by its settled month.
+
+    Reverting ``_gather_facts`` to ``Transaction.date >= three_mo_lower``
+    drops this row entirely → the trailing-spend aggregate falls to 0
+    and this assertion fails.
+    """
+    today = datetime.date.today()
+    current_month_start = today.replace(day=1)
+    period_start = period.start_date
+    three_mo_upper = min(current_month_start, period_start)
+    three_mo_lower = three_mo_upper - relativedelta(months=3)
+
+    # settled_date sits inside [three_mo_lower, three_mo_upper): one month
+    # into the window. Purchase date sits one month BEFORE three_mo_lower
+    # (outside the window). They are in different months.
+    settled_inside = three_mo_lower + relativedelta(months=1)
+    purchase_before = three_mo_lower - relativedelta(months=1)
+    assert purchase_before < three_mo_lower <= settled_inside < three_mo_upper
+
+    await _seed_history(
+        db,
+        org=org,
+        user=user,
+        category=categories["groceries"],
+        amount=Decimal("300.00"),
+        settled=settled_inside,
+        date=purchase_before,
+    )
+
+    captured_payloads: list[dict] = []
+
+    async def fake_call(*args, messages, **kw):
+        for m in messages:
+            content = m.get("content", "")
+            marker = "AGGREGATES:\n"
+            if marker in content:
+                import json as _json
+
+                json_blob = content.split(marker, 1)[1].strip()
+                captured_payloads.append(_json.loads(json_blob))
+        return _make_structured_result({"summary": "ok", "suggestions": []})
+
+    with patch(
+        "app.services.budget_rebalance_service.call_llm_structured",
+        side_effect=fake_call,
+    ):
+        out = await budget_rebalance_service.suggest_rebalance(
+            db, org_id=org.id
+        )
+
+    # If history bucketed by raw purchase date, the row would be excluded
+    # entirely and the service would short-circuit to empty_no_history.
+    assert out.status == "ok", (
+        "settled expense must register as history when bucketed by its "
+        f"settled date; got status={out.status}"
+    )
+    assert captured_payloads, "expected the prompt to carry an aggregates payload"
+    cats = captured_payloads[0]["categories"]
+    by_id = {c["category_id"]: c for c in cats}
+    g_id = categories["groceries"].id
+    assert g_id in by_id
+    # $300 settled inside the 3-month window → avg = 300 / 3 = 100.
+    assert by_id[g_id]["last_3mo_avg_actual"] == pytest.approx(100.0), (
+        "groceries trailing-spend avg must reflect the settled-date "
+        f"bucketing; got {by_id[g_id]['last_3mo_avg_actual']}"
+    )
 
 
 # ---------- parent/child rollup correctness --------------------------
