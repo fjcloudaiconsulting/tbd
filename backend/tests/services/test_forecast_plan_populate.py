@@ -569,3 +569,51 @@ async def test_refresh_does_not_duplicate_manual_items(session_factory):
     assert len(items) == 1, "manual item must not be duplicated by recurring"
     assert items[0].planned_amount == Decimal("5000")
     assert items[0].source == "manual"
+
+
+# ── Cash-basis: history window + bucketing use the effective settled date ──
+
+
+@pytest.mark.asyncio
+async def test_history_buckets_by_effective_settled_date(session_factory):
+    """A GBLT (dated 2026-01-31, settled 2026-02-15) falls in the Feb
+    history month by its SETTLED date — it's both inside the [Feb 1, May 1)
+    history window and bucketed into Feb, not Jan. Paired with a Mar settled
+    row that gives the 2nd month the 2-month minimum needs, so the plan line
+    only surfaces when the GBLT is counted by its effective date.
+    """
+    seed = await _seed(session_factory)
+
+    async with session_factory() as db:
+        # GBLT: dated Jan 31 (before the Feb-1 history floor on raw date),
+        # settled Feb 15 (inside the window, buckets to Feb).
+        db.add(_tx(
+            org_id=seed["org_id"], account_id=seed["account_id"],
+            category_id=seed["groceries_id"], amount=200,
+            date=datetime.date(2026, 1, 31),
+            settled_date=datetime.date(2026, 2, 15),
+            status=TransactionStatus.SETTLED, type_=TransactionType.EXPENSE,
+        ))
+        # Mar 2026 settled $400 — the second history month.
+        db.add(_tx(
+            org_id=seed["org_id"], account_id=seed["account_id"],
+            category_id=seed["groceries_id"], amount=400,
+            date=datetime.date(2026, 3, 10),
+            settled_date=datetime.date(2026, 3, 10),
+            status=TransactionStatus.SETTLED, type_=TransactionType.EXPENSE,
+        ))
+        await db.commit()
+
+    async with session_factory() as db:
+        resp = await forecast_plan_service.populate_from_sources(
+            db, org_id=seed["org_id"], period_start=seed["may_start"],
+        )
+
+    items = [
+        i for i in resp.items
+        if i.category_id == seed["groceries_id"] and i.type == "expense"
+    ]
+    # GBLT in Feb ($200) + Mar ($400) → 2 history months → avg = 300.00.
+    assert len(items) == 1
+    assert items[0].source == "history"
+    assert items[0].planned_amount == Decimal("300.00")
