@@ -237,6 +237,7 @@ export default function MarkAsTransferModal({
             <span className="font-medium">Source:</span> {source.account_name} &middot;{" "}
             {source.type === "expense" ? "-" : "+"}
             {formatAmount(source.amount)} &middot; {source.date}
+            <span className="ml-1 text-text-secondary">settled {source.settled_date ?? "—"}</span>
           </div>
         </div>
 
