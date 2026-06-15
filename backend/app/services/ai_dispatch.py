@@ -83,6 +83,10 @@ from app.models.user import Role, User
 from app.services import ai_routing_service, notification_service
 from app.services.ai_credential_crypto import decrypt
 from app.services.ai_pricing import estimate_cost_cents
+from app.services.ai_token_estimate import (
+    default_max_output_tokens_for,
+    estimate_prompt_tokens_from_messages,
+)
 from app.services.ai_providers import (
     AIProviderError,
     CapabilityNotSupported,
@@ -503,6 +507,107 @@ async def remaining_hard_cap_cents(
     return resolved.hard_cap_cents - cost_so_far
 
 
+# --- Projected-overspend gate ----------------------------------------
+
+
+def _projected_cost_cents(
+    model: str,
+    messages: list[dict],
+    max_tokens: Optional[int],
+    *,
+    retry_multiplier: int = 1,
+) -> int:
+    """Conservative worst-case cost (cents) for a not-yet-made call.
+
+    Prompt tokens come from the shared char heuristic over ``messages``;
+    completion tokens are the caller's pinned ``max_tokens`` or the
+    model's worst-case output ceiling when unpinned. ``retry_multiplier``
+    scales the single-call estimate for callers that retry and aggregate
+    spend across attempts (e.g. structured output). Unknown models price
+    via ``estimate_cost_cents``'s conservative ``_default`` row, so the
+    projection is always computable.
+    """
+    prompt_tokens = estimate_prompt_tokens_from_messages(messages)
+    completion_tokens = (
+        max_tokens if max_tokens else default_max_output_tokens_for(model)
+    )
+    single = estimate_cost_cents(
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+    return single * retry_multiplier
+
+
+def _enforce_cap(
+    *,
+    resolved: "_ResolvedCaps",
+    cost_so_far: int,
+    model: str,
+    messages: list[dict],
+    max_tokens: Optional[int],
+    retry_multiplier: int,
+    org_id: int,
+    feature_key: str,
+    capability: Optional[str] = None,
+) -> None:
+    """Universal hard-cap gate: block if already exhausted OR if this
+    call's conservative projected cost would tip the org over its hard
+    cap. Raises ``AICapExceeded`` (→ 402 ``ai_hard_cap_exceeded``).
+
+    No cap configured (``hard_cap_cents is None``) → no gate.
+
+    Fail-closed: if projection raises for any reason, ``projected`` is
+    pinned to 0 and a warning is logged. This degrades the gate to
+    exhausted-only enforcement — it never skips the gate and never 500s
+    the dispatch hot path. The explicit ``cost_so_far >= hard_cap`` arm
+    keeps an at-cap org blocked even when ``projected`` is 0.
+
+    Writes no ledger row and no audit event at this layer (matches the
+    prior inline exhausted block); ``AICapExceeded`` is audited as a
+    success-precondition by the routers.
+    """
+    if resolved.hard_cap_cents is None:
+        return
+
+    try:
+        projected = _projected_cost_cents(
+            model,
+            messages,
+            max_tokens,
+            retry_multiplier=retry_multiplier,
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed, never crash dispatch
+        projected = 0
+        logger.warning(
+            "ai.dispatch.cap.projection_failed",
+            org_id=org_id,
+            feature_key=feature_key,
+            capability=capability,
+            error_class=type(exc).__name__,
+        )
+
+    if (
+        cost_so_far >= resolved.hard_cap_cents
+        or cost_so_far + projected > resolved.hard_cap_cents
+    ):
+        logger.info(
+            "ai.dispatch.cap.exceeded",
+            org_id=org_id,
+            feature_key=feature_key,
+            capability=capability,
+            cost_so_far=cost_so_far,
+            hard_cap_cents=resolved.hard_cap_cents,
+            projected_cost_cents=projected,
+            reason=(
+                "exhausted"
+                if cost_so_far >= resolved.hard_cap_cents
+                else "projected"
+            ),
+        )
+        raise AICapExceeded()
+
+
 # --- Soft-cap warning -------------------------------------------------
 
 
@@ -740,22 +845,21 @@ async def call_llm(
         )
         raise NoRoutingConfigured()
 
-    # 2. Pre-check caps.
+    # 2. Pre-check caps (exhausted + projected-overspend gate).
     resolved, cost_so_far = await _resolve_caps_and_cost(
         db, org_id=org_id, feature_key=feature_key
     )
-    if (
-        resolved.hard_cap_cents is not None
-        and cost_so_far >= resolved.hard_cap_cents
-    ):
-        logger.info(
-            "ai.dispatch.cap.exceeded",
-            org_id=org_id,
-            feature_key=feature_key,
-            cost_so_far=cost_so_far,
-            hard_cap_cents=resolved.hard_cap_cents,
-        )
-        raise AICapExceeded()
+    _enforce_cap(
+        resolved=resolved,
+        cost_so_far=cost_so_far,
+        model=model,
+        messages=(request_payload.get("messages") or []),
+        max_tokens=request_payload.get("max_tokens"),
+        retry_multiplier=1,
+        org_id=org_id,
+        feature_key=feature_key,
+        capability=capability,
+    )
 
     # 3. Soft-cap warning (first-time-in-period).
     await _maybe_warn_soft_cap(
@@ -962,8 +1066,20 @@ async def _prepare_dispatch(
     org_id: int,
     feature_key: str,
     capability: str,
+    messages: list[dict],
+    max_tokens: Optional[int],
+    retry_multiplier: int = 1,
 ) -> _PreparedDispatch:
     """Resolve routing + credential + caps for one dispatch.
+
+    ``messages``/``max_tokens``/``retry_multiplier`` feed the universal
+    projected-overspend gate (``_enforce_cap``) after ``model`` is
+    resolved. Embedding callers synthesize a ``messages`` payload from
+    their INPUT (the texts to embed) so the gate projects the embedding
+    INPUT cost as prompt tokens, with ``max_tokens=None`` resolving to
+    the model output ceiling (0 for embedding models, which emit no
+    completion tokens); structured-output callers pass their retry
+    budget.
 
     Raises ``NoRoutingConfigured``, ``AICapExceeded``, or
     ``AICapabilityNotSupported`` before the adapter is built. The
@@ -1027,19 +1143,17 @@ async def _prepare_dispatch(
     resolved, cost_so_far = await _resolve_caps_and_cost(
         db, org_id=org_id, feature_key=feature_key
     )
-    if (
-        resolved.hard_cap_cents is not None
-        and cost_so_far >= resolved.hard_cap_cents
-    ):
-        logger.info(
-            "ai.dispatch.cap.exceeded",
-            org_id=org_id,
-            feature_key=feature_key,
-            capability=capability,
-            cost_so_far=cost_so_far,
-            hard_cap_cents=resolved.hard_cap_cents,
-        )
-        raise AICapExceeded()
+    _enforce_cap(
+        resolved=resolved,
+        cost_so_far=cost_so_far,
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        retry_multiplier=retry_multiplier,
+        org_id=org_id,
+        feature_key=feature_key,
+        capability=capability,
+    )
 
     await _maybe_warn_soft_cap(
         db,
@@ -1167,6 +1281,12 @@ async def call_llm_structured(
         org_id=org_id,
         feature_key=feature_key,
         capability="structured_output",
+        messages=messages,
+        max_tokens=max_tokens,
+        # Structured output retries up to STRUCTURED_OUTPUT_MAX_RETRIES and
+        # aggregates token spend across every attempt, so project the
+        # worst case: all attempts billed.
+        retry_multiplier=STRUCTURED_OUTPUT_MAX_RETRIES + 1,
     )
 
     retry_message = {
@@ -1380,11 +1500,23 @@ async def call_llm_embed(
     caller can override with the ``model`` kwarg if a feature surface
     pins a specific model.
     """
+    # Embeddings bill on their INPUT, so feed ``texts`` to the gate as a
+    # synthetic prompt payload. ``_projected_cost_cents`` then estimates
+    # prompt tokens from the joined input and prices it at the embedding
+    # input rate; ``max_tokens=None`` resolves the model output ceiling,
+    # which is 0 for embedding models (they emit no completion tokens),
+    # so projected == the embedding INPUT cost. Without this the gate saw
+    # an empty payload (projected 0) and embeddings got exhausted-only
+    # protection, letting a bulk batch overspend by its full cost.
+    gate_messages = [{"role": "user", "content": "\n".join(texts)}]
     prepared = await _prepare_dispatch(
         db,
         org_id=org_id,
         feature_key=feature_key,
         capability="embed",
+        messages=gate_messages,
+        max_tokens=None,
+        retry_multiplier=1,
     )
     embed_model = model or prepared.model
 
@@ -1488,11 +1620,24 @@ async def call_llm_function(
     max_tokens: Optional[int] = None,
 ) -> FunctionCallDispatchResult:
     """Dispatch a function-calling chat through the chokepoint."""
+    # The provider bills the ``tools`` JSON schemas as PROMPT tokens, so
+    # fold them into the gate's projection by appending a serialized copy
+    # as a synthetic prompt message. This keeps the projected prompt cost
+    # honest for function-calling without altering the real adapter call
+    # below (which still passes the original ``messages`` + ``tools``).
+    gate_messages = (
+        messages + [{"role": "user", "content": json.dumps(tools)}]
+        if tools
+        else messages
+    )
     prepared = await _prepare_dispatch(
         db,
         org_id=org_id,
         feature_key=feature_key,
         capability="function_call",
+        messages=gate_messages,
+        max_tokens=max_tokens,
+        retry_multiplier=1,
     )
 
     start = time.perf_counter()
@@ -1615,6 +1760,9 @@ async def call_llm_stream(
         org_id=org_id,
         feature_key=feature_key,
         capability="stream",
+        messages=messages,
+        max_tokens=max_tokens,
+        retry_multiplier=1,
     )
 
     accumulated: list[str] = []
