@@ -472,3 +472,28 @@ async def test_month_bucketing_uses_settled_date(session_factory):
         rows, _ = await execute_query(db, ast, org_id=seeds["org_id"])
     by_month = {r["month"]: r["value"] for r in rows}
     assert "2026-06" in by_month and "2026-05" not in by_month
+
+
+@pytest.mark.asyncio
+async def test_date_filter_uses_settled_date(session_factory):
+    """A DATE BETWEEN June filter INCLUDES the GBLT by its June settled
+    date, even though its raw transaction date is in May.
+    """
+    seeds = await _seed_gblt(session_factory)
+    ast = ReportsQuery(
+        dataset=Dataset.TRANSACTIONS,
+        measure=Measure(agg=Aggregation.SUM, field=MeasureField.AMOUNT),
+        filters=[
+            Filter(
+                field=FilterField.DATE,
+                op=FilterOp.BETWEEN,
+                value=[date(2026, 6, 1), date(2026, 6, 30)],
+            )
+        ],
+        limit=100,
+    )
+    async with session_factory() as db:
+        rows, _ = await execute_query(db, ast, org_id=seeds["org_id"])
+    # No dimensions → a single aggregate row. SUM is the GBLT amount only
+    # when the June filter includes it via its settled date (else 0/None).
+    assert rows[0]["value"] == 459.68

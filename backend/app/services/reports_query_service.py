@@ -145,7 +145,10 @@ def _category_parent_alias():
 
 
 _FILTER_COLUMN: dict[FilterField, Any] = {
-    FilterField.DATE: Transaction.date,
+    # Cash-basis: the DATE filter compares against the effective settled
+    # date (coalesce(settled_date, date)), so a date-window filter buckets
+    # rows by when they settled — consistent with the time dimensions.
+    FilterField.DATE: effective_period_date_expr(),
     FilterField.AMOUNT: Transaction.amount,
     FilterField.CATEGORY_ID: Transaction.category_id,
     FilterField.ACCOUNT_ID: Transaction.account_id,
