@@ -493,6 +493,15 @@ async def test_get_transfer_candidates(session_factory):
         amount=Decimal("50.00"), description="usd account",
         on_date=base_date,
     )
+    # Pending same-day income on a2 → NOT a candidate (only settled rows
+    # surface as transfer-pair candidates), so it never reaches the response.
+    pending_id = await _add_tx(
+        session_factory,
+        org_id=seed["org_id"], account_id=seed["a2_id"],
+        category_id=seed["cat_salary_id"], type=TransactionType.INCOME,
+        amount=Decimal("50.00"), description="pending leg",
+        on_date=base_date, status=TransactionStatus.PENDING,
+    )
 
     app = make_app(session_factory)
     with TestClient(app) as client:
@@ -516,6 +525,11 @@ async def test_get_transfer_candidates(session_factory):
     assert by_id[near_id]["date_diff_days"] == 2
     # All candidates are on the requested destination account.
     assert all(c["account_id"] == seed["a2_id"] for c in cands)
+    # Each candidate carries its own settled date (all candidates are settled).
+    assert by_id[same_day_id]["settled_date"] == base_date.isoformat()
+    assert by_id[near_id]["settled_date"] == (base_date + timedelta(days=2)).isoformat()
+    # The pending row never surfaces as a candidate.
+    assert pending_id not in cand_ids
 
 
 # ── Track E: manual-adjustment rejection in transfer-pair routes ──────────

@@ -429,7 +429,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
     expect(body).not.toHaveProperty("settled_date");
   });
 
-  it("view row: shows 'expected settled YYYY-MM-DD' subtext on pending rows", async () => {
+  it("view row: mobile card surfaces the settled date on pending rows", async () => {
     const tx = makeTx({
       id: 90,
       description: "Pending CC",
@@ -441,12 +441,16 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
     render(<TransactionsPage />);
 
     await screen.findAllByText("Pending CC");
-    // Subtext renders in both desktop + mobile views.
-    const subtexts = await screen.findAllByText(/expected settled 2026-06-15/);
-    expect(subtexts.length).toBeGreaterThan(0);
+    // The always-on mobile settled line shows the settled date exactly
+    // once (the legacy "expected settled" subtext was removed so it no
+    // longer renders twice when settled_date differs from date).
+    const mobileSettled = await screen.findByTestId("settled-date-mobile-90");
+    expect(mobileSettled).toHaveTextContent("Settled 2026-06-15");
+    expect(screen.queryByTestId("expected-settled-mobile-90")).toBeNull();
+    expect(screen.queryByText(/expected settled/i)).toBeNull();
   });
 
-  it("view row: subtext hidden when settled_date matches transaction date (would be redundant)", async () => {
+  it("view row: mobile settled line always renders, even when settled_date matches the transaction date", async () => {
     const tx = makeTx({
       id: 91,
       description: "Pending same date",
@@ -458,6 +462,10 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
     render(<TransactionsPage />);
 
     await screen.findAllByText("Pending same date");
+    // The always-on line renders regardless of whether the dates match;
+    // it shows the (matching) settled date rather than being suppressed.
+    const mobileSettled = await screen.findByTestId("settled-date-mobile-91");
+    expect(mobileSettled).toHaveTextContent("Settled 2026-05-01");
     expect(screen.queryByText(/expected settled/i)).toBeNull();
   });
 

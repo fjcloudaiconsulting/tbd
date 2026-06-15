@@ -294,4 +294,47 @@ describe("MarkAsTransferModal", () => {
       })
     );
   });
+
+  it("candidate rows show each candidate's settled date (and — when null)", async () => {
+    apiFetchMock.mockResolvedValueOnce({
+      candidates: [
+        {
+          id: 99,
+          date: "2026-04-29",
+          settled_date: "2026-05-02",
+          description: "Settled leg",
+          amount: 500,
+          account_id: 20,
+          account_name: "Savings",
+          date_diff_days: 0,
+          confidence: "same_day",
+        },
+        {
+          id: 100,
+          date: "2026-04-29",
+          settled_date: null,
+          description: "Unsettled leg",
+          amount: 500,
+          account_id: 20,
+          account_name: "Savings",
+          date_diff_days: 0,
+          confidence: "same_day",
+        },
+      ],
+    } as never);
+    render(
+      <MarkAsTransferModal
+        source={source}
+        accounts={accounts}
+        onConverted={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "20" } });
+    await waitFor(() => expect(screen.getAllByRole("radio").length).toBe(2));
+    // The settled date (distinct month from the original date) is shown.
+    expect(screen.getByText(/settled 2026-05-02/i)).toBeInTheDocument();
+    // Null settled_date renders the em-dash placeholder.
+    expect(screen.getByText(/settled —/i)).toBeInTheDocument();
+  });
 });

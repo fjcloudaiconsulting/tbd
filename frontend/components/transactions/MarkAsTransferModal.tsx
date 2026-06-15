@@ -206,7 +206,11 @@ export default function MarkAsTransferModal({
         />
         <span className="flex flex-col">
           <span>
-            {c.date} &middot; {c.description} &middot; {formatAmount(c.amount)}
+            {c.date}
+            <span className="ml-1 text-text-secondary">
+              settled {c.settled_date ?? "—"}
+            </span>{" "}
+            &middot; {c.description} &middot; {formatAmount(c.amount)}
           </span>
           <span className="text-xs text-text-secondary">
             {c.account_name} &middot; {diffText}
@@ -237,6 +241,7 @@ export default function MarkAsTransferModal({
             <span className="font-medium">Source:</span> {source.account_name} &middot;{" "}
             {source.type === "expense" ? "-" : "+"}
             {formatAmount(source.amount)} &middot; {source.date}
+            <span className="ml-1 text-text-secondary">settled {source.settled_date ?? "—"}</span>
           </div>
         </div>
 

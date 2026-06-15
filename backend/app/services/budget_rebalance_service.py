@@ -61,7 +61,10 @@ from app.services.ai_providers import (
     StructuredOutputError,
 )
 from app.services.billing_service import get_current_period
-from app.services.transaction_filters import reportable_transaction_filter
+from app.services.transaction_filters import (
+    effective_period_date_expr,
+    reportable_transaction_filter,
+)
 
 
 logger = structlog.stdlib.get_logger()
@@ -200,8 +203,8 @@ async def _gather_facts(
             select(Transaction.category_id, func.sum(Transaction.amount))
             .where(
                 *base_filter,
-                Transaction.settled_date >= three_mo_lower,
-                Transaction.settled_date < three_mo_upper,
+                effective_period_date_expr() >= three_mo_lower,
+                effective_period_date_expr() < three_mo_upper,
             )
             .group_by(Transaction.category_id)
         )
@@ -213,10 +216,10 @@ async def _gather_facts(
     # One query for the current-period rollup, GROUP BY category_id.
     current_q = (
         select(Transaction.category_id, func.sum(Transaction.amount))
-        .where(*base_filter, Transaction.settled_date >= period_start)
+        .where(*base_filter, effective_period_date_expr() >= period_start)
     )
     if period_end is not None:
-        current_q = current_q.where(Transaction.settled_date <= period_end)
+        current_q = current_q.where(effective_period_date_expr() <= period_end)
     current_rows = (
         await db.execute(current_q.group_by(Transaction.category_id))
     ).all()

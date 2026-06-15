@@ -1281,3 +1281,68 @@ async def test_simulate_custom_events_does_not_mutate_any_real_table(
     # The one_off_expense at month 3 in a positive-balance fixture may
     # not dip below zero; just sanity-check projection length.
     assert len(result["per_account_series"]) == 2
+
+
+# ── Cash-basis: history cashflow buckets by effective settled date ──
+
+
+@pytest.mark.asyncio
+async def test_world_state_history_buckets_by_effective_settled_date(
+    session_factory,
+):
+    """build_world_state's 12-month per-account cashflow history must
+    bucket a GBLT (dated in month X, settled in month Y) by its SETTLED
+    month, and include rows the window only admits via the settled date.
+    """
+    from app.models.transaction import TransactionStatus, TransactionType
+
+    # Pick two adjacent months a few months back so both the raw and the
+    # settled date sit inside the [today-12mo, this-month) window.
+    anchor = date.today().replace(day=1) - relativedelta(months=4)
+    settled_month = anchor + relativedelta(months=1)
+    raw_date = (settled_month.replace(day=1) - timedelta(days=1))  # last day of anchor month
+    settled_date_val = settled_month.replace(day=10)
+
+    async with session_factory() as db:
+        org = Organization(name="Acme", billing_cycle_day=1)
+        db.add(org)
+        await db.commit()
+        user = User(
+            org_id=org.id, username="bob", email="bob@acme.io",
+            password_hash=hash_password("pw-1234567"), role=Role.OWNER,
+            is_active=True, email_verified=True,
+        )
+        db.add(user)
+        await db.commit()
+        at = AccountType(org_id=org.id, name="Checking", slug="checking", is_system=True)
+        db.add(at)
+        await db.commit()
+        acc = Account(
+            org_id=org.id, account_type_id=at.id, name="Main",
+            balance=Decimal("1000.00"), currency="EUR",
+            opening_balance=Decimal("1000.00"),
+            opening_balance_date=date(2025, 1, 1),
+        )
+        db.add(acc)
+        await db.commit()
+        cat = Category(org_id=org.id, name="Groceries", type=CategoryType.EXPENSE)
+        db.add(cat)
+        await db.commit()
+        db.add(Transaction(
+            org_id=org.id, account_id=acc.id, category_id=cat.id,
+            description="GBLT", amount=Decimal("459.68"),
+            type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+            date=raw_date, settled_date=settled_date_val,
+        ))
+        await db.commit()
+        org_id, user_id, acc_id = org.id, user.id, acc.id
+
+    async with session_factory() as db:
+        from app.services.scenario_engine import build_world_state
+        state = await build_world_state(db, org_id=org_id, user_id=user_id)
+
+    keyed = {(p.year, p.month): p for p in state.history if p.account_id == acc_id}
+    # Bucketed into the SETTLED month, not the raw (anchor) month.
+    assert (settled_date_val.year, settled_date_val.month) in keyed
+    assert (raw_date.year, raw_date.month) not in keyed
+    assert keyed[(settled_date_val.year, settled_date_val.month)].net == Decimal("-459.68")

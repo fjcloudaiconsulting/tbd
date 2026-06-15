@@ -102,10 +102,12 @@ export default function LinkAsTransferModal({
           <div>
             <span className="font-medium">Expense leg:</span>{" "}
             -{formatAmount(expenseLeg.amount)} on {expenseLeg.account_name} ({expenseLeg.date})
+            <span className="ml-1 text-text-secondary">settled {expenseLeg.settled_date ?? "—"}</span>
           </div>
           <div>
             <span className="font-medium">Income leg:</span>{" "}
             +{formatAmount(incomeLeg.amount)} on {incomeLeg.account_name} ({incomeLeg.date})
+            <span className="ml-1 text-text-secondary">settled {incomeLeg.settled_date ?? "—"}</span>
           </div>
         </div>
         <label className="mb-4 flex items-center gap-2 text-sm text-text-primary">

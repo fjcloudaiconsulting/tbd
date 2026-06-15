@@ -127,6 +127,7 @@ export default function UnpairTransferModal({
             <span className="font-medium">Expense leg:</span>{" "}
             -{formatAmount(expenseLeg.amount)} &middot; {expenseLeg.date}{" "}
             &middot; {expenseLeg.account_name}
+            <span className="ml-1 text-text-secondary">settled {expenseLeg.settled_date ?? "—"}</span>
           </div>
           <label htmlFor="unpair-expense-cat" className={labelCls}>
             Category
@@ -147,6 +148,7 @@ export default function UnpairTransferModal({
             <span className="font-medium">Income leg:</span>{" "}
             +{formatAmount(incomeLeg.amount)} &middot; {incomeLeg.date} &middot;{" "}
             {incomeLeg.account_name}
+            <span className="ml-1 text-text-secondary">settled {incomeLeg.settled_date ?? "—"}</span>
           </div>
           <label htmlFor="unpair-income-cat" className={labelCls}>
             Category

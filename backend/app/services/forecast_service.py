@@ -18,7 +18,10 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.services.billing_service import get_current_period
 from app.services.date_utils import advance_date
-from app.services.transaction_filters import reportable_transaction_filter
+from app.services.transaction_filters import (
+    effective_period_date_expr,
+    reportable_transaction_filter,
+)
 
 
 async def compute_forecast(
@@ -87,14 +90,16 @@ async def compute_forecast(
         )
     ) or Decimal("0")
 
-    # ── Pending — uses transaction date (when purchase happened) ──────────
+    # ── Pending — buckets by effective settled date (the settled-date
+    # estimate when set, else purchase date) so pending rows fall in the
+    # period they're expected to clear, consistent with the list/reports.
     pending_income = await db.scalar(
         select(func.coalesce(func.sum(Transaction.amount), 0)).where(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.INCOME,
             Transaction.status == TransactionStatus.PENDING,
-            Transaction.date >= p_start,
-            Transaction.date <= p_end,
+            effective_period_date_expr() >= p_start,
+            effective_period_date_expr() <= p_end,
             reportable_transaction_filter(),
         )
     ) or Decimal("0")
@@ -104,8 +109,8 @@ async def compute_forecast(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.PENDING,
-            Transaction.date >= p_start,
-            Transaction.date <= p_end,
+            effective_period_date_expr() >= p_start,
+            effective_period_date_expr() <= p_end,
             reportable_transaction_filter(),
         )
     ) or Decimal("0")
@@ -162,8 +167,8 @@ async def compute_forecast(
             Transaction.org_id == org_id,
             Transaction.type == TransactionType.EXPENSE,
             Transaction.status == TransactionStatus.PENDING,
-            Transaction.date >= p_start,
-            Transaction.date <= p_end,
+            effective_period_date_expr() >= p_start,
+            effective_period_date_expr() <= p_end,
             reportable_transaction_filter(),
         ).group_by(Transaction.category_id)
     )

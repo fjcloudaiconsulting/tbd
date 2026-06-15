@@ -1042,17 +1042,24 @@ function TransactionsPageContent() {
                   />
                 </div>
                 {([
-                  { field: "date" as const, label: "Date", span: "col-span-2", align: "" },
-                  { field: "description" as const, label: "Description", span: "col-span-2", align: "" },
-                  { field: "account_name" as const, label: "Account", span: "col-span-2", align: "" },
-                  { field: "category_name" as const, label: "Category", span: "col-span-1", align: "" },
-                  { field: "status" as const, label: "Status", span: "col-span-1", align: "text-center" },
-                  { field: "amount" as const, label: "Amount", span: "col-span-1", align: "text-right" },
-                ]).map((col) => (
-                  <button key={col.field} onClick={() => toggleSort(col.field)} className={`${col.span} ${col.align} min-h-[32px] hover:text-text-primary transition-colors`}>
-                    {col.label}{sortField === col.field ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
-                  </button>
-                ))}
+                  { field: "date" as const, label: "Date", span: "col-span-1", align: "", sortable: true },
+                  { field: "settled_date" as const, label: "Settled", span: "col-span-1", align: "", sortable: false },
+                  { field: "description" as const, label: "Description", span: "col-span-2", align: "", sortable: true },
+                  { field: "account_name" as const, label: "Account", span: "col-span-2", align: "", sortable: true },
+                  { field: "category_name" as const, label: "Category", span: "col-span-1", align: "", sortable: true },
+                  { field: "status" as const, label: "Status", span: "col-span-1", align: "text-center", sortable: true },
+                  { field: "amount" as const, label: "Amount", span: "col-span-1", align: "text-right", sortable: true },
+                ]).map((col) =>
+                  // Settled is a display-only column (the server sorts by `date`),
+                  // so it renders as a static header rather than a sort button.
+                  col.sortable ? (
+                    <button key={col.field} onClick={() => toggleSort(col.field as SortField)} className={`${col.span} ${col.align} min-h-[32px] hover:text-text-primary transition-colors`}>
+                      {col.label}{sortField === col.field ? (sortDir === "asc" ? " ↑" : " ↓") : ""}
+                    </button>
+                  ) : (
+                    <span key={col.field} className={`${col.span} ${col.align} flex items-center`}>{col.label}</span>
+                  ),
+                )}
                 <span className="col-span-2" />
               </div>
             </div>
@@ -1314,21 +1321,20 @@ function TransactionsPageContent() {
                               className="h-4 w-4"
                             />
                           </span>
-                          <span className="col-span-2 text-sm tabular-nums text-text-secondary">
+                          <span className="col-span-1 text-sm tabular-nums text-text-secondary">
                             {tx.date}
-                            {/* Expected settlement subtext (Item 13). Surfaces
-                                only when the row is pending AND the user set a
-                                custom settlement date that differs from the
-                                transaction date. Otherwise the subtext would
-                                be redundant noise. */}
-                            {tx.status === "pending" && tx.settled_date && tx.settled_date !== tx.date && (
-                              <span
-                                className="block text-[10px] text-text-muted"
-                                data-testid={`expected-settled-${tx.id}`}
-                              >
-                                expected settled {tx.settled_date}
-                              </span>
-                            )}
+                          </span>
+                          {/* Settled date column (effective-date consistency).
+                              The operator requires the settled date to be
+                              visible wherever a transaction renders, so every
+                              row shows it explicitly: the settled date when
+                              set, or an em-dash placeholder when still pending
+                              / unsettled. */}
+                          <span
+                            className="col-span-1 text-sm tabular-nums text-text-secondary"
+                            data-testid={`settled-date-${tx.id}`}
+                          >
+                            {tx.settled_date ?? "—"}
                           </span>
                           <span className="col-span-2 flex flex-col text-sm text-text-primary">
                             <span>{tx.description}</span>
@@ -1658,14 +1664,17 @@ function TransactionsPageContent() {
                               <div className="mt-0.5 text-xs text-text-muted tabular-nums">
                                 {tx.date} · {isTransfer && linkedTx ? <>{tx.account_name} &rarr; {linkedTx.account_name}</> : tx.account_name}
                               </div>
-                              {tx.status === "pending" && tx.settled_date && tx.settled_date !== tx.date && (
-                                <div
-                                  className="mt-0.5 text-[10px] text-text-muted"
-                                  data-testid={`expected-settled-mobile-${tx.id}`}
-                                >
-                                  expected settled {tx.settled_date}
-                                </div>
-                              )}
+                              {/* Settled date always surfaced on the mobile card
+                                  too (effective-date consistency): the operator
+                                  requires it visible wherever a transaction
+                                  renders. Settled date when set, em-dash when
+                                  still pending / unsettled. */}
+                              <div
+                                className="mt-0.5 text-[10px] text-text-muted tabular-nums"
+                                data-testid={`settled-date-mobile-${tx.id}`}
+                              >
+                                Settled {tx.settled_date ?? "—"}
+                              </div>
                             </div>
                             <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                               {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
