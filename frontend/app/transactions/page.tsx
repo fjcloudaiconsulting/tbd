@@ -1675,14 +1675,6 @@ function TransactionsPageContent() {
                               >
                                 Settled {tx.settled_date ?? "—"}
                               </div>
-                              {tx.status === "pending" && tx.settled_date && tx.settled_date !== tx.date && (
-                                <div
-                                  className="mt-0.5 text-[10px] text-text-muted"
-                                  data-testid={`expected-settled-mobile-${tx.id}`}
-                                >
-                                  expected settled {tx.settled_date}
-                                </div>
-                              )}
                             </div>
                             <div className={`shrink-0 text-right text-sm font-semibold tabular-nums ${isTransfer ? "text-accent" : tx.type === "income" ? "text-success" : "text-danger"}`}>
                               {isTransfer ? "" : tx.type === "income" ? "+" : "-"}{formatAmount(tx.amount)}
