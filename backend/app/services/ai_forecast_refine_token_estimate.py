@@ -11,9 +11,13 @@ from __future__ import annotations
 import enum
 import math
 
+# ``_PROMPT_CHARS_PER_TOKEN`` is owned by ``ai_token_estimate`` and
+# re-exported here so the refine preflight and the universal dispatch
+# overspend gate share one char-per-token heuristic and cannot drift.
+from app.services.ai_token_estimate import _PROMPT_CHARS_PER_TOKEN
+
 # Char-per-token heuristics. The stack has no tokenizer; these are
 # deliberately rough and surfaced to the user as approximate ("≈").
-_PROMPT_CHARS_PER_TOKEN = 3.5
 _OUTPUT_CHARS_PER_TOKEN = 3.0
 
 # Per-row JSON size assumptions for the output shape (SeasonalAdjustment,
