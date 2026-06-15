@@ -41,6 +41,7 @@ from app.models.recurring import Frequency, RecurringTransaction
 from app.models.scenario import Scenario, ScenarioType
 from app.models.transaction import Transaction, TransactionType
 from app.services.date_utils import advance_date
+from app.services.transaction_filters import effective_period_date_expr
 
 
 _TWOPLACES = Decimal("0.01")
@@ -661,19 +662,23 @@ async def build_world_state(
     # for plans that don't smooth, the points are simply ignored.
     today = utcnow_naive().date()
     history_start = today.replace(day=1) - relativedelta(months=12)
+    # Cash-basis: window + bucket by the effective settled date so a row
+    # dated in month X but settled in month Y counts in Y, consistent with
+    # the list/reports/forecast.
     txn_rows = (
         await db.execute(
             select(Transaction).where(
                 Transaction.org_id == org_id,
-                Transaction.date >= history_start,
-                Transaction.date < today.replace(day=1),
+                effective_period_date_expr() >= history_start,
+                effective_period_date_expr() < today.replace(day=1),
                 Transaction.type != TransactionType.TRANSFER,
             )
         )
     ).scalars().all()
     monthly: dict[tuple[int, int, int], Decimal] = {}
     for txn in txn_rows:
-        key = (txn.account_id, txn.date.year, txn.date.month)
+        eff = txn.settled_date or txn.date
+        key = (txn.account_id, eff.year, eff.month)
         sign = (
             Decimal("1")
             if txn.type == TransactionType.INCOME
