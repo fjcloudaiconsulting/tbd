@@ -90,6 +90,14 @@ export default async function ComparePage() {
         ·{" "}
         <Link href="/vs/ynab" className="underline hover:text-text-primary">
           vs YNAB
+        </Link>{" "}
+        ·{" "}
+        <Link href="/vs/pocketsmith" className="underline hover:text-text-primary">
+          vs PocketSmith
+        </Link>{" "}
+        ·{" "}
+        <Link href="/vs/monarch" className="underline hover:text-text-primary">
+          vs Monarch
         </Link>
         .
       </p>
