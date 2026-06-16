@@ -21,14 +21,14 @@ describe("sitemap.ts", () => {
     expect(urls).not.toContain("/login");
   });
 
-  it("includes the indexable marketing pages and omits the noindex /vs pages", () => {
+  it("includes the indexable marketing pages and all four /vs pages", () => {
     const urls = sitemap().map((entry) => new URL(entry.url).pathname);
     expect(urls).toContain("/features");
     expect(urls).toContain("/compare");
     expect(urls).toContain("/vs/spreadsheets");
     expect(urls).toContain("/vs/ynab");
-    // /vs/pocketsmith and /vs/monarch are noindex (staggered for a later PR).
-    expect(urls).not.toContain("/vs/pocketsmith");
-    expect(urls).not.toContain("/vs/monarch");
+    // PocketSmith and Monarch are now published (staggered launch complete).
+    expect(urls).toContain("/vs/pocketsmith");
+    expect(urls).toContain("/vs/monarch");
   });
 });

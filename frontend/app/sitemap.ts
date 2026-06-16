@@ -43,8 +43,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "monthly",
       priority: 0.7,
     },
-    // /vs/spreadsheets and /vs/ynab are indexable (robots index:true). The
-    // other two /vs pages (pocketsmith, monarch) are noindex and stay out.
+    // All four /vs pages are indexable (robots index:true).
     {
       url: `${siteUrl}/vs/spreadsheets`,
       lastModified,
@@ -53,6 +52,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: `${siteUrl}/vs/ynab`,
+      lastModified,
+      changeFrequency: "monthly",
+      priority: 0.6,
+    },
+    {
+      url: `${siteUrl}/vs/pocketsmith`,
+      lastModified,
+      changeFrequency: "monthly",
+      priority: 0.6,
+    },
+    {
+      url: `${siteUrl}/vs/monarch`,
       lastModified,
       changeFrequency: "monthly",
       priority: 0.6,
