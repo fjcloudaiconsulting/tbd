@@ -38,9 +38,16 @@ interface Props {
   widget: AreaWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
-export default function AreaWidget({ widget, canvasFilters, editMode }: Props) {
+export default function AreaWidget({
+  widget,
+  canvasFilters,
+  editMode,
+  currency,
+}: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
   const { series, isLoading, error } = useSeriesQueries(
     widget,
@@ -110,6 +117,7 @@ export default function AreaWidget({ widget, canvasFilters, editMode }: Props) {
             labels={labels}
             stackId={stackId}
             format={format}
+            currency={currency}
           />
         )}
       </div>

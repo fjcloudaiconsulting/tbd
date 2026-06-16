@@ -39,11 +39,18 @@ interface Props {
   widget: TableWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 const DEFAULT_PAGE_SIZE = 25;
 
-export default function TableWidget({ widget, canvasFilters, editMode }: Props) {
+export default function TableWidget({
+  widget,
+  canvasFilters,
+  editMode,
+  currency,
+}: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
   const { series, isLoading, error } = useSeriesQueries(
     widget,
@@ -243,7 +250,7 @@ export default function TableWidget({ widget, canvasFilters, editMode }: Props) 
                   ))}
                   {seriesKeys.map((key) => (
                     <td key={key} className="py-1.5 pr-3 text-right font-mono">
-                      {formatCell(row[key], format)}
+                      {formatCell(row[key], format, currency)}
                     </td>
                   ))}
                 </tr>
@@ -263,7 +270,7 @@ export default function TableWidget({ widget, canvasFilters, editMode }: Props) 
                   <td key={key} className="py-1.5 pr-3 text-right font-mono">
                     {columnTotals[i] === null
                       ? "—"
-                      : formatCell(columnTotals[i], format)}
+                      : formatCell(columnTotals[i], format, currency)}
                   </td>
                 ))}
               </tr>
@@ -292,9 +299,10 @@ export default function TableWidget({ widget, canvasFilters, editMode }: Props) 
 function formatCell(
   v: string | number | null | undefined,
   format: "currency" | "number" | "percent",
+  currency?: string,
 ): string {
   if (v === null || v === undefined) return "";
   const n = typeof v === "number" ? v : Number(v);
   if (!Number.isFinite(n)) return String(v);
-  return formatMeasureValue(n, format);
+  return formatMeasureValue(n, format, currency);
 }

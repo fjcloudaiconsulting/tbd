@@ -27,6 +27,8 @@ interface Props {
    * date arithmetic. Undefined means "no delta shown."
    */
   priorValue?: number | null;
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 export default function KPIWidget({
@@ -34,6 +36,7 @@ export default function KPIWidget({
   canvasFilters,
   editMode,
   priorValue,
+  currency,
 }: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
@@ -96,7 +99,7 @@ export default function KPIWidget({
             data-testid="kpi-widget-value"
             className="text-2xl font-semibold text-text-primary"
           >
-            {formatMeasureValue(value, format)}
+            {formatMeasureValue(value, format, currency)}
           </div>
           {showDelta && delta !== null && (
             <div

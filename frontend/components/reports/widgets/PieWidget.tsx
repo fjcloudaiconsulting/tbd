@@ -37,9 +37,16 @@ interface Props {
   widget: PieWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
-export default function PieWidget({ widget, canvasFilters, editMode }: Props) {
+export default function PieWidget({
+  widget,
+  canvasFilters,
+  editMode,
+  currency,
+}: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
   const dimensionKey = widget.config.dimensions[0] ?? "dimension";
@@ -100,7 +107,7 @@ export default function PieWidget({ widget, canvasFilters, editMode }: Props) {
             No data
           </div>
         ) : (
-          <PieWidgetChart rows={rows} format={format} />
+          <PieWidgetChart rows={rows} format={format} currency={currency} />
         )}
       </div>
     </div>

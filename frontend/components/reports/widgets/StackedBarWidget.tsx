@@ -42,12 +42,15 @@ interface Props {
   widget: StackedBarWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 export default function StackedBarWidget({
   widget,
   canvasFilters,
   editMode,
+  currency,
 }: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
   const { series, isLoading, error } = useSeriesQueries(
@@ -122,6 +125,7 @@ export default function StackedBarWidget({
             labels={labels}
             stackId={stackId}
             format={format}
+            currency={currency}
           />
         )}
       </div>

@@ -42,12 +42,15 @@ interface Props {
   widget: SparklineWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 export default function SparklineWidget({
   widget,
   canvasFilters,
   editMode,
+  currency,
 }: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
@@ -107,10 +110,10 @@ export default function SparklineWidget({
             data-testid="sparkline-widget-value"
             className="text-xl font-semibold text-text-primary"
           >
-            {formatMeasureValue(lastValue ?? 0, format)}
+            {formatMeasureValue(lastValue ?? 0, format, currency)}
           </div>
           <div className="-mx-1 h-10">
-            <SparklineWidgetChart rows={rows} format={format} />
+            <SparklineWidgetChart rows={rows} format={format} currency={currency} />
           </div>
         </>
       )}

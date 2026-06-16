@@ -147,10 +147,27 @@ describe("TableWidget", () => {
     const totalRow = await screen.findByTestId("table-widget-total-row");
     // Dimension cell reads "Total".
     expect(totalRow).toHaveTextContent("Total");
-    // 200 + 80 + 20 = 300, grouped 2dp with NO currency symbol
-    // (symbols deferred to the future multi-currency work).
+    // 200 + 80 + 20 = 300, grouped 2dp. No ``currency`` prop supplied →
+    // no symbol (graceful degradation).
     expect(totalRow).toHaveTextContent("300.00");
     expect(totalRow.textContent).not.toContain("$");
+    expect(totalRow.textContent).not.toContain("€");
+  });
+
+  it("prefixes the org currency symbol in cells when a currency code is supplied", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [
+        { category: "Food", value: 200 },
+        { category: "Transport", value: 80 },
+      ],
+      meta: { row_count: 2, truncated: false, query_ms: 1 },
+    });
+
+    renderWithSWR(<TableWidget widget={makeWidget()} currency="EUR" />);
+
+    const totalRow = await screen.findByTestId("table-widget-total-row");
+    // 200 + 80 = 280, prefixed with the org currency symbol.
+    expect(totalRow.textContent).toContain("€280.00");
   });
 
   it("sums ALL rows in the total even across multiple pages", async () => {
