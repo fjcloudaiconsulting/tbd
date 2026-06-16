@@ -96,6 +96,13 @@ export function currencySymbol(code: string | undefined | null): string {
  * done), so we take the first account's currency as the report currency.
  * Returns ``undefined`` when no account currency is available, in which
  * case currency formatting degrades to grouped numbers with no symbol.
+ *
+ * Trade-off knowingly accepted: if an org legitimately holds accounts in
+ * more than one currency, every widget is labeled with the first account's
+ * symbol — a measure aggregating a differently-denominated account would be
+ * mislabeled. This matches the rest of the report engine, which is not
+ * currency-aware. A future gate (show no symbol when >1 distinct currency)
+ * is the cleaner fix; tracked in the reports backlog.
  */
 export function reportCurrency(
   accounts: Array<{ currency?: string | null }> | undefined | null,
