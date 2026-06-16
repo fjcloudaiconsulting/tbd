@@ -39,6 +39,8 @@ export interface AreaWidgetChartProps {
   stackId?: string;
   /** Display format for the measure value (tooltip + value axis). */
   format: "currency" | "number" | "percent";
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 export default function AreaWidgetChart({
@@ -47,6 +49,7 @@ export default function AreaWidgetChart({
   labels,
   stackId,
   format,
+  currency,
 }: AreaWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -58,13 +61,13 @@ export default function AreaWidgetChart({
           interval={0}
         />
         <YAxis
-          width={80}
+          width={92}
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
-          tickFormatter={(v) => formatMeasureValue(Number(v), format)}
+          tickFormatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
         <Tooltip
           cursor={{ stroke: "var(--color-border)" }}
-          formatter={(v) => formatMeasureValue(Number(v), format)}
+          formatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
         {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         {seriesKeys.map((key, i) => (

@@ -25,9 +25,15 @@ export interface PieWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
   /** Display format for the measure value (tooltip only — pie has no axis). */
   format: "currency" | "number" | "percent";
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
-export default function PieWidgetChart({ rows, format }: PieWidgetChartProps) {
+export default function PieWidgetChart({
+  rows,
+  format,
+  currency,
+}: PieWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <PieChart>
@@ -51,7 +57,9 @@ export default function PieWidgetChart({ rows, format }: PieWidgetChartProps) {
             />
           ))}
         </Pie>
-        <Tooltip formatter={(v) => formatMeasureValue(Number(v), format)} />
+        <Tooltip
+          formatter={(v) => formatMeasureValue(Number(v), format, currency)}
+        />
         <Legend
           verticalAlign="bottom"
           wrapperStyle={{ fontSize: 11 }}

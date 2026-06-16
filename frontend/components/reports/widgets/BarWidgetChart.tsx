@@ -51,6 +51,8 @@ export interface BarWidgetChartProps {
   valueName: string;
   /** Display format for the measure value (tooltip + value axis). */
   format: "currency" | "number" | "percent";
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 export default function BarWidgetChart({
@@ -60,6 +62,7 @@ export default function BarWidgetChart({
   seriesKeys,
   valueName,
   format,
+  currency,
 }: BarWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -71,13 +74,13 @@ export default function BarWidgetChart({
           interval={0}
         />
         <YAxis
-          width={80}
+          width={92}
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
-          tickFormatter={(v) => formatMeasureValue(Number(v), format)}
+          tickFormatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
         <Tooltip
           cursor={{ fill: "var(--color-border)", opacity: 0.3 }}
-          formatter={(v) => formatMeasureValue(Number(v), format)}
+          formatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
         {sliced ? (
           secondaryValues.map((sv, i) => (

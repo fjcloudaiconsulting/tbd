@@ -41,12 +41,24 @@ describe("KPIWidget", () => {
     renderWithSWR(<KPIWidget widget={makeWidget()} />);
 
     const value = await screen.findByTestId("kpi-widget-value");
-    // Grouped, 2dp, NO currency symbol (symbols deferred to the future
-    // multi-currency work). Assert the grouped digits and the absence
-    // of any "$"/"USD".
+    // No ``currency`` prop supplied → currency formatting degrades to a
+    // bare grouped 2dp amount with no symbol. Assert the grouped digits
+    // and the absence of any symbol.
     expect(value.textContent).toContain("1,234.56");
     expect(value.textContent).not.toContain("$");
-    expect(value.textContent).not.toContain("USD");
+    expect(value.textContent).not.toContain("€");
+  });
+
+  it("prefixes the org currency symbol when a currency code is supplied", async () => {
+    runQueryMock.mockResolvedValueOnce({
+      rows: [{ value: 1234.56 }],
+      meta: { row_count: 1, truncated: false, query_ms: 12 },
+    });
+
+    renderWithSWR(<KPIWidget widget={makeWidget()} currency="EUR" />);
+
+    const value = await screen.findByTestId("kpi-widget-value");
+    expect(value.textContent).toContain("€1,234.56");
   });
 
   it("renders a delta vs the supplied prior-period value when compare_prior_period is on", async () => {
