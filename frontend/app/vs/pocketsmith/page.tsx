@@ -1,8 +1,7 @@
 // frontend/app/vs/pocketsmith/page.tsx
-// NOTE: noindex until the publish PR (staggered launch). Do NOT add to sitemap,
-// llms.txt, or internal links until then. Honesty: PocketSmith's headline is
-// forecasting and it is NZ (EU adequacy), so this page leads with simplicity and
-// household sharing, NOT "we forecast better" or a hard EU-privacy claim.
+// Honesty: PocketSmith's headline is forecasting and it is NZ (EU adequacy), so
+// this page leads with simplicity and household sharing, NOT "we forecast
+// better" or a hard EU-privacy claim.
 import type { Metadata } from "next";
 import { readNonce } from "@/lib/nonce";
 import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
@@ -20,7 +19,7 @@ export const metadata: Metadata = {
     description,
     path: apexCanonical("/vs/pocketsmith"),
   }),
-  robots: { index: false, follow: false },
+  robots: { index: true, follow: true },
 };
 
 const faq = [
