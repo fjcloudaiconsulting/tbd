@@ -51,6 +51,8 @@ interface Props {
   widget: BarWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 // Canonical categorical chart palette (theme tokens, mirrors the
@@ -70,7 +72,12 @@ function legendColor(index: number): string {
   return LEGEND_COLORS[index % LEGEND_COLORS.length];
 }
 
-export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
+export default function BarWidget({
+  widget,
+  canvasFilters,
+  editMode,
+  currency,
+}: Props) {
   const { data, error, isLoading } = useReportQuery(widget, canvasFilters);
 
   const primaryKey = widget.config.dimensions[0] ?? "dimension";
@@ -171,6 +178,7 @@ export default function BarWidget({ widget, canvasFilters, editMode }: Props) {
             seriesKeys={seriesKeys}
             valueName={measureLabel}
             format={format}
+            currency={currency}
           />
         )}
       </div>

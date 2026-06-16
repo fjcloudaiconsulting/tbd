@@ -14,18 +14,21 @@ export interface SparklineWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
   /** Display format for the measure value (tooltip only — sparkline has no axis). */
   format: "currency" | "number" | "percent";
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 export default function SparklineWidgetChart({
   rows,
   format,
+  currency,
 }: SparklineWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={rows} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
         <Tooltip
           cursor={false}
-          formatter={(v) => formatMeasureValue(Number(v), format)}
+          formatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
         <Line
           type="monotone"

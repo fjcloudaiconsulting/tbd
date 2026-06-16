@@ -61,6 +61,7 @@ import PieWidget from "@/components/reports/widgets/PieWidget";
 import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
 import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
 import TableWidget from "@/components/reports/widgets/TableWidget";
+import { reportCurrency } from "@/lib/reports/series";
 import type { WidgetType } from "@/lib/reports/types";
 
 interface PageProps {
@@ -195,27 +196,57 @@ function renderWidgetByType(
   w: Widget,
   canvasFilters: CanvasFilters,
   editMode: boolean,
+  // The report's single display currency (reports are single-currency in
+  // practice), derived from the org's accounts. Threads down so every
+  // widget's tooltip / axis / cell formats currency measures with the org
+  // symbol instead of a bare number.
+  currency?: string,
 ) {
   switch (w.type) {
     case "kpi":
       return (
-        <KPIWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+        <KPIWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+          currency={currency}
+        />
       );
     case "bar":
       return (
-        <BarWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+        <BarWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+          currency={currency}
+        />
       );
     case "line":
       return (
-        <LineWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+        <LineWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+          currency={currency}
+        />
       );
     case "area":
       return (
-        <AreaWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+        <AreaWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+          currency={currency}
+        />
       );
     case "pie":
       return (
-        <PieWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />
+        <PieWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+          currency={currency}
+        />
       );
     case "sparkline":
       return (
@@ -223,6 +254,7 @@ function renderWidgetByType(
           widget={w}
           canvasFilters={canvasFilters}
           editMode={editMode}
+          currency={currency}
         />
       );
     case "stacked_bar":
@@ -231,6 +263,7 @@ function renderWidgetByType(
           widget={w}
           canvasFilters={canvasFilters}
           editMode={editMode}
+          currency={currency}
         />
       );
     case "table":
@@ -239,6 +272,7 @@ function renderWidgetByType(
           widget={w}
           canvasFilters={canvasFilters}
           editMode={editMode}
+          currency={currency}
         />
       );
   }
@@ -326,6 +360,10 @@ export default function ReportEditorPage({ params }: PageProps) {
     selectWidgetFilters,
     clearRequestedTab,
   } = useFilterChipState(setSelectedWidgetId);
+  // Reports are single-currency in practice (cross-currency mixing is not
+  // done), so derive one display currency from the org's accounts and
+  // thread it into every widget for currency-symbol formatting.
+  const currency = reportCurrency(accounts);
   const [editMode, setEditMode] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -900,7 +938,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             >
               {orderWidgetsForStack(layout.widgets).map((w) => (
                 <div key={w.id}>
-                  {renderWidgetByType(w, canvasFilters, false)}
+                  {renderWidgetByType(w, canvasFilters, false, currency)}
                 </div>
               ))}
             </div>
@@ -927,7 +965,7 @@ export default function ReportEditorPage({ params }: PageProps) {
                   // guard needed.
                   onSelectFilters={() => selectWidgetFilters(w.id)}
                 >
-                  {renderWidgetByType(w, canvasFilters, editModeActive)}
+                  {renderWidgetByType(w, canvasFilters, editModeActive, currency)}
                 </WidgetShell>
               )}
             />

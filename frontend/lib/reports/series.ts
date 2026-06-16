@@ -70,20 +70,59 @@ export function measureFieldLabel(field: MeasureField): string {
   return MEASURE_FIELD_LABELS[field] ?? field;
 }
 
+/**
+ * Best-effort ISO-code → currency-symbol map, mirroring the dashboard's
+ * ``AccountMonthEndForecast`` helper. Unknown codes fall back to the code
+ * itself with a trailing space (e.g. "CHF 1,234.56") so the value stays
+ * readable. A report is single-currency in practice — cross-currency
+ * mixing is deliberately NOT done — so a report's charts share one symbol
+ * derived from the org's accounts via ``reportCurrency``.
+ */
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  EUR: "€",
+  USD: "$",
+  GBP: "£",
+};
+
+/** Symbol (or padded ISO code) prefix for a currency code. */
+export function currencySymbol(code: string | undefined | null): string {
+  if (!code) return "";
+  return CURRENCY_SYMBOLS[code] ?? `${code} `;
+}
+
+/**
+ * Derive the single currency a report renders in from the org's accounts.
+ * Reports are single-currency in practice (cross-currency mixing is not
+ * done), so we take the first account's currency as the report currency.
+ * Returns ``undefined`` when no account currency is available, in which
+ * case currency formatting degrades to grouped numbers with no symbol.
+ */
+export function reportCurrency(
+  accounts: Array<{ currency?: string | null }> | undefined | null,
+): string | undefined {
+  const code = accounts?.find((a) => a.currency)?.currency;
+  return code ?? undefined;
+}
+
 /** Format a measure value for display in widget tooltips, axes and cells.
- *  Grouped numbers, no currency symbol — matches the app's `formatAmount`
- *  convention. Currency symbols are deferred to the future multi-currency
- *  work (currency will be configured per account). */
+ *  Grouped numbers; when ``format`` is "currency" and a ``currency`` ISO
+ *  code is supplied, the org currency symbol is prefixed (e.g. "€1,234.56").
+ *  With no currency code, currency formatting degrades to grouped 2-decimal
+ *  numbers with no symbol, matching the app's `formatAmount` convention. */
 export function formatMeasureValue(
   value: number,
   format: "currency" | "number" | "percent",
+  currency?: string,
 ): string {
   // Recharts hands tick/tooltip values in as `any`; a degenerate
   // undefined/NaN would otherwise surface as the literal "NaN". Mirror
   // the Number.isFinite guard KPIWidget/TableWidget already apply.
   if (!Number.isFinite(value)) return "";
   if (format === "percent") return `${value.toFixed(1)}%`;
-  if (format === "currency") return formatAmount(value); // grouped, 2dp, no symbol
+  if (format === "currency") {
+    // grouped, 2dp; symbol prefix when the org currency is known.
+    return `${currencySymbol(currency)}${formatAmount(value)}`;
+  }
   return value.toLocaleString();
 }
 

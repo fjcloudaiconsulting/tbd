@@ -37,6 +37,8 @@ export interface LineWidgetChartProps {
   smooth?: boolean;
   /** Display format for the measure value (tooltip + value axis). */
   format: "currency" | "number" | "percent";
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
 export default function LineWidgetChart({
@@ -45,6 +47,7 @@ export default function LineWidgetChart({
   labels,
   smooth,
   format,
+  currency,
 }: LineWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -58,11 +61,11 @@ export default function LineWidgetChart({
         <YAxis
           width={80}
           tick={{ fill: chartColor.axisTick, fontSize: 11 }}
-          tickFormatter={(v) => formatMeasureValue(Number(v), format)}
+          tickFormatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
         <Tooltip
           cursor={{ stroke: "var(--color-border)" }}
-          formatter={(v) => formatMeasureValue(Number(v), format)}
+          formatter={(v) => formatMeasureValue(Number(v), format, currency)}
         />
         {seriesKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         {seriesKeys.map((key, i) => (

@@ -37,9 +37,16 @@ interface Props {
   widget: LineWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
+  /** Org currency ISO code; prefixes the symbol when format is "currency". */
+  currency?: string;
 }
 
-export default function LineWidget({ widget, canvasFilters, editMode }: Props) {
+export default function LineWidget({
+  widget,
+  canvasFilters,
+  editMode,
+  currency,
+}: Props) {
   const measures = widget.config.measures.map((m) => m.measure);
   const { series, isLoading, error } = useSeriesQueries(
     widget,
@@ -108,6 +115,7 @@ export default function LineWidget({ widget, canvasFilters, editMode }: Props) {
             labels={labels}
             smooth={widget.config.smooth}
             format={format}
+            currency={currency}
           />
         )}
       </div>
