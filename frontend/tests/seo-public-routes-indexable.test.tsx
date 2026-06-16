@@ -42,16 +42,9 @@ describe("published /vs pages are indexable", () => {
   it.each([
     ["/vs/spreadsheets", vsSpreadsheetsMetadata],
     ["/vs/ynab", vsYnabMetadata],
-  ] as const)("%s indexes", (_r, meta) => {
-    expect(meta.robots).toEqual({ index: true, follow: true });
-  });
-});
-
-describe("staggered /vs pages stay out of the index until launch", () => {
-  it.each([
     ["/vs/pocketsmith", vsPocketsmithMetadata],
     ["/vs/monarch", vsMonarchMetadata],
-  ] as const)("%s is noindex", (_r, meta) => {
-    expect(meta.robots).toEqual({ index: false, follow: false });
+  ] as const)("%s indexes", (_r, meta) => {
+    expect(meta.robots).toEqual({ index: true, follow: true });
   });
 });

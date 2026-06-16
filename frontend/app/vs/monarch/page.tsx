@@ -1,5 +1,4 @@
 // frontend/app/vs/monarch/page.tsx
-// NOTE: noindex until the publish PR (staggered launch).
 import type { Metadata } from "next";
 import { readNonce } from "@/lib/nonce";
 import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
@@ -17,7 +16,7 @@ export const metadata: Metadata = {
     description,
     path: apexCanonical("/vs/monarch"),
   }),
-  robots: { index: false, follow: false },
+  robots: { index: true, follow: true },
 };
 
 const faq = [

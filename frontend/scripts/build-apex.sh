@@ -309,6 +309,8 @@ cat > "${FRONTEND_DIR}/out-apex/sitemap.xml" <<EOF
   <url><loc>${APEX_URL}/compare/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/vs/spreadsheets/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
   <url><loc>${APEX_URL}/vs/ynab/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
+  <url><loc>${APEX_URL}/vs/pocketsmith/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
+  <url><loc>${APEX_URL}/vs/monarch/</loc><lastmod>${BUILD_TIME%T*}</lastmod></url>
 </urlset>
 EOF
 
