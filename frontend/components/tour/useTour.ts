@@ -53,10 +53,20 @@ export interface TourApi {
   start: (steps: string[]) => void;
   /**
    * Stage a storage-independent "start when the dashboard mounts"
-   * request. The replay flow navigates to /dashboard and
-   * DashboardTourAutoStart consumes this on arrival. Survives client
-   * navigation because TourProvider sits above the page tree, so it
-   * works in Safari private mode where sessionStorage writes throw.
+   * request. Survives client navigation because TourProvider sits above
+   * the page tree, so it works in Safari private mode where
+   * sessionStorage writes throw.
+   *
+   * CONTRACT: the staged request is consumed (and cleared) ONLY on the
+   * next mount/visit of /dashboard, where DashboardTourAutoStart reads
+   * pendingStart and calls start(). It is NOT cleared on close/finish or
+   * a timeout. Callers MUST navigate to /dashboard right after calling
+   * requestStart() — the replay flow does this synchronously. If a
+   * caller stages a request but never reaches /dashboard, the request
+   * persists for the rest of the SPA session and will auto-start the
+   * tour on a later, possibly unexpected, /dashboard visit. Re-staging a
+   * different step list before consumption is last-write-wins (the new
+   * list replaces the old).
    */
   requestStart: (steps: string[]) => void;
   /**
@@ -120,8 +130,12 @@ export function useTourEngine(): TourApi {
 
   const requestStart = useCallback((steps: string[]) => {
     if (!steps.length) return;
-    // Stage the steps; DashboardTourAutoStart starts them on arrival.
-    // Idempotent: re-staging the same request is a no-op write.
+    // Stage the steps; DashboardTourAutoStart consumes (and clears) them
+    // on the next /dashboard mount. Each call sets new state and triggers
+    // a re-render; re-staging a different list is last-write-wins (it
+    // replaces whatever was pending), not a no-op. The request lingers
+    // until a /dashboard visit consumes it, so callers must navigate
+    // there after calling — see the requestStart JSDoc on TourApi.
     setState((s) => ({ ...s, pendingStart: steps }));
   }, []);
 

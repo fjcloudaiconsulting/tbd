@@ -89,7 +89,8 @@ describe("storage-independent tour replay", () => {
       mockPathname = "/dashboard";
     });
     // A second click re-renders so DashboardTourAutoStart's effect sees
-    // the new pathname (requestStart is idempotent).
+    // the new pathname (re-staging the same list is last-write-wins, so
+    // the pending start is unchanged).
     act(() => {
       fireEvent.click(screen.getByTestId("replay"));
     });
@@ -133,6 +134,34 @@ describe("storage-independent tour replay", () => {
 
   it("starts exactly once when both a context pending start and a sessionStorage flag are present", async () => {
     vi.useFakeTimers();
+    // The card is a singleton overlay and both sources resolve to the
+    // same step list, so "one card / right step count" can't actually
+    // prove start() ran once. Instead, count how many times the consume
+    // effect's deferred-start callback actually FIRES.
+    //
+    // DashboardTourAutoStart schedules window.setTimeout(api.start, 100)
+    // when it consumes a source, and clears it in cleanup before
+    // re-scheduling, so across the two renders only one callback
+    // survives to execute. We wrap each ~100ms timer's callback in a
+    // counter: a regression that fired start twice (e.g. consuming BOTH
+    // sources, or scheduling a second un-cleared timer) would execute
+    // two deferred-start callbacks and trip this assertion. Counting
+    // executions (not schedules) ignores the cleaned-up timer.
+    let deferredStartFires = 0;
+    const realSetTimeout = window.setTimeout.bind(window);
+    const setTimeoutSpy = vi
+      .spyOn(window, "setTimeout")
+      .mockImplementation(((fn: TimerHandler, delay?: number, ...rest: unknown[]) => {
+        if (delay === 100 && typeof fn === "function") {
+          const wrapped = ((...args: unknown[]) => {
+            deferredStartFires += 1;
+            return (fn as (...a: unknown[]) => unknown)(...args);
+          }) as TimerHandler;
+          return realSetTimeout(wrapped, delay, ...rest);
+        }
+        return realSetTimeout(fn, delay as number, ...rest);
+      }) as typeof window.setTimeout);
+
     render(
       <TourProvider>
         <ReplayButton />
@@ -158,6 +187,10 @@ describe("storage-independent tour replay", () => {
       vi.advanceTimersByTime(200);
     });
 
+    // The load-bearing guard: the deferred-start callback fired exactly
+    // once. This bites if start() runs twice (e.g. both sources consumed,
+    // or a second timer is scheduled without clearing the first).
+    expect(deferredStartFires).toBe(1);
     // Exactly one card on screen — not two from a double-start.
     expect(screen.getAllByTestId("tour-card")).toHaveLength(1);
     // The extended tour has a fixed step count; a double-start that
@@ -168,5 +201,7 @@ describe("storage-independent tour replay", () => {
     // Both sources consumed: the legacy flag must be cleared so a later
     // dashboard mount does not start a second time.
     expect(window.sessionStorage.getItem(TOUR_FLAG_KEY)).toBeNull();
+
+    setTimeoutSpy.mockRestore();
   });
 });
