@@ -51,6 +51,19 @@ export interface TourApi {
   totalSteps: number;
   /** Begin the tour with the given step ids. */
   start: (steps: string[]) => void;
+  /**
+   * Stage a storage-independent "start when the dashboard mounts"
+   * request. The replay flow navigates to /dashboard and
+   * DashboardTourAutoStart consumes this on arrival. Survives client
+   * navigation because TourProvider sits above the page tree, so it
+   * works in Safari private mode where sessionStorage writes throw.
+   */
+  requestStart: (steps: string[]) => void;
+  /**
+   * Pending steps staged by requestStart(), or null when none. Read by
+   * DashboardTourAutoStart; starting the tour clears it via start().
+   */
+  pendingStart: string[] | null;
   /** Advance to the next step, finishing if at the end. */
   next: () => void;
   /** Step back (no-op when already at index 0). */
@@ -67,9 +80,18 @@ interface TourState {
   phase: TourPhase;
   steps: string[];
   index: number;
+  // Steps staged by requestStart() to begin once the dashboard mounts.
+  // Storage-independent replacement for the sessionStorage flag; null
+  // when nothing is pending. Cleared whenever start() runs.
+  pendingStart: string[] | null;
 }
 
-const INITIAL_STATE: TourState = { phase: "idle", steps: [], index: -1 };
+const INITIAL_STATE: TourState = {
+  phase: "idle",
+  steps: [],
+  index: -1,
+  pendingStart: null,
+};
 
 const TourContext = createContext<TourApi | null>(null);
 
@@ -88,10 +110,19 @@ export function useTourEngine(): TourApi {
     if (guard.current) return;
     if (!steps.length) return;
     guard.current = true;
-    setState({ phase: "active", steps, index: 0 });
+    // Clear any pending start: once we've begun, the staged request is
+    // consumed so the dashboard watcher can't double-start.
+    setState({ phase: "active", steps, index: 0, pendingStart: null });
     queueMicrotask(() => {
       guard.current = false;
     });
+  }, []);
+
+  const requestStart = useCallback((steps: string[]) => {
+    if (!steps.length) return;
+    // Stage the steps; DashboardTourAutoStart starts them on arrival.
+    // Idempotent: re-staging the same request is a no-op write.
+    setState((s) => ({ ...s, pendingStart: steps }));
   }, []);
 
   const next = useCallback(() => {
@@ -99,7 +130,7 @@ export function useTourEngine(): TourApi {
       if (s.phase !== "active") return s;
       const nextIdx = s.index + 1;
       if (nextIdx >= s.steps.length) {
-        return { phase: "finished", steps: s.steps, index: -1 };
+        return { ...s, phase: "finished", index: -1 };
       }
       return { ...s, index: nextIdx };
     });
@@ -116,12 +147,12 @@ export function useTourEngine(): TourApi {
   const close = useCallback(() => {
     setState((s) => {
       if (s.phase !== "active") return s;
-      return { phase: "finished", steps: s.steps, index: -1 };
+      return { ...s, phase: "finished", index: -1 };
     });
   }, []);
 
   const finish = useCallback(() => {
-    setState((s) => ({ phase: "finished", steps: s.steps, index: -1 }));
+    setState((s) => ({ ...s, phase: "finished", index: -1 }));
   }, []);
 
   const reset = useCallback(() => {
@@ -139,13 +170,15 @@ export function useTourEngine(): TourApi {
       currentIndex: state.phase === "active" ? state.index : -1,
       totalSteps: state.steps.length,
       start,
+      requestStart,
+      pendingStart: state.pendingStart,
       next,
       prev,
       close,
       finish,
       reset,
     }),
-    [state, start, next, prev, close, finish, reset],
+    [state, start, requestStart, next, prev, close, finish, reset],
   );
 }
 
@@ -161,6 +194,8 @@ export function useTour(): TourApi {
     currentIndex: -1,
     totalSteps: 0,
     start: () => {},
+    requestStart: () => {},
+    pendingStart: null,
     next: () => {},
     prev: () => {},
     close: () => {},
