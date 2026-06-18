@@ -17,7 +17,7 @@
     "@floating-ui/react": "^0.27.19",
     "@marsidev/react-turnstile": "^1.5.2",
     "lucide-react": "^1.7.0",
-    "next": "16.2.4",
+    "next": "16.2.9",
     "react": "19.2.5",
     "react-dom": "19.2.5",
     "react-grid-layout": "^1.5.0",
@@ -36,13 +36,15 @@
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.4",
     "jsdom": "^26.1.0",
-    "postcss": "^8.5.3",
+    "postcss": "^8.5.10",
     "tailwindcss": "^4.1.7",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   },
   "overrides": {
     "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3"
+    "@types/react-dom": "19.2.3",
+    "esbuild": "0.28.1",
+    "postcss": "$postcss"
   }
 }
