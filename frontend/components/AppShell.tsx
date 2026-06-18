@@ -30,9 +30,11 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import {
+  EXTENDED_TOUR_STEPS,
   TOUR_FLAG_KEY,
   TOUR_FLAG_VALUE_EXTENDED,
 } from "@/lib/help/tour";
+import { useTour } from "@/components/tour/useTour";
 import AppShellAddTransactionCta, {
   shouldShowAddTransactionCta,
 } from "@/components/AppShellAddTransactionCta";
@@ -219,6 +221,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const navItems = buildNavItems(Boolean(featureReportsV2));
   const router = useRouter();
   const pathname = usePathname();
+  const tour = useTour();
   const [userExpanded, setUserExpanded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -516,6 +519,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <div className="absolute bottom-full left-3 right-3 mb-1.5 rounded-lg border border-sidebar-border bg-sidebar-bg py-1 shadow-xl">
               <button
                 onClick={() => {
+                  // Primary path: stage the start on the TourContext.
+                  // TourProvider lives above the page tree, so this
+                  // state survives the client navigation to /dashboard
+                  // and works even in Safari private mode.
+                  tour.requestStart(EXTENDED_TOUR_STEPS);
+                  // Secondary fallback: the sessionStorage flag still
+                  // covers a full page reload between this click and the
+                  // dashboard mount (which would drop the context
+                  // state). DashboardTourAutoStart consumes whichever
+                  // source is present, exactly once.
                   try {
                     window.sessionStorage.setItem(
                       TOUR_FLAG_KEY,
@@ -523,14 +536,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                     );
                   } catch {
                     // sessionStorage unavailable (Safari private mode,
-                    // disabled storage). The replay-tour flow depends
-                    // on this flag — `DashboardTourAutoStart` and
-                    // `RestartTourCard` both read it on mount, so the
-                    // tour won't auto-start in this branch. We still
-                    // navigate to /dashboard so the user sees their
-                    // home; restart-tour from the Settings card has
-                    // the same limitation. TODO: lift the start path
-                    // onto the TourContext so it's storage-independent.
+                    // disabled storage). The context path above carries
+                    // the start, so the tour still runs.
                   }
                   setUserExpanded(false);
                   setSidebarOpen(false);

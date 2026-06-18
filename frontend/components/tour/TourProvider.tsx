@@ -48,36 +48,54 @@ import {
 
 function DashboardTourAutoStart({ api }: { api: TourApi }) {
   const pathname = usePathname();
+  const pendingStart = api.pendingStart;
   useEffect(() => {
     if (pathname !== "/dashboard") return;
-    let flag: string | null = null;
-    try {
-      flag = window.sessionStorage.getItem(TOUR_FLAG_KEY);
-    } catch {
-      return;
+
+    // Two sources, in priority order:
+    //   1. The context pending start (storage-independent). Set by the
+    //      replay button / RestartTourCard; survives client nav and
+    //      Safari private mode where sessionStorage writes throw.
+    //   2. The legacy sessionStorage flag, for the case where a full
+    //      page reload happened between the click and this mount (the
+    //      context state would have been lost).
+    // We consume whichever is present, clear BOTH, and start once.
+    let steps: string[] | null = null;
+
+    if (pendingStart && pendingStart.length) {
+      steps = pendingStart;
+    } else {
+      let flag: string | null = null;
+      try {
+        flag = window.sessionStorage.getItem(TOUR_FLAG_KEY);
+      } catch {
+        flag = null;
+      }
+      if (flag === TOUR_FLAG_VALUE_EXTENDED) {
+        steps = EXTENDED_TOUR_STEPS;
+      } else if (flag === TOUR_FLAG_VALUE_DASHBOARD) {
+        steps = DASHBOARD_TOUR_STEPS;
+      }
     }
-    if (
-      flag !== TOUR_FLAG_VALUE_DASHBOARD &&
-      flag !== TOUR_FLAG_VALUE_EXTENDED
-    ) {
-      return;
-    }
+
+    if (!steps) return;
+
+    // Clear the legacy flag regardless of which source we used so a
+    // later dashboard mount cannot start a second time.
     try {
       window.sessionStorage.removeItem(TOUR_FLAG_KEY);
     } catch {
       // best-effort
     }
-    const steps =
-      flag === TOUR_FLAG_VALUE_EXTENDED
-        ? EXTENDED_TOUR_STEPS
-        : DASHBOARD_TOUR_STEPS;
+
     // Defer one tick so the dashboard's TourAnchor DOM is mounted
-    // before the engine measures positions.
+    // before the engine measures positions. start() clears the context
+    // pendingStart, so the two sources can never double-start.
     const t = window.setTimeout(() => {
       api.start(steps);
     }, 100);
     return () => window.clearTimeout(t);
-  }, [pathname, api]);
+  }, [pathname, pendingStart, api]);
   return null;
 }
 

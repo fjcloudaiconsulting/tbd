@@ -19,10 +19,12 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useTour } from "@/components/tour/useTour";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { btnSecondary, card, cardHeader, cardTitle } from "@/lib/styles";
 
 import {
+  DASHBOARD_TOUR_STEPS,
   TOUR_FLAG_KEY,
   TOUR_FLAG_VALUE_DASHBOARD,
 } from "@/lib/help/tour";
@@ -30,6 +32,7 @@ import {
 export default function RestartTourCard() {
   const router = useRouter();
   const { refreshMe } = useAuth();
+  const tour = useTour();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,16 +44,21 @@ export default function RestartTourCard() {
         method: "POST",
       });
       // Refresh the cached user so any other AppShell guards see the
-      // freshest /me payload, then stage the dashboard auto-start flag.
+      // freshest /me payload, then stage the dashboard auto-start.
       // Note: the backend intentionally leaves ``onboarded_at`` untouched,
       // so AppShell will NOT redirect us to /onboarding after this call.
       await refreshMe();
+      // Primary path: stage the start on the TourContext, which sits
+      // above the page tree and survives the navigation to /dashboard
+      // (and works in Safari private mode where sessionStorage throws).
+      tour.requestStart(DASHBOARD_TOUR_STEPS);
+      // Secondary fallback: the sessionStorage flag still covers a full
+      // page reload between this click and the dashboard mount.
       try {
         window.sessionStorage.setItem(TOUR_FLAG_KEY, TOUR_FLAG_VALUE_DASHBOARD);
       } catch {
-        // Private mode or storage disabled. The dashboard tour will
-        // not auto-start; the user can re-click the button from
-        // Settings since the action is idempotent.
+        // Private mode or storage disabled. The context path above
+        // carries the start, so the dashboard tour still runs.
       }
       router.push("/dashboard");
     } catch (err) {
