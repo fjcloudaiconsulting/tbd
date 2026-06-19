@@ -65,13 +65,21 @@ locals {
   # 'unsafe-inline').
   #
   # External origins the apex genuinely loads, and nothing more:
-  #   * https://fonts.googleapis.com -> Google Fonts <link rel=stylesheet> (style-src)
-  #   * https://fonts.gstatic.com    -> the font files that stylesheet pulls (font-src)
+  #   * https://fonts.googleapis.com         -> Google Fonts <link rel=stylesheet> (style-src)
+  #   * https://fonts.gstatic.com            -> the font files that stylesheet pulls (font-src)
+  #   * https://www.googletagmanager.com     -> GA4 gtag.js loader + image ping (script-src, img-src, connect-src)
+  #   * https://www.google-analytics.com     -> GA4 measurement endpoint (img-src, connect-src)
+  #   * https://*.google-analytics.com       -> GA4 regional measurement endpoints (connect-src)
+  #   * https://*.analytics.google.com       -> GA4 alternative measurement hosts (connect-src)
+  # Google Analytics 4 (gtag.js) loads on the apex marketing build via
+  # frontend/components/analytics/GoogleAnalytics.tsx, which self-gates on
+  # NEXT_PUBLIC_BUILD_TARGET=apex and is never rendered on the authenticated app
+  # host. The GA domains above are allowlisted solely for this purpose.
   # og:image (/og.png) and every other asset are same-origin ('self'). There is
-  # NO analytics, CDN, Cloudflare Turnstile, or backend connect on the apex
-  # surface: build-apex.sh's post-build guard hard-fails on any /api/v1
-  # reference, and the auth pages that load Turnstile are staged out of the
-  # apex build by the default-deny route allowlist.
+  # no CDN, Cloudflare Turnstile, or backend connect on the apex surface:
+  # build-apex.sh's post-build guard hard-fails on any /api/v1 reference, and
+  # the auth pages that load Turnstile are staged out of the apex build by the
+  # default-deny route allowlist.
   #
   # CSP violation reporting points CROSS-ORIGIN at the app's public,
   # unauthenticated report sink (https://app.${var.domain}/api/v1/security/csp-report,
@@ -94,12 +102,12 @@ locals {
   # infra-only landing change.
   apex_csp = join("; ", [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "style-src-attr 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https://www.google-analytics.com https://www.googletagmanager.com",
     "font-src 'self' data: https://fonts.gstatic.com",
-    "connect-src 'self'",
+    "connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
