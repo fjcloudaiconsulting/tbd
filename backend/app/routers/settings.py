@@ -29,6 +29,14 @@ logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/api/v1/settings", tags=["settings"])
 
+# The "feature." prefix is exclusively managed by superadmin endpoints in
+# admin_features.py, which layer per-org OrgSetting overrides at the highest
+# priority in the three-level feature gate (feature_gate.py: per-org >
+# SystemSetting global > env-floor).  Allowing the generic PUT/DELETE here
+# would let any OWNER/ADMIN bypass a globally-disabled feature with no audit
+# trail.  Block the entire namespace from this writer.
+RESERVED_SETTINGS_PREFIX = "feature."
+
 
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware."""
@@ -66,6 +74,12 @@ async def upsert_setting(
     db: AsyncSession = Depends(get_db),
 ):
     _require_admin(current_user)
+
+    if body.key.startswith(RESERVED_SETTINGS_PREFIX):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The 'feature.' settings namespace is managed by platform administrators",
+        )
 
     # Per-key bounds validation. Other org settings have no bounds
     # contract today; only the session-lifetime key actually drives
@@ -140,6 +154,12 @@ async def delete_setting(
     db: AsyncSession = Depends(get_db),
 ):
     _require_admin(current_user)
+
+    if key.startswith(RESERVED_SETTINGS_PREFIX):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The 'feature.' settings namespace is managed by platform administrators",
+        )
 
     result = await db.execute(
         select(OrgSetting).where(
