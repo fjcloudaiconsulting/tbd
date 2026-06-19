@@ -207,7 +207,7 @@ class Settings(BaseSettings):
 
     # Plans (forecast-driven plan builder)
     # When ``feature_plans`` is False (the pre-launch default), the
-    # ``/api/v1/plans/*`` router-level dependency ``require_feature``
+    # ``/api/v1/scenarios/*`` router-level dependency ``require_feature``
     # raises a hard 404 on every route and the frontend hides the nav
     # item. Flip to True (or override via SystemSetting / OrgSetting)
     # once the frontend lands.

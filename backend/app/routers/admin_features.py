@@ -33,9 +33,9 @@ from app.models.system_setting import SystemSetting
 from app.models.user import Organization, User
 from app.rate_limit import get_client_ip
 from app.services import audit_service
-from app.config import settings as _cfg
 from app.services.feature_gate import (
     Feature,
+    env_floor,
     feature_setting_key,
     resolve_feature,
 )
@@ -70,16 +70,6 @@ def _require_superadmin(user: User) -> None:
 def _request_id() -> str | None:
     """Pull the per-request id bound by RequestContextMiddleware."""
     return structlog.contextvars.get_contextvars().get("request_id")
-
-
-_FEATURE_ENV_FLOOR: dict[Feature, object] = {
-    Feature.REPORTS: lambda: _cfg.feature_reports_v2,
-    Feature.PLANS: lambda: _cfg.feature_plans,
-}
-
-
-def _env_floor(feature: Feature) -> bool:
-    return bool(_FEATURE_ENV_FLOOR[feature]())
 
 
 def _feature_from_str(name: str) -> Feature:
@@ -141,7 +131,7 @@ async def list_global_features(
             {
                 "feature": feature.value,
                 "global_value": global_val if global_val in ("on", "off") else None,
-                "env_floor": _env_floor(feature),
+                "env_floor": env_floor(feature),
             }
         )
     return result
@@ -202,7 +192,7 @@ async def set_global_feature(
     return {
         "feature": feat.value,
         "global_value": new_global_value,
-        "env_floor": _env_floor(feat),
+        "env_floor": env_floor(feat),
     }
 
 

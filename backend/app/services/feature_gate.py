@@ -85,6 +85,11 @@ async def resolve_feature(feature: Feature, org_id: int | None, db: AsyncSession
     return bool(_ENV_FLOOR[feature]())
 
 
+def env_floor(feature: Feature) -> bool:
+    """Return the env-floor (settings-level) boolean for *feature*."""
+    return bool(_ENV_FLOOR[feature]())
+
+
 def require_feature(feature: Feature):
     """Return a FastAPI dependency that 404s when *feature* is off for the caller's org."""
 
