@@ -68,6 +68,12 @@ describe("SystemHubPage (L5.8)", () => {
     // Catalog" vs "Subscription Plan Catalog") as long as it keeps the
     // word "plan".
     expect(plansLink!.textContent).toMatch(/plan/i);
+
+    // Feature Flags card is also shown for superadmin.
+    const featuresLink = allLinks.find((a) => a.getAttribute("href") === "/system/features");
+    expect(featuresLink).toBeDefined();
+    expect(featuresLink!.textContent).toMatch(/feature/i);
+
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
@@ -113,6 +119,31 @@ describe("SystemHubPage (L5.8)", () => {
     expect(
       screen.getByText(/don.?t have access to any platform-admin surfaces/i),
     ).toBeInTheDocument();
+  });
+
+  it("hides the Feature Flags card for non-superadmin (superadminOnly guard)", async () => {
+    // A user with admin.view + plans.manage but not is_superadmin should
+    // see the Plans card but NOT the Feature Flags card (superadminOnly).
+    vi.mocked(useAuth).mockReturnValue({
+      user: ADMIN_VIEW_AND_PLANS as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+
+    render(<SystemHubPage />);
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1, name: /system/i })).toBeInTheDocument(),
+    );
+    const allLinks = screen.getAllByRole("link");
+    const featuresLink = allLinks.find((a) => a.getAttribute("href") === "/system/features");
+    expect(featuresLink).toBeUndefined();
+    // Plans card is still present.
+    const plansLink = allLinks.find((a) => a.getAttribute("href") === "/system/plans");
+    expect(plansLink).toBeDefined();
   });
 
   it("renders Plans card for non-superadmin with admin.view + plans.manage", async () => {
