@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from sqlalchemy import event
-from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -33,7 +32,7 @@ async def db_session():
         poolclass=StaticPool,
     )
 
-    @event.listens_for(Engine, "connect")
+    @event.listens_for(engine.sync_engine, "connect")
     def _fk_on(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
@@ -82,3 +81,20 @@ async def test_org_override_beats_global(db_session, monkeypatch):
     assert await resolve_feature(Feature.REPORTS, org_id=7, db=db_session) is True
     # other org still sees global off
     assert await resolve_feature(Feature.REPORTS, org_id=8, db=db_session) is False
+
+
+@pytest.mark.asyncio
+async def test_unrecognized_org_value_falls_through(db_session, monkeypatch):
+    """An unrecognised org-level value must be ignored; resolution falls through
+    to the next level (global SystemSetting) rather than treating it as off."""
+    from app.models.user import Organization
+    from app.config import settings
+    monkeypatch.setattr(settings, "feature_plans", False)
+    db_session.add(Organization(id=7, name="Org Seven", billing_cycle_day=1))
+    await db_session.flush()
+    # Global is "on"; org value is an unrecognised string ("maybe").
+    db_session.add(SystemSetting(key=feature_setting_key(Feature.PLANS), value="on"))
+    db_session.add(OrgSetting(org_id=7, key=feature_setting_key(Feature.PLANS), value="maybe"))
+    await db_session.commit()
+    # Unrecognised "maybe" at org level → falls through → global "on" → True.
+    assert await resolve_feature(Feature.PLANS, org_id=7, db=db_session) is True
