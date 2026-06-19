@@ -669,6 +669,25 @@ resource "aws_cloudfront_distribution" "apex" {
     origin_access_control_id = aws_cloudfront_origin_access_control.apex.id
   }
 
+  # Google tag gateway (first-party GA serving). Added manually in the
+  # CloudFront console on 2026-06-19 while wiring the gateway; reconciled
+  # into config here so a future `terraform apply` doesn't revert it. The
+  # /88x6/* behavior below proxies first-party GA requests to this origin
+  # (gtag.js loader + collection), keeping GA same-origin (PR that switched
+  # the loader: feat/ga-gateway-firstparty). Settings mirror Google's manual
+  # CloudFront setup guide (HTTPS-only origin).
+  origin {
+    domain_name = "G-GRXDVTVBLV.fps.goog"
+    origin_id   = "G-GRXDVTVBLV.fps.goog"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
   default_cache_behavior {
     target_origin_id       = local.s3_origin_id
     viewer_protocol_policy = "redirect-to-https"
@@ -691,6 +710,28 @@ resource "aws_cloudfront_distribution" "apex" {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.viewer_request.arn
     }
+  }
+
+  # Google tag gateway behavior. Routes /88x6/* to the fps.goog origin above.
+  # Per Google's manual CloudFront setup: CachingDisabled + AllViewerExcept
+  # HostHeader (forwards every viewer header/query/cookie except Host, which
+  # CloudFront sets to the origin), all HTTP methods, no compression, HTTPS
+  # only. Deliberately NO function_association — the static-site viewer-request
+  # rewrite must not touch the GA proxy path. Must have higher precedence than
+  # the default behavior (it is, being the only ordered behavior).
+  ordered_cache_behavior {
+    path_pattern           = "/88x6/*"
+    target_origin_id       = "G-GRXDVTVBLV.fps.goog"
+    viewer_protocol_policy = "https-only"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = false
+
+    # AWS managed CachingDisabled
+    cache_policy_id = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+
+    # AWS managed AllViewerExceptHostHeader
+    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
   }
 
   custom_error_response {
