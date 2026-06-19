@@ -55,20 +55,25 @@ def _parse_onoff(value: str | None) -> bool | None:
     return None
 
 
-async def resolve_feature(feature: Feature, org_id: int, db: AsyncSession) -> bool:
+async def resolve_feature(feature: Feature, org_id: int | None, db: AsyncSession) -> bool:
     """Return the effective on/off state for *feature* scoped to *org_id*.
 
     Resolution order: per-org OrgSetting → global SystemSetting → env-floor.
+
+    When *org_id* is ``None`` (unauthenticated caller), the per-org lookup is
+    skipped entirely and resolution falls through to global SystemSetting →
+    env-floor only.
     """
     key = feature_setting_key(feature)
 
-    # Level 3 — per-org override
-    org_val = await db.scalar(
-        select(OrgSetting.value).where(OrgSetting.org_id == org_id, OrgSetting.key == key)
-    )
-    parsed = _parse_onoff(org_val)
-    if parsed is not None:
-        return parsed
+    # Level 3 — per-org override (skipped when caller is unauthenticated)
+    if org_id is not None:
+        org_val = await db.scalar(
+            select(OrgSetting.value).where(OrgSetting.org_id == org_id, OrgSetting.key == key)
+        )
+        parsed = _parse_onoff(org_val)
+        if parsed is not None:
+            return parsed
 
     # Level 2 — global system setting
     global_val = await db.scalar(select(SystemSetting.value).where(SystemSetting.key == key))
