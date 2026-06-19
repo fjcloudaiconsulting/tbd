@@ -987,6 +987,61 @@ describe("/plans page", () => {
     expect(flash).toHaveTextContent(/Updated,/i);
   });
 
+  // ── Feature gate: features.plans === false ──────────────────────────────
+  //
+  // When the org's resolved Plans feature is disabled, the page must:
+  //   - Render the "feature unavailable" empty state.
+  //   - NOT call /api/v1/scenarios (the simulator must not be entered).
+  it("renders the feature-unavailable empty state when features.plans is false", async () => {
+    useAuthMock.mockReturnValue({
+      user: USER as never,
+      loading: false,
+      needsSetup: false,
+      features: { reports: false, plans: false },
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+    // apiFetch must NOT be called — not even for scenarios.
+    render(<PlansPage />);
+    const empty = await screen.findByTestId("plans-feature-unavailable");
+    expect(empty).toBeInTheDocument();
+    expect(empty).toHaveTextContent(/This feature is currently unavailable/i);
+    // The simulator page title ("Plans") is inside the empty state heading —
+    // confirm the scenarios list is never rendered.
+    expect(screen.queryByTestId("plans-empty")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("plans-list")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("plans-new")).not.toBeInTheDocument();
+    // No API call to /api/v1/scenarios should have been made.
+    const scenariosCalls = apiFetchMock.mock.calls.filter(
+      ([url]) => url === "/api/v1/scenarios",
+    );
+    expect(scenariosCalls).toHaveLength(0);
+  });
+
+  it("renders the simulator normally when features.plans is true", async () => {
+    useAuthMock.mockReturnValue({
+      user: USER as never,
+      loading: false,
+      needsSetup: false,
+      features: { reports: false, plans: true },
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve([]);
+      if (url === "/api/v1/accounts") return Promise.resolve([SAMPLE_ACCOUNT]);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<PlansPage />);
+    // The "No plans yet" empty state signals the simulator path was entered.
+    await screen.findByTestId("plans-empty");
+    expect(screen.queryByTestId("plans-feature-unavailable")).not.toBeInTheDocument();
+  });
+
   it("wraps the verdict pill area in an aria-live polite region", async () => {
     setUser();
     apiFetchMock.mockImplementation(((url: string) => {
