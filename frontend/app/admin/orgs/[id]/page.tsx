@@ -8,6 +8,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import ChangePlanModal from "@/components/admin/ChangePlanModal";
 import FeatureOverridesCard from "@/components/admin/FeatureOverridesCard";
+import OrgFeatureGateCard from "@/components/admin/OrgFeatureGateCard";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { hasPlatformPermission } from "@/lib/auth";
@@ -359,8 +360,11 @@ export default function AdminOrgDetailPage() {
         />
       )}
 
-      {/* Feature overrides card */}
+      {/* Feature overrides card (subscription-plan entitlements) */}
       <FeatureOverridesCard orgId={detail.id} />
+
+      {/* Per-org feature gate overrides (Reports / Plans global gate) — superadmin only */}
+      {user?.is_superadmin && <OrgFeatureGateCard orgId={detail.id} />}
 
       {/* Members card */}
       <section className={`${card} mb-6`}>
