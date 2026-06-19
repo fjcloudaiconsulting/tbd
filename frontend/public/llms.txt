@@ -20,3 +20,29 @@ The Better Decision tracks accounts, transactions, budgets, and forecasts, all s
 - [vs Monarch](https://thebetterdecision.com/vs/monarch/): Forecasting-first planning with no bank linking required, and where Monarch's aggregation wins.
 - [Privacy](https://thebetterdecision.com/privacy/): How personal and financial data is handled.
 - [Terms](https://thebetterdecision.com/terms/): Terms of use.
+
+## FAQ
+
+### Does The Better Decision forecast my cash flow?
+
+Yes. It projects a forecast end-of-month balance for every account from your recurring income and bills, your category budgets, and what-if adjustments, so you can see whether the rest of the month still works.
+
+### Do I have to connect my bank account?
+
+No. You import transactions from your bank by CSV or OFX, with a preview before anything is saved. There is no bank-linking requirement.
+
+### Is my financial data private?
+
+Yes. Your data is hosted in the EU and processed under EU law, you can export it anytime, and it is never sold and never used to train AI.
+
+### Is The Better Decision free?
+
+Yes, it is free during the beta.
+
+### Can my partner or household use it together?
+
+Yes. Finances are organized per household, so several people can share one organization with clear roles and boundaries.
+
+### Does it use AI, and is that optional?
+
+AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories you accept before they are applied to a transaction, and proposes seasonal forecast adjustments you can accept or dismiss. Nothing changes without your action. There are hard spend caps and a full audit trail.
