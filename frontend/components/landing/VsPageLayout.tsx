@@ -8,6 +8,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import ComparisonTable from "./ComparisonTable";
 import MarketingShell from "./MarketingShell";
+import ChevronGlyph from "./ChevronGlyph";
 import { type Competitor, competitorMeta } from "@/lib/comparison";
 import { btnPrimary } from "@/lib/styles";
 import { signupHref } from "@/lib/links";
@@ -60,16 +61,16 @@ export default function VsPageLayout({
     url: apexCanonical(`/vs/${slug}`),
     author: { "@id": orgId },
     publisher: { "@id": orgId },
-    offers: { "@type": "Offer", price: "0", priceCurrency: "EUR" },
+    offers: { "@type": "Offer", price: "0", priceCurrency: "EUR", description: "Free during beta" },
   };
   const structuredData = [faqLd, breadcrumbLd, softwareLd];
 
   return (
     <MarketingShell>
     <main className="mx-auto max-w-3xl px-6 py-20 lg:py-24">
-      {structuredData.map((block) => (
+      {structuredData.map((block, i) => (
         <script
-          key={block["@type"]}
+          key={`ld-${i}`}
           type="application/ld+json"
           {...nonceProp}
           dangerouslySetInnerHTML={{
@@ -116,6 +117,7 @@ export default function VsPageLayout({
               <details className="group">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-4 text-left text-sm font-medium text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
                   <span>{item.q}</span>
+                  <ChevronGlyph />
                 </summary>
                 <div className="border-t border-border px-5 py-4 text-sm leading-relaxed text-text-secondary">
                   {item.a}

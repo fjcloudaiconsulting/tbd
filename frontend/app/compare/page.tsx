@@ -5,6 +5,7 @@ import { readNonce } from "@/lib/nonce";
 import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 import ComparisonTable from "@/components/landing/ComparisonTable";
 import MarketingShell from "@/components/landing/MarketingShell";
+import ChevronGlyph from "@/components/landing/ChevronGlyph";
 import { competitorOrder } from "@/lib/comparison";
 
 const description =
@@ -22,6 +23,20 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
+// Visible on-page FAQ (Google requires FAQPage Q&A to be visible). The same
+// array drives both the rendered <details> list below and the FAQPage JSON-LD,
+// so the structured data can't drift from what visitors read.
+const faqEntries: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
+  {
+    q: "What is the best app for budgeting and cash-flow forecasting?",
+    a: "It depends on what you need. The Better Decision combines budgeting with forward-looking cash-flow forecasting, EU-hosted, and imports CSV or OFX rather than linking your bank. YNAB is strongest for strict envelope budgeting, PocketSmith for deep long-range forecasting, and Monarch for live bank and investment aggregation.",
+  },
+  {
+    q: "Which budgeting apps host data in the EU?",
+    a: "The Better Decision is EU-hosted and processed under EU law. PocketSmith is based in New Zealand, which has an EU adequacy decision. YNAB and Monarch are US-based.",
+  },
+];
+
 const breadcrumbLd = {
   "@context": "https://schema.org",
   "@type": "BreadcrumbList",
@@ -33,24 +48,14 @@ const breadcrumbLd = {
 const faqLd = {
   "@context": "https://schema.org",
   "@type": "FAQPage",
-  mainEntity: [
-    {
-      "@type": "Question",
-      name: "What is the best app for budgeting and cash-flow forecasting?",
-      acceptedAnswer: {
-        "@type": "Answer",
-        text: "It depends on what you need. The Better Decision combines budgeting with forward-looking cash-flow forecasting, EU-hosted, and imports CSV or OFX rather than linking your bank. YNAB is strongest for strict envelope budgeting, PocketSmith for deep long-range forecasting, and Monarch for live bank and investment aggregation.",
-      },
+  mainEntity: faqEntries.map((entry) => ({
+    "@type": "Question",
+    name: entry.q,
+    acceptedAnswer: {
+      "@type": "Answer",
+      text: entry.a,
     },
-    {
-      "@type": "Question",
-      name: "Which budgeting apps host data in the EU?",
-      acceptedAnswer: {
-        "@type": "Answer",
-        text: "The Better Decision is EU-hosted and processed under EU law. PocketSmith is based in New Zealand, which has an EU adequacy decision. YNAB and Monarch are US-based.",
-      },
-    },
-  ],
+  })),
 };
 const orgId = `${apexUrl}/#organization`;
 const softwareLd = {
@@ -62,7 +67,7 @@ const softwareLd = {
   url: apexCanonical("/compare"),
   author: { "@id": orgId },
   publisher: { "@id": orgId },
-  offers: { "@type": "Offer", price: "0", priceCurrency: "EUR" },
+  offers: { "@type": "Offer", price: "0", priceCurrency: "EUR", description: "Free during beta" },
 };
 const structuredData = [breadcrumbLd, faqLd, softwareLd];
 
@@ -72,9 +77,9 @@ export default async function ComparePage() {
   return (
     <MarketingShell>
     <main className="mx-auto max-w-5xl px-6 py-20 lg:py-24">
-      {structuredData.map((block) => (
+      {structuredData.map((block, i) => (
         <script
-          key={(block as { "@type": string })["@type"]}
+          key={`ld-${i}`}
           type="application/ld+json"
           {...nonceProp}
           dangerouslySetInnerHTML={{
@@ -113,6 +118,27 @@ export default async function ComparePage() {
         </Link>
         .
       </p>
+
+      <section aria-label="Frequently asked questions" className="mt-12">
+        <h2 className="font-display text-xl font-semibold text-text-primary">
+          Frequently asked questions
+        </h2>
+        <ul className="mt-4 space-y-3">
+          {faqEntries.map((item) => (
+            <li key={item.q} className="rounded-xl border border-border bg-surface">
+              <details className="group">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-4 text-left text-sm font-medium text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
+                  <span>{item.q}</span>
+                  <ChevronGlyph />
+                </summary>
+                <div className="border-t border-border px-5 py-4 text-sm leading-relaxed text-text-secondary">
+                  {item.a}
+                </div>
+              </details>
+            </li>
+          ))}
+        </ul>
+      </section>
     </main>
     </MarketingShell>
   );

@@ -2,6 +2,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import MarketingShell from "@/components/landing/MarketingShell";
+import ChevronGlyph from "@/components/landing/ChevronGlyph";
 import { readNonce } from "@/lib/nonce";
 import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 
@@ -82,7 +83,7 @@ const featuresFaq: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
   },
   {
     q: "Does it use AI, and is that optional?",
-    a: "AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories and refines forecasts, you approve every suggestion before anything is saved, and there are hard spend caps plus a full audit trail.",
+    a: "AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories you accept before they are applied to a transaction, and proposes seasonal forecast adjustments you can accept or dismiss — nothing changes without your action. There are hard spend caps and a full audit trail.",
   },
 ];
 
@@ -132,7 +133,7 @@ const groups = [
   {
     title: "AI on your terms",
     points: [
-      "Suggest a category, refine a forecast with seasonal patterns, or rebalance a budget. You accept or reject every suggestion before anything is saved.",
+      "Optional, opt-in AI: you accept or dismiss every suggestion, nothing changes without your action, with hard spend caps and a full audit trail.",
       "Bring your own OpenAI or Anthropic key, or run it entirely locally with Ollama.",
       "Hard and soft spend caps, plus a full audit trail of every call.",
     ],
@@ -145,9 +146,9 @@ export default async function FeaturesPage() {
   return (
     <MarketingShell>
     <main className="mx-auto max-w-4xl px-6 py-20 lg:py-24">
-      {structuredData.map((block) => (
+      {structuredData.map((block, i) => (
         <script
-          key={block["@type"]}
+          key={`ld-${i}`}
           type="application/ld+json"
           {...nonceProp}
           dangerouslySetInnerHTML={{
@@ -205,6 +206,7 @@ export default async function FeaturesPage() {
               <details className="group">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-4 text-left text-sm font-medium text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
                   <span>{item.q}</span>
+                  <ChevronGlyph />
                 </summary>
                 <div className="border-t border-border px-5 py-4 text-sm leading-relaxed text-text-secondary">
                   {item.a}

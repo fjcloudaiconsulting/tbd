@@ -45,4 +45,4 @@ Yes. Finances are organized per household, so several people can share one organ
 
 ### Does it use AI, and is that optional?
 
-AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories and refines forecasts, you approve every suggestion before anything is saved, and there are hard spend caps plus a full audit trail.
+AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories you accept before they are applied to a transaction, and proposes seasonal forecast adjustments you can accept or dismiss — nothing changes without your action. There are hard spend caps and a full audit trail.

@@ -11,6 +11,7 @@
 // structured data block can share the same source without drifting.
 
 import { faqEntries } from "./faqData";
+import ChevronGlyph from "./ChevronGlyph";
 
 export default function Faq() {
   return (
@@ -50,24 +51,5 @@ export default function Faq() {
         ))}
       </ul>
     </section>
-  );
-}
-
-function ChevronGlyph() {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      aria-hidden
-      className="h-4 w-4 flex-shrink-0 text-text-muted transition-transform group-open:rotate-180"
-    >
-      <path
-        d="M3 6l5 5 5-5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
