@@ -132,6 +132,21 @@ export default function ReportsListPage() {
     );
   }
 
+  // Render guard: when reports is disabled, the effect above fires
+  // router.replace("/dashboard"), but that redirect is async. Return a
+  // spinner here so the full Reports UI never flashes during the one
+  // frame before the redirect resolves — matching the sibling /reports/[id]
+  // and /reports/new pages which do the same.
+  if (features?.reports === false) {
+    return (
+      <AppShell>
+        <div className="flex h-full items-center justify-center">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
+        </div>
+      </AppShell>
+    );
+  }
+
   return (
     <AppShell>
       <header className="mb-6 flex items-center justify-between">

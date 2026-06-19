@@ -7,7 +7,6 @@ import {
   cardHeader,
   cardTitle,
   error as errorCls,
-  success as successCls,
 } from "@/lib/styles";
 
 type FeatureName = "reports" | "plans";

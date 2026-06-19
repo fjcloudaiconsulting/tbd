@@ -33,6 +33,9 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("key", sa.String(length=100), nullable=False),
         sa.Column("value", sa.Text(), nullable=False),
+        # onupdate is handled at the ORM layer (parity with org_settings).
+        # There is intentionally NO MySQL `ON UPDATE CURRENT_TIMESTAMP` here,
+        # so raw-SQL writes won't auto-bump this column — only ORM writes do.
         sa.Column(
             "updated_at",
             sa.DateTime(),
