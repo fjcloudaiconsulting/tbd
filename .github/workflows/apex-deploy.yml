@@ -30,6 +30,10 @@
 name: Deploy Apex Landing
 
 on:
+  # Manual redeploy. Use this to re-publish the apex static export without a
+  # code change — e.g. after a GA gateway path swap, or to recover from a
+  # stale deploy when a relevant change landed outside the paths filter below.
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -50,6 +54,14 @@ on:
       - "frontend/app/globals.css"
       # Landing components and apex-build helpers
       - "frontend/components/landing/**"
+      # GA4 is rendered into the apex layout (GoogleAnalytics.tsx is mounted
+      # in app/layout.tsx; both read from lib/analytics.ts). An analytics-only
+      # change — e.g. swapping the GA tag-gateway path — must redeploy the apex
+      # static export, otherwise the live HTML keeps the old path baked in and
+      # 404s once the matching CloudFront behavior is renamed (the /88x6/ ->
+      # /vd9r/ incident, #465).
+      - "frontend/components/analytics/**"
+      - "frontend/lib/analytics.ts"
       - "frontend/components/auth/AuthProviderApex.tsx"
       - "frontend/scripts/build-apex.sh"
       - "frontend/next.config.apex.ts"
