@@ -333,6 +333,62 @@ async def test_unknown_feature_name_per_org_put_returns_404(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_non_superadmin_global_get_returns_403(session_factory):
+    """Regular OWNER must be rejected with 403 on GET /admin/features."""
+    ids = await _seed(session_factory)
+
+    async def owner_resolver(factory):
+        return await _get_user_by_id(factory, ids["owner_id"])
+
+    app = _make_app(session_factory, owner_resolver)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    resp = client.get("/api/v1/admin/features")
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_non_superadmin_per_org_get_returns_403(session_factory):
+    """Regular OWNER must be rejected with 403 on GET /admin/orgs/{id}/features."""
+    ids = await _seed(session_factory)
+
+    async def owner_resolver(factory):
+        return await _get_user_by_id(factory, ids["owner_id"])
+
+    app = _make_app(session_factory, owner_resolver)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    resp = client.get(f"/api/v1/admin/orgs/{ids['org_id']}/features")
+    assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_cold_start_inherit_returns_null_and_audits(session_factory):
+    """PUT inherit with NO SystemSetting row → 200, global_value null, audit written."""
+    ids = await _seed(session_factory)
+
+    async def superadmin_resolver(factory):
+        return await _get_user_by_id(factory, ids["superadmin_id"])
+
+    app = _make_app(session_factory, superadmin_resolver)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    before = await _count_audit_events(session_factory, "feature.global.set")
+
+    # No prior SystemSetting row exists — cold start
+    put_resp = client.put(
+        "/api/v1/admin/features/plans",
+        json={"value": "inherit"},
+    )
+    assert put_resp.status_code == 200, put_resp.text
+    result = put_resp.json()
+    assert result["global_value"] is None
+
+    after = await _count_audit_events(session_factory, "feature.global.set")
+    assert after == before + 1, "Expected one new feature.global.set audit row even for no-op inherit"
+
+
+@pytest.mark.asyncio
 async def test_global_put_writes_audit_event(session_factory):
     """Each successful global PUT inserts a feature.global.set audit row."""
     ids = await _seed(session_factory)
