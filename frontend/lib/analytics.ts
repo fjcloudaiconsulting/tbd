@@ -9,8 +9,8 @@ export const GA_MEASUREMENT_ID =
 // loader src therefore points here instead of googletagmanager.com, so the
 // browser never makes a third-party request and the apex CSP needs no GA
 // external origins ('self' covers it). Must match the CloudFront behavior's
-// path pattern (/88x6/*).
+// path pattern (/vd9r/*).
 export const GA_GATEWAY_PATH =
-  process.env.NEXT_PUBLIC_GA_GATEWAY_PATH || "/88x6/";
+  process.env.NEXT_PUBLIC_GA_GATEWAY_PATH || "/vd9r/";
 
 export const isApexBuild = process.env.NEXT_PUBLIC_BUILD_TARGET === "apex";
