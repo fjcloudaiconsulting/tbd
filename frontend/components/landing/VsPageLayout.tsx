@@ -11,7 +11,9 @@ import MarketingShell from "./MarketingShell";
 import { type Competitor, competitorMeta } from "@/lib/comparison";
 import { btnPrimary } from "@/lib/styles";
 import { signupHref } from "@/lib/links";
-import { apexCanonical } from "@/lib/site";
+import { apexCanonical, apexUrl, siteName } from "@/lib/site";
+
+const orgId = `${apexUrl}/#organization`;
 
 export default function VsPageLayout({
   slug,
@@ -49,7 +51,18 @@ export default function VsPageLayout({
       { "@type": "ListItem", position: 3, name: meta.name, item: apexCanonical(`/vs/${slug}`) },
     ],
   };
-  const structuredData = [faqLd, breadcrumbLd];
+  const softwareLd = {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    name: siteName,
+    applicationCategory: "FinanceApplication",
+    operatingSystem: "Web",
+    url: apexCanonical(`/vs/${slug}`),
+    author: { "@id": orgId },
+    publisher: { "@id": orgId },
+    offers: { "@type": "Offer", price: "0", priceCurrency: "EUR" },
+  };
+  const structuredData = [faqLd, breadcrumbLd, softwareLd];
 
   return (
     <MarketingShell>

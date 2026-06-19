@@ -55,7 +55,50 @@ const breadcrumbLd = {
     { "@type": "ListItem", position: 2, name: "Features", item: apexCanonical("/features") },
   ],
 };
-const structuredData = [softwareLd, breadcrumbLd];
+
+// Visible on-page FAQ (Google requires FAQPage Q&A to be visible). The same
+// array drives both the rendered <details> list below and the FAQPage JSON-LD,
+// so the structured data can't drift from what visitors read.
+const featuresFaq: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
+  {
+    q: "Does The Better Decision forecast my cash flow?",
+    a: "Yes. It projects a forecast end-of-month balance for every account from your recurring income and bills, your category budgets, and what-if adjustments, so you can see whether the rest of the month still works.",
+  },
+  {
+    q: "Do I have to connect my bank account?",
+    a: "No. You import transactions from your bank by CSV or OFX, with a preview before anything is saved. There is no bank-linking requirement.",
+  },
+  {
+    q: "Is my financial data private?",
+    a: "Yes. Your data is hosted in the EU and processed under EU law, you can export it anytime, and it is never sold and never used to train AI.",
+  },
+  {
+    q: "Is The Better Decision free?",
+    a: "Yes, it is free during the beta.",
+  },
+  {
+    q: "Can my partner or household use it together?",
+    a: "Yes. Finances are organized per household, so several people can share one organization with clear roles and boundaries.",
+  },
+  {
+    q: "Does it use AI, and is that optional?",
+    a: "AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories and refines forecasts, you approve every suggestion before anything is saved, and there are hard spend caps plus a full audit trail.",
+  },
+];
+
+const faqLd = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: featuresFaq.map((entry) => ({
+    "@type": "Question",
+    name: entry.q,
+    acceptedAnswer: {
+      "@type": "Answer",
+      text: entry.a,
+    },
+  })),
+};
+const structuredData = [softwareLd, breadcrumbLd, faqLd];
 
 const groups = [
   {
@@ -149,6 +192,26 @@ export default async function FeaturesPage() {
             confirmed before it runs.
           </li>
           <li>A hosted AI option, opt-in and consent-gated, as an alternative to your own key.</li>
+        </ul>
+      </section>
+
+      <section aria-label="Frequently asked questions" className="mt-12">
+        <h2 className="font-display text-xl font-semibold text-text-primary">
+          Frequently asked questions
+        </h2>
+        <ul className="mt-4 space-y-3">
+          {featuresFaq.map((item) => (
+            <li key={item.q} className="rounded-xl border border-border bg-surface">
+              <details className="group">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-xl px-5 py-4 text-left text-sm font-medium text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">
+                  <span>{item.q}</span>
+                </summary>
+                <div className="border-t border-border px-5 py-4 text-sm leading-relaxed text-text-secondary">
+                  {item.a}
+                </div>
+              </details>
+            </li>
+          ))}
         </ul>
       </section>
 

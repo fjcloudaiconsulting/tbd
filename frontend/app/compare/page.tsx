@@ -2,7 +2,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { readNonce } from "@/lib/nonce";
-import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
+import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 import ComparisonTable from "@/components/landing/ComparisonTable";
 import MarketingShell from "@/components/landing/MarketingShell";
 import { competitorOrder } from "@/lib/comparison";
@@ -52,7 +52,19 @@ const faqLd = {
     },
   ],
 };
-const structuredData = [breadcrumbLd, faqLd];
+const orgId = `${apexUrl}/#organization`;
+const softwareLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: siteName,
+  applicationCategory: "FinanceApplication",
+  operatingSystem: "Web",
+  url: apexCanonical("/compare"),
+  author: { "@id": orgId },
+  publisher: { "@id": orgId },
+  offers: { "@type": "Offer", price: "0", priceCurrency: "EUR" },
+};
+const structuredData = [breadcrumbLd, faqLd, softwareLd];
 
 export default async function ComparePage() {
   const nonce = await readNonce();
