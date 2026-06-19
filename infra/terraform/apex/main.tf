@@ -68,14 +68,14 @@ locals {
   #   * https://fonts.googleapis.com         -> Google Fonts <link rel=stylesheet> (style-src)
   #   * https://fonts.gstatic.com            -> the font files that stylesheet pulls (font-src)
   # Google Analytics 4 needs NO external origins here: gtag.js is served
-  # FIRST-PARTY through the Google tag gateway. The /88x6/* ordered cache
+  # FIRST-PARTY through the Google tag gateway. The /vd9r/* ordered cache
   # behavior on aws_cloudfront_distribution.apex proxies the gtag.js loader and
   # all GA collection to the G-GRXDVTVBLV.fps.goog origin, so from the browser's
   # perspective everything is same-origin -- 'self' alone covers the loader
   # (script-src), the measurement beacons (img-src), and the collection
   # fetch/beacon (connect-src). GA self-gates to the apex build via
   # frontend/components/analytics/GoogleAnalytics.tsx (NEXT_PUBLIC_BUILD_TARGET=
-  # apex) and loads from GA_GATEWAY_PATH (/88x6/), never googletagmanager.com.
+  # apex) and loads from GA_GATEWAY_PATH (/vd9r/), never googletagmanager.com.
   # (The googletagmanager.com / google-analytics.com allowlist entries from the
   # original third-party tag were dropped once the gateway went live.)
   # og:image (/og.png) and every other asset are same-origin ('self'). There is
@@ -675,7 +675,7 @@ resource "aws_cloudfront_distribution" "apex" {
   # Google tag gateway (first-party GA serving). Added manually in the
   # CloudFront console on 2026-06-19 while wiring the gateway; reconciled
   # into config here so a future `terraform apply` doesn't revert it. The
-  # /88x6/* behavior below proxies first-party GA requests to this origin
+  # /vd9r/* behavior below proxies first-party GA requests to this origin
   # (gtag.js loader + collection), keeping GA same-origin (PR that switched
   # the loader: feat/ga-gateway-firstparty). Settings mirror Google's manual
   # CloudFront setup guide (HTTPS-only origin).
@@ -715,7 +715,7 @@ resource "aws_cloudfront_distribution" "apex" {
     }
   }
 
-  # Google tag gateway behavior. Routes /88x6/* to the fps.goog origin above.
+  # Google tag gateway behavior. Routes /vd9r/* to the fps.goog origin above.
   # Per Google's manual CloudFront setup: CachingDisabled + AllViewerExcept
   # HostHeader (forwards every viewer header/query/cookie except Host, which
   # CloudFront sets to the origin), all HTTP methods, no compression, HTTPS
@@ -723,7 +723,7 @@ resource "aws_cloudfront_distribution" "apex" {
   # rewrite must not touch the GA proxy path. Must have higher precedence than
   # the default behavior (it is, being the only ordered behavior).
   ordered_cache_behavior {
-    path_pattern           = "/88x6/*"
+    path_pattern           = "/vd9r/*"
     target_origin_id       = "G-GRXDVTVBLV.fps.goog"
     viewer_protocol_policy = "https-only"
     allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]

@@ -38,7 +38,7 @@ describe("GoogleAnalytics — non-apex build", () => {
     // No gtag scripts in the rendered container.
     const scripts = container.querySelectorAll("script");
     const gtagScripts = Array.from(scripts).filter(
-      (s) => s.getAttribute("src")?.includes("/88x6/") ?? false,
+      (s) => s.getAttribute("src")?.includes("/vd9r/") ?? false,
     );
     expect(gtagScripts.length).toBe(0);
     // Component returns null so the container should be empty.
@@ -67,11 +67,11 @@ describe("GoogleAnalytics — apex build", () => {
     // The async loader script src must be the first-party tag-gateway path
     // (served via CloudFront), NOT googletagmanager.com.
     const loaderScript = allScripts.find(
-      (s) => (s.getAttribute("src") ?? "") === "/88x6/",
+      (s) => (s.getAttribute("src") ?? "") === "/vd9r/",
     );
     expect(
       loaderScript,
-      `expected a <script src="/88x6/"> (first-party gateway loader) in document.scripts but found: ${allScripts.map((s) => s.outerHTML.substring(0, 120)).join(" | ")}`,
+      `expected a <script src="/vd9r/"> (first-party gateway loader) in document.scripts but found: ${allScripts.map((s) => s.outerHTML.substring(0, 120)).join(" | ")}`,
     ).toBeDefined();
     // And it must NOT load from the third-party googletagmanager host.
     const thirdParty = allScripts.find((s) =>
