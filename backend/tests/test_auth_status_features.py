@@ -19,7 +19,6 @@ import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event
-from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -48,7 +47,7 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
         poolclass=StaticPool,
     )
 
-    @event.listens_for(Engine, "connect")
+    @event.listens_for(engine.sync_engine, "connect")
     def _fk_on(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
@@ -281,3 +280,54 @@ async def test_authenticated_no_org_override_uses_env(session_factory, monkeypat
     body = resp.json()
     assert body["features"]["reports"] is True
     assert body["features"]["plans"] is True
+
+
+# ---------------------------------------------------------------------------
+# HTTP-level fail-closed: bad token → optional dep returns None, not 401/500
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bad_token_treated_as_unauthenticated(session_factory, monkeypatch) -> None:
+    """A well-formed but invalid Bearer token must NOT raise 401 or 500.
+
+    get_current_user_optional runs for real (no override); it sees the bad JWT,
+    returns None, and the endpoint resolves features from env/global — exactly
+    the same as an unauthenticated call.  Proves the optional-auth path fails
+    closed at the HTTP layer.
+    """
+    monkeypatch.setattr(app_settings, "feature_reports_v2", True)
+    monkeypatch.setattr(app_settings, "feature_plans", False)
+    monkeypatch.setattr(app_settings, "captcha_required", False)
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+
+    # Build the app WITHOUT overriding get_current_user_optional so the real
+    # dependency runs.  Only override get_db (and get_session_factory so any
+    # independent-session code also uses the in-memory DB).
+    from app.deps import get_session_factory
+
+    app = FastAPI()
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    async def override_get_session_factory() -> async_sessionmaker[AsyncSession]:
+        return session_factory
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_session_factory] = override_get_session_factory
+    app.include_router(auth_router)
+
+    with TestClient(app) as client:
+        resp = client.get(
+            "/api/v1/auth/status",
+            headers={"Authorization": "Bearer not-a-real-token"},
+        )
+
+    assert resp.status_code == 200, f"expected 200, got {resp.status_code}: {resp.text}"
+    body = resp.json()
+    assert "features" in body
+    # Bad token → treated as no user → env-floor resolution
+    assert body["features"]["reports"] is True
+    assert body["features"]["plans"] is False
