@@ -21,6 +21,7 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return async_session
 
 bearer_scheme = HTTPBearer()
+bearer_optional = HTTPBearer(auto_error=False)
 
 
 async def get_current_user(
@@ -66,3 +67,39 @@ async def get_current_user(
     )
 
     return user
+
+
+async def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_optional),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Like ``get_current_user`` but returns ``None`` instead of raising on any
+    auth failure (missing token, invalid/expired token, inactive user, invalidated
+    session).  Used by endpoints that serve both authenticated and anonymous callers
+    with different resolution behaviour (e.g. ``/auth/status`` feature flags).
+
+    Does NOT bind structlog context — that is ``get_current_user``'s job.
+    """
+    if credentials is None:
+        return None
+    try:
+        payload = decode_token(credentials.credentials)
+        if payload is None or payload.get("type") != "access":
+            return None
+
+        user_id = int(payload["sub"])
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+
+        if user is None or not user.is_active:
+            return None
+
+        iat = payload.get("iat")
+        if iat is not None:
+            token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
+            if token_issued_at < token_cutoff(user):
+                return None
+
+        return user
+    except Exception:
+        return None

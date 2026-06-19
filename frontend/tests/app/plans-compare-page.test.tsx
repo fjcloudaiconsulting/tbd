@@ -127,11 +127,12 @@ describe("/plans/compare page", () => {
     pushMock.mockReset();
   });
 
-  function setUser() {
+  function setUser(features: { plans: boolean; reports: boolean } = { plans: true, reports: false }) {
     useAuthMock.mockReturnValue({
       user: USER as never,
       loading: false,
       needsSetup: false,
+      features,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),
@@ -207,5 +208,37 @@ describe("/plans/compare page", () => {
     // The 4th checkbox should now be disabled.
     const fourth = screen.getByTestId("compare-plan-checkbox-4") as HTMLInputElement;
     expect(fourth.disabled).toBe(true);
+  });
+
+  // ── Feature gate: features.plans === false ──────────────────────────────
+
+  it("renders the feature-unavailable empty state when features.plans is false", async () => {
+    setUser({ plans: false, reports: false });
+    render(<ComparePlansPage />);
+
+    const empty = await screen.findByTestId("plans-feature-unavailable");
+    expect(empty).toBeInTheDocument();
+    expect(screen.getByText(/This feature is currently unavailable/i)).toBeInTheDocument();
+  });
+
+  it("does not call /api/v1/scenarios when features.plans is false", async () => {
+    setUser({ plans: false, reports: false });
+    render(<ComparePlansPage />);
+
+    await screen.findByTestId("plans-feature-unavailable");
+    // No scenarios fetch should have been made.
+    expect(apiFetchMock).not.toHaveBeenCalledWith("/api/v1/scenarios");
+  });
+
+  it("renders the compare UI normally when features.plans is true", async () => {
+    setUser({ plans: true, reports: false });
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === "/api/v1/scenarios") return Promise.resolve(PLANS);
+      return Promise.resolve(undefined);
+    }) as never);
+    render(<ComparePlansPage />);
+
+    await screen.findByTestId("compare-plan-checkbox-1");
+    expect(screen.queryByTestId("plans-feature-unavailable")).not.toBeInTheDocument();
   });
 });

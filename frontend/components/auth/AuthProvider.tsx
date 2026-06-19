@@ -83,15 +83,17 @@ interface AuthContextValue {
    */
   billingUiEnabled?: boolean;
   /**
-   * Reports v2 (flexible canvas + AST query engine) kill switch.
-   * Mirrors the backend's ``FEATURE_REPORTS_V2`` env via
-   * /api/v1/auth/status. Default false until the canvas + widget
-   * catalog ship and the operator flips the flag. Same shape as
-   * ``billingUiEnabled`` — optional in the interface so existing
-   * test mocks that pre-date this field still type-check; consumers
-   * treat ``undefined`` as ``false`` (the safe pre-launch state).
+   * Resolved per-org feature flags from /api/v1/auth/status.
+   * Each key is the RESOLVED value (per-org override → global → env
+   * floor). Defaults to all-false until status resolves — same
+   * "default false until /auth/status" rationale as billingUiEnabled.
+   * Re-fetched with a Bearer token once the access token is set so
+   * per-org overrides are correctly reflected in the UI.
+   * Optional in the interface so existing test mocks that pre-date
+   * this field don't have to be updated; consumers treat ``undefined``
+   * as ``{ reports: false, plans: false }`` (the safe default).
    */
-  featureReportsV2?: boolean;
+  features?: { reports: boolean; plans: boolean };
   login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,
@@ -118,12 +120,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // (older API revision) is equivalent to "billing UI hidden" — the
   // safe default for the pre-payment state.
   const [billingUiEnabled, setBillingUiEnabled] = useState(false);
-  // Defaults to false until /auth/status resolves so the Reports nav
-  // item stays hidden on first render. Backend default is also false
-  // (pre-launch); a missing key in the status payload (older API
-  // revision) is equivalent to "Reports surface hidden" — the safe
-  // pre-launch default.
-  const [featureReportsV2, setFeatureReportsV2] = useState(false);
+  // Resolved per-org feature flags. Defaults to all-false until
+  // /auth/status resolves so gated surfaces stay hidden on first render.
+  // Same "default false until /auth/status" rationale as billingUiEnabled.
+  const [features, setFeatures] = useState<{ reports: boolean; plans: boolean }>({ reports: false, plans: false });
 
   const fetchMe = useCallback(async () => {
     // 2026-05-18 review fix: fetchMe is the shared current-user load
@@ -172,15 +172,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // billing-UI kill switch so the trial banner, settings Billing
         // tab, and /settings/billing plan grid are gated on the
         // backend's BILLING_UI_ENABLED env on the next page load.
+        // NOTE: this unauthenticated fetch resolves features at the
+        // global/env level only. Per-org overrides require a Bearer
+        // token, so features is re-fetched after the access token is
+        // set below.
         const status = await withAuthRetry(() =>
           apiFetch<{
             needs_setup: boolean;
             billing_ui_enabled?: boolean;
-            feature_reports_v2?: boolean;
+            features?: { reports?: boolean; plans?: boolean };
           }>("/api/v1/auth/status"),
         );
         setBillingUiEnabled(Boolean(status.billing_ui_enabled));
-        setFeatureReportsV2(Boolean(status.feature_reports_v2));
+        setFeatures({
+          reports: Boolean(status.features?.reports),
+          plans: Boolean(status.features?.plans),
+        });
         if (status.needs_setup) {
           setNeedsSetup(true);
           setLoading(false);
@@ -204,6 +211,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           apiFetch<User>("/api/v1/auth/me"),
         );
         setUser(me);
+
+        // Re-fetch /auth/status now that the access token is set so
+        // the Bearer token is included and per-org overrides are
+        // resolved correctly (org override → global → env floor).
+        // Best-effort: a failure here must not prevent the user from
+        // reaching the app — features stay at the global/env values
+        // from the unauthenticated read above.
+        try {
+          const authedStatus = await apiFetch<{
+            features?: { reports?: boolean; plans?: boolean };
+          }>("/api/v1/auth/status");
+          setFeatures({
+            reports: Boolean(authedStatus.features?.reports),
+            plans: Boolean(authedStatus.features?.plans),
+          });
+        } catch {
+          // Non-fatal: keep the global/env-level features already set.
+        }
+
         setLoading(false);
       } catch (err) {
         if (isTerminalAuthError(err)) {
@@ -253,6 +279,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const tokenData = data as TokenResponse;
     setAccessToken(tokenData.access_token);
     await fetchMe();
+
+    // Re-fetch /auth/status with the new Bearer token so per-org
+    // feature overrides are reflected immediately after login.
+    // Best-effort: failure keeps whatever features were resolved at
+    // boot (global/env level).
+    try {
+      const authedStatus = await apiFetch<{
+        features?: { reports?: boolean; plans?: boolean };
+      }>("/api/v1/auth/status");
+      setFeatures({
+        reports: Boolean(authedStatus.features?.reports),
+        plans: Boolean(authedStatus.features?.plans),
+      });
+    } catch {
+      // Non-fatal: keep the boot-time global/env-level features.
+    }
+
     setNeedsSetup(false);
   };
 
@@ -287,6 +330,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setAccessToken(null);
     setUser(null);
+    // Reset to fail-closed default so a signed-out user doesn't retain
+    // a previous org's per-org feature resolution.
+    setFeatures({ reports: false, plans: false });
   };
 
   return (
@@ -296,7 +342,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         loading,
         needsSetup,
         billingUiEnabled,
-        featureReportsV2,
+        features,
         login,
         register,
         logout,

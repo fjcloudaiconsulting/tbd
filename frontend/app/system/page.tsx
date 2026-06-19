@@ -12,7 +12,15 @@ type SystemSection = {
   href: string;
   title: string;
   description: string;
-  permission: string;
+  // `permission` is checked via hasPlatformPermission for non-superadmin cards.
+  // Omit it on `superadminOnly` cards — the backend already enforces is_superadmin.
+  permission?: string;
+  // When true the card is only rendered for superadmins, regardless of
+  // permission checks. Set this for surfaces where the backend gate is
+  // is_superadmin rather than a named platform permission, so plain admins
+  // (who pass hasPlatformPermission for broad permissions) don't see a card
+  // whose API calls would 403 them.
+  superadminOnly?: boolean;
 };
 
 // Catalog of /system/* subsections. Add a row here when a new
@@ -26,6 +34,13 @@ const SECTIONS: readonly SystemSection[] = [
     description:
       "Manage subscription plans (free, premium, custom) and per-plan feature flags. Duplicate a plan to build a custom variant for sales-negotiated deals.",
     permission: "plans.manage",
+  },
+  {
+    href: "/system/features",
+    title: "Feature Flags",
+    description:
+      "Globally enable or disable gated features (Reports, Plans). Per-org overrides are managed from each organization.",
+    superadminOnly: true,
   },
 ];
 
@@ -63,9 +78,14 @@ export default function SystemHubPage() {
   // resolve to false on every key — keeps behavior identical to the
   // previous is_superadmin gate. When backend /me starts returning
   // permissions, cards light up automatically per-permission.
-  const visibleSections = SECTIONS.filter((section) =>
-    hasPlatformPermission(user, section.permission),
-  );
+  //
+  // `superadminOnly` cards bypass the permission check and require
+  // is_superadmin directly, because the backend gate on those surfaces is
+  // is_superadmin (not a named permission) — plain admins would 403.
+  const visibleSections = SECTIONS.filter((section) => {
+    if (section.superadminOnly) return user?.is_superadmin === true;
+    return hasPlatformPermission(user, section.permission ?? "");
+  });
 
   return (
     <AppShell>

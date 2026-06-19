@@ -7,6 +7,7 @@ from app.models.recurring import RecurringTransaction, Frequency
 from app.models.budget import Budget
 from app.models.billing import BillingPeriod
 from app.models.settings import OrgSetting
+from app.models.system_setting import SystemSetting  # noqa: F401
 from app.models.forecast_plan import ForecastPlan, ForecastPlanItem, PlanStatus, ForecastItemType, ItemSource
 from app.models.subscription import Plan, Subscription, SubscriptionStatus, BillingInterval
 from app.models.invitation import Invitation
@@ -73,6 +74,7 @@ __all__ = [
     "Budget",
     "BillingPeriod",
     "OrgSetting",
+    "SystemSetting",
     "ForecastPlan",
     "ForecastPlanItem",
     "PlanStatus",

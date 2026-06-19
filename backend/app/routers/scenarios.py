@@ -45,6 +45,7 @@ from app.schemas.scenario import (
     SimulateRequest,
     validate_horizon,
 )
+from app.services.feature_gate import Feature, require_feature
 from app.services.scenario_engine import (
     SimulationRequest,
     build_world_state,
@@ -55,7 +56,11 @@ from app.services.scenario_engine_ai import run_ai_simulation
 
 logger = structlog.stdlib.get_logger()
 
-router = APIRouter(prefix="/api/v1/scenarios", tags=["scenarios"])
+router = APIRouter(
+    prefix="/api/v1/scenarios",
+    tags=["scenarios"],
+    dependencies=[Depends(require_feature(Feature.PLANS))],
+)
 
 
 def _validate_horizon_or_422(scenario_type: str, horizon_months: int) -> None:

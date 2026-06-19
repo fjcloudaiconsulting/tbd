@@ -196,12 +196,12 @@ describe("AppShell — system nav gating", () => {
     expect(screen.queryByRole("link", { name: "Plan Catalog" })).toBeNull();
   });
 
-  it("hides the Reports nav entry when feature_reports_v2 is false", async () => {
+  it("hides the Reports nav entry when features.reports is false", async () => {
     useAuthMock.mockReturnValue({
       user: BASE_USER as never,
       loading: false,
       needsSetup: false,
-      featureReportsV2: false,
+      features: { reports: false, plans: true },
       billingUiEnabled: false,
       login: vi.fn(),
       register: vi.fn(),
@@ -219,12 +219,12 @@ describe("AppShell — system nav gating", () => {
     expect(screen.getAllByText("Dashboard").length).toBeGreaterThan(0);
   });
 
-  it("shows the Reports nav entry when feature_reports_v2 is true", async () => {
+  it("shows the Reports nav entry when features.reports is true", async () => {
     useAuthMock.mockReturnValue({
       user: BASE_USER as never,
       loading: false,
       needsSetup: false,
-      featureReportsV2: true,
+      features: { reports: true, plans: true },
       billingUiEnabled: false,
       login: vi.fn(),
       register: vi.fn(),
@@ -242,6 +242,80 @@ describe("AppShell — system nav gating", () => {
     // Plans entry must remain (architect-locked: Reports is a peer of
     // Plans, not a replacement).
     expect(screen.getByRole("link", { name: "Plans" })).toBeInTheDocument();
+  });
+
+  it("hides the Plans nav entry when features.plans is false", async () => {
+    useAuthMock.mockReturnValue({
+      user: BASE_USER as never,
+      loading: false,
+      needsSetup: false,
+      features: { reports: false, plans: false },
+      billingUiEnabled: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+
+    await renderShell();
+
+    // The "/plans" (Plans) item must be absent. Use exact role/name so we
+    // don't accidentally match "/forecast-plans" (Forecast Plans) or the
+    // system "/system/plans" (Plan Catalog).
+    expect(screen.queryByRole("link", { name: "Plans" })).toBeNull();
+    // Forecast Plans is a DIFFERENT feature — must remain untouched.
+    expect(
+      screen.getByRole("link", { name: "Forecast Plans" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the Plans nav entry when features.plans is true", async () => {
+    useAuthMock.mockReturnValue({
+      user: BASE_USER as never,
+      loading: false,
+      needsSetup: false,
+      features: { reports: false, plans: true },
+      billingUiEnabled: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+
+    await renderShell();
+
+    expect(screen.getByRole("link", { name: "Plans" })).toBeInTheDocument();
+    // Forecast Plans must be unaffected.
+    expect(
+      screen.getByRole("link", { name: "Forecast Plans" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Reports appears after Forecast Plans when Plans is hidden (features.reports=true, features.plans=false)", async () => {
+    useAuthMock.mockReturnValue({
+      user: BASE_USER as never,
+      loading: false,
+      needsSetup: false,
+      features: { reports: true, plans: false },
+      billingUiEnabled: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    });
+
+    await renderShell();
+
+    // Reports still renders when enabled, even without Plans.
+    expect(
+      screen.getByRole("link", { name: "Reports" }),
+    ).toBeInTheDocument();
+    // Plans item must be absent.
+    expect(screen.queryByRole("link", { name: "Plans" })).toBeNull();
+    // Forecast Plans untouched.
+    expect(
+      screen.getByRole("link", { name: "Forecast Plans" }),
+    ).toBeInTheDocument();
   });
 
   it("shows only the Plan Catalog link for a non-superadmin with plans.manage alone", async () => {

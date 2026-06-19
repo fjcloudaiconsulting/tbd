@@ -205,6 +205,14 @@ class Settings(BaseSettings):
     # ``specs/2026-05-22-reports-v2-flexible-canvas.md`` §11.
     feature_reports_v2: bool = False
 
+    # Plans (forecast-driven plan builder)
+    # When ``feature_plans`` is False (the pre-launch default), the
+    # ``/api/v1/scenarios/*`` router-level dependency ``require_feature``
+    # raises a hard 404 on every route and the frontend hides the nav
+    # item. Flip to True (or override via SystemSetting / OrgSetting)
+    # once the frontend lands.
+    feature_plans: bool = False
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:

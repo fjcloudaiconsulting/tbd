@@ -87,12 +87,12 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams,
 }));
 
-function mockUser(featureReportsV2 = true) {
+function mockUser(reportsOn = true) {
   vi.mocked(useAuth).mockReturnValue({
     user: { id: 1 } as never,
     loading: false,
     needsSetup: false,
-    featureReportsV2,
+    features: { reports: reportsOn, plans: false },
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),
@@ -196,5 +196,25 @@ describe("ReportDraftPage (/reports/new)", () => {
 
     expect(createMock).not.toHaveBeenCalled();
     expect(pushMock).toHaveBeenCalledWith("/reports");
+  });
+
+  it("redirects to /dashboard when features.reports is false (per-org off)", async () => {
+    mockUser(false);
+
+    render(<ReportDraftPage />);
+
+    await waitFor(() =>
+      expect(replaceMock).toHaveBeenCalledWith("/dashboard"),
+    );
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("renders draft canvas when features.reports is true (per-org override on)", async () => {
+    mockUser(true);
+
+    render(<ReportDraftPage />);
+
+    await screen.findByText("Spend by category");
+    expect(replaceMock).not.toHaveBeenCalledWith("/dashboard");
   });
 });

@@ -71,6 +71,12 @@ def test_engine_is_constructed_with_settings_pool_values(monkeypatch):
     import app.config as app_config
     import app.database as app_database
 
+    # Capture the original settings singleton so we can restore it after the
+    # reload — a second reload creates yet another Settings object and leaves
+    # all already-imported ``from app.config import settings`` references
+    # stranded on a stale instance (causing cross-test monkeypatch pollution).
+    _original_settings = app_config.settings
+
     monkeypatch.setattr(sa_async, "create_async_engine", _fake_create_async_engine)
 
     try:
@@ -85,8 +91,9 @@ def test_engine_is_constructed_with_settings_pool_values(monkeypatch):
         # see test_db_engine_config.py for the NAT-idle-ceiling rationale.
         assert captured["kwargs"]["pool_recycle"] == app_config.settings.db_pool_recycle
     finally:
-        # Restore module state for any later tests in the run.
-        importlib.reload(app_config)
+        # Restore the original singleton so ``from app.config import settings``
+        # references in other modules continue to see the live object.
+        app_config.settings = _original_settings
         importlib.reload(app_database)
 
 
@@ -124,6 +131,9 @@ def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch):
         import app.config as app_config
         import app.database as app_database
 
+        # Capture original singleton before reload (see test above for rationale).
+        _original_settings = app_config.settings
+
         monkeypatch.setattr(sa_async, "create_async_engine", _fake_engine)
         importlib.reload(app_config)
         importlib.reload(app_database)
@@ -140,8 +150,8 @@ def test_engine_configured_breadcrumb_emitted_at_import(monkeypatch):
         assert "user:" not in flat
     finally:
         structlog.reset_defaults()
-        # Restore for downstream tests.
+        # Restore original singleton and re-wire app.database to it.
         import app.config as app_config
         import app.database as app_database
-        importlib.reload(app_config)
+        app_config.settings = _original_settings
         importlib.reload(app_database)

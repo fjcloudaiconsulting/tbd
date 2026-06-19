@@ -46,7 +46,7 @@ export default function ReportDraftPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const templateKey = searchParams.get("template");
-  const { user, loading: authLoading, featureReportsV2 } = useAuth();
+  const { user, loading: authLoading, features } = useAuth();
 
   const [name, setName] = useState("Untitled report");
   const [layout, setLayout] = useState<LayoutJson | null>(null);
@@ -75,7 +75,7 @@ export default function ReportDraftPage() {
       router.replace("/login");
       return;
     }
-    if (!featureReportsV2) {
+    if (features?.reports === false) {
       router.replace("/dashboard");
       return;
     }
@@ -120,7 +120,7 @@ export default function ReportDraftPage() {
     // guaranteed stable and refiring would reseed over edits (the
     // ``seeded`` ref also guards that).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, authLoading, featureReportsV2, templateKey]);
+  }, [user, authLoading, features, templateKey]);
 
   const selectedWidget = useMemo(
     () => layout?.widgets.find((w) => w.id === selectedWidgetId) ?? null,

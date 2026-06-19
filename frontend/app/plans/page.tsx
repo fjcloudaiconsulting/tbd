@@ -146,7 +146,7 @@ const VERDICT_BADGE: Record<AffordabilityVerdict["color"], string> = {
 };
 
 export default function PlansPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, features } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [items, setItems] = useState<Scenario[]>([]);
@@ -202,8 +202,9 @@ export default function PlansPage() {
   }, []);
 
   useEffect(() => {
-    if (user) void loadAll();
-  }, [user, loadAll]);
+    // Do not fetch scenarios when the Plans feature is disabled for this org.
+    if (user && features?.plans !== false) void loadAll();
+  }, [user, features, loadAll]);
 
   // ?open=<id> from the compare page → open the matching plan in the
   // editor as soon as the scenarios list has loaded. If no scenario
@@ -281,6 +282,27 @@ export default function PlansPage() {
 
   if (loading || !user) {
     return null;
+  }
+
+  // Feature gate: when Plans is disabled for this org, render an empty
+  // state instead of the simulator. Mirrors how /settings/billing handles
+  // billingUiEnabled=false — page stays reachable so bookmarks don't 404,
+  // but no data is fetched and the simulator is never entered.
+  if (features?.plans === false) {
+    return (
+      <AppShell>
+        <div className={card} data-testid="plans-feature-unavailable">
+          <div className="p-6 text-center">
+            <h2 className="mb-2 text-lg font-semibold text-text-primary">
+              Plans
+            </h2>
+            <p className="text-sm text-text-muted">
+              This feature is currently unavailable.
+            </p>
+          </div>
+        </div>
+      </AppShell>
+    );
   }
 
   return (

@@ -61,12 +61,12 @@ const BASE_USER = {
   trial_end: null,
 };
 
-function mockUser(featureReportsV2 = true) {
+function mockUser(reportsOn = true) {
   vi.mocked(useAuth).mockReturnValue({
     user: BASE_USER as never,
     loading: false,
     needsSetup: false,
-    featureReportsV2,
+    features: { reports: reportsOn, plans: false },
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),
@@ -229,7 +229,7 @@ describe("ReportsListPage", () => {
     await waitFor(() => expect(pushMock).toHaveBeenCalledWith("/reports/88"));
   });
 
-  it("redirects to /dashboard when feature_reports_v2 is false", async () => {
+  it("redirects to /dashboard when features.reports is false (per-org off)", async () => {
     mockUser(false);
     listMock.mockResolvedValue([]);
 
@@ -240,5 +240,18 @@ describe("ReportsListPage", () => {
     );
     // Should not have queried the API at all.
     expect(listMock).not.toHaveBeenCalled();
+  });
+
+  it("renders and fetches when features.reports is true (per-org override on)", async () => {
+    mockUser(true);
+    listMock.mockResolvedValue([]);
+
+    render(<ReportsListPage />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("reports-empty-state")).toBeInTheDocument(),
+    );
+    expect(listMock).toHaveBeenCalled();
+    expect(replaceMock).not.toHaveBeenCalledWith("/dashboard");
   });
 });

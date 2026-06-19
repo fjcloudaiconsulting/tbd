@@ -98,6 +98,12 @@ function installMocks(membersOverride?: typeof MEMBERS) {
     if (url === "/api/v1/plans") {
       return Promise.resolve([{ id: 1, slug: "free", name: "Free" }]);
     }
+    if (url === "/api/v1/admin/orgs/42/features") {
+      return Promise.resolve([
+        { feature: "reports", override: "inherit", effective: true },
+        { feature: "plans", override: "inherit", effective: true },
+      ]);
+    }
     return Promise.resolve(undefined);
   }) as never);
   return apiFetchMock;
@@ -344,6 +350,12 @@ describe("AdminOrgDetailPage — member management (L4.4)", () => {
       }
       if (url === "/api/v1/plans") {
         return Promise.resolve([{ id: 1, slug: "free", name: "Free" }]);
+      }
+      if (url === "/api/v1/admin/orgs/42/features") {
+        return Promise.resolve([
+          { feature: "reports", override: "inherit", effective: true },
+          { feature: "plans", override: "inherit", effective: true },
+        ]);
       }
       if (
         url === "/api/v1/admin/orgs/42/members/9" &&

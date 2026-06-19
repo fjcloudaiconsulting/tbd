@@ -111,12 +111,12 @@ const BASE_USER = {
   trial_end: null,
 };
 
-function mockUser(featureReportsV2 = true) {
+function mockUser(reportsOn = true) {
   vi.mocked(useAuth).mockReturnValue({
     user: BASE_USER as never,
     loading: false,
     needsSetup: false,
-    featureReportsV2,
+    features: { reports: reportsOn, plans: false },
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),
@@ -1003,7 +1003,7 @@ describe("ReportEditorPage", () => {
     expect(widgets.map((w) => w.id)).toEqual(["c", "a", "b"]);
   });
 
-  it("redirects to /dashboard when feature_reports_v2 is false", async () => {
+  it("redirects to /dashboard when features.reports is false (per-org off)", async () => {
     mockUser(false);
     getReportMock.mockResolvedValue({
       id: 10,
@@ -1015,6 +1015,20 @@ describe("ReportEditorPage", () => {
       expect(replaceMock).toHaveBeenCalledWith("/dashboard"),
     );
     expect(getReportMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches and renders the report when features.reports is true (per-org override on)", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+    runQueryMock.mockResolvedValue({
+      rows: [],
+      meta: { row_count: 0, truncated: false, query_ms: 1 },
+    });
+
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
+
+    await waitFor(() => expect(getReportMock).toHaveBeenCalled());
+    expect(replaceMock).not.toHaveBeenCalledWith("/dashboard");
   });
 
   it("opening the widget editor popover does not reflow the canvas (saved editor)", async () => {
