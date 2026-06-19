@@ -31,6 +31,8 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent
+from app.models.system_setting import SystemSetting
+from app.models.settings import OrgSetting
 from app.models.user import Organization, Role, User
 from app.routers.admin_features import router as admin_features_router
 from app.security import hash_password
@@ -428,3 +430,91 @@ async def test_per_org_put_writes_audit_event(session_factory):
 
     after = await _count_audit_events(session_factory, "feature.org.set")
     assert after == before + 1, "Expected one new feature.org.set audit row"
+
+
+# ─── Finding A: 403-before-422 ordering ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_non_superadmin_invalid_body_returns_403_not_422(session_factory):
+    """Authenticated non-superadmin with INVALID body must get 403, not 422.
+
+    Proves that the superadmin check runs as a router-level dependency
+    (before body validation) and does not leak schema shape to regular users.
+    """
+    ids = await _seed(session_factory)
+
+    async def owner_resolver(factory):
+        return await _get_user_by_id(factory, ids["owner_id"])
+
+    app = _make_app(session_factory, owner_resolver)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    # "garbage" is not a valid Literal["on", "off", "inherit"] — would be 422
+    # if body validation ran first; must be 403 because authz runs first.
+    resp = client.put(
+        "/api/v1/admin/features/reports",
+        json={"value": "garbage"},
+    )
+    assert resp.status_code == 403, (
+        f"Expected 403 (authz before body validation), got {resp.status_code}: {resp.text}"
+    )
+
+
+# ─── Finding B: canonical on/off display ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_non_canonical_stored_value_shows_canonical_in_get(session_factory):
+    """A SystemSetting stored as 'ON' (non-canonical) must be reported as 'on'.
+
+    Proves that the GET display uses normalize_onoff() — the same normalization
+    as the gate — so the console and the resolution layer agree.
+    """
+    ids = await _seed(session_factory)
+
+    # Seed a non-canonical value directly into the DB, bypassing the API
+    async with session_factory() as db:
+        db.add(SystemSetting(key="feature.plans", value="ON"))
+        await db.commit()
+
+    async def superadmin_resolver(factory):
+        return await _get_user_by_id(factory, ids["superadmin_id"])
+
+    app = _make_app(session_factory, superadmin_resolver)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    resp = client.get("/api/v1/admin/features")
+    assert resp.status_code == 200, resp.text
+    plans = next(i for i in resp.json() if i["feature"] == "plans")
+    assert plans["global_value"] == "on", (
+        f"Expected canonical 'on', got {plans['global_value']!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_canonical_org_override_shows_canonical_in_get(session_factory):
+    """An OrgSetting stored as ' on ' (non-canonical) must be reported as 'on'.
+
+    Proves the per-org override display also uses normalize_onoff().
+    """
+    ids = await _seed(session_factory)
+    org_id = ids["org_id"]
+
+    # Seed a non-canonical value directly into the DB, bypassing the API
+    async with session_factory() as db:
+        db.add(OrgSetting(org_id=org_id, key="feature.reports", value=" on "))
+        await db.commit()
+
+    async def superadmin_resolver(factory):
+        return await _get_user_by_id(factory, ids["superadmin_id"])
+
+    app = _make_app(session_factory, superadmin_resolver)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    resp = client.get(f"/api/v1/admin/orgs/{org_id}/features")
+    assert resp.status_code == 200, resp.text
+    reports = next(i for i in resp.json() if i["feature"] == "reports")
+    assert reports["override"] == "on", (
+        f"Expected canonical 'on', got {reports['override']!r}"
+    )

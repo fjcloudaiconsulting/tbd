@@ -55,6 +55,22 @@ def _parse_onoff(value: str | None) -> bool | None:
     return None
 
 
+def normalize_onoff(value: str | None) -> str | None:
+    """Return the canonical ``'on'`` / ``'off'`` / ``None`` string for *value*.
+
+    Uses the same normalization as :func:`_parse_onoff` so that the admin
+    display layer and the gate resolution layer agree on what is stored.
+    """
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if v == "on":
+        return "on"
+    if v == "off":
+        return "off"
+    return None
+
+
 async def resolve_feature(feature: Feature, org_id: int | None, db: AsyncSession) -> bool:
     """Return the effective on/off state for *feature* scoped to *org_id*.
 

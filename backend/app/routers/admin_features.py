@@ -37,12 +37,34 @@ from app.services.feature_gate import (
     Feature,
     env_floor,
     feature_setting_key,
+    normalize_onoff,
     resolve_feature,
 )
 
 logger = structlog.stdlib.get_logger()
 
-router = APIRouter(prefix="/api/v1/admin", tags=["admin-features"])
+
+async def require_superadmin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """FastAPI dependency: resolve the current user and enforce superadmin access.
+
+    Runs during dependency resolution — before request-body validation — so
+    unauthenticated or non-superadmin callers receive 403, never 422.
+    """
+    if not current_user.is_superadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Superadmin access required",
+        )
+    return current_user
+
+
+router = APIRouter(
+    prefix="/api/v1/admin",
+    tags=["admin-features"],
+    dependencies=[Depends(require_superadmin)],
+)
 
 
 # ─── request body ──────────────────────────────────────────────────────────
@@ -50,18 +72,6 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin-features"])
 
 class FeatureValueBody(BaseModel):
     value: Literal["on", "off", "inherit"]
-
-
-# ─── auth helper ──────────────────────────────────────────────────────────
-
-
-def _require_superadmin(user: User) -> None:
-    """Raise 403 unless the user holds the platform superadmin flag."""
-    if not user.is_superadmin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Superadmin access required",
-        )
 
 
 # ─── misc helpers ─────────────────────────────────────────────────────────
@@ -119,8 +129,6 @@ async def list_global_features(
 
     Superadmin only.
     """
-    _require_superadmin(current_user)
-
     result = []
     for feature in Feature:
         key = feature_setting_key(feature)
@@ -130,7 +138,7 @@ async def list_global_features(
         result.append(
             {
                 "feature": feature.value,
-                "global_value": global_val if global_val in ("on", "off") else None,
+                "global_value": normalize_onoff(global_val),
                 "env_floor": env_floor(feature),
             }
         )
@@ -151,7 +159,6 @@ async def set_global_feature(
     Superadmin only.  ``value="inherit"`` deletes the row (falls back to
     env-floor).  Audit event: ``feature.global.set``.
     """
-    _require_superadmin(current_user)
     feat = _feature_from_str(feature)
     key = feature_setting_key(feat)
 
@@ -206,8 +213,6 @@ async def list_org_features(
 
     Superadmin only.  Returns 404 when org doesn't exist.
     """
-    _require_superadmin(current_user)
-
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -220,7 +225,7 @@ async def list_org_features(
                 OrgSetting.org_id == org_id, OrgSetting.key == key
             )
         )
-        override = override_raw if override_raw in ("on", "off") else "inherit"
+        override = normalize_onoff(override_raw) or "inherit"
         effective = await resolve_feature(feat, org_id, db)
         result.append(
             {"feature": feat.value, "override": override, "effective": effective}
@@ -243,7 +248,6 @@ async def set_org_feature(
     Superadmin only.  Returns 404 when org or feature is unknown.
     Audit event: ``feature.org.set``.
     """
-    _require_superadmin(current_user)
     feat = _feature_from_str(feature)
 
     org = await db.scalar(select(Organization).where(Organization.id == org_id))
