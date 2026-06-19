@@ -83,7 +83,7 @@ const featuresFaq: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
   },
   {
     q: "Does it use AI, and is that optional?",
-    a: "AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories you accept before they are applied to a transaction, and proposes seasonal forecast adjustments you can accept or dismiss — nothing changes without your action. There are hard spend caps and a full audit trail.",
+    a: "AI is optional and opt-in. Bring your own OpenAI or Anthropic key, or run it locally with Ollama. It suggests categories you accept before they are applied to a transaction, and proposes seasonal forecast adjustments you can accept or dismiss. Nothing changes without your action. There are hard spend caps and a full audit trail.",
   },
 ];
 
