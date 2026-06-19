@@ -660,10 +660,14 @@ function RoutingSection({
   const [savingDefault, setSavingDefault] = useState(false);
   const [sectionError, setSectionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setDefaultCred(routing?.default?.credential_id ?? "");
-    setDefaultModel(routing?.default?.model ?? "");
-  }, [routing]);
+  // NOTE: the default-routing form seeds from `routing` via the useState
+  // initializers above. RoutingSection only mounts once `routing` has loaded
+  // (the parent gates it on `!listLoading`, and routing is set in the same
+  // batch as listLoading=false), so no prop->state sync effect is needed.
+  // A `useEffect([routing])` that re-seeded these fields was removed: it was
+  // redundant on mount and would clobber the user's in-progress edits whenever
+  // `routing` changed (e.g. the post-save refetch), which also caused a race
+  // that flaked the "PUTs the default routing payload on save" test.
 
   const saveDefault = async () => {
     if (!defaultCred || !defaultModel.trim()) return;
