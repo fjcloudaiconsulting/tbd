@@ -1,23 +1,9 @@
 """Feature gate integration tests — Reports + Scenarios routers.
 
-TDD: these tests are written BEFORE the router changes are made.
-
-Expected RED state:
-- Reports gate tests: ``test_reports_gate_off_returns_404`` will PASS
-  (the old ``require_reports_v2_enabled`` also 404s when the env floor
-  is False) but ``test_reports_gate_on_returns_200`` will also PASS
-  because the old dep reads ``feature_reports_v2`` directly.
-  → Still valid as a regression pin once we migrate to require_feature.
-- Scenarios gate tests: ``test_scenarios_gate_off_returns_404`` will FAIL
-  (RED) because scenarios is currently UNGATED — it returns 200 when the
-  feature is off. ``test_scenarios_gate_on_returns_200`` will PASS.
-
-After implementation (GREEN):
-- All four tests pass.
-- unauthenticated ``/reports`` and ``/scenarios`` now return 401/403
-  (auth fires before the gate) rather than 404 — that is the accepted
-  behaviour for org-scoped gating and is NOT tested here (it is already
-  covered by test_reports.py::test_anonymous_request_returns_401).
+Contract: ``GET /api/v1/reports`` and ``GET /api/v1/scenarios`` return 404
+when their feature resolves to off via ``require_feature``, and 200 when on.
+Resolution priority: org-level DB override beats the env floor in both
+directions (on-beats-false-env, off-beats-true-env).
 """
 from __future__ import annotations
 
@@ -30,7 +16,6 @@ import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import event
-from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -43,6 +28,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.account import Account, AccountType
+from app.models.settings import OrgSetting
 from app.models.user import Organization, Role, User
 from app.routers.reports import router as reports_router
 from app.routers.scenarios import router as scenarios_router
@@ -62,7 +48,7 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
         poolclass=StaticPool,
     )
 
-    @event.listens_for(Engine, "connect")
+    @event.listens_for(engine.sync_engine, "connect")
     def _fk_on(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
@@ -223,4 +209,56 @@ async def test_scenarios_gate_on_returns_200(session_factory, monkeypatch):
     with TestClient(app) as client:
         res = client.get("/api/v1/scenarios")
     assert res.status_code == 200
+    assert res.json() == []
+
+
+# ---------------------------------------------------------------------------
+# DB-override gate tests — org override beats env floor (both directions)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reports_org_override_off_beats_true_env(session_factory, monkeypatch):
+    """Org-level OrgSetting 'off' beats a True env floor: router returns 404.
+
+    env feature_reports_v2=True but org has key='feature.reports', value='off'
+    → require_feature resolves 'off' → GET /api/v1/reports returns 404.
+    """
+    monkeypatch.setattr(app_settings, "feature_reports_v2", True)
+    ids = await _seed(session_factory)
+
+    # Seed the org-level override that turns the feature off
+    async with session_factory() as db:
+        db.add(OrgSetting(org_id=ids["org_id"], key="feature.reports", value="off"))
+        await db.commit()
+
+    app = _make_reports_app(session_factory, _resolve_user)
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports")
+    assert res.status_code == 404, (
+        f"Expected 404 (org override 'off' beats True env), got {res.status_code}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scenarios_org_override_on_beats_false_env(session_factory, monkeypatch):
+    """Org-level OrgSetting 'on' beats a False env floor: router returns 200.
+
+    env feature_plans=False but org has key='feature.plans', value='on'
+    → require_feature resolves 'on' → GET /api/v1/scenarios returns 200.
+    """
+    monkeypatch.setattr(app_settings, "feature_plans", False)
+    ids = await _seed(session_factory)
+
+    # Seed the org-level override that turns the feature on
+    async with session_factory() as db:
+        db.add(OrgSetting(org_id=ids["org_id"], key="feature.plans", value="on"))
+        await db.commit()
+
+    app = _make_scenarios_app(session_factory, _resolve_user)
+    with TestClient(app) as client:
+        res = client.get("/api/v1/scenarios")
+    assert res.status_code == 200, (
+        f"Expected 200 (org override 'on' beats False env), got {res.status_code}"
+    )
     assert res.json() == []

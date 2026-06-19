@@ -138,6 +138,17 @@ async def _count_audit_events(factory, event_type: str) -> int:
         return len(list(rows))
 
 
+async def _latest_audit_event(factory, event_type: str) -> AuditEvent | None:
+    """Return the most recently inserted AuditEvent with the given event_type."""
+    async with factory() as db:
+        return await db.scalar(
+            select(AuditEvent)
+            .where(AuditEvent.event_type == event_type)
+            .order_by(AuditEvent.id.desc())
+            .limit(1)
+        )
+
+
 # ─── tests ────────────────────────────────────────────────────────
 
 
@@ -298,6 +309,41 @@ async def test_per_org_get_unknown_org_returns_404(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_per_org_put_unknown_org_returns_404(session_factory):
+    """PUT /admin/orgs/9999/features/reports → 404; no side effects."""
+    ids = await _seed(session_factory)
+
+    async def superadmin_resolver(factory):
+        return await _get_user_by_id(factory, ids["superadmin_id"])
+
+    app = _make_app(session_factory, superadmin_resolver)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    resp = client.put(
+        "/api/v1/admin/orgs/9999/features/reports",
+        json={"value": "on"},
+    )
+    assert resp.status_code == 404, resp.text
+
+    # No OrgSetting row should exist for org 9999
+    async with session_factory() as db:
+        row = await db.scalar(
+            select(OrgSetting).where(OrgSetting.org_id == 9999)
+        )
+    assert row is None, "PUT to unknown org must not create an OrgSetting row"
+
+    # No feature.org.set audit row should exist for org 9999
+    async with session_factory() as db:
+        audit_row = await db.scalar(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "feature.org.set",
+                AuditEvent.target_org_id == 9999,
+            )
+        )
+    assert audit_row is None, "PUT to unknown org must not write a feature.org.set audit row"
+
+
+@pytest.mark.asyncio
 async def test_unknown_feature_name_global_put_returns_404(session_factory):
     """PUT /admin/features/unknown → 404."""
     ids = await _seed(session_factory)
@@ -392,7 +438,7 @@ async def test_cold_start_inherit_returns_null_and_audits(session_factory):
 
 @pytest.mark.asyncio
 async def test_global_put_writes_audit_event(session_factory):
-    """Each successful global PUT inserts a feature.global.set audit row."""
+    """Each successful global PUT inserts a feature.global.set audit row with correct payload."""
     ids = await _seed(session_factory)
 
     async def superadmin_resolver(factory):
@@ -408,10 +454,19 @@ async def test_global_put_writes_audit_event(session_factory):
     after = await _count_audit_events(session_factory, "feature.global.set")
     assert after == before + 1, "Expected one new feature.global.set audit row"
 
+    row = await _latest_audit_event(session_factory, "feature.global.set")
+    assert row is not None
+    assert row.actor_user_id == ids["superadmin_id"]
+    assert row.outcome == "success"
+    assert row.target_org_id is None, "Global audit must have no target_org_id"
+    assert row.detail["feature"] == "reports"
+    assert row.detail["old"] == "inherit"  # no prior SystemSetting row → inherit
+    assert row.detail["new"] == "on"
+
 
 @pytest.mark.asyncio
 async def test_per_org_put_writes_audit_event(session_factory):
-    """Each successful per-org PUT inserts a feature.org.set audit row."""
+    """Each successful per-org PUT inserts a feature.org.set audit row with correct payload."""
     ids = await _seed(session_factory)
 
     async def superadmin_resolver(factory):
@@ -430,6 +485,15 @@ async def test_per_org_put_writes_audit_event(session_factory):
 
     after = await _count_audit_events(session_factory, "feature.org.set")
     assert after == before + 1, "Expected one new feature.org.set audit row"
+
+    row = await _latest_audit_event(session_factory, "feature.org.set")
+    assert row is not None
+    assert row.actor_user_id == ids["superadmin_id"]
+    assert row.outcome == "success"
+    assert row.target_org_id == org_id, "Per-org audit must carry the target org_id"
+    assert row.detail["feature"] == "reports"
+    assert row.detail["old"] == "inherit"  # no prior OrgSetting row → inherit
+    assert row.detail["new"] == "on"
 
 
 # ─── Finding A: 403-before-422 ordering ───────────────────────────
