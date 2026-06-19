@@ -609,6 +609,133 @@ describe("AuthProvider", () => {
     expect(screen.getByTestId("features-plans")).toHaveTextContent("false");
   });
 
+  // ── Per-org feature resolution via authenticated /auth/status re-fetch ──
+
+  it("restore() updates features from authenticated /auth/status after access token is set", async () => {
+    // /auth/status unauthenticated returns features off (global/env level).
+    // After restore() sets the access token and loads the user, it re-fetches
+    // /auth/status WITH the Bearer token. The authenticated response carries
+    // per-org overrides — here reports=true — which must win over the unauth
+    // value. This is the core correctness guarantee for Finding [4].
+    apiFetchMock
+      .mockResolvedValueOnce({ needs_setup: false, features: { reports: false, plans: false } }) // (1) unauth /status
+      .mockResolvedValueOnce({ access_token: "restored-token" })                                  // (2) /refresh
+      .mockResolvedValueOnce(TEST_USER)                                                           // (3) /me
+      .mockResolvedValueOnce({ features: { reports: true, plans: false } });                      // (4) authed /status
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+
+    // Per-org override (reports=true) must be the final value, NOT the
+    // unauthenticated global/env read (reports=false).
+    expect(screen.getByTestId("features-reports")).toHaveTextContent("true");
+    expect(screen.getByTestId("features-plans")).toHaveTextContent("false");
+    // Confirm the authenticated status call was the 4th apiFetch call.
+    expect(apiFetchMock).toHaveBeenNthCalledWith(4, "/api/v1/auth/status");
+  });
+
+  it("login() updates features from authenticated /auth/status after fetchMe", async () => {
+    // Boot (restore) resolves features at global/env level (reports=false).
+    // Interactive login sets the access token, loads the user, then re-fetches
+    // /auth/status. The authenticated response carries per-org overrides
+    // (reports=true). The context must reflect the per-org value.
+    apiFetchMock
+      .mockResolvedValueOnce({ needs_setup: false, features: { reports: false, plans: false } }) // (1) unauth /status at boot
+      .mockRejectedValueOnce(new ApiResponseError(401, "no session"))                            // (2) /refresh terminal — not signed in
+      .mockResolvedValueOnce({ access_token: "login-token" })                                   // (3) /login POST
+      .mockResolvedValueOnce(TEST_USER)                                                          // (4) /me
+      .mockResolvedValueOnce({ features: { reports: true, plans: false } });                     // (5) authed /status
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    // Wait for boot to settle (terminal refresh → signed out, loading=false).
+    await waitFor(() =>
+      expect(screen.getByTestId("loading")).toHaveTextContent("false"),
+    );
+    // At boot, features should be global/env values from the unauth read.
+    expect(screen.getByTestId("features-reports")).toHaveTextContent("false");
+
+    // Now perform interactive login.
+    fireEvent.click(screen.getByText("Login"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+
+    // After login the authenticated /auth/status re-fetch must update features
+    // to the per-org resolved value (reports=true).
+    expect(screen.getByTestId("features-reports")).toHaveTextContent("true");
+    expect(screen.getByTestId("features-plans")).toHaveTextContent("false");
+  });
+
+  it("restore() keeps global/env features when authenticated /auth/status re-fetch fails (best-effort)", async () => {
+    // If the authenticated re-fetch throws, features must remain at the
+    // global/env-level values from the initial unauthenticated read — the
+    // failure must not prevent the user reaching the app or crash the flow.
+    apiFetchMock
+      .mockResolvedValueOnce({ needs_setup: false, features: { reports: true, plans: false } }) // (1) unauth /status
+      .mockResolvedValueOnce({ access_token: "restored-token" })                               // (2) /refresh
+      .mockResolvedValueOnce(TEST_USER)                                                        // (3) /me
+      .mockRejectedValueOnce(new ApiTimeoutError());                                           // (4) authed /status fails
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+
+    // Features must stay at the unauth read value (reports=true from global),
+    // not be wiped out by the failed re-fetch.
+    expect(screen.getByTestId("features-reports")).toHaveTextContent("true");
+    expect(screen.getByTestId("loading")).toHaveTextContent("false");
+  });
+
+  it("logout() resets features to { reports: false, plans: false } (fail-closed)", async () => {
+    // After a successful session with per-org features enabled, logout must
+    // reset features to the fail-closed default so a signed-out user
+    // does not retain the previous org's feature resolution.
+    apiFetchMock
+      .mockResolvedValueOnce({ needs_setup: false, features: { reports: false, plans: false } }) // (1) unauth /status
+      .mockResolvedValueOnce({ access_token: "restored-token" })                                 // (2) /refresh
+      .mockResolvedValueOnce(TEST_USER)                                                          // (3) /me
+      .mockResolvedValueOnce({ features: { reports: true, plans: true } })                       // (4) authed /status
+      .mockRejectedValueOnce(new Error("network down"));                                         // (5) /logout best-effort fail
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("features-reports")).toHaveTextContent("true"),
+    );
+
+    fireEvent.click(screen.getByText("Logout"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent("none"),
+    );
+
+    expect(screen.getByTestId("features-reports")).toHaveTextContent("false");
+    expect(screen.getByTestId("features-plans")).toHaveTextContent("false");
+  });
+
   it("keeps loading=true on persistent transient /auth/me so AppShell doesn't redirect with a valid token", async () => {
     // Three transient /auth/me failures exhausts the retry budget.
     // CRITICAL: loading must STAY true (AppShell renders the spinner)
