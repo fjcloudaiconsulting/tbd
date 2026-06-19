@@ -4,6 +4,7 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 import { TourProvider } from "@/components/tour/TourProvider";
 import { siteDescription, siteName, siteTagline, siteUrl } from "@/lib/site";
 import { readNonce } from "@/lib/nonce";
+import { GoogleAnalytics } from "@/components/analytics/GoogleAnalytics";
 import "./globals.css";
 
 // Structural social-graph defaults only. Each public page must declare its
@@ -52,6 +53,7 @@ export default async function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <GoogleAnalytics nonce={nonce} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link

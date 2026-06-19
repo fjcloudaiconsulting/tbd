@@ -86,7 +86,13 @@ export default function PrivacyPolicyPage() {
                 cookie issued during Google sign-in (deleted within 10 minutes
                 of the sign-in flow completing or being cancelled), a theme
                 preference in local storage, and a bot-management cookie set
-                by Cloudflare. We do not use analytics or advertising cookies.
+                by Cloudflare. On our public marketing pages only &mdash; never
+                once you are signed in to the app &mdash; we use Google Analytics
+                4, which sets first-party <code>_ga</code> and{" "}
+                <code>_ga_*</code> cookies to measure aggregate, anonymized
+                visitor traffic. We do not use this data for advertising. You
+                can opt out site-wide with Google&rsquo;s official opt-out
+                browser add-on at https://tools.google.com/dlpage/gaoptout.
               </li>
             </ul>
           </section>
