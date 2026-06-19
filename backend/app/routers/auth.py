@@ -14,7 +14,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database import get_db
-from app.deps import get_current_user, get_session_factory
+from app.deps import get_current_user, get_current_user_optional, get_session_factory
+from app.services.feature_gate import Feature, resolve_feature
 from app.models.account import AccountType, SYSTEM_ACCOUNT_TYPES
 from app.models.category import Category, CategoryType, SYSTEM_CATEGORIES
 from app.models.user import AVATAR_URL_MAX_LENGTH, Organization, Role, User
@@ -161,7 +162,10 @@ async def _create_org_with_defaults(db: AsyncSession, org_name: str) -> Organiza
 
 
 @router.get("/status")
-async def auth_status(db: AsyncSession = Depends(get_db)):
+async def auth_status(
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user_optional),
+):
     """Boot-time signals the frontend reads before rendering /register
     or /setup.
 
@@ -187,13 +191,24 @@ async def auth_status(db: AsyncSession = Depends(get_db)):
     up. The backend's own ``/api/v1/reports/*`` routes are independently
     gated via the ``require_reports_v2_enabled`` router dependency, so
     flipping this flag while the backend is False is a no-op.
+
+    ``features`` exposes the resolved on/off state for each named feature
+    flag.  When the caller presents a valid bearer token the flags are
+    resolved per-org (OrgSetting → SystemSetting → env-floor).  Without a
+    token the per-org lookup is skipped and resolution falls through to
+    global SystemSetting → env-floor only.
     """
+    org_id: int | None = user.org_id if user else None
     user_count = await db.scalar(select(func.count()).select_from(User))
     return {
         "needs_setup": user_count == 0,
         "captcha_required": app_settings.captcha_required,
         "billing_ui_enabled": app_settings.billing_ui_enabled,
         "feature_reports_v2": app_settings.feature_reports_v2,
+        "features": {
+            "reports": await resolve_feature(Feature.REPORTS, org_id, db),
+            "plans": await resolve_feature(Feature.PLANS, org_id, db),
+        },
     }
 
 

@@ -334,7 +334,7 @@ export default function ReportEditorPage({ params }: PageProps) {
       : (params as { id: string });
   const { id } = resolvedParams;
   const router = useRouter();
-  const { user, loading: authLoading, featureReportsV2 } = useAuth();
+  const { user, loading: authLoading, features } = useAuth();
   const isSmallScreen = useIsSmallScreen();
 
   const [report, setReport] = useState<ReportSummary | null>(null);
@@ -410,7 +410,7 @@ export default function ReportEditorPage({ params }: PageProps) {
       router.replace("/login");
       return;
     }
-    if (!featureReportsV2) {
+    if (features?.reports === false) {
       router.replace("/dashboard");
       return;
     }
@@ -436,7 +436,7 @@ export default function ReportEditorPage({ params }: PageProps) {
     // guarantee a referentially-stable identity across renders, and
     // refiring the load effect would clobber unsaved canvas edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, user, authLoading, featureReportsV2]);
+  }, [id, user, authLoading, features]);
 
   // Auto-dismiss the "Report saved" toast ~2s after it appears.
   useEffect(() => {

@@ -64,7 +64,7 @@ function minCapAcross(selectedTypes: Array<keyof typeof HORIZON_CAPS>): number {
 }
 
 export default function ComparePlansPage() {
-  const { user, loading } = useAuth();
+  const { user, loading, features } = useAuth();
   const router = useRouter();
   const [plans, setPlans] = useState<PlanRow[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
@@ -90,8 +90,9 @@ export default function ComparePlansPage() {
   }, []);
 
   useEffect(() => {
-    if (user) void loadPlans();
-  }, [user, loadPlans]);
+    // Do not fetch scenarios when the Plans feature is disabled for this org.
+    if (user && features?.plans !== false) void loadPlans();
+  }, [user, features, loadPlans]);
 
   const selectedTypes = useMemo(() => {
     const types = selected
@@ -134,6 +135,26 @@ export default function ComparePlansPage() {
   }
 
   if (loading || !user) return null;
+
+  // Feature gate: when Plans is disabled for this org, show the same
+  // unavailable state as /plans. Hooks above remain unconditional; this
+  // early-return is after all hooks, matching the /plans pattern exactly.
+  if (features?.plans === false) {
+    return (
+      <AppShell>
+        <div className={card} data-testid="plans-feature-unavailable">
+          <div className="p-6 text-center">
+            <h2 className="mb-2 text-lg font-semibold text-text-primary">
+              Plans
+            </h2>
+            <p className="text-sm text-text-muted">
+              This feature is currently unavailable.
+            </p>
+          </div>
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>

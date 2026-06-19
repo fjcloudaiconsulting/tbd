@@ -30,7 +30,7 @@ import type { ReportSummary, ReportTemplate } from "@/lib/reports/types";
 
 export default function ReportsListPage() {
   const router = useRouter();
-  const { user, loading: authLoading, featureReportsV2 } = useAuth();
+  const { user, loading: authLoading, features } = useAuth();
   const [reports, setReports] = useState<ReportSummary[] | null>(null);
   const [templates, setTemplates] = useState<ReportTemplate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +44,7 @@ export default function ReportsListPage() {
       router.replace("/login");
       return;
     }
-    if (!featureReportsV2) {
+    if (features?.reports === false) {
       router.replace("/dashboard");
       return;
     }
@@ -72,7 +72,7 @@ export default function ReportsListPage() {
     // not guaranteed stable across renders, and refiring the list
     // effect on every render would churn the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, authLoading, featureReportsV2]);
+  }, [user, authLoading, features]);
 
   // "New report" no longer persists anything. It opens the unsaved
   // draft editor at /reports/new; the row is created only when the user
@@ -123,6 +123,21 @@ export default function ReportsListPage() {
   }
 
   if (authLoading) {
+    return (
+      <AppShell>
+        <div className="flex h-full items-center justify-center">
+          <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-accent" />
+        </div>
+      </AppShell>
+    );
+  }
+
+  // Render guard: when reports is disabled, the effect above fires
+  // router.replace("/dashboard"), but that redirect is async. Return a
+  // spinner here so the full Reports UI never flashes during the one
+  // frame before the redirect resolves — matching the sibling /reports/[id]
+  // and /reports/new pages which do the same.
+  if (features?.reports === false) {
     return (
       <AppShell>
         <div className="flex h-full items-center justify-center">

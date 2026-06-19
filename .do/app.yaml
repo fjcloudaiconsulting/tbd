@@ -251,6 +251,19 @@ services:
         scope: RUN_AND_BUILD_TIME
         value: "true"
 
+      # Plans (life-event scenario simulator) gate — env floor only.
+      # "false" disables Plans globally (nav + /plans route + the
+      # /api/v1/scenarios/* API all gate off). This is intentional: Plans
+      # is being parked until its rethink lands. The gate still resolves
+      # per-org override -> global system_settings default -> this floor,
+      # so a superadmin re-enables Plans for a specific org (or globally)
+      # at runtime from /system/features and the org admin page — no
+      # redeploy. NOTE: shipping this flips Plans OFF for every org on
+      # deploy; set a per-org override to keep demo access.
+      - key: FEATURE_PLANS
+        scope: RUN_AND_BUILD_TIME
+        value: "false"
+
   - name: frontend
     github:
       repo: fjcloudaiconsulting/tbd

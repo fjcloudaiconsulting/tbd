@@ -43,7 +43,6 @@ from fastapi import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.report import Report, ReportVersion, ReportVisibility
@@ -65,33 +64,16 @@ from app.schemas.report_sources import (
     SourceMeasureOut,
 )
 from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse
+from app.services.feature_gate import Feature, require_feature
 
 
 logger = structlog.stdlib.get_logger()
 
 
-async def require_reports_v2_enabled() -> None:
-    """Router-level dependency: hard 404 when the flag is off.
-
-    The architect-locked gate (spec §11 "PR 1"):
-
-    > When the flag is off, ALL ``/api/v1/reports/*`` routes return 404
-    > via a router-level dependency that raises ``HTTPException(404)``.
-
-    The 404 is the same shape FastAPI emits for an unknown path so the
-    surface looks identical to a route that doesn't exist.
-    """
-    if not app_settings.feature_reports_v2:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Not Found",
-        )
-
-
 router = APIRouter(
     prefix="/api/v1/reports",
     tags=["reports"],
-    dependencies=[Depends(require_reports_v2_enabled)],
+    dependencies=[Depends(require_feature(Feature.REPORTS))],
 )
 
 

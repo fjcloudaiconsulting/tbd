@@ -63,7 +63,6 @@ const makeSuperadminAuth = (billingUiEnabled: boolean) => ({
   loading: false,
   needsSetup: false,
   billingUiEnabled,
-  featureReportsV2: false,
   login: vi.fn(),
   register: vi.fn(),
   logout: vi.fn(),

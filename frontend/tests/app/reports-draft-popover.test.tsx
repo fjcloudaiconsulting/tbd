@@ -117,12 +117,12 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => searchParams,
 }));
 
-function mockUser(featureReportsV2 = true) {
+function mockUser(reportsOn = true) {
   vi.mocked(useAuth).mockReturnValue({
     user: { id: 1 } as never,
     loading: false,
     needsSetup: false,
-    featureReportsV2,
+    features: { reports: reportsOn, plans: false },
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),

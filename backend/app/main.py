@@ -20,7 +20,7 @@ from app import redis_client
 from app.database import engine
 from app.logging import setup_logging
 from app.rate_limit import limiter
-from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, auth, budgets, categories, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users
+from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, auth, budgets, categories, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 
 # Setup JSON logging early so uvicorn's loggers are captured
@@ -473,6 +473,7 @@ app.include_router(import_router.router)
 app.include_router(subscriptions.router)
 app.include_router(plans.router)
 app.include_router(admin.router)
+app.include_router(admin_features.router)
 app.include_router(admin_orgs.router)
 app.include_router(admin_audit.router)
 app.include_router(admin_analytics.router)

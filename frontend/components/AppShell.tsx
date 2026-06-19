@@ -65,9 +65,9 @@ const NAV_ICON_PROPS = {
   strokeWidth: 1.5,
 } as const;
 
-// Static base nav items. Reports v2 is injected conditionally based on
-// the ``feature_reports_v2`` signal from /auth/status; see the gated
-// build inside the AppShell component below.
+// Static base nav items. Reports and Plans are injected/filtered
+// conditionally based on the per-org resolved ``features`` from
+// /auth/status; see buildNavItems below.
 const baseNavItems = [
   {
     href: "/dashboard",
@@ -111,26 +111,41 @@ const baseNavItems = [
   },
 ];
 
-// Reports v2 entry. Inserted between Forecast Plans and Categories
-// when ``featureReportsV2`` resolves true. Kept as a top-level item
-// (NOT under Planning, NOT under Settings) per spec §10.
+// Reports v2 entry. Inserted between Forecast Plans and Plans (or after
+// Forecast Plans when Plans is hidden) when ``features.reports`` is true.
+// Kept as a top-level item (NOT under Planning, NOT under Settings) per spec §10.
 const REPORTS_NAV_ITEM = {
   href: "/reports",
   label: "Reports",
   icon: <FileBarChart {...NAV_ICON_PROPS} />,
 } as const;
 
-function buildNavItems(featureReportsV2: boolean) {
-  if (!featureReportsV2) return baseNavItems;
-  // Insert Reports just after Forecast Plans (index where Plans sits)
-  // so the order stays Dashboard / Transactions / Accounts / Recurring
-  // / Budgets / Forecast Plans / Reports / Plans / Categories.
-  const idx = baseNavItems.findIndex((i) => i.href === "/plans");
-  if (idx === -1) return [...baseNavItems, REPORTS_NAV_ITEM];
+// Build the visible nav list from the per-org resolved feature flags.
+// Order: Dashboard / Transactions / Accounts / Recurring / Budgets /
+// Forecast Plans / [Reports] / [Plans] / Categories.
+//
+// - features.plans: when false, the "/plans" (Plans) item is removed.
+//   NOTE: "/forecast-plans" (Forecast Plans) and "/system/plans" (Plan
+//   Catalog) are different features and are never touched here.
+// - features.reports: when true, Reports is inserted just before the
+//   Plans item (or after Forecast Plans when Plans is hidden).
+function buildNavItems(features: { reports: boolean; plans: boolean }) {
+  // Start from base; optionally drop the Plans item.
+  const items = features.plans
+    ? [...baseNavItems]
+    : baseNavItems.filter((i) => i.href !== "/plans");
+
+  if (!features.reports) return items;
+
+  // Insert Reports just before the Plans item when present; otherwise
+  // insert it after Forecast Plans so the order stays sensible.
+  const plansIdx = items.findIndex((i) => i.href === "/plans");
+  const forecastIdx = items.findIndex((i) => i.href === "/forecast-plans");
+  const insertAt = plansIdx !== -1 ? plansIdx : forecastIdx + 1;
   return [
-    ...baseNavItems.slice(0, idx),
+    ...items.slice(0, insertAt),
     REPORTS_NAV_ITEM,
-    ...baseNavItems.slice(idx),
+    ...items.slice(insertAt),
   ];
 }
 
@@ -217,8 +232,8 @@ const systemItems: readonly SystemNavItem[] = [
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, loading, logout, featureReportsV2, billingUiEnabled } = useAuth();
-  const navItems = buildNavItems(Boolean(featureReportsV2));
+  const { user, loading, logout, features, billingUiEnabled } = useAuth();
+  const navItems = buildNavItems(features ?? { reports: false, plans: false });
   const router = useRouter();
   const pathname = usePathname();
   const tour = useTour();

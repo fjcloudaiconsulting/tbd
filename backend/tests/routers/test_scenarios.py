@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
@@ -43,6 +44,18 @@ from app.models.scenario import Scenario, ScenarioType
 from app.models.user import Organization, Role, User
 from app.routers.scenarios import router as scenarios_router
 from app.security import hash_password
+
+
+@pytest.fixture(autouse=True)
+def _enable_plans(monkeypatch):
+    """Enable feature_plans for every test in this file.
+
+    The scenarios router is now gated behind require_feature(Feature.PLANS).
+    Without this, every route returns 404 and the existing CRUD/simulation
+    tests break. The env-floor is the simplest enable; no DB rows are needed
+    since resolution falls through to the env floor when no override rows exist.
+    """
+    monkeypatch.setattr(app_settings, "feature_plans", True)
 
 
 @pytest_asyncio.fixture
