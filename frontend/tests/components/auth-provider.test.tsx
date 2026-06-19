@@ -48,7 +48,7 @@ const TEST_USER: User = {
 
 
 function Harness() {
-  const { user, loading, needsSetup, billingUiEnabled, login, logout } = useAuth();
+  const { user, loading, needsSetup, billingUiEnabled, features, login, logout } = useAuth();
   const [error, setError] = useState("none");
 
   return (
@@ -56,6 +56,8 @@ function Harness() {
       <div data-testid="loading">{String(loading)}</div>
       <div data-testid="needs-setup">{String(needsSetup)}</div>
       <div data-testid="billing-ui-enabled">{String(billingUiEnabled)}</div>
+      <div data-testid="features-reports">{String(features?.reports ?? false)}</div>
+      <div data-testid="features-plans">{String(features?.plans ?? false)}</div>
       <div data-testid="user">{user?.email ?? "none"}</div>
       <div data-testid="error">{error}</div>
       <button
@@ -545,6 +547,66 @@ describe("AuthProvider", () => {
       expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
     );
     expect(screen.getByTestId("billing-ui-enabled")).toHaveTextContent("false");
+  });
+
+  // ── Resolved per-org features object from /auth/status ─────────────────
+
+  it("defaults features to { reports: false, plans: false } before /auth/status resolves", async () => {
+    apiFetchMock.mockImplementation(
+      () => new Promise(() => {}), // never resolves
+    );
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    expect(screen.getByTestId("features-reports")).toHaveTextContent("false");
+    expect(screen.getByTestId("features-plans")).toHaveTextContent("false");
+  });
+
+  it("flows features.reports=true and features.plans=false from /auth/status into context", async () => {
+    apiFetchMock
+      .mockResolvedValueOnce({
+        needs_setup: false,
+        features: { reports: true, plans: false },
+      })
+      .mockResolvedValueOnce({ access_token: "restored-token" })
+      .mockResolvedValueOnce(TEST_USER);
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+    expect(screen.getByTestId("features-reports")).toHaveTextContent("true");
+    expect(screen.getByTestId("features-plans")).toHaveTextContent("false");
+  });
+
+  it("treats missing features key in status payload as { reports: false, plans: false }", async () => {
+    // Defensive: an older API revision that doesn't include the features
+    // key must keep all feature-gated surfaces hidden.
+    apiFetchMock
+      .mockResolvedValueOnce({ needs_setup: false })
+      .mockResolvedValueOnce({ access_token: "restored-token" })
+      .mockResolvedValueOnce(TEST_USER);
+
+    render(
+      <AuthProvider>
+        <Harness />
+      </AuthProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("user")).toHaveTextContent(TEST_USER.email),
+    );
+    expect(screen.getByTestId("features-reports")).toHaveTextContent("false");
+    expect(screen.getByTestId("features-plans")).toHaveTextContent("false");
   });
 
   it("keeps loading=true on persistent transient /auth/me so AppShell doesn't redirect with a valid token", async () => {

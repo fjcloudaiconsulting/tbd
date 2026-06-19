@@ -92,6 +92,16 @@ interface AuthContextValue {
    * treat ``undefined`` as ``false`` (the safe pre-launch state).
    */
   featureReportsV2?: boolean;
+  /**
+   * Resolved per-org feature flags from /api/v1/auth/status.
+   * Each key is the RESOLVED value (per-org override → global → env
+   * floor). Defaults to all-false until status resolves — same
+   * "default false until /auth/status" rationale as billingUiEnabled.
+   * Optional in the interface so existing test mocks that pre-date
+   * this field don't have to be updated; consumers treat ``undefined``
+   * as ``{ reports: false, plans: false }`` (the safe default).
+   */
+  features?: { reports: boolean; plans: boolean };
   login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,
@@ -124,6 +134,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // revision) is equivalent to "Reports surface hidden" — the safe
   // pre-launch default.
   const [featureReportsV2, setFeatureReportsV2] = useState(false);
+  // Resolved per-org feature flags. Defaults to all-false until
+  // /auth/status resolves so gated surfaces stay hidden on first render.
+  // Same "default false until /auth/status" rationale as billingUiEnabled.
+  const [features, setFeatures] = useState<{ reports: boolean; plans: boolean }>({ reports: false, plans: false });
 
   const fetchMe = useCallback(async () => {
     // 2026-05-18 review fix: fetchMe is the shared current-user load
@@ -177,10 +191,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             needs_setup: boolean;
             billing_ui_enabled?: boolean;
             feature_reports_v2?: boolean;
+            features?: { reports?: boolean; plans?: boolean };
           }>("/api/v1/auth/status"),
         );
         setBillingUiEnabled(Boolean(status.billing_ui_enabled));
         setFeatureReportsV2(Boolean(status.feature_reports_v2));
+        setFeatures({
+          reports: Boolean(status.features?.reports),
+          plans: Boolean(status.features?.plans),
+        });
         if (status.needs_setup) {
           setNeedsSetup(true);
           setLoading(false);
@@ -297,6 +316,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         needsSetup,
         billingUiEnabled,
         featureReportsV2,
+        features,
         login,
         register,
         logout,
