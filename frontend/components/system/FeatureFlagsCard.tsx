@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import {
   card,
@@ -36,6 +36,13 @@ export default function FeatureFlagsCard() {
   const [fetchError, setFetchError] = useState("");
   // Per-feature save status: undefined = idle, "saving" = in-flight, "ok" = success, string = error
   const [saveStatus, setSaveStatus] = useState<Record<string, "saving" | "ok" | string>>({});
+  const clearTimers = useRef<number[]>([]);
+
+  useEffect(() => {
+    return () => {
+      clearTimers.current.forEach(clearTimeout);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,7 +73,8 @@ export default function FeatureFlagsCard() {
         prev.map((f) => (f.feature === feature ? updated : f)),
       );
       setSaveStatus((s) => ({ ...s, [feature]: "ok" }));
-      setTimeout(() => setSaveStatus((s) => ({ ...s, [feature]: "" })), 3000);
+      const timerId = window.setTimeout(() => setSaveStatus((s) => ({ ...s, [feature]: "" })), 3000);
+      clearTimers.current.push(timerId);
     } catch (err) {
       setSaveStatus((s) => ({ ...s, [feature]: extractErrorMessage(err) }));
     }
