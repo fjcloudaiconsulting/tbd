@@ -62,6 +62,20 @@ const organizationLd = {
     url: `${apexUrl}/icon.svg`,
   },
   description: siteDescription,
+  // Entity disambiguation for search + AI engines. The company profile goes on
+  // the Organization; the founder's personal profiles go on a Person node so
+  // the human behind the product is verifiable (E-E-A-T) without conflating the
+  // person and the brand.
+  sameAs: ["https://github.com/fjcloudaiconsulting"],
+  founder: {
+    "@type": "Person",
+    name: "Flamarion Jorge",
+    sameAs: [
+      "https://www.linkedin.com/in/flamarion",
+      "https://x.com/flamarion",
+      "https://github.com/flamarion",
+    ],
+  },
 };
 
 const websiteLd = {
