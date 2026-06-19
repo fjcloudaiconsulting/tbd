@@ -67,14 +67,17 @@ locals {
   # External origins the apex genuinely loads, and nothing more:
   #   * https://fonts.googleapis.com         -> Google Fonts <link rel=stylesheet> (style-src)
   #   * https://fonts.gstatic.com            -> the font files that stylesheet pulls (font-src)
-  #   * https://www.googletagmanager.com     -> GA4 gtag.js loader + image ping (script-src, img-src, connect-src)
-  #   * https://www.google-analytics.com     -> GA4 measurement endpoint (img-src, connect-src)
-  #   * https://*.google-analytics.com       -> GA4 regional measurement endpoints (connect-src)
-  #   * https://*.analytics.google.com       -> GA4 alternative measurement hosts (connect-src)
-  # Google Analytics 4 (gtag.js) loads on the apex marketing build via
-  # frontend/components/analytics/GoogleAnalytics.tsx, which self-gates on
-  # NEXT_PUBLIC_BUILD_TARGET=apex and is never rendered on the authenticated app
-  # host. The GA domains above are allowlisted solely for this purpose.
+  # Google Analytics 4 needs NO external origins here: gtag.js is served
+  # FIRST-PARTY through the Google tag gateway. The /88x6/* ordered cache
+  # behavior on aws_cloudfront_distribution.apex proxies the gtag.js loader and
+  # all GA collection to the G-GRXDVTVBLV.fps.goog origin, so from the browser's
+  # perspective everything is same-origin -- 'self' alone covers the loader
+  # (script-src), the measurement beacons (img-src), and the collection
+  # fetch/beacon (connect-src). GA self-gates to the apex build via
+  # frontend/components/analytics/GoogleAnalytics.tsx (NEXT_PUBLIC_BUILD_TARGET=
+  # apex) and loads from GA_GATEWAY_PATH (/88x6/), never googletagmanager.com.
+  # (The googletagmanager.com / google-analytics.com allowlist entries from the
+  # original third-party tag were dropped once the gateway went live.)
   # og:image (/og.png) and every other asset are same-origin ('self'). There is
   # no CDN, Cloudflare Turnstile, or backend connect on the apex surface:
   # build-apex.sh's post-build guard hard-fails on any /api/v1 reference, and
@@ -102,12 +105,12 @@ locals {
   # infra-only landing change.
   apex_csp = join("; ", [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com",
+    "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "style-src-attr 'unsafe-inline'",
-    "img-src 'self' data: blob: https://www.google-analytics.com https://www.googletagmanager.com",
+    "img-src 'self' data: blob:",
     "font-src 'self' data: https://fonts.gstatic.com",
-    "connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com",
+    "connect-src 'self'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
