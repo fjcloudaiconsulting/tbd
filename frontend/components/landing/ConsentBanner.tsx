@@ -22,8 +22,12 @@ export default function ConsentBanner() {
   // mismatch. `open` is decided in the effect below.
   const [open, setOpen] = useState(false);
   const [customizing, setCustomizing] = useState(false);
-  const [analytics, setAnalytics] = useState(true);
-  const [marketing, setMarketing] = useState(true);
+  // Non-essential categories start UNticked (GDPR/ePrivacy: consent is opt-in,
+  // never pre-checked). The reopen path below fills these from a stored choice;
+  // a first-time visitor who opens Customize must actively tick to grant. The
+  // Accept button grants both regardless, since it is an explicit affirmative.
+  const [analytics, setAnalytics] = useState(false);
+  const [marketing, setMarketing] = useState(false);
 
   useEffect(() => {
     // Show the banner when there's no valid (non-expired) stored choice.
@@ -55,22 +59,19 @@ export default function ConsentBanner() {
 
   return (
     <div
-      role="dialog"
-      aria-modal="false"
+      role="region"
       aria-label="Cookie consent"
       className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-surface-raised shadow-lg"
     >
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-5 lg:px-10">
-        <div className="flex flex-col gap-2 text-sm text-text-secondary">
-          <p>
-            We use cookies to understand how the site is used. Analytics stay off
-            until you accept. See our{" "}
-            <Link href="/privacy" className="text-accent hover:underline">
-              Privacy Policy
-            </Link>
-            .
-          </p>
-        </div>
+        <p className="text-sm text-text-secondary">
+          We use cookies to understand how the site is used. Analytics stay off
+          until you accept. See our{" "}
+          <Link href="/privacy" className="text-accent hover:underline">
+            Privacy Policy
+          </Link>
+          .
+        </p>
 
         {customizing && (
           <fieldset className="flex flex-col gap-2 rounded-md border border-border bg-bg p-3">

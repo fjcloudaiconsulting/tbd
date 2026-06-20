@@ -6,6 +6,12 @@
 // The apex is a static export with no request-time runtime, so the user's
 // choice lives in localStorage rather than a server session. GA only runs on
 // the apex (see lib/analytics.ts isApexBuild), so this surface is apex-only.
+//
+// The localStorage plumbing (SSR guard + JSON guard rails) is reused from
+// lib/persisted-state.ts; this module layers only the consent-specific shape
+// validation and the 6-month expiry on top.
+
+import { readPersisted, writePersisted } from "@/lib/persisted-state";
 
 export const CONSENT_STORAGE_KEY = "tbd-consent-v1";
 
@@ -24,6 +30,11 @@ export type ConsentSignal = "granted" | "denied";
 // Consent Mode v2 default applied before gtag('config'). Everything
 // non-essential is denied until the user opts in; security + functionality are
 // granted (they are strictly necessary and need no consent).
+//
+// personalization_storage is intentionally left denied with no path to grant
+// it: the banner exposes no "personalization" category (we use none), so it
+// stays denied for the session's lifetime. If a personalization feature is
+// ever added, give it a category and extend toConsentModeUpdate.
 export const DEFAULT_DENIED: Record<string, ConsentSignal> = {
   ad_storage: "denied",
   ad_user_data: "denied",
@@ -52,35 +63,27 @@ export function toConsentModeUpdate(
   };
 }
 
+function isConsentChoice(value: unknown): value is ConsentChoice {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as ConsentChoice).analytics === "boolean" &&
+    typeof (value as ConsentChoice).marketing === "boolean" &&
+    typeof (value as ConsentChoice).ts === "number"
+  );
+}
+
 /** Read + validate the stored choice; null if missing, malformed, or expired. */
 export function readConsent(now: number): ConsentChoice | null {
-  let raw: string | null;
-  try {
-    raw = localStorage.getItem(CONSENT_STORAGE_KEY);
-  } catch {
-    // localStorage can throw (privacy mode, disabled storage). Treat as unset.
-    return null;
-  }
-  if (!raw) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    typeof (parsed as ConsentChoice).analytics !== "boolean" ||
-    typeof (parsed as ConsentChoice).marketing !== "boolean" ||
-    typeof (parsed as ConsentChoice).ts !== "number"
-  ) {
-    return null;
-  }
-
-  const choice = parsed as ConsentChoice;
+  // readPersisted handles the SSR guard, missing key, malformed JSON, and the
+  // shape validation, falling through to null on any of them.
+  const choice = readPersisted<ConsentChoice | null>(
+    CONSENT_STORAGE_KEY,
+    null,
+    (v): v is ConsentChoice | null => v === null || isConsentChoice(v),
+  );
+  if (!choice) return null;
+  // An expired choice is treated as no choice, so the banner re-asks.
   if (now - choice.ts > CONSENT_TTL_MS) return null;
   return choice;
 }
@@ -95,11 +98,7 @@ export function writeConsent(
     marketing: choice.marketing,
     ts: now,
   };
-  try {
-    localStorage.setItem(CONSENT_STORAGE_KEY, JSON.stringify(record));
-  } catch {
-    // Best-effort; if storage is unavailable the banner will simply re-show.
-  }
+  writePersisted(CONSENT_STORAGE_KEY, record);
 }
 
 /** Custom event the footer link dispatches to re-open the banner. */

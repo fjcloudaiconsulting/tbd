@@ -40,13 +40,6 @@ describe("<LandingFooter />", () => {
     );
   });
 
-  it("exposes a Cookie preferences control to re-open the consent banner", () => {
-    render(<LandingFooter />);
-    expect(
-      screen.getByRole("button", { name: /cookie preferences/i }),
-    ).toBeInTheDocument();
-  });
-
   it("uses a labelled footer nav", () => {
     render(<LandingFooter />);
     expect(

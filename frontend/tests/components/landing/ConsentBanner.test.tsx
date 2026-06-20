@@ -18,7 +18,7 @@ beforeEach(() => {
 describe("<ConsentBanner />", () => {
   it("shows when no consent is stored", () => {
     render(<ConsentBanner />);
-    expect(screen.getByRole("dialog", { name: /cookie consent/i })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: /cookie consent/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^accept$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^reject$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^customize$/i })).toBeInTheDocument();
@@ -30,7 +30,7 @@ describe("<ConsentBanner />", () => {
       JSON.stringify({ analytics: true, marketing: false, ts: Date.now() }),
     );
     render(<ConsentBanner />);
-    expect(screen.queryByRole("dialog", { name: /cookie consent/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /cookie consent/i })).not.toBeInTheDocument();
   });
 
   it("Accept persists both granted and updates Consent Mode", () => {
@@ -48,7 +48,7 @@ describe("<ConsentBanner />", () => {
       ad_personalization: "granted",
     });
     // Banner closes after a choice.
-    expect(screen.queryByRole("dialog", { name: /cookie consent/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /cookie consent/i })).not.toBeInTheDocument();
   });
 
   it("Reject persists both denied and updates Consent Mode", () => {
@@ -65,7 +65,7 @@ describe("<ConsentBanner />", () => {
     });
   });
 
-  it("Customize lets a user grant analytics only", () => {
+  it("Customize starts opt-out and lets a user grant analytics only", () => {
     render(<ConsentBanner />);
     fireEvent.click(screen.getByRole("button", { name: /^customize$/i }));
 
@@ -74,8 +74,14 @@ describe("<ConsentBanner />", () => {
     expect(necessary).toBeChecked();
     expect(necessary).toBeDisabled();
 
-    // Turn marketing off, leave analytics on (both default to on in the panel).
-    fireEvent.click(screen.getByLabelText(/marketing cookies/i));
+    // GDPR: non-essential categories start UNticked for a first-time visitor.
+    const analyticsBox = screen.getByLabelText(/analytics cookies/i) as HTMLInputElement;
+    const marketingBox = screen.getByLabelText(/marketing cookies/i) as HTMLInputElement;
+    expect(analyticsBox).not.toBeChecked();
+    expect(marketingBox).not.toBeChecked();
+
+    // Actively grant analytics only, leave marketing off.
+    fireEvent.click(analyticsBox);
     fireEvent.click(screen.getByRole("button", { name: /save preferences/i }));
 
     expect(readConsent(Date.now())).toMatchObject({ analytics: true, marketing: false });
@@ -94,13 +100,16 @@ describe("<ConsentBanner />", () => {
       JSON.stringify({ analytics: true, marketing: true, ts: Date.now() }),
     );
     render(<ConsentBanner />);
-    expect(screen.queryByRole("dialog", { name: /cookie consent/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /cookie consent/i })).not.toBeInTheDocument();
 
     act(() => {
       window.dispatchEvent(new Event(CONSENT_OPEN_EVENT));
     });
-    expect(screen.getByRole("dialog", { name: /cookie consent/i })).toBeInTheDocument();
-    // Re-opens straight into the preferences panel.
+    expect(screen.getByRole("region", { name: /cookie consent/i })).toBeInTheDocument();
+    // Re-opens straight into the preferences panel, prefilled from the stored
+    // choice (both granted) rather than the opt-out first-visit defaults.
     expect(screen.getByRole("button", { name: /save preferences/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/analytics cookies/i)).toBeChecked();
+    expect(screen.getByLabelText(/marketing cookies/i)).toBeChecked();
   });
 });
