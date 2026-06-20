@@ -76,6 +76,9 @@ describe("shouldShowAddTransactionCta route gate", () => {
     "/forecast-plans/2026-05-01",
     "/budgets",
     "/recurring",
+    "/reports",
+    "/reports/abc123",
+    "/plans",
   ];
 
   // Settings, admin, and system trees stay clear of the brass CTA: they

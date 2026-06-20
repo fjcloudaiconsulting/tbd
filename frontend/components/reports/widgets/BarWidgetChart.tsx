@@ -6,6 +6,7 @@
  * BarWidget keeps all data wiring (simple vs sliced pivot, CSV, legend);
  * this renders the already-prepared rows.
  */
+import { useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -16,7 +17,9 @@ import {
   YAxis,
 } from "recharts";
 
+import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import { chartColor } from "@/lib/chart-colors";
+import { makeReportBarTooltipResolver } from "@/lib/reports/bar-tooltip";
 import { formatMeasureValue } from "@/lib/reports/series";
 
 // Canonical categorical chart palette (theme tokens, mirrors the
@@ -64,6 +67,24 @@ export default function BarWidgetChart({
   format,
   currency,
 }: BarWidgetChartProps) {
+  // Resolve each hovered series to its label + swatch, dropping backfilled-zero
+  // breakdown segments so the tooltip only lists categories present in the
+  // hovered bar (see lib/reports/bar-tooltip). The dep array is intentionally a
+  // subset of the config: barSliceColor and chartColor.spent are module
+  // constants, and sliceColors is derived from secondaryValues (already a dep).
+  const resolveSeries = useMemo(
+    () =>
+      makeReportBarTooltipResolver({
+        sliced,
+        seriesKeys,
+        secondaryValues,
+        sliceColors: secondaryValues.map((_, i) => barSliceColor(i)),
+        valueName,
+        singleColor: chartColor.spent,
+      }),
+    [sliced, seriesKeys, secondaryValues, valueName],
+  );
+
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
@@ -80,7 +101,12 @@ export default function BarWidgetChart({
         />
         <Tooltip
           cursor={{ fill: "var(--color-border)", opacity: 0.3 }}
-          formatter={(v) => formatMeasureValue(Number(v), format, currency)}
+          content={
+            <SeriesTooltip
+              resolve={resolveSeries}
+              format={(v) => formatMeasureValue(v, format, currency)}
+            />
+          }
         />
         {sliced ? (
           secondaryValues.map((sv, i) => (
