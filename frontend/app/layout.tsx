@@ -5,6 +5,8 @@ import { TourProvider } from "@/components/tour/TourProvider";
 import { siteDescription, siteName, siteTagline, siteUrl } from "@/lib/site";
 import { readNonce } from "@/lib/nonce";
 import { GoogleAnalytics } from "@/components/analytics/GoogleAnalytics";
+import ConsentBanner from "@/components/landing/ConsentBanner";
+import { isApexBuild } from "@/lib/analytics";
 import "./globals.css";
 
 // Structural social-graph defaults only. Each public page must declare its
@@ -80,6 +82,9 @@ export default async function RootLayout({
             <TourProvider>{children}</TourProvider>
           </AuthProvider>
         </ThemeProvider>
+        {/* Cookie-consent banner — apex marketing host only, matching where
+            GA runs. The authenticated app sets only necessary cookies. */}
+        {isApexBuild && <ConsentBanner />}
       </body>
     </html>
   );

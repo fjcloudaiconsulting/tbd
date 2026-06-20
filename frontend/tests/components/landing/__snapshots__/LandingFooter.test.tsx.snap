@@ -82,6 +82,12 @@ exports[`<LandingFooter /> > snapshot stays stable in dark + light > footer-dark
       >
         Help
       </a>
+      <button
+        class="hover:text-text-primary"
+        type="button"
+      >
+        Cookie preferences
+      </button>
       <a
         class="hover:text-text-primary"
         href="mailto:hello@thebetterdecision.com"
@@ -175,6 +181,12 @@ exports[`<LandingFooter /> > snapshot stays stable in dark + light > footer-ligh
       >
         Help
       </a>
+      <button
+        class="hover:text-text-primary"
+        type="button"
+      >
+        Cookie preferences
+      </button>
       <a
         class="hover:text-text-primary"
         href="mailto:hello@thebetterdecision.com"
