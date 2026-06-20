@@ -68,8 +68,8 @@ function setupAuth() {
   });
 }
 
-// Routes where the CTA must render. All seven core money routes from the
-// locked design direction.
+// Routes where the CTA must render. The core money routes from the locked
+// design direction, plus Reports and Plans (quick-add was missing there).
 const SHOW_ROUTES = [
   "/dashboard",
   "/transactions",
@@ -78,6 +78,8 @@ const SHOW_ROUTES = [
   "/forecast-plans",
   "/budgets",
   "/recurring",
+  "/reports",
+  "/plans",
 ];
 
 // Routes that share the AppShell chrome but should NOT carry the brass
