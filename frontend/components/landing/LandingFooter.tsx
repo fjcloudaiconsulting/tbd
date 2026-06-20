@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Logo } from "@/components/brand/Logo";
+import CookiePreferencesButton from "@/components/landing/CookiePreferencesButton";
 import CurrentYear from "@/components/ui/CurrentYear";
 import { BRAND_CONTACT_EMAIL } from "@/lib/brand";
 
@@ -35,6 +36,7 @@ export default function LandingFooter() {
           <Link href="/docs" className="hover:text-text-primary">
             Help
           </Link>
+          <CookiePreferencesButton />
           <a
             href={`mailto:${BRAND_CONTACT_EMAIL}`}
             className="hover:text-text-primary"

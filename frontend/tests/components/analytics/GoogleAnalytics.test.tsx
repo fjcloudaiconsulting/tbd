@@ -90,4 +90,36 @@ describe("GoogleAnalytics — apex build", () => {
       `expected an inline gtag config script in document but found: ${allScripts.map((s) => s.outerHTML.substring(0, 120)).join(" | ")}`,
     ).toBeDefined();
   });
+
+  it("sets a denied Consent Mode default BEFORE gtag config", async () => {
+    process.env.NEXT_PUBLIC_BUILD_TARGET = "apex";
+    process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID = "G-GRXDVTVBLV";
+    vi.resetModules();
+
+    const { GoogleAnalytics } = await import(
+      "@/components/analytics/GoogleAnalytics"
+    );
+    render(<GoogleAnalytics />);
+
+    const allScripts = Array.from(document.querySelectorAll("script"));
+    const bootstrap = allScripts
+      .map((s) => s.textContent ?? s.innerHTML ?? "")
+      .find((t) => t.includes("gtag('consent', 'default'"));
+
+    expect(
+      bootstrap,
+      "expected an inline gtag consent-default bootstrap script",
+    ).toBeDefined();
+
+    // Analytics + every ad storage type must default to denied.
+    expect(bootstrap).toMatch(/'analytics_storage':\s*'denied'/);
+    expect(bootstrap).toMatch(/'ad_storage':\s*'denied'/);
+
+    // The consent default MUST appear before gtag('config', ...): Consent Mode
+    // only protects collection if it is set first.
+    const defaultIdx = bootstrap!.indexOf("gtag('consent', 'default'");
+    const configIdx = bootstrap!.indexOf("gtag('config'");
+    expect(defaultIdx).toBeGreaterThanOrEqual(0);
+    expect(configIdx).toBeGreaterThan(defaultIdx);
+  });
 });
