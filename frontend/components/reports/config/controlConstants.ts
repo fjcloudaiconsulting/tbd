@@ -43,8 +43,8 @@ export const FIELD_OPTIONS: Array<{ value: MeasureField; label: string }> = (
 
 // The catalog-free fallback dimension set (transactions-shaped), in editor
 // order. Labels are pulled from DIMENSION_HEADERS — the same map chart axes and
-// CSV headers use — so the picker and the rendered output can never drift
-// (e.g. txn_type was "Transaction type" here vs "Type" in DIMENSION_HEADERS).
+// CSV headers use — so the picker fallback and the rendered output can never
+// drift (they previously hard-coded separate strings for the same key).
 const FALLBACK_DIMENSION_KEYS: readonly Dimension[] = [
   "category",
   "category_master",

@@ -35,7 +35,7 @@ export const DIMENSION_HEADERS: Record<Dimension, string> = {
   category_master: "Master category",
   account: "Account",
   tag: "Tag",
-  txn_type: "Type",
+  txn_type: "Transaction type",
   status: "Status",
   month: "Month",
   week: "Week",
