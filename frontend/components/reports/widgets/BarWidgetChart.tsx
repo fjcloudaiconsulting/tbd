@@ -69,7 +69,9 @@ export default function BarWidgetChart({
 }: BarWidgetChartProps) {
   // Resolve each hovered series to its label + swatch, dropping backfilled-zero
   // breakdown segments so the tooltip only lists categories present in the
-  // hovered bar (see lib/reports/bar-tooltip).
+  // hovered bar (see lib/reports/bar-tooltip). The dep array is intentionally a
+  // subset of the config: barSliceColor and chartColor.spent are module
+  // constants, and sliceColors is derived from secondaryValues (already a dep).
   const resolveSeries = useMemo(
     () =>
       makeReportBarTooltipResolver({

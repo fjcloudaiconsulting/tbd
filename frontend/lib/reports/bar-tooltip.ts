@@ -52,8 +52,13 @@ export function makeReportBarTooltipResolver(
   });
 
   return (entry) => {
-    // Drop backfilled-zero categories so the tooltip shows only series with
-    // data for the hovered bar.
+    // Drop zero-value segments so the tooltip shows only series with data for
+    // the hovered bar. This catches the pivot's backfilled zeros (the bug) and
+    // also a segment that genuinely nets to exactly 0 — but that segment is
+    // zero-height and invisible in the bar, so omitting it from the tooltip is
+    // consistent with what's drawn (same rule the forecast/budget charts use).
+    // NOTE the asymmetry with the single-bar branch above, which keeps a
+    // measured 0: there the bar IS that one value, so its row is never noise.
     if (Number(entry.value) === 0) return null;
     if (entry.dataKey == null) return null;
     return byKey.get(String(entry.dataKey)) ?? null;
