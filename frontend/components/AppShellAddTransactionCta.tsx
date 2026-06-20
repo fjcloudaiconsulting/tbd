@@ -346,6 +346,11 @@ const SHOW_ON: readonly string[] = [
   "/forecast-plans",
   "/budgets",
   "/recurring",
+  // Reports and Plans are money routes too; quick-add was missing here. When
+  // Plans is gated off the route 404s before AppShell mounts, so listing it is
+  // harmless (the CTA only renders on a page that actually loads).
+  "/reports",
+  "/plans",
 ];
 
 const HIDE_PREFIXES: readonly string[] = [
