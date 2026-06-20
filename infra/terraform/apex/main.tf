@@ -67,17 +67,36 @@ locals {
   # External origins the apex genuinely loads, and nothing more:
   #   * https://fonts.googleapis.com         -> Google Fonts <link rel=stylesheet> (style-src)
   #   * https://fonts.gstatic.com            -> the font files that stylesheet pulls (font-src)
-  # Google Analytics 4 needs NO external origins here: gtag.js is served
-  # FIRST-PARTY through the Google tag gateway. The /vd9r/* ordered cache
-  # behavior on aws_cloudfront_distribution.apex proxies the gtag.js loader and
-  # all GA collection to the G-GRXDVTVBLV.fps.goog origin, so from the browser's
-  # perspective everything is same-origin -- 'self' alone covers the loader
-  # (script-src), the measurement beacons (img-src), and the collection
-  # fetch/beacon (connect-src). GA self-gates to the apex build via
+  # Google Analytics 4 external origins:
+  #   * https://www.googletagmanager.com  -> gtag gateway health probe
+  #                                          (.../gtag/js?id=...&gtg_health=1)
+  #                                          (script-src, img-src)
+  #   * https://www.google-analytics.com  -> GA4 collection + image beacons
+  #                                          (img-src, connect-src)
+  #   * https://*.google-analytics.com    -> regional collection (connect-src)
+  #   * https://*.analytics.google.com    -> regional collection, e.g.
+  #                                          region1.analytics.google.com
+  #                                          (connect-src)
+  # These were dropped in #462 on the assumption the Google tag gateway makes
+  # GA fully same-origin under 'self'. It does NOT. The gateway we run is the
+  # CDN-only option (the /vd9r/* ordered cache behavior proxies to the
+  # G-GRXDVTVBLV.fps.goog origin): it first-parties ONLY the gtag.js LOADER.
+  # The browser still (a) hits googletagmanager.com for the gateway health
+  # probe and (b) sends /g/collect measurement to *.analytics.google.com /
+  # *.google-analytics.com. Full first-party collection would require a
+  # server-side Tag Manager (Option 3), which we do not have. With 'self'
+  # alone the loader runs but every collection request is CSP-blocked, so GA
+  # records nothing (verified in prod console after #462). Restoring these
+  # origins is the fix. GA self-gates to the apex build via
   # frontend/components/analytics/GoogleAnalytics.tsx (NEXT_PUBLIC_BUILD_TARGET=
-  # apex) and loads from GA_GATEWAY_PATH (/vd9r/), never googletagmanager.com.
-  # (The googletagmanager.com / google-analytics.com allowlist entries from the
-  # original third-party tag were dropped once the gateway went live.)
+  # apex) and loads the gtag loader from GA_GATEWAY_PATH (/vd9r/).
+  #
+  # NOT allowlisted: Google Signals / Ads remarketing endpoints
+  # (stats.g.doubleclick.net, www.google.<cctld>/ads/ga-audiences). The
+  # ga-audiences pixel uses per-country TLDs that cannot be cleanly allowlisted,
+  # and these are advertising features we do not use (ads are deferred; the
+  # acquisition play is organic). Disable "Google Signals" in the GA4 admin to
+  # stop these requests at the source rather than widening the CSP.
   # og:image (/og.png) and every other asset are same-origin ('self'). There is
   # no CDN, Cloudflare Turnstile, or backend connect on the apex surface:
   # build-apex.sh's post-build guard hard-fails on any /api/v1 reference, and
@@ -105,12 +124,12 @@ locals {
   # infra-only landing change.
   apex_csp = join("; ", [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "style-src-attr 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https://www.google-analytics.com https://www.googletagmanager.com",
     "font-src 'self' data: https://fonts.gstatic.com",
-    "connect-src 'self'",
+    "connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
