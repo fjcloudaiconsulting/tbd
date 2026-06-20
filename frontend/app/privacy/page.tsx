@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
+import CookiePreferencesButton from "@/components/landing/CookiePreferencesButton";
 
 import { apexCanonical, pageSocialMeta, siteName } from "@/lib/site";
 
@@ -87,12 +88,17 @@ export default function PrivacyPolicyPage() {
                 of the sign-in flow completing or being cancelled), a theme
                 preference in local storage, and a bot-management cookie set
                 by Cloudflare. On our public marketing pages (never once you
-                are signed in to the app), we use Google Analytics 4, which
-                sets first-party <code>_ga</code> and{" "}
-                <code>_ga_*</code> cookies to measure aggregate, anonymized
-                visitor traffic. We do not use this data for advertising. You
-                can opt out site-wide with Google&rsquo;s official opt-out
-                browser add-on at https://tools.google.com/dlpage/gaoptout.
+                are signed in to the app), we use Google Analytics 4. It runs
+                only after you opt in: a consent banner lets you accept or
+                reject, and until you accept, Google Analytics is loaded in a
+                consent-denied mode (Google Consent Mode v2) that sets no{" "}
+                <code>_ga</code> / <code>_ga_*</code> cookies. If you accept,
+                those first-party cookies measure aggregate, anonymized visitor
+                traffic; we do not use this data for advertising. Your choice is
+                stored in a <code>tbd-consent-v1</code> local-storage entry and
+                re-requested every six months. You can change or withdraw it
+                anytime via the &ldquo;Cookie preferences&rdquo; link in the
+                page footer.
               </li>
             </ul>
           </section>
@@ -285,8 +291,11 @@ export default function PrivacyPolicyPage() {
           </section>
         </div>
 
-        <footer className="mt-12 border-t border-border pt-6 text-xs text-text-muted">
-          See also: <Link href="/terms" className="underline hover:text-text-primary">Terms of Service</Link>
+        <footer className="mt-12 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-6 text-xs text-text-muted">
+          <span>
+            See also: <Link href="/terms" className="underline hover:text-text-primary">Terms of Service</Link>
+          </span>
+          <CookiePreferencesButton />
         </footer>
       </article>
     </div>

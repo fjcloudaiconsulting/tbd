@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import BackLink from "@/components/ui/BackLink";
+import CookiePreferencesButton from "@/components/landing/CookiePreferencesButton";
 import { readNonce } from "@/lib/nonce";
 import { apexCanonical, apexUrl, pageSocialMeta, siteName } from "@/lib/site";
 
@@ -738,15 +739,18 @@ export default async function DocsPage() {
           </section>
         </div>
 
-        <footer className="mt-12 border-t border-border pt-6 text-xs text-text-muted">
-          See also:{" "}
-          <Link href="/privacy" className="underline hover:text-text-primary">
-            Privacy
-          </Link>{" "}
-          ·{" "}
-          <Link href="/terms" className="underline hover:text-text-primary">
-            Terms
-          </Link>
+        <footer className="mt-12 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-6 text-xs text-text-muted">
+          <span>
+            See also:{" "}
+            <Link href="/privacy" className="underline hover:text-text-primary">
+              Privacy
+            </Link>{" "}
+            ·{" "}
+            <Link href="/terms" className="underline hover:text-text-primary">
+              Terms
+            </Link>
+          </span>
+          <CookiePreferencesButton />
         </footer>
       </article>
     </div>

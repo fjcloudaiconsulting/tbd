@@ -1,0 +1,13 @@
+# Keep host build artifacts out of the image. Without this, `COPY . .` in
+# Dockerfile / Dockerfile.dev overlays the host's node_modules (built for the
+# host platform, e.g. macOS/darwin) on top of the clean in-image `npm install`,
+# producing a mixed dependency tree. The symptom is an esbuild host/binary
+# version skew ("Host version X does not match binary version Y") when vitest
+# loads, because the JS esbuild package comes from the host while the native
+# @esbuild/<platform> binary comes from the in-image install.
+node_modules
+.next
+out
+out-apex
+npm-debug.log*
+.DS_Store
