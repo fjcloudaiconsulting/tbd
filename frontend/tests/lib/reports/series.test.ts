@@ -52,6 +52,12 @@ describe("seriesLabel", () => {
     ).toBe("Average of Account");
   });
 
+  it("labels distinct as 'Distinct count' to match the editor picker", () => {
+    expect(
+      seriesLabel(s({ measure: { agg: "distinct", field: "account_id" } }), 0, 2),
+    ).toBe("Distinct count of Account");
+  });
+
   it("an explicit label override always wins", () => {
     expect(seriesLabel(s({ label: "Total spend" }), 0, 1)).toBe("Total spend");
     expect(seriesLabel(s({ label: "  Total spend  " }), 0, 2)).toBe(

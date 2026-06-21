@@ -254,4 +254,96 @@ def get_report_templates() -> list[dict]:
             ],
         },
     },
+    {
+        "key": "account_balances",
+        "name": "Account balances",
+        "description": (
+            "Where your money sits right now: total balance across all "
+            "accounts, plus a breakdown by account and by account type."
+        ),
+        # Accounts source reports a current snapshot, not a period, so it
+        # ignores the canvas date range — no window needed.
+        "canvas_filters_json": {},
+        "layout_json": {
+            "version": 1,
+            "widgets": [
+                {
+                    "id": "ab-kpi-total",
+                    "type": "kpi",
+                    "title": "Total balance",
+                    "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+                    "config": {
+                        "dataset": "accounts",
+                        "measure": _measure("sum", "balance"),
+                        "format": "currency",
+                    },
+                },
+                {
+                    "id": "ab-bar-by-account",
+                    "type": "bar",
+                    "title": "Balance by account",
+                    "grid": {"x": 0, "y": 2, "w": 6, "h": 4},
+                    "config": {
+                        "dataset": "accounts",
+                        "measure": _measure("sum", "balance"),
+                        "dimensions": ["account"],
+                        "sort": {"by": "value", "dir": "desc"},
+                        "limit": 10,
+                        "format": "currency",
+                    },
+                },
+                {
+                    "id": "ab-bar-by-type",
+                    "type": "bar",
+                    "title": "Balance by account type",
+                    "grid": {"x": 6, "y": 2, "w": 6, "h": 4},
+                    "config": {
+                        "dataset": "accounts",
+                        "measure": _measure("sum", "balance"),
+                        "dimensions": ["account_type"],
+                        "sort": {"by": "value", "dir": "desc"},
+                        "format": "currency",
+                    },
+                },
+            ],
+        },
+    },
+    {
+        "key": "settled_vs_pending",
+        "name": "Settled vs pending",
+        "description": (
+            "This month's activity split by settlement status, with net, "
+            "so you can see how much is still in flight."
+        ),
+        "canvas_filters_json": {"date_range": this_month},
+        "layout_json": {
+            "version": 1,
+            "widgets": [
+                {
+                    "id": "svp-kpi-net",
+                    "type": "kpi",
+                    "title": "Net (this month)",
+                    "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+                    "config": {
+                        "dataset": "transactions",
+                        "measure": _measure("sum"),
+                        "format": "currency",
+                    },
+                },
+                {
+                    "id": "svp-bar-status",
+                    "type": "bar",
+                    "title": "Amount by status",
+                    "grid": {"x": 0, "y": 2, "w": 8, "h": 4},
+                    "config": {
+                        "dataset": "transactions",
+                        "measure": _measure("sum"),
+                        "dimensions": ["status"],
+                        "sort": {"by": "value", "dir": "desc"},
+                        "format": "currency",
+                    },
+                },
+            ],
+        },
+    },
 ]

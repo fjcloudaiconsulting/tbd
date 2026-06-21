@@ -18,7 +18,7 @@ import type {
   TableConfig,
   Widget,
 } from "@/lib/reports/types";
-import { MEASURE_FIELD_LABELS } from "@/lib/reports/series";
+import { DIMENSION_HEADERS, MEASURE_FIELD_LABELS } from "@/lib/reports/series";
 
 export const AGG_OPTIONS: Array<{ value: Aggregation; label: string }> = [
   { value: "sum", label: "Sum" },
@@ -41,17 +41,27 @@ export const FIELD_OPTIONS: Array<{ value: MeasureField; label: string }> = (
   Object.keys(MEASURE_FIELD_LABELS) as MeasureField[]
 ).map((value) => ({ value, label: MEASURE_FIELD_LABELS[value] }));
 
-export const DIMENSION_OPTIONS: Array<{ value: Dimension; label: string }> = [
-  { value: "category", label: "Category" },
-  { value: "category_master", label: "Master category" },
-  { value: "account", label: "Account" },
-  { value: "tag", label: "Tag" },
-  { value: "txn_type", label: "Transaction type" },
-  { value: "status", label: "Status" },
-  { value: "month", label: "Month" },
-  { value: "week", label: "Week" },
-  { value: "day", label: "Day" },
+// The catalog-free fallback dimension set (transactions-shaped), in editor
+// order. Labels are pulled from DIMENSION_HEADERS — the same map chart axes and
+// CSV headers use — so the picker fallback and the rendered output can never
+// drift (they previously hard-coded separate strings for the same key).
+const FALLBACK_DIMENSION_KEYS: readonly Dimension[] = [
+  "category",
+  "category_master",
+  "account",
+  "tag",
+  "txn_type",
+  "status",
+  "month",
+  "week",
+  "day",
 ];
+
+export const DIMENSION_OPTIONS: Array<{ value: Dimension; label: string }> =
+  FALLBACK_DIMENSION_KEYS.map((value) => ({
+    value,
+    label: DIMENSION_HEADERS[value],
+  }));
 
 /**
  * Maps a source catalog entry's dimensions to picker options

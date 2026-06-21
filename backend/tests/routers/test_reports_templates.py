@@ -385,18 +385,57 @@ async def test_list_versions_404_when_flag_off(session_factory, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_templates_endpoint_returns_three(session_factory):
+async def test_templates_endpoint_returns_starter_set(session_factory):
     await _seed(session_factory)
     app = _make_app(session_factory, _resolver("user_a"))
     with TestClient(app) as client:
         res = client.get("/api/v1/reports/templates")
     assert res.status_code == 200, res.text
     body = res.json()
-    assert len(body) == 3
     keys = {t["key"] for t in body}
-    assert keys == {"monthly_review", "cash_flow_trend", "category_deep_dive"}
+    assert keys == {
+        "monthly_review",
+        "cash_flow_trend",
+        "category_deep_dive",
+        "account_balances",
+        "settled_vs_pending",
+    }
     for t in body:
         assert t["layout_json"]["widgets"], t["key"]
+
+
+@pytest.mark.asyncio
+async def test_account_balances_template_uses_accounts_source(session_factory):
+    # The accounts source (added in #450) had no template coverage; the
+    # account_balances starter must drive its widgets off it with the
+    # balance measure so "where my money sits" is answerable out of the box.
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports/templates")
+    body = {t["key"]: t for t in res.json()}
+    widgets = body["account_balances"]["layout_json"]["widgets"]
+    assert widgets, "account_balances has no widgets"
+    for w in widgets:
+        assert w["config"]["dataset"] == "accounts", w["id"]
+        measure = w["config"].get("measure") or w["config"]["measures"][0]["measure"]
+        assert measure["field"] == "balance", w["id"]
+
+
+@pytest.mark.asyncio
+async def test_settled_vs_pending_template_breaks_down_by_status(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/reports/templates")
+    body = {t["key"]: t for t in res.json()}
+    widgets = body["settled_vs_pending"]["layout_json"]["widgets"]
+    status_bars = [
+        w
+        for w in widgets
+        if w["type"] == "bar" and w["config"].get("dimensions") == ["status"]
+    ]
+    assert status_bars, "settled_vs_pending lacks a status-breakdown bar"
 
 
 @pytest.mark.asyncio

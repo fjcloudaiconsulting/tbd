@@ -305,7 +305,7 @@ export default function ReportDraftPage() {
                   Add a widget to see your data. The canvas date applies to
                   every widget; accounts and categories are per-widget.
                 </p>
-                <div className="mt-4 flex items-center justify-center">
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                   <button
                     type="button"
                     onClick={() => setPickerOpen(true)}
@@ -314,6 +314,13 @@ export default function ReportDraftPage() {
                   >
                     Add widget
                   </button>
+                  <Link
+                    href="/reports"
+                    className="rounded-md border border-border px-4 py-2 text-sm text-text-primary hover:bg-surface-raised"
+                    data-testid="report-draft-empty-templates"
+                  >
+                    Start from a template
+                  </Link>
                 </div>
               </div>
             ) : (
