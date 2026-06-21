@@ -1,6 +1,5 @@
-import Link from "next/link";
-import { signupHref } from "@/lib/links";
 import { btnPrimary } from "@/lib/styles";
+import SignupLink from "./SignupLink";
 
 // Spec §3.4 — centered block, single primary CTA. The heading is the
 // one-liner above the button per the spec; the subline is voice-grade
@@ -15,12 +14,12 @@ export default function SecondCta() {
         No spreadsheets, no shame. Sign up free and start turning opacity
         into calm.
       </p>
-      <Link
-        href={signupHref()}
+      <SignupLink
+        location="second_cta"
         className={`${btnPrimary} mt-8 inline-block px-6 py-3 text-base`}
       >
         Get started free
-      </Link>
+      </SignupLink>
     </section>
   );
 }
