@@ -14,3 +14,19 @@ export const GA_GATEWAY_PATH =
   process.env.NEXT_PUBLIC_GA_GATEWAY_PATH || "/vd9r/";
 
 export const isApexBuild = process.env.NEXT_PUBLIC_BUILD_TARGET === "apex";
+
+export type SignupCtaLocation = "hero" | "topnav" | "second_cta" | "vs_page";
+
+type GtagFn = (command: string, ...args: unknown[]) => void;
+
+// Fire a GA4 event when a visitor clicks a signup CTA. The operator imports
+// this event into Google Ads as the "register_click" conversion. GA4's
+// sendBeacon transport lets the event survive the cross-domain navigation to
+// the app host, so we never delay navigation. Consent Mode (bootstrapped in
+// GoogleAnalytics.tsx) handles redaction — do not gate on consent here.
+export function trackRegisterClick(location: SignupCtaLocation): void {
+  if (!isApexBuild || typeof window === "undefined") return;
+  const gtag = (window as unknown as { gtag?: GtagFn }).gtag;
+  if (typeof gtag !== "function") return;
+  gtag("event", "register_click", { cta_location: location });
+}
