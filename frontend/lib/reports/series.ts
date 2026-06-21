@@ -15,11 +15,14 @@ import type {
   SeriesConfig,
 } from "./types";
 
+// Matches AGG_OPTIONS labels in controlConstants so the editor picker and the
+// rendered series/tooltip/CSV labels agree (distinct was "Distinct count" in
+// the picker but "Distinct" here).
 const HUMAN_AGG: Record<Measure["agg"], string> = {
   sum: "Sum",
   count: "Count",
   avg: "Average",
-  distinct: "Distinct",
+  distinct: "Distinct count",
 };
 
 /**
@@ -32,7 +35,7 @@ export const DIMENSION_HEADERS: Record<Dimension, string> = {
   category_master: "Master category",
   account: "Account",
   tag: "Tag",
-  txn_type: "Type",
+  txn_type: "Transaction type",
   status: "Status",
   month: "Month",
   week: "Week",
