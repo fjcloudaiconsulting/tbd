@@ -11,7 +11,7 @@ import MarketingShell from "./MarketingShell";
 import ChevronGlyph from "./ChevronGlyph";
 import { type Competitor, competitorMeta } from "@/lib/comparison";
 import { btnPrimary } from "@/lib/styles";
-import { signupHref } from "@/lib/links";
+import SignupLink from "./SignupLink";
 import { apexCanonical, apexUrl, siteName } from "@/lib/site";
 
 const orgId = `${apexUrl}/#organization`;
@@ -132,9 +132,9 @@ export default function VsPageLayout({
         <p className="text-base text-text-secondary">
           See your money clearly and plan what is coming. Free while in beta.
         </p>
-        <Link href={signupHref()} className={`${btnPrimary} mt-4 inline-flex items-center`}>
+        <SignupLink location="vs_page" className={`${btnPrimary} mt-4 inline-flex items-center`}>
           Get started
-        </Link>
+        </SignupLink>
         <p className="mt-6 text-sm text-text-muted">
           <Link href="/compare" className="underline hover:text-text-primary">
             Compare all options
