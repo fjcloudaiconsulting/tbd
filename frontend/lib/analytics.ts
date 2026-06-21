@@ -14,3 +14,26 @@ export const GA_GATEWAY_PATH =
   process.env.NEXT_PUBLIC_GA_GATEWAY_PATH || "/vd9r/";
 
 export const isApexBuild = process.env.NEXT_PUBLIC_BUILD_TARGET === "apex";
+
+export type SignupCtaLocation = "hero" | "topnav" | "second_cta" | "vs_page";
+
+type GtagFn = (command: string, ...args: unknown[]) => void;
+
+// Fire a GA4 event when a visitor clicks a signup CTA. The operator imports
+// this event into Google Ads as the "register_click" conversion. The CTA
+// immediately navigates cross-domain to the app host, so we force
+// `transport_type: "beacon"` — navigator.sendBeacon is designed to survive
+// page unload, whereas gtag's default transport for a small event can be a
+// fetch/image GET that the browser cancels on navigation (silently dropping
+// the conversion). We therefore never need to delay navigation. Consent Mode
+// (bootstrapped in GoogleAnalytics.tsx) handles redaction — do not gate on
+// consent here.
+export function trackRegisterClick(location: SignupCtaLocation): void {
+  if (!isApexBuild || typeof window === "undefined") return;
+  const gtag = (window as unknown as { gtag?: GtagFn }).gtag;
+  if (typeof gtag !== "function") return;
+  gtag("event", "register_click", {
+    cta_location: location,
+    transport_type: "beacon",
+  });
+}

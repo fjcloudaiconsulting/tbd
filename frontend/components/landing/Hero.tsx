@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { BRAND_NAME } from "@/lib/brand";
-import { signinHref, signupHref } from "@/lib/links";
+import { signinHref } from "@/lib/links";
 import { btnPrimary, btnSecondary } from "@/lib/styles";
 import HeroDashboard from "./HeroDashboard";
+import SignupLink from "./SignupLink";
 
 // Hero — spec §3.2 split layout. Left column carries the locked tagline
 // (BRAND.md §Tagline), right column carries a stylized dashboard built
@@ -27,12 +28,12 @@ export default function Hero() {
             EU-hosted, for normal people.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
-            <Link
-              href={signupHref()}
+            <SignupLink
+              location="hero"
               className={`${btnPrimary} px-6 py-3 text-base`}
             >
               Get started free
-            </Link>
+            </SignupLink>
             <Link
               href={signinHref()}
               className={`${btnSecondary} px-6 py-3 text-base`}
