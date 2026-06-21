@@ -20,6 +20,7 @@ describe("trackRegisterClick", () => {
     trackRegisterClick("hero");
     expect(gtag).toHaveBeenCalledWith("event", "register_click", {
       cta_location: "hero",
+      transport_type: "beacon",
     });
   });
 
