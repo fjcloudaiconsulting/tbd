@@ -79,6 +79,7 @@ async def get_current_user(
 async def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_optional),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> User | None:
     """Like ``get_current_user`` but returns ``None`` instead of raising on any
     auth failure (missing token, invalid/expired token, inactive user, invalidated
@@ -106,6 +107,11 @@ async def get_current_user_optional(
             token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
             if token_issued_at < token_cutoff(user):
                 return None
+
+        # Founding-members activity stamp on the optional-auth path too, so
+        # an authenticated user hitting an anonymous-friendly endpoint still
+        # counts as active. Throttled + independent session + swallows errors.
+        await maybe_stamp_last_active(session_factory, user.id, user.last_active_at)
 
         return user
     except Exception:

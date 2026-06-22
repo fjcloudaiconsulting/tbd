@@ -63,6 +63,7 @@ def _user_response(user: User) -> UserResponse:
         billing_cycle_day=user.organization.billing_cycle_day,
         is_superadmin=user.is_superadmin,
         is_active=user.is_active,
+        is_founder=user.is_founder,
         mfa_enabled=user.mfa_enabled,
         password_set=user.password_set,
         onboarded_at=user.onboarded_at.isoformat() if user.onboarded_at else None,
