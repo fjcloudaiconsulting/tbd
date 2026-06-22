@@ -155,7 +155,7 @@ export const comparisonMatrix: Record<Dimension, Record<Competitor, Cell>> = {
     monarch: { supported: "partial", value: "Built-in assistant, no bring-your-own or local" },
   },
   price: {
-    tbd: { supported: "yes", value: "Free while in beta" },
+    tbd: { supported: "yes", value: "Free while we grow" },
     spreadsheets: { supported: "yes", value: "Free" },
     ynab: { supported: "no", value: "Paid subscription" },
     pocketsmith: { supported: "partial", value: "Free tier plus paid plans" },

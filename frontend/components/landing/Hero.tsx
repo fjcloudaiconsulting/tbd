@@ -2,6 +2,7 @@ import Link from "next/link";
 import { BRAND_NAME } from "@/lib/brand";
 import { signinHref } from "@/lib/links";
 import { btnPrimary, btnSecondary } from "@/lib/styles";
+import FounderCount from "./FounderCount";
 import HeroDashboard from "./HeroDashboard";
 import SignupLink from "./SignupLink";
 
@@ -41,11 +42,13 @@ export default function Hero() {
               Sign in
             </Link>
           </div>
-          {/* Spec called for "Free while in beta. No credit card required." but
-              the trust line below already says "No card required" — trimmed
-              here to avoid the duplication. */}
+          {/* Founding-members offer (2026-06-22). The counter is a client
+              island that fetches the public count-only endpoint and renders
+              "· N founding members so far" once a real number arrives.
+              Regular hyphen (not an em-dash) per the customer-copy policy. */}
           <p className="mt-3 text-sm text-text-muted">
-            Free while in beta.
+            Join as a founding member - free for life.
+            <FounderCount />
           </p>
           {/* Trust line under the CTAs. Three honest, verifiable claims;
               the dot separators match the footer convention. No fake

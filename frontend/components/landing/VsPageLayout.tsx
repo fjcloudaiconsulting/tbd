@@ -130,7 +130,7 @@ export default function VsPageLayout({
 
       <section className="mt-12 text-center">
         <p className="text-base text-text-secondary">
-          See your money clearly and plan what is coming. Free while in beta.
+          See your money clearly and plan what is coming. Free while we grow.
         </p>
         <SignupLink location="vs_page" className={`${btnPrimary} mt-4 inline-flex items-center`}>
           Get started
