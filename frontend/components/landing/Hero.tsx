@@ -2,7 +2,6 @@ import Link from "next/link";
 import { BRAND_NAME } from "@/lib/brand";
 import { signinHref } from "@/lib/links";
 import { btnPrimary, btnSecondary } from "@/lib/styles";
-import FounderCount from "./FounderCount";
 import HeroDashboard from "./HeroDashboard";
 import SignupLink from "./SignupLink";
 
@@ -42,13 +41,14 @@ export default function Hero() {
               Sign in
             </Link>
           </div>
-          {/* Founding-members offer (2026-06-22). The counter is a client
-              island that fetches the public count-only endpoint and renders
-              "· N founding members so far" once a real number arrives.
+          {/* Founding-members offer (2026-06-22). Copy only — a LIVE counter
+              here can't ship to the apex static site (the apex bundle is
+              forbidden from referencing the backend API; see
+              frontend/scripts/build-apex.sh). The public count endpoint
+              exists server-side for a future build-time or in-app counter.
               Regular hyphen (not an em-dash) per the customer-copy policy. */}
           <p className="mt-3 text-sm text-text-muted">
             Join as a founding member - free for life.
-            <FounderCount />
           </p>
           {/* Trust line under the CTAs. Three honest, verifiable claims;
               the dot separators match the footer convention. No fake
