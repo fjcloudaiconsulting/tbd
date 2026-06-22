@@ -1,11 +1,58 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  asTxnTypeArray,
   isFieldOverridden,
   pickDateRange,
   resolveFilters,
 } from "@/lib/reports/resolve";
 import type { CanvasFilters, WidgetFilters } from "@/lib/reports/types";
+
+describe("asTxnTypeArray", () => {
+  it("coerces a legacy string value to a one-element array", () => {
+    expect(asTxnTypeArray("income")).toEqual(["income"]);
+  });
+  it("passes a valid array through", () => {
+    expect(asTxnTypeArray(["income", "expense"])).toEqual(["income", "expense"]);
+  });
+  it("drops unknown members and returns undefined when empty", () => {
+    expect(asTxnTypeArray(["bogus"])).toBeUndefined();
+    expect(asTxnTypeArray([])).toBeUndefined();
+    expect(asTxnTypeArray(undefined)).toBeUndefined();
+    expect(asTxnTypeArray(null)).toBeUndefined();
+  });
+});
+
+describe("resolveFilters txn_type", () => {
+  it("emits op:in for a multi-select array", () => {
+    const out = resolveFilters(undefined, {
+      txn_type: ["income", "expense"],
+    } as WidgetFilters);
+    expect(out).toContainEqual({
+      field: "txn_type",
+      op: "in",
+      value: ["income", "expense"],
+    });
+  });
+  it("emits nothing for an empty or undefined selection", () => {
+    expect(
+      resolveFilters(undefined, { txn_type: [] } as unknown as WidgetFilters),
+    ).not.toContainEqual(expect.objectContaining({ field: "txn_type" }));
+    expect(resolveFilters(undefined, {})).not.toContainEqual(
+      expect.objectContaining({ field: "txn_type" }),
+    );
+  });
+  it("coerces a legacy string txn_type to op:in", () => {
+    const out = resolveFilters(undefined, {
+      txn_type: "expense",
+    } as unknown as WidgetFilters);
+    expect(out).toContainEqual({
+      field: "txn_type",
+      op: "in",
+      value: ["expense"],
+    });
+  });
+});
 
 /**
  * Phase 4b model: ``date_range`` is the ONLY canvas-shared field, so

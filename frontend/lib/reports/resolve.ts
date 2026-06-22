@@ -18,8 +18,25 @@ import type {
   Dataset,
   Filter,
   SourceCatalogEntry,
+  TxnType,
   WidgetFilters,
 } from "./types";
+
+/**
+ * Coerce a persisted ``txn_type`` into a clean array. Old saved reports
+ * stored it as a single string; new reports store an array. Filters out
+ * unknown members and returns ``undefined`` when nothing valid remains,
+ * so callers treat "no valid types" the same as "no filter".
+ */
+export function asTxnTypeArray(v: unknown): TxnType[] | undefined {
+  if (v == null) return undefined;
+  const arr = Array.isArray(v) ? v : [v];
+  const out = arr.filter(
+    (x): x is TxnType =>
+      x === "income" || x === "expense" || x === "transfer",
+  );
+  return out.length > 0 ? out : undefined;
+}
 
 /**
  * Returns true when a widget-level field overrides the canvas-level
@@ -152,8 +169,9 @@ export function resolveFilters(
     out.push({ field: "category_id", op: "in", value: categoryIds });
   }
 
-  if (widget?.txn_type) {
-    out.push({ field: "txn_type", op: "eq", value: widget.txn_type });
+  const txnTypes = asTxnTypeArray(widget?.txn_type);
+  if (txnTypes) {
+    out.push({ field: "txn_type", op: "in", value: txnTypes });
   }
 
   if (widget?.amount_range) {
