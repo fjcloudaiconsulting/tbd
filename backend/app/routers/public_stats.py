@@ -53,7 +53,13 @@ async def founder_count(
     excluded = settings.founder_count_exclude_list
     if excluded:
         stmt = stmt.where(User.username.notin_(excluded))
-    count = int(await db.scalar(stmt) or 0)
+    try:
+        count = int(await db.scalar(stmt) or 0)
+    except Exception:  # noqa: BLE001 — a public counter must never 500
+        # A DB hiccup on a cold cache must not surface a 500 to anonymous
+        # callers. Degrade to 0 (the page hides the counter when count<=0).
+        logger.warning("public.founder_count.db_failed")
+        return {"count": 0}
 
     try:
         await redis_client.founder_count_cache_set(count)

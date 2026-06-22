@@ -61,7 +61,7 @@ export default function VsPageLayout({
     url: apexCanonical(`/vs/${slug}`),
     author: { "@id": orgId },
     publisher: { "@id": orgId },
-    offers: { "@type": "Offer", price: "0", priceCurrency: "EUR", description: "Free during beta" },
+    offers: { "@type": "Offer", price: "0", priceCurrency: "EUR", description: "Free while we grow" },
   };
   const structuredData = [faqLd, breadcrumbLd, softwareLd];
 

@@ -104,6 +104,13 @@ services:
         # apex origins added 2026-06-22 so the static landing page can fetch
         # the public founder-count endpoint cross-origin (W1b).
         value: "https://app.thebetterdecision.com,https://thebetterdecision.com,https://www.thebetterdecision.com"
+      # Usernames excluded from the public founder count. MUST match the
+      # production smoke account (CI secret SMOKE_USERNAME) + any seed
+      # accounts, or the advertised count is inflated. Operator: confirm
+      # this equals secrets.SMOKE_USERNAME.
+      - key: FOUNDER_COUNT_EXCLUDE_USERNAMES
+        scope: RUN_AND_BUILD_TIME
+        value: "pfv_smoke_l05"
       - key: COOKIE_SECURE
         scope: RUN_AND_BUILD_TIME
         value: "true"

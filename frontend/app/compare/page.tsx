@@ -67,7 +67,7 @@ const softwareLd = {
   url: apexCanonical("/compare"),
   author: { "@id": orgId },
   publisher: { "@id": orgId },
-  offers: { "@type": "Offer", price: "0", priceCurrency: "EUR", description: "Free during beta" },
+  offers: { "@type": "Offer", price: "0", priceCurrency: "EUR", description: "Free while we grow" },
 };
 const structuredData = [breadcrumbLd, faqLd, softwareLd];
 

@@ -16,6 +16,8 @@ Three concerns under test:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -287,7 +289,11 @@ def _make_user(**overrides) -> User:
 @pytest.mark.asyncio
 async def test_get_current_user_binds_authenticated_context(monkeypatch) -> None:
     structlog.contextvars.clear_contextvars()
-    user = _make_user(id=7, org_id=42, role=Role.OWNER)
+    # Fresh last_active_at so the founding-members stamp short-circuits
+    # (this test asserts context binding, not the stamp).
+    user = _make_user(
+        id=7, org_id=42, role=Role.OWNER, last_active_at=datetime.now(timezone.utc)
+    )
     monkeypatch.setattr(
         deps_module, "decode_token",
         lambda _t: {"sub": "7", "type": "access"},
