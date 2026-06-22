@@ -201,6 +201,22 @@ describe("FilterEditor", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("self-heals by stripping only transfer and KEEPING the rest on a recurring widget", async () => {
+    const calls: WidgetFilters[] = [];
+    // A widget persisted on transactions with [expense, transfer], switched
+    // to recurring (transfer hidden). The strip must drop ONLY transfer and
+    // keep expense — NOT clear the whole filter to undefined.
+    render(
+      { txn_type: ["expense", "transfer"] },
+      {},
+      (next) => calls.push(next),
+      "recurring",
+    );
+    await screen.findByTestId("category-picker");
+    expect(calls).toHaveLength(1);
+    expect(calls.at(-1)?.txn_type).toEqual(["expense"]);
+  });
+
   it("reports tag_names + tag_match when a tag chip is selected", async () => {
     const calls: WidgetFilters[] = [];
     render({}, {}, (next) => calls.push(next));
