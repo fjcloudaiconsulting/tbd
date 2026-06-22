@@ -41,11 +41,14 @@ export default function Hero() {
               Sign in
             </Link>
           </div>
-          {/* Spec called for "Free while in beta. No credit card required." but
-              the trust line below already says "No card required" — trimmed
-              here to avoid the duplication. */}
+          {/* Founding-members offer (2026-06-22). Copy only — a LIVE counter
+              here can't ship to the apex static site (the apex bundle is
+              forbidden from referencing the backend API; see
+              frontend/scripts/build-apex.sh). The public count endpoint
+              exists server-side for a future build-time or in-app counter.
+              Regular hyphen (not an em-dash) per the customer-copy policy. */}
           <p className="mt-3 text-sm text-text-muted">
-            Free while in beta.
+            Join as a founding member - free for life.
           </p>
           {/* Trust line under the CTAs. Three honest, verifiable claims;
               the dot separators match the footer convention. No fake

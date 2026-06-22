@@ -204,6 +204,8 @@ async def test_register_succeeds_when_verify_ok(
 
     assert res.status_code == 201, res.text
     assert await _count_users(session_factory) == 2
+    # Founding-members program: every registration is flagged a founder.
+    assert res.json()["is_founder"] is True
 
 
 @pytest.mark.asyncio

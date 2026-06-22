@@ -84,7 +84,11 @@ def make_credentials() -> HTTPAuthorizationCredentials:
 async def test_get_current_user_returns_user_for_valid_access_token_without_iat(
     monkeypatch,
 ) -> None:
-    user = make_user()
+    # last_active_at fresh so the founding-members stamp short-circuits
+    # (no independent-session open → no spurious stamp_failed warning in
+    # this token-focused unit test). The stamp wiring is covered by the
+    # dedicated integration tests at the bottom of this file.
+    user = make_user(last_active_at=datetime.now(timezone.utc))
     db = FakeAsyncSession(user)
 
     monkeypatch.setattr(
@@ -144,3 +148,74 @@ async def test_get_current_user_rejects_tokens_issued_before_cutoff(monkeypatch)
         await get_current_user(make_credentials(), FakeAsyncSession(make_user()))
 
     assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_stamps_last_active_via_independent_factory(
+    monkeypatch,
+) -> None:
+    """The founding-members activity stamp lands via the injected
+    ``session_factory`` (the independent-session design invariant), not the
+    request ``db``."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+    from sqlalchemy.pool import StaticPool
+
+    from app.models import Base
+    from app.models.user import Organization
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as s:
+        org = Organization(name="Acme", billing_cycle_day=1)
+        s.add(org)
+        await s.commit()
+        u = make_user(org_id=org.id, last_active_at=None)
+        s.add(u)
+        await s.commit()
+        uid = u.id
+
+    monkeypatch.setattr(
+        deps_module, "decode_token", lambda _t: {"sub": str(uid), "type": "access"}
+    )
+
+    async with factory() as db:
+        resolved = await get_current_user(
+            make_credentials(), db, session_factory=factory
+        )
+        assert resolved.id == uid
+
+    async with factory() as s:
+        stamped = await s.scalar(select(User.last_active_at).where(User.id == uid))
+    assert stamped is not None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_swallows_stamp_failure(monkeypatch) -> None:
+    """A failing stamp session must NEVER break the authenticated request."""
+    user = make_user(last_active_at=None)
+    db = FakeAsyncSession(user)
+    monkeypatch.setattr(
+        deps_module, "decode_token", lambda _t: {"sub": "1", "type": "access"}
+    )
+
+    class _BoomFactory:
+        def __call__(self):
+            raise RuntimeError("db down")
+
+    # Stamp blows up internally but is swallowed → auth still succeeds.
+    resolved = await get_current_user(
+        make_credentials(), db, session_factory=_BoomFactory()
+    )
+    assert resolved is user

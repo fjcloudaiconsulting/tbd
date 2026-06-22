@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import async_session, get_db
 from app.models.user import User
 from app.security import decode_token, token_cutoff
+from app.services.user_activity_service import maybe_stamp_last_active
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -27,6 +28,7 @@ bearer_optional = HTTPBearer(auto_error=False)
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> User:
     payload = decode_token(credentials.credentials)
     if payload is None or payload.get("type") != "access":
@@ -66,12 +68,18 @@ async def get_current_user(
         role=user.role.value if hasattr(user.role, "value") else str(user.role),
     )
 
+    # Founding-members program: stamp activity (throttled, on an independent
+    # session so the request transaction is untouched and a stamp failure
+    # can never break auth). No-op when last_active_at is still fresh.
+    await maybe_stamp_last_active(session_factory, user.id, user.last_active_at)
+
     return user
 
 
 async def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_optional),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> User | None:
     """Like ``get_current_user`` but returns ``None`` instead of raising on any
     auth failure (missing token, invalid/expired token, inactive user, invalidated
@@ -99,6 +107,11 @@ async def get_current_user_optional(
             token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
             if token_issued_at < token_cutoff(user):
                 return None
+
+        # Founding-members activity stamp on the optional-auth path too, so
+        # an authenticated user hitting an anonymous-friendly endpoint still
+        # counts as active. Throttled + independent session + swallows errors.
+        await maybe_stamp_last_active(session_factory, user.id, user.last_active_at)
 
         return user
     except Exception:
