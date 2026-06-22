@@ -15,7 +15,7 @@ import {
   isMultiSeries,
   isSingleAggLocked,
 } from "@/components/reports/config/controlConstants";
-import { pruneFiltersToSource } from "@/lib/reports/resolve";
+import { asTxnTypeArray, pruneFiltersToSource } from "@/lib/reports/resolve";
 import type {
   AreaConfig,
   BarConfig,
@@ -155,9 +155,20 @@ export function buildWidgetMutations(
     ): WidgetFilters | undefined => {
       const pruned = pruneFiltersToSource(filters, publishedFilterFields);
       if (!pruned) return undefined;
-      if (dataset !== "transactions" && pruned.txn_type === "transfer") {
-        const { txn_type: _drop, ...rest } = pruned;
-        return Object.keys(rest).length > 0 ? rest : undefined;
+      if (dataset !== "transactions") {
+        // ``transfer`` is transactions-only; drop just that member from
+        // the multi-select array (keep any income/expense), and drop the
+        // whole key only when nothing valid remains.
+        const kept = asTxnTypeArray(pruned.txn_type)?.filter(
+          (t) => t !== "transfer",
+        );
+        if (kept && kept.length > 0) {
+          return { ...pruned, txn_type: kept };
+        }
+        if (pruned.txn_type !== undefined) {
+          const { txn_type: _drop, ...rest } = pruned;
+          return Object.keys(rest).length > 0 ? rest : undefined;
+        }
       }
       return pruned;
     };

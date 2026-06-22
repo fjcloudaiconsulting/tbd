@@ -1083,6 +1083,9 @@ describe("ReportEditorPage", () => {
               dataset: "transactions" as const,
               measure: { agg: "sum" as const, field: "amount" as const },
               format: "currency" as const,
+              // Legacy persisted shape: txn_type as a single string (pre
+              // multi-select). asTxnTypeArray coerces it on read, so old
+              // reports still render — this fixture pins that back-compat.
               filters: { txn_type: "expense" as const },
             },
           },
@@ -1128,6 +1131,9 @@ describe("ReportEditorPage", () => {
               dataset: "transactions" as const,
               measure: { agg: "sum" as const, field: "amount" as const },
               format: "currency" as const,
+              // Legacy persisted shape: txn_type as a single string (pre
+              // multi-select). asTxnTypeArray coerces it on read, so old
+              // reports still render — this fixture pins that back-compat.
               filters: { txn_type: "expense" as const },
             },
           },

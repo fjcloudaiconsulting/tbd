@@ -32,7 +32,7 @@ export function blankDraftSeed(now: Date = new Date()): DraftSeed {
             dataset: "transactions",
             measure: { agg: "sum", field: "amount" },
             dimensions: ["category"],
-            filters: { txn_type: "expense" },
+            filters: { txn_type: ["expense"] },
             sort: { by: "value", dir: "desc" },
             limit: 10,
             format: "currency",

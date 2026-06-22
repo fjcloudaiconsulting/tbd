@@ -298,7 +298,7 @@ it("prunes stale per-widget filters the new source doesn't publish on switch", (
         account_ids: [1, 2],
         // All pruned: accounts publishes none of these fields.
         category_ids: [9],
-        txn_type: "expense",
+        txn_type: ["expense"],
         amount_range: { min: 10 },
         tag_names: ["foo"],
         tag_match: "any",
@@ -324,7 +324,7 @@ it("drops the whole filters blob when no widget filter survives the switch", () 
     ...makeBar(),
     config: {
       ...makeBar().config,
-      filters: { category_ids: [9], txn_type: "expense" },
+      filters: { category_ids: [9], txn_type: ["expense"] },
     },
   };
   renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
@@ -424,7 +424,7 @@ it("clears a stale txn_type=transfer on switch to recurring (transfer invalid th
         // recurring publishes ``txn_type`` so the FIELD survives the prune,
         // but ``transfer`` is invalid for recurring (income/expense only) —
         // the stale VALUE must be stripped or the backend validate() 422s.
-        txn_type: "transfer",
+        txn_type: ["transfer"],
       },
     },
   };
@@ -448,7 +448,7 @@ it("keeps a valid txn_type but clears transfer on switch to recurring", () => {
     config: {
       ...makeBar().config,
       filters: {
-        txn_type: "transfer",
+        txn_type: ["transfer"],
         // survives: recurring publishes ``category_id``.
         category_ids: [9],
       },
@@ -471,7 +471,7 @@ it("keeps a valid txn_type=expense on switch to recurring", () => {
     ...makeBar(),
     config: {
       ...makeBar().config,
-      filters: { txn_type: "expense" },
+      filters: { txn_type: ["expense"] },
     },
   };
   renderWithSWR(<DataTab widget={widget} onUpdate={onUpdate} />);
@@ -482,7 +482,7 @@ it("keeps a valid txn_type=expense on switch to recurring", () => {
 
   const next = onUpdate.mock.calls[0][0] as BarWidget;
   // ``expense`` is valid for recurring → preserved unchanged.
-  expect(next.config.filters).toEqual({ txn_type: "expense" });
+  expect(next.config.filters).toEqual({ txn_type: ["expense"] });
 });
 
 it("persisted accounts widget rendered before /sources resolves has no value/options mismatch", () => {

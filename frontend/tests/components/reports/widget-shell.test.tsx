@@ -35,7 +35,7 @@ function renderShell(editMode: boolean, onSelectFilters = () => {}) {
       editMode={editMode}
       onSelect={() => {}}
       onSelectFilters={onSelectFilters}
-      widget={barWith({ txn_type: "expense" })}
+      widget={barWith({ txn_type: ["expense"] })}
       canvasFilters={{}}
       accounts={[]}
       categories={[]}
@@ -75,7 +75,7 @@ describe("WidgetShell filter chips", () => {
         editMode
         onSelect={onSelect}
         onSelectFilters={() => {}}
-        widget={barWith({ txn_type: "expense" })}
+        widget={barWith({ txn_type: ["expense"] })}
         canvasFilters={{}}
         accounts={[]}
         categories={[]}

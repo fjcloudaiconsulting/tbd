@@ -64,6 +64,8 @@ export type FilterOp = "eq" | "in" | "between" | "gte" | "lte";
 
 export type TagMatch = "all" | "any";
 
+export type TxnType = "income" | "expense" | "transfer";
+
 export type FilterValue =
   | string
   | number
@@ -145,7 +147,7 @@ export interface WidgetFilters {
   date_range?: CanvasDateRange;
   account_ids?: number[];
   category_ids?: number[];
-  txn_type?: "income" | "expense" | "transfer";
+  txn_type?: TxnType[];
   amount_range?: { min?: number; max?: number };
   tag_names?: string[];
   tag_match?: TagMatch;

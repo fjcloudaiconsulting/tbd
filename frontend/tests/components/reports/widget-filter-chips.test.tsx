@@ -75,7 +75,7 @@ describe("WidgetFilterChips (interactive / edit mode)", () => {
     const onSelectFilters = vi.fn();
     render(
       <WidgetFilterChips
-        widget={barWith({ txn_type: "expense" })}
+        widget={barWith({ txn_type: ["expense"] })}
         canvasFilters={{}}
         accounts={[]}
         categories={[]}
@@ -92,7 +92,7 @@ describe("WidgetFilterChips (interactive / edit mode)", () => {
   it("uses the HUMAN display label in the aria-label, not the raw key", () => {
     render(
       <WidgetFilterChips
-        widget={barWith({ txn_type: "expense" })}
+        widget={barWith({ txn_type: ["expense"] })}
         canvasFilters={{}}
         accounts={[]}
         categories={[]}
@@ -211,7 +211,7 @@ describe("WidgetFilterChips (non-interactive / view mode)", () => {
     const onSelectFilters = vi.fn();
     render(
       <WidgetFilterChips
-        widget={barWith({ txn_type: "expense" })}
+        widget={barWith({ txn_type: ["expense"] })}
         canvasFilters={{}}
         accounts={[]}
         categories={[]}

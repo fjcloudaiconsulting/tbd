@@ -142,7 +142,7 @@ describe("describeWidgetFilters", () => {
     // A date-less source still surfaces account/category/txn_type chips —
     // only the date chip is suppressed.
     const chips = describeWidgetFilters(
-      bar({ txn_type: "expense" }),
+      bar({ txn_type: ["expense"] }),
       { date_range: buildPresetRanges(NOW).this_month },
       NO_LOOKUPS,
       NOW,
@@ -229,11 +229,28 @@ describe("describeWidgetFilters", () => {
     expect(chips.find((c) => c.key === "categories")?.label).toBe("Groceries +1");
   });
 
-  it("emits a txn_type chip capitalized only when set", () => {
+  it("emits a txn_type chip joining the selected types, only when set", () => {
     expect(
-      describeWidgetFilters(bar({ txn_type: "expense" }), {}, NO_LOOKUPS, NOW)
+      describeWidgetFilters(bar({ txn_type: ["expense"] }), {}, NO_LOOKUPS, NOW)
         .find((c) => c.key === "txn_type")?.label,
     ).toBe("Expense");
+    expect(
+      describeWidgetFilters(
+        bar({ txn_type: ["income", "expense"] }),
+        {},
+        NO_LOOKUPS,
+        NOW,
+      ).find((c) => c.key === "txn_type")?.label,
+    ).toBe("Income, Expense");
+    // Legacy reports persisted a single string — coerced + still rendered.
+    expect(
+      describeWidgetFilters(
+        bar({ txn_type: "income" } as unknown as WidgetFilters),
+        {},
+        NO_LOOKUPS,
+        NOW,
+      ).find((c) => c.key === "txn_type")?.label,
+    ).toBe("Income");
     expect(
       describeWidgetFilters(bar({}), {}, NO_LOOKUPS, NOW).find(
         (c) => c.key === "txn_type",
@@ -291,7 +308,7 @@ describe("describeWidgetFilters", () => {
     const chips = describeWidgetFilters(
       bar({
         date_range: presets.this_month,
-        txn_type: "income",
+        txn_type: ["income"],
         amount_range: { min: 10 },
         tag_names: ["x"],
         account_ids: [1],
