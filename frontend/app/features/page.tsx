@@ -75,7 +75,7 @@ const featuresFaq: ReadonlyArray<{ readonly q: string; readonly a: string }> = [
   },
   {
     q: "Is The Better Decision free?",
-    a: "Yes, it is free during the beta.",
+    a: "Yes. It is free while we grow, and founding members keep full access free for life.",
   },
   {
     q: "Can my partner or household use it together?",

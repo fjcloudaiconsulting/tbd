@@ -63,6 +63,9 @@ class UserResponse(BaseModel):
     billing_cycle_day: int = 1
     is_superadmin: bool
     is_active: bool
+    # Founding-members program. True for users in the founder window
+    # (default True so existing tokens/responses stay valid).
+    is_founder: bool = True
     mfa_enabled: bool = False
     # Track E: org-level toggle for the "set balance directly" admin escape
     # hatch. Off by default; mirrors `billing_cycle_day` storage pattern

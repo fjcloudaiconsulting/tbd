@@ -147,6 +147,14 @@ class Settings(BaseSettings):
     # CORS
     backend_cors_origins: str = "http://localhost:3000"
 
+    # Founding-members program (2026-06-22).
+    # Throttle for the per-user last_active_at stamp: only re-stamp when the
+    # stored value is older than this many seconds (≤1 write/user/window).
+    last_active_stamp_throttle_seconds: int = 3600
+    # Usernames excluded from the public founder count (smoke/seed accounts).
+    # CSV, mirrors the cors-origins parsing pattern.
+    founder_count_exclude_usernames: str = "pfv_smoke_l05"
+
     # Billing
     default_plan_slug: str = "pro"  # "pro" during beta, "free" when billing goes live
     trial_duration_days: int = 14
@@ -237,6 +245,14 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.backend_cors_origins.split(",")]
+
+    @property
+    def founder_count_exclude_list(self) -> list[str]:
+        return [
+            u.strip()
+            for u in self.founder_count_exclude_usernames.split(",")
+            if u.strip()
+        ]
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

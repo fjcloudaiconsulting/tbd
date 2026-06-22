@@ -20,8 +20,8 @@ describe("comparison data", () => {
     }
   });
 
-  it("tbd price is the beta string, never a hard price or 'Free'", () => {
-    expect(comparisonMatrix.price.tbd.value).toBe("Free while in beta");
+  it("tbd price is the founders 'free while we grow' string, never a hard price", () => {
+    expect(comparisonMatrix.price.tbd.value).toBe("Free while we grow");
   });
 
   it("every competitor has a name and at least one honest 'where they win' point", () => {

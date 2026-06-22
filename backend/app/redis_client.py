@@ -863,3 +863,39 @@ async def _ai_validate_cooldown_set(client, key: str, ttl_seconds: int):
     closed-transport translation provided by the decorator.
     """
     return await client.set(key, "1", nx=True, ex=ttl_seconds)
+
+
+# ── Public founding-members counter cache ───────────────────────────
+#
+# The /api/v1/public/founder-count endpoint advertises a non-sensitive
+# integer to the marketing/apex site. The count changes slowly, so a
+# short Redis TTL absorbs the public read volume off the DB. Both helpers
+# return None / no-op when Redis isn't configured (dev) so the endpoint
+# falls back to a direct COUNT and never depends on Redis.
+
+_FOUNDER_COUNT_KEY = "public:founder_count"
+_FOUNDER_COUNT_TTL_S = 300
+
+
+@_normalize_transport_errors
+async def founder_count_cache_get() -> int | None:
+    """Return the cached founder count, or None on miss / no-Redis / bad value."""
+    client = get_client()
+    if client is None:
+        return None
+    raw = await client.get(_FOUNDER_COUNT_KEY)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+@_normalize_transport_errors
+async def founder_count_cache_set(n: int) -> None:
+    """Cache the founder count with a short TTL. No-op when Redis is absent."""
+    client = get_client()
+    if client is None:
+        return
+    await client.set(_FOUNDER_COUNT_KEY, str(n), ex=_FOUNDER_COUNT_TTL_S)

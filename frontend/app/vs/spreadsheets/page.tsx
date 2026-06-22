@@ -30,7 +30,7 @@ const faq = [
   },
   {
     q: "Is it free?",
-    a: "It is free while in beta. A spreadsheet is free forever, which the comparison says plainly.",
+    a: "It is free while we grow, and founding members keep it free for life. A spreadsheet is free forever, which the comparison says plainly.",
   },
 ];
 

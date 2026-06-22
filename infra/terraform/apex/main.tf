@@ -129,7 +129,7 @@ locals {
     "style-src-attr 'unsafe-inline'",
     "img-src 'self' data: blob: https://www.google-analytics.com https://www.googletagmanager.com",
     "font-src 'self' data: https://fonts.gstatic.com",
-    "connect-src 'self' https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com",
+    "connect-src 'self' https://app.thebetterdecision.com https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",

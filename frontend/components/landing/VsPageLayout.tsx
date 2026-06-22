@@ -61,7 +61,7 @@ export default function VsPageLayout({
     url: apexCanonical(`/vs/${slug}`),
     author: { "@id": orgId },
     publisher: { "@id": orgId },
-    offers: { "@type": "Offer", price: "0", priceCurrency: "EUR", description: "Free during beta" },
+    offers: { "@type": "Offer", price: "0", priceCurrency: "EUR", description: "Free while we grow" },
   };
   const structuredData = [faqLd, breadcrumbLd, softwareLd];
 
@@ -130,7 +130,7 @@ export default function VsPageLayout({
 
       <section className="mt-12 text-center">
         <p className="text-base text-text-secondary">
-          See your money clearly and plan what is coming. Free while in beta.
+          See your money clearly and plan what is coming. Free while we grow.
         </p>
         <SignupLink location="vs_page" className={`${btnPrimary} mt-4 inline-flex items-center`}>
           Get started

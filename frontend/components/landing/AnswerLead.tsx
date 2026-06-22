@@ -28,7 +28,7 @@ export default function AnswerLead() {
         spreadsheet fatigue.
       </p>
       <p className="mt-4 text-base leading-relaxed text-text-secondary lg:text-lg">
-        It is free while in beta, EU-hosted, and runs in any browser. You can
+        It is free while we grow, EU-hosted, and runs in any browser. You can
         import a CSV from your bank or add transactions by hand, with no bank
         connection required to get started.
       </p>
