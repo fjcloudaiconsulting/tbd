@@ -12,17 +12,18 @@
  * widget-only now (the canvas can't hold them), so they NEVER show the
  * override pill — they're plain per-widget controls.
  */
-import { useEffect, useId } from "react";
+import { useEffect } from "react";
 
 import AccountFilter from "@/components/reports/filters/AccountFilter";
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
 import DatePresetChips from "@/components/reports/filters/DatePresetChips";
 import TagFilter from "@/components/reports/filters/TagFilter";
-import { isFieldOverridden } from "@/lib/reports/resolve";
+import { asTxnTypeArray, isFieldOverridden } from "@/lib/reports/resolve";
 import type {
   CanvasFilters,
   Dataset,
   TagMatch,
+  TxnType,
   WidgetFilters,
 } from "@/lib/reports/types";
 
@@ -114,7 +115,7 @@ export default function FilterEditor({
       </div>
 
       <div className="flex flex-col gap-1">
-        <TxnTypeRadioRow
+        <TxnTypeCheckboxRow
           value={filters.txn_type}
           allowTransfer={allowTransfer}
           onChange={(txn_type) => onChange({ ...filters, txn_type })}
@@ -174,18 +175,20 @@ export default function FilterEditor({
   );
 }
 
-function TxnTypeRadioRow({
+function TxnTypeCheckboxRow({
   value,
   allowTransfer,
   onChange,
 }: {
-  value: "income" | "expense" | "transfer" | undefined;
+  value: TxnType[] | undefined;
   allowTransfer: boolean;
-  onChange: (next: "income" | "expense" | "transfer" | undefined) => void;
+  onChange: (next: TxnType[] | undefined) => void;
 }) {
-  const name = useId();
-  const choices: Array<{ value: "" | "income" | "expense" | "transfer"; label: string }> = [
-    { value: "", label: "Any" },
+  // ``asTxnTypeArray`` also coerces a legacy single-string value (old
+  // saved reports) into an array, so the control renders correctly for
+  // both shapes. No "Any" choice — zero checked boxes IS "Any".
+  const selected = asTxnTypeArray(value) ?? [];
+  const choices: Array<{ value: TxnType; label: string }> = [
     { value: "income", label: "Income" },
     { value: "expense", label: "Expense" },
     // ``transfer`` is a transactions-only concept; omit it for sources
@@ -194,18 +197,27 @@ function TxnTypeRadioRow({
       ? ([{ value: "transfer", label: "Transfer" }] as const)
       : []),
   ];
-  // Self-heal: when a persisted ``txn_type`` value isn't among the rendered
-  // choices (e.g. ``transfer`` survives in a saved config but the widget is
-  // now on a non-transactions source where Transfer is hidden), reset it to
-  // "Any" once so the control never shows a phantom no-selection-with-stale-
-  // value state. ``onChange(undefined)`` makes ``value`` undefined, which IS
-  // in-range, so the effect won't re-fire (no loop). The transactions case
-  // keeps ``transfer`` because it's a rendered choice there.
-  const valueInRange =
-    value === undefined || choices.some((c) => c.value === value);
+  // Self-heal: if a persisted ``transfer`` survives on a non-transactions
+  // source (where the Transfer box is hidden), strip it once so the widget
+  // never queries a type the source 422s. Depending on the boolean keeps
+  // the effect from re-firing after the value settles (cleaned value no
+  // longer contains ``transfer`` → condition false → no loop).
+  const hasIllegalTransfer = !allowTransfer && selected.includes("transfer");
   useEffect(() => {
-    if (!valueInRange) onChange(undefined);
-  }, [valueInRange, onChange]);
+    if (hasIllegalTransfer) {
+      const cleaned = selected.filter((t) => t !== "transfer");
+      onChange(cleaned.length > 0 ? cleaned : undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasIllegalTransfer, onChange]);
+
+  function toggle(t: TxnType) {
+    const next = selected.includes(t)
+      ? selected.filter((x) => x !== t)
+      : [...selected, t];
+    onChange(next.length > 0 ? next : undefined);
+  }
+
   return (
     <>
       <div className="text-xs text-text-secondary">Transaction type</div>
@@ -213,11 +225,10 @@ function TxnTypeRadioRow({
         {choices.map((c) => (
           <label key={c.value} className="flex items-center gap-1">
             <input
-              type="radio"
-              name={name}
+              type="checkbox"
               aria-label={`Widget transaction type ${c.label}`}
-              checked={(value ?? "") === c.value}
-              onChange={() => onChange(c.value === "" ? undefined : (c.value as "income" | "expense" | "transfer"))}
+              checked={selected.includes(c.value)}
+              onChange={() => toggle(c.value)}
             />
             <span>{c.label}</span>
           </label>

@@ -148,7 +148,7 @@ describe("isFieldOverridden", () => {
     // must never render for these fields.
     it("never reports txn_type as overriding canvas", () => {
       const canvas: CanvasFilters = {};
-      const widget: WidgetFilters = { txn_type: "expense" };
+      const widget: WidgetFilters = { txn_type: ["expense"] };
       expect(isFieldOverridden("txn_type", widget, canvas)).toBe(false);
     });
 
