@@ -133,19 +133,27 @@ describe("FilterEditor", () => {
     expect(calls.at(-1)?.amount_range).toEqual({ min: 5, max: 20 });
   });
 
-  it("reports the chosen txn_type on change", async () => {
+  it("checks a type into a single-element array", async () => {
     const calls: WidgetFilters[] = [];
     render({}, {}, (next) => calls.push(next));
     await screen.findByTestId("category-picker");
     fireEvent.click(screen.getByLabelText("Widget transaction type Expense"));
-    expect(calls.at(-1)?.txn_type).toBe("expense");
+    expect(calls.at(-1)?.txn_type).toEqual(["expense"]);
   });
 
-  it("clears txn_type back to undefined when 'Any' is chosen", async () => {
+  it("accumulates multiple checked types into the array", async () => {
     const calls: WidgetFilters[] = [];
-    render({ txn_type: "expense" }, {}, (next) => calls.push(next));
+    render({ txn_type: ["income"] }, {}, (next) => calls.push(next));
     await screen.findByTestId("category-picker");
-    fireEvent.click(screen.getByLabelText("Widget transaction type Any"));
+    fireEvent.click(screen.getByLabelText("Widget transaction type Expense"));
+    expect(calls.at(-1)?.txn_type).toEqual(["income", "expense"]);
+  });
+
+  it("clears txn_type to undefined when the last checked type is unchecked", async () => {
+    const calls: WidgetFilters[] = [];
+    render({ txn_type: ["expense"] }, {}, (next) => calls.push(next));
+    await screen.findByTestId("category-picker");
+    fireEvent.click(screen.getByLabelText("Widget transaction type Expense"));
     expect(calls.at(-1)?.txn_type).toBeUndefined();
   });
 
@@ -177,7 +185,7 @@ describe("FilterEditor", () => {
     // switched to recurring (where transfer is hidden). The orphan value
     // must self-correct on mount so the control never shows a phantom
     // no-selection-with-stale-value state.
-    render({ txn_type: "transfer" }, {}, (next) => calls.push(next), "recurring");
+    render({ txn_type: ["transfer"] }, {}, (next) => calls.push(next), "recurring");
     await screen.findByTestId("category-picker");
     // The self-heal effect MUST have fired (not vacuously empty) and cleared
     // the orphan value.
@@ -187,10 +195,26 @@ describe("FilterEditor", () => {
 
   it("does NOT self-heal a valid txn_type=transfer on a transactions widget", async () => {
     const calls: WidgetFilters[] = [];
-    render({ txn_type: "transfer" }, {}, (next) => calls.push(next), "transactions");
+    render({ txn_type: ["transfer"] }, {}, (next) => calls.push(next), "transactions");
     await screen.findByTestId("category-picker");
     // transfer is a valid choice for transactions → no auto-clear fires.
     expect(calls).toHaveLength(0);
+  });
+
+  it("self-heals by stripping only transfer and KEEPING the rest on a recurring widget", async () => {
+    const calls: WidgetFilters[] = [];
+    // A widget persisted on transactions with [expense, transfer], switched
+    // to recurring (transfer hidden). The strip must drop ONLY transfer and
+    // keep expense — NOT clear the whole filter to undefined.
+    render(
+      { txn_type: ["expense", "transfer"] },
+      {},
+      (next) => calls.push(next),
+      "recurring",
+    );
+    await screen.findByTestId("category-picker");
+    expect(calls).toHaveLength(1);
+    expect(calls.at(-1)?.txn_type).toEqual(["expense"]);
   });
 
   it("reports tag_names + tag_match when a tag chip is selected", async () => {

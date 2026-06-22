@@ -15,7 +15,11 @@
  * falls back to a plain count label so it never blocks on load.
  */
 import { buildPresetRanges } from "@/lib/reports/date-presets";
-import { isFieldOverridden, pickDateRange } from "@/lib/reports/resolve";
+import {
+  asTxnTypeArray,
+  isFieldOverridden,
+  pickDateRange,
+} from "@/lib/reports/resolve";
 import type {
   CanvasDateRange,
   CanvasFilters,
@@ -73,8 +77,9 @@ export function describeWidgetFilters(
   }
 
   // ── txn_type ──────────────────────────────────────────────────
-  if (widgetFilters.txn_type) {
-    chips.push({ key: "txn_type", label: capitalize(widgetFilters.txn_type) });
+  const txnTypes = asTxnTypeArray(widgetFilters.txn_type);
+  if (txnTypes) {
+    chips.push({ key: "txn_type", label: txnTypes.map(capitalize).join(", ") });
   }
 
   // ── amount ────────────────────────────────────────────────────
