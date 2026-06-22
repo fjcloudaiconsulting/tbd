@@ -101,7 +101,9 @@ services:
         value: "https://app.thebetterdecision.com"
       - key: BACKEND_CORS_ORIGINS
         scope: RUN_AND_BUILD_TIME
-        value: "https://app.thebetterdecision.com"
+        # apex origins added 2026-06-22 so the static landing page can fetch
+        # the public founder-count endpoint cross-origin (W1b).
+        value: "https://app.thebetterdecision.com,https://thebetterdecision.com,https://www.thebetterdecision.com"
       - key: COOKIE_SECURE
         scope: RUN_AND_BUILD_TIME
         value: "true"
