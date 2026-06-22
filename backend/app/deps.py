@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database import async_session, get_db
 from app.models.user import User
 from app.security import decode_token, token_cutoff
+from app.services.user_activity_service import maybe_stamp_last_active
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
@@ -27,6 +28,7 @@ bearer_optional = HTTPBearer(auto_error=False)
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ) -> User:
     payload = decode_token(credentials.credentials)
     if payload is None or payload.get("type") != "access":
@@ -65,6 +67,11 @@ async def get_current_user(
         org_id=user.org_id,
         role=user.role.value if hasattr(user.role, "value") else str(user.role),
     )
+
+    # Founding-members program: stamp activity (throttled, on an independent
+    # session so the request transaction is untouched and a stamp failure
+    # can never break auth). No-op when last_active_at is still fresh.
+    await maybe_stamp_last_active(session_factory, user.id, user.last_active_at)
 
     return user
 
