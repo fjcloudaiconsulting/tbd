@@ -68,6 +68,13 @@ class User(Base):
     )
     is_superadmin: Mapped[bool] = mapped_column(default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    # Founding-members program (2026-06-22). True for every user created
+    # during the founder window; server_default "1" grandfathers all
+    # existing rows (the pre-launch testers are the most-founding members).
+    # Soft cap (1000 is a marketing number) — no gating at registration.
+    is_founder: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="1", default=True
+    )
     password_changed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     sessions_invalidated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -99,6 +106,13 @@ class User(Base):
     # Existing rows are backfilled with ``created_at`` by migration 041.
     onboarded_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True
+    )
+    # Founding-members program: last authenticated activity, stamped
+    # (throttled) by get_current_user via an independent session. Tracked
+    # now; the "lose founder status after 30 days idle" rule ships with
+    # payments. NULL until first stamped.
+    last_active_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

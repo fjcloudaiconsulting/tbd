@@ -111,6 +111,7 @@ def _user_response(user: User, org: Organization, sub: Subscription | None = Non
         billing_cycle_day=org.billing_cycle_day,
         is_superadmin=user.is_superadmin,
         is_active=user.is_active,
+        is_founder=user.is_founder,
         mfa_enabled=user.mfa_enabled,
         password_set=user.password_set,
         onboarded_at=user.onboarded_at.isoformat() if user.onboarded_at else None,
@@ -310,6 +311,7 @@ async def register(
         password_hash=hash_password(body.password),
         role=Role.OWNER,
         is_superadmin=is_first_user,
+        is_founder=True,
     )
     db.add(user)
     try:
@@ -2659,6 +2661,7 @@ async def google_callback(
             email_verified=True,  # guaranteed by the verified_email guard
             role=Role.OWNER,
             is_superadmin=is_first_user,
+            is_founder=True,
             # SSO users get a random unguessable hash they cannot use to
             # sign in with. Flag the row so the change-password endpoint
             # accepts a first-time set without `current_password` and so
