@@ -208,8 +208,12 @@ function TxnTypeCheckboxRow({
       const cleaned = selected.filter((t) => t !== "transfer");
       onChange(cleaned.length > 0 ? cleaned : undefined);
     }
+    // Depend ONLY on the boolean: it flips true at most once (the
+    // onChange clears transfer → selected loses it → false), so the
+    // effect fires exactly when needed and never re-runs on unrelated
+    // parent re-renders (``onChange`` is a fresh ref each render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasIllegalTransfer, onChange]);
+  }, [hasIllegalTransfer]);
 
   function toggle(t: TxnType) {
     const next = selected.includes(t)
