@@ -35,7 +35,10 @@ export default function FounderCount() {
       <span aria-hidden className="text-text-muted/60">
         &middot;
       </span>{" "}
-      <span>{count.toLocaleString()} founding members so far</span>
+      <span>
+        {count.toLocaleString()} founding {count === 1 ? "member" : "members"}{" "}
+        so far
+      </span>
     </>
   );
 }

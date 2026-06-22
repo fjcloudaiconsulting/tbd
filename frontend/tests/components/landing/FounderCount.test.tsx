@@ -28,6 +28,17 @@ describe("FounderCount", () => {
     expect(fetch).toHaveBeenCalledWith("/api/v1/public/founder-count");
   });
 
+  it("uses the singular noun at a count of 1", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ count: 1 }) }),
+    );
+    render(<FounderCount />);
+    expect(
+      await screen.findByText(/1 founding member so far/),
+    ).toBeInTheDocument();
+  });
+
   it("fetches the absolute app-origin URL on the apex build", async () => {
     // The apex static host is a different origin from the app API, so the
     // counter MUST hit the absolute BRAND_APP_URL there. A regression that
