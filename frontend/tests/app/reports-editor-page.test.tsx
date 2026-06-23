@@ -1005,15 +1005,19 @@ describe("ReportEditorPage", () => {
   });
 
   it("gives chart widgets a definite mobile height and leaves KPI/table natural", () => {
-    expect(mobileStackHeight({ type: "bar", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight({ type: "stacked_bar", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight({ type: "line", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight({ type: "area", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight({ type: "pie", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight({ type: "sparkline", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight({ type: "sankey", grid: { x: 0, y: 0, w: 8, h: 5 } } as any)).toBeGreaterThanOrEqual(260);
-    expect(mobileStackHeight({ type: "kpi", grid: { x: 0, y: 0, w: 3, h: 2 } } as any)).toBeUndefined();
-    expect(mobileStackHeight({ type: "table", grid: { x: 0, y: 0, w: 6, h: 6 } } as any)).toBeUndefined();
+    // mobileStackHeight only reads ``type`` and ``grid.h``; build minimal
+    // typed fixtures rather than full per-type configs.
+    const fixture = (type: Widget["type"], w: number, h: number): Widget =>
+      ({ id: "x", type, title: "", grid: { x: 0, y: 0, w, h }, config: {} } as unknown as Widget);
+    expect(mobileStackHeight(fixture("bar", 6, 4))).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight(fixture("stacked_bar", 6, 4))).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight(fixture("line", 6, 4))).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight(fixture("area", 6, 4))).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight(fixture("pie", 6, 4))).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight(fixture("sparkline", 6, 4))).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight(fixture("sankey", 8, 5))).toBeGreaterThanOrEqual(260);
+    expect(mobileStackHeight(fixture("kpi", 3, 2))).toBeUndefined();
+    expect(mobileStackHeight(fixture("table", 6, 6))).toBeUndefined();
   });
 
   it("report header row allows wrapping so action buttons do not overflow on small screens", async () => {
