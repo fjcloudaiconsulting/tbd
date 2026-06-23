@@ -53,6 +53,10 @@ export default function AreaWidgetChart({
         <defs>
           {seriesKeys.map((key, i) => {
             const color = CHART_SERIES[i % CHART_SERIES.length];
+            // For overlaid multi-series, reduce fill density so lower series
+            // remain legible behind upper ones. Stacked charts use a single
+            // visual layer per series so the full 0.5 opacity is fine there.
+            const topOpacity = seriesKeys.length > 1 && !stackId ? 0.35 : 0.5;
             return (
               <linearGradient
                 key={key}
@@ -62,7 +66,7 @@ export default function AreaWidgetChart({
                 x2="0"
                 y2="1"
               >
-                <stop offset="0%" stopColor={color} stopOpacity={0.5} />
+                <stop offset="0%" stopColor={color} stopOpacity={topOpacity} />
                 <stop offset="100%" stopColor={color} stopOpacity={0.02} />
               </linearGradient>
             );

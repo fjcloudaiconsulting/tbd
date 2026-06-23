@@ -104,4 +104,69 @@ describe("AreaWidgetChart", () => {
     expect(area0?.getAttribute("data-fill")).toBe("url(#grad-w2-0)");
     expect(area1?.getAttribute("data-fill")).toBe("url(#grad-w2-1)");
   });
+
+  describe("adaptive gradient top-stop opacity (FIX 4)", () => {
+    it("uses 0.5 top-stop opacity for a single series", () => {
+      const { container } = render(
+        <AreaWidgetChart
+          widgetId="single"
+          rows={[{ label: "Jan", s0: 100 }]}
+          seriesKeys={["s0"]}
+          labels={["Series A"]}
+          format="number"
+        />,
+      );
+      const topStop = container.querySelector('linearGradient[id="grad-single-0"] stop[offset="0%"]');
+      expect(topStop?.getAttribute("stop-opacity")).toBe("0.5");
+    });
+
+    it("uses 0.35 top-stop opacity for multiple overlaid series (no stackId)", () => {
+      const { container } = render(
+        <AreaWidgetChart
+          widgetId="multi"
+          rows={rows}
+          seriesKeys={["s0", "s1"]}
+          labels={["Series A", "Series B"]}
+          format="number"
+        />,
+      );
+      const topStop0 = container.querySelector('linearGradient[id="grad-multi-0"] stop[offset="0%"]');
+      const topStop1 = container.querySelector('linearGradient[id="grad-multi-1"] stop[offset="0%"]');
+      expect(topStop0?.getAttribute("stop-opacity")).toBe("0.35");
+      expect(topStop1?.getAttribute("stop-opacity")).toBe("0.35");
+    });
+
+    it("uses 0.5 top-stop opacity for multiple stacked series (stackId set)", () => {
+      const { container } = render(
+        <AreaWidgetChart
+          widgetId="stacked"
+          rows={rows}
+          seriesKeys={["s0", "s1"]}
+          labels={["Series A", "Series B"]}
+          stackId="s"
+          format="number"
+        />,
+      );
+      const topStop0 = container.querySelector('linearGradient[id="grad-stacked-0"] stop[offset="0%"]');
+      const topStop1 = container.querySelector('linearGradient[id="grad-stacked-1"] stop[offset="0%"]');
+      expect(topStop0?.getAttribute("stop-opacity")).toBe("0.5");
+      expect(topStop1?.getAttribute("stop-opacity")).toBe("0.5");
+    });
+
+    it("always uses 0.02 bottom-stop opacity", () => {
+      const { container } = render(
+        <AreaWidgetChart
+          widgetId="bottom"
+          rows={rows}
+          seriesKeys={["s0", "s1"]}
+          labels={["Series A", "Series B"]}
+          format="number"
+        />,
+      );
+      const bottomStop0 = container.querySelector('linearGradient[id="grad-bottom-0"] stop[offset="100%"]');
+      const bottomStop1 = container.querySelector('linearGradient[id="grad-bottom-1"] stop[offset="100%"]');
+      expect(bottomStop0?.getAttribute("stop-opacity")).toBe("0.02");
+      expect(bottomStop1?.getAttribute("stop-opacity")).toBe("0.02");
+    });
+  });
 });

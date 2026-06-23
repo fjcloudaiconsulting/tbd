@@ -36,7 +36,7 @@ export default function PieWidgetChart({
       >
         {/* Offset upward slightly to clear the legend at the bottom */}
         <span
-          className="fill-[var(--color-text-primary)] -mt-8 text-sm font-bold text-[var(--color-text-primary)]"
+          className="-mt-8 text-sm font-bold text-[var(--color-text-primary)]"
           data-testid="pie-center-total"
         >
           {formattedTotal}
