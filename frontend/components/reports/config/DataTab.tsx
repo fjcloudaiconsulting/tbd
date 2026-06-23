@@ -267,11 +267,14 @@ export default function DataTab({
               value={(widget.config as SankeyConfig).top_n ?? ""}
               onChange={(e) => {
                 const raw = e.target.value;
+                const n = parseInt(raw, 10);
+                const clamped =
+                  Number.isNaN(n) || n < 2 ? undefined : Math.min(n, 50);
                 onUpdate({
                   ...widget,
                   config: {
                     ...(widget.config as SankeyConfig),
-                    top_n: raw === "" ? undefined : Number(raw) || undefined,
+                    top_n: clamped,
                   },
                 });
               }}

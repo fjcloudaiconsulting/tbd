@@ -24,7 +24,7 @@ const SankeyWidgetChart = dynamic(() => import("./SankeyWidgetChart"), {
   ssr: false,
   loading: () => (
     <div
-      data-testid="sankey-widget-chart-loading"
+      data-testid="sankey-widget-chart-outer-loading"
       className="h-full w-full animate-pulse rounded bg-border/40"
     />
   ),
