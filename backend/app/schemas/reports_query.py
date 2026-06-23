@@ -259,6 +259,39 @@ class ReportsQueryResponse(BaseModel):
     meta: QueryMeta
 
 
+# ─── Sankey schemas ──────────────────────────────────────────────────
+
+
+class SankeyLink(BaseModel):
+    """A single directed flow: source → target with a numeric value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    target: str
+    value: float
+
+
+class SankeyQuery(BaseModel):
+    """Request body for ``POST /api/v1/reports/query/sankey``.
+
+    ``dataset`` is implicitly transactions; ``measure`` is implicitly
+    sum(amount). ``extra="forbid"`` rejects unknown wire keys so
+    ``org_id`` can never arrive from the client.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    filters: List[Filter] = Field(default_factory=list, max_length=MAX_FILTERS)
+    spending_granularity: Literal["category", "category_master"] = "category"
+    top_n: Optional[int] = Field(default=None, ge=1)
+
+
+class SankeyResponse(BaseModel):
+    links: List[SankeyLink]
+    meta: QueryMeta
+
+
 # ─── helpers ────────────────────────────────────────────────────────
 
 

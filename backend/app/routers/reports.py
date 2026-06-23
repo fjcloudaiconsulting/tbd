@@ -63,8 +63,9 @@ from app.schemas.report_sources import (
     SourceFilterOut,
     SourceMeasureOut,
 )
-from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse
+from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse, SankeyQuery, SankeyResponse
 from app.services.feature_gate import Feature, require_feature
+from app.services.sankey_service import build_sankey
 
 
 logger = structlog.stdlib.get_logger()
@@ -178,6 +179,30 @@ async def run_query(
     """
     rows, meta = await _run_source_query(db, body, org_id=current_user.org_id)
     return ReportsQueryResponse(rows=rows, meta=meta)
+
+
+@router.post(
+    "/query/sankey",
+    response_model=SankeyResponse,
+)
+@limiter.limit("60/minute")
+async def run_sankey_query(
+    request: Request,
+    body: SankeyQuery,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Execute a Sankey cash-flow query against the caller's org data.
+
+    Returns income-hub Sankey links: income_categories → Income hub →
+    spending_categories, plus an optional Income → Savings link when
+    income exceeds expense.
+
+    ``org_id`` is injected from ``current_user``; the AST has no way to
+    express it. Transfer legs and manual adjustments are excluded via
+    ``reportable_transaction_filter`` in the service layer.
+    """
+    return await build_sankey(db, org_id=current_user.org_id, query=body)
 
 
 @router.get("", response_model=list[ReportResponse])
