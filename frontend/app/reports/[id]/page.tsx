@@ -776,7 +776,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             <span className="text-xs text-text-muted">Saved</span>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-1.5" data-testid="report-editor-action-group">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2" data-testid="report-editor-action-group">
           {/* Edit-mode-only: Add widget + Save (+ Cancel when dirty).
               All gated on ``editModeActive`` so small screens (< sm)
               never show edit affordances. */}
