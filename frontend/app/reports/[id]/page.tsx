@@ -65,6 +65,7 @@ import TableWidget from "@/components/reports/widgets/TableWidget";
 import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
 import { reportCurrency } from "@/lib/reports/series";
 import type { WidgetType } from "@/lib/reports/types";
+import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 
 interface PageProps {
   // Next 15 makes ``params`` a promise on server-rendered pages; in
@@ -313,11 +314,6 @@ function newWidgetId(): string {
   return `w_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-// Tailwind's ``sm`` breakpoint. Below this we render the report as a
-// read-only single-column stack and force VIEW mode (no drag/resize, no
-// edit toolbar) — editing stays a desktop affordance.
-const SMALL_SCREEN_QUERY = "(max-width: 639px)";
-
 /**
  * Order widgets for the mobile single-column stack: top-to-bottom by
  * grid ``y``, then left-to-right by grid ``x`` so the vertical reading
@@ -331,24 +327,23 @@ export function orderWidgetsForStack(widgets: Widget[]): Widget[] {
   });
 }
 
+// Chart widgets need a definite height for Recharts/Nivo height="100%" to
+// render in the mobile stack (the wrapper is otherwise auto-height → ~0).
+// KPI and table size to their content, so they stay natural-height.
+const CHART_STACK_TYPES = new Set<WidgetType>([
+  "bar", "stacked_bar", "line", "area", "pie", "sparkline", "sankey",
+]);
+
 /**
- * True when the viewport is below Tailwind's ``sm`` breakpoint. SSR-safe
- * (returns false until mounted) and listens for breakpoint crossings so
- * rotating a phone or resizing a window flips the read-only stack on/off.
+ * Returns a pixel height for the mobile stack wrapper of a chart widget,
+ * so that Recharts/Nivo ``height="100%"`` resolves to a usable size.
+ * Returns ``undefined`` for content widgets (kpi, table) that naturally
+ * size to their own content.
  */
-function useIsSmallScreen(): boolean {
-  const [small, setSmall] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return;
-    }
-    const mq = window.matchMedia(SMALL_SCREEN_QUERY);
-    const update = () => setSmall(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
-  return small;
+export function mobileStackHeight(widget: Widget): number | undefined {
+  if (!CHART_STACK_TYPES.has(widget.type)) return undefined;
+  const base = widget.grid.h * 56; // ~rowHeight; taller widgets stay taller
+  return Math.min(Math.max(base, widget.type === "sankey" || widget.type === "pie" ? 260 : 220), 460);
 }
 
 export default function ReportEditorPage({ params }: PageProps) {
@@ -363,7 +358,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   const { id } = resolvedParams;
   const router = useRouter();
   const { user, loading: authLoading, features } = useAuth();
-  const isSmallScreen = useIsSmallScreen();
+  const isSmallScreen = useIsMobile();
 
   const [report, setReport] = useState<ReportSummary | null>(null);
   // Draft value of the inline-editable title. Seeded from the loaded
@@ -735,7 +730,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   return (
     <AppShell>
       <div className="flex h-full flex-col" data-testid="report-editor">
-      <header className="flex items-center justify-between border-b border-border bg-surface px-4 py-3">
+      <header className="flex flex-wrap items-center justify-between gap-y-2 border-b border-border bg-surface px-4 py-3">
         <div className="flex items-center gap-3">
           <Link
             href="/reports"
@@ -781,7 +776,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             <span className="text-xs text-text-muted">Saved</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2" data-testid="report-editor-action-group">
           {/* Edit-mode-only: Add widget + Save (+ Cancel when dirty).
               All gated on ``editModeActive`` so small screens (< sm)
               never show edit affordances. */}
@@ -964,11 +959,14 @@ export default function ReportEditorPage({ params }: PageProps) {
               data-testid="reports-canvas-stack"
               className="flex flex-col gap-3"
             >
-              {orderWidgetsForStack(layout.widgets).map((w) => (
-                <div key={w.id}>
-                  {renderWidgetByType(w, canvasFilters, false, currency)}
-                </div>
-              ))}
+              {orderWidgetsForStack(layout.widgets).map((w) => {
+                const h = mobileStackHeight(w);
+                return (
+                  <div key={w.id} style={h ? { height: h } : undefined}>
+                    {renderWidgetByType(w, canvasFilters, false, currency)}
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <Canvas

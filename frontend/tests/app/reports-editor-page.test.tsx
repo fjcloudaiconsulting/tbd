@@ -69,6 +69,7 @@ vi.mock("next/navigation", () => ({
 
 import ReportEditorPage, {
   orderWidgetsForStack,
+  mobileStackHeight,
 } from "@/app/reports/[id]/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import * as reportsApi from "@/lib/reports/api";
@@ -1001,6 +1002,55 @@ describe("ReportEditorPage", () => {
     ]);
     // Pure function: does not mutate the input order.
     expect(widgets.map((w) => w.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("gives chart widgets a definite mobile height and leaves KPI/table natural", () => {
+    // mobileStackHeight only reads ``type`` and ``grid.h``; build minimal
+    // typed fixtures rather than full per-type configs.
+    const fixture = (type: Widget["type"], w: number, h: number): Widget =>
+      ({ id: "x", type, title: "", grid: { x: 0, y: 0, w, h }, config: {} } as unknown as Widget);
+
+    // --- floor branch: h=1 → base=56, below all floors ---
+    // non-pie / non-sankey chart type hits the 220 floor
+    expect(mobileStackHeight(fixture("bar", 6, 1))).toBe(220);
+    expect(mobileStackHeight(fixture("line", 6, 1))).toBe(220);
+    // pie hits the 260 floor (unconditional bottom legend needs extra room)
+    expect(mobileStackHeight(fixture("pie", 6, 1))).toBe(260);
+    // sankey hits the 260 floor
+    expect(mobileStackHeight(fixture("sankey", 8, 1))).toBe(260);
+
+    // --- cap branch: h=10 → base=560, above the 460 cap ---
+    expect(mobileStackHeight(fixture("bar", 6, 10))).toBe(460);
+
+    // --- content widgets: no fixed height, size to own content ---
+    expect(mobileStackHeight(fixture("kpi", 3, 2))).toBeUndefined();
+    expect(mobileStackHeight(fixture("table", 6, 6))).toBeUndefined();
+  });
+
+  it("report header row allows wrapping so action buttons do not overflow on small screens", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+
+    // The outermost header element (direct child of report-editor, contains
+    // both the breadcrumb group and the action button group).
+    const header = screen
+      .getByTestId("report-editor")
+      .querySelector("header")!;
+    expect(header).not.toBeNull();
+    expect(header.className).toMatch(/flex-wrap/);
+
+    // The right-side action group must also allow wrapping so the buttons
+    // stack below the breadcrumb rather than overflow off-screen.
+    // It is the second direct flex child of the header.
+    const actionGroup = header.querySelector<HTMLElement>(
+      '[data-testid="report-editor-action-group"]',
+    )!;
+    expect(actionGroup).not.toBeNull();
+    expect(actionGroup.className).toMatch(/flex-wrap/);
   });
 
   it("redirects to /dashboard when features.reports is false (per-org off)", async () => {
