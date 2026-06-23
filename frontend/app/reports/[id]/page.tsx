@@ -65,6 +65,7 @@ import TableWidget from "@/components/reports/widgets/TableWidget";
 import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
 import { reportCurrency } from "@/lib/reports/series";
 import type { WidgetType } from "@/lib/reports/types";
+import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 
 interface PageProps {
   // Next 15 makes ``params`` a promise on server-rendered pages; in
@@ -313,11 +314,6 @@ function newWidgetId(): string {
   return `w_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-// Tailwind's ``sm`` breakpoint. Below this we render the report as a
-// read-only single-column stack and force VIEW mode (no drag/resize, no
-// edit toolbar) — editing stays a desktop affordance.
-const SMALL_SCREEN_QUERY = "(max-width: 639px)";
-
 /**
  * Order widgets for the mobile single-column stack: top-to-bottom by
  * grid ``y``, then left-to-right by grid ``x`` so the vertical reading
@@ -350,26 +346,6 @@ export function mobileStackHeight(widget: Widget): number | undefined {
   return Math.min(Math.max(base, widget.type === "sankey" ? 260 : 220), 460);
 }
 
-/**
- * True when the viewport is below Tailwind's ``sm`` breakpoint. SSR-safe
- * (returns false until mounted) and listens for breakpoint crossings so
- * rotating a phone or resizing a window flips the read-only stack on/off.
- */
-function useIsSmallScreen(): boolean {
-  const [small, setSmall] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return;
-    }
-    const mq = window.matchMedia(SMALL_SCREEN_QUERY);
-    const update = () => setSmall(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
-  return small;
-}
-
 export default function ReportEditorPage({ params }: PageProps) {
   // Next 15 makes ``params`` a promise; ``use()`` unwraps it on the
   // client without awaiting at the top level. In test harnesses we
@@ -382,7 +358,7 @@ export default function ReportEditorPage({ params }: PageProps) {
   const { id } = resolvedParams;
   const router = useRouter();
   const { user, loading: authLoading, features } = useAuth();
-  const isSmallScreen = useIsSmallScreen();
+  const isSmallScreen = useIsMobile();
 
   const [report, setReport] = useState<ReportSummary | null>(null);
   // Draft value of the inline-editable title. Seeded from the loaded
