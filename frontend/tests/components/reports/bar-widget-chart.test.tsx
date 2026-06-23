@@ -76,7 +76,7 @@ describe("BarWidgetChart", () => {
       expect(JSON.parse(bar!.getAttribute("data-radius") || "null")).toEqual([4, 4, 0, 0]);
     });
 
-    it("uses CHART_SERIES palette fill for single bar", () => {
+    it("uses chartColor.spent (var(--color-accent)) fill for single bar", () => {
       const { container } = render(
         <BarWidgetChart
           rows={rows}
@@ -88,8 +88,7 @@ describe("BarWidgetChart", () => {
         />,
       );
       const bar = container.querySelector('[data-testid="bar-value"]');
-      // Fill must be a non-empty string (exact color is from chartColor.spent)
-      expect(bar?.getAttribute("data-fill")).toBeTruthy();
+      expect(bar?.getAttribute("data-fill")).toBe("var(--color-accent)");
     });
   });
 
@@ -143,8 +142,9 @@ describe("BarWidgetChart", () => {
       );
       const barS0 = container.querySelector('[data-testid="bar-s0"]');
       const barS1 = container.querySelector('[data-testid="bar-s1"]');
-      expect(barS0?.getAttribute("data-fill")).toBeTruthy();
-      expect(barS1?.getAttribute("data-fill")).toBeTruthy();
+      // First two CHART_SERIES slots: chart-1, chart-2
+      expect(barS0?.getAttribute("data-fill")).toBe("var(--color-chart-1)");
+      expect(barS1?.getAttribute("data-fill")).toBe("var(--color-chart-2)");
       // The two bars must use different palette colors
       expect(barS0?.getAttribute("data-fill")).not.toBe(
         barS1?.getAttribute("data-fill"),

@@ -30,7 +30,7 @@
       "chart-4":         { "role": "chart",   "displayName": "Violet",          "canonical": "oklch(70% 0.15 290)" },
       "chart-5":         { "role": "chart",   "displayName": "Teal",            "canonical": "oklch(78% 0.14 188)" },
       "chart-6":         { "role": "chart",   "displayName": "Pink",            "canonical": "oklch(72% 0.18 345)" },
-      "chart-7":         { "role": "chart",   "displayName": "Amber",           "canonical": "oklch(76% 0.16 70)" },
+      "chart-7":         { "role": "chart",   "displayName": "Amber",           "canonical": "oklch(76% 0.16 70)",  "note": "Light-mode value coincides with Warning Amber (#f59e0b); the warning semantic token remains the authoritative caution signal. Chart-7 is a data-series hue — they diverge in dark theme." },
       "chart-8":         { "role": "chart",   "displayName": "Coral",           "canonical": "oklch(70% 0.18 22)",  "note": "Available as a series color; the over-budget state uses chartColor.over (= danger token), not this index." }
     },
     "typographyMeta": {

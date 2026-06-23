@@ -24,19 +24,28 @@ export default function PieWidgetChart({
   format,
   currency,
 }: PieWidgetChartProps) {
+  // Self-guard: parent already ensures rows is non-empty, but be defensive.
+  if (rows.length === 0) return null;
+
   const total = rows.reduce((sum, row) => sum + row.value, 0);
   const formattedTotal = formatMeasureValue(total, format, currency);
 
   return (
     <div className="relative h-full w-full">
+      {/* Visually-hidden accessible alternative for the center total (SC 1.3.1).
+          Must live OUTSIDE the aria-hidden overlay so screen readers find it. */}
+      <span className="sr-only">Total: {formattedTotal}</span>
       {/* Center total — absolutely positioned over the donut hole */}
       <div
         className="pointer-events-none absolute inset-0 flex items-center justify-center"
         aria-hidden="true"
       >
-        {/* Offset upward slightly to clear the legend at the bottom */}
+        {/*
+         * -mt-8 compensates for the bottom Legend row (~32px / 2rem).
+         * Revisit if the legend wraps to two lines (e.g. many slices).
+         */}
         <span
-          className="-mt-8 text-sm font-bold text-[var(--color-text-primary)]"
+          className="-mt-8 text-sm font-bold text-text-primary"
           data-testid="pie-center-total"
         >
           {formattedTotal}
