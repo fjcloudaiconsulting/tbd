@@ -24,38 +24,56 @@ export default function PieWidgetChart({
   format,
   currency,
 }: PieWidgetChartProps) {
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  const formattedTotal = formatMeasureValue(total, format, currency);
+
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <PieChart>
-        <Pie
-          data={rows}
-          dataKey="value"
-          nameKey="label"
-          innerRadius="40%"
-          outerRadius="75%"
-          stroke="var(--color-surface)"
-          isAnimationActive={false}
+    <div className="relative h-full w-full">
+      {/* Center total — absolutely positioned over the donut hole */}
+      <div
+        className="pointer-events-none absolute inset-0 flex items-center justify-center"
+        aria-hidden="true"
+      >
+        {/* Offset upward slightly to clear the legend at the bottom */}
+        <span
+          className="fill-[var(--color-text-primary)] -mt-8 text-sm font-bold text-[var(--color-text-primary)]"
+          data-testid="pie-center-total"
         >
-          {rows.map((row, i) => (
-            <Cell
-              key={row.label}
-              fill={
-                row.label === "Other"
-                  ? "var(--color-border)"
-                  : CHART_SERIES[i % CHART_SERIES.length]
-              }
-            />
-          ))}
-        </Pie>
-        <Tooltip
-          formatter={(v) => formatMeasureValue(Number(v), format, currency)}
-        />
-        <Legend
-          verticalAlign="bottom"
-          wrapperStyle={{ fontSize: 11 }}
-          iconSize={8}
-        />
-      </PieChart>
-    </ResponsiveContainer>
+          {formattedTotal}
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={rows}
+            dataKey="value"
+            nameKey="label"
+            innerRadius="58%"
+            outerRadius="80%"
+            stroke="var(--color-surface)"
+            isAnimationActive={false}
+          >
+            {rows.map((row, i) => (
+              <Cell
+                key={row.label}
+                fill={
+                  row.label === "Other"
+                    ? "var(--color-border)"
+                    : CHART_SERIES[i % CHART_SERIES.length]
+                }
+              />
+            ))}
+          </Pie>
+          <Tooltip
+            formatter={(v) => formatMeasureValue(Number(v), format, currency)}
+          />
+          <Legend
+            verticalAlign="bottom"
+            wrapperStyle={{ fontSize: 11 }}
+            iconSize={8}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
