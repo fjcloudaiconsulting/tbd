@@ -32,7 +32,7 @@ import {
 } from "recharts";
 
 import { formatAmount } from "@/lib/format";
-import { chartColor } from "@/lib/chart-colors";
+import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 
 export interface ProjectionPoint {
   month: string;
@@ -76,17 +76,8 @@ export interface CompareProjection {
   projection: ProjectionResult;
 }
 
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard) — one color per scenario. The endpoint caps comparison at
-// 3 scenarios, so chart-5 (danger/red) is never reached here.
-const SCENARIO_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-];
-
 function pickColor(index: number): string {
-  return SCENARIO_COLORS[index % SCENARIO_COLORS.length];
+  return CHART_SERIES[index % CHART_SERIES.length];
 }
 
 // X-axis tick formatter: same logic as ProjectionChart for visual

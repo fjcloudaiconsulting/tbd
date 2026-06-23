@@ -16,19 +16,8 @@ import {
   YAxis,
 } from "recharts";
 
-import { chartColor } from "@/lib/chart-colors";
+import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
-
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard). chart-5 (danger/red) sits last so neutral series don't
-// pick up alarm semantics until the cycle wraps.
-const LINE_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-  "var(--color-chart-4)",
-  "var(--color-chart-5)",
-];
 
 export interface LineWidgetChartProps {
   rows: Array<{ label: string } & Record<string, number | string>>;
@@ -74,7 +63,7 @@ export default function LineWidgetChart({
             type={smooth === false ? "linear" : "monotone"}
             dataKey={key}
             name={labels[i]}
-            stroke={LINE_COLORS[i % LINE_COLORS.length]}
+            stroke={CHART_SERIES[i % CHART_SERIES.length]}
             strokeWidth={2}
             dot={false}
             isAnimationActive={false}

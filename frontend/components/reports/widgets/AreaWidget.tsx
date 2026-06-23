@@ -118,6 +118,7 @@ export default function AreaWidget({
             stackId={stackId}
             format={format}
             currency={currency}
+            widgetId={widget.id}
           />
         )}
       </div>

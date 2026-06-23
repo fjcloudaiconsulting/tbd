@@ -38,7 +38,7 @@ import {
 } from "recharts";
 
 import { formatAmount } from "@/lib/format";
-import { chartColor } from "@/lib/chart-colors";
+import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 
 export interface ProjectionPoint {
   month: string;
@@ -72,20 +72,8 @@ export interface ProjectionInput {
   currency: string;
 }
 
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard) so per-account areas don't drift across surfaces. chart-5
-// (danger/red) sits last; genuine negative semantics (the real-terms
-// line, dip alert dots) keep their own explicit danger color below.
-const SERIES_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-  "var(--color-chart-4)",
-  "var(--color-chart-5)",
-];
-
 function pickColor(index: number): string {
-  return SERIES_COLORS[index % SERIES_COLORS.length];
+  return CHART_SERIES[index % CHART_SERIES.length];
 }
 
 // X-axis tick formatter. Months come in as "YYYY-MM"; for horizons

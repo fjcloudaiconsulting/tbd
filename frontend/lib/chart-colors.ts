@@ -22,8 +22,20 @@ export const chartColor = {
   axisTick: "var(--color-text-secondary)",
 } as const;
 
-// Categorical multi-series colors now come from the canonical
-// `--color-chart-1..5` palette (see globals.css), referenced directly at
-// the chart call sites. The previous `categoricalColors`/`categoricalColor`
-// helper was removed when those sites migrated; it included brass, which
-// conflicts with The One Brass Rule.
+// Categorical multi-series palette for report widgets (W3 visual refresh).
+// Single source of truth — every widget imports CHART_SERIES rather than
+// maintaining its own local array. Palette expanded to 8 tokens as part of
+// W3; the DESIGN.md chart-palette exception documents why these colors are
+// exempt from The One Brass Rule (they are data-series hues, not brand
+// surfaces). Tokens defined in `app/globals.css` so theme-switches cascade
+// automatically; never embed raw hex here.
+export const CHART_SERIES = [
+  "var(--color-chart-1)",
+  "var(--color-chart-2)",
+  "var(--color-chart-3)",
+  "var(--color-chart-4)",
+  "var(--color-chart-5)",
+  "var(--color-chart-6)",
+  "var(--color-chart-7)",
+  "var(--color-chart-8)",
+] as const;

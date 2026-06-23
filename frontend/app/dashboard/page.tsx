@@ -18,7 +18,7 @@ import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 
 
 import { PieChart, Pie, BarChart, Bar, XAxis, YAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
-import { chartColor } from "@/lib/chart-colors";
+import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
 import {
   resolveBudgetSeries,
@@ -669,13 +669,6 @@ export default function DashboardPage() {
     [visibleTxs, chartFilter, dashSortField, dashSortDir],
   );
 
-  const CHART_COLORS = [
-    "var(--color-chart-1)",
-    "var(--color-chart-2)",
-    "var(--color-chart-3)",
-    "var(--color-chart-4)",
-    "var(--color-chart-5)",
-  ];
 
   return (
     <AppShell>
@@ -893,7 +886,7 @@ export default function DashboardPage() {
                           }}
                         >
                           {donutData.map((d, i) => (
-                            <Cell key={d.name} fill={CHART_COLORS[i % CHART_COLORS.length]}
+                            <Cell key={d.name} fill={CHART_SERIES[i % CHART_SERIES.length]}
                               opacity={chartFilter && chartFilter !== d.name ? 0.3 : 1} />
                           ))}
                         </Pie>
@@ -1029,7 +1022,7 @@ export default function DashboardPage() {
                     {sortedSpending.slice(0, 10).map((d) => (
                       <button key={d.name} onClick={() => setChartFilter(chartFilter === d.name ? null : d.name)}
                         className={`grid w-full grid-cols-[auto_minmax(0,1fr)_3rem_auto] items-center gap-2 rounded px-1.5 py-0.5 transition-colors hover:bg-surface-raised ${chartFilter === d.name ? "bg-surface-overlay" : ""}`}>
-                        <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_COLORS[d.origIdx % CHART_COLORS.length] }} />
+                        <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CHART_SERIES[d.origIdx % CHART_SERIES.length] }} />
                         <span className="min-w-0 truncate text-left text-xs text-text-secondary">{d.name}</span>
                         {/* %/amount carry data, so they ride text-secondary
                             (~6.9:1) not text-muted (~3.0:1, fails AA 1.4.3). */}

@@ -18,26 +18,12 @@ import {
 } from "recharts";
 
 import { SeriesTooltip } from "@/components/charts/SeriesTooltip";
-import { chartColor } from "@/lib/chart-colors";
+import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 import { makeReportBarTooltipResolver } from "@/lib/reports/bar-tooltip";
 import { formatMeasureValue } from "@/lib/reports/series";
 
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard). chart-5 (danger/red) sits last so neutral break-down
-// segments don't pick up alarm semantics until the cycle wraps. Kept in
-// sync with the legend swatches in BarWidget (palette duplicated rather
-// than imported across the next/dynamic boundary so the legend doesn't
-// pull this recharts-laden module into the route's initial JS).
-const BAR_SLICE_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-  "var(--color-chart-4)",
-  "var(--color-chart-5)",
-];
-
 function barSliceColor(index: number): string {
-  return BAR_SLICE_COLORS[index % BAR_SLICE_COLORS.length];
+  return CHART_SERIES[index % CHART_SERIES.length];
 }
 
 export interface BarWidgetChartProps {

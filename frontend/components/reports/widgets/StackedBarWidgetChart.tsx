@@ -16,19 +16,8 @@ import {
   YAxis,
 } from "recharts";
 
-import { chartColor } from "@/lib/chart-colors";
+import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
-
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard). chart-5 (danger/red) sits last so neutral series don't
-// pick up alarm semantics until the cycle wraps.
-const BAR_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-  "var(--color-chart-4)",
-  "var(--color-chart-5)",
-];
 
 export interface StackedBarWidgetChartProps {
   rows: Array<{ label: string } & Record<string, number | string>>;
@@ -74,7 +63,7 @@ export default function StackedBarWidgetChart({
             dataKey={key}
             name={labels[i]}
             stackId={stackId}
-            fill={BAR_COLORS[i % BAR_COLORS.length]}
+            fill={CHART_SERIES[i % CHART_SERIES.length]}
             radius={
               stackId && i === seriesKeys.length - 1
                 ? [4, 4, 0, 0]
