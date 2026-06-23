@@ -24,7 +24,6 @@ Why NOT ``execute_query`` / ``ReportsQuery`` ASTs:
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -134,6 +133,11 @@ async def build_sankey(
 
     expense_total = sum(v for _, v in expense_pairs)
 
+    # Capture pre-fold counts for row_count semantics (reflects the number
+    # of aggregated categories before top_n folding collapses the tail).
+    pre_fold_income_count = len(income_pairs)
+    pre_fold_expense_count = len(expense_pairs)
+
     # ── Apply top_n folding on the expense side ──────────────────────
     if query.top_n is not None and len(expense_pairs) > query.top_n:
         # Sort by value descending; keep top_n, fold remainder into "Other".
@@ -162,10 +166,10 @@ async def build_sankey(
     # "Income" → "Savings" when income exceeds expense
     if income_total > expense_total:
         savings = income_total - expense_total
-        links.append(SankeyLink(source="Income", target="Savings", value=round(savings, 10)))
+        links.append(SankeyLink(source="Income", target="Savings", value=savings))
 
     meta = QueryMeta(
-        row_count=len(income_pairs) + len(expense_pairs),
+        row_count=pre_fold_income_count + pre_fold_expense_count,
         truncated=False,
         query_ms=elapsed_ms,
     )
@@ -187,6 +191,17 @@ def _to_float(value) -> float:
     return float(value)
 
 
+_SANKEY_SUPPORTED_FILTER_FIELDS = {
+    FilterField.DATE,
+    FilterField.AMOUNT,
+    FilterField.CATEGORY_ID,
+    FilterField.ACCOUNT_ID,
+    FilterField.STATUS,
+    FilterField.TAG_NAME,
+    # TXN_TYPE is excluded: the builder locks it; handled separately below.
+}
+
+
 def _apply_user_filters(stmt, filters: list[Filter], org_id: int):
     """Apply the caller-supplied SankeyQuery filters to *stmt*.
 
@@ -195,13 +210,23 @@ def _apply_user_filters(stmt, filters: list[Filter], org_id: int):
     skipped here: the sankey builder already adds its own ``type =
     income / expense`` predicate, so a caller-supplied txn_type filter
     would at best be a no-op and at worst conflict.
-    """
-    from app.schemas.reports_query import FilterField
 
+    Raises:
+        ValueError: when a filter field is not in the Sankey-supported
+            whitelist (e.g. ``account_type``, ``currency``, ``balance``,
+            ``account_active``, ``frequency``, ``recurring_active``).
+            The router maps this to HTTP 422.
+    """
     for f in filters:
         if f.field is FilterField.TXN_TYPE:
             # Skip — the builder locks txn_type itself.
             continue
+        if f.field not in _SANKEY_SUPPORTED_FILTER_FIELDS:
+            supported = sorted(ff.value for ff in _SANKEY_SUPPORTED_FILTER_FIELDS)
+            raise ValueError(
+                f"Filter field {f.field.value!r} is not supported on the Sankey endpoint. "
+                f"Supported fields: {supported}"
+            )
         if f.field is FilterField.TAG_NAME:
             stmt = _apply_tag_filter(stmt, f, org_id)
         else:

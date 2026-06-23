@@ -201,8 +201,15 @@ async def run_sankey_query(
     ``org_id`` is injected from ``current_user``; the AST has no way to
     express it. Transfer legs and manual adjustments are excluded via
     ``reportable_transaction_filter`` in the service layer.
+
+    A ``ValueError`` from the builder (e.g. unsupported filter field) is
+    mapped to HTTP 422, mirroring how ``_run_source_query`` maps
+    ``source.validate()`` errors.
     """
-    return await build_sankey(db, org_id=current_user.org_id, query=body)
+    try:
+        return await build_sankey(db, org_id=current_user.org_id, query=body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("", response_model=list[ReportResponse])

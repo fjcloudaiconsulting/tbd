@@ -275,6 +275,27 @@ async def test_sankey_no_income_returns_empty_links(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_sankey_unsupported_filter_field_returns_422(session_factory):
+    """Sending a non-transaction filter field (e.g. account_type) returns 422, not 500.
+
+    ``account_type`` is a valid ``FilterField`` enum value (accepted by Pydantic) but
+    is not in the Sankey builder's supported-field whitelist.  The service raises
+    ``ValueError``; the router maps it to 422.
+    """
+    await _seed_two_orgs(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/reports/query/sankey",
+            json={"filters": [{"field": "account_type", "op": "eq", "value": 1}]},
+        )
+
+    assert res.status_code == 422, res.text
+    assert "account_type" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_sankey_with_top_n(session_factory):
     """top_n=1 keeps only the largest spending category, folds rest into Other."""
     await _seed_two_orgs(session_factory)

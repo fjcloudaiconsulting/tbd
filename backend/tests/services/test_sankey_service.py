@@ -398,6 +398,52 @@ async def test_top_n_folds_tail_into_other(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_unsupported_filter_field_raises_value_error(session_factory):
+    """_apply_user_filters raises ValueError for non-transaction filter fields.
+
+    ``account_type`` is a valid FilterField enum value but is not in the
+    Sankey-supported whitelist.  Passing it must raise ValueError (which the
+    router maps to 422) rather than a KeyError (which would produce a 500).
+    """
+    world = await _seed_world(session_factory)
+    from app.schemas.reports_query import Filter, FilterField, FilterOp
+
+    bad_filter = Filter(field=FilterField.ACCOUNT_TYPE, op=FilterOp.EQ, value=1)
+    async with session_factory() as db:
+        with pytest.raises(ValueError, match="account_type"):
+            await build_sankey(
+                db,
+                org_id=world["org_id"],
+                query=SankeyQuery(filters=[bad_filter]),
+            )
+
+
+@pytest.mark.asyncio
+async def test_row_count_reflects_pre_fold_counts(session_factory):
+    """meta.row_count reports aggregated category counts BEFORE top_n folding.
+
+    Seeded world: 2 income categories + 3 expense categories.
+    With top_n=2, the expense side is folded to 2+Other, but row_count must
+    still reflect 2 income + 3 expense = 5, not 2 + 2 = 4 (post-fold).
+    """
+    world = await _seed_world(session_factory)
+    async with session_factory() as db:
+        # Without folding: row_count should be 2 income + 3 expense = 5.
+        response_no_fold = await build_sankey(
+            db, org_id=world["org_id"], query=SankeyQuery(filters=[])
+        )
+    assert response_no_fold.meta.row_count == 5
+
+    async with session_factory() as db:
+        # With top_n=2: expense side folds to 2 visible + Other, but
+        # row_count must still be 2 + 3 = 5 (pre-fold semantics).
+        response_folded = await build_sankey(
+            db, org_id=world["org_id"], query=SankeyQuery(filters=[], top_n=2)
+        )
+    assert response_folded.meta.row_count == 5
+
+
+@pytest.mark.asyncio
 async def test_spending_granularity_category_master(session_factory):
     """spending_granularity='category_master' groups by parent category.
 
