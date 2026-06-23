@@ -91,13 +91,16 @@ export function buildSankeyBody(
 
   // Reuse the shared resolver — handles canvas date cascade, widget date
   // override, account_ids, category_ids, txn_type, amount_range, tag_names.
-  // The sankey endpoint accepts any valid Filter[] so the full resolver
-  // output is appropriate.
-  const filters = resolveFilters(
+  // Strip txn_type afterwards: the Sankey endpoint ignores it (it always
+  // aggregates all transaction types for the income→spending flow), so
+  // sending it would be a silent no-op. Filtering it here keeps the wire
+  // honest and prevents stale user selections from poisoning the SWR key.
+  const resolvedFilters = resolveFilters(
     canvasFilters,
     widgetFilters,
     true, // transactions always supports date filter
   );
+  const filters = resolvedFilters.filter((f) => f.field !== "txn_type");
 
   const body: SankeyQueryBody = {
     filters,

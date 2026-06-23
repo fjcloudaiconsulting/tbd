@@ -60,8 +60,8 @@ describe("SankeyWidget", () => {
     mockUseSankeyQuery.mockReturnValue({
       data: {
         links: [
-          { source: "Income", target: "Food", value: 200 },
-          { source: "Income", target: "Transport", value: 80 },
+          { source: "__hub_income__", target: "Food", value: 200 },
+          { source: "__hub_income__", target: "Transport", value: 80 },
         ],
         meta: { row_count: 2, truncated: false, query_ms: 4 },
       },
@@ -85,8 +85,8 @@ describe("SankeyWidget", () => {
     mockUseSankeyQuery.mockReturnValue({
       data: {
         links: [
-          { source: "Income", target: "Food", value: 200 },
-          { source: "Income", target: "Transport", value: 80 },
+          { source: "__hub_income__", target: "Food", value: 200 },
+          { source: "__hub_income__", target: "Transport", value: 80 },
         ],
         meta: { row_count: 2, truncated: false, query_ms: 4 },
       },
@@ -99,20 +99,21 @@ describe("SankeyWidget", () => {
 
     const chart = await screen.findByTestId("nivo-sankey");
 
-    // Nodes: unique ids from links (Income, Food, Transport)
+    // Nodes: unique ids from links — sentinel id is preserved as the node id
+    // (label mapping is done via the label accessor, not by rewriting the id).
     const nodes = JSON.parse(chart.getAttribute("data-nodes") ?? "[]") as { id: string }[];
     const nodeIds = nodes.map((n) => n.id).sort();
-    expect(nodeIds).toEqual(["Food", "Income", "Transport"]);
+    expect(nodeIds).toEqual(["Food", "Transport", "__hub_income__"]);
 
-    // Links: pass-through from SankeyLink[]
+    // Links: pass-through from SankeyLink[] with sentinel ids on the wire
     const links = JSON.parse(chart.getAttribute("data-links") ?? "[]") as {
       source: string;
       target: string;
       value: number;
     }[];
     expect(links).toHaveLength(2);
-    expect(links[0]).toEqual({ source: "Income", target: "Food", value: 200 });
-    expect(links[1]).toEqual({ source: "Income", target: "Transport", value: 80 });
+    expect(links[0]).toEqual({ source: "__hub_income__", target: "Food", value: 200 });
+    expect(links[1]).toEqual({ source: "__hub_income__", target: "Transport", value: 80 });
 
     // Colors: must be CHART_SERIES
     const colors = JSON.parse(chart.getAttribute("data-colors") ?? "[]") as string[];
@@ -142,20 +143,27 @@ describe("SankeyWidget", () => {
     expect(screen.queryByTestId("nivo-sankey")).toBeNull();
   });
 
-  it("renders the empty state when data is undefined (not yet loaded but no error)", async () => {
-    mockUseSankeyQuery.mockReturnValue({
-      data: undefined,
-      error: undefined,
-      isLoading: false,
-      query: { filters: [], spending_granularity: "category" },
-    });
+  it(
+    // SWR has resolved (isLoading=false) but returned undefined data — this
+    // happens when the SWR cache entry is stale-while-revalidating and the
+    // previous value was undefined (e.g. first mount before any fetch completes
+    // in a non-loading SWR state). Treated as empty, not as loading.
+    "renders the empty state when SWR resolves with undefined data (stale/uninitialised cache)",
+    async () => {
+      mockUseSankeyQuery.mockReturnValue({
+        data: undefined,
+        error: undefined,
+        isLoading: false,
+        query: { filters: [], spending_granularity: "category" },
+      });
 
-    renderWithSWR(<SankeyWidget widget={makeWidget()} />);
+      renderWithSWR(<SankeyWidget widget={makeWidget()} />);
 
-    await waitFor(() =>
-      expect(screen.getByTestId("sankey-widget-empty")).toBeInTheDocument(),
-    );
-  });
+      await waitFor(() =>
+        expect(screen.getByTestId("sankey-widget-empty")).toBeInTheDocument(),
+      );
+    },
+  );
 
   it("renders a loading skeleton while loading", () => {
     mockUseSankeyQuery.mockReturnValue({
@@ -198,5 +206,24 @@ describe("SankeyWidget", () => {
     renderWithSWR(<SankeyWidget widget={makeWidget()} />);
 
     expect(screen.getByText("Cash flow")).toBeInTheDocument();
+  });
+
+  it("passes canvasFilters directly to useSankeyQuery (no fresh-object wrap)", () => {
+    const canvasFilters = { date_range: { start: "2026-01-01", end: "2026-01-31" } };
+    mockUseSankeyQuery.mockReturnValue({
+      data: undefined,
+      error: undefined,
+      isLoading: true,
+      query: { filters: [], spending_granularity: "category" },
+    });
+
+    renderWithSWR(<SankeyWidget widget={makeWidget()} canvasFilters={canvasFilters} />);
+
+    // The hook is called with the exact canvasFilters reference, not a
+    // fresh {} fallback that would defeat useMemo in useSankeyQuery.
+    expect(mockUseSankeyQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      canvasFilters,
+    );
   });
 });

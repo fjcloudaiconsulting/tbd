@@ -2,22 +2,29 @@
 
 /**
  * Nivo ResponsiveSankey inner for SankeyWidget. Split out so @nivo/sankey is
- * dynamically imported (ssr:false) only when a chart mounts — consistent with
- * how the other widgets code-split their chart engines via next/dynamic.
+ * code-split (ssr:false) only when a chart mounts — the single dynamic()
+ * boundary lives in SankeyWidget.tsx; here we import ResponsiveSankey
+ * statically (matching BarWidgetChart / LineWidgetChart).
  *
  * Conversion: the backend returns ``SankeyLink[]`` (source/target/value).
  * Nivo expects ``{ nodes: [{id}], links: [{source, target, value}] }``. We
  * derive unique node ids from the union of all source and target strings so
  * Nivo never sees an undeclared node id.
  *
- * Colors: ``CHART_SERIES`` — the same categorical palette every other
- * report widget uses, so the Sankey's node colors register with the rest
- * of the canvas.
+ * Hub/sentinel ids: the backend may return hub sentinel ids
+ * (``__hub_income__``, ``__hub_savings__``, ``__hub_other__``) instead of
+ * the display strings "Income" / "Savings" / "Other". The Nivo node ``id``
+ * MUST stay the sentinel so link resolution works, but the displayed label
+ * must be the friendly text — achieved via the ``label`` accessor.
+ *
+ * Colors: ``SANKEY_COLORS`` — stable module-level reference so Nivo's
+ * ordinal-scale memo is not defeated by a new array every render.
  */
 import { useMemo } from "react";
-import dynamic from "next/dynamic";
+import { ResponsiveSankey } from "@nivo/sankey";
 
 import { CHART_SERIES } from "@/lib/chart-colors";
+import { formatMeasureValue } from "@/lib/reports/series";
 import type { SankeyLink } from "@/lib/reports/types";
 
 // Nivo's sankey types
@@ -34,24 +41,19 @@ interface NivoSankeyData {
   links: NivoLink[];
 }
 
-// Dynamic import with ssr:false so Nivo never tries to run in Node/jsdom
-// (it depends on browser-only layout APIs).
-const ResponsiveSankey = dynamic(
-  () => import("@nivo/sankey").then((m) => m.ResponsiveSankey),
-  {
-    ssr: false,
-    loading: () => (
-      <div
-        data-testid="sankey-widget-chart-loading"
-        className="h-full w-full animate-pulse rounded bg-border/40"
-      />
-    ),
-  },
-);
+/**
+ * Hub/sentinel id → friendly display label mapping.
+ * Real category node ids are not present here; their label === id.
+ */
+export const HUB_LABELS: Record<string, string> = {
+  __hub_income__: "Income",
+  __hub_savings__: "Savings",
+  __hub_other__: "Other",
+};
 
-export interface SankeyWidgetChartProps {
-  links: SankeyLink[];
-}
+/** Stable color array ref — defeats Nivo's ordinal-scale memo when spread
+ *  as a new array each render. */
+const SANKEY_COLORS = [...CHART_SERIES];
 
 function buildNivoData(links: SankeyLink[]): NivoSankeyData {
   // Collect unique node ids from the union of all source and target values,
@@ -74,14 +76,20 @@ function buildNivoData(links: SankeyLink[]): NivoSankeyData {
   };
 }
 
-export default function SankeyWidgetChart({ links }: SankeyWidgetChartProps) {
+export interface SankeyWidgetChartProps {
+  links: SankeyLink[];
+  currency?: string;
+  title?: string;
+}
+
+export default function SankeyWidgetChart({ links, currency, title }: SankeyWidgetChartProps) {
   const data = useMemo(() => buildNivoData(links), [links]);
 
   return (
     <ResponsiveSankey
       data={data}
-      colors={[...CHART_SERIES]}
-      margin={{ top: 8, right: 16, bottom: 8, left: 16 }}
+      colors={SANKEY_COLORS}
+      margin={{ top: 8, right: 80, bottom: 8, left: 80 }}
       nodeOpacity={1}
       nodeHoverOpacity={1}
       nodeThickness={18}
@@ -99,6 +107,9 @@ export default function SankeyWidgetChart({ links }: SankeyWidgetChartProps) {
       labelPosition="outside"
       labelOrientation="horizontal"
       labelPadding={12}
+      // Map hub sentinel ids to friendly display labels; real category ids
+      // pass through unchanged (HUB_LABELS[id] is undefined → fall back to id).
+      label={(node) => HUB_LABELS[node.id] ?? node.id}
       // labelTextColor is the authoritative knob Nivo uses for outside node
       // labels (via getLabelTextColor). A plain string is a valid
       // InheritedColorConfigStaticColor; CSS vars resolve in SVG fill.
@@ -115,8 +126,45 @@ export default function SankeyWidgetChart({ links }: SankeyWidgetChartProps) {
           },
         },
       }}
-      animate={true}
-      motionConfig="gentle"
+      // Currency-formatted node tooltip: shows friendly hub label + amount.
+      nodeTooltip={({ node }) => (
+        <div
+          style={{
+            background: "var(--color-surface)",
+            color: "var(--color-text-primary)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 4,
+            padding: "6px 10px",
+            fontSize: 12,
+          }}
+        >
+          <strong>{HUB_LABELS[node.id] ?? node.id}</strong>
+          {": "}
+          {formatMeasureValue(node.value, "currency", currency)}
+        </div>
+      )}
+      // Currency-formatted link tooltip: shows source→target + amount.
+      linkTooltip={({ link }) => (
+        <div
+          style={{
+            background: "var(--color-surface)",
+            color: "var(--color-text-primary)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 4,
+            padding: "6px 10px",
+            fontSize: 12,
+          }}
+        >
+          <strong>{HUB_LABELS[link.source.id] ?? link.source.id}</strong>
+          {" → "}
+          <strong>{HUB_LABELS[link.target.id] ?? link.target.id}</strong>
+          {": "}
+          {formatMeasureValue(link.value, "currency", currency)}
+        </div>
+      )}
+      // Disable animation for consistency with every other widget.
+      animate={false}
+      ariaLabel={title ?? "Cash flow Sankey chart"}
     />
   );
 }

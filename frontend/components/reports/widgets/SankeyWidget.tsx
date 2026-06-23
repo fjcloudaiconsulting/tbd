@@ -24,7 +24,7 @@ const SankeyWidgetChart = dynamic(() => import("./SankeyWidgetChart"), {
   ssr: false,
   loading: () => (
     <div
-      data-testid="sankey-widget-chart-outer-loading"
+      data-testid="sankey-widget-chart-loading"
       className="h-full w-full animate-pulse rounded bg-border/40"
     />
   ),
@@ -34,10 +34,11 @@ interface Props {
   widget: SankeyWidgetType;
   canvasFilters?: CanvasFilters;
   editMode?: boolean;
+  currency?: string;
 }
 
-export default function SankeyWidget({ widget, canvasFilters, editMode: _editMode }: Props) {
-  const { data, error, isLoading } = useSankeyQuery(widget, canvasFilters ?? {});
+export default function SankeyWidget({ widget, canvasFilters, editMode: _editMode, currency }: Props) {
+  const { data, error, isLoading } = useSankeyQuery(widget, canvasFilters);
 
   const links = data?.links ?? [];
   const hasLinks = links.length > 0;
@@ -48,7 +49,10 @@ export default function SankeyWidget({ widget, canvasFilters, editMode: _editMod
       data-widget-id={widget.id}
       className="flex h-full flex-col rounded-lg border border-border bg-surface p-4"
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div
+        className="mb-2 flex items-center justify-between gap-2"
+        aria-label={widget.title || "Cash flow Sankey diagram"}
+      >
         <div className="text-sm font-semibold text-text-primary">
           {widget.title || "Cash flow"}
         </div>
@@ -75,7 +79,11 @@ export default function SankeyWidget({ widget, canvasFilters, editMode: _editMod
             No income in this period to chart cash flow
           </div>
         ) : (
-          <SankeyWidgetChart links={links} />
+          <SankeyWidgetChart
+            links={links}
+            currency={currency}
+            title={widget.title}
+          />
         )}
       </div>
     </div>

@@ -300,6 +300,7 @@ function renderWidgetByType(
           widget={w}
           canvasFilters={canvasFilters}
           editMode={editMode}
+          currency={currency}
         />
       );
   }
