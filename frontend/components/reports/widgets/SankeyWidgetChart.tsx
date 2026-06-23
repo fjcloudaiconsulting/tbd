@@ -90,10 +90,31 @@ export default function SankeyWidgetChart({ links }: SankeyWidgetChartProps) {
       linkOpacity={0.35}
       linkHoverOpacity={0.6}
       linkContract={1}
+      // Link ribbons already default to source-node color (Nivo sets
+      // link.color = link.source.color internally). Keeping
+      // enableLinkGradient={false} (the default) preserves that solid
+      // source-color fill without a gradient.
+      enableLinkGradient={false}
       enableLabels={true}
       labelPosition="outside"
       labelOrientation="horizontal"
       labelPadding={12}
+      // labelTextColor is the authoritative knob Nivo uses for outside node
+      // labels (via getLabelTextColor). A plain string is a valid
+      // InheritedColorConfigStaticColor; CSS vars resolve in SVG fill.
+      labelTextColor="var(--color-text-primary)"
+      theme={{
+        text: { fill: "var(--color-text-primary)", fontSize: 11 },
+        labels: { text: { fill: "var(--color-text-primary)", fontSize: 11 } },
+        tooltip: {
+          container: {
+            background: "var(--color-surface)",
+            color: "var(--color-text-primary)",
+            fontSize: 12,
+            border: "1px solid var(--color-border)",
+          },
+        },
+      }}
       animate={true}
       motionConfig="gentle"
     />
