@@ -38,7 +38,11 @@ from app.schemas.reports_query import (
     SankeyQuery,
     SankeyResponse,
 )
-from app.services.reports_query_service import _apply_scalar_filter, _apply_tag_filter
+from app.services.reports_query_service import (
+    _apply_query_timeout,
+    _apply_scalar_filter,
+    _apply_tag_filter,
+)
 from app.services.transaction_filters import reportable_transaction_filter
 
 
@@ -60,6 +64,7 @@ async def build_sankey(
         ``income_total == 0`` (the frontend renders an empty state).
     """
     started = time.perf_counter()
+    dialect_name = db.bind.dialect.name if db.bind is not None else "mysql"
 
     # ── Income aggregation ──────────────────────────────────────────
     # SUM(amount) grouped by category name for all reportable income rows.
@@ -76,6 +81,7 @@ async def build_sankey(
     )
     income_stmt = _apply_user_filters(income_stmt, query.filters, org_id)
     income_stmt = income_stmt.group_by(Category.name)
+    income_stmt = _apply_query_timeout(income_stmt, dialect_name)
 
     income_rows = (await db.execute(income_stmt)).mappings().all()
 
@@ -113,6 +119,7 @@ async def build_sankey(
         )
         expense_stmt = _apply_user_filters(expense_stmt, query.filters, org_id)
         expense_stmt = expense_stmt.group_by(Category.name)
+    expense_stmt = _apply_query_timeout(expense_stmt, dialect_name)
 
     expense_rows = (await db.execute(expense_stmt)).mappings().all()
 
