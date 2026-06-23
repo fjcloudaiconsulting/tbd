@@ -30,6 +30,12 @@ export interface AreaWidgetChartProps {
   format: "currency" | "number" | "percent";
   /** Org currency ISO code; prefixes the symbol when format is "currency". */
   currency?: string;
+  /**
+   * Stable widget id used to namespace SVG linearGradient ids so two area
+   * widgets on the same canvas never share a <defs> id and steal each
+   * other's gradient.
+   */
+  widgetId?: string;
 }
 
 export default function AreaWidgetChart({
@@ -39,10 +45,29 @@ export default function AreaWidgetChart({
   stackId,
   format,
   currency,
+  widgetId = "area",
 }: AreaWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <AreaChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
+        <defs>
+          {seriesKeys.map((key, i) => {
+            const color = CHART_SERIES[i % CHART_SERIES.length];
+            return (
+              <linearGradient
+                key={key}
+                id={`grad-${widgetId}-${i}`}
+                x1="0"
+                y1="0"
+                x2="0"
+                y2="1"
+              >
+                <stop offset="0%" stopColor={color} stopOpacity={0.5} />
+                <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+              </linearGradient>
+            );
+          })}
+        </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
         <XAxis
           dataKey="label"
@@ -67,8 +92,7 @@ export default function AreaWidgetChart({
             name={labels[i]}
             stackId={stackId}
             stroke={CHART_SERIES[i % CHART_SERIES.length]}
-            fill={CHART_SERIES[i % CHART_SERIES.length]}
-            fillOpacity={seriesKeys.length > 1 ? 0.35 : 0.55}
+            fill={`url(#grad-${widgetId}-${i})`}
             strokeWidth={2}
             isAnimationActive={false}
           />
