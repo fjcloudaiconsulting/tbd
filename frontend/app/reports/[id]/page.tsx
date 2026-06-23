@@ -331,6 +331,25 @@ export function orderWidgetsForStack(widgets: Widget[]): Widget[] {
   });
 }
 
+// Chart widgets need a definite height for Recharts/Nivo height="100%" to
+// render in the mobile stack (the wrapper is otherwise auto-height → ~0).
+// KPI and table size to their content, so they stay natural-height.
+const CHART_STACK_TYPES = new Set<WidgetType>([
+  "bar", "stacked_bar", "line", "area", "pie", "sparkline", "sankey",
+]);
+
+/**
+ * Returns a pixel height for the mobile stack wrapper of a chart widget,
+ * so that Recharts/Nivo ``height="100%"`` resolves to a usable size.
+ * Returns ``undefined`` for content widgets (kpi, table) that naturally
+ * size to their own content.
+ */
+export function mobileStackHeight(widget: Widget): number | undefined {
+  if (!CHART_STACK_TYPES.has(widget.type)) return undefined;
+  const base = widget.grid.h * 56; // ~rowHeight; taller widgets stay taller
+  return Math.min(Math.max(base, widget.type === "sankey" ? 260 : 220), 460);
+}
+
 /**
  * True when the viewport is below Tailwind's ``sm`` breakpoint. SSR-safe
  * (returns false until mounted) and listens for breakpoint crossings so
@@ -964,11 +983,14 @@ export default function ReportEditorPage({ params }: PageProps) {
               data-testid="reports-canvas-stack"
               className="flex flex-col gap-3"
             >
-              {orderWidgetsForStack(layout.widgets).map((w) => (
-                <div key={w.id}>
-                  {renderWidgetByType(w, canvasFilters, false, currency)}
-                </div>
-              ))}
+              {orderWidgetsForStack(layout.widgets).map((w) => {
+                const h = mobileStackHeight(w);
+                return (
+                  <div key={w.id} style={h ? { height: h } : undefined}>
+                    {renderWidgetByType(w, canvasFilters, false, currency)}
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <Canvas

@@ -69,6 +69,7 @@ vi.mock("next/navigation", () => ({
 
 import ReportEditorPage, {
   orderWidgetsForStack,
+  mobileStackHeight,
 } from "@/app/reports/[id]/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import * as reportsApi from "@/lib/reports/api";
@@ -1001,6 +1002,15 @@ describe("ReportEditorPage", () => {
     ]);
     // Pure function: does not mutate the input order.
     expect(widgets.map((w) => w.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("gives chart widgets a definite mobile height and leaves KPI/table natural", () => {
+    expect(mobileStackHeight({ type: "bar", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight({ type: "area", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight({ type: "pie", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight({ type: "sankey", grid: { x: 0, y: 0, w: 8, h: 5 } } as any)).toBeGreaterThanOrEqual(260);
+    expect(mobileStackHeight({ type: "kpi", grid: { x: 0, y: 0, w: 3, h: 2 } } as any)).toBeUndefined();
+    expect(mobileStackHeight({ type: "table", grid: { x: 0, y: 0, w: 6, h: 6 } } as any)).toBeUndefined();
   });
 
   it("redirects to /dashboard when features.reports is false (per-org off)", async () => {
