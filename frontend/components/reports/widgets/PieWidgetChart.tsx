@@ -8,18 +8,8 @@
  */
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
+import { CHART_SERIES } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
-
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard donut). Slices cycle through chart-1..chart-5; the explicit
-// "Other" roll-up below stays on the neutral border track.
-const PIE_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-  "var(--color-chart-4)",
-  "var(--color-chart-5)",
-];
 
 export interface PieWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
@@ -52,7 +42,7 @@ export default function PieWidgetChart({
               fill={
                 row.label === "Other"
                   ? "var(--color-border)"
-                  : PIE_COLORS[i % PIE_COLORS.length]
+                  : CHART_SERIES[i % CHART_SERIES.length]
               }
             />
           ))}

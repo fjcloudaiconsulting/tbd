@@ -34,6 +34,7 @@ import type {
   BarWidget as BarWidgetType,
   CanvasFilters,
 } from "@/lib/reports/types";
+import { CHART_SERIES } from "@/lib/chart-colors";
 import WidgetCsvButton from "./WidgetCsvButton";
 import type { CsvCell } from "@/lib/reports/csv";
 
@@ -55,21 +56,8 @@ interface Props {
   currency?: string;
 }
 
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard). Kept in sync with BarWidgetChart's bar fills; duplicated
-// here rather than imported across the next/dynamic boundary so the
-// legend doesn't pull the recharts-laden chart module into the route's
-// initial JS.
-const LEGEND_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-  "var(--color-chart-4)",
-  "var(--color-chart-5)",
-];
-
 function legendColor(index: number): string {
-  return LEGEND_COLORS[index % LEGEND_COLORS.length];
+  return CHART_SERIES[index % CHART_SERIES.length];
 }
 
 export default function BarWidget({
