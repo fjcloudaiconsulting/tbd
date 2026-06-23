@@ -11,6 +11,7 @@
 import { apiFetch } from "@/lib/api";
 import type {
   CanvasFilters,
+  Filter,
   LayoutJson,
   ReportCreatePayload,
   ReportSummary,
@@ -19,7 +20,22 @@ import type {
   ReportVersionSummary,
   ReportsQuery,
   ReportsQueryResponse,
+  SankeyResponse,
 } from "./types";
+
+/**
+ * Wire body for ``POST /api/v1/reports/query/sankey``.
+ *
+ * Matches the backend ``SankeyQuery`` Pydantic model exactly — it uses
+ * ``extra="forbid"``, so only these three keys may appear on the wire.
+ * ``dataset`` and ``measure`` are implied (transactions + sum(amount))
+ * and must NOT be sent.
+ */
+export interface SankeyQueryBody {
+  filters: Filter[];
+  spending_granularity: "category" | "category_master";
+  top_n?: number;
+}
 
 export async function listReports(): Promise<ReportSummary[]> {
   return apiFetch<ReportSummary[]>("/api/v1/reports");
@@ -140,4 +156,23 @@ export async function saveLayout(
   canvas_filters_json: CanvasFilters,
 ): Promise<ReportSummary> {
   return updateReport(id, { layout_json, canvas_filters_json });
+}
+
+/**
+ * POST to the Sankey query endpoint.
+ *
+ * Sends only the backend-accepted keys (``filters``,
+ * ``spending_granularity``, and optionally ``top_n``). The backend
+ * implies ``dataset=transactions`` and ``measure=sum(amount)`` and
+ * uses ``extra="forbid"``, so sending ``dataset`` or ``measure`` would
+ * 422.
+ */
+export async function runSankeyQuery(
+  body: SankeyQueryBody,
+): Promise<SankeyResponse> {
+  return apiFetch<SankeyResponse>("/api/v1/reports/query/sankey", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }

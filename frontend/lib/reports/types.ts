@@ -17,7 +17,8 @@ export type WidgetType =
   | "area"
   | "pie"
   | "sparkline"
-  | "table";
+  | "table"
+  | "sankey";
 
 // PR3 exposes the full v1 catalog. ``WidgetTypeV1`` retains its name
 // as the "widgets shipped in v1" union; the picker hands one of these
@@ -268,8 +269,39 @@ export type SparklineWidget = BaseWidget<"sparkline", SparklineConfig>;
 export type StackedBarWidget = BaseWidget<"stacked_bar", StackedBarConfig>;
 export type TableWidget = BaseWidget<"table", TableConfig>;
 
+/**
+ * Sankey widget config. ``dataset`` and ``measure`` are kept for editor
+ * uniformity but are NOT sent on the wire — the backend endpoint
+ * ``POST /api/v1/reports/query/sankey`` implies transactions + sum(amount)
+ * and uses ``extra="forbid"``, so only ``filters``, ``spending_granularity``,
+ * and ``top_n`` travel in the request body.
+ */
+export interface SankeyConfig {
+  dataset: "transactions";
+  measure: Measure; // sum of amount
+  filters?: WidgetFilters;
+  spending_granularity?: "category" | "category_master"; // default "category"
+  top_n?: number;
+}
+
+export type SankeyWidget = BaseWidget<"sankey", SankeyConfig>;
+
+/** A single directed flow: source → target with a numeric value. */
+export interface SankeyLink {
+  source: string;
+  target: string;
+  value: number;
+}
+
+/** Response from ``POST /api/v1/reports/query/sankey``. */
+export interface SankeyResponse {
+  links: SankeyLink[];
+  meta: QueryMeta;
+}
+
 // Full v1 widget union. PR3 expands this from KPI + Bar to the
 // architect-locked eight-widget catalog (spec §2 "Widget catalog v1").
+// SankeyWidget is added in the w3 wave (task 3).
 export type Widget =
   | KPIWidget
   | BarWidget
@@ -278,7 +310,8 @@ export type Widget =
   | PieWidget
   | SparklineWidget
   | StackedBarWidget
-  | TableWidget;
+  | TableWidget
+  | SankeyWidget;
 
 export interface LayoutJson {
   version: 1;

@@ -25,6 +25,7 @@ import type {
   Dimension,
   KPIConfig,
   PieConfig,
+  SankeyConfig,
   SparklineConfig,
   TableConfig,
   Widget,
@@ -109,50 +110,57 @@ export default function DataTab({
 
   return (
     <>
-      <Section label="Data source">
-        <select
-          value={widget.config.dataset}
-          onChange={(e) => onSourceChange(e.target.value)}
-          aria-label="Data source"
-          className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-        >
-          {sources.length > 0 ? (
-            sources.map((s) => (
-              <option key={s.key} value={s.key}>
-                {s.label}
+      {/* Data source: Sankey is always transactions — hide the picker so
+          users cannot accidentally switch it and 422 the fixed endpoint. */}
+      {widget.type !== "sankey" && (
+        <Section label="Data source">
+          <select
+            value={widget.config.dataset}
+            onChange={(e) => onSourceChange(e.target.value)}
+            aria-label="Data source"
+            className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+          >
+            {sources.length > 0 ? (
+              sources.map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.label}
+                </option>
+              ))
+            ) : (
+              // Graceful fallback while the catalog loads: show the
+              // widget's current source so the control never renders empty.
+              <option value={widget.config.dataset}>
+                {DATASET_FALLBACK_LABELS[widget.config.dataset] ?? "Transactions"}
               </option>
-            ))
-          ) : (
-            // Graceful fallback while the catalog loads: show the
-            // widget's current source so the control never renders empty.
-            <option value={widget.config.dataset}>
-              {DATASET_FALLBACK_LABELS[widget.config.dataset] ?? "Transactions"}
-            </option>
-          )}
-        </select>
-      </Section>
-
-      {/* Aggregation / measures section. Single-measure widgets show
-          one row; multi-series widgets show one row per series with
-          an "Add series" button at the bottom. */}
-      {isMultiSeries(widget) ? (
-        <MeasuresEditor
-          widget={widget}
-          onChange={setSeries}
-          fieldOptions={fieldOptions}
-        />
-      ) : (
-        <SingleMeasureEditor
-          measure={
-            (widget.config as KPIConfig | BarConfig | PieConfig | SparklineConfig)
-              .measure
-          }
-          onChange={setSingleMeasure}
-          fieldOptions={fieldOptions}
-        />
+            )}
+          </select>
+        </Section>
       )}
 
-      {widget.type !== "kpi" && (
+      {/* Aggregation / measures section. Sankey has a fixed measure
+          (transactions sum(amount)) so we skip this block for it. Single-
+          measure widgets show one row; multi-series show one per series. */}
+      {widget.type !== "sankey" && (
+        isMultiSeries(widget) ? (
+          <MeasuresEditor
+            widget={widget}
+            onChange={setSeries}
+            fieldOptions={fieldOptions}
+          />
+        ) : (
+          <SingleMeasureEditor
+            measure={
+              (widget.config as KPIConfig | BarConfig | PieConfig | SparklineConfig)
+                .measure
+            }
+            onChange={setSingleMeasure}
+            fieldOptions={fieldOptions}
+          />
+        )
+      )}
+
+      {/* Primary dimension: skip for kpi (no dimensions) and sankey (fixed schema). */}
+      {widget.type !== "kpi" && widget.type !== "sankey" && (
         <Section label="Primary dimension" help="reports.master-category">
           <select
             value={
@@ -207,6 +215,74 @@ export default function DataTab({
             ))}
           </select>
         </Section>
+      )}
+
+      {/* Sankey-specific knobs. Dataset + measure are fixed (transactions +
+          sum(amount)); only granularity and top_n are user-configurable. */}
+      {widget.type === "sankey" && (
+        <>
+          <Section label="Spending breakdown" help="reports.master-category">
+            <fieldset className="flex flex-col gap-1.5">
+              <legend className="sr-only">Spending breakdown level</legend>
+              {(
+                [
+                  { value: "category", label: "Category" },
+                  { value: "category_master", label: "Master category" },
+                ] as const
+              ).map(({ value, label }) => (
+                <label
+                  key={value}
+                  className="flex items-center gap-2 text-sm text-text-primary"
+                >
+                  <input
+                    type="radio"
+                    name={`sankey-granularity-${widget.id}`}
+                    value={value}
+                    checked={
+                      ((widget.config as SankeyConfig).spending_granularity ??
+                        "category") === value
+                    }
+                    onChange={() => {
+                      onUpdate({
+                        ...widget,
+                        config: {
+                          ...(widget.config as SankeyConfig),
+                          spending_granularity: value,
+                        },
+                      });
+                    }}
+                    aria-label={label}
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </fieldset>
+          </Section>
+          <Section label="Top N categories">
+            <input
+              type="number"
+              min={2}
+              max={50}
+              placeholder="All"
+              value={(widget.config as SankeyConfig).top_n ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const n = parseInt(raw, 10);
+                const clamped =
+                  Number.isNaN(n) || n < 2 ? undefined : Math.min(n, 50);
+                onUpdate({
+                  ...widget,
+                  config: {
+                    ...(widget.config as SankeyConfig),
+                    top_n: clamped,
+                  },
+                });
+              }}
+              aria-label="Top N categories"
+              className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+            />
+          </Section>
+        </>
       )}
     </>
   );

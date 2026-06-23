@@ -131,6 +131,16 @@ export function buildQueryAst(
     };
   }
 
+  // Sankey widgets use useSankeyQuery, not useReportQuery. This branch
+  // is unreachable in normal operation; it guards the type-checker so
+  // the sparkline fallback below doesn't try to read SankeyConfig fields
+  // (dimensions/sort/limit) that don't exist on SankeyConfig.
+  if (widget.type === "sankey") {
+    throw new Error(
+      "buildQueryAst called for a sankey widget; use useSankeyQuery instead",
+    );
+  }
+
   // Sparkline.
   return {
     dataset: widget.config.dataset,

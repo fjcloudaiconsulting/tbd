@@ -236,6 +236,7 @@ export default function WidgetEditorPopover({
                   filters={widget.config.filters ?? {}}
                   canvasFilters={canvasFilters}
                   dataset={widget.config.dataset}
+                  hideTxnType={widget.type === "sankey"}
                   onChange={setFilters}
                 />
               )}

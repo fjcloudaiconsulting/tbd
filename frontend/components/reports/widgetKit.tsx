@@ -11,7 +11,7 @@
  * "no id" mode through the big saved-report page.
  */
 import type { CanvasFilters, Widget, WidgetType } from "@/lib/reports/types";
-import type { BarConfig, KPIConfig } from "@/lib/reports/types";
+import type { BarConfig, KPIConfig, SankeyConfig } from "@/lib/reports/types";
 import KPIWidget from "@/components/reports/widgets/KPIWidget";
 import BarWidget from "@/components/reports/widgets/BarWidget";
 import LineWidget from "@/components/reports/widgets/LineWidget";
@@ -20,6 +20,7 @@ import PieWidget from "@/components/reports/widgets/PieWidget";
 import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
 import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
 import TableWidget from "@/components/reports/widgets/TableWidget";
+import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
 
 function emptyKPI(id: string): Widget {
   const config: KPIConfig = {
@@ -120,6 +121,21 @@ function emptySparkline(id: string): Widget {
   };
 }
 
+function emptySankey(id: string): Widget {
+  const config: SankeyConfig = {
+    dataset: "transactions",
+    measure: { agg: "sum", field: "amount" },
+    spending_granularity: "category",
+  };
+  return {
+    id,
+    type: "sankey",
+    title: "Cash flow",
+    grid: { x: 0, y: 0, w: 8, h: 5 },
+    config,
+  };
+}
+
 export function emptyWidget(type: WidgetType, id: string): Widget {
   switch (type) {
     case "kpi":
@@ -138,6 +154,8 @@ export function emptyWidget(type: WidgetType, id: string): Widget {
       return emptyPie(id);
     case "sparkline":
       return emptySparkline(id);
+    case "sankey":
+      return emptySankey(id);
   }
 }
 
@@ -186,6 +204,14 @@ export function renderWidgetByType(
     case "table":
       return (
         <TableWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+        />
+      );
+    case "sankey":
+      return (
+        <SankeyWidget
           widget={w}
           canvasFilters={canvasFilters}
           editMode={editMode}

@@ -47,6 +47,7 @@ DEFAULT_LIMIT = 100
 MAX_FILTERS = 20
 MAX_DIMENSIONS = 2
 MAX_DATE_WINDOW_DAYS = 5 * 365 + 2  # 5 years inclusive of two leap days.
+MAX_TOP_N = 100  # Upper bound for SankeyQuery.top_n (frontend clamps min=2).
 
 # Fields a SUM / AVG may target. Source-agnostic numeric sanity gate — the
 # per-source validate() still rejects a field the source does not publish.
@@ -256,6 +257,39 @@ class QueryRow(BaseModel):
 
 class ReportsQueryResponse(BaseModel):
     rows: List[dict]
+    meta: QueryMeta
+
+
+# ─── Sankey schemas ──────────────────────────────────────────────────
+
+
+class SankeyLink(BaseModel):
+    """A single directed flow: source → target with a numeric value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    target: str
+    value: float
+
+
+class SankeyQuery(BaseModel):
+    """Request body for ``POST /api/v1/reports/query/sankey``.
+
+    ``dataset`` is implicitly transactions; ``measure`` is implicitly
+    sum(amount). ``extra="forbid"`` rejects unknown wire keys so
+    ``org_id`` can never arrive from the client.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    filters: List[Filter] = Field(default_factory=list, max_length=MAX_FILTERS)
+    spending_granularity: Literal["category", "category_master"] = "category"
+    top_n: Optional[int] = Field(default=None, ge=2, le=MAX_TOP_N)
+
+
+class SankeyResponse(BaseModel):
+    links: List[SankeyLink]
     meta: QueryMeta
 
 
