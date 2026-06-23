@@ -1006,11 +1006,40 @@ describe("ReportEditorPage", () => {
 
   it("gives chart widgets a definite mobile height and leaves KPI/table natural", () => {
     expect(mobileStackHeight({ type: "bar", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight({ type: "stacked_bar", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight({ type: "line", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
     expect(mobileStackHeight({ type: "area", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
     expect(mobileStackHeight({ type: "pie", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
+    expect(mobileStackHeight({ type: "sparkline", grid: { x: 0, y: 0, w: 6, h: 4 } } as any)).toBeGreaterThanOrEqual(220);
     expect(mobileStackHeight({ type: "sankey", grid: { x: 0, y: 0, w: 8, h: 5 } } as any)).toBeGreaterThanOrEqual(260);
     expect(mobileStackHeight({ type: "kpi", grid: { x: 0, y: 0, w: 3, h: 2 } } as any)).toBeUndefined();
     expect(mobileStackHeight({ type: "table", grid: { x: 0, y: 0, w: 6, h: 6 } } as any)).toBeUndefined();
+  });
+
+  it("report header row allows wrapping so action buttons do not overflow on small screens", async () => {
+    mockUser(true);
+    getReportMock.mockResolvedValue(REPORT_WITH_WIDGET as never);
+
+    renderWithSWR(<ReportEditorPage params={makeParams()} />);
+
+    await screen.findByTestId("kpi-widget");
+
+    // The outermost header element (direct child of report-editor, contains
+    // both the breadcrumb group and the action button group).
+    const header = screen
+      .getByTestId("report-editor")
+      .querySelector("header")!;
+    expect(header).not.toBeNull();
+    expect(header.className).toMatch(/flex-wrap/);
+
+    // The right-side action group must also allow wrapping so the buttons
+    // stack below the breadcrumb rather than overflow off-screen.
+    // It is the second direct flex child of the header.
+    const actionGroup = header.querySelector<HTMLElement>(
+      '[data-testid="report-editor-action-group"]',
+    )!;
+    expect(actionGroup).not.toBeNull();
+    expect(actionGroup.className).toMatch(/flex-wrap/);
   });
 
   it("redirects to /dashboard when features.reports is false (per-org off)", async () => {
