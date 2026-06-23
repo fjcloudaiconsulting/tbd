@@ -343,7 +343,7 @@ const CHART_STACK_TYPES = new Set<WidgetType>([
 export function mobileStackHeight(widget: Widget): number | undefined {
   if (!CHART_STACK_TYPES.has(widget.type)) return undefined;
   const base = widget.grid.h * 56; // ~rowHeight; taller widgets stay taller
-  return Math.min(Math.max(base, widget.type === "sankey" ? 260 : 220), 460);
+  return Math.min(Math.max(base, widget.type === "sankey" || widget.type === "pie" ? 260 : 220), 460);
 }
 
 export default function ReportEditorPage({ params }: PageProps) {

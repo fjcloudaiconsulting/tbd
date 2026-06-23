@@ -1009,13 +1009,20 @@ describe("ReportEditorPage", () => {
     // typed fixtures rather than full per-type configs.
     const fixture = (type: Widget["type"], w: number, h: number): Widget =>
       ({ id: "x", type, title: "", grid: { x: 0, y: 0, w, h }, config: {} } as unknown as Widget);
-    expect(mobileStackHeight(fixture("bar", 6, 4))).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight(fixture("stacked_bar", 6, 4))).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight(fixture("line", 6, 4))).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight(fixture("area", 6, 4))).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight(fixture("pie", 6, 4))).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight(fixture("sparkline", 6, 4))).toBeGreaterThanOrEqual(220);
-    expect(mobileStackHeight(fixture("sankey", 8, 5))).toBeGreaterThanOrEqual(260);
+
+    // --- floor branch: h=1 → base=56, below all floors ---
+    // non-pie / non-sankey chart type hits the 220 floor
+    expect(mobileStackHeight(fixture("bar", 6, 1))).toBe(220);
+    expect(mobileStackHeight(fixture("line", 6, 1))).toBe(220);
+    // pie hits the 260 floor (unconditional bottom legend needs extra room)
+    expect(mobileStackHeight(fixture("pie", 6, 1))).toBe(260);
+    // sankey hits the 260 floor
+    expect(mobileStackHeight(fixture("sankey", 8, 1))).toBe(260);
+
+    // --- cap branch: h=10 → base=560, above the 460 cap ---
+    expect(mobileStackHeight(fixture("bar", 6, 10))).toBe(460);
+
+    // --- content widgets: no fixed height, size to own content ---
     expect(mobileStackHeight(fixture("kpi", 3, 2))).toBeUndefined();
     expect(mobileStackHeight(fixture("table", 6, 6))).toBeUndefined();
   });
