@@ -397,7 +397,10 @@ async def execute_query(
     datasets used in tests finish in milliseconds, so the gap is
     intentional rather than a defect.
     """
-    dialect = db.bind.dialect.name if db.bind is not None else "mysql"
+    try:
+        dialect = db.get_bind().dialect.name
+    except Exception:
+        dialect = "mysql"
     stmt = compile_ast_to_query(ast, org_id=org_id, dialect_name=dialect)
     stmt = _apply_query_timeout(stmt, dialect)
     started = time.perf_counter()

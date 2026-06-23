@@ -42,6 +42,7 @@ export default function FilterEditor({
   filters,
   canvasFilters,
   dataset,
+  hideTxnType = false,
   onChange,
 }: {
   filters: WidgetFilters;
@@ -53,6 +54,12 @@ export default function FilterEditor({
    * source is ``transactions`` — otherwise the backend 422s the choice.
    */
   dataset: Dataset;
+  /**
+   * When true, hides the transaction-type checkboxes entirely. Used for
+   * widget types where txn_type is a backend no-op (e.g. Sankey), so the
+   * user is not shown a control that has no effect on the chart.
+   */
+  hideTxnType?: boolean;
   onChange: (next: WidgetFilters) => void;
 }) {
   const allowTransfer = dataset === "transactions";
@@ -114,13 +121,15 @@ export default function FilterEditor({
         />
       </div>
 
-      <div className="flex flex-col gap-1">
-        <TxnTypeCheckboxRow
-          value={filters.txn_type}
-          allowTransfer={allowTransfer}
-          onChange={(txn_type) => onChange({ ...filters, txn_type })}
-        />
-      </div>
+      {!hideTxnType && (
+        <div className="flex flex-col gap-1">
+          <TxnTypeCheckboxRow
+            value={filters.txn_type}
+            allowTransfer={allowTransfer}
+            onChange={(txn_type) => onChange({ ...filters, txn_type })}
+          />
+        </div>
+      )}
 
       <div className="flex flex-col gap-1">
         <div className="text-xs text-text-secondary">Amount range</div>

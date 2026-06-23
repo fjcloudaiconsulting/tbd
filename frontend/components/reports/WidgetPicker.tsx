@@ -16,6 +16,7 @@ import {
   AreaChart as AreaIcon,
   BarChart3,
   BarChartHorizontal,
+  GitMerge,
   Hash,
   LineChart as LineIcon,
   PieChart as PieIcon,
@@ -109,6 +110,17 @@ const GROUPS: Group[] = [
         label: "Table",
         description: "Sortable, paginated rows. Up to five numeric columns.",
         Icon: TableIcon,
+      },
+    ],
+  },
+  {
+    label: "Flow",
+    options: [
+      {
+        type: "sankey",
+        label: "Cash flow (Sankey)",
+        description: "Directed flow from income sources through spending categories.",
+        Icon: GitMerge,
       },
     ],
   },

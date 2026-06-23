@@ -43,6 +43,7 @@ import type {
   LayoutJson,
   ReportSummary,
   ReportVersionSummary,
+  SankeyConfig,
   Widget,
 } from "@/lib/reports/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -61,6 +62,7 @@ import PieWidget from "@/components/reports/widgets/PieWidget";
 import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
 import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
 import TableWidget from "@/components/reports/widgets/TableWidget";
+import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
 import { reportCurrency } from "@/lib/reports/series";
 import type { WidgetType } from "@/lib/reports/types";
 
@@ -171,6 +173,21 @@ function emptySparkline(id: string): Widget {
   };
 }
 
+function emptySankey(id: string): Widget {
+  const config: SankeyConfig = {
+    dataset: "transactions",
+    measure: { agg: "sum", field: "amount" },
+    spending_granularity: "category",
+  };
+  return {
+    id,
+    type: "sankey",
+    title: "Cash flow",
+    grid: { x: 0, y: 0, w: 8, h: 5 },
+    config,
+  };
+}
+
 function emptyWidget(type: WidgetType, id: string): Widget {
   switch (type) {
     case "kpi":
@@ -189,6 +206,8 @@ function emptyWidget(type: WidgetType, id: string): Widget {
       return emptyPie(id);
     case "sparkline":
       return emptySparkline(id);
+    case "sankey":
+      return emptySankey(id);
   }
 }
 
@@ -269,6 +288,15 @@ function renderWidgetByType(
     case "table":
       return (
         <TableWidget
+          widget={w}
+          canvasFilters={canvasFilters}
+          editMode={editMode}
+          currency={currency}
+        />
+      );
+    case "sankey":
+      return (
+        <SankeyWidget
           widget={w}
           canvasFilters={canvasFilters}
           editMode={editMode}
