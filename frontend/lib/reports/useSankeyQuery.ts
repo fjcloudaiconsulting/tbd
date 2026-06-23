@@ -37,8 +37,9 @@ export interface UseSankeyQueryResult {
 /**
  * Builds the ``SankeyQuery`` wire body from a ``SankeyWidget`` config and the
  * shared canvas filters, then fetches via SWR. The SWR cache key is
- * ``["sankey-query", widgetId, JSON.stringify(body)]`` so two widgets with
- * identical configs share the same fetch.
+ * ``["sankey-query", widgetId, JSON.stringify(body)]`` — widget.id is included
+ * so each widget always gets its own cache entry even when configs are identical
+ * (two Sankey widgets would otherwise race on a shared key and clobber each other).
  *
  * Canvas date cascades through ``resolveFilters`` exactly as it does for all
  * other widgets: the widget's ``filters.date_range`` overrides the canvas

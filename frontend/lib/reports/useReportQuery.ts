@@ -137,7 +137,7 @@ export function buildQueryAst(
   // (dimensions/sort/limit) that don't exist on SankeyConfig.
   if (widget.type === "sankey") {
     throw new Error(
-      "buildQueryAst called for a sankey widget — use useSankeyQuery instead",
+      "buildQueryAst called for a sankey widget; use useSankeyQuery instead",
     );
   }
 
