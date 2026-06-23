@@ -8,18 +8,8 @@
  */
 import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
+import { CHART_SERIES } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
-
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard donut). Slices cycle through chart-1..chart-5; the explicit
-// "Other" roll-up below stays on the neutral border track.
-const PIE_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-  "var(--color-chart-4)",
-  "var(--color-chart-5)",
-];
 
 export interface PieWidgetChartProps {
   rows: Array<{ label: string; value: number }>;
@@ -34,38 +24,65 @@ export default function PieWidgetChart({
   format,
   currency,
 }: PieWidgetChartProps) {
+  // Self-guard: parent already ensures rows is non-empty, but be defensive.
+  if (rows.length === 0) return null;
+
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  const formattedTotal = formatMeasureValue(total, format, currency);
+
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <PieChart>
-        <Pie
-          data={rows}
-          dataKey="value"
-          nameKey="label"
-          innerRadius="40%"
-          outerRadius="75%"
-          stroke="var(--color-surface)"
-          isAnimationActive={false}
+    <div className="relative h-full w-full">
+      {/* Visually-hidden accessible alternative for the center total (SC 1.3.1).
+          Must live OUTSIDE the aria-hidden overlay so screen readers find it. */}
+      <span className="sr-only">Total: {formattedTotal}</span>
+      {/* Center total — absolutely positioned over the donut hole */}
+      <div
+        className="pointer-events-none absolute inset-0 flex items-center justify-center"
+        aria-hidden="true"
+      >
+        {/*
+         * -mt-8 compensates for the bottom Legend row (~32px / 2rem).
+         * Revisit if the legend wraps to two lines (e.g. many slices).
+         */}
+        <span
+          className="-mt-8 text-sm font-bold text-text-primary"
+          data-testid="pie-center-total"
         >
-          {rows.map((row, i) => (
-            <Cell
-              key={row.label}
-              fill={
-                row.label === "Other"
-                  ? "var(--color-border)"
-                  : PIE_COLORS[i % PIE_COLORS.length]
-              }
-            />
-          ))}
-        </Pie>
-        <Tooltip
-          formatter={(v) => formatMeasureValue(Number(v), format, currency)}
-        />
-        <Legend
-          verticalAlign="bottom"
-          wrapperStyle={{ fontSize: 11 }}
-          iconSize={8}
-        />
-      </PieChart>
-    </ResponsiveContainer>
+          {formattedTotal}
+        </span>
+      </div>
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={rows}
+            dataKey="value"
+            nameKey="label"
+            innerRadius="58%"
+            outerRadius="80%"
+            stroke="var(--color-surface)"
+            isAnimationActive={false}
+          >
+            {rows.map((row, i) => (
+              <Cell
+                key={row.label}
+                fill={
+                  row.label === "Other"
+                    ? "var(--color-border)"
+                    : CHART_SERIES[i % CHART_SERIES.length]
+                }
+              />
+            ))}
+          </Pie>
+          <Tooltip
+            formatter={(v) => formatMeasureValue(Number(v), format, currency)}
+          />
+          <Legend
+            verticalAlign="bottom"
+            wrapperStyle={{ fontSize: 11 }}
+            iconSize={8}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
   );
 }

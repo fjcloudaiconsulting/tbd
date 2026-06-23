@@ -59,6 +59,16 @@
      legible against the dark page. */
   --theme-scrim: rgba(7, 13, 24, 0.55);
   --theme-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+
+  /* Categorical chart scale — Brass Harmony (W3). Chart-only; see DESIGN.md amendment. */
+  --theme-cat-1: #D4A64A;
+  --theme-cat-2: #5FA8D3;
+  --theme-cat-3: #4ade80;
+  --theme-cat-4: #a78bfa;
+  --theme-cat-5: #2dd4bf;
+  --theme-cat-6: #f472b6;
+  --theme-cat-7: #f59e0b;
+  --theme-cat-8: #f87171;
 }
 
 /* ─── Light theme ─── */
@@ -111,6 +121,15 @@
      elevation a touch since white-on-white needs less punch. */
   --theme-scrim: rgba(11, 31, 58, 0.20);
   --theme-card-shadow: 0 18px 48px rgba(11, 31, 58, 0.18);
+
+  --theme-cat-1: #B88A2E;
+  --theme-cat-2: #2f7fb0;
+  --theme-cat-3: #16a34a;
+  --theme-cat-4: #7c3aed;
+  --theme-cat-5: #0d9488;
+  --theme-cat-6: #db2777;
+  --theme-cat-7: #d97706;
+  --theme-cat-8: #dc2626;
 }
 
 @theme {
@@ -158,15 +177,16 @@
   --color-scrim: var(--theme-scrim);
   --shadow-card: var(--theme-card-shadow);
 
-  /* Chart palette. Aliases of the themed status + neutral tokens above so
-     theme switches cascade automatically. Brass is intentionally excluded
-     per The One Brass Rule; danger appears only at index 5 for the
-     over-budget state. */
-  --color-chart-1: var(--theme-info);
-  --color-chart-2: var(--theme-success);
-  --color-chart-3: var(--theme-text-secondary);
-  --color-chart-4: var(--theme-text-muted);
-  --color-chart-5: var(--theme-danger);
+  /* Chart palette. Aliases of the Brass Harmony categorical scale.
+     Theme switches cascade automatically. See DESIGN.md amendment. */
+  --color-chart-1: var(--theme-cat-1);
+  --color-chart-2: var(--theme-cat-2);
+  --color-chart-3: var(--theme-cat-3);
+  --color-chart-4: var(--theme-cat-4);
+  --color-chart-5: var(--theme-cat-5);
+  --color-chart-6: var(--theme-cat-6);
+  --color-chart-7: var(--theme-cat-7);
+  --color-chart-8: var(--theme-cat-8);
 
   --font-display: "Fraunces", Georgia, serif;
   --font-body: "Outfit", system-ui, sans-serif;

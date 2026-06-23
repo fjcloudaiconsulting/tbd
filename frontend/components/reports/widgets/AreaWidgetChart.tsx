@@ -18,19 +18,8 @@ import {
   YAxis,
 } from "recharts";
 
-import { chartColor } from "@/lib/chart-colors";
+import { chartColor, CHART_SERIES } from "@/lib/chart-colors";
 import { formatMeasureValue } from "@/lib/reports/series";
-
-// Canonical categorical chart palette (theme tokens, mirrors the
-// dashboard). chart-5 (danger/red) sits last so neutral series don't
-// pick up alarm semantics until the cycle wraps.
-const AREA_COLORS = [
-  "var(--color-chart-1)",
-  "var(--color-chart-2)",
-  "var(--color-chart-3)",
-  "var(--color-chart-4)",
-  "var(--color-chart-5)",
-];
 
 export interface AreaWidgetChartProps {
   rows: Array<{ label: string } & Record<string, number | string>>;
@@ -41,6 +30,12 @@ export interface AreaWidgetChartProps {
   format: "currency" | "number" | "percent";
   /** Org currency ISO code; prefixes the symbol when format is "currency". */
   currency?: string;
+  /**
+   * Stable widget id used to namespace SVG linearGradient ids so two area
+   * widgets on the same canvas never share a <defs> id and steal each
+   * other's gradient.
+   */
+  widgetId?: string;
 }
 
 export default function AreaWidgetChart({
@@ -50,10 +45,33 @@ export default function AreaWidgetChart({
   stackId,
   format,
   currency,
+  widgetId = "area",
 }: AreaWidgetChartProps) {
   return (
     <ResponsiveContainer width="100%" height="100%">
       <AreaChart data={rows} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
+        <defs>
+          {seriesKeys.map((key, i) => {
+            const color = CHART_SERIES[i % CHART_SERIES.length];
+            // For overlaid multi-series, reduce fill density so lower series
+            // remain legible behind upper ones. Stacked charts use a single
+            // visual layer per series so the full 0.5 opacity is fine there.
+            const topOpacity = seriesKeys.length > 1 && !stackId ? 0.35 : 0.5;
+            return (
+              <linearGradient
+                key={key}
+                id={`grad-${widgetId}-${i}`}
+                x1="0"
+                y1="0"
+                x2="0"
+                y2="1"
+              >
+                <stop offset="0%" stopColor={color} stopOpacity={topOpacity} />
+                <stop offset="100%" stopColor={color} stopOpacity={0.02} />
+              </linearGradient>
+            );
+          })}
+        </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
         <XAxis
           dataKey="label"
@@ -77,9 +95,8 @@ export default function AreaWidgetChart({
             dataKey={key}
             name={labels[i]}
             stackId={stackId}
-            stroke={AREA_COLORS[i % AREA_COLORS.length]}
-            fill={AREA_COLORS[i % AREA_COLORS.length]}
-            fillOpacity={seriesKeys.length > 1 ? 0.35 : 0.55}
+            stroke={CHART_SERIES[i % CHART_SERIES.length]}
+            fill={`url(#grad-${widgetId}-${i})`}
             strokeWidth={2}
             isAnimationActive={false}
           />

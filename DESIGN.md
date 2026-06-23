@@ -28,11 +28,14 @@ colors:
   warning-dim: "#F59E0B29"
   warning-text: "#0B1F3A"
   scrim: "#070D188C"
-  chart-1: "#5FA8D3"
-  chart-2: "#4ade80"
-  chart-3: "#9ba8bd"
-  chart-4: "#5a6a82"
-  chart-5: "#f87171"
+  chart-1: "#D4A64A"
+  chart-2: "#5FA8D3"
+  chart-3: "#4ade80"
+  chart-4: "#a78bfa"
+  chart-5: "#2dd4bf"
+  chart-6: "#f472b6"
+  chart-7: "#f59e0b"
+  chart-8: "#f87171"
   sidebar-bg: "#06101e"
   sidebar-text: "#7a8da6"
   sidebar-text-bright: "#E6EAF0"
@@ -201,9 +204,9 @@ Every status color carries a `-dim` low-alpha sibling for backgrounds (banners, 
 
 ### Data Visualization
 
-The chart palette is built entirely from the status and neutral tokens so a theme switch cascades through every chart automatically. Brass is intentionally excluded (it would violate *The One Brass Rule* if it appeared on every series), and danger sits only at the last index for the over-budget state.
+The categorical chart palette is an 8-hue scale (`chart-1..8`) with light and dark variants defined in `globals.css`, so a theme switch cascades through every chart automatically. *The One Brass Rule* continues to govern chrome (primary CTAs, the active sidebar/list item, the focus ring). The chart palette carries a narrow carve-out: one of the eight series slots is gold/brass because charts are **data**, not CTAs — they legitimately need many distinct hues, and one gold slice among eight does not dilute the "where do I click" signal. The over-budget state uses the `chartColor.over` semantic token (= `danger`/coral), not a positional chart-N index.
 
-- **chart-1** = Reference Blue, **chart-2** = Settled Green, **chart-3** = Mist, **chart-4** = Fog, **chart-5** = Overdue Coral (over-budget only).
+- **chart-1** = Gold, **chart-2** = Reference Blue, **chart-3** = Settled Green, **chart-4** = Violet, **chart-5** = Teal, **chart-6** = Pink, **chart-7** = Amber, **chart-8** = Coral.
 
 ### Overlay Chrome
 
@@ -334,7 +337,7 @@ Badges are the inline status chips; banners are the full-width block messages. B
 - **Do** reserve Brass Tally for primary CTAs, focus states, and the active sidebar item. One brass moment per region; two at most.
 - **Do** prefer surface-tone changes over shadows for elevation at rest. Reach for `bg-surface-raised` before `shadow-md`.
 - **Do** import primitives from `lib/styles.ts` (`btnPrimary`, `btnSecondary`, `btnDangerSolid`, `card`, `input`, `label`, `badge*`, `stickyBar`). New primitives are added to that file, not reinvented inline.
-- **Do** build chart series from `chart-1…chart-5` so palettes follow theme switches; keep brass out of charts and reserve `chart-5` (coral) for the over-budget state.
+- **Do** build chart series from `chart-1…chart-8` so palettes follow theme switches; reserve the danger/coral semantic token (`chartColor.over`) for the over-budget state — not a positional chart-N index.
 - **Do** include `min-h-[44px]` on any pressable affordance whose parent is touch-likely (forms, dialogs, primary CTAs in mobile views). `btnPrimary` already bakes this in.
 - **Do** keep the sidebar navy in both themes. The product chrome carries the brand; only the data canvas adapts.
 - **Do** route brand-surface literals (landing hero, OG image, email, app icon) through `lib/brand.ts`; those surfaces must not theme-switch.
@@ -350,6 +353,6 @@ Badges are the inline status chips; banners are the full-width block messages. B
 - **Don't** use Fraunces for numbers, currency, or status text. Fraunces is for titles and selective emphasis only.
 - **Don't** introduce a new accent. The system has one. If a screen seems to call for a second, the answer is contrast through neutrals, not a second hue. (Warning Amber, coral, green, and blue are *status* tokens, not decorative accents.)
 - **Don't** use raw Tailwind palette colors (`amber-500`, `slate-700`, `gray-200`). There are no surviving exceptions; the old `btnWarning` carve-out is closed.
-- **Don't** put brass into a chart series, and don't theme-switch a brand surface. Charts stay neutral-plus-status; brand surfaces stay locked navy/brass.
+- **Don't** theme-switch a brand surface. Brand surfaces stay locked navy/brass; chart series are data — the chart-palette exception (one gold among eight) is documented in the Data Visualization section.
 - **Don't** rely on color alone to convey state. Pair every color with text, icon, or shape — required for AA compliance.
 - **Don't** put a shadow on the sidebar to "separate" it from the content. The dark navy already does that work.
