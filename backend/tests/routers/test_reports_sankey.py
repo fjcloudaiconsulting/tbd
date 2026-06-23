@@ -8,6 +8,8 @@ Pinned invariants:
 - Org-scoping: a second org's transactions do NOT appear.
 - extra/unknown body key → 422 (``extra="forbid"`` on SankeyQuery).
 - Valid request with no income → 200 with empty links (not an error).
+- top_n < 2 → 422 (ge=2 constraint).
+- top_n > MAX_TOP_N → 422 (le=MAX_TOP_N constraint).
 """
 from __future__ import annotations
 
@@ -37,7 +39,9 @@ from app.models.category import Category
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.models.user import Organization, Role, User
 from app.routers.reports import router as reports_router
+from app.schemas.reports_query import MAX_TOP_N
 from app.security import hash_password
+from app.services.sankey_service import HUB_INCOME, HUB_OTHER, HUB_SAVINGS
 
 
 # ── fixtures ──────────────────────────────────────────────────────────
@@ -198,9 +202,9 @@ async def test_sankey_returns_200_with_links(session_factory):
     assert "meta" in data
 
     by = {(lk["source"], lk["target"]): lk["value"] for lk in data["links"]}
-    assert by[("Salary", "Income")] == pytest.approx(5000.0)
-    assert by[("Income", "Housing")] == pytest.approx(2000.0)
-    assert by[("Income", "Savings")] == pytest.approx(3000.0)
+    assert by[("Salary", HUB_INCOME)] == pytest.approx(5000.0)
+    assert by[(HUB_INCOME, "Housing")] == pytest.approx(2000.0)
+    assert by[(HUB_INCOME, HUB_SAVINGS)] == pytest.approx(3000.0)
 
 
 @pytest.mark.asyncio
@@ -219,7 +223,7 @@ async def test_sankey_org_scoping(session_factory):
 
     assert "IncomeB" not in all_nodes, "Org B income category must not leak into Org A"
     # Total income must be 5000 (Org A only), not 14999.
-    income_total = sum(lk["value"] for lk in res.json()["links"] if lk["target"] == "Income")
+    income_total = sum(lk["value"] for lk in res.json()["links"] if lk["target"] == HUB_INCOME)
     assert income_total == pytest.approx(5000.0)
 
 
@@ -297,15 +301,16 @@ async def test_sankey_unsupported_filter_field_returns_422(session_factory):
 
 @pytest.mark.asyncio
 async def test_sankey_with_top_n(session_factory):
-    """top_n=1 keeps only the largest spending category, folds rest into Other."""
+    """top_n=2 keeps the two largest spending categories, folds rest into HUB_OTHER."""
     await _seed_two_orgs(session_factory)
-    # Add a second expense category to Org A to test folding.
+    # Add a second expense category to Org A to test folding (need >=3 for top_n=2 to fold).
     async with session_factory() as db:
         from sqlalchemy import select as _s
         org_a = (await db.execute(_s(Organization).where(Organization.name == "Org A"))).scalar_one()
         acct_a = (await db.execute(_s(Account).where(Account.org_id == org_a.id))).scalar_one()
         cat_food = Category(org_id=org_a.id, name="Food")
-        db.add(cat_food)
+        cat_transport = Category(org_id=org_a.id, name="Transport")
+        db.add_all([cat_food, cat_transport])
         await db.flush()
         db.add(
             Transaction(
@@ -315,16 +320,53 @@ async def test_sankey_with_top_n(session_factory):
                 date=date(2026, 6, 1), settled_date=date(2026, 6, 1),
             )
         )
+        db.add(
+            Transaction(
+                org_id=org_a.id, account_id=acct_a.id, category_id=cat_transport.id,
+                description="Transport", amount=Decimal("100"),
+                type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+                date=date(2026, 6, 1), settled_date=date(2026, 6, 1),
+            )
+        )
         await db.commit()
 
     app = _make_app(session_factory, _resolver("user_a"))
     with TestClient(app) as client:
-        res = client.post("/api/v1/reports/query/sankey", json={"filters": [], "top_n": 1})
+        # top_n=2 keeps Housing (2000) + Food (300); Transport (100) folds to HUB_OTHER.
+        res = client.post("/api/v1/reports/query/sankey", json={"filters": [], "top_n": 2})
 
     assert res.status_code == 200
     by = {(lk["source"], lk["target"]): lk["value"] for lk in res.json()["links"]}
 
-    # Housing (2000) is top-1. Food (300) folds to Other.
-    assert ("Income", "Housing") in by
-    assert ("Income", "Food") not in by
-    assert by[("Income", "Other")] == pytest.approx(300.0)
+    # Housing (2000) and Food (300) are top-2.
+    assert (HUB_INCOME, "Housing") in by
+    assert (HUB_INCOME, "Food") in by
+    assert (HUB_INCOME, "Transport") not in by
+    assert by[(HUB_INCOME, HUB_OTHER)] == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_sankey_top_n_below_minimum_returns_422(session_factory):
+    """top_n=1 is below the minimum of 2, must return 422."""
+    await _seed_two_orgs(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    with TestClient(app) as client:
+        res = client.post("/api/v1/reports/query/sankey", json={"filters": [], "top_n": 1})
+
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_sankey_top_n_above_max_returns_422(session_factory):
+    """top_n > MAX_TOP_N must return 422."""
+    await _seed_two_orgs(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/reports/query/sankey",
+            json={"filters": [], "top_n": MAX_TOP_N + 1},
+        )
+
+    assert res.status_code == 422

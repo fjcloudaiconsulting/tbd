@@ -2,13 +2,17 @@
 
 Produces income-hub Sankey links from the org's reportable transactions:
 
-    income_category → Income → spending_category
-                             ↘ Savings  (when income > expense)
+    income_category → HUB_INCOME → spending_category
+                                 ↘ HUB_SAVINGS  (when income > expense)
 
 Transfer pairs (``linked_transaction_id IS NOT NULL``), manual balance
 adjustments (``is_manual_adjustment``), and SKIPPED/REJECTED reconciliation
 rows are excluded via ``reportable_transaction_filter()`` — the same predicate
 used by budgets, forecasts, and every other aggregate surface.
+
+Categories with net amount <= 0 are excluded from links (Nivo cannot render
+zero or negative flow values).  An org where all income nets to zero returns
+``links=[]`` (the frontend renders an empty state).
 
 Why NOT ``execute_query`` / ``ReportsQuery`` ASTs:
     ``execute_query`` in ``reports_query_service`` does NOT apply
@@ -45,6 +49,15 @@ from app.services.reports_query_service import (
 )
 from app.services.transaction_filters import reportable_transaction_filter
 
+# ── Hub / sentinel node ids ─────────────────────────────────────────────
+# These are the WIRE values emitted in SankeyLink.source / .target.
+# Using opaque sentinel strings prevents real category names ("Income",
+# "Savings", "Other") from colliding with hub nodes and producing corrupt
+# or silently-merged links.  The frontend maps these to display labels.
+HUB_INCOME = "__hub_income__"
+HUB_SAVINGS = "__hub_savings__"
+HUB_OTHER = "__hub_other__"
+
 
 async def build_sankey(
     db: AsyncSession,
@@ -60,11 +73,18 @@ async def build_sankey(
         query: Validated ``SankeyQuery`` from the request body.
 
     Returns:
-        ``SankeyResponse`` with links and meta. Empty ``links=[]`` when
+        ``SankeyResponse`` with links and meta.  Empty ``links=[]`` when
         ``income_total == 0`` (the frontend renders an empty state).
+        Categories with net amount <= 0 are excluded; an org where all
+        income nets to zero also returns empty.
     """
+    # elapsed_ms covers both DB round-trips but excludes Python post-processing
+    # (matches reports_query_service query_ms semantics — clock is not moved).
     started = time.perf_counter()
-    dialect_name = db.bind.dialect.name if db.bind is not None else "mysql"
+    try:
+        dialect_name = db.get_bind().dialect.name
+    except Exception:
+        dialect_name = "mysql"
 
     # ── Income aggregation ──────────────────────────────────────────
     # SUM(amount) grouped by category name for all reportable income rows.
@@ -146,34 +166,35 @@ async def build_sankey(
     pre_fold_expense_count = len(expense_pairs)
 
     # ── Apply top_n folding on the expense side ──────────────────────
+    # After folding, expense_pairs has at most top_n+1 entries (top_n + Other).
     if query.top_n is not None and len(expense_pairs) > query.top_n:
-        # Sort by value descending; keep top_n, fold remainder into "Other".
+        # Sort by value descending; keep top_n, fold remainder into HUB_OTHER.
         expense_pairs_sorted = sorted(expense_pairs, key=lambda x: x[1], reverse=True)
         top = expense_pairs_sorted[: query.top_n]
         tail_total = sum(v for _, v in expense_pairs_sorted[query.top_n :])
         expense_pairs = top
         if tail_total > 0:
-            expense_pairs = list(expense_pairs) + [("Other", tail_total)]
+            expense_pairs = list(expense_pairs) + [(HUB_OTHER, tail_total)]
 
     # ── Build links ─────────────────────────────────────────────────
     links: list[SankeyLink] = []
 
-    # Income category → "Income" hub
+    # Income category → HUB_INCOME hub
     for cat, value in income_pairs:
         source = cat or "Uncategorised"
-        if source != "Income":  # guard self-loop
-            links.append(SankeyLink(source=source, target="Income", value=value))
+        if source != HUB_INCOME:  # guard self-loop (sentinel-safe)
+            links.append(SankeyLink(source=source, target=HUB_INCOME, value=value))
 
-    # "Income" hub → spending category
+    # HUB_INCOME hub → spending category
     for cat, value in expense_pairs:
         target = cat or "Uncategorised"
-        if target != "Income":  # guard self-loop
-            links.append(SankeyLink(source="Income", target=target, value=value))
+        if target != HUB_INCOME:  # guard self-loop (sentinel-safe)
+            links.append(SankeyLink(source=HUB_INCOME, target=target, value=value))
 
-    # "Income" → "Savings" when income exceeds expense
+    # HUB_INCOME → HUB_SAVINGS when income exceeds expense
     if income_total > expense_total:
         savings = income_total - expense_total
-        links.append(SankeyLink(source="Income", target="Savings", value=savings))
+        links.append(SankeyLink(source=HUB_INCOME, target=HUB_SAVINGS, value=savings))
 
     meta = QueryMeta(
         row_count=pre_fold_income_count + pre_fold_expense_count,
