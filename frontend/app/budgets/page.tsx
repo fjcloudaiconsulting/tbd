@@ -410,7 +410,7 @@ export default function BudgetsPage() {
           )}
 
           {/* Budget details */}
-          <div className={`${card} xl:col-span-2`}>
+          <div className={`${card} ${budgets.length > 0 ? "xl:col-span-2" : "xl:col-span-5"}`}>
             <div className={cardHeader}>
               <h2 className={cardTitle}>Details</h2>
             </div>

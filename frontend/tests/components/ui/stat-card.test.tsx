@@ -12,8 +12,18 @@ describe("StatCard", () => {
     expect(screen.getByText("Actual: 0.00")).toBeInTheDocument();
   });
   it("omits sub/badge when not provided", () => {
-    const { container } = render(<StatCard label="X" value="1" />);
+    render(<StatCard label="X" value="1" />);
     expect(screen.getByText("X")).toBeInTheDocument();
-    expect(container.textContent).toContain("1");
+    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.queryByText("Actual: 0.00")).not.toBeInTheDocument();
+    expect(screen.queryByText("BADGE")).not.toBeInTheDocument();
+  });
+  it("renders badge when provided", () => {
+    render(<StatCard label="Y" value="42" badge={<span>BADGE</span>} />);
+    expect(screen.getByText("BADGE")).toBeInTheDocument();
+  });
+  it("does not render badge when not provided", () => {
+    render(<StatCard label="Z" value="99" />);
+    expect(screen.queryByText("BADGE")).not.toBeInTheDocument();
   });
 });
