@@ -14,6 +14,7 @@ import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCl
 import dynamic from "next/dynamic";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import StatCard from "@/components/ui/StatCard";
 // chartColor (theme tokens) stays for the static DOM legend swatches
 // below the chart; the recharts subtree itself is code-split into
 // BudgetOverviewChart and loaded via next/dynamic (ssr:false).
@@ -360,56 +361,56 @@ export default function BudgetsPage() {
           {/* Summary */}
           {budgets.length > 0 && (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <div className={`flex-1 ${card} p-5`}>
-                <p className={cardTitle}>Total Budget</p>
-                <p className="mt-1 text-2xl font-semibold tabular-nums text-text-primary">{formatAmount(totalBudget)}</p>
-              </div>
-              <div className={`flex-1 ${card} p-5`}>
-                <p className={cardTitle}>Total Spent</p>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <p className={`text-2xl font-semibold tabular-nums ${totalSpent > totalBudget ? "text-danger" : "text-text-primary"}`}>{formatAmount(totalSpent)}</p>
-                  {totalSpent > totalBudget && <span className={badgeError}>Over budget</span>}
-                </div>
-              </div>
-              <div className={`flex-1 ${card} p-5`}>
-                <p className={cardTitle}>Remaining</p>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <p className={`text-2xl font-semibold tabular-nums ${totalBudget - totalSpent < 0 ? "text-danger" : "text-success"}`}>{formatAmount(totalBudget - totalSpent)}</p>
-                  {totalBudget - totalSpent < 0 && <span className={badgeError}>Overspent</span>}
-                </div>
-              </div>
+              <StatCard
+                label="Total Budget"
+                value={formatAmount(totalBudget)}
+              />
+              <StatCard
+                label="Total Spent"
+                value={formatAmount(totalSpent)}
+                valueClassName={totalSpent > totalBudget ? "text-danger" : "text-text-primary"}
+                badge={totalSpent > totalBudget ? <span className={badgeError}>Over budget</span> : undefined}
+              />
+              <StatCard
+                label="Remaining"
+                value={formatAmount(totalBudget - totalSpent)}
+                valueClassName={totalBudget - totalSpent < 0 ? "text-danger" : "text-success"}
+                badge={totalBudget - totalSpent < 0 ? <span className={badgeError}>Overspent</span> : undefined}
+              />
             </div>
           )}
 
-          {/* Budget chart */}
-          {budgets.length > 0 && (
-            <div className={`${card} p-5`}>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className={cardTitle}>Budget Overview</h2>
-                <span className="text-xs text-text-muted">
-                  {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` – ${selectedPeriod.end_date}` : " (open)"}</>}
-                </span>
+          {/* Budget chart + Details side-by-side on wide screens */}
+          <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+            {/* Budget chart */}
+            {budgets.length > 0 && (
+              <div className={`${card} p-5 xl:col-span-3 min-w-0`}>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className={cardTitle}>Budget Overview</h2>
+                  <span className="text-xs text-text-muted">
+                    {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` – ${selectedPeriod.end_date}` : " (open)"}</>}
+                  </span>
+                </div>
+                <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
+                  <BudgetOverviewChart
+                    budgetChartData={budgetChartData}
+                    cellMeta={budgets}
+                    onBarClick={(name) => {
+                      if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                    }}
+                  />
+                </div>
+                <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.spent }} /> Spent</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.watch }} /> &gt;80%</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over budget</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.remaining }} /> Remaining</span>
+                </div>
               </div>
-              <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
-                <BudgetOverviewChart
-                  budgetChartData={budgetChartData}
-                  cellMeta={budgets}
-                  onBarClick={(name) => {
-                    if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
-                  }}
-                />
-              </div>
-              <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.spent }} /> Spent</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.watch }} /> &gt;80%</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over budget</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.remaining }} /> Remaining</span>
-              </div>
-            </div>
-          )}
+            )}
 
-          {/* Budget details */}
-          <div className={card}>
+            {/* Budget details */}
+            <div className={`${card} min-w-0 ${budgets.length > 0 ? "xl:col-span-2" : "xl:col-span-5"}`}>
             <div className={cardHeader}>
               <h2 className={cardTitle}>Details</h2>
             </div>
@@ -484,7 +485,9 @@ export default function BudgetsPage() {
                 </div>
               )}
             </div>
+            </div>
           </div>
+          {/* end chart+details grid */}
         </div>
       )}
       <ConfirmModal
