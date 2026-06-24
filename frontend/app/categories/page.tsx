@@ -654,7 +654,7 @@ export default function CategoriesPage() {
           })}
 
           {masters.length === 0 && (
-            <div className={`${card} p-8 text-center`}>
+            <div className={`${card} p-8 text-center lg:col-span-2`}>
               <p className="text-sm text-text-muted">No categories yet. Register a new account to seed system categories.</p>
             </div>
           )}
