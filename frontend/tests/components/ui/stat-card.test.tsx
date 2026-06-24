@@ -34,4 +34,19 @@ describe("StatCard", () => {
     render(<StatCard label="Y" value="42" badge={<span>BADGE</span>} />);
     expect(screen.getByText("BADGE")).toBeInTheDocument();
   });
+
+  it("defaults value size to text-2xl and applies a custom valueSize", () => {
+    const { rerender } = render(<StatCard label="A" value="1" />);
+    expect(screen.getByText("1").className).toContain("text-2xl");
+    rerender(<StatCard label="A" value="2" valueSize="text-xl" />);
+    const v = screen.getByText("2");
+    expect(v.className).toContain("text-xl");
+    expect(v.className).not.toContain("text-2xl");
+  });
+
+  it("applies a custom subClassName when sub is provided", () => {
+    render(<StatCard label="A" value="1" sub="Actual: 0.00" subClassName="mt-0.5 text-xs text-text-muted" />);
+    const sub = screen.getByTestId("stat-card-sub");
+    expect(sub.className).toContain("text-xs");
+  });
 });
