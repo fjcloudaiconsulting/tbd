@@ -1,34 +1,176 @@
 """Pydantic schemas for the ``/api/v1/dashboard`` endpoints.
 
 Models the per-org saved dashboard layout (layout JSON, canvas filter JSON,
-schema version). Reuses the same ``validate_layout_json`` /
-``validate_canvas_filters_json`` validators that Reports uses, ensuring the
-same wire-contract on both surfaces.
+schema version).
 
 Architecture notes:
 
-- ``layout_json`` and ``canvas_filters_json`` validators are imported from
-  ``app.schemas.report_layout`` (the shared validator module) — not
-  copy-pasted. Any fix or extension to the layout validation shape applies
-  to both Reports and Dashboard automatically.
+- ``layout_json`` validation uses a dashboard-specific validator
+  (``validate_dashboard_layout_json``) defined in this module.  It accepts
+  both the dashboard-native ``dash_*`` widget types AND all report widget
+  types (kpi, bar, line, …) so the dashboard can host cloned report widgets
+  alongside finance tiles.
+
+  The reports validator (``validate_layout_json`` in ``report_layout``) is
+  intentionally NOT used for the dashboard: it uses a closed ``WidgetType``
+  enum that does NOT include the ``dash_*`` discriminants, so it would 422
+  every layout that contains a finance tile.  The reports validator stays
+  strict (unchanged) — it never sees ``dash_*`` payloads.
+
+- ``canvas_filters_json`` reuses the shared ``validate_canvas_filters_json``
+  from ``report_layout`` — the canvas-filter shape is identical on both
+  surfaces.
+
 - Validators use the validate-and-return-verbatim pattern (side-effect only,
   no ``model_dump`` round-trip). This prevents the #424 regression where
   ``extra="ignore"`` widget configs silently strip unmodelled visual knobs
   (``compare_prior_period``, ``top_n``, ``smooth``, ``stacked``, etc.).
+
 - ``DashboardUpdate`` uses ``extra="forbid"`` so unknown keys are rejected
   (matches ``ReportUpdate`` behaviour).
 """
 from __future__ import annotations
 
+import enum
 from datetime import datetime
-from typing import Any, Optional
+from typing import Annotated, Any, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.report_layout import (
+    AreaWidget,
+    BarWidget,
+    KPIWidget,
+    LineWidget,
+    PieWidget,
+    SparklineWidget,
+    StackedBarWidget,
+    TableWidget,
+    WidgetGrid,
     validate_canvas_filters_json,
-    validate_layout_json,
 )
+
+
+# ─── dashboard-native widget types (dash_*) ───────────────────────────────────
+
+
+class DashWidgetType(str, enum.Enum):
+    ON_TRACK = "dash_on_track"
+    ACCOUNTS = "dash_accounts"
+    ACCOUNT_FORECAST = "dash_account_forecast"
+
+
+class _DashWidgetConfig(BaseModel):
+    """Config for dashboard-native tiles.
+
+    The provider supplies all data; config is always an empty object.
+    ``extra="allow"`` lets future config knobs survive round-trips without
+    requiring a schema update.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
+class _DashWidgetBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    title: str
+    grid: WidgetGrid
+
+
+class DashOnTrackWidget(_DashWidgetBase):
+    type: Literal[DashWidgetType.ON_TRACK]
+    config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
+
+
+class DashAccountsWidget(_DashWidgetBase):
+    type: Literal[DashWidgetType.ACCOUNTS]
+    config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
+
+
+class DashAccountForecastWidget(_DashWidgetBase):
+    type: Literal[DashWidgetType.ACCOUNT_FORECAST]
+    config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
+
+
+# ─── widened widget union (dash_* + all report types) ────────────────────────
+#
+# Re-uses the public report widget classes from report_layout.  The
+# discriminator field lets Pydantic route each incoming dict to the right
+# model without ambiguity.
+_DashboardWidget = Annotated[
+    Union[
+        DashOnTrackWidget,
+        DashAccountsWidget,
+        DashAccountForecastWidget,
+        # report widget types (public classes from report_layout)
+        KPIWidget,
+        BarWidget,
+        PieWidget,
+        SparklineWidget,
+        LineWidget,
+        AreaWidget,
+        StackedBarWidget,
+        TableWidget,
+    ],
+    Field(discriminator="type"),
+]
+
+
+# ─── dashboard layout root ────────────────────────────────────────────────────
+
+
+class _DashboardLayoutJson(BaseModel):
+    """The ``layout_json`` shape accepted by the dashboard endpoints.
+
+    Accepts ``dash_*`` widget types and all report widget types.
+    Widget ``id`` values must be unique within the layout.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1]
+    widgets: List[_DashboardWidget]
+
+    @field_validator("widgets")
+    @classmethod
+    def _unique_ids(
+        cls, widgets: List[_DashboardWidget]
+    ) -> List[_DashboardWidget]:
+        ids = [w.id for w in widgets]
+        if len(ids) != len(set(ids)):
+            dupes = sorted({i for i in ids if ids.count(i) > 1})
+            raise ValueError(f"duplicate widget id(s): {', '.join(dupes)}")
+        return widgets
+
+
+# ─── validation entrypoints ───────────────────────────────────────────────────
+
+
+def validate_dashboard_layout_json(value: dict[str, Any]) -> dict[str, Any]:
+    """Validate a ``layout_json`` payload for the dashboard endpoint.
+
+    Empty dict (a blank layout) passes through untouched. A populated dict is
+    validated against ``_DashboardLayoutJson`` (accepts ``dash_*`` + all
+    report types) and then the ORIGINAL dict is returned VERBATIM.
+
+    We validate for the side-effect only — never round-trip through
+    ``model_dump`` (the widget configs use ``extra="ignore"`` / ``extra="allow"``
+    and dumping would silently DROP unmodelled-but-real visual knobs).
+
+    The strict ``validate_layout_json`` from ``report_layout`` is NOT used
+    here; it stays unchanged for the reports surface only.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("layout_json must be a JSON object")
+    if value == {}:
+        return value
+    _DashboardLayoutJson.model_validate(value)
+    return value
+
+
+# ─── response / update schemas ────────────────────────────────────────────────
 
 
 class DashboardLayoutOut(BaseModel):
@@ -65,7 +207,7 @@ class DashboardUpdate(BaseModel):
         # only a present dict is validated here.
         if v is None:
             return v
-        return validate_layout_json(v)
+        return validate_dashboard_layout_json(v)
 
     @field_validator("canvas_filters_json")
     @classmethod
