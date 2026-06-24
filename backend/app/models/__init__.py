@@ -40,6 +40,7 @@ from app.models.notification import (  # noqa: F401
     UserNotificationPreferences,
 )
 from app.models.report import Report, ReportVersion, ReportVisibility  # noqa: F401
+from app.models.dashboard import DashboardLayout  # noqa: F401
 from app.models.scenario import Scenario, ScenarioType  # noqa: F401
 from app.models.org_ai_credential import (  # noqa: F401
     AiProvider,
@@ -121,6 +122,7 @@ __all__ = [
     "Report",
     "ReportVersion",
     "ReportVisibility",
+    "DashboardLayout",
     "Scenario",
     "ScenarioType",
 ]

@@ -30,11 +30,13 @@ from app.models.user import User
 class Feature(str, Enum):
     REPORTS = "reports"
     PLANS = "plans"
+    CUSTOM_DASHBOARD = "custom_dashboard"
 
 
 _ENV_FLOOR = {
     Feature.REPORTS: lambda: app_settings.feature_reports_v2,
     Feature.PLANS: lambda: app_settings.feature_plans,
+    Feature.CUSTOM_DASHBOARD: lambda: app_settings.feature_custom_dashboard,
 }
 
 

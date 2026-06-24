@@ -64,6 +64,7 @@ import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
 import TableWidget from "@/components/reports/widgets/TableWidget";
 import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
 import { reportCurrency } from "@/lib/reports/series";
+import { mobileStackHeight, orderWidgetsForStack } from "@/lib/reports/stack";
 import type { WidgetType } from "@/lib/reports/types";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 
@@ -314,37 +315,6 @@ function newWidgetId(): string {
   return `w_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/**
- * Order widgets for the mobile single-column stack: top-to-bottom by
- * grid ``y``, then left-to-right by grid ``x`` so the vertical reading
- * order matches what the desktop grid shows. Exported for unit testing
- * the ordering independently of viewport mocking.
- */
-export function orderWidgetsForStack(widgets: Widget[]): Widget[] {
-  return [...widgets].sort((a, b) => {
-    if (a.grid.y !== b.grid.y) return a.grid.y - b.grid.y;
-    return a.grid.x - b.grid.x;
-  });
-}
-
-// Chart widgets need a definite height for Recharts/Nivo height="100%" to
-// render in the mobile stack (the wrapper is otherwise auto-height → ~0).
-// KPI and table size to their content, so they stay natural-height.
-const CHART_STACK_TYPES = new Set<WidgetType>([
-  "bar", "stacked_bar", "line", "area", "pie", "sparkline", "sankey",
-]);
-
-/**
- * Returns a pixel height for the mobile stack wrapper of a chart widget,
- * so that Recharts/Nivo ``height="100%"`` resolves to a usable size.
- * Returns ``undefined`` for content widgets (kpi, table) that naturally
- * size to their own content.
- */
-export function mobileStackHeight(widget: Widget): number | undefined {
-  if (!CHART_STACK_TYPES.has(widget.type)) return undefined;
-  const base = widget.grid.h * 56; // ~rowHeight; taller widgets stay taller
-  return Math.min(Math.max(base, widget.type === "sankey" || widget.type === "pie" ? 260 : 220), 460);
-}
 
 export default function ReportEditorPage({ params }: PageProps) {
   // Next 15 makes ``params`` a promise; ``use()`` unwraps it on the

@@ -209,6 +209,7 @@ async def auth_status(
         "features": {
             "reports": await resolve_feature(Feature.REPORTS, org_id, db),
             "plans": await resolve_feature(Feature.PLANS, org_id, db),
+            "custom_dashboard": await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id, db),
         },
     }
 
