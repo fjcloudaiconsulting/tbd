@@ -434,7 +434,7 @@ export default function SecurityPage() {
           />
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           {/* ── Left column: Password + Session Lifetime ────────────── */}
           <div className="space-y-6">
             {/* ── Change Password ────────────────────────────────────── */}
@@ -451,7 +451,7 @@ export default function SecurityPage() {
                 {passwordSet && (
                   <div>
                     <label htmlFor="pwd-current" className={label}>Current Password</label>
-                    <PasswordInput id="pwd-current" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={input} autoComplete="current-password" />
+                    <PasswordInput id="pwd-current" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} className={`${input} max-w-md`} autoComplete="current-password" />
                   </div>
                 )}
                 {!passwordSet && (
@@ -480,11 +480,11 @@ export default function SecurityPage() {
                 )}
                 <div>
                   <label htmlFor="pwd-new" className={label}>New Password</label>
-                  <PasswordInput id="pwd-new" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={input} autoComplete="new-password" />
+                  <PasswordInput id="pwd-new" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} className={`${input} max-w-md`} autoComplete="new-password" />
                 </div>
                 <div>
                   <label htmlFor="pwd-confirm" className={label}>Confirm New Password</label>
-                  <PasswordInput id="pwd-confirm" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={input} autoComplete="new-password" />
+                  <PasswordInput id="pwd-confirm" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={`${input} max-w-md`} autoComplete="new-password" />
                 </div>
                 <button
                   type="submit"
@@ -671,7 +671,7 @@ export default function SecurityPage() {
                       maxLength={6}
                       value={totpCode}
                       onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))}
-                      className={`${input} text-center text-lg tracking-[0.3em]`}
+                      className={`${input} w-full sm:max-w-[200px] text-center text-lg tracking-[0.3em]`}
                       placeholder="000000"
                       autoFocus
                       aria-describedby="mfa-setup-code-hint"
@@ -827,7 +827,7 @@ export default function SecurityPage() {
                           required
                           value={regenPassword}
                           onChange={(e) => setRegenPassword(e.target.value)}
-                          className={input}
+                          className={`${input} max-w-md`}
                           aria-describedby={regenErr ? "regen-err" : undefined}
                           aria-invalid={regenErr ? true : undefined}
                         />
@@ -941,7 +941,7 @@ export default function SecurityPage() {
                             required
                             value={disablePassword}
                             onChange={(e) => setDisablePassword(e.target.value)}
-                            className={input}
+                            className={`${input} max-w-md`}
                             aria-describedby={disableErr ? "disable-err" : undefined}
                             aria-invalid={disableErr ? true : undefined}
                           />

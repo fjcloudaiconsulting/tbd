@@ -210,7 +210,7 @@ export default function SettingsProfilePage() {
             onDismiss={clearStepupErrorFromUrl}
           />
         )}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           {/* Left column: identity card + Edit-Profile form */}
           <div className="space-y-6">
             <div className={`${card} p-6`}>
