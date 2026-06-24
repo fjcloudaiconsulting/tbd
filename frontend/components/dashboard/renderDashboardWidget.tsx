@@ -34,8 +34,6 @@ import PieWidget from "@/components/reports/widgets/PieWidget";
 import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
 import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
 import TableWidget from "@/components/reports/widgets/TableWidget";
-import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
-
 /**
  * Render a dashboard canvas widget.
  *
@@ -134,14 +132,8 @@ export function renderDashboardWidget(
           currency={currency}
         />
       );
-    case "sankey":
-      return (
-        <SankeyWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
+    // FIX 2: graceful fallback for any unrecognised widget type.
+    default:
+      return null;
   }
 }

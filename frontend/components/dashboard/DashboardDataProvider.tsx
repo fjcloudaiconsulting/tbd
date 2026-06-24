@@ -27,6 +27,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
 import type { Account, BillingPeriod, Transaction } from "@/lib/types";
 import type {
@@ -120,15 +121,22 @@ export function DashboardDataProvider({
 }: {
   children: React.ReactNode;
 }) {
+  // FIX 5: seed billingCycleDay from the authed user (same as LegacyDashboard)
+  // so the initial monthTo calculation is correct before loadRefs resolves.
+  const { user } = useAuth();
+
   // ── Refs state ──────────────────────────────────────────────────────────────
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [periods, setPeriods] = useState<BillingPeriod[]>([]);
   const [period, setPeriod] = useState<BillingPeriod | null>(null);
-  const [billingCycleDay, setBillingCycleDay] = useState(1);
+  const [billingCycleDay, setBillingCycleDay] = useState(
+    user?.billing_cycle_day ?? 1,
+  );
   const [periodIdx, setPeriodIdxRaw] = useState(0);
 
   // ── Forecast plan (current period) ─────────────────────────────────────────
   const [forecast, setForecast] = useState<ForecastPlan | null>(null);
+  const forecastPlanRequestId = useRef(0);
 
   // ── Pending transactions ────────────────────────────────────────────────────
   const [pendingTransactions, setPendingTransactions] = useState<Transaction[]>([]);
@@ -190,11 +198,11 @@ export function DashboardDataProvider({
   }, [periods]);
 
   // ── loadRefs ────────────────────────────────────────────────────────────────
+  // FIX 7: categories and budgets removed — no Phase-2a tile consumes them.
+  // Phase 2b will re-add budgets/categories when the chart tiles need them.
   const loadRefs = useCallback(async () => {
-    const [accts, , , per, plist, bc] = await Promise.all([
+    const [accts, per, plist, bc] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
-      apiFetch<unknown[]>("/api/v1/categories"),
-      apiFetch<unknown[]>("/api/v1/budgets"),
       apiFetch<BillingPeriod>("/api/v1/settings/billing-period"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
       apiFetch<{ billing_cycle_day: number }>("/api/v1/settings/billing-cycle"),
@@ -280,12 +288,21 @@ export function DashboardDataProvider({
   // Fetch the current forecast plan for the selected period (equivalent to
   // the page-0 loadTransactions call in LegacyDashboard). Done separately
   // so the provider doesn't need to load transactions.
+  // FIX 3: monotonic stale-request guard + try/catch matching sibling loaders.
   const loadForecastPlan = useCallback(async () => {
+    const myId = ++forecastPlanRequestId.current;
     const forecastUrl = realPeriodStart
       ? `/api/v1/forecast-plans/current?period_start=${realPeriodStart}`
       : "/api/v1/forecast-plans/current";
-    const fc = await apiFetch<ForecastPlan | null>(forecastUrl);
-    setForecast(fc ?? null);
+    try {
+      const fc = await apiFetch<ForecastPlan | null>(forecastUrl);
+      if (forecastPlanRequestId.current !== myId) return;
+      setForecast(fc ?? null);
+    } catch {
+      if (forecastPlanRequestId.current !== myId) return;
+      // Silent — keep last good snapshot on transient failures.
+      setForecast(null);
+    }
   }, [realPeriodStart]);
 
   // ── Initial load ────────────────────────────────────────────────────────────
@@ -309,9 +326,13 @@ export function DashboardDataProvider({
     }
   }, [realPeriodStart, loadForecastProjection]);
 
+  // FIX 4: gate account-forecast fetch on realPeriodStart being resolved,
+  // matching the guard pattern on the sibling loadForecastProjection effect.
   useEffect(() => {
-    void loadAccountMonthEndForecast();
-  }, [loadAccountMonthEndForecast]);
+    if (realPeriodStart) {
+      void loadAccountMonthEndForecast();
+    }
+  }, [realPeriodStart, loadAccountMonthEndForecast]);
 
   useEffect(() => {
     if (realPeriodStart) {

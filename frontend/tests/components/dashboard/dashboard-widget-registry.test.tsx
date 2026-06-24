@@ -89,10 +89,6 @@ vi.mock("@/components/reports/widgets/StackedBarWidget", () => ({
 vi.mock("@/components/reports/widgets/TableWidget", () => ({
   default: () => <div data-testid="table-widget-stub">TableWidget</div>,
 }));
-vi.mock("@/components/reports/widgets/SankeyWidget", () => ({
-  default: () => <div data-testid="sankey-widget-stub">SankeyWidget</div>,
-}));
-
 // ── emptyDashboardWidget ──────────────────────────────────────────────────────
 
 describe("emptyDashboardWidget", () => {
@@ -174,14 +170,16 @@ describe("renderDashboardWidget — dashboard-native tiles", () => {
     expect(container.querySelector("[data-testid='account-tiles-card']")).toBeNull();
   });
 
-  it("renders AccountMonthEndForecast for dash_account_forecast", () => {
+  it("renders AccountForecastWidget without throwing when no accounts present", () => {
     const w = emptyDashboardWidget("dash_account_forecast", "w3");
-    renderWidget(w);
     // AccountMonthEndForecast returns null when hasAnyAccounts is false.
-    // With our mock (activeAccounts: []), it renders null — assert no error thrown.
-    // The component is registered and mounts without throwing.
-    // (No accounts in mock → component renders null → container is empty, no crash.)
-    expect(true).toBe(true); // render completed without error
+    // With our mock (activeAccounts: []), the container renders empty.
+    // Assert that the component is registered and the dispatch returns null
+    // gracefully (no crash, no error-state testid in the DOM).
+    const container = renderWidget(w);
+    expect(
+      container.querySelector("[data-testid='account-month-end-forecast']"),
+    ).toBeNull();
   });
 
   it("renders the forecast tile wrapper with accounts present", () => {
@@ -227,6 +225,9 @@ describe("renderDashboardWidget — reports fall-through", () => {
     } as unknown as Widget;
   }
 
+  // "sankey" is intentionally absent: the backend WidgetType enum does not
+  // accept "sankey", so a sankey widget can never be persisted/loaded on the
+  // dashboard. The arm was removed from renderDashboardWidget (FIX 1).
   const REPORT_TYPES: Array<[Widget["type"], string]> = [
     ["kpi", "kpi-widget-stub"],
     ["bar", "bar-widget-stub"],
@@ -236,7 +237,6 @@ describe("renderDashboardWidget — reports fall-through", () => {
     ["sparkline", "sparkline-widget-stub"],
     ["stacked_bar", "stacked-bar-widget-stub"],
     ["table", "table-widget-stub"],
-    ["sankey", "sankey-widget-stub"],
   ];
 
   it.each(REPORT_TYPES)(

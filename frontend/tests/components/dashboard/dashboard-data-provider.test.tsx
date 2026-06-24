@@ -25,6 +25,17 @@ vi.mock("@/lib/pagination", async () => {
   return { ...actual, fetchAll: vi.fn() };
 });
 
+// FIX 5: DashboardDataProvider now calls useAuth() to seed billingCycleDay.
+vi.mock("@/components/auth/AuthProvider", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/components/auth/AuthProvider")
+  >("@/components/auth/AuthProvider");
+  return {
+    ...actual,
+    useAuth: vi.fn(() => ({ user: { billing_cycle_day: 1 }, loading: false })),
+  };
+});
+
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
 const PAST_PERIOD = { id: 1, start_date: "2026-04-01", end_date: "2026-04-30" };
@@ -76,8 +87,6 @@ const ACCOUNT_MONTH_END = {
 function makeApiFetchHandler(overrides: Record<string, unknown> = {}) {
   return async (url: string) => {
     if (url.startsWith("/api/v1/accounts")) return overrides.accounts ?? [ACCT];
-    if (url.startsWith("/api/v1/categories")) return overrides.categories ?? [];
-    if (url.startsWith("/api/v1/budgets")) return overrides.budgets ?? [];
     if (url.startsWith("/api/v1/settings/billing-periods"))
       return overrides.periods ?? PERIODS;
     if (url.startsWith("/api/v1/settings/billing-period"))
@@ -218,7 +227,25 @@ describe("DashboardDataProvider — period derivations", () => {
       }) as never,
     );
 
-    renderProvider();
+    // Use a consumer that also exposes setPeriodIdx so we can navigate to
+    // the future period (index 0 in [FUTURE_PERIOD, CURRENT_PERIOD]).
+    function ConsumerWithSetIdx() {
+      const ctx = useDashboard();
+      return (
+        <div>
+          <span data-testid="loading">{String(ctx.loading)}</span>
+          <span data-testid="is-current">{String(ctx.isCurrentSelectedPeriod)}</span>
+          <span data-testid="is-future">{String(ctx.isFutureSelectedPeriod)}</span>
+          <button data-testid="go-to-0" onClick={() => ctx.setPeriodIdx(0)} />
+        </div>
+      );
+    }
+
+    render(
+      <DashboardDataProvider>
+        <ConsumerWithSetIdx />
+      </DashboardDataProvider>,
+    );
 
     await waitFor(() =>
       expect(screen.getByTestId("loading").textContent).toBe("false"),
@@ -227,14 +254,17 @@ describe("DashboardDataProvider — period derivations", () => {
     // Provider defaults to current period (end_date === null), which is
     // index 1 in [FUTURE_PERIOD, CURRENT_PERIOD].
     expect(screen.getByTestId("is-current").textContent).toBe("true");
+    expect(screen.getByTestId("is-future").textContent).toBe("false");
 
-    // Move to periodIdx 0 (future period).
+    // Navigate to periodIdx 0 (the future period).
     act(() => {
-      // Directly update periodIdx via jumpToCurrentPeriod won't work here;
-      // we test setPeriodIdx indirectly via jumpToCurrentPeriod below.
-      // Here we dispatch a custom test event instead — use the context
-      // directly by wrapping with a helper component.
+      screen.getByTestId("go-to-0").click();
     });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("is-future").textContent).toBe("true"),
+    );
+    expect(screen.getByTestId("is-current").textContent).toBe("false");
   });
 });
 
@@ -273,8 +303,6 @@ describe("DashboardDataProvider — projection failure + retry", () => {
   it("sets projectionFailed when projection fetch throws", async () => {
     vi.mocked(apiFetch).mockImplementation(((url: string) => {
       if (url.startsWith("/api/v1/accounts")) return Promise.resolve([ACCT]);
-      if (url.startsWith("/api/v1/categories")) return Promise.resolve([]);
-      if (url.startsWith("/api/v1/budgets")) return Promise.resolve([]);
       if (url.startsWith("/api/v1/settings/billing-periods")) return Promise.resolve(PERIODS);
       if (url.startsWith("/api/v1/settings/billing-period")) return Promise.resolve(CURRENT_PERIOD);
       if (url.startsWith("/api/v1/settings/billing-cycle")) return Promise.resolve({ billing_cycle_day: 1 });
@@ -296,8 +324,6 @@ describe("DashboardDataProvider — projection failure + retry", () => {
     let projectionCalls = 0;
     vi.mocked(apiFetch).mockImplementation(((url: string) => {
       if (url.startsWith("/api/v1/accounts")) return Promise.resolve([ACCT]);
-      if (url.startsWith("/api/v1/categories")) return Promise.resolve([]);
-      if (url.startsWith("/api/v1/budgets")) return Promise.resolve([]);
       if (url.startsWith("/api/v1/settings/billing-periods")) return Promise.resolve(PERIODS);
       if (url.startsWith("/api/v1/settings/billing-period")) return Promise.resolve(CURRENT_PERIOD);
       if (url.startsWith("/api/v1/settings/billing-cycle")) return Promise.resolve({ billing_cycle_day: 1 });
