@@ -8,11 +8,12 @@ Design decisions:
 
 - **One row per user** — the ``UNIQUE(owner_user_id)`` DB constraint is
   the canonical enforcement. The GET endpoint auto-creates the row on
-  first access using a SELECT-then-INSERT pattern (no race risk: the UNIQUE
-  constraint will reject a duplicate if two concurrent requests race, and
-  both would return 200 with their respective row; the second caller's
-  insert will fail and SQLAlchemy will surface an IntegrityError that is
-  already guarded against by the ``on_conflict_do_nothing`` upsert).
+  first access using a SELECT-then-INSERT pattern. The UNIQUE constraint
+  prevents duplicate rows if two concurrent first-access requests race;
+  the losing INSERT raises an IntegrityError that surfaces as a 500 in
+  that pathological case. There is no ``on_conflict_do_nothing`` upsert —
+  handling that concurrent-first-access race is a known Phase-2
+  follow-up.
 
 - **org_id / owner_user_id from current_user only** — never taken from
   the wire. Mirrors the reports router's org-scoping convention.
@@ -123,8 +124,8 @@ async def update_dashboard(
 ):
     """Update the caller's dashboard layout.
 
-    Idempotent upsert semantics: auto-creates the row when it does not yet
-    exist (so the caller can PATCH without a prior GET). Only
+    Auto-creates the row on first access (so the caller can PATCH without
+    a prior GET), then applies the patch. Only
     ``layout_json`` and ``canvas_filters_json`` are patchable; both are
     optional in a single call.
 

@@ -25,12 +25,11 @@ import type { Widget } from "@/lib/reports/types";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 import { card, pageTitle } from "@/lib/styles";
 
-// Re-use the mobile-stack helpers from the reports editor page.
-// Imported here to avoid duplicating logic.
+// Re-use the mobile-stack helpers from the shared lib module.
 import {
   mobileStackHeight,
   orderWidgetsForStack,
-} from "@/app/reports/[id]/page";
+} from "@/lib/reports/stack";
 
 // --- widget renderer ---
 // Phase 1: the server default layout contains only a KPI widget.

@@ -67,10 +67,11 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/reports/10",
 }));
 
-import ReportEditorPage, {
+import ReportEditorPage from "@/app/reports/[id]/page";
+import {
   orderWidgetsForStack,
   mobileStackHeight,
-} from "@/app/reports/[id]/page";
+} from "@/lib/reports/stack";
 import { useAuth } from "@/components/auth/AuthProvider";
 import * as reportsApi from "@/lib/reports/api";
 import type { Widget } from "@/lib/reports/types";
