@@ -18,7 +18,7 @@ import { BRAND_CONTACT_EMAIL } from "@/lib/brand";
 export default function AppShellFooter() {
   return (
     <footer className="border-t border-border bg-surface px-4 sm:px-8 py-4">
-      <div className="mx-auto flex max-w-screen-xl flex-col gap-2 text-[11px] text-text-muted sm:flex-row sm:items-center sm:justify-between sm:text-xs">
+      <div className="mx-auto flex max-w-[1760px] flex-col gap-2 text-[11px] text-text-muted sm:flex-row sm:items-center sm:justify-between sm:text-xs">
         <div className="flex items-center gap-3">
           <Logo tone="muted" size="sm" />
           <span className="inline-flex items-center gap-1">

@@ -617,7 +617,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <AnnouncementBar />
-        <main id="main-content" tabIndex={-1} className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-screen-xl">{children}</div></main>
+        <main id="main-content" tabIndex={-1} className="flex-1 overflow-auto p-4 sm:p-8"><div className="mx-auto max-w-[1760px]">{children}</div></main>
         <AppShellFooter />
       </div>
     </div>
