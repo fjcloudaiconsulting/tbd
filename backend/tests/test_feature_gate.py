@@ -98,3 +98,56 @@ async def test_unrecognized_org_value_falls_through(db_session, monkeypatch):
     await db_session.commit()
     # Unrecognised "maybe" at org level → falls through → global "on" → True.
     assert await resolve_feature(Feature.PLANS, org_id=7, db=db_session) is True
+
+
+# ---------------------------------------------------------------------------
+# CUSTOM_DASHBOARD gate tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_custom_dashboard_defaults_off(db_session, monkeypatch):
+    """Feature.CUSTOM_DASHBOARD must resolve OFF when env-floor is False and no
+    DB rows exist — fail-closed behaviour mirrors PLANS."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "feature_custom_dashboard", False)
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=1, db=db_session) is False
+
+
+@pytest.mark.asyncio
+async def test_custom_dashboard_flips_with_org_override(db_session, monkeypatch):
+    """A per-org OrgSetting of 'on' turns CUSTOM_DASHBOARD on even when the
+    env-floor is False — same three-level resolution as PLANS."""
+    from app.models.user import Organization
+    from app.config import settings
+    monkeypatch.setattr(settings, "feature_custom_dashboard", False)
+    db_session.add(Organization(id=10, name="Org Ten", billing_cycle_day=1))
+    await db_session.flush()
+    db_session.add(
+        OrgSetting(org_id=10, key=feature_setting_key(Feature.CUSTOM_DASHBOARD), value="on")
+    )
+    await db_session.commit()
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=10, db=db_session) is True
+    # Other org (no override) stays off.
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=999, db=db_session) is False
+
+
+@pytest.mark.asyncio
+async def test_custom_dashboard_flips_with_global_override(db_session, monkeypatch):
+    """A global SystemSetting of 'on' turns CUSTOM_DASHBOARD on for all orgs."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "feature_custom_dashboard", False)
+    db_session.add(
+        SystemSetting(key=feature_setting_key(Feature.CUSTOM_DASHBOARD), value="on")
+    )
+    await db_session.commit()
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=1, db=db_session) is True
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=2, db=db_session) is True
+
+
+@pytest.mark.asyncio
+async def test_custom_dashboard_env_floor_on(db_session, monkeypatch):
+    """When env-floor is True (operator opted-in globally), gate resolves True."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "feature_custom_dashboard", True)
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=1, db=db_session) is True
