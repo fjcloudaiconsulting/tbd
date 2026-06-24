@@ -64,18 +64,23 @@ class _DashWidgetConfig(BaseModel):
     """Config for dashboard-native tiles.
 
     The provider supplies all data; config is always an empty object.
-    ``extra="allow"`` lets future config knobs survive round-trips without
-    requiring a schema update.
+    ``extra="ignore"`` silently drops unknown keys on the way in while
+    still preserving the verbatim-return contract (the validator returns
+    the original dict, not a model_dump round-trip).  This matches the
+    ``extra="ignore"`` policy used by the report widget configs
+    (``_SingleMeasureConfig`` / ``_MultiSeriesConfig``) that share the
+    same discriminated union, keeping the policy consistent across all
+    widget config models.
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="ignore")
 
 
 class _DashWidgetBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1)
-    title: str
+    title: str = Field(min_length=1)
     grid: WidgetGrid
 
 
@@ -156,8 +161,8 @@ def validate_dashboard_layout_json(value: dict[str, Any]) -> dict[str, Any]:
     report types) and then the ORIGINAL dict is returned VERBATIM.
 
     We validate for the side-effect only — never round-trip through
-    ``model_dump`` (the widget configs use ``extra="ignore"`` / ``extra="allow"``
-    and dumping would silently DROP unmodelled-but-real visual knobs).
+    ``model_dump`` (the widget configs use ``extra="ignore"`` and dumping
+    would silently DROP unmodelled-but-real visual knobs).
 
     The strict ``validate_layout_json`` from ``report_layout`` is NOT used
     here; it stays unchanged for the reports surface only.

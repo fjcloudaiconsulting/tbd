@@ -453,6 +453,40 @@ async def test_patch_rejects_unknown_widget_type(session_factory):
     assert res.status_code == 422, res.text
 
 
+# ─── (l) PATCH rejects empty widget title → 422 ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_empty_widget_title(session_factory):
+    """PATCH with a widget whose title is an empty string must be rejected with 422.
+
+    _DashWidgetBase.title uses Field(min_length=1); a blank title is
+    structurally invalid for both dash_* and report widget types.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    empty_title_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-empty-title",
+                "type": "dash_on_track",
+                "title": "",  # empty string — must be rejected
+                "grid": {"x": 0, "y": 0, "w": 12, "h": 3},
+                "config": {},
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch(
+            "/api/v1/dashboard", json={"layout_json": empty_title_layout}
+        )
+    assert res.status_code == 422, res.text
+
+
 # ─── (k) PATCH rejects malformed grid (w=0) → 422 ────────────────────────────
 
 
