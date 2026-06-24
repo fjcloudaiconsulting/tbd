@@ -533,7 +533,7 @@ export default function CategoriesPage() {
           onDragEnd={handleDragEnd}
           onDragCancel={handleDragCancel}
         >
-        <div className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start" data-testid="categories-master-grid">
           {masters.map((master) => {
             const subs = childrenOf(master.id);
             const Icon = (master.slug && CATEGORY_ICONS[master.slug]) || Tag;
