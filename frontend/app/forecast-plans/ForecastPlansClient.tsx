@@ -8,6 +8,7 @@ import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import HelpTooltip from "@/components/Tooltip";
 import Spinner from "@/components/ui/Spinner";
+import StatCard from "@/components/ui/StatCard";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import CategorySelect from "@/components/ui/CategorySelect";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
@@ -1146,61 +1147,63 @@ export default function ForecastPlansClient({
           {/* Summary cards */}
           {plan && hasItems && (
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-              <div className={`${card} p-5`}>
-                <p className={cardTitle}>Planned Income</p>
-                <p className="mt-1 text-xl font-semibold tabular-nums text-success">
-                  {formatAmount(plan.total_planned_income)}
-                </p>
-                <p className="mt-0.5 text-xs text-text-muted">
-                  Actual: {formatAmount(plan.total_actual_income)}
-                </p>
-              </div>
-              <div className={`${card} p-5`}>
-                <p className={cardTitle}>Planned Expenses</p>
-                <p className="mt-1 text-xl font-semibold tabular-nums text-danger">
-                  {formatAmount(plan.total_planned_expense)}
-                </p>
-                <p className="mt-0.5 text-xs text-text-muted">
-                  Actual: {formatAmount(plan.total_actual_expense)}
-                </p>
-              </div>
-              <div className={`${card} p-5`}>
-                <p className={cardTitle}>Planned Net</p>
-                <p
-                  className={`mt-1 text-xl font-semibold tabular-nums ${plannedNet >= 0 ? "text-success" : "text-danger"}`}
-                >
-                  {formatAmount(plannedNet)}
-                </p>
-              </div>
-              <div className={`${card} p-5`}>
-                <p className={cardTitle}>Actual Net</p>
-                <p
-                  className={`mt-1 text-xl font-semibold tabular-nums ${actualNet >= 0 ? "text-success" : "text-danger"}`}
-                >
-                  {formatAmount(actualNet)}
-                </p>
-              </div>
+              <StatCard
+                label="Planned Income"
+                value={formatAmount(plan.total_planned_income)}
+                valueSize="text-xl"
+                valueClassName="text-success"
+                sub={<>Actual: {formatAmount(plan.total_actual_income)}</>}
+                subClassName="mt-0.5 text-xs text-text-muted"
+              />
+              <StatCard
+                label="Planned Expenses"
+                value={formatAmount(plan.total_planned_expense)}
+                valueSize="text-xl"
+                valueClassName="text-danger"
+                sub={<>Actual: {formatAmount(plan.total_actual_expense)}</>}
+                subClassName="mt-0.5 text-xs text-text-muted"
+              />
+              <StatCard
+                label="Planned Net"
+                value={formatAmount(plannedNet)}
+                valueSize="text-xl"
+                valueClassName={plannedNet >= 0 ? "text-success" : "text-danger"}
+                subClassName="mt-0.5 text-xs text-text-muted"
+              />
+              <StatCard
+                label="Actual Net"
+                value={formatAmount(actualNet)}
+                valueSize="text-xl"
+                valueClassName={actualNet >= 0 ? "text-success" : "text-danger"}
+                subClassName="mt-0.5 text-xs text-text-muted"
+              />
             </div>
           )}
 
-          {/* Planned vs Actual chart */}
+          {/* Planned vs Actual chart — contained at ~66% on xl+ */}
           {showDetails && chartData.length > 0 && (
-            <div className={`${card} p-5 overflow-hidden`}>
-              <h2 className={`${cardTitle} mb-4`}>
-                Planned vs Actual (Expenses)
-              </h2>
-              <div className="w-full min-w-0" style={{ height: Math.max(chartData.length * 40, 100) }}>
-                <ForecastPlanChart
-                  chartData={chartData}
-                  onBarClick={(name) => {
-                    if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
-                  }}
-                />
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+              <div className={`${card} p-5 overflow-hidden xl:col-span-2`}>
+                <h2 className={`${cardTitle} mb-4`}>
+                  Planned vs Actual (Expenses)
+                </h2>
+                <div className="w-full min-w-0" style={{ height: Math.max(chartData.length * 40, 100) }}>
+                  <ForecastPlanChart
+                    chartData={chartData}
+                    onBarClick={(name) => {
+                      if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                    }}
+                  />
+                </div>
               </div>
-              <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.planned }} /> Planned</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.actual }} /> Under plan</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over plan</span>
+              <div className={`${card} p-5 xl:col-span-1 flex flex-col justify-center gap-3`}>
+                <p className={cardTitle}>Legend</p>
+                <div className="flex flex-col gap-2 text-sm text-text-muted">
+                  <span className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full shrink-0" style={{ background: chartColor.planned }} /> Planned</span>
+                  <span className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full shrink-0" style={{ background: chartColor.actual }} /> Under plan</span>
+                  <span className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full shrink-0" style={{ background: chartColor.over }} /> Over plan</span>
+                </div>
+                <p className="mt-2 text-xs text-text-muted">Click a bar to view transactions for that category.</p>
               </div>
             </div>
           )}
