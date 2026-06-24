@@ -1168,14 +1168,12 @@ export default function ForecastPlansClient({
                 value={formatAmount(plannedNet)}
                 valueSize="text-xl"
                 valueClassName={plannedNet >= 0 ? "text-success" : "text-danger"}
-                subClassName="mt-0.5 text-xs text-text-muted"
               />
               <StatCard
                 label="Actual Net"
                 value={formatAmount(actualNet)}
                 valueSize="text-xl"
                 valueClassName={actualNet >= 0 ? "text-success" : "text-danger"}
-                subClassName="mt-0.5 text-xs text-text-muted"
               />
             </div>
           )}
