@@ -356,7 +356,12 @@ describe("DashboardPage — feature flag", () => {
         expect(vi.mocked(dashboardApi.saveDashboard)).toHaveBeenCalledTimes(1),
       );
       expect(vi.mocked(dashboardApi.saveDashboard)).toHaveBeenCalledWith(
-        expect.objectContaining({ version: 1 }),
+        expect.objectContaining({
+          version: 1,
+          widgets: expect.arrayContaining([
+            expect.objectContaining({ id: "w_kpi1" }),
+          ]),
+        }),
         expect.any(Object),
       );
     });

@@ -118,7 +118,7 @@ function mockUser(reportsOn = true) {
     user: BASE_USER as never,
     loading: false,
     needsSetup: false,
-    features: { reports: reportsOn, plans: false },
+    features: { reports: reportsOn, plans: false, customDashboard: false },
     login: vi.fn(),
     register: vi.fn(),
     logout: vi.fn(),

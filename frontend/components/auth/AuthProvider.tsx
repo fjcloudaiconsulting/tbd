@@ -94,7 +94,7 @@ interface AuthContextValue {
    * as ``{ reports: false, plans: false, customDashboard: false }``
    * (the safe default).
    */
-  features?: { reports: boolean; plans: boolean; customDashboard?: boolean };
+  features?: { reports: boolean; plans: boolean; customDashboard: boolean };
   login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,

@@ -24,6 +24,8 @@ import type { CanvasFilters, LayoutJson } from "@/lib/dashboard/types";
 import type { Widget } from "@/lib/reports/types";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 import { card, pageTitle } from "@/lib/styles";
+import { useFilterChipState } from "@/lib/reports/use-filter-chip-state";
+import { reportCurrency } from "@/lib/reports/series";
 
 // Re-use the mobile-stack helpers from the shared lib module.
 import {
@@ -53,26 +55,27 @@ function renderWidgetByType(
   w: Widget,
   canvasFilters: CanvasFilters,
   editMode: boolean,
+  currency?: string,
 ) {
   switch (w.type) {
     case "kpi":
-      return <KPIWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <KPIWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
     case "bar":
-      return <BarWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <BarWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
     case "line":
-      return <LineWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <LineWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
     case "area":
-      return <AreaWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <AreaWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
     case "pie":
-      return <PieWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <PieWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
     case "sparkline":
-      return <SparklineWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <SparklineWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
     case "stacked_bar":
-      return <StackedBarWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <StackedBarWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
     case "table":
-      return <TableWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <TableWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
     case "sankey":
-      return <SankeyWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} />;
+      return <SankeyWidget widget={w} canvasFilters={canvasFilters} editMode={editMode} currency={currency} />;
   }
 }
 
@@ -90,6 +93,11 @@ export default function CustomDashboard() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  // Accounts SWR (shared cache with the reports surface) — used to derive
+  // the org display currency so money widgets format correctly.
+  const { accounts } = useFilterChipState(setSelectedWidgetId);
+  const currency = reportCurrency(accounts);
 
   // Editing is desktop-only (mirrors reports editor).
   const editModeActive = editMode && !isSmallScreen;
@@ -121,16 +129,12 @@ export default function CustomDashboard() {
     };
   }, []);
 
-  function updateLayout(next: LayoutJson) {
+  // Stable identity so Canvas's onLayoutChange dep doesn't thrash.
+  // setState setters are stable, so [] is an honest dependency list.
+  const updateLayout = useCallback((next: LayoutJson) => {
     setLayout(next);
     setDirty(true);
-  }
-
-  // Stable identity so Canvas's onLayoutChange dep doesn't thrash.
-  const handleLayoutChange = useCallback(
-    (next: LayoutJson) => updateLayout(next),
-    [],
-  );
+  }, []);
 
   const handleSave = useCallback(async () => {
     if (saving) return;
@@ -223,7 +227,7 @@ export default function CustomDashboard() {
                 onClick={() => setEditMode((v) => !v)}
                 className={`rounded-md border px-3 py-1.5 text-sm ${
                   editMode
-                    ? "border-border text-text-primary hover:bg-surface-raised"
+                    ? "border-accent text-accent hover:bg-accent/10"
                     : "border-border text-text-primary hover:bg-surface-raised"
                 }`}
               >
@@ -271,7 +275,7 @@ export default function CustomDashboard() {
               const h = mobileStackHeight(w);
               return (
                 <div key={w.id} style={h ? { height: h } : undefined}>
-                  {renderWidgetByType(w, canvasFilters, false)}
+                  {renderWidgetByType(w, canvasFilters, false, currency)}
                 </div>
               );
             })}
@@ -280,7 +284,7 @@ export default function CustomDashboard() {
           <Canvas
             layout={layout}
             editMode={editModeActive}
-            onLayoutChange={handleLayoutChange}
+            onLayoutChange={updateLayout}
             renderWidget={(w) => (
               <WidgetShell
                 widgetId={w.id}
@@ -293,7 +297,7 @@ export default function CustomDashboard() {
                 categories={[]}
                 onSelectFilters={() => {}}
               >
-                {renderWidgetByType(w, canvasFilters, editModeActive)}
+                {renderWidgetByType(w, canvasFilters, editModeActive, currency)}
               </WidgetShell>
             )}
           />
