@@ -130,30 +130,21 @@ describe("CategoriesPage — master list layout (2-col grid)", () => {
     setupApi();
   });
 
-  it("master-grid container carries the lg:grid-cols-2 class", async () => {
+  it("master-grid container has correct responsive classes and ≥2 master cards", async () => {
     render(<CategoriesPage />);
     // Wait for data to load (any master name appears).
     await waitFor(() => expect(screen.getByText("Food")).toBeInTheDocument());
 
     const grid = screen.getByTestId("categories-master-grid");
-    expect(grid.className).toContain("lg:grid-cols-2");
-  });
 
-  it("renders ≥2 master category cards inside the grid", async () => {
-    render(<CategoriesPage />);
-    await waitFor(() => expect(screen.getByText("Food")).toBeInTheDocument());
+    // Word-boundary matches to avoid false positives (e.g. grid-cols-1 inside lg:grid-cols-2).
+    expect(grid.className).toMatch(/\blg:grid-cols-2\b/);
+    expect(grid.className).toMatch(/\bgrid-cols-1\b/);
+    expect(grid.className).toMatch(/\bgrid\b/);
+    expect(grid.className).toMatch(/\bitems-start\b/);
 
-    // Each master card has data-testid="master-row-{id}".
-    const grid = screen.getByTestId("categories-master-grid");
+    // Each master card has data-testid="master-row-{id}" and is a direct child.
     const masterRows = grid.querySelectorAll("[data-testid^='master-row-']");
     expect(masterRows.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("grid container also carries grid-cols-1 for mobile baseline", async () => {
-    render(<CategoriesPage />);
-    await waitFor(() => expect(screen.getByText("Food")).toBeInTheDocument());
-
-    const grid = screen.getByTestId("categories-master-grid");
-    expect(grid.className).toContain("grid-cols-1");
   });
 });
