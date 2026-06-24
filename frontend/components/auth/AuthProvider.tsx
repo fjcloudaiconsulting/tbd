@@ -91,9 +91,10 @@ interface AuthContextValue {
    * per-org overrides are correctly reflected in the UI.
    * Optional in the interface so existing test mocks that pre-date
    * this field don't have to be updated; consumers treat ``undefined``
-   * as ``{ reports: false, plans: false }`` (the safe default).
+   * as ``{ reports: false, plans: false, customDashboard: false }``
+   * (the safe default).
    */
-  features?: { reports: boolean; plans: boolean };
+  features?: { reports: boolean; plans: boolean; customDashboard?: boolean };
   login: (login: string, password: string) => Promise<void>;
   register: (
     username: string,
@@ -123,7 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Resolved per-org feature flags. Defaults to all-false until
   // /auth/status resolves so gated surfaces stay hidden on first render.
   // Same "default false until /auth/status" rationale as billingUiEnabled.
-  const [features, setFeatures] = useState<{ reports: boolean; plans: boolean }>({ reports: false, plans: false });
+  const [features, setFeatures] = useState<{ reports: boolean; plans: boolean; customDashboard: boolean }>({ reports: false, plans: false, customDashboard: false });
 
   const fetchMe = useCallback(async () => {
     // 2026-05-18 review fix: fetchMe is the shared current-user load
@@ -180,13 +181,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           apiFetch<{
             needs_setup: boolean;
             billing_ui_enabled?: boolean;
-            features?: { reports?: boolean; plans?: boolean };
+            features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
           }>("/api/v1/auth/status"),
         );
         setBillingUiEnabled(Boolean(status.billing_ui_enabled));
         setFeatures({
           reports: Boolean(status.features?.reports),
           plans: Boolean(status.features?.plans),
+          customDashboard: Boolean(status.features?.custom_dashboard),
         });
         if (status.needs_setup) {
           setNeedsSetup(true);
@@ -220,11 +222,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // from the unauthenticated read above.
         try {
           const authedStatus = await apiFetch<{
-            features?: { reports?: boolean; plans?: boolean };
+            features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
           }>("/api/v1/auth/status");
           setFeatures({
             reports: Boolean(authedStatus.features?.reports),
             plans: Boolean(authedStatus.features?.plans),
+            customDashboard: Boolean(authedStatus.features?.custom_dashboard),
           });
         } catch {
           // Non-fatal: keep the global/env-level features already set.
@@ -286,11 +289,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // boot (global/env level).
     try {
       const authedStatus = await apiFetch<{
-        features?: { reports?: boolean; plans?: boolean };
+        features?: { reports?: boolean; plans?: boolean; custom_dashboard?: boolean };
       }>("/api/v1/auth/status");
       setFeatures({
         reports: Boolean(authedStatus.features?.reports),
         plans: Boolean(authedStatus.features?.plans),
+        customDashboard: Boolean(authedStatus.features?.custom_dashboard),
       });
     } catch {
       // Non-fatal: keep the boot-time global/env-level features.
@@ -332,7 +336,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     // Reset to fail-closed default so a signed-out user doesn't retain
     // a previous org's per-org feature resolution.
-    setFeatures({ reports: false, plans: false });
+    setFeatures({ reports: false, plans: false, customDashboard: false });
   };
 
   return (
