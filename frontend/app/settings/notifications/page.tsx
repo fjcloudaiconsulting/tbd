@@ -113,7 +113,7 @@ export default function NotificationsPage() {
 
   return (
     <SettingsLayout activeTab="/settings/notifications">
-      <div className="max-w-lg space-y-6">
+      <div className="max-w-3xl space-y-6">
         <div className={`${card} p-6`}>
           <h2 className={`mb-2 ${cardTitle}`}>Email notifications</h2>
           <p className="mb-5 text-sm text-text-muted">
