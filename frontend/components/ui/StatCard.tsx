@@ -21,7 +21,7 @@ export default function StatCard({ label, value, valueClassName, sub, badge }: S
       ) : (
         <p className={`mt-1 text-2xl font-semibold tabular-nums ${valueClassName ?? "text-text-primary"}`}>{value}</p>
       )}
-      {sub ? <p className="mt-1 text-sm text-text-muted">{sub}</p> : null}
+      {sub ? <p data-testid="stat-card-sub" className="mt-1 text-sm text-text-muted">{sub}</p> : null}
     </div>
   );
 }

@@ -382,35 +382,35 @@ export default function BudgetsPage() {
 
           {/* Budget chart + Details side-by-side on wide screens */}
           <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-          {/* Budget chart */}
-          {budgets.length > 0 && (
-            <div className={`${card} p-5 xl:col-span-3`}>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className={cardTitle}>Budget Overview</h2>
-                <span className="text-xs text-text-muted">
-                  {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` – ${selectedPeriod.end_date}` : " (open)"}</>}
-                </span>
+            {/* Budget chart */}
+            {budgets.length > 0 && (
+              <div className={`${card} p-5 xl:col-span-3 min-w-0`}>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className={cardTitle}>Budget Overview</h2>
+                  <span className="text-xs text-text-muted">
+                    {selectedPeriod && <>{selectedPeriod.start_date}{selectedPeriod.end_date ? ` – ${selectedPeriod.end_date}` : " (open)"}</>}
+                  </span>
+                </div>
+                <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
+                  <BudgetOverviewChart
+                    budgetChartData={budgetChartData}
+                    cellMeta={budgets}
+                    onBarClick={(name) => {
+                      if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
+                    }}
+                  />
+                </div>
+                <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.spent }} /> Spent</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.watch }} /> &gt;80%</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over budget</span>
+                  <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.remaining }} /> Remaining</span>
+                </div>
               </div>
-              <div className="w-full min-w-0 p-4" style={{ height: Math.max(budgets.length * 36, 100) }}>
-                <BudgetOverviewChart
-                  budgetChartData={budgetChartData}
-                  cellMeta={budgets}
-                  onBarClick={(name) => {
-                    if (name) router.push(`/transactions?category=${encodeURIComponent(name)}`);
-                  }}
-                />
-              </div>
-              <div className="mt-3 flex gap-4 px-4 pb-2 text-[10px] text-text-muted">
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.spent }} /> Spent</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.watch }} /> &gt;80%</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.over }} /> Over budget</span>
-                <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full" style={{ background: chartColor.remaining }} /> Remaining</span>
-              </div>
-            </div>
-          )}
+            )}
 
-          {/* Budget details */}
-          <div className={`${card} ${budgets.length > 0 ? "xl:col-span-2" : "xl:col-span-5"}`}>
+            {/* Budget details */}
+            <div className={`${card} min-w-0 ${budgets.length > 0 ? "xl:col-span-2" : "xl:col-span-5"}`}>
             <div className={cardHeader}>
               <h2 className={cardTitle}>Details</h2>
             </div>
@@ -485,8 +485,9 @@ export default function BudgetsPage() {
                 </div>
               )}
             </div>
+            </div>
           </div>
-          </div>{/* end chart+details grid */}
+          {/* end chart+details grid */}
         </div>
       )}
       <ConfirmModal
