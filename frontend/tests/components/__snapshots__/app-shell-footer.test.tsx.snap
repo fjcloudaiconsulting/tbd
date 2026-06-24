@@ -5,7 +5,7 @@ exports[`<AppShellFooter /> > snapshot stays stable in dark + light > app-footer
   class="border-t border-border bg-surface px-4 sm:px-8 py-4"
 >
   <div
-    class="mx-auto flex max-w-screen-xl flex-col gap-2 text-[11px] text-text-muted sm:flex-row sm:items-center sm:justify-between sm:text-xs"
+    class="mx-auto flex max-w-[1760px] flex-col gap-2 text-[11px] text-text-muted sm:flex-row sm:items-center sm:justify-between sm:text-xs"
   >
     <div
       class="flex items-center gap-3"
@@ -129,7 +129,7 @@ exports[`<AppShellFooter /> > snapshot stays stable in dark + light > app-footer
   class="border-t border-border bg-surface px-4 sm:px-8 py-4"
 >
   <div
-    class="mx-auto flex max-w-screen-xl flex-col gap-2 text-[11px] text-text-muted sm:flex-row sm:items-center sm:justify-between sm:text-xs"
+    class="mx-auto flex max-w-[1760px] flex-col gap-2 text-[11px] text-text-muted sm:flex-row sm:items-center sm:justify-between sm:text-xs"
   >
     <div
       class="flex items-center gap-3"
