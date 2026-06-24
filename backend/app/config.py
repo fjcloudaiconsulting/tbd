@@ -221,6 +221,14 @@ class Settings(BaseSettings):
     # once the frontend lands.
     feature_plans: bool = False
 
+    # Custom Dashboard (W4 customizable dashboard — gridstack.js canvas)
+    # When ``feature_custom_dashboard`` is False (the pre-launch default),
+    # the ``/api/v1/dashboard/*`` router-level dependency ``require_feature``
+    # raises a hard 404 on every route and the frontend hides the nav item.
+    # Flip to True (or override via SystemSetting / OrgSetting) once the
+    # frontend lands.
+    feature_custom_dashboard: bool = False
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:

@@ -10,6 +10,7 @@ import HelpTooltip from "@/components/Tooltip";
 import Pagination from "@/components/ui/Pagination";
 import TourAnchor from "@/components/tour/TourAnchor";
 import { useAuth } from "@/components/auth/AuthProvider";
+import CustomDashboard from "@/components/dashboard/CustomDashboard";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { fetchAll } from "@/lib/pagination";
 import { formatAmount, formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
@@ -135,7 +136,29 @@ function DashboardSkeleton() {
   );
 }
 
+/**
+ * Flag-switched entry point for /dashboard.
+ *
+ * When ``features.customDashboard`` is **false** (default): renders the
+ * existing ``LegacyDashboard`` component, which is the original page body
+ * extracted verbatim — no behaviour change, byte-identical render.
+ *
+ * When **true**: renders ``<CustomDashboard />``, the Canvas-based shell
+ * introduced in W4 Phase 1.
+ *
+ * While auth is still loading we render the legacy component (it shows
+ * its own skeleton via the ``loading`` flag it already reads from
+ * ``useAuth()``), so the UX during the loading window is unchanged.
+ */
 export default function DashboardPage() {
+  const { features } = useAuth();
+  if (features?.customDashboard) {
+    return <CustomDashboard />;
+  }
+  return <LegacyDashboard />;
+}
+
+function LegacyDashboard() {
   const { user, loading } = useAuth();
   const router = useRouter();
   const [resetBanner, setResetBanner] = useState(false);

@@ -5,10 +5,12 @@ feature flags when a valid bearer token is presented, and fall back to
 global/env resolution when the caller is unauthenticated.
 
 Coverage:
-- Unauthenticated: features.reports / features.plans reflect global/env.
+- Unauthenticated: features.reports / features.plans / features.custom_dashboard
+  reflect global/env.
 - Authenticated: per-org OrgSetting override is applied.
 - Backward-compat: existing keys (needs_setup, captcha_required,
   billing_ui_enabled, feature_reports_v2) must still be present.
+- custom_dashboard defaults OFF (env-floor False, no DB rows).
 """
 from __future__ import annotations
 
@@ -106,9 +108,11 @@ async def test_unauthenticated_features_reflect_env_floor(
     """Without a token the endpoint resolves features from env only (no DB rows).
 
     feature_reports_v2=True, feature_plans=False → reports True, plans False.
+    custom_dashboard defaults False.
     """
     monkeypatch.setattr(app_settings, "feature_reports_v2", True)
     monkeypatch.setattr(app_settings, "feature_plans", False)
+    monkeypatch.setattr(app_settings, "feature_custom_dashboard", False)
     monkeypatch.setattr(app_settings, "captcha_required", False)
     monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
 
@@ -121,6 +125,7 @@ async def test_unauthenticated_features_reflect_env_floor(
     assert "features" in body
     assert body["features"]["reports"] is True
     assert body["features"]["plans"] is False
+    assert body["features"]["custom_dashboard"] is False
 
 
 @pytest.mark.asyncio
@@ -330,4 +335,77 @@ async def test_bad_token_treated_as_unauthenticated(session_factory, monkeypatch
     assert "features" in body
     # Bad token → treated as no user → env-floor resolution
     assert body["features"]["reports"] is True
+    assert body["features"]["plans"] is False
+
+
+# ---------------------------------------------------------------------------
+# custom_dashboard — default OFF + org-override
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_custom_dashboard_defaults_off_in_status(
+    session_factory, monkeypatch
+) -> None:
+    """features.custom_dashboard is False when env-floor is False and no DB
+    rows exist — mirrors the PLANS default-OFF behaviour."""
+    monkeypatch.setattr(app_settings, "feature_reports_v2", False)
+    monkeypatch.setattr(app_settings, "feature_plans", False)
+    monkeypatch.setattr(app_settings, "feature_custom_dashboard", False)
+    monkeypatch.setattr(app_settings, "captcha_required", False)
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+
+    app = _make_unauthed_app(session_factory)
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/auth/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["features"]["custom_dashboard"] is False
+
+
+@pytest.mark.asyncio
+async def test_custom_dashboard_flips_with_org_override_in_status(
+    session_factory, monkeypatch
+) -> None:
+    """Per-org OrgSetting 'on' turns custom_dashboard on for that org."""
+    monkeypatch.setattr(app_settings, "feature_reports_v2", False)
+    monkeypatch.setattr(app_settings, "feature_plans", False)
+    monkeypatch.setattr(app_settings, "feature_custom_dashboard", False)
+    monkeypatch.setattr(app_settings, "captcha_required", False)
+    monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+
+    async with session_factory() as db:
+        org = Organization(name="Dashboard Org", billing_cycle_day=1)
+        db.add(org)
+        await db.flush()
+        user = User(
+            org_id=org.id,
+            username="dash_owner",
+            email="dash_owner@example.com",
+            password_hash=hash_password("pw-1234567"),
+            role=Role.OWNER,
+            email_verified=True,
+        )
+        db.add(user)
+        await db.flush()
+        db.add(
+            OrgSetting(
+                org_id=org.id,
+                key=feature_setting_key(Feature.CUSTOM_DASHBOARD),
+                value="on",
+            )
+        )
+        await db.commit()
+        await db.refresh(user)
+
+    app = _make_authed_app(session_factory, user)
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/auth/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["features"]["custom_dashboard"] is True
+    # Other features still reflect env (off).
+    assert body["features"]["reports"] is False
     assert body["features"]["plans"] is False
