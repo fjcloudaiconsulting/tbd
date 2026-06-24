@@ -196,7 +196,7 @@ export default function SettingsProfilePage() {
 
   return (
     <SettingsLayout activeTab="/settings">
-      <div className="max-w-lg space-y-6">
+      <div className="space-y-6">
         {stepupErrorVisible && stepupErrorCode && (
           <SsoStepupErrorBanner
             errorCode={stepupErrorCode}
@@ -210,108 +210,116 @@ export default function SettingsProfilePage() {
             onDismiss={clearStepupErrorFromUrl}
           />
         )}
-        <div className={`${card} p-6`}>
-          <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-dim text-lg font-semibold text-accent">
-              {initials}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Left column: identity card + Edit-Profile form */}
+          <div className="space-y-6">
+            <div className={`${card} p-6`}>
+              <div className="flex items-center gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-dim text-lg font-semibold text-accent">
+                  {initials}
+                </div>
+                <div>
+                  <p className="font-medium text-text-primary">{displayName}</p>
+                  <p className="mt-0.5 text-xs text-text-muted">
+                    {user?.role} · {user?.org_name}
+                    {user?.is_superadmin && <span className="ml-1 text-accent">· superadmin</span>}
+                  </p>
+                  {user?.email_verified && (
+                    <p className="mt-0.5 text-[10px] text-success">Email verified</p>
+                  )}
+                </div>
+              </div>
             </div>
-            <div>
-              <p className="font-medium text-text-primary">{displayName}</p>
-              <p className="mt-0.5 text-xs text-text-muted">
-                {user?.role} · {user?.org_name}
-                {user?.is_superadmin && <span className="ml-1 text-accent">· superadmin</span>}
-              </p>
-              {user?.email_verified && (
-                <p className="mt-0.5 text-[10px] text-success">Email verified</p>
-              )}
+
+            <div className={`${card} p-6`}>
+              <h2 className={`mb-5 ${cardTitle}`}>Edit Profile</h2>
+              <form onSubmit={handleProfileSubmit} className="space-y-4">
+                {profileMsg && <div className={successCls}>{profileMsg}</div>}
+                {profileErr && <div className={errorCls}>{profileErr}</div>}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="profile-firstname" className={label}>First Name</label>
+                    <input id="profile-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} placeholder="John" />
+                  </div>
+                  <div>
+                    <label htmlFor="profile-lastname" className={label}>Last Name</label>
+                    <input id="profile-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} placeholder="Doe" />
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="profile-username" className={label}>Username</label>
+                  <input id="profile-username" type="text" required value={username} onChange={(e) => setUsername(e.target.value)} className={`${input} max-w-md`} />
+                </div>
+                <div>
+                  <label htmlFor="profile-email" className={label}>Email</label>
+                  <input id="profile-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={`${input} max-w-md`} />
+                </div>
+                {emailChanging && passwordSet && (
+                  <div>
+                    <label htmlFor="profile-current-password" className={label}>
+                      Current password <span className="text-xs text-text-muted">(required to change email)</span>
+                    </label>
+                    <PasswordInput
+                      id="profile-current-password"
+                      autoComplete="current-password"
+                      required
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      className={`${input} max-w-md`}
+                    />
+                    <p className="mt-1 text-xs text-text-muted">
+                      Prefer not to type your password? You can{" "}
+                      <Link href="/settings/security" className="text-accent hover:underline">
+                        change it
+                      </Link>{" "}
+                      any time from the Security settings.
+                    </p>
+                  </div>
+                )}
+                {emailChanging && !passwordSet && (
+                  <div className="rounded-lg border border-border p-4 space-y-3">
+                    <p className="text-sm text-text-primary font-medium">
+                      Verify with Google to change your email
+                    </p>
+                    <p className="text-xs text-text-muted">
+                      Your account was created with Google and has no password yet. Verify with Google now to confirm this change, or{" "}
+                      <Link href="/settings/security" className="text-accent hover:underline">
+                        set a password first
+                      </Link>{" "}
+                      in Security settings.
+                    </p>
+                    {stepupToken ? (
+                      <p className="text-xs text-success">
+                        Google verified. Click Save Changes to update your email.
+                      </p>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleVerifyWithGoogle}
+                        disabled={stepupBusy}
+                        className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
+                      >
+                        {stepupBusy ? "Redirecting..." : "Verify with Google"}
+                      </button>
+                    )}
+                  </div>
+                )}
+                <div>
+                  <label htmlFor="profile-phone" className={label}>Phone</label>
+                  <input id="profile-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} className={`${input} max-w-md`} placeholder="+1 234 567 8900" />
+                </div>
+                <button type="submit" disabled={savingProfile} className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>
+                  {savingProfile ? "Saving..." : "Save Changes"}
+                </button>
+              </form>
             </div>
           </div>
-        </div>
 
-        <div className={`${card} p-6`}>
-          <h2 className={`mb-5 ${cardTitle}`}>Edit Profile</h2>
-          <form onSubmit={handleProfileSubmit} className="space-y-4">
-            {profileMsg && <div className={successCls}>{profileMsg}</div>}
-            {profileErr && <div className={errorCls}>{profileErr}</div>}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label htmlFor="profile-firstname" className={label}>First Name</label>
-                <input id="profile-firstname" type="text" value={firstName} onChange={(e) => setFirstName(e.target.value)} className={input} placeholder="John" />
-              </div>
-              <div>
-                <label htmlFor="profile-lastname" className={label}>Last Name</label>
-                <input id="profile-lastname" type="text" value={lastName} onChange={(e) => setLastName(e.target.value)} className={input} placeholder="Doe" />
-              </div>
-            </div>
-            <div>
-              <label htmlFor="profile-username" className={label}>Username</label>
-              <input id="profile-username" type="text" required value={username} onChange={(e) => setUsername(e.target.value)} className={input} />
-            </div>
-            <div>
-              <label htmlFor="profile-email" className={label}>Email</label>
-              <input id="profile-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className={input} />
-            </div>
-            {emailChanging && passwordSet && (
-              <div>
-                <label htmlFor="profile-current-password" className={label}>
-                  Current password <span className="text-xs text-text-muted">(required to change email)</span>
-                </label>
-                <PasswordInput
-                  id="profile-current-password"
-                  autoComplete="current-password"
-                  required
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  className={input}
-                />
-                <p className="mt-1 text-xs text-text-muted">
-                  Prefer not to type your password? You can{" "}
-                  <Link href="/settings/security" className="text-accent hover:underline">
-                    change it
-                  </Link>{" "}
-                  any time from the Security settings.
-                </p>
-              </div>
-            )}
-            {emailChanging && !passwordSet && (
-              <div className="rounded-lg border border-border p-4 space-y-3">
-                <p className="text-sm text-text-primary font-medium">
-                  Verify with Google to change your email
-                </p>
-                <p className="text-xs text-text-muted">
-                  Your account was created with Google and has no password yet. Verify with Google now to confirm this change, or{" "}
-                  <Link href="/settings/security" className="text-accent hover:underline">
-                    set a password first
-                  </Link>{" "}
-                  in Security settings.
-                </p>
-                {stepupToken ? (
-                  <p className="text-xs text-success">
-                    Google verified. Click Save Changes to update your email.
-                  </p>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleVerifyWithGoogle}
-                    disabled={stepupBusy}
-                    className={`${btnSecondary} w-full sm:w-auto min-h-[44px] sm:min-h-0`}
-                  >
-                    {stepupBusy ? "Redirecting..." : "Verify with Google"}
-                  </button>
-                )}
-              </div>
-            )}
-            <div>
-              <label htmlFor="profile-phone" className={label}>Phone</label>
-              <input id="profile-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} className={input} placeholder="+1 234 567 8900" />
-            </div>
-            <button type="submit" disabled={savingProfile} className={`${btnPrimary} w-full sm:w-auto sm:min-h-0`}>
-              {savingProfile ? "Saving..." : "Save Changes"}
-            </button>
-          </form>
+          {/* Right column: Dashboard-Tour card */}
+          <div>
+            <RestartTourCard />
+          </div>
         </div>
-
-        <RestartTourCard />
       </div>
     </SettingsLayout>
   );
