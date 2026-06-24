@@ -1181,7 +1181,7 @@ export default function ForecastPlansClient({
           {/* Planned vs Actual chart — contained at ~66% on xl+ */}
           {showDetails && chartData.length > 0 && (
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-              <div className={`${card} p-5 overflow-hidden xl:col-span-2`}>
+              <div data-testid="forecast-chart-container" className={`${card} p-5 overflow-hidden xl:col-span-2`}>
                 <h2 className={`${cardTitle} mb-4`}>
                   Planned vs Actual (Expenses)
                 </h2>
@@ -1194,8 +1194,8 @@ export default function ForecastPlansClient({
                   />
                 </div>
               </div>
-              <div className={`${card} p-5 xl:col-span-1 flex flex-col justify-center gap-3`}>
-                <p className={cardTitle}>Legend</p>
+              <div data-testid="forecast-chart-legend" role="group" aria-labelledby="forecast-chart-legend-title" className={`${card} p-5 flex flex-col gap-3`}>
+                <h2 id="forecast-chart-legend-title" className={cardTitle}>Legend</h2>
                 <div className="flex flex-col gap-2 text-sm text-text-muted">
                   <span className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full shrink-0" style={{ background: chartColor.planned }} /> Planned</span>
                   <span className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full shrink-0" style={{ background: chartColor.actual }} /> Under plan</span>

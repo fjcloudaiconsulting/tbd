@@ -180,17 +180,17 @@ describe("ForecastPlans page — proportional layout", () => {
     expect(screen.getByText("Actual Net")).toBeInTheDocument();
 
     // All four tiles rendered — each StatCard wraps its label in a <p>;
-    // verify at least one value cell is present alongside its label.
+    // verify the StatCard outer div contains the label.
     const expensesLabel = screen.getByText("Planned Expenses");
-    // The value is a sibling <p> in the same StatCard container.
-    expect(expensesLabel.closest("div")).not.toBeNull();
+    const tile = expensesLabel.closest("div");
+    expect(tile).not.toBeNull();
+    // Planned Income and Planned Expenses carry sub rows (Actual: …);
+    // assert those sub elements render (confirms StatCard sub prop is wired).
+    const subs = screen.getAllByTestId("stat-card-sub");
+    expect(subs.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("Planned vs Actual chart sits inside an xl:col-span-2 ancestor", async () => {
-    // Seed localStorage so showDetails starts as true (avoids an extra
-    // fireEvent that would complicate the assertion).
-    localStorage.setItem("forecast-plans:show-details", "true");
-
+  it("Planned vs Actual chart sits inside forecast-chart-container", async () => {
     const plan = makePlan([
       {
         category_id: 20,
@@ -205,12 +205,14 @@ describe("ForecastPlans page — proportional layout", () => {
     mockApiFetch(plan);
     renderClient(plan);
 
-    // The toggle reads localStorage on mount — wait for it to hydrate.
+    // Wait for the toggle to appear (defaults off), then click to show details.
     await waitFor(() => {
       expect(
-        screen.getByRole("switch", { name: /hide details/i }),
+        screen.getByRole("switch", { name: /show details/i }),
       ).toBeInTheDocument();
     });
+
+    fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
 
     // The chart heading renders only when showDetails is true AND chartData
     // is non-empty (the expense item above populates chartData).
@@ -220,11 +222,12 @@ describe("ForecastPlans page — proportional layout", () => {
       ).toBeInTheDocument();
     });
 
+    const chartContainer = screen.getByTestId("forecast-chart-container");
     const chartHeading = screen.getByText("Planned vs Actual (Expenses)");
-    expect(chartHeading.closest('[class*="xl:col-span-2"]')).not.toBeNull();
+    expect(chartContainer).toContainElement(chartHeading);
   });
 
-  it("Show details toggle on via click: chart is then contained in xl:col-span-2 ancestor", async () => {
+  it("Show details toggle on via click: legend card renders beside the chart", async () => {
     const plan = makePlan([
       {
         category_id: 20,
@@ -246,7 +249,7 @@ describe("ForecastPlans page — proportional layout", () => {
       ).toBeInTheDocument();
     });
 
-    // Toggle on.
+    // Toggle on via click (not localStorage pre-seed) to avoid coupling to key.
     fireEvent.click(screen.getByRole("switch", { name: /show details/i }));
 
     await waitFor(() => {
@@ -255,7 +258,8 @@ describe("ForecastPlans page — proportional layout", () => {
       ).toBeInTheDocument();
     });
 
-    const chartHeading = screen.getByText("Planned vs Actual (Expenses)");
-    expect(chartHeading.closest('[class*="xl:col-span-2"]')).not.toBeNull();
+    // Both chart container and legend card must be present.
+    expect(screen.getByTestId("forecast-chart-container")).toBeInTheDocument();
+    expect(screen.getByTestId("forecast-chart-legend")).toBeInTheDocument();
   });
 });

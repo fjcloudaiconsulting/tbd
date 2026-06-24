@@ -42,6 +42,19 @@ describe("StatCard", () => {
     const v = screen.getByText("2");
     expect(v.className).toContain("text-xl");
     expect(v.className).not.toContain("text-2xl");
+    // Invariants: always present regardless of size
+    expect(v.className).toContain("font-semibold");
+    expect(v.className).toContain("tabular-nums");
+  });
+
+  it("valueSize badge-present branch: resolvedValueSize applies and default text-2xl is absent", () => {
+    render(<StatCard label="X" value="9" valueSize="text-xl" badge={<span>B</span>} />);
+    const val = screen.getByText("9");
+    expect(val.className).toContain("text-xl");
+    expect(val.className).not.toContain("text-2xl");
+    // Structural invariants in badge branch
+    expect(val.className).toContain("font-semibold");
+    expect(val.className).toContain("tabular-nums");
   });
 
   it("applies a custom subClassName when sub is provided", () => {
