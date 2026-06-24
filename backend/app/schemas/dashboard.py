@@ -32,7 +32,7 @@ from app.schemas.report_layout import (
 
 
 class DashboardLayoutOut(BaseModel):
-    """Full dashboard layout response returned by GET/PUT ``/api/v1/dashboard``."""
+    """Full dashboard layout response returned by GET/PATCH ``/api/v1/dashboard``."""
 
     model_config = ConfigDict(from_attributes=True)
 

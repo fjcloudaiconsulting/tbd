@@ -43,7 +43,7 @@ class DashboardLayout(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     owner_user_id: Mapped[int] = mapped_column(
         Integer,
-        ForeignKey("users.id", ondelete="RESTRICT"),
+        ForeignKey("users.id", name="fk_dashboard_layouts_owner", ondelete="RESTRICT"),
         nullable=False,
     )
     org_id: Mapped[int] = mapped_column(
@@ -74,6 +74,5 @@ class DashboardLayout(Base):
 
     __table_args__ = (
         UniqueConstraint("owner_user_id", name="uq_dashboard_layouts_owner"),
-        Index("ix_dashboard_layouts_owner", "owner_user_id"),
         Index("ix_dashboard_layouts_org", "org_id"),
     )

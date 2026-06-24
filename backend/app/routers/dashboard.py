@@ -31,6 +31,7 @@ Design decisions:
 """
 from __future__ import annotations
 
+import copy
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -93,8 +94,8 @@ async def _get_or_create(db: AsyncSession, user: User) -> DashboardLayout:
     row = DashboardLayout(
         owner_user_id=user.id,
         org_id=user.org_id,
-        layout_json=DEFAULT_DASHBOARD_LAYOUT,
-        canvas_filters_json=DEFAULT_CANVAS_FILTERS,
+        layout_json=copy.deepcopy(DEFAULT_DASHBOARD_LAYOUT),
+        canvas_filters_json=copy.deepcopy(DEFAULT_CANVAS_FILTERS),
     )
     db.add(row)
     await db.commit()

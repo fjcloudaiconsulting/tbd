@@ -62,15 +62,11 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["owner_user_id"],
             ["users.id"],
+            name="fk_dashboard_layouts_owner",
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("owner_user_id", name="uq_dashboard_layouts_owner"),
-    )
-    op.create_index(
-        "ix_dashboard_layouts_owner",
-        "dashboard_layouts",
-        ["owner_user_id"],
     )
     op.create_index(
         "ix_dashboard_layouts_org",
@@ -81,5 +77,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_dashboard_layouts_org", table_name="dashboard_layouts")
-    op.drop_index("ix_dashboard_layouts_owner", table_name="dashboard_layouts")
     op.drop_table("dashboard_layouts")

@@ -255,6 +255,8 @@ async def test_get_is_isolated_per_user(session_factory):
     assert res_b.status_code == 200
     body_b = res_b.json()
     assert body_b["owner_user_id"] == seeds["user_b_id"]
+    # org_id must be sourced from current_user, not bled across orgs
+    assert body_b["org_id"] == seeds["org_b_id"]
     # Must NOT contain A's widget
     widgets = body_b["layout_json"].get("widgets", [])
     widget_ids = [w.get("id") for w in widgets]
@@ -300,5 +302,40 @@ async def test_patch_unknown_key_returns_422(session_factory):
         res = client.patch(
             "/api/v1/dashboard",
             json={"layout_json": {}, "unknown_key": "bad"},
+        )
+    assert res.status_code == 422
+
+
+# ─── (g) Explicit-null PATCH → 422 ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_layout_json_null_returns_422(session_factory):
+    """PATCH with explicit null for layout_json must be rejected with 422.
+
+    The router's explicit-null guard (~line 141-147) blocks null values for
+    NOT-NULL columns even though the Pydantic schema marks them Optional
+    (so the field is patchable when absent but not when explicitly nulled).
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch("/api/v1/dashboard", json={"layout_json": None})
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_canvas_filters_json_null_returns_422(session_factory):
+    """PATCH with explicit null for canvas_filters_json must be rejected with 422.
+
+    Mirrors test_patch_layout_json_null_returns_422 for the other guarded column.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch(
+            "/api/v1/dashboard", json={"canvas_filters_json": None}
         )
     assert res.status_code == 422
