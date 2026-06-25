@@ -327,16 +327,26 @@ describe("DashboardDataProvider — initial fetch", () => {
       expect(screen.getByTestId("loading").textContent).toBe("false");
     });
 
-    const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
-    expect(calls.some((u) => u.startsWith("/api/v1/accounts"))).toBe(true);
-    expect(calls.some((u) => u.startsWith("/api/v1/settings/billing-periods"))).toBe(true);
-    expect(calls.some((u) => u.startsWith("/api/v1/settings/billing-cycle"))).toBe(true);
-    expect(calls.some((u) => u.startsWith("/api/v1/forecast?period_start="))).toBe(true);
-    expect(calls.some((u) => u.startsWith("/api/v1/forecast/account-balances"))).toBe(true);
-    expect(calls.some((u) => u.startsWith("/api/v1/forecast-plans/current"))).toBe(true);
-    // Phase 2b: snapshot + budgets (initial call has no period_start; period-change call adds it)
-    expect(calls.some((u) => u.startsWith("/api/v1/transactions?limit=200"))).toBe(true);
-    expect(calls.some((u) => u.startsWith("/api/v1/budgets"))).toBe(true);
+    // De-flake: `loading` flips false right after loadRefs resolves, but the
+    // period-scoped fetches (forecast / account-balances / forecast-plan /
+    // snapshot / budgets) fire in SEPARATE effects keyed on realPeriodStart,
+    // which resolves a render later. Asserting on the call log immediately
+    // after loading=false races those effects, so poll for the calls inside
+    // waitFor until every expected endpoint has been hit.
+    await waitFor(() => {
+      const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
+      // refs (fire on mount)
+      expect(calls.some((u) => u.startsWith("/api/v1/accounts"))).toBe(true);
+      expect(calls.some((u) => u.startsWith("/api/v1/settings/billing-periods"))).toBe(true);
+      expect(calls.some((u) => u.startsWith("/api/v1/settings/billing-cycle"))).toBe(true);
+      // period-scoped (fire once realPeriodStart resolves)
+      expect(calls.some((u) => u.startsWith("/api/v1/forecast?period_start="))).toBe(true);
+      expect(calls.some((u) => u.startsWith("/api/v1/forecast/account-balances"))).toBe(true);
+      expect(calls.some((u) => u.startsWith("/api/v1/forecast-plans/current"))).toBe(true);
+      // Phase 2b: snapshot + budgets (initial call has no period_start; period-change call adds it)
+      expect(calls.some((u) => u.startsWith("/api/v1/transactions?limit=200"))).toBe(true);
+      expect(calls.some((u) => u.startsWith("/api/v1/budgets"))).toBe(true);
+    });
   });
 
   it("exposes accounts and activeAccounts (filters inactive)", async () => {
