@@ -47,21 +47,34 @@ from app.services.feature_gate import Feature, require_feature
 
 logger = structlog.stdlib.get_logger()
 
-# Minimal valid LayoutJson for Phase 1. Phase 2 will replace this with a
-# curated set of finance tiles once the widget catalogue is richer.
+# Phase 2a default layout: the 3 finance tiles at the same grid coords as
+# ``emptyDashboardWidget`` defaults in ``frontend/lib/dashboard/widget-types.ts``.
+# dash_* types require the dashboard-specific validator (see schemas/dashboard.py);
+# the strict reports validator does NOT accept them.
 DEFAULT_DASHBOARD_LAYOUT: dict = {
     "version": 1,
     "widgets": [
         {
-            "id": "default-kpi-1",
-            "type": "kpi",
-            "title": "Total Spent",
-            "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
-            "config": {
-                "dataset": "transactions",
-                "measure": {"agg": "sum", "field": "amount"},
-            },
-        }
+            "id": "default-on-track",
+            "type": "dash_on_track",
+            "title": "On Track",
+            "grid": {"x": 0, "y": 0, "w": 12, "h": 3},
+            "config": {},
+        },
+        {
+            "id": "default-accounts",
+            "type": "dash_accounts",
+            "title": "Accounts",
+            "grid": {"x": 0, "y": 3, "w": 4, "h": 5},
+            "config": {},
+        },
+        {
+            "id": "default-account-forecast",
+            "type": "dash_account_forecast",
+            "title": "Month-End Forecast",
+            "grid": {"x": 4, "y": 3, "w": 8, "h": 5},
+            "config": {},
+        },
     ],
 }
 

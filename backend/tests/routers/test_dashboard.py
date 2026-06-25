@@ -339,3 +339,183 @@ async def test_patch_canvas_filters_json_null_returns_422(session_factory):
             "/api/v1/dashboard", json={"canvas_filters_json": None}
         )
     assert res.status_code == 422
+
+
+# ─── (h) Default layout shape — 3 dash_* tiles ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_default_layout_contains_three_dash_tiles(session_factory):
+    """GET auto-creates a layout with the 3 Phase-2a finance tiles.
+
+    The default layout must contain exactly the dash_on_track,
+    dash_accounts, and dash_account_forecast widgets at the Phase-2a
+    grid coords, and the GET must return 200 (i.e. the dashboard
+    layout validator accepts dash_* types).
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/dashboard")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    widgets = body["layout_json"]["widgets"]
+    types = [w["type"] for w in widgets]
+    assert "dash_on_track" in types
+    assert "dash_accounts" in types
+    assert "dash_account_forecast" in types
+    assert len(types) == 3
+
+    # Verify grid coords match emptyDashboardWidget defaults
+    by_type = {w["type"]: w for w in widgets}
+    assert by_type["dash_on_track"]["grid"] == {"x": 0, "y": 0, "w": 12, "h": 3}
+    assert by_type["dash_accounts"]["grid"] == {"x": 0, "y": 3, "w": 4, "h": 5}
+    assert by_type["dash_account_forecast"]["grid"] == {"x": 4, "y": 3, "w": 8, "h": 5}
+
+
+# ─── (i) PATCH accepts dash_* layout → 200; round-trips verbatim ─────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_accepts_dash_widget_types(session_factory):
+    """PATCH with a layout containing dash_* widget types must return 200.
+
+    The dashboard-specific validator accepts dash_* types; the strict
+    reports validator does NOT — this test verifies the correct one is wired.
+    The response must round-trip the dash_* layout VERBATIM.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    dash_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-on-track",
+                "type": "dash_on_track",
+                "title": "On Track",
+                "grid": {"x": 0, "y": 0, "w": 12, "h": 3},
+                "config": {},
+            },
+            {
+                "id": "w-accounts",
+                "type": "dash_accounts",
+                "title": "Accounts",
+                "grid": {"x": 0, "y": 3, "w": 4, "h": 5},
+                "config": {},
+            },
+            {
+                "id": "w-forecast",
+                "type": "dash_account_forecast",
+                "title": "Month-End Forecast",
+                "grid": {"x": 4, "y": 3, "w": 8, "h": 5},
+                "config": {},
+            },
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch("/api/v1/dashboard", json={"layout_json": dash_layout})
+    assert res.status_code == 200, res.text
+    assert res.json()["layout_json"] == dash_layout
+
+
+# ─── (j) PATCH rejects unknown widget type → 422 ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_unknown_widget_type(session_factory):
+    """PATCH with an unknown/unsupported widget type must be rejected with 422.
+
+    The dashboard validator accepts only the known dash_* types and the
+    known report widget types; any other ``type`` value is a 422.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    bad_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-bad",
+                "type": "totally_unknown_widget",
+                "title": "Bad",
+                "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+                "config": {},
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch("/api/v1/dashboard", json={"layout_json": bad_layout})
+    assert res.status_code == 422, res.text
+
+
+# ─── (l) PATCH rejects empty widget title → 422 ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_empty_widget_title(session_factory):
+    """PATCH with a widget whose title is an empty string must be rejected with 422.
+
+    _DashWidgetBase.title uses Field(min_length=1); a blank title is
+    structurally invalid for both dash_* and report widget types.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    empty_title_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-empty-title",
+                "type": "dash_on_track",
+                "title": "",  # empty string — must be rejected
+                "grid": {"x": 0, "y": 0, "w": 12, "h": 3},
+                "config": {},
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch(
+            "/api/v1/dashboard", json={"layout_json": empty_title_layout}
+        )
+    assert res.status_code == 422, res.text
+
+
+# ─── (k) PATCH rejects malformed grid (w=0) → 422 ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_zero_width_grid(session_factory):
+    """PATCH with a widget whose grid.w=0 must be rejected with 422.
+
+    WidgetGrid.w is Field(gt=0); a zero-width widget is structurally invalid
+    regardless of the widget type.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    bad_grid_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-bad-grid",
+                "type": "dash_on_track",
+                "title": "On Track",
+                "grid": {"x": 0, "y": 0, "w": 0, "h": 3},  # w=0 is invalid
+                "config": {},
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch(
+            "/api/v1/dashboard", json={"layout_json": bad_grid_layout}
+        )
+    assert res.status_code == 422, res.text

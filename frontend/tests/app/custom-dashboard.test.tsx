@@ -13,6 +13,10 @@
  *
  *   (b) Flag ON + mocked getDashboard: the Canvas shell renders, and
  *       clicking Save calls saveDashboard.
+ *
+ *   (c) Phase 2a wiring: flag ON with a dash_* default layout — period
+ *       nav renders, the 3 finance tiles are present, Save calls
+ *       saveDashboard with the dash_* widget types.
  */
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
@@ -96,7 +100,7 @@ vi.mock("@/components/reports/WidgetShell", () => ({
   ),
 }));
 
-// Stub all widget types — their real implementations call useReportQuery
+// Stub all report widget types — their real implementations call useReportQuery
 // → useReportSources → SWR → apiFetch. Tests only verify the dashboard
 // frame (load/customize/save), not individual widget data loading.
 vi.mock("@/components/reports/widgets/KPIWidget", () => ({
@@ -142,6 +146,44 @@ vi.mock("@/components/reports/widgets/TableWidget", () => ({
 vi.mock("@/components/reports/widgets/SankeyWidget", () => ({
   default: ({ widget }: { widget: { id: string; title: string } }) => (
     <div data-testid={`widget-stub-${widget.id}`}>{widget.title}</div>
+  ),
+}));
+
+// Stub the 3 dash_* finance tile widget wrappers.
+// The real implementations call useDashboard() which requires the provider;
+// for these tests we only verify they are rendered by the canvas dispatch.
+vi.mock("@/components/dashboard/widgets/OnTrackWidget", () => ({
+  default: () => <div data-testid="tile-on-track">OnTrack</div>,
+}));
+vi.mock("@/components/dashboard/widgets/AccountsWidget", () => ({
+  default: () => <div data-testid="tile-accounts">Accounts</div>,
+}));
+vi.mock("@/components/dashboard/widgets/AccountForecastWidget", () => ({
+  default: () => <div data-testid="tile-account-forecast">AccountForecast</div>,
+}));
+
+// Stub DashboardDataProvider — the real provider fires apiFetch for
+// billing-period, accounts, etc.  For dashboard-frame tests we just need
+// the children to render.  DashboardPeriodNav (which reads useDashboard) is
+// also stubbed below so the provider context is not required in tests.
+vi.mock("@/components/dashboard/DashboardDataProvider", () => ({
+  DashboardDataProvider: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="dashboard-data-provider">{children}</div>
+  ),
+  useDashboard: vi.fn(),
+}));
+
+// Stub DashboardPeriodNav — avoids the useDashboard() context requirement.
+// The "period nav renders" tests check for this testid directly.
+vi.mock("@/components/dashboard/DashboardPeriodNav", () => ({
+  default: () => (
+    <div data-testid="dashboard-period-nav">
+      <button aria-label="Previous period" />
+      <span>2026-06-01 – 2026-06-30</span>
+      <button aria-label="Next period" />
+      <span data-testid="period-nav-current-badge">CURRENT</span>
+      <a href="/transactions">View All Transactions</a>
+    </div>
   ),
 }));
 
@@ -201,6 +243,43 @@ const BASE_DASHBOARD_RESPONSE = {
           format: "currency" as const,
           compare_prior_period: false,
         },
+      },
+    ],
+  },
+  canvas_filters_json: {},
+  schema_version: 1,
+  created_at: "2026-06-01T00:00:00Z",
+  updated_at: "2026-06-01T00:00:00Z",
+};
+
+/** Phase-2a default layout response — the 3 dash_* finance tiles. */
+const DASH_TILES_RESPONSE = {
+  id: 1,
+  owner_user_id: 1,
+  org_id: 1,
+  layout_json: {
+    version: 1,
+    widgets: [
+      {
+        id: "default-on-track",
+        type: "dash_on_track",
+        title: "On Track",
+        grid: { x: 0, y: 0, w: 12, h: 3 },
+        config: {},
+      },
+      {
+        id: "default-accounts",
+        type: "dash_accounts",
+        title: "Accounts",
+        grid: { x: 0, y: 3, w: 4, h: 5 },
+        config: {},
+      },
+      {
+        id: "default-account-forecast",
+        type: "dash_account_forecast",
+        title: "Month-End Forecast",
+        grid: { x: 4, y: 3, w: 8, h: 5 },
+        config: {},
       },
     ],
   },
@@ -279,6 +358,14 @@ describe("DashboardPage — feature flag", () => {
       );
       expect(vi.mocked(dashboardApi.getDashboard)).not.toHaveBeenCalled();
     });
+
+    it("does NOT render the period nav", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(),
+      );
+      expect(screen.queryByTestId("dashboard-period-nav")).toBeNull();
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -327,6 +414,20 @@ describe("DashboardPage — feature flag", () => {
         expect(screen.getByTestId("reports-canvas")).toBeInTheDocument(),
       );
       expect(screen.getByTestId("custom-dashboard")).toBeInTheDocument();
+    });
+
+    it("renders DashboardDataProvider wrapper", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(screen.getByTestId("dashboard-data-provider")).toBeInTheDocument(),
+      );
+    });
+
+    it("renders the period nav chrome", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(screen.getByTestId("dashboard-period-nav")).toBeInTheDocument(),
+      );
     });
 
     it("clicking Save calls saveDashboard", async () => {
@@ -383,6 +484,108 @@ describe("DashboardPage — feature flag", () => {
       );
       expect(screen.getByTestId("custom-dashboard-error")).toHaveTextContent(
         "Network error",
+      );
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // (c) FLAG ON + dash_* layout — Phase 2a finance tiles + period nav
+  // ────────────────────────────────────────────────────────────────────────
+  describe("flag ON — Phase 2a dash_* tiles", () => {
+    beforeEach(() => {
+      vi.mocked(useAuth).mockReturnValue({
+        user: BASE_USER as never,
+        loading: false,
+        needsSetup: false,
+        features: { reports: true, plans: false, customDashboard: true },
+        login: vi.fn(),
+        register: vi.fn(),
+        logout: vi.fn(),
+        refreshMe: vi.fn(),
+      } as never);
+
+      // getDashboard resolves with the 3-tile default layout.
+      vi.mocked(dashboardApi.getDashboard).mockResolvedValue(
+        DASH_TILES_RESPONSE as never,
+      );
+      // saveDashboard returns the same layout.
+      vi.mocked(dashboardApi.saveDashboard).mockResolvedValue(
+        DASH_TILES_RESPONSE as never,
+      );
+    });
+
+    it("renders the period nav after load", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(screen.getByTestId("dashboard-period-nav")).toBeInTheDocument(),
+      );
+    });
+
+    it("renders the CURRENT period badge in the period nav", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(screen.getByTestId("period-nav-current-badge")).toBeInTheDocument(),
+      );
+    });
+
+    it("renders the View All Transactions link", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("link", { name: /view all transactions/i }),
+        ).toBeInTheDocument(),
+      );
+    });
+
+    it("renders all 3 dash_* tile widgets via the canvas dispatch", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(screen.getByTestId("reports-canvas")).toBeInTheDocument(),
+      );
+      // Each dash_* type is dispatched to its tile stub
+      expect(screen.getByTestId("tile-on-track")).toBeInTheDocument();
+      expect(screen.getByTestId("tile-accounts")).toBeInTheDocument();
+      expect(screen.getByTestId("tile-account-forecast")).toBeInTheDocument();
+    });
+
+    it("wraps content in DashboardDataProvider", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(screen.getByTestId("dashboard-data-provider")).toBeInTheDocument(),
+      );
+    });
+
+    it("Save calls saveDashboard with the dash_* layout", async () => {
+      render(<DashboardPage />);
+      await waitFor(() =>
+        expect(screen.getByTestId("custom-dashboard")).toBeInTheDocument(),
+      );
+
+      // Enter Customize mode.
+      fireEvent.click(screen.getByTestId("custom-dashboard-customize"));
+
+      // Trigger a layout change to mark dirty.
+      fireEvent.click(screen.getByTestId("canvas-simulate-change"));
+
+      const saveBtn = await screen.findByTestId("custom-dashboard-save");
+      expect(saveBtn).not.toBeDisabled();
+      fireEvent.click(saveBtn);
+
+      await waitFor(() =>
+        expect(vi.mocked(dashboardApi.saveDashboard)).toHaveBeenCalledTimes(1),
+      );
+
+      // The layout passed to saveDashboard must contain the dash_* widget ids
+      expect(vi.mocked(dashboardApi.saveDashboard)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          version: 1,
+          widgets: expect.arrayContaining([
+            expect.objectContaining({ type: "dash_on_track" }),
+            expect.objectContaining({ type: "dash_accounts" }),
+            expect.objectContaining({ type: "dash_account_forecast" }),
+          ]),
+        }),
+        expect.any(Object),
       );
     });
   });
