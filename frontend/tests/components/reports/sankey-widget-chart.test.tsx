@@ -105,10 +105,12 @@ describe("SankeyWidgetChart — theme/color props", () => {
   it("uses wider margins to prevent label clipping", () => {
     render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
     const margin = capturedProps.margin as { left?: number; right?: number } | undefined;
-    // Wide enough for outside node labels (e.g. "Paycheck/Salary",
-    // "Bills & Subscriptions") not to clip at the SVG edge.
-    expect(margin?.left).toBeGreaterThanOrEqual(120);
-    expect(margin?.right).toBeGreaterThanOrEqual(120);
+    // Pin the fix values: wide enough for outside node labels (e.g.
+    // "Paycheck/Salary", "Bills & Subscriptions") not to clip at the SVG edge.
+    // (>=140/150 rather than a loose floor so a partial regression below the
+    // clip threshold still fails.)
+    expect(margin?.left).toBeGreaterThanOrEqual(140);
+    expect(margin?.right).toBeGreaterThanOrEqual(150);
   });
 
   it("passes ariaLabel", () => {
@@ -194,11 +196,21 @@ describe("SankeyWidgetChart — hub label mapping", () => {
     expect(container.textContent).toContain(long);
     expect(container.textContent).not.toContain("…");
   });
+
+  it("passes nodeTooltip and linkTooltip render props", () => {
+    render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
+    expect(typeof capturedProps.nodeTooltip).toBe("function");
+    expect(typeof capturedProps.linkTooltip).toBe("function");
+  });
 });
 
 describe("truncateLabel", () => {
   it("returns short strings unchanged", () => {
     expect(truncateLabel("Housing")).toBe("Housing");
+  });
+
+  it("returns an empty string unchanged", () => {
+    expect(truncateLabel("")).toBe("");
   });
 
   it("truncates strings longer than the max with a trailing ellipsis", () => {
@@ -211,9 +223,13 @@ describe("truncateLabel", () => {
     expect(truncateLabel("abcde", 5)).toBe("abcde");
   });
 
-  it("passes nodeTooltip and linkTooltip render props", () => {
-    render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
-    expect(typeof capturedProps.nodeTooltip).toBe("function");
-    expect(typeof capturedProps.linkTooltip).toBe("function");
+  // Composition guard: the label accessor is truncateLabel(HUB_LABELS[id] ?? id),
+  // so a hub friendly label longer than the cap WOULD be truncated. Today's hub
+  // labels are intentionally short; this pins that invariant so adding a long
+  // one trips this test (prompting a re-check of the truncation interaction).
+  it("leaves every HUB_LABELS friendly label untruncated (they stay short)", () => {
+    for (const label of Object.values(HUB_LABELS)) {
+      expect(truncateLabel(label)).toBe(label);
+    }
   });
 });

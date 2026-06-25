@@ -103,8 +103,8 @@ export default function SankeyWidgetChart({ links, currency, title }: SankeyWidg
       data={data}
       colors={SANKEY_COLORS}
       // Generous left/right margins so node labels (placed outside the end
-      // nodes) have room — 80px clipped names like "Paycheck/Salary" and
-      // "Bills & Subscriptions" at the SVG edge.
+      // nodes) have room — an 80px margin clipped names like "Paycheck/Salary"
+      // and "Bills & Subscriptions" at the SVG edge.
       margin={{ top: 10, right: 150, bottom: 10, left: 140 }}
       nodeOpacity={1}
       nodeHoverOpacity={1}
