@@ -345,14 +345,15 @@ async def test_patch_canvas_filters_json_null_returns_422(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_default_layout_contains_six_dash_tiles(session_factory):
-    """GET auto-creates a layout with all 6 Phase-2a+2b finance tiles.
+async def test_default_layout_contains_seven_dash_tiles(session_factory):
+    """GET auto-creates a layout with all 7 Phase-2a+2b+2c finance tiles.
 
-    The default layout must contain exactly the Phase-2a tiles
-    (dash_on_track, dash_accounts, dash_account_forecast) at their row-2
-    grid coords, AND the Phase-2b chart tiles (dash_spending, dash_budget,
-    dash_forecast_category) at the row-3 grid coords.  The GET must return
-    200 (i.e. the dashboard layout validator accepts all 6 dash_* types).
+    The default layout must contain the Phase-2a tiles (dash_on_track,
+    dash_accounts, dash_account_forecast) at their row-2 grid coords, the
+    Phase-2b chart tiles (dash_spending, dash_budget, dash_forecast_category)
+    at the row-3 grid coords, AND the Phase-2c recent-transactions tile
+    (dash_recent_transactions) at the row-4 full-width coords.  The GET must
+    return 200 (i.e. the dashboard layout validator accepts all 7 dash_* types).
     """
     await _seed(session_factory)
     app = _make_app(session_factory, _resolver("user_a"))
@@ -373,7 +374,10 @@ async def test_default_layout_contains_six_dash_tiles(session_factory):
     assert "dash_budget" in types
     assert "dash_forecast_category" in types
 
-    assert len(types) == 6
+    # Phase-2c recent-transactions tile
+    assert "dash_recent_transactions" in types
+
+    assert len(types) == 7
 
     # Verify grid coords match emptyDashboardWidget defaults
     by_type = {w["type"]: w for w in widgets}
@@ -386,6 +390,8 @@ async def test_default_layout_contains_six_dash_tiles(session_factory):
     assert by_type["dash_spending"]["grid"] == {"x": 0, "y": 8, "w": 4, "h": 5}
     assert by_type["dash_budget"]["grid"] == {"x": 4, "y": 8, "w": 4, "h": 5}
     assert by_type["dash_forecast_category"]["grid"] == {"x": 8, "y": 8, "w": 4, "h": 5}
+    # Row 4
+    assert by_type["dash_recent_transactions"]["grid"] == {"x": 0, "y": 13, "w": 12, "h": 6}
 
 
 # ─── (i) PATCH accepts dash_* layout → 200; round-trips verbatim ─────────────
@@ -511,6 +517,34 @@ async def test_patch_accepts_chart_tile_types(session_factory):
         res = client.patch("/api/v1/dashboard", json={"layout_json": chart_layout})
     assert res.status_code == 200, res.text
     assert res.json()["layout_json"] == chart_layout
+
+
+@pytest.mark.asyncio
+async def test_patch_accepts_recent_transactions_tile(session_factory):
+    """PATCH with the Phase-2c dash_recent_transactions tile must return 200
+    and round-trip the layout VERBATIM.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    recent_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-recent",
+                "type": "dash_recent_transactions",
+                "title": "Recent Transactions",
+                "grid": {"x": 0, "y": 13, "w": 12, "h": 6},
+                "config": {},
+            },
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch("/api/v1/dashboard", json={"layout_json": recent_layout})
+    assert res.status_code == 200, res.text
+    assert res.json()["layout_json"] == recent_layout
 
 
 @pytest.mark.asyncio

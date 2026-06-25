@@ -61,6 +61,7 @@ class DashWidgetType(str, enum.Enum):
     SPENDING = "dash_spending"
     BUDGET = "dash_budget"
     FORECAST_CATEGORY = "dash_forecast_category"
+    RECENT_TRANSACTIONS = "dash_recent_transactions"
 
 
 class _DashWidgetConfig(BaseModel):
@@ -117,6 +118,11 @@ class DashForecastCategoryWidget(_DashWidgetBase):
     config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
 
 
+class DashRecentTransactionsWidget(_DashWidgetBase):
+    type: Literal[DashWidgetType.RECENT_TRANSACTIONS]
+    config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
+
+
 # ─── widened widget union (dash_* + all report types) ────────────────────────
 #
 # Re-uses the public report widget classes from report_layout.  The
@@ -130,6 +136,7 @@ _DashboardWidget = Annotated[
         DashSpendingWidget,
         DashBudgetWidget,
         DashForecastCategoryWidget,
+        DashRecentTransactionsWidget,
         # report widget types (public classes from report_layout)
         KPIWidget,
         BarWidget,

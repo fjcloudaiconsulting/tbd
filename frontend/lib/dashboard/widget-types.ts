@@ -13,14 +13,15 @@
 
 import type { WidgetGrid } from "@/lib/reports/types";
 
-/** All dashboard-specific widget type discriminants (grows in Phase 2b/2c). */
+/** All dashboard-specific widget type discriminants. */
 export type DashboardWidgetType =
   | "dash_on_track"
   | "dash_accounts"
   | "dash_account_forecast"
   | "dash_spending"
   | "dash_budget"
-  | "dash_forecast_category";
+  | "dash_forecast_category"
+  | "dash_recent_transactions";
 
 /** A dashboard-native widget.  config is empty — the provider owns the data. */
 export interface DashboardWidget {
@@ -58,6 +59,10 @@ const DASHBOARD_WIDGET_DEFAULTS: Record<
   dash_forecast_category: {
     title: "Forecast by Category",
     grid: { x: 8, y: 8, w: 4, h: 5 },
+  },
+  dash_recent_transactions: {
+    title: "Recent Transactions",
+    grid: { x: 0, y: 13, w: 12, h: 6 },
   },
 };
 
