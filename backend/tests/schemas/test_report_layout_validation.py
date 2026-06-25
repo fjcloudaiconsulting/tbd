@@ -141,6 +141,31 @@ def test_sankey_widget_round_trips_granularity_and_top_n_verbatim():
     assert cfg["top_n"] == 8
 
 
+def test_sankey_widget_rejects_missing_measure():
+    """measure is required on the sankey config (mirrors the other widgets'
+    required-field contract)."""
+    layout = _sankey_layout()
+    layout["widgets"][0]["config"].pop("measure")
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", layout_json=layout)
+
+
+def test_sankey_widget_rejects_bad_spending_granularity():
+    """spending_granularity is a closed enum (category | category_master)."""
+    layout = _sankey_layout()
+    layout["widgets"][0]["config"]["spending_granularity"] = "daily"
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", layout_json=layout)
+
+
+def test_sankey_widget_rejects_non_positive_top_n():
+    """top_n must be >= 1 (ge=1) — a zero/negative cap is malformed."""
+    layout = _sankey_layout()
+    layout["widgets"][0]["config"]["top_n"] = 0
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", layout_json=layout)
+
+
 def test_multi_series_line_valid():
     body = ReportCreate(name="r", layout_json=_line_layout())
     assert body.layout_json["widgets"][0]["type"] == "line"
