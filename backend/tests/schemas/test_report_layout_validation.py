@@ -214,6 +214,31 @@ def test_reject_unknown_widget_type():
         ReportCreate(name="r", layout_json=layout)
 
 
+@pytest.mark.parametrize(
+    "dash_type",
+    [
+        "dash_on_track",
+        "dash_accounts",
+        "dash_account_forecast",
+        "dash_spending",
+        "dash_budget",
+        "dash_forecast_category",
+        "dash_recent_transactions",
+    ],
+)
+def test_reject_dashboard_native_types_no_smuggling(dash_type):
+    """The strict reports validator must REJECT dashboard-native dash_* types.
+
+    Dashboard tiles are accepted only by the dashboard validator
+    (validate_dashboard_layout_json). A report layout_json carrying a dash_*
+    widget must 422 — the two surfaces use separate tables and there is no
+    cross-surface smuggling.
+    """
+    layout = _mutate(lambda l: l["widgets"][0].__setitem__("type", dash_type))
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", layout_json=layout)
+
+
 def test_reject_bad_agg():
     layout = _kpi_layout()
     layout["widgets"][0]["config"]["measure"]["agg"] = "median"

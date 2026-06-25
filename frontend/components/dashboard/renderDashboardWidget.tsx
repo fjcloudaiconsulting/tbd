@@ -24,6 +24,7 @@ import AccountForecastWidget from "@/components/dashboard/widgets/AccountForecas
 import SpendingDonutWidget from "@/components/dashboard/widgets/SpendingDonutWidget";
 import BudgetBarsWidget from "@/components/dashboard/widgets/BudgetBarsWidget";
 import ForecastBarsWidget from "@/components/dashboard/widgets/ForecastBarsWidget";
+import RecentTransactionsWidget from "@/components/dashboard/widgets/RecentTransactionsWidget";
 import { renderReportWidget } from "@/components/reports/renderReportWidget";
 
 /**
@@ -59,6 +60,9 @@ export function renderDashboardWidget(
 
     case "dash_forecast_category":
       return <ForecastBarsWidget />;
+
+    case "dash_recent_transactions":
+      return <RecentTransactionsWidget />;
 
     // ── Reports fall-through (cloned report widgets) ────────────────────────
     // Delegate all non-dash types to the shared report widget renderer.
