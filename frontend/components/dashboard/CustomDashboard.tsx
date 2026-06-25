@@ -26,7 +26,8 @@ import AddWidgetMenu from "@/components/dashboard/AddWidgetMenu";
 import { DashboardDataProvider } from "@/components/dashboard/DashboardDataProvider";
 import DashboardPeriodNav from "@/components/dashboard/DashboardPeriodNav";
 import { renderDashboardWidget } from "@/components/dashboard/renderDashboardWidget";
-import { getDashboard, saveDashboard } from "@/lib/dashboard/api";
+import ConfirmModal from "@/components/ui/ConfirmModal";
+import { getDashboard, getDefaultDashboard, saveDashboard } from "@/lib/dashboard/api";
 import type { CanvasFilters, LayoutJson } from "@/lib/dashboard/types";
 import {
   emptyDashboardWidget,
@@ -64,6 +65,7 @@ export default function CustomDashboard() {
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
 
   // Accounts SWR (shared cache with the reports surface) — used to derive
   // the org display currency so money widgets format correctly.
@@ -135,6 +137,14 @@ export default function CustomDashboard() {
     setSelectedWidgetId(clone.id);
     setDirty(true);
     setPickerOpen(false);
+  }
+
+  async function handleResetConfirm() {
+    setResetOpen(false);
+    const d = await getDefaultDashboard();
+    setLayout(d.layout_json);
+    setCanvasFilters(d.canvas_filters_json);
+    setDirty(true);
   }
 
   const handleSave = useCallback(async () => {
@@ -230,6 +240,17 @@ export default function CustomDashboard() {
                   className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
                 >
                   Add widget
+                </button>
+              )}
+              {/* Reset to default (only visible in Customize mode) */}
+              {editModeActive && (
+                <button
+                  type="button"
+                  data-testid="custom-dashboard-reset"
+                  onClick={() => setResetOpen(true)}
+                  className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+                >
+                  Reset to default
                 </button>
               )}
               {/* Customize / Done toggle — desktop-only */}
@@ -338,6 +359,18 @@ export default function CustomDashboard() {
             existing={layout.widgets}
             onAddDashTile={addDashTile}
             onAddCloned={addClonedWidget}
+          />
+
+          {/* Reset-to-default confirm modal */}
+          <ConfirmModal
+            open={resetOpen}
+            title="Reset to default?"
+            message="This will replace your current layout with the 7-tile default. You can review before saving."
+            confirmLabel="Reset"
+            cancelLabel="Cancel"
+            variant="warning"
+            onConfirm={handleResetConfirm}
+            onCancel={() => setResetOpen(false)}
           />
         </div>
       </DashboardDataProvider>

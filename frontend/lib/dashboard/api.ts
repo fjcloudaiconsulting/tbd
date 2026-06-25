@@ -22,6 +22,20 @@ export async function getDashboard(): Promise<DashboardLayoutResponse> {
 }
 
 /**
+ * Fetch the canonical default layout from the server WITHOUT persisting
+ * anything. Used by the Reset-to-default action in Customize mode so
+ * the frontend never needs to duplicate the seed.
+ */
+export async function getDefaultDashboard(): Promise<{
+  layout_json: LayoutJson;
+  canvas_filters_json: CanvasFilters;
+}> {
+  return apiFetch<{ layout_json: LayoutJson; canvas_filters_json: CanvasFilters }>(
+    "/api/v1/dashboard/default",
+  );
+}
+
+/**
  * Persist updated layout and canvas filters. Sends ONLY the two
  * accepted keys — the backend uses ``extra="forbid"`` and will 422
  * any additional fields.
