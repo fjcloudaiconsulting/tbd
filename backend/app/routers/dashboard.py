@@ -47,8 +47,11 @@ from app.services.feature_gate import Feature, require_feature
 
 logger = structlog.stdlib.get_logger()
 
-# Phase 2a default layout: the 3 finance tiles at the same grid coords as
+# Phase 2a+2b default layout: 6 finance tiles at the same grid coords as
 # ``emptyDashboardWidget`` defaults in ``frontend/lib/dashboard/widget-types.ts``.
+# Row 1 (y=0): on_track hero bar (full width).
+# Row 2 (y=3): accounts list (left) + account forecast (right).
+# Row 3 (y=8): spending donut + budget bars + forecast-by-category bars.
 # dash_* types require the dashboard-specific validator (see schemas/dashboard.py);
 # the strict reports validator does NOT accept them.
 DEFAULT_DASHBOARD_LAYOUT: dict = {
@@ -73,6 +76,27 @@ DEFAULT_DASHBOARD_LAYOUT: dict = {
             "type": "dash_account_forecast",
             "title": "Month-End Forecast",
             "grid": {"x": 4, "y": 3, "w": 8, "h": 5},
+            "config": {},
+        },
+        {
+            "id": "default-spending",
+            "type": "dash_spending",
+            "title": "Spending by Category",
+            "grid": {"x": 0, "y": 8, "w": 4, "h": 5},
+            "config": {},
+        },
+        {
+            "id": "default-budget",
+            "type": "dash_budget",
+            "title": "Budget Progress",
+            "grid": {"x": 4, "y": 8, "w": 4, "h": 5},
+            "config": {},
+        },
+        {
+            "id": "default-forecast-category",
+            "type": "dash_forecast_category",
+            "title": "Forecast by Category",
+            "grid": {"x": 8, "y": 8, "w": 4, "h": 5},
             "config": {},
         },
     ],

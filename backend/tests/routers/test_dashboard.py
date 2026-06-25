@@ -341,17 +341,18 @@ async def test_patch_canvas_filters_json_null_returns_422(session_factory):
     assert res.status_code == 422
 
 
-# ─── (h) Default layout shape — 3 dash_* tiles ───────────────────────────────
+# ─── (h) Default layout shape — 6 dash_* tiles (Phase 2a + 2b) ──────────────
 
 
 @pytest.mark.asyncio
-async def test_default_layout_contains_three_dash_tiles(session_factory):
-    """GET auto-creates a layout with the 3 Phase-2a finance tiles.
+async def test_default_layout_contains_six_dash_tiles(session_factory):
+    """GET auto-creates a layout with all 6 Phase-2a+2b finance tiles.
 
-    The default layout must contain exactly the dash_on_track,
-    dash_accounts, and dash_account_forecast widgets at the Phase-2a
-    grid coords, and the GET must return 200 (i.e. the dashboard
-    layout validator accepts dash_* types).
+    The default layout must contain exactly the Phase-2a tiles
+    (dash_on_track, dash_accounts, dash_account_forecast) at their row-2
+    grid coords, AND the Phase-2b chart tiles (dash_spending, dash_budget,
+    dash_forecast_category) at the row-3 grid coords.  The GET must return
+    200 (i.e. the dashboard layout validator accepts all 6 dash_* types).
     """
     await _seed(session_factory)
     app = _make_app(session_factory, _resolver("user_a"))
@@ -361,16 +362,30 @@ async def test_default_layout_contains_three_dash_tiles(session_factory):
     body = res.json()
     widgets = body["layout_json"]["widgets"]
     types = [w["type"] for w in widgets]
+
+    # Phase-2a tiles
     assert "dash_on_track" in types
     assert "dash_accounts" in types
     assert "dash_account_forecast" in types
-    assert len(types) == 3
+
+    # Phase-2b chart tiles
+    assert "dash_spending" in types
+    assert "dash_budget" in types
+    assert "dash_forecast_category" in types
+
+    assert len(types) == 6
 
     # Verify grid coords match emptyDashboardWidget defaults
     by_type = {w["type"]: w for w in widgets}
+    # Row 1
     assert by_type["dash_on_track"]["grid"] == {"x": 0, "y": 0, "w": 12, "h": 3}
+    # Row 2
     assert by_type["dash_accounts"]["grid"] == {"x": 0, "y": 3, "w": 4, "h": 5}
     assert by_type["dash_account_forecast"]["grid"] == {"x": 4, "y": 3, "w": 8, "h": 5}
+    # Row 3
+    assert by_type["dash_spending"]["grid"] == {"x": 0, "y": 8, "w": 4, "h": 5}
+    assert by_type["dash_budget"]["grid"] == {"x": 4, "y": 8, "w": 4, "h": 5}
+    assert by_type["dash_forecast_category"]["grid"] == {"x": 8, "y": 8, "w": 4, "h": 5}
 
 
 # ─── (i) PATCH accepts dash_* layout → 200; round-trips verbatim ─────────────
