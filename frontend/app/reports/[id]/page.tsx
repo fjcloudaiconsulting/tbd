@@ -54,15 +54,7 @@ import WidgetEditorPopover from "@/components/reports/WidgetEditorPopover";
 import { useWidgetAnchor } from "@/lib/reports/use-widget-anchor";
 import WidgetPicker from "@/components/reports/WidgetPicker";
 import WidgetShell from "@/components/reports/WidgetShell";
-import KPIWidget from "@/components/reports/widgets/KPIWidget";
-import BarWidget from "@/components/reports/widgets/BarWidget";
-import LineWidget from "@/components/reports/widgets/LineWidget";
-import AreaWidget from "@/components/reports/widgets/AreaWidget";
-import PieWidget from "@/components/reports/widgets/PieWidget";
-import SparklineWidget from "@/components/reports/widgets/SparklineWidget";
-import StackedBarWidget from "@/components/reports/widgets/StackedBarWidget";
-import TableWidget from "@/components/reports/widgets/TableWidget";
-import SankeyWidget from "@/components/reports/widgets/SankeyWidget";
+import { renderReportWidget } from "@/components/reports/renderReportWidget";
 import { reportCurrency } from "@/lib/reports/series";
 import { mobileStackHeight, orderWidgetsForStack } from "@/lib/reports/stack";
 import type { WidgetType } from "@/lib/reports/types";
@@ -210,101 +202,6 @@ function emptyWidget(type: WidgetType, id: string): Widget {
       return emptySparkline(id);
     case "sankey":
       return emptySankey(id);
-  }
-}
-
-function renderWidgetByType(
-  w: Widget,
-  canvasFilters: CanvasFilters,
-  editMode: boolean,
-  // The report's single display currency (reports are single-currency in
-  // practice), derived from the org's accounts. Threads down so every
-  // widget's tooltip / axis / cell formats currency measures with the org
-  // symbol instead of a bare number.
-  currency?: string,
-) {
-  switch (w.type) {
-    case "kpi":
-      return (
-        <KPIWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
-    case "bar":
-      return (
-        <BarWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
-    case "line":
-      return (
-        <LineWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
-    case "area":
-      return (
-        <AreaWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
-    case "pie":
-      return (
-        <PieWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
-    case "sparkline":
-      return (
-        <SparklineWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
-    case "stacked_bar":
-      return (
-        <StackedBarWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
-    case "table":
-      return (
-        <TableWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
-    case "sankey":
-      return (
-        <SankeyWidget
-          widget={w}
-          canvasFilters={canvasFilters}
-          editMode={editMode}
-          currency={currency}
-        />
-      );
   }
 }
 
@@ -933,7 +830,7 @@ export default function ReportEditorPage({ params }: PageProps) {
                 const h = mobileStackHeight(w);
                 return (
                   <div key={w.id} style={h ? { height: h } : undefined}>
-                    {renderWidgetByType(w, canvasFilters, false, currency)}
+                    {renderReportWidget(w, canvasFilters, false, currency)}
                   </div>
                 );
               })}
@@ -961,7 +858,7 @@ export default function ReportEditorPage({ params }: PageProps) {
                   // guard needed.
                   onSelectFilters={() => selectWidgetFilters(w.id)}
                 >
-                  {renderWidgetByType(w, canvasFilters, editModeActive, currency)}
+                  {renderReportWidget(w, canvasFilters, editModeActive, currency)}
                 </WidgetShell>
               )}
             />
