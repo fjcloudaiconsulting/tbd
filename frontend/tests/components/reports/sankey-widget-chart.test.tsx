@@ -27,7 +27,10 @@ beforeEach(() => {
   capturedProps = {};
 });
 
-import SankeyWidgetChart, { HUB_LABELS } from "@/components/reports/widgets/SankeyWidgetChart";
+import SankeyWidgetChart, {
+  HUB_LABELS,
+  truncateLabel,
+} from "@/components/reports/widgets/SankeyWidgetChart";
 import { CHART_SERIES } from "@/lib/chart-colors";
 import type { SankeyLink } from "@/lib/reports/types";
 
@@ -102,8 +105,12 @@ describe("SankeyWidgetChart — theme/color props", () => {
   it("uses wider margins to prevent label clipping", () => {
     render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
     const margin = capturedProps.margin as { left?: number; right?: number } | undefined;
-    expect(margin?.left).toBeGreaterThanOrEqual(80);
-    expect(margin?.right).toBeGreaterThanOrEqual(80);
+    // Pin the fix values: wide enough for outside node labels (e.g.
+    // "Paycheck/Salary", "Bills & Subscriptions") not to clip at the SVG edge.
+    // (>=140/150 rather than a loose floor so a partial regression below the
+    // clip threshold still fails.)
+    expect(margin?.left).toBeGreaterThanOrEqual(140);
+    expect(margin?.right).toBeGreaterThanOrEqual(150);
   });
 
   it("passes ariaLabel", () => {
@@ -168,9 +175,61 @@ describe("SankeyWidgetChart — hub label mapping", () => {
     expect(labelFn({ id: "Food" })).toBe("Food");
   });
 
+  it("label accessor truncates an over-long category name with an ellipsis", () => {
+    render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
+    const labelFn = capturedProps.label as (node: { id: string }) => string;
+    const long = "Shopping & Personal Care Supplies";
+    const out = labelFn({ id: long });
+    expect(out.endsWith("…")).toBe(true);
+    expect(out.length).toBeLessThan(long.length);
+  });
+
+  it("node tooltip shows the FULL untruncated name (not the ellipsis label)", () => {
+    render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
+    const nodeTooltip = capturedProps.nodeTooltip as (a: {
+      node: { id: string; value: number };
+    }) => React.ReactElement;
+    const long = "Shopping & Personal Care Supplies";
+    const { container } = render(
+      nodeTooltip({ node: { id: long, value: 10 } }),
+    );
+    expect(container.textContent).toContain(long);
+    expect(container.textContent).not.toContain("…");
+  });
+
   it("passes nodeTooltip and linkTooltip render props", () => {
     render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
     expect(typeof capturedProps.nodeTooltip).toBe("function");
     expect(typeof capturedProps.linkTooltip).toBe("function");
+  });
+});
+
+describe("truncateLabel", () => {
+  it("returns short strings unchanged", () => {
+    expect(truncateLabel("Housing")).toBe("Housing");
+  });
+
+  it("returns an empty string unchanged", () => {
+    expect(truncateLabel("")).toBe("");
+  });
+
+  it("truncates strings longer than the max with a trailing ellipsis", () => {
+    const out = truncateLabel("abcdefghijklmnopqrstuvwxyz", 10);
+    expect(out).toBe("abcdefghi…");
+    expect(out.length).toBe(10);
+  });
+
+  it("keeps a string exactly at the max unchanged", () => {
+    expect(truncateLabel("abcde", 5)).toBe("abcde");
+  });
+
+  // Composition guard: the label accessor is truncateLabel(HUB_LABELS[id] ?? id),
+  // so a hub friendly label longer than the cap WOULD be truncated. Today's hub
+  // labels are intentionally short; this pins that invariant so adding a long
+  // one trips this test (prompting a re-check of the truncation interaction).
+  it("leaves every HUB_LABELS friendly label untruncated (they stay short)", () => {
+    for (const label of Object.values(HUB_LABELS)) {
+      expect(truncateLabel(label)).toBe(label);
+    }
   });
 });
