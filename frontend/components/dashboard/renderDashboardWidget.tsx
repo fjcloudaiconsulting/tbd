@@ -25,6 +25,7 @@ import SpendingDonutWidget from "@/components/dashboard/widgets/SpendingDonutWid
 import BudgetBarsWidget from "@/components/dashboard/widgets/BudgetBarsWidget";
 import ForecastBarsWidget from "@/components/dashboard/widgets/ForecastBarsWidget";
 import { renderReportWidget } from "@/components/reports/renderReportWidget";
+
 /**
  * Render a dashboard canvas widget.
  *

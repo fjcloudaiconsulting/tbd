@@ -151,6 +151,34 @@ const FORECAST_PLAN_WITH_ITEMS = {
   ],
 };
 
+// FIX 6: forecast plan with a >12-char category name + decimal-string amounts
+// to verify name truncation and numeric coercion in forecastChartRows.
+const FORECAST_PLAN_LONG_NAME = {
+  id: 2,
+  billing_period_id: 2,
+  period_start: "2026-05-01",
+  period_end: null,
+  status: "active" as const,
+  total_planned_income: "3000",
+  total_planned_expense: "2000",
+  total_actual_income: "3000",
+  total_actual_expense: "1500",
+  items: [
+    {
+      id: 10,
+      plan_id: 2,
+      category_id: 30,
+      category_name: "Entertainment & Dining",  // 22 chars — must be truncated
+      parent_id: null,
+      type: "expense" as const,
+      planned_amount: "150.75",   // decimal string — must coerce to number
+      source: "manual" as const,
+      actual_amount: "89.50",     // decimal string — must coerce to number
+      variance: "61.25",
+    },
+  ],
+};
+
 const ACCT = {
   id: 1,
   name: "Checking",
@@ -289,9 +317,9 @@ describe("DashboardDataProvider — initial fetch", () => {
     expect(calls.some((u) => u.startsWith("/api/v1/forecast?period_start="))).toBe(true);
     expect(calls.some((u) => u.startsWith("/api/v1/forecast/account-balances"))).toBe(true);
     expect(calls.some((u) => u.startsWith("/api/v1/forecast-plans/current"))).toBe(true);
-    // Phase 2b: snapshot + budgets
+    // Phase 2b: snapshot + budgets (initial call has no period_start; period-change call adds it)
     expect(calls.some((u) => u.startsWith("/api/v1/transactions?limit=200"))).toBe(true);
-    expect(calls.some((u) => u.startsWith("/api/v1/budgets?period_start="))).toBe(true);
+    expect(calls.some((u) => u.startsWith("/api/v1/budgets"))).toBe(true);
   });
 
   it("exposes accounts and activeAccounts (filters inactive)", async () => {
@@ -580,6 +608,11 @@ describe("useDashboard — throws outside provider", () => {
  */
 function ConsumerChart() {
   const ctx = useDashboard();
+  // First-row values for strengthened memo assertions (FIX 6).
+  const firstBudget = ctx.budgetChartData[0];
+  const firstForecastRow = ctx.forecastChartRows[0];
+  const firstSortedSpending = ctx.sortedSpending[0];
+  const firstDonut = ctx.donutData[0];
   return (
     <div>
       <span data-testid="loading">{String(ctx.loading)}</span>
@@ -594,6 +627,21 @@ function ConsumerChart() {
       <span data-testid="forecast-chart-rows-count">{ctx.forecastChartRows.length}</span>
       <span data-testid="chart-filter">{ctx.chartFilter ?? "null"}</span>
       <span data-testid="spending-sort-field">{ctx.spendingSort.field}</span>
+      {/* FIX 6: first-row budget chart fields */}
+      <span data-testid="budget-row-0-name">{firstBudget?.name ?? ""}</span>
+      <span data-testid="budget-row-0-spent">{firstBudget?.spent ?? ""}</span>
+      <span data-testid="budget-row-0-remaining">{firstBudget?.remaining ?? ""}</span>
+      <span data-testid="budget-row-0-pct">{firstBudget?.pct ?? ""}</span>
+      {/* FIX 6: first-row forecast chart fields */}
+      <span data-testid="forecast-row-0-name">{firstForecastRow?.name ?? ""}</span>
+      <span data-testid="forecast-row-0-planned">{firstForecastRow?.planned ?? ""}</span>
+      <span data-testid="forecast-row-0-actual">{firstForecastRow?.actual ?? ""}</span>
+      {/* FIX 6: first-row sorted spending fields */}
+      <span data-testid="sorted-spending-row-0-pct">{firstSortedSpending?.pct ?? ""}</span>
+      <span data-testid="sorted-spending-row-0-name">{firstSortedSpending?.name ?? ""}</span>
+      {/* FIX 6: first-row donut fields */}
+      <span data-testid="donut-row-0-name">{firstDonut?.name ?? ""}</span>
+      <span data-testid="donut-row-0-value">{firstDonut?.value ?? ""}</span>
       <button
         data-testid="set-chart-filter"
         onClick={() => ctx.setChartFilter("Groceries")}
@@ -726,6 +774,14 @@ describe("DashboardDataProvider — Phase 2b: donut/spending memos", () => {
     );
     expect(screen.getByTestId("total-spend").textContent).toBe("50");
     expect(screen.getByTestId("sorted-spending-count").textContent).toBe("1");
+
+    // With a single category, its pct must be 100 (it is the entirety of spend).
+    // TX_EXPENSE.category_name="Groceries", amount=50.
+    expect(screen.getByTestId("sorted-spending-row-0-pct").textContent).toBe("100");
+    expect(screen.getByTestId("sorted-spending-row-0-name").textContent).toBe("Groceries");
+    // donutData first row matches.
+    expect(screen.getByTestId("donut-row-0-name").textContent).toBe("Groceries");
+    expect(screen.getByTestId("donut-row-0-value").textContent).toBe("50");
   });
 
   it("donutData is empty when allTransactions is empty", async () => {
@@ -761,6 +817,28 @@ describe("DashboardDataProvider — Phase 2b: budgetChartData memo", () => {
     );
     expect(screen.getByTestId("dash-budgets-count").textContent).toBe("1");
   });
+
+  it("budgetChartData first row has correct name/spent/remaining/pct values", async () => {
+    // BUDGET_1: amount=200, spent=50, remaining=150, percent_used=25, name="Groceries"
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({ budgets: [BUDGET_1] }) as never,
+    );
+
+    renderChartProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("budget-chart-data-count").textContent).toBe("1"),
+    );
+
+    expect(screen.getByTestId("budget-row-0-name").textContent).toBe("Groceries");
+    expect(screen.getByTestId("budget-row-0-spent").textContent).toBe("50");
+    expect(screen.getByTestId("budget-row-0-remaining").textContent).toBe("150");
+    expect(screen.getByTestId("budget-row-0-pct").textContent).toBe("25");
+  });
 });
 
 describe("DashboardDataProvider — Phase 2b: forecastChartRows memo", () => {
@@ -795,6 +873,31 @@ describe("DashboardDataProvider — Phase 2b: forecastChartRows memo", () => {
       expect(screen.getByTestId("forecast-expense-items-count").textContent).toBe("0"),
     );
     expect(screen.getByTestId("forecast-chart-rows-count").textContent).toBe("0");
+  });
+
+  it("truncates category names >12 chars and coerces decimal-string amounts to numbers", async () => {
+    // FORECAST_PLAN_LONG_NAME: "Entertainment & Dining" (22 chars) → "Entertainment..."
+    // planned_amount="150.75" → 150.75; actual_amount="89.50" → 89.5
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({ forecastPlan: FORECAST_PLAN_LONG_NAME }) as never,
+    );
+
+    renderChartProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("forecast-chart-rows-count").textContent).toBe("1"),
+    );
+
+    // Name must be truncated to first 12 chars + "...":
+    // "Entertainment & Dining".slice(0, 12) = "Entertainmen"
+    expect(screen.getByTestId("forecast-row-0-name").textContent).toBe("Entertainmen...");
+    // Amounts must be numeric (not strings)
+    expect(screen.getByTestId("forecast-row-0-planned").textContent).toBe("150.75");
+    expect(screen.getByTestId("forecast-row-0-actual").textContent).toBe("89.5");
   });
 });
 

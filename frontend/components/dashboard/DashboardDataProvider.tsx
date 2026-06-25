@@ -306,27 +306,42 @@ export function DashboardDataProvider({
   }, [realPeriodStart, monthFrom, monthTo]);
 
   // ── loadBudgets ─────────────────────────────────────────────────────────────
-  // Per-period budgets: GET /api/v1/budgets?period_start=<realPeriodStart>
-  // Mirrors the budgetUrl fetch in LegacyDashboard.loadTransactions (page 0).
-  // Gated on realPeriodStart; stale-request guard matches sibling loaders.
+  // Per-period budgets. When realPeriodStart is known, request that specific
+  // period. Mirrors the budgetUrl fetch in LegacyDashboard.loadTransactions.
+  // On a transient failure, keep the last good budgets (don't blank them).
+  // Stale-request guard matches sibling loaders.
   const loadBudgets = useCallback(async () => {
-    if (!realPeriodStart) {
-      budgetsRequestId.current += 1;
-      setBudgets([]);
-      return;
-    }
     const myId = ++budgetsRequestId.current;
+    const budgetUrl = realPeriodStart
+      ? `/api/v1/budgets?period_start=${realPeriodStart}`
+      : "/api/v1/budgets";
     try {
-      const bds = await apiFetch<Budget[]>(
-        `/api/v1/budgets?period_start=${realPeriodStart}`,
-      );
+      const bds = await apiFetch<Budget[]>(budgetUrl);
       if (budgetsRequestId.current !== myId) return;
       setBudgets(bds ?? []);
     } catch {
       if (budgetsRequestId.current !== myId) return;
-      // Silent — keep last good snapshot on transient failures.
+      // Silent — keep last good budgets on transient failures.
     }
   }, [realPeriodStart]);
+
+  // ── loadInitialBudgets ───────────────────────────────────────────────────────
+  // One-shot mount fetch: no period_start → API resolves the current open period
+  // by default. Mirrors LegacyDashboard which fetched budgets in loadRefs
+  // (no period_start). Stable identity ([]) so it doesn't re-trigger the mount
+  // effect when realPeriodStart resolves. The period-change effect below will
+  // re-fetch with the resolved period_start once it becomes known.
+  const loadInitialBudgets = useCallback(async () => {
+    const myId = ++budgetsRequestId.current;
+    try {
+      const bds = await apiFetch<Budget[]>("/api/v1/budgets");
+      if (budgetsRequestId.current !== myId) return;
+      setBudgets(bds ?? []);
+    } catch {
+      if (budgetsRequestId.current !== myId) return;
+      // Silent — keep last good budgets on transient failures.
+    }
+  }, []);
 
   // ── loadRefs ────────────────────────────────────────────────────────────────
   // FIX 7: categories removed — no chart tile needs them. Budgets are
@@ -448,7 +463,12 @@ export function DashboardDataProvider({
         setLoading(false);
       });
     void loadPendingTransactions();
-  }, [loadRefs, loadPendingTransactions]);
+    // One-shot initial budget fetch (no period_start → current-period default),
+    // mirroring LegacyDashboard which always fetched budgets in loadRefs.
+    // Uses the stable loadInitialBudgets (no realPeriodStart dep) so this
+    // effect doesn't re-run when the period resolves.
+    void loadInitialBudgets();
+  }, [loadRefs, loadPendingTransactions, loadInitialBudgets]);
 
   // ── Period-scoped loads (fire when realPeriodStart is known) ────────────────
   useEffect(() => {
@@ -549,8 +569,6 @@ export function DashboardDataProvider({
       .sort((a, b) => b.value - a.value);
   }, [allTransactions]);
 
-  const donutData = donutDataRaw;
-
   const totalSpend = useMemo(
     () => donutDataRaw.reduce((s, d) => s + d.value, 0),
     [donutDataRaw],
@@ -611,18 +629,19 @@ export function DashboardDataProvider({
   );
 
   // ── toggleSpendingSort (mirrors LegacyDashboard verbatim) ────────────────────
+  const { field: spendingSortField, dir: spendingSortDir, setSort: setSpendingSort } = spendingSort;
   const toggleSpendingSort = useCallback(
     (field: SpendingSort) => {
-      if (spendingSort.field === field) {
-        spendingSort.setSort(
+      if (spendingSortField === field) {
+        setSpendingSort(
           field,
-          spendingSort.dir === "asc" ? "desc" : "asc",
+          spendingSortDir === "asc" ? "desc" : "asc",
         );
       } else {
-        spendingSort.setSort(field, field === "name" ? "asc" : "desc");
+        setSpendingSort(field, field === "name" ? "asc" : "desc");
       }
     },
-    [spendingSort],
+    [spendingSortField, spendingSortDir, setSpendingSort],
   );
 
   // ── Context value ───────────────────────────────────────────────────────────
@@ -652,7 +671,7 @@ export function DashboardDataProvider({
     budgets,
     dashBudgets,
     budgetChartData,
-    donutData,
+    donutData: donutDataRaw,
     totalSpend,
     sortedSpending,
     spendingSort,

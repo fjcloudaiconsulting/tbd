@@ -46,6 +46,28 @@ vi.mock("recharts", async () => {
     ResponsiveContainer: ({ children }: { children: React.ReactNode }) => (
       <div data-testid="responsive-container">{children}</div>
     ),
+    // BarChart must pass children through so the stubbed Bar components render.
+    // The real BarChart processes children internally (via React.Children) and
+    // never outputs the children's JSX directly — so we stub it to a plain div.
+    BarChart: ({ children }: { children: React.ReactNode }) => (
+      <div data-testid="bar-chart">{children}</div>
+    ),
+    // Stub Bar so its onClick prop is invokable via a data-testid button.
+    // The real recharts Bar renders SVG in a canvas that jsdom can't size,
+    // so onClick is never reachable from tests without this stub.
+    Bar: ({
+      dataKey,
+      onClick,
+    }: {
+      dataKey?: string;
+      onClick?: (data: unknown, index: number) => void;
+      children?: React.ReactNode;
+    }) => (
+      <button
+        data-testid={`bar-${dataKey ?? "unknown"}`}
+        onClick={() => onClick?.({}, 0)}
+      />
+    ),
   };
 });
 
@@ -249,6 +271,34 @@ describe("BudgetBarsWidget", () => {
     // The chart container should be present (mocked ResponsiveContainer)
     expect(screen.getByTestId("responsive-container")).toBeInTheDocument();
   });
+
+  it("clicking spent bar calls setChartFilter with the category name", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      budgets: [MOCK_BUDGET],
+      dashBudgets: [MOCK_BUDGET],
+      budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
+      chartFilter: null,
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
+    fireEvent.click(screen.getByTestId("bar-spent"));
+    expect(setChartFilter).toHaveBeenCalledWith("Groceries");
+  });
+
+  it("clicking spent bar when already active toggles filter to null", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      budgets: [MOCK_BUDGET],
+      dashBudgets: [MOCK_BUDGET],
+      budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
+      chartFilter: "Groceries",
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
+    fireEvent.click(screen.getByTestId("bar-spent"));
+    expect(setChartFilter).toHaveBeenCalledWith(null);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -312,6 +362,34 @@ describe("ForecastBarsWidget", () => {
     });
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
     expect(screen.getByTestId("responsive-container")).toBeInTheDocument();
+  });
+
+  it("clicking planned bar calls setChartFilter with the category name", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      forecast: MOCK_FORECAST,
+      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
+      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
+      chartFilter: null,
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
+    fireEvent.click(screen.getByTestId("bar-planned"));
+    expect(setChartFilter).toHaveBeenCalledWith("Transport");
+  });
+
+  it("clicking planned bar when already active toggles filter to null", () => {
+    const setChartFilter = vi.fn();
+    mockWith({
+      forecast: MOCK_FORECAST,
+      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
+      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
+      chartFilter: "Transport",
+      setChartFilter,
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
+    fireEvent.click(screen.getByTestId("bar-planned"));
+    expect(setChartFilter).toHaveBeenCalledWith(null);
   });
 });
 
