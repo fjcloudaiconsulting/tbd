@@ -62,6 +62,7 @@ class WidgetType(str, enum.Enum):
     PIE = "pie"
     SPARKLINE = "sparkline"
     TABLE = "table"
+    SANKEY = "sankey"
 
 
 class WidgetFormat(str, enum.Enum):
@@ -158,6 +159,28 @@ class _MultiSeriesConfig(BaseModel):
     format: Optional[WidgetFormat] = None
 
 
+class _SankeyConfig(BaseModel):
+    """Config for the sankey (cash-flow) widget.
+
+    The query travels via the dedicated ``POST /api/v1/reports/query/sankey``
+    endpoint (transactions + sum(amount) implied), but the layout still
+    persists ``dataset`` + ``measure`` for editor uniformity, plus the two
+    sankey-specific knobs (``spending_granularity`` and ``top_n``).
+    ``extra="ignore"`` matches the other config models so forward-compat
+    knobs never 422 and are preserved verbatim by validate_layout_json.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    dataset: Dataset
+    measure: Measure
+    filters: Optional[dict[str, Any]] = None
+    spending_granularity: Optional[
+        Literal["category", "category_master"]
+    ] = None
+    top_n: Optional[int] = Field(default=None, ge=1)
+
+
 # ─── widget envelope (discriminated by ``type``) ────────────────────
 
 
@@ -209,6 +232,11 @@ class TableWidget(_WidgetBase):
     config: _MultiSeriesConfig
 
 
+class SankeyWidget(_WidgetBase):
+    type: Literal[WidgetType.SANKEY]
+    config: _SankeyConfig
+
+
 Widget = Annotated[
     Union[
         KPIWidget,
@@ -219,6 +247,7 @@ Widget = Annotated[
         AreaWidget,
         StackedBarWidget,
         TableWidget,
+        SankeyWidget,
     ],
     Field(discriminator="type"),
 ]
