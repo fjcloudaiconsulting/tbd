@@ -572,6 +572,24 @@ describe("RecentTransactionsWidget", () => {
     ).toBeInTheDocument();
   });
 
+  it("clicking Next calls setPage with the zero-based next page (n-1 mapping)", () => {
+    const setPage = vi.fn();
+    mockWith({
+      transactions: [TX],
+      sortedVisibleTxs: [TX],
+      txMap: new Map([[TX.id, TX]]),
+      txTotal: 25,
+      page: 0,
+      pageSize: 10,
+      chartFilter: null,
+      setPage,
+    });
+    renderRecentTx();
+    // Pagination is 1-based (page={page+1}); Next → onPageChange(2) → setPage(1).
+    fireEvent.click(screen.getByRole("button", { name: /Next page/i }));
+    expect(setPage).toHaveBeenCalledWith(1);
+  });
+
   it("hides pagination while a chartFilter is active", () => {
     mockWith({
       transactions: [TX],

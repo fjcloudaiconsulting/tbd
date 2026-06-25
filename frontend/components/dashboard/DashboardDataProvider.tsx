@@ -788,13 +788,20 @@ export function DashboardDataProvider({
   // accounts is a sufficient proxy for the "setup incomplete" vs "no data" copy.
   const canAdd = activeAccounts.length > 0;
 
-  // ── onToggleTransactionStatus (faithful reproduction of legacy ordering) ────
-  // PUT the flipped status, then refresh in LegacyDashboard's exact order:
-  // page data + refs awaited; on page 0 the snapshot/budgets/forecast plan
-  // refresh too (so the donut/budget/forecast charts reflect the change),
-  // matching legacy loadTransactions(0)'s internal p===0 cascade; the
-  // pending/projection/account-forecast reloads stay fire-and-forget.
-  // Rethrows on PUT failure so the calling tile can surface it.
+  // ── onToggleTransactionStatus (close reproduction of legacy ordering) ──────
+  // PUT the flipped status, then refresh in LegacyDashboard's order: page data
+  // + refs awaited; on page 0 the snapshot/budgets/forecast plan refresh too
+  // (so the donut/budget/forecast charts reflect the change), matching legacy
+  // loadTransactions(0)'s internal p===0 cascade. One deliberate relaxation vs
+  // legacy: legacy AWAITED that cascade (it lived inside loadTransactions's
+  // Promise.all); here it's fire-and-forget (void) since the three GETs are
+  // independent and each loader owns its stale-guard + try/catch — the end
+  // state converges identically, only intermediate render order differs.
+  // The pending/projection/account-forecast reloads also stay fire-and-forget.
+  // Rethrows on PUT failure so the calling tile can surface it; a failure of
+  // the post-PUT page re-GET is swallowed by loadPageTransactions (keeps the
+  // last good page, same as the sibling loaders) and does NOT surface as a
+  // toggle error, since the mutation itself already committed.
   const onToggleTransactionStatus = useCallback(
     async (tx: Transaction) => {
       await apiFetch(`/api/v1/transactions/${tx.id}`, {

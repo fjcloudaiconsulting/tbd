@@ -1327,6 +1327,11 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
       expect(screen.getByTestId("page").textContent).toBe("1"),
     );
 
+    // Clear the call log AFTER the page-1 fetch has settled so the post-nav
+    // assertion can only see fetches triggered by the period change itself
+    // (otherwise the page-1 click's offset=10 fetch would false-pass it).
+    vi.mocked(apiFetch).mockClear();
+
     // Navigate to the past period (index 1).
     act(() => {
       screen.getByTestId("set-period-idx-1").click();
@@ -1334,14 +1339,16 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
 
     // Page stays 1 …
     expect(screen.getByTestId("page").textContent).toBe("1");
-    // … and the period-change refetch keeps offset=10 (page 1), not offset=0.
+    // … and the period-change refetch keeps offset=10 (page 1), never resetting
+    // to offset=0 (which is what a setPage(0)-on-nav regression would emit).
     await waitFor(() => {
-      const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
-      expect(
-        calls.some((u) =>
-          u.startsWith("/api/v1/transactions?limit=10&offset=10"),
-        ),
-      ).toBe(true);
+      const pageCalls = vi
+        .mocked(apiFetch)
+        .mock.calls.map((c) => c[0] as string)
+        .filter((u) => u.startsWith("/api/v1/transactions?limit=10"));
+      expect(pageCalls.length).toBeGreaterThan(0);
+      expect(pageCalls.every((u) => u.includes("offset=10"))).toBe(true);
+      expect(pageCalls.some((u) => u.includes("offset=0"))).toBe(false);
     });
   });
 
