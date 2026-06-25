@@ -235,4 +235,89 @@ describe("CustomDashboard — Add-widget picker", () => {
     // The Save button should be enabled (dirty = true).
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
   });
+
+  it("does NOT show the Add-widget button when NOT in Customize mode", async () => {
+    render(<CustomDashboard />);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Customize mode is off by default — the Add-widget button must be absent.
+    expect(
+      screen.queryByTestId("custom-dashboard-add-widget"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("closes the Add-widget menu when Escape is pressed", async () => {
+    render(<CustomDashboard />);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Enter Customize mode and open the picker.
+    const customizeBtn = await screen.findByRole("button", { name: /customize/i });
+    act(() => { fireEvent.click(customizeBtn); });
+    act(() => { fireEvent.click(screen.getByTestId("custom-dashboard-add-widget")); });
+
+    // Menu is open.
+    expect(screen.getByTestId("add-widget-menu")).toBeInTheDocument();
+
+    // Press Escape — menu should close.
+    act(() => { fireEvent.keyDown(document, { key: "Escape" }); });
+
+    expect(screen.queryByTestId("add-widget-menu")).not.toBeInTheDocument();
+  });
+
+  it("closes the Add-widget menu when the backdrop is clicked", async () => {
+    render(<CustomDashboard />);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Enter Customize mode and open the picker.
+    const customizeBtn = await screen.findByRole("button", { name: /customize/i });
+    act(() => { fireEvent.click(customizeBtn); });
+    act(() => { fireEvent.click(screen.getByTestId("custom-dashboard-add-widget")); });
+
+    // Menu is open.
+    const menu = screen.getByTestId("add-widget-menu");
+    expect(menu).toBeInTheDocument();
+
+    // Click the backdrop (the outer overlay element itself).
+    act(() => { fireEvent.click(menu); });
+
+    expect(screen.queryByTestId("add-widget-menu")).not.toBeInTheDocument();
+  });
+
+  it("does NOT close the Add-widget menu when clicking inside the panel", async () => {
+    render(<CustomDashboard />);
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Enter Customize mode and open the picker.
+    const customizeBtn = await screen.findByRole("button", { name: /customize/i });
+    act(() => { fireEvent.click(customizeBtn); });
+    act(() => { fireEvent.click(screen.getByTestId("custom-dashboard-add-widget")); });
+
+    // Click a tile button inside the panel — should NOT close the menu
+    // (the menu only closes after a tile is picked via onAddDashTile → setPickerOpen(false)).
+    const dashGroup = screen.getByTestId("add-widget-menu-group-dashboard");
+    act(() => { fireEvent.click(dashGroup); });
+
+    // Menu still open because the inner click was stopped before reaching backdrop.
+    expect(screen.getByTestId("add-widget-menu")).toBeInTheDocument();
+  });
 });

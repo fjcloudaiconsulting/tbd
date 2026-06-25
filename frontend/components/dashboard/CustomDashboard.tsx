@@ -108,19 +108,21 @@ export default function CustomDashboard() {
 
   function addDashTile(type: DashboardWidgetType) {
     const id = newWidgetId();
-    const w = emptyDashboardWidget(type, id);
-    const maxY = layout.widgets.reduce(
-      (m, x) => Math.max(m, x.grid.y + x.grid.h),
-      0,
-    );
-    w.grid = { ...w.grid, x: 0, y: maxY };
-    // Cast to Widget: LayoutJson.widgets is Widget[] but the canvas dispatcher
-    // (renderDashboardWidget) handles dash_* types at runtime via the DashboardWidget
-    // union. This cast is safe — the same pattern is used in the Canvas renderWidget call.
-    setLayout((prev) => ({
-      ...prev,
-      widgets: [...prev.widgets, w as unknown as Widget],
-    }));
+    const base = emptyDashboardWidget(type, id);
+    // Compute maxY inside the functional updater so it reads the latest
+    // prev.widgets — avoids a stale-closure bug if two tiles are added
+    // before a re-render.
+    setLayout((prev) => {
+      const maxY = prev.widgets.reduce(
+        (m, x) => Math.max(m, x.grid.y + x.grid.h),
+        0,
+      );
+      const w = { ...base, grid: { ...base.grid, x: 0, y: maxY } };
+      // Cast to Widget: LayoutJson.widgets is Widget[] but the canvas dispatcher
+      // (renderDashboardWidget) handles dash_* types at runtime via the DashboardWidget
+      // union. This cast is safe — the same pattern is used in the Canvas renderWidget call.
+      return { ...prev, widgets: [...prev.widgets, w as unknown as Widget] };
+    });
     setSelectedWidgetId(id);
     setDirty(true);
     setPickerOpen(false);

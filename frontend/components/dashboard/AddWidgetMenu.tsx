@@ -10,7 +10,12 @@
  *
  * Modelled on `components/reports/WidgetPicker.tsx` (same grouped option
  * grid, token classes only — no raw Tailwind palette colors).
+ *
+ * A11y (WCAG 2.2 AA): Escape closes the menu via a document keydown listener
+ * (mirrors ConfirmModal pattern). Backdrop click closes via onClick on the
+ * outer overlay; inner-panel clicks do NOT propagate to it.
  */
+import { useEffect } from "react";
 import {
   Activity,
   ArrowRightLeft,
@@ -95,6 +100,16 @@ export default function AddWidgetMenu({
   onClose,
   onAddDashTile,
 }: Props) {
+  // Escape closes the menu — mirrors ConfirmModal's document-listener pattern.
+  useEffect(() => {
+    if (!open) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   return (
@@ -104,8 +119,13 @@ export default function AddWidgetMenu({
       aria-label="Add widget"
       data-testid="add-widget-menu"
       className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 px-4"
+      onClick={onClose}
     >
-      <div className="w-full max-w-2xl rounded-lg border border-border bg-surface p-5 shadow-xl">
+      {/* stopPropagation prevents clicks inside the panel from bubbling to the backdrop */}
+      <div
+        className="w-full max-w-2xl rounded-lg border border-border bg-surface p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-semibold text-text-primary">
