@@ -638,3 +638,75 @@ async def test_patch_rejects_zero_width_grid(session_factory):
             "/api/v1/dashboard", json={"layout_json": bad_grid_layout}
         )
     assert res.status_code == 422, res.text
+
+
+# ─── (n) PATCH accepts cloned sankey widget; round-trips verbatim ────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_accepts_cloned_sankey_widget(session_factory):
+    """PATCH with a cloned sankey widget must return 200 and round-trip the
+    layout VERBATIM, including sankey-specific knobs (top_n, spending_granularity).
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    sankey_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "s1",
+                "type": "sankey",
+                "title": "Cash Flow",
+                "grid": {"x": 0, "y": 0, "w": 8, "h": 5},
+                "config": {
+                    "dataset": "transactions",
+                    "measure": {"agg": "sum", "field": "amount"},
+                    "spending_granularity": "category",
+                    "top_n": 12,
+                },
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch("/api/v1/dashboard", json={"layout_json": sankey_layout})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["layout_json"] == sankey_layout
+    assert body["layout_json"]["widgets"][0]["config"]["top_n"] == 12
+    assert body["layout_json"]["widgets"][0]["config"]["spending_granularity"] == "category"
+
+
+# ─── (o) GET /default returns seed without persisting a row ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_default_returns_seed_without_persisting(session_factory):
+    """GET /api/v1/dashboard/default returns the 7-tile canonical seed with 200
+    and does NOT create a DashboardLayout row for a user who has never
+    GET/PATCHed the normal endpoint.
+    """
+    from sqlalchemy import func, select as _s
+
+    from app.models.dashboard import DashboardLayout
+
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    with TestClient(app) as client:
+        r = client.get("/api/v1/dashboard/default")
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    types = [w["type"] for w in body["layout_json"]["widgets"]]
+    assert "dash_on_track" in types
+    assert len(types) == 7
+
+    # The /default endpoint must NOT have created a DashboardLayout row.
+    async with session_factory() as db:
+        count = (
+            await db.execute(_s(func.count()).select_from(DashboardLayout))
+        ).scalar_one()
+    assert count == 0, f"Expected 0 DashboardLayout rows, got {count}"

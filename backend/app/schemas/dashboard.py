@@ -43,6 +43,7 @@ from app.schemas.report_layout import (
     KPIWidget,
     LineWidget,
     PieWidget,
+    SankeyWidget,
     SparklineWidget,
     StackedBarWidget,
     TableWidget,
@@ -146,6 +147,7 @@ _DashboardWidget = Annotated[
         AreaWidget,
         StackedBarWidget,
         TableWidget,
+        SankeyWidget,
     ],
     Field(discriminator="type"),
 ]
