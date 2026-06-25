@@ -27,7 +27,7 @@
 - Test: `frontend/tests/components/reports/render-report-widget.test.tsx`
 
 **Interfaces:**
-- Produces: `export function renderReportWidget(w: Widget, canvasFilters: CanvasFilters, editMode: boolean, currency?: string): ReactNode` — the 8-case report widget switch (kpi/bar/line/area/stacked_bar/pie/sparkline/table; sankey omitted to match the validator, as fixed in 2a).
+- Produces: `export function renderReportWidget(w: Widget, canvasFilters: CanvasFilters, editMode: boolean, currency?: string): ReactNode` — the 9-case report widget switch (kpi/bar/line/area/stacked_bar/pie/sparkline/table/sankey). The sankey arm renders `SankeyWidget` for the reports page; the dashboard backend validator rejects sankey layouts, so a dashboard layout can never reach the sankey arm — it's unreachable from the dashboard path (not omitted).
 
 - [ ] **Step 1: READ** the `renderWidgetByType` switch in `app/reports/[id]/page.tsx` and the duplicated fall-through in `renderDashboardWidget.tsx`. Move the switch verbatim into `renderReportWidget.tsx` (import the widget components there).
 - [ ] **Step 2:** In `app/reports/[id]/page.tsx`, delete the local switch and call `renderReportWidget(...)`. In `renderDashboardWidget.tsx`, replace the fall-through copy with `renderReportWidget(...)`.
