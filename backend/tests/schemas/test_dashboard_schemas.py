@@ -16,7 +16,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.dashboard import DashboardLayoutOut, DashboardUpdate
+from app.schemas.dashboard import DashboardLayoutOut, DashboardUpdate, validate_dashboard_layout_json
 
 
 # ─── DashboardUpdate — basic field acceptance ───────────────────────
@@ -191,3 +191,29 @@ def test_dashboard_layout_out_from_dict():
     assert out.layout_json == _KPI_WITH_KNOB
     assert out.schema_version == 1
     assert out.created_at == now
+
+
+# ─── sankey widget acceptance ────────────────────────────────────────
+
+
+def _sankey_widget():
+    return {
+        "id": "s1",
+        "type": "sankey",
+        "title": "Cash Flow",
+        "grid": {"x": 0, "y": 0, "w": 8, "h": 5},
+        "config": {
+            "dataset": "transactions",
+            "measure": {"agg": "sum", "field": "amount"},
+            "spending_granularity": "category",
+            "top_n": 12,
+        },
+    }
+
+
+def test_dashboard_accepts_cloned_sankey_widget():
+    layout = {"version": 1, "widgets": [_sankey_widget()]}
+    # validates without raising; returns the blob verbatim
+    out = validate_dashboard_layout_json(layout)
+    assert out["widgets"][0]["config"]["top_n"] == 12
+    assert out["widgets"][0]["config"]["spending_granularity"] == "category"
