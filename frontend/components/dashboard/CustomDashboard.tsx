@@ -22,13 +22,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
 import Canvas from "@/components/reports/Canvas";
 import WidgetShell from "@/components/reports/WidgetShell";
+import AddWidgetMenu from "@/components/dashboard/AddWidgetMenu";
 import { DashboardDataProvider } from "@/components/dashboard/DashboardDataProvider";
 import DashboardPeriodNav from "@/components/dashboard/DashboardPeriodNav";
 import { renderDashboardWidget } from "@/components/dashboard/renderDashboardWidget";
 import { getDashboard, saveDashboard } from "@/lib/dashboard/api";
 import type { CanvasFilters, LayoutJson } from "@/lib/dashboard/types";
-import type { DashboardWidget } from "@/lib/dashboard/widget-types";
+import {
+  emptyDashboardWidget,
+  type DashboardWidget,
+  type DashboardWidgetType,
+} from "@/lib/dashboard/widget-types";
 import type { Widget } from "@/lib/reports/types";
+import { newWidgetId } from "@/components/reports/widgetKit";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 import { card, pageTitle } from "@/lib/styles";
 import { useFilterChipState } from "@/lib/reports/use-filter-chip-state";
@@ -56,6 +62,7 @@ export default function CustomDashboard() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   // Accounts SWR (shared cache with the reports surface) — used to derive
   // the org display currency so money widgets format correctly.
@@ -98,6 +105,26 @@ export default function CustomDashboard() {
     setLayout(next);
     setDirty(true);
   }, []);
+
+  function addDashTile(type: DashboardWidgetType) {
+    const id = newWidgetId();
+    const w = emptyDashboardWidget(type, id);
+    const maxY = layout.widgets.reduce(
+      (m, x) => Math.max(m, x.grid.y + x.grid.h),
+      0,
+    );
+    w.grid = { ...w.grid, x: 0, y: maxY };
+    // Cast to Widget: LayoutJson.widgets is Widget[] but the canvas dispatcher
+    // (renderDashboardWidget) handles dash_* types at runtime via the DashboardWidget
+    // union. This cast is safe — the same pattern is used in the Canvas renderWidget call.
+    setLayout((prev) => ({
+      ...prev,
+      widgets: [...prev.widgets, w as unknown as Widget],
+    }));
+    setSelectedWidgetId(id);
+    setDirty(true);
+    setPickerOpen(false);
+  }
 
   const handleSave = useCallback(async () => {
     if (saving) return;
@@ -183,6 +210,17 @@ export default function CustomDashboard() {
                   {saving ? "Saving…" : "Save"}
                 </button>
               )}
+              {/* Add widget (only visible in Customize mode) */}
+              {editModeActive && (
+                <button
+                  type="button"
+                  data-testid="custom-dashboard-add-widget"
+                  onClick={() => setPickerOpen(true)}
+                  className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+                >
+                  Add widget
+                </button>
+              )}
               {/* Customize / Done toggle — desktop-only */}
               {!isSmallScreen && (
                 <button
@@ -258,27 +296,40 @@ export default function CustomDashboard() {
               editMode={editModeActive}
               onLayoutChange={updateLayout}
               renderWidget={(w) => (
-                <WidgetShell
-                  widgetId={w.id}
-                  selected={selectedWidgetId === w.id}
-                  editMode={editModeActive}
-                  onSelect={() => setSelectedWidgetId(w.id)}
-                  widget={w}
-                  canvasFilters={canvasFilters}
-                  accounts={[]}
-                  categories={[]}
-                  onSelectFilters={() => {}}
-                >
-                  {renderDashboardWidget(
-                    w as DashboardWidget | Widget,
-                    canvasFilters,
-                    editModeActive,
-                    currency,
-                  )}
-                </WidgetShell>
+                <div data-testid={`widget-${w.type}`}>
+                  <WidgetShell
+                    widgetId={w.id}
+                    selected={selectedWidgetId === w.id}
+                    editMode={editModeActive}
+                    onSelect={() => setSelectedWidgetId(w.id)}
+                    widget={w}
+                    canvasFilters={canvasFilters}
+                    accounts={[]}
+                    categories={[]}
+                    onSelectFilters={() => {}}
+                  >
+                    {renderDashboardWidget(
+                      w as DashboardWidget | Widget,
+                      canvasFilters,
+                      editModeActive,
+                      currency,
+                    )}
+                  </WidgetShell>
+                </div>
               )}
             />
           )}
+
+          {/* Add-widget picker — rendered when editModeActive */}
+          <AddWidgetMenu
+            open={pickerOpen}
+            onClose={() => setPickerOpen(false)}
+            existing={layout.widgets}
+            onAddDashTile={addDashTile}
+            onAddCloned={() => {
+              // Task 4 implements the "From a report" clone path.
+            }}
+          />
         </div>
       </DashboardDataProvider>
     </AppShell>
