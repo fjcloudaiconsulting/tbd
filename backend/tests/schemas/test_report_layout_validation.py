@@ -99,9 +99,46 @@ def _line_layout():
     }
 
 
+def _sankey_layout():
+    return {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "s1",
+                "type": "sankey",
+                "title": "Cash flow",
+                "grid": {"x": 0, "y": 0, "w": 8, "h": 5},
+                "config": {
+                    "dataset": "transactions",
+                    "measure": {"agg": "sum", "field": "amount"},
+                    "spending_granularity": "category",
+                },
+            }
+        ],
+    }
+
+
 def test_single_measure_kpi_valid():
     body = ReportCreate(name="r", layout_json=_kpi_layout())
     assert body.layout_json["widgets"][0]["type"] == "kpi"
+
+
+def test_sankey_widget_valid():
+    """A sankey widget must validate — regression guard for the missing
+    WidgetType.SANKEY enum member that 422'd every Cash-flow report save."""
+    body = ReportCreate(name="r", layout_json=_sankey_layout())
+    assert body.layout_json["widgets"][0]["type"] == "sankey"
+
+
+def test_sankey_widget_round_trips_granularity_and_top_n_verbatim():
+    """spending_granularity + top_n must survive validation verbatim."""
+    layout = _sankey_layout()
+    layout["widgets"][0]["config"]["spending_granularity"] = "category_master"
+    layout["widgets"][0]["config"]["top_n"] = 8
+    body = ReportCreate(name="r", layout_json=layout)
+    cfg = body.layout_json["widgets"][0]["config"]
+    assert cfg["spending_granularity"] == "category_master"
+    assert cfg["top_n"] == 8
 
 
 def test_multi_series_line_valid():
