@@ -106,9 +106,10 @@ async def test_unrecognized_org_value_falls_through(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_custom_dashboard_defaults_off(db_session, monkeypatch):
-    """Feature.CUSTOM_DASHBOARD must resolve OFF when env-floor is False and no
-    DB rows exist — fail-closed behaviour mirrors PLANS."""
+async def test_custom_dashboard_env_floor_off(db_session, monkeypatch):
+    """Feature.CUSTOM_DASHBOARD resolves OFF when the env-floor is explicitly
+    set False (e.g. operator opt-out via FEATURE_CUSTOM_DASHBOARD=false) and
+    no DB rows exist — the three-level gate still honours the floor."""
     from app.config import settings
     monkeypatch.setattr(settings, "feature_custom_dashboard", False)
     assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=1, db=db_session) is False

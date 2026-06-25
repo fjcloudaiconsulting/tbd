@@ -8,9 +8,9 @@
  * Phase 2b: adds period-snapshot transactions + budgets fetches, the chart
  * memos (donut/spending/budget/forecast), spendingSort, and chartFilter.
  *
- * The fetch logic is a faithful extraction of LegacyDashboard in
- * app/dashboard/page.tsx — same endpoints, same non-blocking projection
- * semantics, same stale-request guards, same pfv:transaction-added listener.
+ * This provider is the canonical, sole implementation of the dashboard data
+ * layer. LegacyDashboard (previously in app/dashboard/page.tsx) has been
+ * removed as of Phase 3b — all dashboard data flows through this provider.
  */
 
 import {

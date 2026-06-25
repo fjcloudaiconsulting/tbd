@@ -225,7 +225,7 @@ export default function CustomDashboard() {
           className="flex h-full flex-col"
         >
           {/* Header */}
-          <div className="mb-6 flex items-center justify-between">
+          <div data-tour-id="dashboard.header" className="mb-6 flex items-center justify-between">
             <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
             <div className="flex items-center gap-2">
               {/* Save (only visible in Customize mode) */}

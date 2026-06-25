@@ -1,20 +1,13 @@
 /**
  * custom-dashboard.test.tsx
  *
- * Tests the flag-switching behaviour of DashboardPage:
+ * Tests the DashboardPage, which unconditionally renders CustomDashboard
+ * as of Phase 3b (LegacyDashboard removed, CUSTOM_DASHBOARD flag flipped ON).
  *
- *   (a) Flag OFF (default): the existing legacy dashboard renders.
- *       We assert a known testid / text that the legacy dashboard
- *       produces — ``data-testid="reset-banner"`` exists in the legacy
- *       code, but a simpler sentinel is the "Dashboard" heading that
- *       LegacyDashboard renders inside AppShell when not loading.
- *       We also assert ``data-testid="custom-dashboard"`` is absent so
- *       the test is unambiguous about which branch ran.
- *
- *   (b) Flag ON + mocked getDashboard: the Canvas shell renders, and
+ *   (a) Flag ON + mocked getDashboard: the Canvas shell renders, and
  *       clicking Save calls saveDashboard.
  *
- *   (c) Phase 2a wiring: flag ON with a dash_* default layout — period
+ *   (b) Phase 2a wiring: flag ON with a dash_* default layout — period
  *       nav renders, the 3 finance tiles are present, Save calls
  *       saveDashboard with the dash_* widget types.
  */
@@ -23,7 +16,6 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import DashboardPage from "@/app/dashboard/page";
 import { useAuth } from "@/components/auth/AuthProvider";
 import * as dashboardApi from "@/lib/dashboard/api";
-import { apiFetch } from "@/lib/api";
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -44,7 +36,7 @@ vi.mock("@/lib/dashboard/api", () => ({
   saveDashboard: vi.fn(),
 }));
 
-// Stub the legacy dashboard's apiFetch so it doesn't fire real requests.
+// Stub apiFetch so any residual import in transitive deps doesn't fire real requests.
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
   return { ...actual, apiFetch: vi.fn() };
@@ -289,89 +281,18 @@ const DASH_TILES_RESPONSE = {
   updated_at: "2026-06-01T00:00:00Z",
 };
 
-// ── Helper: mock apiFetch for the legacy path ─────────────────────────────
-
-function mockLegacyApiFetch() {
-  vi.mocked(apiFetch).mockImplementation(((url: string) => {
-    if (url === "/api/v1/accounts") return Promise.resolve([]);
-    if (url === "/api/v1/categories") return Promise.resolve([]);
-    if (url === "/api/v1/budgets") return Promise.resolve([]);
-    if (url === "/api/v1/settings/billing-cycle")
-      return Promise.resolve({ billing_cycle_day: 1 });
-    if (url === "/api/v1/settings/billing-period")
-      return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
-    if (url === "/api/v1/settings/billing-periods")
-      return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
-    if (url.startsWith("/api/v1/transactions"))
-      return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
-    if (url.startsWith("/api/v1/forecast-plans/current"))
-      return Promise.resolve(null);
-    return Promise.resolve({});
-  }) as never);
-}
-
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe("DashboardPage — feature flag", () => {
+describe("DashboardPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.history.pushState({}, "", "/dashboard");
   });
 
   // ────────────────────────────────────────────────────────────────────────
-  // (a) FLAG OFF — legacy dashboard renders, Canvas shell absent
+  // (a) Canvas shell renders; Save calls saveDashboard
   // ────────────────────────────────────────────────────────────────────────
-  describe("flag OFF (default)", () => {
-    beforeEach(() => {
-      vi.mocked(useAuth).mockReturnValue({
-        user: BASE_USER as never,
-        loading: false,
-        needsSetup: false,
-        features: { reports: true, plans: false, customDashboard: false },
-        login: vi.fn(),
-        register: vi.fn(),
-        logout: vi.fn(),
-        refreshMe: vi.fn(),
-      } as never);
-      mockLegacyApiFetch();
-    });
-
-    it("renders the legacy dashboard heading", async () => {
-      render(<DashboardPage />);
-      // The legacy DashboardPage renders an <h1>Dashboard</h1>
-      await waitFor(() =>
-        expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(),
-      );
-    });
-
-    it("does NOT render the custom dashboard shell", async () => {
-      render(<DashboardPage />);
-      await waitFor(() =>
-        expect(screen.queryByTestId("custom-dashboard")).toBeNull(),
-      );
-    });
-
-    it("does NOT call getDashboard", async () => {
-      render(<DashboardPage />);
-      await waitFor(() =>
-        expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(),
-      );
-      expect(vi.mocked(dashboardApi.getDashboard)).not.toHaveBeenCalled();
-    });
-
-    it("does NOT render the period nav", async () => {
-      render(<DashboardPage />);
-      await waitFor(() =>
-        expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(),
-      );
-      expect(screen.queryByTestId("dashboard-period-nav")).toBeNull();
-    });
-  });
-
-  // ────────────────────────────────────────────────────────────────────────
-  // (b) FLAG ON — Canvas shell renders; Save calls saveDashboard
-  // ────────────────────────────────────────────────────────────────────────
-  describe("flag ON", () => {
+  describe("custom dashboard renders", () => {
     beforeEach(() => {
       vi.mocked(useAuth).mockReturnValue({
         user: BASE_USER as never,
@@ -489,9 +410,9 @@ describe("DashboardPage — feature flag", () => {
   });
 
   // ────────────────────────────────────────────────────────────────────────
-  // (c) FLAG ON + dash_* layout — Phase 2a finance tiles + period nav
+  // (b) dash_* layout — Phase 2a finance tiles + period nav
   // ────────────────────────────────────────────────────────────────────────
-  describe("flag ON — Phase 2a dash_* tiles", () => {
+  describe("Phase 2a dash_* tiles", () => {
     beforeEach(() => {
       vi.mocked(useAuth).mockReturnValue({
         user: BASE_USER as never,

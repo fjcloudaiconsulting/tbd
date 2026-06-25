@@ -32,12 +32,12 @@ export const TOUR_FLAG_VALUE_EXTENDED = "extended";
 /** Value written for the original first-run dashboard tour. */
 export const TOUR_FLAG_VALUE_DASHBOARD = "1";
 
+// Phase 3b: LegacyDashboard removed — only dashboard.header is currently
+// wired in CustomDashboard. The remaining step anchors (import-cta,
+// period-nav, on-track-tile, account-forecast) need re-wiring in a
+// follow-on task before the full first-run tour can be restored.
 export const DASHBOARD_TOUR_STEPS = [
   "dashboard.header",
-  "dashboard.import-cta",
-  "dashboard.period-nav",
-  "dashboard.on-track-tile",
-  "dashboard.account-forecast",
 ];
 
 /**
