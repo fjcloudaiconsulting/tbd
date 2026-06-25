@@ -66,10 +66,10 @@ export function renderDashboardWidget(
 
     // ── Reports fall-through (cloned report widgets) ────────────────────────
     // Delegate all non-dash types to the shared report widget renderer.
-    // ``renderReportWidget`` includes a sankey arm, but a sankey widget can
-    // never be persisted on a dashboard layout (the backend WidgetType enum
-    // rejects it), so that arm is unreachable from this path — it is safe to
-    // route through a sankey-capable renderer.
+    // ``renderReportWidget`` includes a sankey arm, and since Task 1 of Phase 3
+    // added "sankey" to the dashboard layout validator, a sankey widget CAN now
+    // be cloned onto a dashboard layout and WILL reach this arm via the fall-
+    // through. The reports strict validator still rejects ``dash_*`` types.
     default:
       return renderReportWidget(w as Widget, canvasFilters, editMode, currency) ?? null;
   }

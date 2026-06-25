@@ -148,6 +148,18 @@ async def _get_or_create(db: AsyncSession, user: User) -> DashboardLayout:
     return row
 
 
+@router.get("/default")
+async def get_default_dashboard(
+    current_user: User = Depends(get_current_user),
+):
+    """Return the canonical default layout WITHOUT persisting — backs the
+    Reset-to-default action. Single source of truth for the seed."""
+    return {
+        "layout_json": copy.deepcopy(DEFAULT_DASHBOARD_LAYOUT),
+        "canvas_filters_json": {},
+    }
+
+
 @router.get("", response_model=DashboardLayoutOut)
 async def get_dashboard(
     current_user: User = Depends(get_current_user),

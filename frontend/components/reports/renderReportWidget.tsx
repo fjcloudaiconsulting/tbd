@@ -9,9 +9,10 @@
  *
  * Includes the ``sankey`` arm so the reports editor continues to render
  * SankeyWidget.  The dashboard fall-through routes non-dash types here too,
- * but a sankey widget can never be persisted on a dashboard layout (the
- * backend WidgetType enum rejects it), so the arm is safe to include — it
- * simply will never be reached from the dashboard path.
+ * and since Phase 3 Task 1 added "sankey" to the dashboard layout validator,
+ * the sankey arm IS reachable from the dashboard path — a sankey widget can
+ * now be cloned onto a dashboard and rendered via this function.  The reports
+ * strict validator continues to reject ``dash_*`` types.
  */
 import type { ReactNode } from "react";
 
