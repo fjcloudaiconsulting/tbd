@@ -17,7 +17,10 @@ import type { WidgetGrid } from "@/lib/reports/types";
 export type DashboardWidgetType =
   | "dash_on_track"
   | "dash_accounts"
-  | "dash_account_forecast";
+  | "dash_account_forecast"
+  | "dash_spending"
+  | "dash_budget"
+  | "dash_forecast_category";
 
 /** A dashboard-native widget.  config is empty — the provider owns the data. */
 export interface DashboardWidget {
@@ -43,6 +46,18 @@ const DASHBOARD_WIDGET_DEFAULTS: Record<
   dash_account_forecast: {
     title: "Month-End Forecast",
     grid: { x: 4, y: 3, w: 8, h: 5 },
+  },
+  dash_spending: {
+    title: "Spending by Category",
+    grid: { x: 0, y: 8, w: 4, h: 5 },
+  },
+  dash_budget: {
+    title: "Budget Progress",
+    grid: { x: 4, y: 8, w: 4, h: 5 },
+  },
+  dash_forecast_category: {
+    title: "Forecast by Category",
+    grid: { x: 8, y: 8, w: 4, h: 5 },
   },
 };
 
