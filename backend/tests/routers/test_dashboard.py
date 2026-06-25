@@ -453,6 +453,76 @@ async def test_patch_rejects_unknown_widget_type(session_factory):
     assert res.status_code == 422, res.text
 
 
+# ─── (m) PATCH accepts 3 chart tile types; round-trips verbatim ───────────────
+
+
+@pytest.mark.asyncio
+async def test_patch_accepts_chart_tile_types(session_factory):
+    """PATCH with the 3 Phase-2b chart tiles (dash_spending, dash_budget,
+    dash_forecast_category) must return 200 and round-trip the layout VERBATIM.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    chart_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-spending",
+                "type": "dash_spending",
+                "title": "Spending by Category",
+                "grid": {"x": 0, "y": 8, "w": 4, "h": 5},
+                "config": {},
+            },
+            {
+                "id": "w-budget",
+                "type": "dash_budget",
+                "title": "Budget Progress",
+                "grid": {"x": 4, "y": 8, "w": 4, "h": 5},
+                "config": {},
+            },
+            {
+                "id": "w-forecast-cat",
+                "type": "dash_forecast_category",
+                "title": "Forecast by Category",
+                "grid": {"x": 8, "y": 8, "w": 4, "h": 5},
+                "config": {},
+            },
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch("/api/v1/dashboard", json={"layout_json": chart_layout})
+    assert res.status_code == 200, res.text
+    assert res.json()["layout_json"] == chart_layout
+
+
+@pytest.mark.asyncio
+async def test_patch_still_rejects_unknown_type_after_chart_tiles(session_factory):
+    """After adding the 3 chart tiles, unknown widget types must still 422."""
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+
+    bad_layout = {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "w-bad",
+                "type": "dash_unknown_tile",
+                "title": "Bad",
+                "grid": {"x": 0, "y": 0, "w": 4, "h": 2},
+                "config": {},
+            }
+        ],
+    }
+
+    with TestClient(app) as client:
+        client.get("/api/v1/dashboard")
+        res = client.patch("/api/v1/dashboard", json={"layout_json": bad_layout})
+    assert res.status_code == 422, res.text
+
+
 # ─── (l) PATCH rejects empty widget title → 422 ─────────────────────────────
 
 

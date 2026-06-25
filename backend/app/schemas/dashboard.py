@@ -58,6 +58,9 @@ class DashWidgetType(str, enum.Enum):
     ON_TRACK = "dash_on_track"
     ACCOUNTS = "dash_accounts"
     ACCOUNT_FORECAST = "dash_account_forecast"
+    SPENDING = "dash_spending"
+    BUDGET = "dash_budget"
+    FORECAST_CATEGORY = "dash_forecast_category"
 
 
 class _DashWidgetConfig(BaseModel):
@@ -99,6 +102,21 @@ class DashAccountForecastWidget(_DashWidgetBase):
     config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
 
 
+class DashSpendingWidget(_DashWidgetBase):
+    type: Literal[DashWidgetType.SPENDING]
+    config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
+
+
+class DashBudgetWidget(_DashWidgetBase):
+    type: Literal[DashWidgetType.BUDGET]
+    config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
+
+
+class DashForecastCategoryWidget(_DashWidgetBase):
+    type: Literal[DashWidgetType.FORECAST_CATEGORY]
+    config: _DashWidgetConfig = Field(default_factory=_DashWidgetConfig)
+
+
 # ─── widened widget union (dash_* + all report types) ────────────────────────
 #
 # Re-uses the public report widget classes from report_layout.  The
@@ -109,6 +127,9 @@ _DashboardWidget = Annotated[
         DashOnTrackWidget,
         DashAccountsWidget,
         DashAccountForecastWidget,
+        DashSpendingWidget,
+        DashBudgetWidget,
+        DashForecastCategoryWidget,
         # report widget types (public classes from report_layout)
         KPIWidget,
         BarWidget,

@@ -21,6 +21,9 @@ import type { DashboardWidget } from "@/lib/dashboard/widget-types";
 import OnTrackWidget from "@/components/dashboard/widgets/OnTrackWidget";
 import AccountsWidget from "@/components/dashboard/widgets/AccountsWidget";
 import AccountForecastWidget from "@/components/dashboard/widgets/AccountForecastWidget";
+import SpendingDonutWidget from "@/components/dashboard/widgets/SpendingDonutWidget";
+import BudgetBarsWidget from "@/components/dashboard/widgets/BudgetBarsWidget";
+import ForecastBarsWidget from "@/components/dashboard/widgets/ForecastBarsWidget";
 import { renderReportWidget } from "@/components/reports/renderReportWidget";
 /**
  * Render a dashboard canvas widget.
@@ -46,6 +49,15 @@ export function renderDashboardWidget(
 
     case "dash_account_forecast":
       return <AccountForecastWidget />;
+
+    case "dash_spending":
+      return <SpendingDonutWidget />;
+
+    case "dash_budget":
+      return <BudgetBarsWidget />;
+
+    case "dash_forecast_category":
+      return <ForecastBarsWidget />;
 
     // ── Reports fall-through (cloned report widgets) ────────────────────────
     // Delegate all non-dash types to the shared report widget renderer.
