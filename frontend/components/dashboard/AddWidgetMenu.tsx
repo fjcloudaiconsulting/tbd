@@ -125,6 +125,7 @@ export default function AddWidgetMenu({
   const [view, setView] = useState<View>("root");
   const [reports, setReports] = useState<ReportSummary[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportsError, setReportsError] = useState(false);
   const [selectedReport, setSelectedReport] = useState<ReportSummary | null>(null);
 
   // Reset sub-view when the menu closes.
@@ -133,6 +134,7 @@ export default function AddWidgetMenu({
       setView("root");
       setSelectedReport(null);
       setReports([]);
+      setReportsError(false);
     }
   }, [open]);
 
@@ -160,9 +162,13 @@ export default function AddWidgetMenu({
   function enterReports() {
     setView("reports");
     setReportsLoading(true);
+    setReportsError(false);
     listReports()
       .then((data) => {
         setReports(data);
+      })
+      .catch(() => {
+        setReportsError(true);
       })
       .finally(() => {
         setReportsLoading(false);
@@ -315,6 +321,22 @@ export default function AddWidgetMenu({
             {reportsLoading ? (
               <div className="flex justify-center py-6">
                 <div className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-accent" />
+              </div>
+            ) : reportsError ? (
+              <div
+                data-testid="add-widget-menu-reports-error"
+                className="py-4"
+              >
+                <p className="text-sm text-danger">
+                  Could not load reports. Try again.
+                </p>
+                <button
+                  type="button"
+                  onClick={enterReports}
+                  className="mt-2 text-sm text-accent hover:underline"
+                >
+                  Retry
+                </button>
               </div>
             ) : reports.length === 0 ? (
               <p className="py-4 text-sm text-text-muted">

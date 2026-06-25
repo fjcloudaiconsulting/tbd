@@ -132,9 +132,18 @@ export default function CustomDashboard() {
   }
 
   function addClonedWidget(source: Widget) {
-    const clone = cloneWidgetForDashboard(source, layout.widgets);
-    setLayout((prev) => ({ ...prev, widgets: [...prev.widgets, clone] }));
-    setSelectedWidgetId(clone.id);
+    // Compute the clone's grid placement INSIDE the functional updater so it
+    // reads prev.widgets — mirrors addDashTile's pattern. This removes the
+    // stale-closure risk when two clones are added before a re-render.
+    let cloneId: string;
+    setLayout((prev) => {
+      const clone = cloneWidgetForDashboard(source, prev.widgets);
+      cloneId = clone.id;
+      return { ...prev, widgets: [...prev.widgets, clone] };
+    });
+    // cloneId is always assigned synchronously by the updater before the
+    // setSelectedWidgetId call executes (React batches but runs updaters first).
+    setSelectedWidgetId(cloneId!);
     setDirty(true);
     setPickerOpen(false);
   }

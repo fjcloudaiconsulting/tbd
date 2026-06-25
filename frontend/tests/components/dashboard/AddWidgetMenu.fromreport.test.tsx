@@ -208,4 +208,40 @@ describe("AddWidgetMenu — From a report", () => {
     // After going back the "Dashboard tiles" group must be visible again.
     expect(screen.getByTestId("add-widget-menu-group-dashboard")).toBeInTheDocument();
   });
+
+  it("shows error message (not empty state) when listReports rejects", async () => {
+    vi.mocked(reportsApi.listReports).mockRejectedValue(new Error("Network error"));
+
+    render(
+      <AddWidgetMenu
+        open
+        existing={[]}
+        onClose={() => {}}
+        onAddDashTile={() => {}}
+        onAddCloned={() => {}}
+      />,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /from a report/i }));
+    });
+
+    // Error state must appear.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("add-widget-menu-reports-error"),
+      ).toBeInTheDocument(),
+    );
+
+    // Must show the error message.
+    expect(screen.getByText(/could not load reports/i)).toBeInTheDocument();
+
+    // Must NOT show the "no saved reports" empty state.
+    expect(
+      screen.queryByText(/you have no saved reports yet/i),
+    ).not.toBeInTheDocument();
+
+    // A Retry button must be present.
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
 });
