@@ -268,9 +268,26 @@ function Consumer() {
       <span data-testid="has-account-forecast">{String(ctx.accountMonthEndForecast !== null)}</span>
       <span data-testid="account-forecast-error">{String(ctx.accountMonthEndForecastError)}</span>
       <span data-testid="pending-acct-1">{ctx.pendingByAccount[1] ?? 0}</span>
+      {/* Phase 2c recent-tx surface */}
+      <span data-testid="tx-count">{ctx.transactions.length}</span>
+      <span data-testid="tx-total">{ctx.txTotal}</span>
+      <span data-testid="page">{ctx.page}</span>
+      <span data-testid="sorted-visible-count">{ctx.sortedVisibleTxs.length}</span>
+      <span data-testid="can-add">{String(ctx.canAdd)}</span>
       <button data-testid="retry-projection" onClick={ctx.onRetryProjection} />
       <button data-testid="jump-to-current" onClick={ctx.jumpToCurrentPeriod} />
       <button data-testid="refresh" onClick={() => void ctx.refresh()} />
+      <button data-testid="set-page-1" onClick={() => ctx.setPage(1)} />
+      <button data-testid="set-period-idx-1" onClick={() => ctx.setPeriodIdx(1)} />
+      <button data-testid="set-chart-filter" onClick={() => ctx.setChartFilter("Groceries")} />
+      <button data-testid="toggle-dash-sort" onClick={() => ctx.toggleDashSort("date")} />
+      <button
+        data-testid="toggle-status"
+        onClick={() => {
+          const tx = ctx.sortedVisibleTxs[0];
+          if (tx) void ctx.onToggleTransactionStatus(tx);
+        }}
+      />
     </div>
   );
 }
@@ -1069,5 +1086,307 @@ describe("DashboardDataProvider — Phase 2b: chartFilter", () => {
     });
 
     expect(screen.getByTestId("chart-filter").textContent).toBe("null");
+  });
+});
+
+describe("DashboardDataProvider — Phase 2c: paginated recent transactions", () => {
+  it("fetches the paginated page (limit=PAGE_SIZE) once realPeriodStart resolves", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 1 },
+      }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("tx-count").textContent).toBe("1"),
+    );
+    expect(screen.getByTestId("tx-total").textContent).toBe("1");
+
+    const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
+    expect(
+      calls.some((u) => u.startsWith("/api/v1/transactions?limit=10&offset=0")),
+    ).toBe(true);
+  });
+
+  it("changing page re-fetches with the new offset (period nav untouched)", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 25 },
+      }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("tx-total").textContent).toBe("25"),
+    );
+
+    act(() => {
+      screen.getByTestId("set-page-1").click();
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("page").textContent).toBe("1"),
+    );
+
+    await waitFor(() => {
+      const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
+      expect(
+        calls.some((u) =>
+          u.startsWith("/api/v1/transactions?limit=10&offset=10"),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("onToggleTransactionStatus PUTs the flipped status and runs the legacy refresh cascade", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 1 },
+      }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    // The page tx must be visible so the toggle button has a row to act on.
+    await waitFor(() =>
+      expect(screen.getByTestId("sorted-visible-count").textContent).toBe("1"),
+    );
+
+    const countCalls = (pred: (u: string) => boolean) =>
+      vi.mocked(apiFetch).mock.calls.filter((c) => pred(c[0] as string)).length;
+
+    const refsBefore = countCalls((u) => u.startsWith("/api/v1/accounts"));
+    const snapshotBefore = countCalls((u) =>
+      u.startsWith("/api/v1/transactions?limit=200"),
+    );
+    const pageBefore = countCalls((u) =>
+      u.startsWith("/api/v1/transactions?limit=10"),
+    );
+    const projectionBefore = countCalls((u) =>
+      u.startsWith("/api/v1/forecast?period_start="),
+    );
+    const pendingBefore = vi.mocked(pagination.fetchAll).mock.calls.length;
+
+    act(() => {
+      screen.getByTestId("toggle-status").click();
+    });
+
+    // The PUT flips settled → pending (TX_EXPENSE is settled).
+    await waitFor(() => {
+      const put = vi
+        .mocked(apiFetch)
+        .mock.calls.find(
+          (c) =>
+            c[0] === "/api/v1/transactions/1" &&
+            (c[1] as { method?: string } | undefined)?.method === "PUT",
+        );
+      expect(put).toBeTruthy();
+      expect((put?.[1] as { body?: string }).body).toContain("pending");
+    });
+
+    // Refresh cascade: refs + page + (page-0) snapshot + projection refetched,
+    // and the all-time pending refetch fired.
+    await waitFor(() => {
+      expect(countCalls((u) => u.startsWith("/api/v1/accounts"))).toBeGreaterThan(
+        refsBefore,
+      );
+    });
+    expect(
+      countCalls((u) => u.startsWith("/api/v1/transactions?limit=10")),
+    ).toBeGreaterThan(pageBefore);
+    expect(
+      countCalls((u) => u.startsWith("/api/v1/transactions?limit=200")),
+    ).toBeGreaterThan(snapshotBefore);
+    expect(
+      countCalls((u) => u.startsWith("/api/v1/forecast?period_start=")),
+    ).toBeGreaterThan(projectionBefore);
+    expect(vi.mocked(pagination.fetchAll).mock.calls.length).toBeGreaterThan(
+      pendingBefore,
+    );
+  });
+
+  it("chartFilter routes sortedVisibleTxs to the full snapshot, not the page", async () => {
+    // Snapshot (limit=200) holds two Groceries rows; the page (limit=10) holds
+    // only one. With a chartFilter active, sortedVisibleTxs must reflect the
+    // snapshot (2), proving the filter switches the source.
+    const SECOND_GROCERY = { ...TX_EXPENSE, id: 5 };
+    vi.mocked(apiFetch).mockImplementation((async (url: string) => {
+      if (url.startsWith("/api/v1/transactions?limit=200"))
+        return { items: [TX_EXPENSE, SECOND_GROCERY], total: 2 };
+      if (url.startsWith("/api/v1/transactions"))
+        return { items: [TX_EXPENSE], total: 1 };
+      if (url.startsWith("/api/v1/accounts")) return [ACCT];
+      if (url.startsWith("/api/v1/settings/billing-periods")) return PERIODS;
+      if (url.startsWith("/api/v1/settings/billing-period")) return CURRENT_PERIOD;
+      if (url.startsWith("/api/v1/settings/billing-cycle"))
+        return { billing_cycle_day: 1 };
+      if (url.startsWith("/api/v1/forecast-plans/current")) return null;
+      if (url.startsWith("/api/v1/forecast/account-balances"))
+        return ACCOUNT_MONTH_END;
+      if (url.startsWith("/api/v1/forecast")) return FORECAST_PROJECTION;
+      if (url.startsWith("/api/v1/budgets")) return [];
+      return null;
+    }) as never);
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    // No filter: source is the page (1 row).
+    await waitFor(() =>
+      expect(screen.getByTestId("sorted-visible-count").textContent).toBe("1"),
+    );
+
+    act(() => {
+      screen.getByTestId("set-chart-filter").click();
+    });
+
+    // Filter active: source switches to the snapshot (2 Groceries rows).
+    await waitFor(() =>
+      expect(screen.getByTestId("sorted-visible-count").textContent).toBe("2"),
+    );
+  });
+
+  it("onToggleTransactionStatus on page>0 does NOT refresh the limit=200 snapshot (page-gated cascade)", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 25 },
+      }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    // Move to page 1 and let the page fetch settle.
+    act(() => {
+      screen.getByTestId("set-page-1").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("page").textContent).toBe("1"),
+    );
+
+    const countCalls = (pred: (u: string) => boolean) =>
+      vi.mocked(apiFetch).mock.calls.filter((c) => pred(c[0] as string)).length;
+
+    const snapshotBefore = countCalls((u) =>
+      u.startsWith("/api/v1/transactions?limit=200"),
+    );
+    const pageBefore = countCalls((u) =>
+      u.startsWith("/api/v1/transactions?limit=10"),
+    );
+
+    act(() => {
+      screen.getByTestId("toggle-status").click();
+    });
+
+    // The page refetch (limit=10) and the PUT must fire …
+    await waitFor(() => {
+      expect(
+        countCalls((u) => u.startsWith("/api/v1/transactions?limit=10")),
+      ).toBeGreaterThan(pageBefore);
+    });
+    // … but the snapshot cascade must be SKIPPED off page 0.
+    expect(
+      countCalls((u) => u.startsWith("/api/v1/transactions?limit=200")),
+    ).toBe(snapshotBefore);
+  });
+
+  it("period navigation does NOT reset the page (re-fetches the same offset for the new period)", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 25 },
+      }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    act(() => {
+      screen.getByTestId("set-page-1").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("page").textContent).toBe("1"),
+    );
+
+    // Clear the call log AFTER the page-1 fetch has settled so the post-nav
+    // assertion can only see fetches triggered by the period change itself
+    // (otherwise the page-1 click's offset=10 fetch would false-pass it).
+    vi.mocked(apiFetch).mockClear();
+
+    // Navigate to the past period (index 1).
+    act(() => {
+      screen.getByTestId("set-period-idx-1").click();
+    });
+
+    // Page stays 1 …
+    expect(screen.getByTestId("page").textContent).toBe("1");
+    // … and the period-change refetch keeps offset=10 (page 1), never resetting
+    // to offset=0 (which is what a setPage(0)-on-nav regression would emit).
+    await waitFor(() => {
+      const pageCalls = vi
+        .mocked(apiFetch)
+        .mock.calls.map((c) => c[0] as string)
+        .filter((u) => u.startsWith("/api/v1/transactions?limit=10"));
+      expect(pageCalls.length).toBeGreaterThan(0);
+      expect(pageCalls.every((u) => u.includes("offset=10"))).toBe(true);
+      expect(pageCalls.some((u) => u.includes("offset=0"))).toBe(false);
+    });
+  });
+
+  it("canAdd is false when there are no active accounts", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({ accounts: [INACTIVE_ACCT] }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    expect(screen.getByTestId("can-add").textContent).toBe("false");
+  });
+
+  it("toggleDashSort flips the persisted dash sort", async () => {
+    const setSort = vi.fn();
+    vi.mocked(usePersistedSortModule.usePersistedSort).mockReturnValue({
+      field: "date",
+      dir: "desc",
+      setSort,
+      reset: vi.fn(),
+      isDefault: true,
+    });
+    vi.mocked(apiFetch).mockImplementation(makeApiFetchHandler() as never);
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    act(() => {
+      screen.getByTestId("toggle-dash-sort").click();
+    });
+
+    // Same field ("date") → direction flips desc → asc.
+    expect(setSort).toHaveBeenCalledWith("date", "asc");
   });
 });
