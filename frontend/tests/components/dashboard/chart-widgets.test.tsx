@@ -28,6 +28,7 @@ import {
   useDashboard,
   type DashboardData,
 } from "@/components/dashboard/DashboardDataProvider";
+import type { Transaction } from "@/lib/types";
 
 // ── Lightweight chart-lib stubs ───────────────────────────────────────────────
 
@@ -118,6 +119,24 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   forecastChartRows: [],
   chartFilter: null,
   setChartFilter: MOCK_SETFILTER,
+  transactions: [],
+  txTotal: 0,
+  page: 0,
+  setPage: vi.fn(),
+  pageSize: 10,
+  visibleTxs: [],
+  sortedVisibleTxs: [],
+  txMap: new Map(),
+  dashSort: {
+    field: "date" as const,
+    dir: "desc" as const,
+    setSort: vi.fn(),
+    reset: vi.fn(),
+    isDefault: true,
+  },
+  toggleDashSort: vi.fn(),
+  canAdd: true,
+  onToggleTransactionStatus: vi.fn(),
   loading: false,
   error: null,
   refresh: vi.fn(),
@@ -455,5 +474,117 @@ describe("renderDashboardWidget — 3 new chart tile types", () => {
   it("dash_forecast_category renders ForecastBarsWidget (check for 'Forecast by Category')", () => {
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "wf"))}</>);
     expect(screen.getByText("Forecast by Category")).toBeInTheDocument();
+  });
+
+  it("dash_recent_transactions renders RecentTransactionsWidget (check for 'Recent Transactions')", () => {
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_recent_transactions", "wr"))}</>);
+    expect(screen.getByText("Recent Transactions")).toBeInTheDocument();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RecentTransactionsWidget (Phase 2c)
+// ══════════════════════════════════════════════════════════════════════════════
+
+const TX: Transaction = {
+  id: 1,
+  account_id: 1,
+  account_name: "Checking",
+  category_id: 10,
+  category_name: "Groceries",
+  description: "Supermarket",
+  amount: 50,
+  type: "expense",
+  status: "settled",
+  linked_transaction_id: null,
+  recurring_id: null,
+  date: "2026-06-10",
+  settled_date: null,
+  is_imported: false,
+  is_manual_adjustment: false,
+  tags: [],
+} as unknown as Transaction;
+
+function renderRecentTx() {
+  return render(
+    <>{renderDashboardWidget(emptyDashboardWidget("dash_recent_transactions", "wr"))}</>,
+  );
+}
+
+describe("RecentTransactionsWidget", () => {
+  it("renders the 'No transactions this period.' empty state when canAdd and no rows", () => {
+    mockWith({ transactions: [], sortedVisibleTxs: [], canAdd: true });
+    renderRecentTx();
+    expect(screen.getByText("No transactions this period.")).toBeInTheDocument();
+  });
+
+  it("renders the setup-incomplete empty state when canAdd is false", () => {
+    mockWith({ transactions: [], sortedVisibleTxs: [], canAdd: false });
+    renderRecentTx();
+    expect(
+      screen.getByText("Create accounts and categories first."),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a transaction row and clicking the status pill calls onToggleTransactionStatus", () => {
+    const onToggleTransactionStatus = vi.fn().mockResolvedValue(undefined);
+    mockWith({
+      transactions: [TX],
+      sortedVisibleTxs: [TX],
+      txMap: new Map([[TX.id, TX]]),
+      onToggleTransactionStatus,
+    });
+    renderRecentTx();
+    expect(screen.getByText("Supermarket")).toBeInTheDocument();
+    const pill = screen.getByRole("button", { name: /Mark as pending/i });
+    fireEvent.click(pill);
+    expect(onToggleTransactionStatus).toHaveBeenCalledWith(TX);
+  });
+
+  it("clicking a sort header calls toggleDashSort with that field", () => {
+    const toggleDashSort = vi.fn();
+    mockWith({
+      transactions: [TX],
+      sortedVisibleTxs: [TX],
+      txMap: new Map([[TX.id, TX]]),
+      toggleDashSort,
+    });
+    renderRecentTx();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Sort transactions by amount/i }),
+    );
+    expect(toggleDashSort).toHaveBeenCalledWith("amount");
+  });
+
+  it("shows pagination when txTotal exceeds the page size and no chartFilter", () => {
+    mockWith({
+      transactions: [TX],
+      sortedVisibleTxs: [TX],
+      txMap: new Map([[TX.id, TX]]),
+      txTotal: 25,
+      page: 0,
+      pageSize: 10,
+      chartFilter: null,
+    });
+    renderRecentTx();
+    expect(
+      screen.getByRole("button", { name: /Next page/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides pagination while a chartFilter is active", () => {
+    mockWith({
+      transactions: [TX],
+      sortedVisibleTxs: [TX],
+      txMap: new Map([[TX.id, TX]]),
+      txTotal: 25,
+      page: 0,
+      pageSize: 10,
+      chartFilter: "Groceries",
+    });
+    renderRecentTx();
+    expect(
+      screen.queryByRole("button", { name: /Next page/i }),
+    ).not.toBeInTheDocument();
   });
 });
