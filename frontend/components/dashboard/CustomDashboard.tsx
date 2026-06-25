@@ -34,6 +34,7 @@ import {
   type DashboardWidgetType,
 } from "@/lib/dashboard/widget-types";
 import type { Widget } from "@/lib/reports/types";
+import { cloneWidgetForDashboard } from "@/lib/dashboard/clone";
 import { newWidgetId } from "@/components/reports/widgetKit";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 import { card, pageTitle } from "@/lib/styles";
@@ -124,6 +125,14 @@ export default function CustomDashboard() {
       return { ...prev, widgets: [...prev.widgets, w as unknown as Widget] };
     });
     setSelectedWidgetId(id);
+    setDirty(true);
+    setPickerOpen(false);
+  }
+
+  function addClonedWidget(source: Widget) {
+    const clone = cloneWidgetForDashboard(source, layout.widgets);
+    setLayout((prev) => ({ ...prev, widgets: [...prev.widgets, clone] }));
+    setSelectedWidgetId(clone.id);
     setDirty(true);
     setPickerOpen(false);
   }
@@ -328,9 +337,7 @@ export default function CustomDashboard() {
             onClose={() => setPickerOpen(false)}
             existing={layout.widgets}
             onAddDashTile={addDashTile}
-            onAddCloned={() => {
-              // Task 4 implements the "From a report" clone path.
-            }}
+            onAddCloned={addClonedWidget}
           />
         </div>
       </DashboardDataProvider>

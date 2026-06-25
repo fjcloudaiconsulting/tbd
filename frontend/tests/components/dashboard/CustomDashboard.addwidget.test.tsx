@@ -55,6 +55,23 @@ vi.mock("@/components/dashboard/widgets/RecentTransactionsWidget", () => ({
 }));
 
 /**
+ * Stub report widgets so the fall-through renderer doesn't need network calls.
+ * Only bar is needed for the clone-from-report test.
+ */
+vi.mock("@/components/reports/widgets/BarWidget", () => ({
+  default: ({ widget }: { widget: { id: string; type: string } }) => (
+    <div data-testid={`report-widget-${widget.id}`}>Bar widget stub</div>
+  ),
+}));
+
+/**
+ * Stub listReports so the "From a report" menu can be driven in tests.
+ */
+vi.mock("@/lib/reports/api", () => ({
+  listReports: vi.fn(),
+}));
+
+/**
  * Mock the dashboard API module so we control what getDashboard returns
  * (layout without dash_accounts) and saveDashboard resolves cleanly.
  */
@@ -145,6 +162,7 @@ vi.mock("@/components/reports/Canvas", () => ({
 
 import CustomDashboard from "@/components/dashboard/CustomDashboard";
 import * as dashboardApi from "@/lib/dashboard/api";
+import * as reportsApi from "@/lib/reports/api";
 import { apiFetch } from "@/lib/api";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -319,5 +337,106 @@ describe("CustomDashboard — Add-widget picker", () => {
 
     // Menu still open because the inner click was stopped before reaching backdrop.
     expect(screen.getByTestId("add-widget-menu")).toBeInTheDocument();
+  });
+});
+
+describe("CustomDashboard — clone widget from a report", () => {
+  const SOURCE_BAR_WIDGET = {
+    id: "w_src_bar",
+    type: "bar",
+    title: "Monthly Spending",
+    grid: { x: 0, y: 0, w: 6, h: 4 },
+    config: {},
+  };
+
+  const REPORT_WITH_BAR = {
+    id: 42,
+    owner_user_id: 1,
+    org_id: 1,
+    visibility: "private",
+    name: "My Spending Report",
+    description: null,
+    layout_json: { version: 1, widgets: [SOURCE_BAR_WIDGET] },
+    canvas_filters_json: {},
+    schema_version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+
+  beforeEach(() => {
+    vi.mocked(reportsApi.listReports).mockResolvedValue([REPORT_WITH_BAR] as never);
+    // saveDashboard echoes the layout it receives so we can inspect what was saved.
+    vi.mocked(dashboardApi.saveDashboard).mockImplementation(
+      async (layout) => ({ ...DASHBOARD_RESPONSE, layout_json: layout }) as never,
+    );
+  });
+
+  it("clones a bar widget from a report onto the canvas, then saves with the cloned widget", async () => {
+    render(<CustomDashboard />);
+
+    // Wait for initial load.
+    await waitFor(() =>
+      expect(screen.queryByTestId("custom-dashboard-loading")).not.toBeInTheDocument(),
+    );
+
+    // Enter Customize mode.
+    const customizeBtn = await screen.findByRole("button", { name: /customize/i });
+    act(() => { fireEvent.click(customizeBtn); });
+
+    // Open the Add-widget picker.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /add widget/i }));
+    });
+
+    // Navigate into "From a report".
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /from a report/i }));
+    });
+
+    // Wait for the report list and pick our report.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /my spending report/i }),
+      ).toBeInTheDocument(),
+    );
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /my spending report/i }));
+    });
+
+    // Wait for the widget list and pick the bar widget.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("add-widget-menu-report-widget-w_src_bar"),
+      ).toBeInTheDocument(),
+    );
+    act(() => {
+      fireEvent.click(screen.getByTestId("add-widget-menu-report-widget-w_src_bar"));
+    });
+
+    // The menu should close and the cloned widget should appear on the canvas.
+    // The Canvas stub renders each widget via renderWidget which wraps it in
+    // data-testid="widget-<type>".
+    await waitFor(() =>
+      expect(screen.getByTestId("widget-bar")).toBeInTheDocument(),
+    );
+
+    // Save button should be enabled (dirty).
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    expect(saveBtn).toBeEnabled();
+
+    // Click Save and assert saveDashboard was called with the cloned widget.
+    act(() => { fireEvent.click(saveBtn); });
+
+    await waitFor(() =>
+      expect(dashboardApi.saveDashboard).toHaveBeenCalledTimes(1),
+    );
+
+    const [savedLayout] = (dashboardApi.saveDashboard as ReturnType<typeof vi.fn>).mock.calls[0];
+    const savedWidgets: Array<{ type: string; id: string }> = savedLayout.widgets;
+    // The cloned widget must be in the saved layout.
+    const clonedBar = savedWidgets.find((w) => w.type === "bar");
+    expect(clonedBar).toBeDefined();
+    // It must have a fresh id (not the source widget's id).
+    expect(clonedBar?.id).not.toBe("w_src_bar");
   });
 });
