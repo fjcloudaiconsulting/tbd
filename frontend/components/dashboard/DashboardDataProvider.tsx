@@ -5,9 +5,8 @@
  * fetches for the three custom-dashboard finance tiles (OnTrack hero,
  * Accounts strip, AccountMonthEndForecast) and the period-navigation state.
  *
- * Phase 2a subset only: refs + projection + account-forecast + pending txns
- * + period nav. Transactions table / chart memos / status-mutation are
- * deliberately absent (Phase 2b/2c).
+ * Phase 2b: adds period-snapshot transactions + budgets fetches, the chart
+ * memos (donut/spending/budget/forecast), spendingSort, and chartFilter.
  *
  * The fetch logic is a faithful extraction of LegacyDashboard in
  * app/dashboard/page.tsx — same endpoints, same non-blocking projection
@@ -29,12 +28,60 @@ import { fetchAll } from "@/lib/pagination";
 import { formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
-import type { Account, BillingPeriod, Transaction } from "@/lib/types";
+import { SORT_KEY_DASHBOARD_SPENDING } from "@/lib/hooks/persisted-keys";
+import { usePersistedSort } from "@/lib/hooks/use-persisted-sort";
+import type { PersistedSort } from "@/lib/hooks/use-persisted-sort";
+import type { Account, BillingPeriod, Budget, Transaction } from "@/lib/types";
 import type {
   ForecastPlanLike,
   ForecastProjectionLike,
 } from "@/components/dashboard/OnTrackTile";
 import type { AccountMonthEndForecastResponse } from "@/components/dashboard/AccountMonthEndForecast";
+
+// ── Chart row types (mirror LegacyDashboard verbatim) ────────────────────────
+
+export type SpendingSort = "name" | "percent" | "amount";
+
+export interface DonutDatum {
+  name: string;
+  value: number;
+}
+
+export interface SortedSpendingRow {
+  name: string;
+  value: number;
+  pct: number;
+  origIdx: number;
+}
+
+export interface BudgetChartRow {
+  name: string;
+  spent: number;
+  remaining: number;
+  pct: number;
+}
+
+// ForecastPlanItem as returned by the API (amounts are strings at the wire
+// level — mirrors the local interface in LegacyDashboard).
+export interface ForecastPlanItem {
+  id: number;
+  plan_id: number;
+  category_id: number;
+  category_name: string;
+  parent_id: number | null;
+  type: "income" | "expense";
+  planned_amount: string;
+  source: "manual" | "recurring" | "history";
+  actual_amount: string;
+  variance: string;
+}
+
+export interface ForecastChartRow {
+  categoryId: number;
+  name: string;
+  planned: number;
+  actual: number;
+}
 
 // ── Public interface ──────────────────────────────────────────────────────────
 
@@ -60,6 +107,20 @@ export interface DashboardData {
   monthFrom: string;
   monthTo: string;
   jumpToCurrentPeriod: () => void;
+  // chart data (Phase 2b)
+  allTransactions: Transaction[];
+  budgets: Budget[];
+  dashBudgets: Budget[];
+  budgetChartData: BudgetChartRow[];
+  donutData: DonutDatum[];
+  totalSpend: number;
+  sortedSpending: SortedSpendingRow[];
+  spendingSort: PersistedSort<SpendingSort>;
+  toggleSpendingSort: (field: SpendingSort) => void;
+  forecastExpenseItems: ForecastPlanItem[];
+  forecastChartRows: ForecastChartRow[];
+  chartFilter: string | null;
+  setChartFilter: (c: string | null) => void;
   // status
   loading: boolean;
   error: string | null;
@@ -80,7 +141,7 @@ interface ForecastPlan extends ForecastPlanLike {
   total_planned_expense: string;
   total_actual_income: string;
   total_actual_expense: string;
-  items: unknown[];
+  items: ForecastPlanItem[];
 }
 
 // Full projection shape from GET /api/v1/forecast?period_start=…
@@ -134,6 +195,17 @@ export function DashboardDataProvider({
   );
   const [periodIdx, setPeriodIdxRaw] = useState(0);
 
+  // ── Chart filter (cross-tile) ───────────────────────────────────────────────
+  const [chartFilter, setChartFilter] = useState<string | null>(null);
+
+  // ── Spending sort (persisted) ───────────────────────────────────────────────
+  const spendingSort = usePersistedSort<SpendingSort>(
+    SORT_KEY_DASHBOARD_SPENDING,
+    "amount",
+    "desc",
+    ["name", "percent", "amount"] as const,
+  );
+
   // ── Forecast plan (current period) ─────────────────────────────────────────
   const [forecast, setForecast] = useState<ForecastPlan | null>(null);
   const forecastPlanRequestId = useRef(0);
@@ -141,6 +213,14 @@ export function DashboardDataProvider({
   // ── Pending transactions ────────────────────────────────────────────────────
   const [pendingTransactions, setPendingTransactions] = useState<Transaction[]>([]);
   const pendingRequestId = useRef(0);
+
+  // ── Period snapshot transactions (limit=200) ────────────────────────────────
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
+  const snapshotRequestId = useRef(0);
+
+  // ── Period-scoped budgets ───────────────────────────────────────────────────
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const budgetsRequestId = useRef(0);
 
   // ── Forecast projection ─────────────────────────────────────────────────────
   const [forecastProjection, setForecastProjection] =
@@ -182,24 +262,90 @@ export function DashboardDataProvider({
     selectedPeriod?.end_date ??
     (monthFrom ? (projectedPeriodEnd(monthFrom, billingCycleDay) ?? "") : "");
 
-  // ── setPeriodIdx (clamped) ──────────────────────────────────────────────────
+  // ── setPeriodIdx (clamped) — clears chartFilter on period nav ──────────────
   const setPeriodIdx = useCallback(
     (i: number) => {
       const clamped = Math.max(0, Math.min(i, periods.length - 1));
       setPeriodIdxRaw(clamped);
+      setChartFilter(null);
     },
     [periods.length],
   );
 
-  // ── jumpToCurrentPeriod ─────────────────────────────────────────────────────
+  // ── jumpToCurrentPeriod — clears chartFilter on period nav ─────────────────
   const jumpToCurrentPeriod = useCallback(() => {
     const idx = periods.findIndex((p) => p.end_date === null);
-    if (idx >= 0) setPeriodIdxRaw(idx);
+    if (idx >= 0) {
+      setPeriodIdxRaw(idx);
+      setChartFilter(null);
+    }
   }, [periods]);
 
+  // ── loadTransactionSnapshot ─────────────────────────────────────────────────
+  // Full-period snapshot: GET /api/v1/transactions?limit=200&date_from=…&date_to=…
+  // Mirrors the `allData` fetch in LegacyDashboard.loadTransactions (page 0).
+  // Gated on realPeriodStart; stale-request guard matches sibling loaders.
+  const loadTransactionSnapshot = useCallback(async () => {
+    if (!realPeriodStart) {
+      snapshotRequestId.current += 1;
+      setAllTransactions([]);
+      return;
+    }
+    const myId = ++snapshotRequestId.current;
+    const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
+    try {
+      const data = await apiFetch<{ items: Transaction[]; total: number }>(
+        `/api/v1/transactions?limit=200&${dateFilter}`,
+      );
+      if (snapshotRequestId.current !== myId) return;
+      setAllTransactions(data?.items ?? []);
+    } catch {
+      if (snapshotRequestId.current !== myId) return;
+      // Silent — keep last good snapshot on transient failures.
+    }
+  }, [realPeriodStart, monthFrom, monthTo]);
+
+  // ── loadBudgets ─────────────────────────────────────────────────────────────
+  // Per-period budgets. When realPeriodStart is known, request that specific
+  // period. Mirrors the budgetUrl fetch in LegacyDashboard.loadTransactions.
+  // On a transient failure, keep the last good budgets (don't blank them).
+  // Stale-request guard matches sibling loaders.
+  const loadBudgets = useCallback(async () => {
+    const myId = ++budgetsRequestId.current;
+    const budgetUrl = realPeriodStart
+      ? `/api/v1/budgets?period_start=${realPeriodStart}`
+      : "/api/v1/budgets";
+    try {
+      const bds = await apiFetch<Budget[]>(budgetUrl);
+      if (budgetsRequestId.current !== myId) return;
+      setBudgets(bds ?? []);
+    } catch {
+      if (budgetsRequestId.current !== myId) return;
+      // Silent — keep last good budgets on transient failures.
+    }
+  }, [realPeriodStart]);
+
+  // ── loadInitialBudgets ───────────────────────────────────────────────────────
+  // One-shot mount fetch: no period_start → API resolves the current open period
+  // by default. Mirrors LegacyDashboard which fetched budgets in loadRefs
+  // (no period_start). Stable identity ([]) so it doesn't re-trigger the mount
+  // effect when realPeriodStart resolves. The period-change effect below will
+  // re-fetch with the resolved period_start once it becomes known.
+  const loadInitialBudgets = useCallback(async () => {
+    const myId = ++budgetsRequestId.current;
+    try {
+      const bds = await apiFetch<Budget[]>("/api/v1/budgets");
+      if (budgetsRequestId.current !== myId) return;
+      setBudgets(bds ?? []);
+    } catch {
+      if (budgetsRequestId.current !== myId) return;
+      // Silent — keep last good budgets on transient failures.
+    }
+  }, []);
+
   // ── loadRefs ────────────────────────────────────────────────────────────────
-  // FIX 7: categories and budgets removed — no Phase-2a tile consumes them.
-  // Phase 2b will re-add budgets/categories when the chart tiles need them.
+  // FIX 7: categories removed — no chart tile needs them. Budgets are
+  // loaded per-period in loadBudgets (Phase 2b), not as a ref here.
   const loadRefs = useCallback(async () => {
     const [accts, per, plist, bc] = await Promise.all([
       apiFetch<Account[]>("/api/v1/accounts"),
@@ -317,7 +463,12 @@ export function DashboardDataProvider({
         setLoading(false);
       });
     void loadPendingTransactions();
-  }, [loadRefs, loadPendingTransactions]);
+    // One-shot initial budget fetch (no period_start → current-period default),
+    // mirroring LegacyDashboard which always fetched budgets in loadRefs.
+    // Uses the stable loadInitialBudgets (no realPeriodStart dep) so this
+    // effect doesn't re-run when the period resolves.
+    void loadInitialBudgets();
+  }, [loadRefs, loadPendingTransactions, loadInitialBudgets]);
 
   // ── Period-scoped loads (fire when realPeriodStart is known) ────────────────
   useEffect(() => {
@@ -340,6 +491,19 @@ export function DashboardDataProvider({
     }
   }, [realPeriodStart, loadForecastPlan]);
 
+  // Phase 2b: period snapshot + budgets fire once realPeriodStart resolves.
+  useEffect(() => {
+    if (realPeriodStart) {
+      void loadTransactionSnapshot();
+    }
+  }, [realPeriodStart, loadTransactionSnapshot]);
+
+  useEffect(() => {
+    if (realPeriodStart) {
+      void loadBudgets();
+    }
+  }, [realPeriodStart, loadBudgets]);
+
   // ── refresh (post-write) ────────────────────────────────────────────────────
   const refresh = useCallback(async () => {
     await Promise.allSettled([
@@ -348,6 +512,8 @@ export function DashboardDataProvider({
       loadPendingTransactions(),
       loadAccountMonthEndForecast(),
       loadForecastPlan(),
+      loadTransactionSnapshot(),
+      loadBudgets(),
     ]);
   }, [
     loadRefs,
@@ -355,6 +521,8 @@ export function DashboardDataProvider({
     loadPendingTransactions,
     loadAccountMonthEndForecast,
     loadForecastPlan,
+    loadTransactionSnapshot,
+    loadBudgets,
   ]);
 
   // ── pfv:transaction-added listener ─────────────────────────────────────────
@@ -376,6 +544,104 @@ export function DashboardDataProvider({
         return acc;
       }, {}),
     [pendingTransactions],
+  );
+
+  // ── Chart memos (copied verbatim from LegacyDashboard) ──────────────────────
+
+  // Spending by category from all period transactions. Transfer expense
+  // halves carry linked_transaction_id; excluding them here stops transfers
+  // from polluting the Spending by Category donut.
+  const donutDataRaw = useMemo(() => {
+    if (!Array.isArray(allTransactions)) return [];
+    const spendingByCategory = allTransactions
+      .filter(
+        (tx) =>
+          tx.type === "expense" &&
+          tx.status === "settled" &&
+          tx.linked_transaction_id == null,
+      )
+      .reduce<Record<string, number>>((acc, tx) => {
+        acc[tx.category_name] = (acc[tx.category_name] || 0) + Number(tx.amount);
+        return acc;
+      }, {});
+    return Object.entries(spendingByCategory)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  }, [allTransactions]);
+
+  const totalSpend = useMemo(
+    () => donutDataRaw.reduce((s, d) => s + d.value, 0),
+    [donutDataRaw],
+  );
+
+  const sortedSpending = useMemo(() => {
+    const list = donutDataRaw.map((d, i) => ({
+      name: d.name,
+      value: d.value,
+      pct: totalSpend > 0 ? (d.value / totalSpend) * 100 : 0,
+      origIdx: i,
+    }));
+    list.sort((a, b) => {
+      let cmp = 0;
+      if (spendingSort.field === "name") cmp = a.name.localeCompare(b.name);
+      else if (spendingSort.field === "percent") cmp = a.pct - b.pct;
+      else cmp = a.value - b.value;
+      return spendingSort.dir === "asc" ? cmp : -cmp;
+    });
+    return list;
+  }, [donutDataRaw, totalSpend, spendingSort.field, spendingSort.dir]);
+
+  // First six budgets feed the "Budget Overview" mini bar chart.
+  const dashBudgets = useMemo(
+    () => (Array.isArray(budgets) ? budgets.slice(0, 6) : []),
+    [budgets],
+  );
+
+  const budgetChartData = useMemo(
+    () =>
+      dashBudgets.map((b) => ({
+        name: b.category_name,
+        spent: Number(b.spent),
+        remaining: Math.max(Number(b.amount) - Number(b.spent), 0),
+        pct: b.percent_used,
+      })),
+    [dashBudgets],
+  );
+
+  // First eight expense items feed the "Forecast by Category" mini bar chart.
+  const forecastExpenseItems = useMemo(
+    () => forecast?.items.filter((it) => it.type === "expense") ?? [],
+    [forecast],
+  );
+
+  const forecastChartRows = useMemo(
+    () =>
+      forecastExpenseItems.slice(0, 8).map((it) => ({
+        categoryId: it.category_id,
+        name:
+          it.category_name.length > 12
+            ? it.category_name.slice(0, 12) + "..."
+            : it.category_name,
+        planned: Number(it.planned_amount),
+        actual: Number(it.actual_amount),
+      })),
+    [forecastExpenseItems],
+  );
+
+  // ── toggleSpendingSort (mirrors LegacyDashboard verbatim) ────────────────────
+  const { field: spendingSortField, dir: spendingSortDir, setSort: setSpendingSort } = spendingSort;
+  const toggleSpendingSort = useCallback(
+    (field: SpendingSort) => {
+      if (spendingSortField === field) {
+        setSpendingSort(
+          field,
+          spendingSortDir === "asc" ? "desc" : "asc",
+        );
+      } else {
+        setSpendingSort(field, field === "name" ? "asc" : "desc");
+      }
+    },
+    [spendingSortField, spendingSortDir, setSpendingSort],
   );
 
   // ── Context value ───────────────────────────────────────────────────────────
@@ -400,6 +666,20 @@ export function DashboardDataProvider({
     monthFrom,
     monthTo,
     jumpToCurrentPeriod,
+    // Phase 2b chart data
+    allTransactions,
+    budgets,
+    dashBudgets,
+    budgetChartData,
+    donutData: donutDataRaw,
+    totalSpend,
+    sortedSpending,
+    spendingSort,
+    toggleSpendingSort,
+    forecastExpenseItems,
+    forecastChartRows,
+    chartFilter,
+    setChartFilter,
     loading,
     error,
     refresh,
