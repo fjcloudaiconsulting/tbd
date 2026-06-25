@@ -28,7 +28,10 @@ import { fetchAll } from "@/lib/pagination";
 import { formatLocalDate, projectedPeriodEnd, todayISO } from "@/lib/format";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
-import { SORT_KEY_DASHBOARD_SPENDING } from "@/lib/hooks/persisted-keys";
+import {
+  SORT_KEY_DASHBOARD_SPENDING,
+  SORT_KEY_DASHBOARD_TRANSACTIONS,
+} from "@/lib/hooks/persisted-keys";
 import { usePersistedSort } from "@/lib/hooks/use-persisted-sort";
 import type { PersistedSort } from "@/lib/hooks/use-persisted-sort";
 import type { Account, BillingPeriod, Budget, Transaction } from "@/lib/types";
@@ -38,9 +41,15 @@ import type {
 } from "@/components/dashboard/OnTrackTile";
 import type { AccountMonthEndForecastResponse } from "@/components/dashboard/AccountMonthEndForecast";
 
+// Recent-transactions tile page size (mirrors LegacyDashboard's PAGE_SIZE).
+const PAGE_SIZE = 10;
+
 // ── Chart row types (mirror LegacyDashboard verbatim) ────────────────────────
 
 export type SpendingSort = "name" | "percent" | "amount";
+
+// Dashboard recent-transactions sort fields (mirror LegacyDashboard verbatim).
+export type DashTxSort = "date" | "description" | "status" | "amount";
 
 export interface DonutDatum {
   name: string;
@@ -121,6 +130,19 @@ export interface DashboardData {
   forecastChartRows: ForecastChartRow[];
   chartFilter: string | null;
   setChartFilter: (c: string | null) => void;
+  // recent transactions tile (Phase 2c)
+  transactions: Transaction[];
+  txTotal: number;
+  page: number;
+  setPage: (p: number) => void;
+  pageSize: number;
+  visibleTxs: Transaction[];
+  sortedVisibleTxs: Transaction[];
+  txMap: Map<number, Transaction>;
+  dashSort: PersistedSort<DashTxSort>;
+  toggleDashSort: (field: DashTxSort) => void;
+  canAdd: boolean;
+  onToggleTransactionStatus: (tx: Transaction) => Promise<void>;
   // status
   loading: boolean;
   error: string | null;
@@ -206,6 +228,14 @@ export function DashboardDataProvider({
     ["name", "percent", "amount"] as const,
   );
 
+  // ── Recent-transactions sort (persisted) ────────────────────────────────────
+  const dashSort = usePersistedSort<DashTxSort>(
+    SORT_KEY_DASHBOARD_TRANSACTIONS,
+    "date",
+    "desc",
+    ["date", "description", "status", "amount"] as const,
+  );
+
   // ── Forecast plan (current period) ─────────────────────────────────────────
   const [forecast, setForecast] = useState<ForecastPlan | null>(null);
   const forecastPlanRequestId = useRef(0);
@@ -217,6 +247,12 @@ export function DashboardDataProvider({
   // ── Period snapshot transactions (limit=200) ────────────────────────────────
   const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const snapshotRequestId = useRef(0);
+
+  // ── Paginated period transactions (recent-tx tile, Phase 2c) ────────────────
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [txTotal, setTxTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const txPageRequestId = useRef(0);
 
   // ── Period-scoped budgets ───────────────────────────────────────────────────
   const [budgets, setBudgets] = useState<Budget[]>([]);
@@ -304,6 +340,38 @@ export function DashboardDataProvider({
       // Silent — keep last good snapshot on transient failures.
     }
   }, [realPeriodStart, monthFrom, monthTo]);
+
+  // ── loadPageTransactions ────────────────────────────────────────────────────
+  // Paginated period transactions for the recent-tx tile:
+  // GET /api/v1/transactions?limit=PAGE_SIZE&offset=p*PAGE_SIZE&date_from=…
+  // Mirrors the page-data half of LegacyDashboard.loadTransactions. The
+  // snapshot (allTransactions), budgets, and forecast plan are loaded by
+  // their own sibling loaders, so this loader is page-data only.
+  // Gated on realPeriodStart; stale-request guard matches sibling loaders.
+  const loadPageTransactions = useCallback(
+    async (p: number) => {
+      if (!realPeriodStart) {
+        txPageRequestId.current += 1;
+        setTransactions([]);
+        setTxTotal(0);
+        return;
+      }
+      const myId = ++txPageRequestId.current;
+      const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
+      try {
+        const data = await apiFetch<{ items: Transaction[]; total: number }>(
+          `/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&${dateFilter}`,
+        );
+        if (txPageRequestId.current !== myId) return;
+        setTransactions(data?.items ?? []);
+        setTxTotal(data?.total ?? 0);
+      } catch {
+        if (txPageRequestId.current !== myId) return;
+        // Silent — keep last good page on transient failures.
+      }
+    },
+    [realPeriodStart, monthFrom, monthTo],
+  );
 
   // ── loadBudgets ─────────────────────────────────────────────────────────────
   // Per-period budgets. When realPeriodStart is known, request that specific
@@ -504,7 +572,18 @@ export function DashboardDataProvider({
     }
   }, [realPeriodStart, loadBudgets]);
 
+  // Phase 2c: the paginated recent-tx page re-fetches when the period OR the
+  // page changes. Period nav does NOT reset the page (mirrors LegacyDashboard).
+  useEffect(() => {
+    if (realPeriodStart) {
+      void loadPageTransactions(page);
+    }
+  }, [realPeriodStart, page, loadPageTransactions]);
+
   // ── refresh (post-write) ────────────────────────────────────────────────────
+  // Mirrors LegacyDashboard.refreshAllPostWrite: the paginated page resets to
+  // page 0 data (loadPageTransactions(0)) without mutating the `page` state,
+  // matching legacy's loadTransactions(0) call there.
   const refresh = useCallback(async () => {
     await Promise.allSettled([
       loadRefs(),
@@ -514,6 +593,7 @@ export function DashboardDataProvider({
       loadForecastPlan(),
       loadTransactionSnapshot(),
       loadBudgets(),
+      loadPageTransactions(0),
     ]);
   }, [
     loadRefs,
@@ -523,6 +603,7 @@ export function DashboardDataProvider({
     loadForecastPlan,
     loadTransactionSnapshot,
     loadBudgets,
+    loadPageTransactions,
   ]);
 
   // ── pfv:transaction-added listener ─────────────────────────────────────────
@@ -644,6 +725,122 @@ export function DashboardDataProvider({
     [spendingSortField, spendingSortDir, setSpendingSort],
   );
 
+  // ── Recent-transactions memos (copied verbatim from LegacyDashboard) ────────
+
+  // O(1) linked-transaction lookups for transfer leg rendering. Built from the
+  // full-period snapshot so a transfer's other half resolves regardless of
+  // which page is visible.
+  const txMap = useMemo(
+    () => new Map(allTransactions.map((tx) => [tx.id, tx])),
+    [allTransactions],
+  );
+
+  // When a chart filter is active, show from the full snapshot; otherwise the
+  // paginated page. Dedups transfer legs (keep the lower-id half).
+  const visibleTxs = useMemo(() => {
+    const txSource = chartFilter ? allTransactions : transactions;
+    const hiddenIds = new Set<number>();
+    for (const tx of txSource) {
+      if (tx.linked_transaction_id && tx.id > tx.linked_transaction_id) {
+        hiddenIds.add(tx.id);
+      }
+    }
+    return txSource.filter((tx) => !hiddenIds.has(tx.id));
+  }, [chartFilter, allTransactions, transactions]);
+
+  const { field: dashSortField, dir: dashSortDir, setSort: setDashSort } = dashSort;
+
+  const sortedVisibleTxs = useMemo(
+    () =>
+      visibleTxs
+        .filter((tx) => !chartFilter || tx.category_name === chartFilter)
+        .sort((a, b) => {
+          let cmp = 0;
+          if (dashSortField === "date") cmp = a.date.localeCompare(b.date);
+          else if (dashSortField === "description")
+            cmp = a.description.localeCompare(b.description);
+          // Status sort is alphabetical on the enum value: "pending" < "settled"
+          // so asc surfaces pending rows first, desc surfaces settled first.
+          else if (dashSortField === "status")
+            cmp = a.status.localeCompare(b.status);
+          else if (dashSortField === "amount")
+            cmp = Number(a.amount) - Number(b.amount);
+          return dashSortDir === "asc" ? cmp : -cmp;
+        }),
+    [visibleTxs, chartFilter, dashSortField, dashSortDir],
+  );
+
+  const toggleDashSort = useCallback(
+    (field: DashTxSort) => {
+      if (dashSortField === field) {
+        setDashSort(field, dashSortDir === "asc" ? "desc" : "asc");
+      } else {
+        // Default direction per field: date desc (newest first), description /
+        // status asc (alphabetical: pending before settled), amount asc.
+        setDashSort(field, field === "date" ? "desc" : "asc");
+      }
+    },
+    [dashSortField, dashSortDir, setDashSort],
+  );
+
+  // canAdd gates the empty-state copy. LegacyDashboard also required categories,
+  // but the provider intentionally dropped the categories fetch (FIX 7); active
+  // accounts is a sufficient proxy for the "setup incomplete" vs "no data" copy.
+  const canAdd = activeAccounts.length > 0;
+
+  // ── onToggleTransactionStatus (close reproduction of legacy ordering) ──────
+  // PUT the flipped status, then refresh in LegacyDashboard's order: page data
+  // + refs awaited; on page 0 the snapshot/budgets/forecast plan refresh too
+  // (so the donut/budget/forecast charts reflect the change), matching legacy
+  // loadTransactions(0)'s internal p===0 cascade. One deliberate relaxation vs
+  // legacy: legacy AWAITED that cascade (it lived inside loadTransactions's
+  // Promise.all); here it's fire-and-forget (void) since the three GETs are
+  // independent and each loader owns its stale-guard + try/catch — the end
+  // state converges identically, only intermediate render order differs.
+  // The pending/projection/account-forecast reloads also stay fire-and-forget.
+  // Rethrows on PUT failure so the calling tile can surface it; a failure of
+  // the post-PUT page re-GET is swallowed by loadPageTransactions (keeps the
+  // last good page, same as the sibling loaders) and does NOT surface as a
+  // toggle error, since the mutation itself already committed.
+  const onToggleTransactionStatus = useCallback(
+    async (tx: Transaction) => {
+      await apiFetch(`/api/v1/transactions/${tx.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          status: tx.status === "settled" ? "pending" : "settled",
+        }),
+      });
+      await loadPageTransactions(page);
+      // Page-0 chart cascade fires BEFORE loadRefs (matching legacy, where it
+      // ran inside loadTransactions(0) ahead of loadRefs). loadRefs has no
+      // internal try/catch and can reject; keeping the cascade ahead of it
+      // means a transient refs blip after a committed PUT can't skip the
+      // donut/budget/forecast refresh.
+      if (page === 0) {
+        void loadTransactionSnapshot();
+        void loadBudgets();
+        void loadForecastPlan();
+      }
+      await loadRefs();
+      void loadForecastProjection();
+      void loadAccountMonthEndForecast();
+      // Independent of `page`: a toggle on page 2 still has to refresh the
+      // accounts strip's pending totals.
+      void loadPendingTransactions();
+    },
+    [
+      page,
+      loadPageTransactions,
+      loadRefs,
+      loadTransactionSnapshot,
+      loadBudgets,
+      loadForecastPlan,
+      loadForecastProjection,
+      loadAccountMonthEndForecast,
+      loadPendingTransactions,
+    ],
+  );
+
   // ── Context value ───────────────────────────────────────────────────────────
   const value: DashboardData = {
     accounts,
@@ -680,6 +877,19 @@ export function DashboardDataProvider({
     forecastChartRows,
     chartFilter,
     setChartFilter,
+    // Phase 2c recent transactions
+    transactions,
+    txTotal,
+    page,
+    setPage,
+    pageSize: PAGE_SIZE,
+    visibleTxs,
+    sortedVisibleTxs,
+    txMap,
+    dashSort,
+    toggleDashSort,
+    canAdd,
+    onToggleTransactionStatus,
     loading,
     error,
     refresh,

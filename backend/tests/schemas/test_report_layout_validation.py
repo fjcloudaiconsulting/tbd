@@ -99,9 +99,71 @@ def _line_layout():
     }
 
 
+def _sankey_layout():
+    return {
+        "version": 1,
+        "widgets": [
+            {
+                "id": "s1",
+                "type": "sankey",
+                "title": "Cash flow",
+                "grid": {"x": 0, "y": 0, "w": 8, "h": 5},
+                "config": {
+                    "dataset": "transactions",
+                    "measure": {"agg": "sum", "field": "amount"},
+                    "spending_granularity": "category",
+                },
+            }
+        ],
+    }
+
+
 def test_single_measure_kpi_valid():
     body = ReportCreate(name="r", layout_json=_kpi_layout())
     assert body.layout_json["widgets"][0]["type"] == "kpi"
+
+
+def test_sankey_widget_valid():
+    """A sankey widget must validate — regression guard for the missing
+    WidgetType.SANKEY enum member that 422'd every Cash-flow report save."""
+    body = ReportCreate(name="r", layout_json=_sankey_layout())
+    assert body.layout_json["widgets"][0]["type"] == "sankey"
+
+
+def test_sankey_widget_round_trips_granularity_and_top_n_verbatim():
+    """spending_granularity + top_n must survive validation verbatim."""
+    layout = _sankey_layout()
+    layout["widgets"][0]["config"]["spending_granularity"] = "category_master"
+    layout["widgets"][0]["config"]["top_n"] = 8
+    body = ReportCreate(name="r", layout_json=layout)
+    cfg = body.layout_json["widgets"][0]["config"]
+    assert cfg["spending_granularity"] == "category_master"
+    assert cfg["top_n"] == 8
+
+
+def test_sankey_widget_rejects_missing_measure():
+    """measure is required on the sankey config (mirrors the other widgets'
+    required-field contract)."""
+    layout = _sankey_layout()
+    layout["widgets"][0]["config"].pop("measure")
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", layout_json=layout)
+
+
+def test_sankey_widget_rejects_bad_spending_granularity():
+    """spending_granularity is a closed enum (category | category_master)."""
+    layout = _sankey_layout()
+    layout["widgets"][0]["config"]["spending_granularity"] = "daily"
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", layout_json=layout)
+
+
+def test_sankey_widget_rejects_non_positive_top_n():
+    """top_n must be >= 1 (ge=1) — a zero/negative cap is malformed."""
+    layout = _sankey_layout()
+    layout["widgets"][0]["config"]["top_n"] = 0
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", layout_json=layout)
 
 
 def test_multi_series_line_valid():
@@ -148,6 +210,31 @@ def _mutate(fn):
 
 def test_reject_unknown_widget_type():
     layout = _mutate(lambda l: l["widgets"][0].__setitem__("type", "gauge"))
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", layout_json=layout)
+
+
+@pytest.mark.parametrize(
+    "dash_type",
+    [
+        "dash_on_track",
+        "dash_accounts",
+        "dash_account_forecast",
+        "dash_spending",
+        "dash_budget",
+        "dash_forecast_category",
+        "dash_recent_transactions",
+    ],
+)
+def test_reject_dashboard_native_types_no_smuggling(dash_type):
+    """The strict reports validator must REJECT dashboard-native dash_* types.
+
+    Dashboard tiles are accepted only by the dashboard validator
+    (validate_dashboard_layout_json). A report layout_json carrying a dash_*
+    widget must 422 — the two surfaces use separate tables and there is no
+    cross-surface smuggling.
+    """
+    layout = _mutate(lambda l: l["widgets"][0].__setitem__("type", dash_type))
     with pytest.raises(ValidationError):
         ReportCreate(name="r", layout_json=layout)
 
