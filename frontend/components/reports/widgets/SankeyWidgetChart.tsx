@@ -55,6 +55,19 @@ export const HUB_LABELS: Record<string, string> = {
  *  as a new array each render. */
 const SANKEY_COLORS = [...CHART_SERIES];
 
+/**
+ * Max characters for an outside node label before it gets an ellipsis.
+ * Sized to fit within the chart's left/right label margins at 11px so a
+ * long category name degrades gracefully to "…" instead of hard-clipping
+ * mid-glyph at the SVG edge. The full, untruncated name stays available in
+ * the node/link tooltips.
+ */
+const LABEL_MAX_CHARS = 22;
+
+export function truncateLabel(text: string, max = LABEL_MAX_CHARS): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 function buildNivoData(links: SankeyLink[]): NivoSankeyData {
   // Collect unique node ids from the union of all source and target values,
   // preserving first-seen order so the layout is deterministic across renders.
@@ -89,7 +102,10 @@ export default function SankeyWidgetChart({ links, currency, title }: SankeyWidg
     <ResponsiveSankey
       data={data}
       colors={SANKEY_COLORS}
-      margin={{ top: 8, right: 80, bottom: 8, left: 80 }}
+      // Generous left/right margins so node labels (placed outside the end
+      // nodes) have room — 80px clipped names like "Paycheck/Salary" and
+      // "Bills & Subscriptions" at the SVG edge.
+      margin={{ top: 10, right: 150, bottom: 10, left: 140 }}
       nodeOpacity={1}
       nodeHoverOpacity={1}
       nodeThickness={18}
@@ -109,7 +125,9 @@ export default function SankeyWidgetChart({ links, currency, title }: SankeyWidg
       labelPadding={12}
       // Map hub sentinel ids to friendly display labels; real category ids
       // pass through unchanged (HUB_LABELS[id] is undefined → fall back to id).
-      label={(node) => HUB_LABELS[node.id] ?? node.id}
+      // Truncate long names with an ellipsis so they never hard-clip at the
+      // SVG edge; the full name remains in the tooltip.
+      label={(node) => truncateLabel(HUB_LABELS[node.id] ?? node.id)}
       // labelTextColor is the authoritative knob Nivo uses for outside node
       // labels (via getLabelTextColor). A plain string is a valid
       // InheritedColorConfigStaticColor; CSS vars resolve in SVG fill.

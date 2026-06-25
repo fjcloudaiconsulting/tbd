@@ -27,7 +27,10 @@ beforeEach(() => {
   capturedProps = {};
 });
 
-import SankeyWidgetChart, { HUB_LABELS } from "@/components/reports/widgets/SankeyWidgetChart";
+import SankeyWidgetChart, {
+  HUB_LABELS,
+  truncateLabel,
+} from "@/components/reports/widgets/SankeyWidgetChart";
 import { CHART_SERIES } from "@/lib/chart-colors";
 import type { SankeyLink } from "@/lib/reports/types";
 
@@ -102,8 +105,10 @@ describe("SankeyWidgetChart — theme/color props", () => {
   it("uses wider margins to prevent label clipping", () => {
     render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
     const margin = capturedProps.margin as { left?: number; right?: number } | undefined;
-    expect(margin?.left).toBeGreaterThanOrEqual(80);
-    expect(margin?.right).toBeGreaterThanOrEqual(80);
+    // Wide enough for outside node labels (e.g. "Paycheck/Salary",
+    // "Bills & Subscriptions") not to clip at the SVG edge.
+    expect(margin?.left).toBeGreaterThanOrEqual(120);
+    expect(margin?.right).toBeGreaterThanOrEqual(120);
   });
 
   it("passes ariaLabel", () => {
@@ -166,6 +171,44 @@ describe("SankeyWidgetChart — hub label mapping", () => {
     // Real category ids pass through unchanged
     expect(labelFn({ id: "Housing" })).toBe("Housing");
     expect(labelFn({ id: "Food" })).toBe("Food");
+  });
+
+  it("label accessor truncates an over-long category name with an ellipsis", () => {
+    render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
+    const labelFn = capturedProps.label as (node: { id: string }) => string;
+    const long = "Shopping & Personal Care Supplies";
+    const out = labelFn({ id: long });
+    expect(out.endsWith("…")).toBe(true);
+    expect(out.length).toBeLessThan(long.length);
+  });
+
+  it("node tooltip shows the FULL untruncated name (not the ellipsis label)", () => {
+    render(<SankeyWidgetChart links={SAMPLE_LINKS} />);
+    const nodeTooltip = capturedProps.nodeTooltip as (a: {
+      node: { id: string; value: number };
+    }) => React.ReactElement;
+    const long = "Shopping & Personal Care Supplies";
+    const { container } = render(
+      nodeTooltip({ node: { id: long, value: 10 } }),
+    );
+    expect(container.textContent).toContain(long);
+    expect(container.textContent).not.toContain("…");
+  });
+});
+
+describe("truncateLabel", () => {
+  it("returns short strings unchanged", () => {
+    expect(truncateLabel("Housing")).toBe("Housing");
+  });
+
+  it("truncates strings longer than the max with a trailing ellipsis", () => {
+    const out = truncateLabel("abcdefghijklmnopqrstuvwxyz", 10);
+    expect(out).toBe("abcdefghi…");
+    expect(out.length).toBe(10);
+  });
+
+  it("keeps a string exactly at the max unchanged", () => {
+    expect(truncateLabel("abcde", 5)).toBe("abcde");
   });
 
   it("passes nodeTooltip and linkTooltip render props", () => {
