@@ -89,6 +89,8 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   loading: false,
   error: null,
   refresh: vi.fn(),
+  refreshError: false,
+  onDismissRefreshError: vi.fn(),
 };
 
 vi.mock("@/components/dashboard/DashboardDataProvider", async () => {

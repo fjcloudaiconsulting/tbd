@@ -17,13 +17,14 @@
  * the Reports editor. Customize mode is desktop-only; mobile renders
  * a read-only single-column stack (same mobileStackHeight pattern).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
 import Canvas from "@/components/reports/Canvas";
 import WidgetShell from "@/components/reports/WidgetShell";
 import AddWidgetMenu from "@/components/dashboard/AddWidgetMenu";
-import { DashboardDataProvider } from "@/components/dashboard/DashboardDataProvider";
+import { DashboardDataProvider, useDashboard } from "@/components/dashboard/DashboardDataProvider";
 import DashboardPeriodNav from "@/components/dashboard/DashboardPeriodNav";
 import { renderDashboardWidget } from "@/components/dashboard/renderDashboardWidget";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -50,8 +51,48 @@ import {
 
 const DEFAULT_LAYOUT: LayoutJson = { version: 1, widgets: [] };
 
+// Inner component: reads refreshError from the DashboardDataProvider context
+// and renders an inline retry affordance when a post-write refresh fails.
+// Must be rendered inside <DashboardDataProvider> so useDashboard() resolves.
+function RefreshErrorBanner() {
+  const { refreshError, onDismissRefreshError, refresh } = useDashboard();
+  if (!refreshError) return null;
+  return (
+    <div
+      role="alert"
+      data-testid="dashboard-refresh-error"
+      className="mb-4 flex items-center justify-between rounded-md border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger"
+    >
+      <span>Refresh failed. Your data may be out of date.</span>
+      <div className="ml-4 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          className="rounded px-2 py-0.5 text-sm font-medium underline underline-offset-2 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-danger/30"
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          aria-label="Dismiss"
+          onClick={onDismissRefreshError}
+          className="rounded p-0.5 hover:bg-danger/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-danger/30"
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function CustomDashboard() {
   const isSmallScreen = useIsMobile();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [resetBanner, setResetBanner] = useState(false);
+  // Guard: only process ?reset=1 once per mount, even if the router/searchParams
+  // references change between renders (e.g., in test environments).
+  const resetProcessed = useRef(false);
 
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
@@ -66,6 +107,18 @@ export default function CustomDashboard() {
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+
+  // L3.1 port: read ?reset=1 left by the org data-wipe flow, show a
+  // one-time success banner, then strip the param so a refresh doesn't replay it.
+  // The resetProcessed ref prevents re-triggering when router/searchParams refs
+  // change between renders (guards against test environments and edge cases).
+  useEffect(() => {
+    if (!resetProcessed.current && searchParams.get("reset") === "1") {
+      resetProcessed.current = true;
+      setResetBanner(true);
+      router.replace("/dashboard");
+    }
+  }, [searchParams, router]);
 
   // Accounts SWR (shared cache with the reports surface) — used to derive
   // the org display currency so money widgets format correctly.
@@ -220,6 +273,26 @@ export default function CustomDashboard() {
   return (
     <AppShell>
       <DashboardDataProvider>
+        {/* ?reset=1 success banner — org data wipe confirmation */}
+        {resetBanner && (
+          <div
+            role="status"
+            data-testid="reset-banner"
+            className="mb-4 flex items-center justify-between rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success"
+          >
+            <span>All organisation data has been cleared.</span>
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={() => setResetBanner(false)}
+              className="ml-4 rounded p-0.5 hover:bg-success/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-success/30"
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {/* Post-write refresh error banner with inline retry */}
+        <RefreshErrorBanner />
         <div
           data-testid="custom-dashboard"
           className="flex h-full flex-col"

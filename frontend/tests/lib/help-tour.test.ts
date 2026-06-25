@@ -33,13 +33,10 @@ describe("tour constants", () => {
     expect(TOUR_FLAG_VALUE_EXTENDED.length).toBeGreaterThan(0);
   });
 
-  it("dashboard tour has at least 1 step and all steps stay in /dashboard", () => {
-    // Phase 3b: LegacyDashboard removed; only dashboard.header is wired in
-    // CustomDashboard so far. Full tour re-wiring is a follow-on task.
-    expect(DASHBOARD_TOUR_STEPS.length).toBeGreaterThanOrEqual(1);
-    for (const id of DASHBOARD_TOUR_STEPS) {
-      expect(pagePrefix(id)).toBe("dashboard");
-    }
+  it("dashboard tour step list is empty (stub disabled until Phase 3b follow-on re-wires anchors)", () => {
+    // TODO Phase 3b follow-on: re-wire dashboard tour anchors to CustomDashboard.
+    // An empty step list cleanly prevents the 1-step tour stub from auto-launching.
+    expect(DASHBOARD_TOUR_STEPS).toHaveLength(0);
   });
 
   it("extended tour covers 5-7 surfaces (spec requirement)", () => {

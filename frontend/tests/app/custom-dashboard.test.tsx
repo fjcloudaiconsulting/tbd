@@ -162,7 +162,13 @@ vi.mock("@/components/dashboard/DashboardDataProvider", () => ({
   DashboardDataProvider: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="dashboard-data-provider">{children}</div>
   ),
-  useDashboard: vi.fn(),
+  // Return the minimum shape that RefreshErrorBanner destructures so it
+  // renders null without throwing ("refreshError: false → returns null").
+  useDashboard: vi.fn(() => ({
+    refreshError: false,
+    onDismissRefreshError: vi.fn(),
+    refresh: vi.fn(),
+  })),
 }));
 
 // Stub DashboardPeriodNav — avoids the useDashboard() context requirement.
@@ -192,6 +198,7 @@ const stableRouter = { push: pushMock, replace: replaceMock };
 vi.mock("next/navigation", () => ({
   useRouter: () => stableRouter,
   usePathname: () => "/dashboard",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 // ── Shared fixtures ────────────────────────────────────────────────────────

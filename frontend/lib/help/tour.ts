@@ -32,13 +32,11 @@ export const TOUR_FLAG_VALUE_EXTENDED = "extended";
 /** Value written for the original first-run dashboard tour. */
 export const TOUR_FLAG_VALUE_DASHBOARD = "1";
 
-// Phase 3b: LegacyDashboard removed — only dashboard.header is currently
-// wired in CustomDashboard. The remaining step anchors (import-cta,
-// period-nav, on-track-tile, account-forecast) need re-wiring in a
-// follow-on task before the full first-run tour can be restored.
-export const DASHBOARD_TOUR_STEPS = [
-  "dashboard.header",
-];
+// TODO Phase 3b follow-on: re-wire dashboard tour anchors to CustomDashboard
+// (import-cta, period-nav, on-track-tile, account-forecast) before enabling
+// the first-run tour again. An empty step list prevents the 1-step stub from
+// auto-launching and immediately completing on the dashboard.
+export const DASHBOARD_TOUR_STEPS: string[] = [];
 
 /**
  * Extended replay tour. One stop per top-level page so a curious user

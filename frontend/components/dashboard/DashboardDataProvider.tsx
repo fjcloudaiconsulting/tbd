@@ -147,6 +147,8 @@ export interface DashboardData {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  refreshError: boolean;
+  onDismissRefreshError: () => void;
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -275,6 +277,7 @@ export function DashboardDataProvider({
   // ── Load / error state ──────────────────────────────────────────────────────
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState(false);
 
   // ── Period derivations (mirrors LegacyDashboard verbatim) ──────────────────
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : period;
@@ -584,8 +587,10 @@ export function DashboardDataProvider({
   // Mirrors LegacyDashboard.refreshAllPostWrite: the paginated page resets to
   // page 0 data (loadPageTransactions(0)) without mutating the `page` state,
   // matching legacy's loadTransactions(0) call there.
+  // Sets refreshError when any sub-fetch rejects so the UI can surface
+  // an inline retry affordance via RefreshErrorBanner.
   const refresh = useCallback(async () => {
-    await Promise.allSettled([
+    const results = await Promise.allSettled([
       loadRefs(),
       loadForecastProjection(),
       loadPendingTransactions(),
@@ -595,6 +600,8 @@ export function DashboardDataProvider({
       loadBudgets(),
       loadPageTransactions(0),
     ]);
+    const anyRejected = results.some((r) => r.status === "rejected");
+    setRefreshError(anyRejected);
   }, [
     loadRefs,
     loadForecastProjection,
@@ -841,6 +848,9 @@ export function DashboardDataProvider({
     ],
   );
 
+  // ── onDismissRefreshError ────────────────────────────────────────────────────
+  const onDismissRefreshError = useCallback(() => setRefreshError(false), []);
+
   // ── Context value ───────────────────────────────────────────────────────────
   const value: DashboardData = {
     accounts,
@@ -893,6 +903,8 @@ export function DashboardDataProvider({
     loading,
     error,
     refresh,
+    refreshError,
+    onDismissRefreshError,
   };
 
   return (
