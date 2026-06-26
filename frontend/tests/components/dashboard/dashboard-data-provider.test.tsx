@@ -1458,3 +1458,106 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     });
   });
 });
+
+// ── Projection stale-response discard (race protection) ──────────────────────
+describe("DashboardDataProvider — projection stale-response discard", () => {
+  function Probe({ onProjection }: { onProjection: (v: unknown) => void }) {
+    const { forecastProjection } = useDashboard();
+    onProjection(forecastProjection);
+    return null;
+  }
+
+  it("ignores a stale projection response when a newer fetch has already committed", async () => {
+    const CURRENT_PERIOD = { id: 2, start_date: "2026-05-01", end_date: null };
+    const PAST_PERIOD = { id: 1, start_date: "2026-04-01", end_date: "2026-04-30" };
+
+    let resolveMay!: (v: unknown) => void;
+    const mayProjection = new Promise<unknown>((r) => { resolveMay = r; });
+
+    const mayData = {
+      period_start: "2026-05-01", period_end: "2026-05-31",
+      executed_income: "0", executed_expense: "200", executed_net: "0",
+      pending_income: "0", pending_expense: "0", recurring_income: "0",
+      recurring_expense: "0", forecast_income: "0", forecast_expense: "200",
+      forecast_net: "0", categories: [],
+    };
+    const aprilData = {
+      period_start: "2026-04-01", period_end: "2026-04-30",
+      executed_income: "0", executed_expense: "1500", executed_net: "-1500",
+      pending_income: "0", pending_expense: "0", recurring_income: "0",
+      recurring_expense: "0", forecast_income: "0", forecast_expense: "1500",
+      forecast_net: "-1500", categories: [],
+    };
+
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([]);
+      if (url.startsWith("/api/v1/budgets")) return Promise.resolve([]);
+      if (url === "/api/v1/settings/billing-cycle") return Promise.resolve({ billing_cycle_day: 1 });
+      if (url === "/api/v1/settings/billing-period") return Promise.resolve(CURRENT_PERIOD);
+      if (url === "/api/v1/settings/billing-periods") return Promise.resolve([CURRENT_PERIOD, PAST_PERIOD]);
+      if (url.startsWith("/api/v1/transactions")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+      if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
+      if (url.startsWith("/api/v1/forecast/account-balances")) return Promise.resolve(null);
+      if (url === "/api/v1/forecast?period_start=2026-05-01") return mayProjection as Promise<unknown>;
+      if (url === "/api/v1/forecast?period_start=2026-04-01") return Promise.resolve(aprilData);
+      return Promise.resolve({});
+    }) as never);
+
+    vi.mocked(pagination.fetchAll).mockResolvedValue([]);
+
+    const projections: unknown[] = [];
+    const onProjection = (v: unknown) => { projections.push(v); };
+
+    const { rerender } = render(
+      <DashboardDataProvider>
+        <Probe onProjection={onProjection} />
+      </DashboardDataProvider>,
+    );
+
+    // Wait for the may period to be selected and projection fetch to start
+    await waitFor(() => {
+      const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0]);
+      expect(calls.some((u) => u === "/api/v1/forecast?period_start=2026-05-01")).toBe(true);
+    });
+
+    // Simulate period change: move periodIdx to point to April (index 1 in [CURRENT, PAST])
+    // by re-rendering with a component that calls setPeriodIdx
+    function PeriodChanger() {
+      const { setPeriodIdx } = useDashboard();
+      React.useEffect(() => { setPeriodIdx(1); }, [setPeriodIdx]);
+      return null;
+    }
+
+    rerender(
+      <DashboardDataProvider>
+        <Probe onProjection={onProjection} />
+        <PeriodChanger />
+      </DashboardDataProvider>,
+    );
+
+    // Wait for the april projection to resolve and commit
+    await waitFor(() => {
+      const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0]);
+      expect(calls.some((u) => u === "/api/v1/forecast?period_start=2026-04-01")).toBe(true);
+    });
+
+    // April data should have committed (executed_expense = "1500")
+    await waitFor(() => {
+      const last = projections[projections.length - 1] as typeof aprilData | null;
+      return last?.executed_expense === "1500";
+    });
+
+    // Now resolve the stale May promise late
+    await act(async () => {
+      resolveMay(mayData);
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    // The last committed projection must still be April's data (executed_expense "1500"),
+    // NOT May's stale data (executed_expense "200")
+    const lastProjection = projections[projections.length - 1] as typeof aprilData | null;
+    expect(lastProjection?.executed_expense).toBe("1500");
+    // May's stale executed_expense should NOT be the last value
+    expect(lastProjection?.executed_expense).not.toBe("200");
+  });
+});

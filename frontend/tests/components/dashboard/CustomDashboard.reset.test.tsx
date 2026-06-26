@@ -11,6 +11,17 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 // ── mocks (must precede component imports) ────────────────────────────────────
 
+/**
+ * Stub next/navigation — CustomDashboard now calls useRouter (for reset banner
+ * router.replace) and useSearchParams (for ?reset=1 detection). Both are
+ * no-ops in these tests (no ?reset=1 scenario exercised here).
+ */
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => "/dashboard",
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 vi.mock("@/components/AppShell", () => ({
   default: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="app-shell">{children}</div>

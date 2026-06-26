@@ -32,13 +32,11 @@ export const TOUR_FLAG_VALUE_EXTENDED = "extended";
 /** Value written for the original first-run dashboard tour. */
 export const TOUR_FLAG_VALUE_DASHBOARD = "1";
 
-export const DASHBOARD_TOUR_STEPS = [
-  "dashboard.header",
-  "dashboard.import-cta",
-  "dashboard.period-nav",
-  "dashboard.on-track-tile",
-  "dashboard.account-forecast",
-];
+// TODO Phase 3b follow-on: re-wire dashboard tour anchors to CustomDashboard
+// (import-cta, period-nav, on-track-tile, account-forecast) before enabling
+// the first-run tour again. An empty step list prevents the 1-step stub from
+// auto-launching and immediately completing on the dashboard.
+export const DASHBOARD_TOUR_STEPS: string[] = [];
 
 /**
  * Extended replay tour. One stop per top-level page so a curious user
