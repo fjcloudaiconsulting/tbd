@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import CustomDashboard from "@/components/dashboard/CustomDashboard";
+import DashboardPage from "@/app/dashboard/page";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
 
@@ -20,48 +20,14 @@ vi.mock("@/components/auth/AuthProvider", async () => {
   };
 });
 
-vi.mock("@/components/AppShell", () => ({
-  default: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="app-shell">{children}</div>
-  ),
-}));
-
-vi.mock("@/components/dashboard/DashboardDataProvider", () => ({
-  DashboardDataProvider: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
-  useDashboard: vi.fn(() => ({
-    refreshError: false,
-    onDismissRefreshError: vi.fn(),
-    refresh: vi.fn(),
-  })),
-}));
-
-vi.mock("@/components/dashboard/DashboardPeriodNav", () => ({
-  default: () => <div data-testid="period-nav" />,
-}));
-
-vi.mock("@/components/reports/Canvas", () => ({
-  default: () => <div data-testid="canvas" />,
-}));
-
-vi.mock("@/lib/dashboard/api", () => ({
-  getDashboard: vi.fn().mockResolvedValue({ layout_json: { version: 1, widgets: [] }, canvas_filters_json: {} }),
-  getDefaultDashboard: vi.fn().mockResolvedValue({ layout_json: { version: 1, widgets: [] }, canvas_filters_json: {} }),
-  saveDashboard: vi.fn().mockResolvedValue({ layout_json: { version: 1, widgets: [] }, canvas_filters_json: {} }),
-}));
-
-vi.mock("@/lib/reports/use-filter-chip-state", () => ({
-  useFilterChipState: vi.fn(() => ({ accounts: [] })),
-}));
-
 const replaceMock = vi.fn();
-let mockSearchParams = new URLSearchParams();
-
+const pushMock = vi.fn();
+// Return a stable router object so useEffect deps don't re-trigger
+// the banner-show effect on every render after a click.
+const stableRouter = { push: pushMock, replace: replaceMock };
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: replaceMock }),
+  useRouter: () => stableRouter,
   usePathname: () => "/dashboard",
-  useSearchParams: () => mockSearchParams,
 }));
 
 const USER = {
@@ -74,43 +40,60 @@ const USER = {
   subscription_status: null, subscription_plan: null, trial_end: null,
 };
 
-describe("CustomDashboard — reset banner", () => {
+function mockEmptyDashboard() {
+  vi.mocked(apiFetch).mockImplementation(((url: string) => {
+    if (url === "/api/v1/accounts") return Promise.resolve([]);
+    if (url === "/api/v1/categories") return Promise.resolve([]);
+    if (url === "/api/v1/budgets") return Promise.resolve([]);
+    if (url === "/api/v1/settings/billing-cycle") return Promise.resolve({ billing_cycle_day: 1 });
+    if (url === "/api/v1/settings/billing-period") return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
+    if (url === "/api/v1/settings/billing-periods") return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
+    if (url.startsWith("/api/v1/transactions")) return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+    if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
+    return Promise.resolve({});
+  }) as never);
+}
+
+describe("DashboardPage — reset banner", () => {
   beforeEach(() => {
     vi.mocked(apiFetch).mockReset();
     replaceMock.mockReset();
-    mockSearchParams = new URLSearchParams();
+    // Reset URL between tests; the page reads window.location.search
+    // directly so the banner-show effect responds to whatever the URL
+    // is at first render.
+    window.history.pushState({}, "", "/dashboard");
     vi.mocked(useAuth).mockReturnValue({
       user: USER as never,
       loading: false,
       needsSetup: false,
-      features: { customDashboard: true } as never,
       login: vi.fn(),
       register: vi.fn(),
       logout: vi.fn(),
       refreshMe: vi.fn(),
     } as never);
+    mockEmptyDashboard();
   });
 
   it("does not render the banner without ?reset=1", async () => {
-    render(<CustomDashboard />);
+    render(<DashboardPage />);
     await waitFor(() => expect(screen.queryByTestId("reset-banner")).toBeNull());
   });
 
   it("renders the banner when ?reset=1", async () => {
-    mockSearchParams = new URLSearchParams("reset=1");
-    render(<CustomDashboard />);
+    window.history.pushState({}, "", "/dashboard?reset=1");
+    render(<DashboardPage />);
     await waitFor(() => expect(screen.getByTestId("reset-banner")).toBeInTheDocument());
   });
 
   it("calls router.replace('/dashboard') after first paint to clear the param", async () => {
-    mockSearchParams = new URLSearchParams("reset=1");
-    render(<CustomDashboard />);
+    window.history.pushState({}, "", "/dashboard?reset=1");
+    render(<DashboardPage />);
     await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/dashboard"));
   });
 
   it("dismisses the banner on click", async () => {
-    mockSearchParams = new URLSearchParams("reset=1");
-    render(<CustomDashboard />);
+    window.history.pushState({}, "", "/dashboard?reset=1");
+    render(<DashboardPage />);
     await waitFor(() => expect(screen.getByTestId("reset-banner")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
     await waitFor(() => expect(screen.queryByTestId("reset-banner")).toBeNull());

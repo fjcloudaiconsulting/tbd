@@ -10,7 +10,7 @@ Coverage:
 - Authenticated: per-org OrgSetting override is applied.
 - Backward-compat: existing keys (needs_setup, captcha_required,
   billing_ui_enabled, feature_reports_v2) must still be present.
-- custom_dashboard defaults ON (env-floor True as of Phase 3b, no DB rows).
+- custom_dashboard defaults OFF (env-floor False, no DB rows).
 """
 from __future__ import annotations
 
@@ -108,8 +108,7 @@ async def test_unauthenticated_features_reflect_env_floor(
     """Without a token the endpoint resolves features from env only (no DB rows).
 
     feature_reports_v2=True, feature_plans=False → reports True, plans False.
-    custom_dashboard is forced False via monkeypatch (env-floor is True by
-    default; this test exercises the monkeypatched-off path).
+    custom_dashboard defaults False.
     """
     monkeypatch.setattr(app_settings, "feature_reports_v2", True)
     monkeypatch.setattr(app_settings, "feature_plans", False)
@@ -345,13 +344,11 @@ async def test_bad_token_treated_as_unauthenticated(session_factory, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_custom_dashboard_off_when_env_floor_forced_off_in_status(
+async def test_custom_dashboard_defaults_off_in_status(
     session_factory, monkeypatch
 ) -> None:
-    """features.custom_dashboard is False when the env-floor is explicitly
-    forced False (operator opt-out) and no DB rows exist.  The default env
-    floor is now True (Phase 3b); this test exercises the monkeypatched-off
-    path to verify the three-level gate still honours an operator override."""
+    """features.custom_dashboard is False when env-floor is False and no DB
+    rows exist — mirrors the PLANS default-OFF behaviour."""
     monkeypatch.setattr(app_settings, "feature_reports_v2", False)
     monkeypatch.setattr(app_settings, "feature_plans", False)
     monkeypatch.setattr(app_settings, "feature_custom_dashboard", False)

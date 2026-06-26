@@ -79,7 +79,6 @@ function DashboardTourAutoStart({ api }: { api: TourApi }) {
     }
 
     if (!steps) return;
-    if (steps.length === 0) return;
 
     // Clear the legacy flag regardless of which source we used so a
     // later dashboard mount cannot start a second time.

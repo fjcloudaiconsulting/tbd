@@ -141,8 +141,6 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   loading: false,
   error: null,
   refresh: vi.fn(),
-  refreshError: false,
-  onDismissRefreshError: vi.fn(),
 };
 
 vi.mock("@/components/dashboard/DashboardDataProvider", async () => {
@@ -669,119 +667,5 @@ describe("RecentTransactionsWidget", () => {
     expect(scrollEl).not.toBeNull();
     expect(scrollEl!.classList.contains("flex-1")).toBe(true);
     expect(scrollEl!.classList.contains("overflow-y-auto")).toBe(true);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FIX 4 — Forecast over/under-plan fill colors and legend; settled-date column;
-//          sort-header tap-target
-// ══════════════════════════════════════════════════════════════════════════════
-
-const TX_WITH_SETTLED: Transaction = {
-  id: 10,
-  account_id: 1,
-  account_name: "Checking",
-  category_id: 10,
-  category_name: "Groceries",
-  description: "Shop",
-  amount: 30,
-  type: "expense",
-  status: "settled",
-  linked_transaction_id: null,
-  recurring_id: null,
-  date: "2026-06-05",
-  settled_date: "2026-06-07",
-  is_imported: false,
-  is_manual_adjustment: false,
-  tags: [],
-} as unknown as Transaction;
-
-const TX_NO_SETTLED: Transaction = {
-  ...TX_WITH_SETTLED,
-  id: 11,
-  settled_date: null,
-} as unknown as Transaction;
-
-describe("ForecastBarsWidget — over/under-plan fill and legend", () => {
-  it("renders 'Under plan' and 'Over plan' legend labels", () => {
-    mockWith({
-      forecast: MOCK_FORECAST,
-      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
-      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
-    });
-    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
-    expect(screen.getByText("Under plan")).toBeInTheDocument();
-    expect(screen.getByText("Over plan")).toBeInTheDocument();
-  });
-
-  it("renders 'Planned' legend label", () => {
-    mockWith({
-      forecast: MOCK_FORECAST,
-      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
-      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
-    });
-    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
-    expect(screen.getByText("Planned")).toBeInTheDocument();
-  });
-
-  it("renders the actual Bar element (for Cell fill logic)", () => {
-    mockWith({
-      forecast: MOCK_FORECAST,
-      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
-      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
-    });
-    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
-    // The stubbed Bar for dataKey="actual" renders as data-testid="bar-actual"
-    expect(screen.getByTestId("bar-actual")).toBeInTheDocument();
-  });
-});
-
-describe("RecentTransactionsWidget — settled-date column", () => {
-  it("renders the settled date when settled_date is present", () => {
-    mockWith({
-      transactions: [TX_WITH_SETTLED],
-      sortedVisibleTxs: [TX_WITH_SETTLED],
-      txMap: new Map([[TX_WITH_SETTLED.id, TX_WITH_SETTLED]]),
-    });
-    renderRecentTx();
-    // settled date is sliced to MM-DD: "2026-06-07".slice(5) = "06-07"
-    expect(screen.getByTestId(`dash-settled-${TX_WITH_SETTLED.id}`)).toHaveTextContent("06-07");
-  });
-
-  it("renders em-dash fallback when settled_date is null", () => {
-    mockWith({
-      transactions: [TX_NO_SETTLED],
-      sortedVisibleTxs: [TX_NO_SETTLED],
-      txMap: new Map([[TX_NO_SETTLED.id, TX_NO_SETTLED]]),
-    });
-    renderRecentTx();
-    expect(screen.getByTestId(`dash-settled-${TX_NO_SETTLED.id}`)).toHaveTextContent("—");
-  });
-});
-
-describe("RecentTransactionsWidget — WCAG tap-targets", () => {
-  it("sort headers carry the min-h-[32px] dense-exception class", () => {
-    mockWith({
-      transactions: [TX],
-      sortedVisibleTxs: [TX],
-      txMap: new Map([[TX.id, TX]]),
-    });
-    renderRecentTx();
-    // The default dashSort has field="date" dir="desc", so the Date header
-    // is the ACTIVE sort: aria-label is "Transactions sorted by date, descending…"
-    // Amount header is not active: aria-label is "Sort transactions by amount"
-    const amountHeader = screen.getByRole("button", { name: /Sort transactions by amount/i });
-    expect(amountHeader.className).toContain("min-h-[32px]");
-  });
-
-  it("status pill carries the min-h-[44px] full tap-target class", () => {
-    mockWith({
-      transactions: [TX],
-      sortedVisibleTxs: [TX],
-      txMap: new Map([[TX.id, TX]]),
-    });
-    renderRecentTx();
-    const pill = screen.getByRole("button", { name: /Mark as pending/i });
-    expect(pill.className).toContain("min-h-[44px]");
   });
 });
