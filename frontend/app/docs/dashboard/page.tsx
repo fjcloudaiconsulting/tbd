@@ -213,11 +213,12 @@ export default async function DashboardDocsPage() {
             <h2 id="customize-mode">Customize mode</h2>
             <p>
               Press <strong>Customize</strong> (top-right) to enter edit
-              mode. Three more buttons appear (<strong>Add widget</strong>,
-              <strong>Reset to default</strong>, and <strong>Save</strong>),
-              and each tile gains a drag handle and a resize handle. Press
-              <strong>Done</strong> to leave edit mode without saving, or
-              Save to keep your changes.
+              mode. Three more buttons appear (left to right:{" "}
+              <strong>Save</strong>, <strong>Add widget</strong>, and{" "}
+              <strong>Reset to default</strong>), and each tile gains a
+              drag handle and a resize handle. Press <strong>Done</strong>{" "}
+              to leave edit mode without saving, or Save to keep your
+              changes.
             </p>
             <p>
               Customize mode is desktop-only. On a phone the dashboard is a

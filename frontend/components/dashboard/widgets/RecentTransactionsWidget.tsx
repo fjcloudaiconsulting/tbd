@@ -123,7 +123,11 @@ export default function RecentTransactionsWidget() {
           })}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-border-subtle">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto divide-y divide-border-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+        tabIndex={0}
+        aria-label="Recent transactions list"
+      >
         {sortedVisibleTxs.map((tx) => {
           const isTransfer = tx.linked_transaction_id !== null;
           const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
