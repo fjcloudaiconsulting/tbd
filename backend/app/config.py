@@ -222,12 +222,11 @@ class Settings(BaseSettings):
     feature_plans: bool = False
 
     # Custom Dashboard (W4 customizable dashboard — gridstack.js canvas)
-    # When ``feature_custom_dashboard`` is False (the pre-launch default),
-    # the ``/api/v1/dashboard/*`` router-level dependency ``require_feature``
-    # raises a hard 404 on every route and the frontend hides the nav item.
-    # Flip to True (or override via SystemSetting / OrgSetting) once the
-    # frontend lands.
-    feature_custom_dashboard: bool = False
+    # Default ON as of Phase 3b — all orgs get the customizable dashboard
+    # unless a per-org OrgSetting or global SystemSetting explicitly overrides
+    # this to "off". An operator may set FEATURE_CUSTOM_DASHBOARD=false in the
+    # environment to suppress it fleet-wide.
+    feature_custom_dashboard: bool = True
 
     @field_validator("session_lifetime_days")
     @classmethod
