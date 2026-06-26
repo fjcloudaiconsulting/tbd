@@ -104,7 +104,7 @@ DEFAULT_DASHBOARD_LAYOUT: dict = {
             "id": "default-recent-transactions",
             "type": "dash_recent_transactions",
             "title": "Recent Transactions",
-            "grid": {"x": 0, "y": 13, "w": 12, "h": 6},
+            "grid": {"x": 0, "y": 13, "w": 12, "h": 9},
             "config": {},
         },
     ],

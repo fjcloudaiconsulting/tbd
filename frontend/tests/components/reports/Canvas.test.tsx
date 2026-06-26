@@ -70,6 +70,22 @@ describe("Canvas literal layout", () => {
     expect(props.preventCollision).toBe(true);
   });
 
+  it("compact prop passes compactType='vertical' and preventCollision=false", () => {
+    const onLayoutChange = vi.fn();
+    render(
+      <Canvas
+        layout={layout}
+        editMode={true}
+        onLayoutChange={onLayoutChange}
+        renderWidget={() => <div>w</div>}
+        compact
+      />,
+    );
+    if (!captured) throw new Error("react-grid-layout stub did not capture props");
+    expect(captured.compactType).toBe("vertical");
+    expect(captured.preventCollision).toBe(false);
+  });
+
   it("does NOT call onLayoutChange for a mount/no-op emission (same grid)", () => {
     const { props, onLayoutChange } = renderCanvas();
     props.onLayoutChange([{ i: "a", x: 0, y: 0, w: 4, h: 4 }]); // identical → ignored

@@ -1399,4 +1399,62 @@ describe("DashboardDataProvider — Phase 2c: paginated recent transactions", ()
     // Same field ("date") → direction flips desc → asc.
     expect(setSort).toHaveBeenCalledWith("date", "asc");
   });
+
+  it("setPageSize(25) resets page to 0 and re-fetches with limit=25&offset=0", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 50 },
+      }) as never,
+    );
+
+    // Minimal consumer that exposes page, setPage, and setPageSize.
+    function PageSizeConsumer() {
+      const ctx = useDashboard();
+      return (
+        <div>
+          <span data-testid="loading">{String(ctx.loading)}</span>
+          <span data-testid="page">{ctx.page}</span>
+          <span data-testid="page-size">{ctx.pageSize}</span>
+          <button data-testid="go-to-page-1" onClick={() => ctx.setPage(1)} />
+          <button data-testid="set-page-size-25" onClick={() => ctx.setPageSize(25)} />
+        </div>
+      );
+    }
+
+    render(
+      <DashboardDataProvider>
+        <PageSizeConsumer />
+      </DashboardDataProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    // Navigate to page 1 first so we can verify page resets to 0.
+    act(() => {
+      screen.getByTestId("go-to-page-1").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("page").textContent).toBe("1"),
+    );
+
+    // Now change the page size — this must reset page to 0.
+    act(() => {
+      screen.getByTestId("set-page-size-25").click();
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("page").textContent).toBe("0"),
+    );
+    expect(screen.getByTestId("page-size").textContent).toBe("25");
+
+    // The transactions fetch must be called with limit=25 and offset=0.
+    await waitFor(() => {
+      const calls = vi.mocked(apiFetch).mock.calls.map((c) => c[0] as string);
+      expect(
+        calls.some((u) => u.includes("limit=25") && u.includes("offset=0")),
+      ).toBe(true);
+    });
+  });
 });

@@ -36,6 +36,16 @@ interface Props {
    * caller (so the editor can wrap with WidgetShell for click-to-select).
    */
   renderWidget: (widget: Widget) => React.ReactNode;
+  /**
+   * Placement mode.
+   *  - ``false`` (default): literal placement — widgets never auto-compact
+   *    and a drag/resize into an occupied cell snaps back, honouring authored
+   *    position/size verbatim (Reports v3 #442).
+   *  - ``true``: vertical compaction + collision displacement — dragging a tile
+   *    over another pushes it aside and tiles float up to fill gaps
+   *    (phone-style rearrange). Used by the dashboard.
+   */
+  compact?: boolean;
 }
 
 // The editor canvas is desktop-only — true mobile widths render the
@@ -52,6 +62,7 @@ export default function Canvas({
   editMode,
   onLayoutChange,
   renderWidget,
+  compact = false,
 }: Props) {
   const items = layout.widgets ?? [];
   // The stored layout is the 12-column (lg/md) layout. At narrower
@@ -100,11 +111,14 @@ export default function Canvas({
         breakpoints={BREAKPOINTS}
         cols={COLS}
         rowHeight={60}
-        // null + preventCollision = literal placement: widgets never
-        // auto-compact, and a drag/resize into an occupied cell snaps back
-        // to the last valid position instead of displacing the neighbour.
-        compactType={null}
-        preventCollision
+        // Placement mode (see the `compact` prop):
+        //  - compact: vertical compaction + collision displacement — dragging a
+        //    tile over another pushes it aside and tiles float up (phone-style).
+        //  - literal (default): widgets never auto-compact and a drag into an
+        //    occupied cell snaps back to the last valid position, honouring the
+        //    authored position/size verbatim (Reports v3 #442).
+        compactType={compact ? "vertical" : null}
+        preventCollision={!compact}
         isDraggable={editMode}
         isResizable={editMode}
         draggableHandle="[data-grid-drag-handle]"

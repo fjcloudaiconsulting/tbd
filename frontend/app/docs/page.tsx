@@ -505,6 +505,20 @@ export default async function DocsPage() {
               source attribution, and the planned-vs-actual chart, open
               Forecast Plans and turn on Show details.
             </p>
+            <p>
+              The dashboard is also customizable: enter Customize mode to
+              rearrange, resize, add, or remove tiles, including charts
+              cloned from your saved reports.{" "}
+              <Link
+                href="/docs/dashboard"
+                className="underline hover:text-text-primary"
+                data-testid="docs-dashboard-link"
+              >
+                See the full dashboard guide
+              </Link>{" "}
+              for rearranging, the widget picker, adding a widget from a
+              report, and the Recent Transactions controls.
+            </p>
           </section>
 
           <section>

@@ -41,28 +41,40 @@ export function renderDashboardWidget(
   editMode = false,
   currency?: string,
 ): ReactNode {
+  // dash_* tiles render content-height cards. On the canvas, react-grid-layout
+  // gives each widget a FIXED-height box (h * rowHeight + margins) and draws the
+  // resize handle at that box's corner. Wrap each tile so its card fills the box:
+  // `h-full` makes the wrapper fill WidgetShell's flex body, and `[&>*]:h-full`
+  // forces the tile's single root card to fill the wrapper. Without this the card
+  // collapses to content height — the resize handle floats below it and tiles
+  // space inconsistently. Report-cloned widgets already fill via their own
+  // `h-full` roots, so the default arm bypasses this wrapper.
+  const fill = (tile: ReactNode): ReactNode => (
+    <div className="h-full [&>*]:h-full">{tile}</div>
+  );
+
   switch (w.type) {
     // ── Dashboard-native tiles ──────────────────────────────────────────────
     case "dash_on_track":
-      return <OnTrackWidget />;
+      return fill(<OnTrackWidget />);
 
     case "dash_accounts":
-      return <AccountsWidget />;
+      return fill(<AccountsWidget />);
 
     case "dash_account_forecast":
-      return <AccountForecastWidget />;
+      return fill(<AccountForecastWidget />);
 
     case "dash_spending":
-      return <SpendingDonutWidget />;
+      return fill(<SpendingDonutWidget />);
 
     case "dash_budget":
-      return <BudgetBarsWidget />;
+      return fill(<BudgetBarsWidget />);
 
     case "dash_forecast_category":
-      return <ForecastBarsWidget />;
+      return fill(<ForecastBarsWidget />);
 
     case "dash_recent_transactions":
-      return <RecentTransactionsWidget />;
+      return fill(<RecentTransactionsWidget />);
 
     // ── Reports fall-through (cloned report widgets) ────────────────────────
     // Delegate all non-dash types to the shared report widget renderer.

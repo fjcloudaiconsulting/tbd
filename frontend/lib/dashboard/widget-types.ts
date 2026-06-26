@@ -62,7 +62,10 @@ const DASHBOARD_WIDGET_DEFAULTS: Record<
   },
   dash_recent_transactions: {
     title: "Recent Transactions",
-    grid: { x: 0, y: 13, w: 12, h: 6 },
+    // h=9 (~636px) fits the ~10-row page without overflow; the widget's row
+    // region scrolls if resized smaller. Keep in sync with the backend
+    // DEFAULT_DASHBOARD_LAYOUT in routers/dashboard.py.
+    grid: { x: 0, y: 13, w: 12, h: 9 },
   },
 };
 
