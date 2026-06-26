@@ -124,6 +124,7 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   page: 0,
   setPage: vi.fn(),
   pageSize: 10,
+  setPageSize: vi.fn(),
   visibleTxs: [],
   sortedVisibleTxs: [],
   txMap: new Map(),
@@ -171,6 +172,21 @@ function mockWith(overrides: Partial<DashboardData>) {
     ...overrides,
   });
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// renderDashboardWidget — fill wrapper
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe("renderDashboardWidget — fill wrapper", () => {
+  it("outermost element carries h-full class (guards the fill() wrapper)", () => {
+    const { container } = render(
+      <>{renderDashboardWidget(emptyDashboardWidget("dash_spending", "w1"))}</>,
+    );
+    const outer = container.firstElementChild as HTMLElement | null;
+    expect(outer).not.toBeNull();
+    expect(outer!.classList.contains("h-full")).toBe(true);
+  });
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SpendingDonutWidget
@@ -592,6 +608,30 @@ describe("RecentTransactionsWidget", () => {
     expect(setPage).toHaveBeenCalledWith(1);
   });
 
+  it("offers a page-size selector (10–100) and calls setPageSize on change, even when rows fit one page", () => {
+    const setPageSize = vi.fn();
+    mockWith({
+      transactions: [TX],
+      sortedVisibleTxs: [TX],
+      txMap: new Map([[TX.id, TX]]),
+      // Fewer rows than a page — the selector must still render so the user can
+      // ask for more rows to fill a resized card.
+      txTotal: 5,
+      page: 0,
+      pageSize: 10,
+      chartFilter: null,
+      setPageSize,
+    });
+    renderRecentTx();
+    const select = screen.getByRole("combobox");
+    // Default option set is PAGE_SIZE_OPTIONS = [10, 25, 50, 100].
+    expect(
+      Array.from(select.querySelectorAll("option")).map((o) => o.textContent),
+    ).toEqual(expect.arrayContaining(["10", "25", "50", "100"]));
+    fireEvent.change(select, { target: { value: "50" } });
+    expect(setPageSize).toHaveBeenCalledWith(50);
+  });
+
   it("hides pagination while a chartFilter is active", () => {
     mockWith({
       transactions: [TX],
@@ -606,6 +646,29 @@ describe("RecentTransactionsWidget", () => {
     expect(
       screen.queryByRole("button", { name: /Next page/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not render pager or page-size selector when txTotal is 0", () => {
+    mockWith({
+      transactions: [],
+      sortedVisibleTxs: [],
+      txMap: new Map(),
+      txTotal: 0,
+      page: 0,
+      pageSize: 10,
+      chartFilter: null,
+      canAdd: true,
+    });
+    renderRecentTx();
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it("scroll region carries flex-1 and overflow-y-auto classes", () => {
+    const { container } = renderRecentTx();
+    const scrollEl = container.querySelector("[aria-label='Recent transactions list']");
+    expect(scrollEl).not.toBeNull();
+    expect(scrollEl!.classList.contains("flex-1")).toBe(true);
+    expect(scrollEl!.classList.contains("overflow-y-auto")).toBe(true);
   });
 });
 

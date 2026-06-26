@@ -257,9 +257,15 @@ describe("CustomDashboard — Add-widget picker", () => {
     act(() => { fireEvent.click(accountsBtn); });
 
     // The dash_accounts widget should now appear on the canvas.
-    expect(
-      await screen.findByTestId("widget-dash_accounts"),
-    ).toBeInTheDocument();
+    const tileWrapper = await screen.findByTestId("widget-dash_accounts");
+    expect(tileWrapper).toBeInTheDocument();
+
+    // Regression guard: the canvas widget wrapper MUST carry `h-full`. It sits
+    // between the react-grid-layout grid item (a fixed-height box) and
+    // WidgetShell (which fills via `h-full`). Dropping `h-full` here breaks the
+    // height chain — tiles collapse to content height inside a taller box, so
+    // the resize handle floats off the card and tall tiles overflow neighbours.
+    expect(tileWrapper).toHaveClass("h-full");
 
     // The Save button should be enabled (dirty = true).
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();

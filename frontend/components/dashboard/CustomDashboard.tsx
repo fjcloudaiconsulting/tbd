@@ -408,9 +408,17 @@ export default function CustomDashboard() {
             <Canvas
               layout={layout}
               editMode={editModeActive}
+              compact
               onLayoutChange={updateLayout}
               renderWidget={(w) => (
-                <div data-testid={`widget-${w.type}`}>
+                // h-full is load-bearing: react-grid-layout sizes the grid item
+                // to a fixed pixel box (h*rowHeight + margins); WidgetShell uses
+                // `h-full` to fill it. This wrapper sits between the two (it
+                // carries the test id), so without `h-full` here the height chain
+                // breaks — tiles collapse to content height inside a taller box,
+                // floating the resize handle and overflowing neighbours. Reports
+                // has no such wrapper (WidgetShell is the grid item's direct child).
+                <div data-testid={`widget-${w.type}`} className="h-full">
                   <WidgetShell
                     widgetId={w.id}
                     selected={selectedWidgetId === w.id}

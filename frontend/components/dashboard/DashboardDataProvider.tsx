@@ -136,6 +136,7 @@ export interface DashboardData {
   page: number;
   setPage: (p: number) => void;
   pageSize: number;
+  setPageSize: (n: number) => void;
   visibleTxs: Transaction[];
   sortedVisibleTxs: Transaction[];
   txMap: Map<number, Transaction>;
@@ -254,6 +255,13 @@ export function DashboardDataProvider({
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [txTotal, setTxTotal] = useState(0);
   const [page, setPage] = useState(0);
+  // Page size is user-selectable on the recent-tx tile (10–100); changing it
+  // resets to page 0. loadPageTransactions reads the current size.
+  const [pageSize, setPageSizeState] = useState(PAGE_SIZE);
+  const setPageSize = useCallback((n: number) => {
+    setPageSizeState(n);
+    setPage(0);
+  }, []);
   const txPageRequestId = useRef(0);
 
   // ── Period-scoped budgets ───────────────────────────────────────────────────
@@ -363,7 +371,7 @@ export function DashboardDataProvider({
       const dateFilter = `date_from=${monthFrom}${monthTo ? `&date_to=${monthTo}` : ""}`;
       try {
         const data = await apiFetch<{ items: Transaction[]; total: number }>(
-          `/api/v1/transactions?limit=${PAGE_SIZE}&offset=${p * PAGE_SIZE}&${dateFilter}`,
+          `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}&${dateFilter}`,
         );
         if (txPageRequestId.current !== myId) return;
         setTransactions(data?.items ?? []);
@@ -373,7 +381,7 @@ export function DashboardDataProvider({
         // Silent — keep last good page on transient failures.
       }
     },
-    [realPeriodStart, monthFrom, monthTo],
+    [realPeriodStart, monthFrom, monthTo, pageSize],
   );
 
   // ── loadBudgets ─────────────────────────────────────────────────────────────
@@ -892,7 +900,8 @@ export function DashboardDataProvider({
     txTotal,
     page,
     setPage,
-    pageSize: PAGE_SIZE,
+    pageSize,
+    setPageSize,
     visibleTxs,
     sortedVisibleTxs,
     txMap,
