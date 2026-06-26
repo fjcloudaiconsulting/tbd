@@ -124,6 +124,7 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   page: 0,
   setPage: vi.fn(),
   pageSize: 10,
+  setPageSize: vi.fn(),
   visibleTxs: [],
   sortedVisibleTxs: [],
   txMap: new Map(),
@@ -588,6 +589,30 @@ describe("RecentTransactionsWidget", () => {
     // Pagination is 1-based (page={page+1}); Next → onPageChange(2) → setPage(1).
     fireEvent.click(screen.getByRole("button", { name: /Next page/i }));
     expect(setPage).toHaveBeenCalledWith(1);
+  });
+
+  it("offers a page-size selector (10–100) and calls setPageSize on change, even when rows fit one page", () => {
+    const setPageSize = vi.fn();
+    mockWith({
+      transactions: [TX],
+      sortedVisibleTxs: [TX],
+      txMap: new Map([[TX.id, TX]]),
+      // Fewer rows than a page — the selector must still render so the user can
+      // ask for more rows to fill a resized card.
+      txTotal: 5,
+      page: 0,
+      pageSize: 10,
+      chartFilter: null,
+      setPageSize,
+    });
+    renderRecentTx();
+    const select = screen.getByRole("combobox");
+    // Default option set is PAGE_SIZE_OPTIONS = [10, 25, 50, 100].
+    expect(
+      Array.from(select.querySelectorAll("option")).map((o) => o.textContent),
+    ).toEqual(expect.arrayContaining(["10", "25", "50", "100"]));
+    fireEvent.change(select, { target: { value: "50" } });
+    expect(setPageSize).toHaveBeenCalledWith(50);
   });
 
   it("hides pagination while a chartFilter is active", () => {

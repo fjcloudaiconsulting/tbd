@@ -73,6 +73,7 @@ const MOCK_DASHBOARD_DATA: DashboardData = {
   page: 0,
   setPage: vi.fn(),
   pageSize: 10,
+  setPageSize: vi.fn(),
   visibleTxs: [],
   sortedVisibleTxs: [],
   txMap: new Map(),

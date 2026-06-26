@@ -391,7 +391,7 @@ async def test_default_layout_contains_seven_dash_tiles(session_factory):
     assert by_type["dash_budget"]["grid"] == {"x": 4, "y": 8, "w": 4, "h": 5}
     assert by_type["dash_forecast_category"]["grid"] == {"x": 8, "y": 8, "w": 4, "h": 5}
     # Row 4
-    assert by_type["dash_recent_transactions"]["grid"] == {"x": 0, "y": 13, "w": 12, "h": 6}
+    assert by_type["dash_recent_transactions"]["grid"] == {"x": 0, "y": 13, "w": 12, "h": 9}
 
 
 # ─── (i) PATCH accepts dash_* layout → 200; round-trips verbatim ─────────────

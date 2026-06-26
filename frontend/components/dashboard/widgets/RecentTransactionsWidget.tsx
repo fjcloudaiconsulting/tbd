@@ -52,6 +52,7 @@ export default function RecentTransactionsWidget() {
     page,
     setPage,
     pageSize,
+    setPageSize,
     dashSort,
     toggleDashSort,
     chartFilter,
@@ -67,8 +68,13 @@ export default function RecentTransactionsWidget() {
   const [toggleError, setToggleError] = useState<string | null>(null);
 
   return (
-    <div className={card}>
-      <div className={`flex items-center justify-between ${cardHeader}`}>
+    // flex-col + h-full so the card fills its grid cell; the rows region below
+    // scrolls (flex-1 + overflow) while the header, sort-row and pager stay
+    // pinned. This keeps the fixed-size row list contained at ANY cell height
+    // instead of overflowing onto the canvas when the table is taller than the
+    // cell (and lets a resize show more/fewer rows).
+    <div className={`${card} flex h-full flex-col`}>
+      <div className={`flex shrink-0 items-center justify-between ${cardHeader}`}>
         <h2 className={cardTitle}>Recent Transactions</h2>
       </div>
       {toggleError && (
@@ -83,7 +89,7 @@ export default function RecentTransactionsWidget() {
           Date / Description / Status / Amount. Hidden under sm; mobile
           rows collapse to a two-line layout (see below) where header
           labels are redundant. */}
-      <div className="hidden sm:block border-b border-border-subtle px-5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+      <div className="hidden shrink-0 sm:block border-b border-border-subtle px-5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
         <div className="grid grid-cols-12 items-center gap-3">
           {([
             { field: "date" as const, label: "Date", span: "col-span-2", align: "text-left" },
@@ -117,7 +123,7 @@ export default function RecentTransactionsWidget() {
           })}
         </div>
       </div>
-      <div className="divide-y divide-border-subtle">
+      <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-border-subtle">
         {sortedVisibleTxs.map((tx) => {
           const isTransfer = tx.linked_transaction_id !== null;
           const linkedTx = isTransfer ? txMap.get(tx.linked_transaction_id!) : null;
@@ -202,15 +208,17 @@ export default function RecentTransactionsWidget() {
           </div>
         )}
       </div>
-      {!chartFilter && (txTotal > pageSize || page > 0) && (
-        <div className="border-t border-border px-5">
+      {!chartFilter && txTotal > 0 && (
+        <div className="shrink-0 border-t border-border px-5">
+          {/* Page-size selector (10–100) lets the user fill a resized card with
+              more rows instead of leaving blank space below a fixed 10. Options
+              default to PAGE_SIZE_OPTIONS = [10, 25, 50, 100]. */}
           <Pagination
             page={page + 1}
             pageSize={pageSize}
             total={txTotal}
             onPageChange={(n) => setPage(n - 1)}
-            onPageSizeChange={() => {}}
-            showPageSizeSelector={false}
+            onPageSizeChange={setPageSize}
           />
         </div>
       )}
