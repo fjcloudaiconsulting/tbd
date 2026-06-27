@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import AppShell from "@/components/AppShell";
+import { useAuth } from "@/components/auth/AuthProvider";
 import Canvas from "@/components/reports/Canvas";
 import WidgetShell from "@/components/reports/WidgetShell";
 import AddWidgetMenu from "@/components/dashboard/AddWidgetMenu";
@@ -52,6 +53,16 @@ const DEFAULT_LAYOUT: LayoutJson = { version: 1, widgets: [] };
 
 export default function CustomDashboard() {
   const isSmallScreen = useIsMobile();
+  // Auth-readiness gate. CustomDashboard renders <AppShell> as a CHILD, so its
+  // mount effects run ABOVE AppShell's `loading || !user` guard — i.e. before
+  // AuthProvider has restored the in-memory token on a hard refresh. Gating
+  // the layout fetch (and the loaded-branch render that mounts the data
+  // provider + filter-chip SWR) on `user` ensures every dashboard request
+  // carries a bearer. AuthProvider sets the token before it exposes `user`,
+  // so `user` truthy ⇒ token present. Gate on a primitive boolean (not the
+  // `user` object) so the effect dep is reference-stable.
+  const { user } = useAuth();
+  const authReady = !!user;
 
   const [layout, setLayout] = useState<LayoutJson>(DEFAULT_LAYOUT);
   const [canvasFilters, setCanvasFilters] = useState<CanvasFilters>({});
@@ -75,8 +86,11 @@ export default function CustomDashboard() {
   // Editing is desktop-only (mirrors reports editor).
   const editModeActive = editMode && !isSmallScreen;
 
-  // Load dashboard on mount.
+  // Load dashboard once auth is ready (token restored). Gating on `user`
+  // keeps this fetch from racing AuthProvider's hydration — see the note on
+  // the `user` declaration above. Re-runs if `user` transitions to present.
   useEffect(() => {
+    if (!authReady) return;
     let cancelled = false;
     setLoading(true);
     getDashboard()
@@ -100,7 +114,7 @@ export default function CustomDashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authReady]);
 
   // Stable identity so Canvas's onLayoutChange dep doesn't thrash.
   // setState setters are stable, so [] is an honest dependency list.
@@ -188,7 +202,10 @@ export default function CustomDashboard() {
   );
 
   // ── Loading state ──────────────────────────────────────────────
-  if (loading) {
+  // `!user` holds the loader until auth resolves, so the loaded branch (which
+  // mounts DashboardDataProvider + the Canvas filter-chip SWR) never renders
+  // token-less. The data-provider/SWR fetches thus always carry a bearer.
+  if (loading || !authReady) {
     return (
       <AppShell>
         <div
