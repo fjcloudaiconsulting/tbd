@@ -94,22 +94,27 @@ describe("mobileStackHeight — dash_* widgets", () => {
   const h = (type: string) =>
     mobileStackHeight(makeWidget(type, 5));
 
-  it("dash_on_track gets a sensible mobile height (>= 160)", () => {
-    expect(h("dash_on_track")).toBeGreaterThanOrEqual(160);
+  // Content tiles (lists, summary cards, the transaction table) size to their
+  // OWN content on mobile — exactly like the report `kpi`/`table` widgets.
+  // A fixed clamp + the cards' `overflow-hidden` was cutting tall content
+  // (e.g. a long accounts list clipped mid-row). Natural height shows it all.
+  it("dash_on_track returns undefined (natural content height)", () => {
+    expect(h("dash_on_track")).toBeUndefined();
   });
 
-  it("dash_accounts gets a positive height (> 0)", () => {
-    expect(h("dash_accounts")).toBeGreaterThan(0);
+  it("dash_accounts returns undefined (natural content height)", () => {
+    expect(h("dash_accounts")).toBeUndefined();
   });
 
-  it("dash_account_forecast gets a positive height (> 0)", () => {
-    expect(h("dash_account_forecast")).toBeGreaterThan(0);
+  it("dash_account_forecast returns undefined (natural content height)", () => {
+    expect(h("dash_account_forecast")).toBeUndefined();
   });
 
-  it("dash_recent_transactions gets a positive height (> 0)", () => {
-    expect(h("dash_recent_transactions")).toBeGreaterThan(0);
+  it("dash_recent_transactions returns undefined (natural content height)", () => {
+    expect(h("dash_recent_transactions")).toBeUndefined();
   });
 
+  // Chart tiles still need a definite height for Recharts/Nivo height="100%".
   it("dash_spending (chart tile) gets >= 220", () => {
     expect(h("dash_spending")).toBeGreaterThanOrEqual(220);
   });
@@ -122,20 +127,17 @@ describe("mobileStackHeight — dash_* widgets", () => {
     expect(h("dash_forecast_category")).toBeGreaterThanOrEqual(220);
   });
 
-  it("all 7 dash_* types return a positive number (not undefined)", () => {
-    const dashTypes = [
+  it("the 3 dash_* CHART tiles return a number; the 4 CONTENT tiles return undefined", () => {
+    for (const type of ["dash_spending", "dash_budget", "dash_forecast_category"]) {
+      expect(typeof h(type)).toBe("number");
+    }
+    for (const type of [
       "dash_on_track",
       "dash_accounts",
       "dash_account_forecast",
-      "dash_spending",
-      "dash_budget",
-      "dash_forecast_category",
       "dash_recent_transactions",
-    ];
-    for (const type of dashTypes) {
-      const height = h(type);
-      expect(typeof height).toBe("number");
-      expect(height).toBeGreaterThan(0);
+    ]) {
+      expect(h(type)).toBeUndefined();
     }
   });
 });
