@@ -17,7 +17,7 @@
  * the Reports editor. Customize mode is desktop-only; mobile renders
  * a read-only single-column stack (same mobileStackHeight pattern).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -39,7 +39,7 @@ import type { Widget } from "@/lib/reports/types";
 import { cloneWidgetForDashboard } from "@/lib/dashboard/clone";
 import { newWidgetId } from "@/components/reports/widgetKit";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
-import { card, pageTitle } from "@/lib/styles";
+import { btnCanvas, btnCanvasActive, card, pageTitle } from "@/lib/styles";
 import { useFilterChipState } from "@/lib/reports/use-filter-chip-state";
 import { reportCurrency } from "@/lib/reports/series";
 
@@ -77,6 +77,14 @@ export default function CustomDashboard() {
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  // Confirm shown when leaving Customize mode (Done) with unsaved changes.
+  const [discardOpen, setDiscardOpen] = useState(false);
+  // Last persisted layout + filters, so "Done → Discard" can revert without a
+  // refetch. Seeded on load and updated on every successful save.
+  const savedRef = useRef<{ layout: LayoutJson; filters: CanvasFilters }>({
+    layout: DEFAULT_LAYOUT,
+    filters: {},
+  });
 
   // Accounts SWR (shared cache with the reports surface) — used to derive
   // the org display currency so money widgets format correctly.
@@ -97,12 +105,14 @@ export default function CustomDashboard() {
       .then((data) => {
         if (cancelled) return;
         const lj = (data.layout_json ?? {}) as Partial<LayoutJson>;
-        setLayout(
+        const loaded =
           lj && Array.isArray(lj.widgets)
-            ? { version: 1, widgets: lj.widgets as Widget[] }
-            : DEFAULT_LAYOUT,
-        );
-        setCanvasFilters((data.canvas_filters_json as CanvasFilters) ?? {});
+            ? { version: 1 as const, widgets: lj.widgets as Widget[] }
+            : DEFAULT_LAYOUT;
+        const loadedFilters = (data.canvas_filters_json as CanvasFilters) ?? {};
+        setLayout(loaded);
+        setCanvasFilters(loadedFilters);
+        savedRef.current = { layout: loaded, filters: loadedFilters };
         setLoading(false);
       })
       .catch((err: Error) => {
@@ -189,12 +199,15 @@ export default function CustomDashboard() {
     try {
       const saved = await saveDashboard(layout, canvasFilters);
       const lj = (saved.layout_json ?? {}) as Partial<LayoutJson>;
-      setLayout(
+      const persisted =
         lj && Array.isArray(lj.widgets)
-          ? { version: 1, widgets: lj.widgets as Widget[] }
-          : DEFAULT_LAYOUT,
-      );
-      setCanvasFilters((saved.canvas_filters_json as CanvasFilters) ?? {});
+          ? { version: 1 as const, widgets: lj.widgets as Widget[] }
+          : DEFAULT_LAYOUT;
+      const persistedFilters =
+        (saved.canvas_filters_json as CanvasFilters) ?? {};
+      setLayout(persisted);
+      setCanvasFilters(persistedFilters);
+      savedRef.current = { layout: persisted, filters: persistedFilters };
       setDirty(false);
       setSavedAt(new Date());
       setEditMode(false);
@@ -206,6 +219,28 @@ export default function CustomDashboard() {
       setSaving(false);
     }
   }, [saving, layout, canvasFilters]);
+
+  // Leave Customize mode. With unsaved changes, confirm first — otherwise Done
+  // silently drops the edits (they vanish on the next reload, since the
+  // dashboard re-fetches the last saved layout).
+  function leaveCustomize() {
+    if (dirty) {
+      setDiscardOpen(true);
+      return;
+    }
+    setEditMode(false);
+    setSelectedWidgetId(null);
+  }
+
+  // Discard unsaved edits: revert to the last persisted layout/filters, exit.
+  function handleDiscardConfirm() {
+    setDiscardOpen(false);
+    setLayout(savedRef.current.layout);
+    setCanvasFilters(savedRef.current.filters);
+    setDirty(false);
+    setSelectedWidgetId(null);
+    setEditMode(false);
+  }
 
   // Memoize the widget list for the mobile stack.
   const orderedWidgets = useMemo(
@@ -275,7 +310,7 @@ export default function CustomDashboard() {
                   type="button"
                   data-testid="custom-dashboard-add-widget"
                   onClick={() => setPickerOpen(true)}
-                  className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+                  className={btnCanvas}
                 >
                   Add widget
                 </button>
@@ -286,7 +321,7 @@ export default function CustomDashboard() {
                   type="button"
                   data-testid="custom-dashboard-reset"
                   onClick={() => setResetOpen(true)}
-                  className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+                  className={btnCanvas}
                 >
                   Reset to default
                 </button>
@@ -296,12 +331,8 @@ export default function CustomDashboard() {
                 <button
                   type="button"
                   data-testid="custom-dashboard-customize"
-                  onClick={() => setEditMode((v) => !v)}
-                  className={`rounded-md border px-3 py-1.5 text-sm ${
-                    editMode
-                      ? "border-accent text-accent hover:bg-accent/10"
-                      : "border-border text-text-primary hover:bg-surface-raised"
-                  }`}
+                  onClick={() => (editMode ? leaveCustomize() : setEditMode(true))}
+                  className={editMode ? btnCanvasActive : btnCanvas}
                 >
                   {editMode ? "Done" : "Customize"}
                 </button>
@@ -417,6 +448,18 @@ export default function CustomDashboard() {
             variant="warning"
             onConfirm={handleResetConfirm}
             onCancel={() => setResetOpen(false)}
+          />
+
+          {/* Unsaved-changes guard when leaving Customize via Done */}
+          <ConfirmModal
+            open={discardOpen}
+            title="Discard unsaved changes?"
+            message="You have unsaved changes to your dashboard layout. Discard them and leave Customize mode, or keep editing to Save."
+            confirmLabel="Discard changes"
+            cancelLabel="Keep editing"
+            variant="warning"
+            onConfirm={handleDiscardConfirm}
+            onCancel={() => setDiscardOpen(false)}
           />
         </div>
       </DashboardDataProvider>

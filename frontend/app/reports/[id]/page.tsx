@@ -59,6 +59,7 @@ import { reportCurrency } from "@/lib/reports/series";
 import { mobileStackHeight, orderWidgetsForStack } from "@/lib/reports/stack";
 import type { WidgetType } from "@/lib/reports/types";
 import { useIsMobile } from "@/lib/hooks/use-is-mobile";
+import { btnCanvas, btnCanvasActive } from "@/lib/styles";
 
 interface PageProps {
   // Next 15 makes ``params`` a promise on server-rendered pages; in
@@ -651,7 +652,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+              className={btnCanvas}
               data-testid="report-editor-add-widget"
             >
               Add widget
@@ -672,7 +673,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             <button
               type="button"
               onClick={handleCancelEdit}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+              className={btnCanvas}
               data-testid="report-editor-cancel"
             >
               Cancel
@@ -686,7 +687,7 @@ export default function ReportEditorPage({ params }: PageProps) {
               type="button"
               onClick={handleToggleVisibility}
               disabled={togglingVisibility}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
+              className={btnCanvas}
               data-testid="report-editor-visibility-toggle"
               aria-label="Toggle report sharing"
             >
@@ -741,7 +742,7 @@ export default function ReportEditorPage({ params }: PageProps) {
             <button
               type="button"
               onClick={() => setEditMode((v) => !v)}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+              className={editMode ? btnCanvasActive : btnCanvas}
               data-testid="report-editor-toggle-edit"
             >
               {editMode ? "Done" : "Edit"}

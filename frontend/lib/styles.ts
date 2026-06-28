@@ -14,6 +14,22 @@ export const btnPrimary =
 export const btnSecondary =
   "rounded-md border border-border px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-raised transition-colors";
 
+// Secondary button for canvas/editor toolbars that sit directly on the page
+// `bg` (dashboard + reports editor headers), where a transparent outline
+// disappears: on the light theme the `border` token and the page `bg` are
+// near-identical grays. Per DESIGN.md "flat by default with tonal depth"
+// (no resting shadow), a `surface` fill lifts the button one tone above the
+// page (white chip on the light-gray page, like the cards) so it reads as an
+// actionable control. Matches the documented `button-secondary` spec.
+export const btnCanvas =
+  "rounded-md border border-border bg-surface px-3 py-1.5 text-sm text-text-primary transition-colors hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60";
+
+// Active/engaged variant of btnCanvas — the Customize/Edit "Done" toggle while
+// editing. Keeps the surface fill (stays visible) but swaps to the brass
+// accent border + text to signal the active edit mode.
+export const btnCanvasActive =
+  "rounded-md border border-accent bg-surface px-3 py-1.5 text-sm text-accent transition-colors hover:bg-accent/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
+
 export const btnDanger =
   "text-xs text-text-muted hover:text-danger";
 
