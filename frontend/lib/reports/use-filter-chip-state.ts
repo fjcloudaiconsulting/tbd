@@ -24,6 +24,7 @@ import { useCallback, useState } from "react";
 import useSWR from "swr";
 
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/components/auth/AuthProvider";
 import type { TabKey } from "@/components/reports/WidgetEditorPopover";
 import type { Account, Category } from "@/lib/types";
 
@@ -43,16 +44,25 @@ interface FilterChipState {
 export function useFilterChipState(
   setSelectedWidgetId: (id: string) => void,
 ): FilterChipState {
+  // Gate the SWR fetches on auth-readiness. AuthProvider sets the access
+  // token BEFORE it exposes `user`, so `user` being present guarantees the
+  // in-memory bearer is set. A null key means SWR does NOT fetch — this stops
+  // the dashboard's mount-time chip fetches from firing token-less during the
+  // cold-start hydration race (the dashboard mounts this hook above AppShell's
+  // `user` gate, so without this guard `/accounts` + `/categories` go out bare
+  // and 403). On the reports editors `user` is already present when this hook
+  // mounts, so the key is immediately live — behavior there is unchanged.
+  const { user } = useAuth();
   // Reuse the EXACT SWR keys ``AccountFilter`` / ``CategoryPicker`` use so
   // the cache is shared (no extra network round-trip). Default to []
   // (count-fallback) while warm.
   const { data: accounts } = useSWR<Account[]>(
-    "/api/v1/accounts?for=reports-filter",
+    user ? "/api/v1/accounts?for=reports-filter" : null,
     () => apiFetch<Account[]>("/api/v1/accounts"),
     { revalidateOnFocus: false },
   );
   const { data: categories } = useSWR<Category[]>(
-    "/api/v1/categories?for=reports-filter",
+    user ? "/api/v1/categories?for=reports-filter" : null,
     () => apiFetch<Category[]>("/api/v1/categories"),
     { revalidateOnFocus: false },
   );

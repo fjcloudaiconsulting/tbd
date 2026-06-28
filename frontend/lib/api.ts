@@ -506,6 +506,15 @@ export async function apiFetch<T>(
     headers.set("Authorization", `Bearer ${accessToken}`);
   }
 
+  // Whether THIS request actually carried a bearer. Drives the token-less
+  // 403 recovery below: FastAPI's HTTPBearer returns 403 "Not authenticated"
+  // (not 401) when the Authorization header is missing entirely. That happens
+  // on a cold-start race where a page's mount-time fetch fires before
+  // AuthProvider has restored the in-memory token. A bare 403 must trigger
+  // the same silent refresh + retry as a 401; a 403 that DID carry a token is
+  // a genuine authorization denial (feature gate / permissions) and must NOT.
+  const sentAuthHeader = headers.has("Authorization");
+
   if (
     fetchInit.body &&
     typeof fetchInit.body === "string" &&
@@ -532,7 +541,12 @@ export async function apiFetch<T>(
   const isCredCheck =
     path.startsWith("/api/v1/auth/login") ||
     path.startsWith("/api/v1/auth/mfa/verify");
-  if (res.status === 401 && !isCredCheck) {
+  // 401 always → try refresh. A 403 only triggers refresh when we sent NO
+  // bearer (the cold-start missing-header case); a 403 with a token is a real
+  // authz denial and falls through to the error throw untouched.
+  const isRecoverableAuthFailure =
+    res.status === 401 || (res.status === 403 && !sentAuthHeader);
+  if (isRecoverableAuthFailure && !isCredCheck) {
     // Singleflight: every concurrent 401-driven caller shares one
     // refreshPromise. We increment refreshAwaiters BEFORE awaiting and
     // only clear refreshPromise once the last awaiter has consumed it.

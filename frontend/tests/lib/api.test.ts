@@ -93,6 +93,50 @@ describe("apiFetch", () => {
     expect(getAccessToken()).toBe("fresh-token");
   });
 
+  it("refreshes and retries once after a token-less 403 (cold-start race)", async () => {
+    // Cold start / pre-hydration: no access token in memory yet. A request
+    // that fires before AuthProvider restores the token goes out BARE, and
+    // FastAPI's HTTPBearer returns 403 "Not authenticated" for a missing
+    // header (NOT 401). The refresh cookie may still be valid, so apiFetch
+    // must attempt one silent refresh + retry — exactly as it does for a
+    // 401. Without this, the dashboard's mount-time fetches that race token
+    // hydration surface a hard "Not authenticated" instead of recovering.
+    // (Null-token requests still send bare first — the established
+    // no-preflight-on-null contract is preserved; this only adds RECOVERY.)
+    setAccessToken(null);
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ detail: "Not authenticated" }, { status: 403 }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ access_token: "fresh-token" }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    const data = await apiFetch<{ ok: boolean }>("/api/v1/dashboard");
+
+    expect(data).toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/auth/refresh");
+    const retryHeaders = fetchMock.mock.calls[2][1]?.headers as Headers;
+    expect(retryHeaders.get("Authorization")).toBe("Bearer fresh-token");
+    expect(getAccessToken()).toBe("fresh-token");
+  });
+
+  it("does NOT refresh on a 403 when a token WAS sent (real authz denial)", async () => {
+    // A 403 carrying a valid bearer is a genuine authorization failure
+    // (feature gate, missing permission) — not an expired session.
+    // Refreshing would be a pointless round-trip that could mask the real
+    // denial, so the 403 must surface unchanged with no refresh attempt.
+    setAccessToken("valid-token");
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ detail: "Feature not enabled" }, { status: 403 }),
+    );
+
+    await expect(apiFetch("/api/v1/dashboard")).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("times out an unresponsive initial request instead of hanging forever", async () => {
     // Exercises the default 10s budget — no timeoutMs override on the call,
     // so fetchWithTimeout falls back to API_FETCH_TIMEOUT_MS.
