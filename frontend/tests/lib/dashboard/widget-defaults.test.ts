@@ -51,7 +51,14 @@ const MIN_CONTENT_H: Record<DashboardWidgetType, number> = {
 };
 
 describe("dashboard widget default grids", () => {
-  it("match the canonical backend seed grids", () => {
+  // NOTE: CANONICAL_GRIDS is a hand-kept MIRROR of the backend
+  // DEFAULT_DASHBOARD_LAYOUT — the two are separate constants (Python vs TS)
+  // with no shared source, so this asserts the frontend matches that mirror,
+  // not the live backend. Cross-stack parity is enforced by the "Keep in
+  // sync" comments + the backend counterpart
+  // (test_dashboard.py::test_default_layout_contains_seven_dash_tiles); a
+  // backend-only edit would NOT fail this test. Keep both sides equal by hand.
+  it("equal the hand-mirrored backend seed grids", () => {
     for (const type of Object.keys(CANONICAL_GRIDS) as DashboardWidgetType[]) {
       const w = emptyDashboardWidget(type, "test-id");
       expect(w.grid, `${type} grid`).toEqual(CANONICAL_GRIDS[type]);
