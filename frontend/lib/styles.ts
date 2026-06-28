@@ -11,18 +11,21 @@ export const label =
 export const btnPrimary =
   "min-h-[44px] rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-text hover:bg-accent-hover disabled:opacity-50";
 
+// Secondary button. A transparent outline defined only by the hairline
+// `border` token disappears on the light theme (border ≈ page `bg`), so the
+// secondary button is a filled chip: a `surface` fill (tonal depth per
+// DESIGN.md "flat by default" — no resting shadow) + the stronger
+// `border-strong` so it reads as actionable on ANY substrate — on a card the
+// fill matches but the defined border still frames it. Matches the documented
+// `button-secondary` spec. The canvas/toolbar variant below is identical but
+// compact.
 export const btnSecondary =
-  "rounded-md border border-border px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-raised transition-colors";
+  "rounded-md border border-border-strong bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
 
-// Secondary button for canvas/editor toolbars that sit directly on the page
-// `bg` (dashboard + reports editor headers), where a transparent outline
-// disappears: on the light theme the `border` token and the page `bg` are
-// near-identical grays. Per DESIGN.md "flat by default with tonal depth"
-// (no resting shadow), a `surface` fill lifts the button one tone above the
-// page (white chip on the light-gray page, like the cards) so it reads as an
-// actionable control. Matches the documented `button-secondary` spec.
+// Compact secondary button for canvas/editor toolbars (same contrast as
+// btnSecondary, smaller padding so several fit a toolbar row).
 export const btnCanvas =
-  "rounded-md border border-border bg-surface px-3 py-1.5 text-sm text-text-primary transition-colors hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60";
+  "rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text-primary transition-colors hover:bg-surface-raised focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60";
 
 // Active/engaged variant of btnCanvas — the Customize/Edit "Done" toggle while
 // editing. Keeps the surface fill (stays visible) but swaps to the brass
