@@ -49,10 +49,25 @@ logger = structlog.stdlib.get_logger()
 
 # Phase 2a+2b+2c default layout: 7 finance tiles at the same grid coords as
 # ``emptyDashboardWidget`` defaults in ``frontend/lib/dashboard/widget-types.ts``.
-# Row 1 (y=0): on_track hero bar (full width).
-# Row 2 (y=3): accounts list (left) + account forecast (right).
-# Row 3 (y=8): spending donut + budget bars + forecast-by-category bars.
-# Row 4 (y=13): recent-transactions table (full width).
+# Row 1 (y=0):  on_track hero bar (full width).
+# Row 2 (y=4):  accounts list (left) + account forecast (right).
+# Row 3 (y=13): spending donut + budget bars + forecast-by-category bars.
+# Row 4 (y=19): recent-transactions table (full width).
+#
+# Heights are sized so every tile shows ALL its default content WITHOUT the
+# card's ``overflow-hidden`` clipping it (the Reset-to-default contract:
+# "keep the original tiles properly resized to accommodate all the original
+# information"). The canvas renders each tile at ``h*60 + (h-1)*12`` px
+# (rowHeight 60 + 12px row margin — see ``frontend/components/reports/Canvas.tsx``).
+# Content floors that drove these heights:
+#   on_track       h4  → 276px (3-stat hero + "View details" link, ~216px)
+#   accounts       h9  → 636px (~8-account list, ~57px/row)
+#   account_fcast  h9  → 636px (eyebrow hero + ~8-row month-end table, ~552px)
+#   spending       h6  → 420px (160px donut beside a ~8-row category legend)
+#   budget         h6  → 420px (bar chart + header)
+#   fcast_category h6  → 420px (bar chart + header)
+#   recent_txns    h11 → 780px (10-row default page + header + sort row + pager, ~714px)
+# Keep these IN SYNC with the frontend ``DASHBOARD_WIDGET_DEFAULTS``.
 # dash_* types require the dashboard-specific validator (see schemas/dashboard.py);
 # the strict reports validator does NOT accept them.
 DEFAULT_DASHBOARD_LAYOUT: dict = {
@@ -62,49 +77,49 @@ DEFAULT_DASHBOARD_LAYOUT: dict = {
             "id": "default-on-track",
             "type": "dash_on_track",
             "title": "On Track",
-            "grid": {"x": 0, "y": 0, "w": 12, "h": 3},
+            "grid": {"x": 0, "y": 0, "w": 12, "h": 4},
             "config": {},
         },
         {
             "id": "default-accounts",
             "type": "dash_accounts",
             "title": "Accounts",
-            "grid": {"x": 0, "y": 3, "w": 4, "h": 5},
+            "grid": {"x": 0, "y": 4, "w": 4, "h": 9},
             "config": {},
         },
         {
             "id": "default-account-forecast",
             "type": "dash_account_forecast",
             "title": "Month-End Forecast",
-            "grid": {"x": 4, "y": 3, "w": 8, "h": 5},
+            "grid": {"x": 4, "y": 4, "w": 8, "h": 9},
             "config": {},
         },
         {
             "id": "default-spending",
             "type": "dash_spending",
             "title": "Spending by Category",
-            "grid": {"x": 0, "y": 8, "w": 4, "h": 5},
+            "grid": {"x": 0, "y": 13, "w": 4, "h": 6},
             "config": {},
         },
         {
             "id": "default-budget",
             "type": "dash_budget",
             "title": "Budget Progress",
-            "grid": {"x": 4, "y": 8, "w": 4, "h": 5},
+            "grid": {"x": 4, "y": 13, "w": 4, "h": 6},
             "config": {},
         },
         {
             "id": "default-forecast-category",
             "type": "dash_forecast_category",
             "title": "Forecast by Category",
-            "grid": {"x": 8, "y": 8, "w": 4, "h": 5},
+            "grid": {"x": 8, "y": 13, "w": 4, "h": 6},
             "config": {},
         },
         {
             "id": "default-recent-transactions",
             "type": "dash_recent_transactions",
             "title": "Recent Transactions",
-            "grid": {"x": 0, "y": 13, "w": 12, "h": 9},
+            "grid": {"x": 0, "y": 19, "w": 12, "h": 11},
             "config": {},
         },
     ],

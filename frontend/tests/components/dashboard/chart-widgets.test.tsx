@@ -433,19 +433,19 @@ describe("ForecastBarsWidget", () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe("emptyDashboardWidget — 3 new chart tile types", () => {
-  it("dash_spending returns correct grid {x:0,y:8,w:4,h:5}", () => {
+  it("dash_spending returns correct grid {x:0,y:13,w:4,h:6}", () => {
     const w = emptyDashboardWidget("dash_spending", "ws");
-    expect(w.grid).toEqual({ x: 0, y: 8, w: 4, h: 5 });
+    expect(w.grid).toEqual({ x: 0, y: 13, w: 4, h: 6 });
   });
 
-  it("dash_budget returns correct grid {x:4,y:8,w:4,h:5}", () => {
+  it("dash_budget returns correct grid {x:4,y:13,w:4,h:6}", () => {
     const w = emptyDashboardWidget("dash_budget", "wb");
-    expect(w.grid).toEqual({ x: 4, y: 8, w: 4, h: 5 });
+    expect(w.grid).toEqual({ x: 4, y: 13, w: 4, h: 6 });
   });
 
-  it("dash_forecast_category returns correct grid {x:8,y:8,w:4,h:5}", () => {
+  it("dash_forecast_category returns correct grid {x:8,y:13,w:4,h:6}", () => {
     const w = emptyDashboardWidget("dash_forecast_category", "wf");
-    expect(w.grid).toEqual({ x: 8, y: 8, w: 4, h: 5 });
+    expect(w.grid).toEqual({ x: 8, y: 13, w: 4, h: 6 });
   });
 
   const NEW_TYPES: DashboardWidgetType[] = [
