@@ -10,7 +10,7 @@ import Spinner from "@/components/ui/Spinner";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { formatAmount, todayISO } from "@/lib/format";
-import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle, badgeError } from "@/lib/styles";
+import { input, label, btnPrimary, btnSecondary, card, cardHeader, cardTitle, error as errorCls, pageTitle, badgeError } from "@/lib/styles";
 import dynamic from "next/dynamic";
 import type { BillingPeriod, Budget, Category } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -240,7 +240,7 @@ export default function BudgetsPage() {
           {isCurrentPeriod && (
             <button
               onClick={handleFromForecast}
-              className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
+              className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
             >
               From Forecast
             </button>
@@ -250,7 +250,7 @@ export default function BudgetsPage() {
               <span className="inline-flex items-center gap-1">
                 <button
                   onClick={() => setRebalanceOpen(true)}
-                  className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
+                  className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
                   data-testid="suggest-rebalance-btn"
                 >
                   Suggest rebalance
@@ -260,7 +260,7 @@ export default function BudgetsPage() {
             ) : (
               <SetUpAiCta
                 role={role}
-                className="min-h-[44px] sm:min-h-0 rounded-md border border-border-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-overlay"
+                className={`${btnSecondary} min-h-[44px] sm:min-h-0`}
               />
             )
           )}
