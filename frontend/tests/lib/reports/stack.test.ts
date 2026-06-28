@@ -140,4 +140,20 @@ describe("mobileStackHeight — dash_* widgets", () => {
       expect(h(type)).toBeUndefined();
     }
   });
+
+  it("content tiles stay natural-height for ANY grid.h (no height-thresholded clamp creeps back)", () => {
+    // The fix is height-INDEPENDENT (unconditional undefined). Pin that across
+    // grid extremes so a future partial clamp that only bites tall tiles —
+    // exactly the original clipping bug — can't slip through on the default h=5.
+    const content = [
+      "dash_on_track",
+      "dash_accounts",
+      "dash_account_forecast",
+      "dash_recent_transactions",
+    ];
+    for (const type of content) {
+      expect(mobileStackHeight(makeWidget(type, 1))).toBeUndefined();
+      expect(mobileStackHeight(makeWidget(type, 20))).toBeUndefined();
+    }
+  });
 });
