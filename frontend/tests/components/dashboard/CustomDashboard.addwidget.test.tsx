@@ -260,6 +260,31 @@ describe("CustomDashboard — Add-widget picker", () => {
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
   });
 
+  it("removes a tile via its Remove button in Customize mode", async () => {
+    render(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Enter Customize mode — the seeded On Track tile renders with a Remove
+    // button (WidgetShell only shows it when onRemove is wired).
+    const customizeBtn = await screen.findByRole("button", { name: /customize/i });
+    act(() => { fireEvent.click(customizeBtn); });
+    expect(screen.getByTestId("widget-dash_on_track")).toBeInTheDocument();
+
+    // Click Remove on the (only) tile.
+    const removeBtn = screen.getByRole("button", { name: /remove widget/i });
+    act(() => { fireEvent.click(removeBtn); });
+
+    // The tile is gone and the canvas is dirty (Save enabled).
+    expect(
+      screen.queryByTestId("widget-dash_on_track"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+  });
+
   it("does NOT show the Add-widget button when NOT in Customize mode", async () => {
     render(<CustomDashboard />);
 

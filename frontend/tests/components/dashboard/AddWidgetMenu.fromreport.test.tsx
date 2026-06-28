@@ -3,7 +3,7 @@
  *
  * Verifies that when the user navigates the "From a report" path in the
  * AddWidgetMenu they can pick a saved report, see its widgets listed, and
- * clone the chosen widget via onAddCloned (with a fresh id).
+ * hand the RAW chosen widget to onAddCloned (the parent clones it once).
  *
  * Sankey widgets must NOT be filtered out — the dashboard backend validator
  * (Task 1) now accepts "sankey".
@@ -74,12 +74,11 @@ beforeEach(() => {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 describe("AddWidgetMenu — From a report", () => {
-  it("lists a report's widgets and clones the chosen one (incl. sankey)", async () => {
+  it("lists a report's widgets and hands the raw chosen one to onAddCloned (incl. sankey)", async () => {
     const onAddCloned = vi.fn();
     render(
       <AddWidgetMenu
         open
-        existing={[]}
         onClose={() => {}}
         onAddDashTile={() => {}}
         onAddCloned={onAddCloned}
@@ -116,8 +115,9 @@ describe("AddWidgetMenu — From a report", () => {
 
     const arg = onAddCloned.mock.calls[0][0];
     expect(arg.type).toBe("sankey");
-    // Clone must have a fresh id — not the source widget's id.
-    expect(arg.id).not.toBe("w_src_sankey");
+    // The menu passes the RAW report widget (same id); the parent
+    // (addClonedWidget) is what assigns a fresh id + grid placement.
+    expect(arg.id).toBe("w_src_sankey");
   });
 
   it("shows 'You have no saved reports yet.' when listReports returns empty", async () => {
@@ -126,7 +126,6 @@ describe("AddWidgetMenu — From a report", () => {
     render(
       <AddWidgetMenu
         open
-        existing={[]}
         onClose={() => {}}
         onAddDashTile={() => {}}
         onAddCloned={() => {}}
@@ -155,7 +154,6 @@ describe("AddWidgetMenu — From a report", () => {
     render(
       <AddWidgetMenu
         open
-        existing={[]}
         onClose={() => {}}
         onAddDashTile={() => {}}
         onAddCloned={() => {}}
@@ -186,7 +184,6 @@ describe("AddWidgetMenu — From a report", () => {
     render(
       <AddWidgetMenu
         open
-        existing={[]}
         onClose={() => {}}
         onAddDashTile={() => {}}
         onAddCloned={() => {}}
@@ -215,7 +212,6 @@ describe("AddWidgetMenu — From a report", () => {
     render(
       <AddWidgetMenu
         open
-        existing={[]}
         onClose={() => {}}
         onAddDashTile={() => {}}
         onAddCloned={() => {}}
