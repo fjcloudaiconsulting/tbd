@@ -141,7 +141,7 @@ describe("emptyDashboardWidget", () => {
 
   it("returns the full-width hero grid for dash_on_track", () => {
     const w = emptyDashboardWidget("dash_on_track", "w1");
-    expect(w.grid).toEqual({ x: 0, y: 0, w: 12, h: 3 });
+    expect(w.grid).toEqual({ x: 0, y: 0, w: 12, h: 4 });
   });
 
   it("returns a widget with the correct type for dash_accounts", () => {
@@ -153,7 +153,7 @@ describe("emptyDashboardWidget", () => {
 
   it("returns the left-column grid for dash_accounts", () => {
     const w = emptyDashboardWidget("dash_accounts", "w2");
-    expect(w.grid).toEqual({ x: 0, y: 3, w: 4, h: 5 });
+    expect(w.grid).toEqual({ x: 0, y: 4, w: 4, h: 9 });
   });
 
   it("returns a widget with the correct type for dash_account_forecast", () => {
@@ -165,7 +165,7 @@ describe("emptyDashboardWidget", () => {
 
   it("returns the right-column grid for dash_account_forecast", () => {
     const w = emptyDashboardWidget("dash_account_forecast", "w3");
-    expect(w.grid).toEqual({ x: 4, y: 3, w: 8, h: 5 });
+    expect(w.grid).toEqual({ x: 4, y: 4, w: 8, h: 9 });
   });
 
   it("each call returns an independent grid object (no aliasing)", () => {
