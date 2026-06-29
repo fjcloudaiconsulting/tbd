@@ -31,20 +31,19 @@ import {
   TrendingUp,
 } from "lucide-react";
 
-import { cloneWidgetForDashboard } from "@/lib/dashboard/clone";
 import { listReports } from "@/lib/reports/api";
 import type { ReportSummary, Widget } from "@/lib/reports/types";
-import type { DashboardWidget, DashboardWidgetType } from "@/lib/dashboard/widget-types";
+import type { DashboardWidgetType } from "@/lib/dashboard/widget-types";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** Widgets already present on the canvas — used by cloneWidgetForDashboard for placement. */
-  existing: Array<Widget | DashboardWidget>;
   /** Called when the user picks a dash_* tile to add. */
   onAddDashTile: (type: DashboardWidgetType) => void;
   /**
-   * Called when the user picks a report widget to clone onto the dashboard.
+   * Called when the user picks a report widget to add. The RAW report widget
+   * is handed back; the parent clones it once (fresh id + grid placement) so
+   * placement reads the parent's current layout — see addClonedWidget.
    */
   onAddCloned: (w: Widget) => void;
 }
@@ -118,7 +117,6 @@ type View = "root" | "reports" | "widgets";
 export default function AddWidgetMenu({
   open,
   onClose,
-  existing,
   onAddDashTile,
   onAddCloned,
 }: Props) {
@@ -181,9 +179,9 @@ export default function AddWidgetMenu({
     setView("widgets");
   }
 
-  /** Clone the chosen widget and hand it back to the parent. */
+  /** Hand the raw report widget to the parent, which clones it once. */
   function pickWidget(widget: Widget) {
-    onAddCloned(cloneWidgetForDashboard(widget, existing));
+    onAddCloned(widget);
   }
 
   /** Widgets in the selected report, guarding the empty-layout case. */

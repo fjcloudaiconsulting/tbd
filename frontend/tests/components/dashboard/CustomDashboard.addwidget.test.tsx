@@ -260,6 +260,84 @@ describe("CustomDashboard — Add-widget picker", () => {
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
   });
 
+  it("removes a tile via its Remove button in Customize mode", async () => {
+    render(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Enter Customize mode — the seeded On Track tile renders with a Remove
+    // button (WidgetShell only shows it when onRemove is wired).
+    const customizeBtn = await screen.findByRole("button", { name: /customize/i });
+    act(() => { fireEvent.click(customizeBtn); });
+    expect(screen.getByTestId("widget-dash_on_track")).toBeInTheDocument();
+
+    // Click Remove on the (only) tile.
+    const removeBtn = screen.getByRole("button", { name: /remove widget/i });
+    act(() => { fireEvent.click(removeBtn); });
+
+    // The tile is gone and the canvas is dirty (Save enabled).
+    expect(
+      screen.queryByTestId("widget-dash_on_track"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+  });
+
+  it("clears the selection only when the SELECTED tile is removed", async () => {
+    // Two tiles so we can observe selection on the survivor. Pins both arms of
+    // removeWidget's `if (selectedWidgetId === widgetId) setSelectedWidgetId(null)`:
+    // removing the OTHER tile keeps the selection; removing the SELECTED tile
+    // drops it. The "keep" arm is the revert-resistant part — an unconditional
+    // clear would fail it.
+    vi.mocked(dashboardApi.getDashboard).mockResolvedValueOnce({
+      id: 1,
+      org_id: 1,
+      layout_json: {
+        version: 1,
+        widgets: [
+          { id: "w_a", type: "dash_on_track", title: "On Track", grid: { x: 0, y: 0, w: 12, h: 3 }, config: {} },
+          { id: "w_b", type: "dash_accounts", title: "Accounts", grid: { x: 0, y: 3, w: 4, h: 5 }, config: {} },
+        ],
+      },
+      canvas_filters_json: {},
+    } as never);
+
+    render(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+    const customizeBtn = await screen.findByRole("button", { name: /customize/i });
+    act(() => { fireEvent.click(customizeBtn); });
+
+    // Select tile A.
+    act(() => {
+      fireEvent.click(document.querySelector('[data-widget-shell="w_a"]')!);
+    });
+    expect(
+      document.querySelector('[data-widget-shell="w_a"]')?.getAttribute("data-selected"),
+    ).toBe("true");
+
+    // Remove the OTHER tile (B) — A must STAY selected (guard is `===`).
+    act(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: /remove widget/i })[1]);
+    });
+    expect(screen.queryByTestId("widget-dash_accounts")).not.toBeInTheDocument();
+    expect(
+      document.querySelector('[data-widget-shell="w_a"]')?.getAttribute("data-selected"),
+    ).toBe("true");
+
+    // Now remove the SELECTED tile (A) — selection clears.
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /remove widget/i }));
+    });
+    expect(screen.queryByTestId("widget-dash_on_track")).not.toBeInTheDocument();
+    expect(document.querySelector('[data-selected="true"]')).toBeNull();
+  });
+
   it("does NOT show the Add-widget button when NOT in Customize mode", async () => {
     render(<CustomDashboard />);
 
