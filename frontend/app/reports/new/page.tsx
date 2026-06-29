@@ -22,6 +22,7 @@ import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { useFilterChipState } from "@/lib/reports/use-filter-chip-state";
+import { btnCanvas } from "@/lib/styles";
 import { createReport, listTemplates } from "@/lib/reports/api";
 import { blankDraftSeed } from "@/lib/reports/draft";
 import type {
@@ -250,7 +251,7 @@ export default function ReportDraftPage() {
             <button
               type="button"
               onClick={() => setPickerOpen(true)}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+              className={btnCanvas}
               data-testid="report-draft-add-widget"
             >
               Add widget
@@ -267,7 +268,7 @@ export default function ReportDraftPage() {
             <button
               type="button"
               onClick={handleCancel}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-primary hover:bg-surface-raised"
+              className={btnCanvas}
               data-testid="report-draft-cancel"
             >
               Cancel

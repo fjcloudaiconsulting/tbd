@@ -17,6 +17,10 @@
   --theme-surface-overlay: #163157;
   --theme-border: #1a3560;
   --theme-border-subtle: #122a4a;
+  /* A more defined border for controls that must read as actionable on any
+     surface (secondary buttons). Tuned to clear WCAG 1.4.11 (>=3:1 non-text
+     contrast) against the button's surface fill, without going to an ink tone. */
+  --theme-border-strong: #5a7099;
 
   --theme-text-primary: #E6EAF0;
   --theme-text-secondary: #9ba8bd;
@@ -79,6 +83,10 @@
   --theme-surface-overlay: #f0f2f5;
   --theme-border: #dde1e8;
   --theme-border-subtle: #e8ebf0;
+  /* Defined control border (secondary buttons) — tuned to clear WCAG 1.4.11
+     (>=3:1) against the white button fill so a white chip reads as actionable
+     on the page; clearly above the hairline --theme-border. */
+  --theme-border-strong: #818ea3;
 
   --theme-text-primary: #0B1F3A;
   --theme-text-secondary: #3d5070;
@@ -139,6 +147,7 @@
   --color-surface-overlay: var(--theme-surface-overlay);
   --color-border: var(--theme-border);
   --color-border-subtle: var(--theme-border-subtle);
+  --color-border-strong: var(--theme-border-strong);
 
   --color-text-primary: var(--theme-text-primary);
   --color-text-secondary: var(--theme-text-secondary);
