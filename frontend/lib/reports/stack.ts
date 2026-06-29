@@ -39,8 +39,10 @@ const DASH_CHART_TYPES = new Set([
   "dash_spending", "dash_budget", "dash_forecast_category",
 ]);
 
-// dash_* content tiles (lists, summary cards, transaction table) need enough
-// room to show meaningful content without collapsing on mobile.
+// dash_* content tiles (lists, summary cards, transaction table) size to
+// their OWN content on mobile — like the report kpi/table widgets. They get
+// NO fixed height so a long list/table is never clipped by a clamp + the
+// cards' overflow-hidden.
 const DASH_CONTENT_TYPES = new Set([
   "dash_on_track", "dash_accounts", "dash_account_forecast", "dash_recent_transactions",
 ]);
@@ -61,9 +63,12 @@ export function mobileStackHeight(widget: Widget | DashboardWidget): number | un
     return Math.min(Math.max(base, 220), 460);
   }
 
-  // dash_* content tiles: clamp to [200, 520] so they don't collapse on mobile
+  // dash_* content tiles: natural height (undefined) so the stack wrapper is
+  // auto-height and the card grows to fit ALL its content. A fixed clamp here
+  // combined with the cards' `overflow-hidden` was cutting tall lists/tables
+  // mid-row on mobile.
   if (DASH_CONTENT_TYPES.has(widget.type)) {
-    return Math.min(Math.max(base, 200), 520);
+    return undefined;
   }
 
   // Report chart widgets
