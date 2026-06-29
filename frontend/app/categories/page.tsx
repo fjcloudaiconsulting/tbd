@@ -533,7 +533,12 @@ export default function CategoriesPage() {
           onDragEnd={handleDragEnd}
           onDragCancel={handleDragCancel}
         >
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start" data-testid="categories-master-grid">
+        {/* Masonry via CSS multi-column: cards have very different heights
+            (a master with 1 sub vs 20), so a 2-col grid with items-start left
+            big gaps under short cards. Multi-column packs each column by
+            height; `[&>*]:break-inside-avoid` keeps a card whole, `[&>*]:mb-4`
+            is the vertical gap (gap-4 is the column gap). */}
+        <div className="columns-1 gap-4 lg:columns-2 [&>*]:mb-4 [&>*]:break-inside-avoid" data-testid="categories-master-grid">
           {masters.map((master) => {
             const subs = childrenOf(master.id);
             const Icon = (master.slug && CATEGORY_ICONS[master.slug]) || Tag;
