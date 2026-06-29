@@ -31,7 +31,7 @@ export default function DashboardPeriodNav() {
   return (
     <div
       data-testid="dashboard-period-nav"
-      className="mb-4 flex items-center justify-between"
+      className="mb-4 flex flex-wrap items-center justify-between gap-y-2"
     >
       <div className="flex items-center gap-2">
         {/* ◀ Previous period (higher index = older) */}

@@ -80,7 +80,7 @@ export default function CustomDashboard() {
 
   // Accounts SWR (shared cache with the reports surface) — used to derive
   // the org display currency so money widgets format correctly.
-  const { accounts } = useFilterChipState(setSelectedWidgetId);
+  const { accounts, categories } = useFilterChipState(setSelectedWidgetId);
   const currency = reportCurrency(accounts);
 
   // Editing is desktop-only (mirrors reports editor).
@@ -160,6 +160,18 @@ export default function CustomDashboard() {
     setSelectedWidgetId(cloneId!);
     setDirty(true);
     setPickerOpen(false);
+  }
+
+  // Remove a tile in Customize mode (mirrors the reports editor). Clears the
+  // selection if the removed tile was selected and marks the canvas dirty so
+  // the change is saved on Save.
+  function removeWidget(widgetId: string) {
+    setLayout((prev) => ({
+      ...prev,
+      widgets: prev.widgets.filter((w) => w.id !== widgetId),
+    }));
+    if (selectedWidgetId === widgetId) setSelectedWidgetId(null);
+    setDirty(true);
   }
 
   async function handleResetConfirm() {
@@ -370,8 +382,9 @@ export default function CustomDashboard() {
                     onSelect={() => setSelectedWidgetId(w.id)}
                     widget={w}
                     canvasFilters={canvasFilters}
-                    accounts={[]}
-                    categories={[]}
+                    accounts={accounts}
+                    categories={categories}
+                    onRemove={() => removeWidget(w.id)}
                     onSelectFilters={() => {}}
                   >
                     {renderDashboardWidget(
@@ -390,7 +403,6 @@ export default function CustomDashboard() {
           <AddWidgetMenu
             open={pickerOpen}
             onClose={() => setPickerOpen(false)}
-            existing={layout.widgets}
             onAddDashTile={addDashTile}
             onAddCloned={addClonedWidget}
           />
