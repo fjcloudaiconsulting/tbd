@@ -379,19 +379,86 @@ async def test_default_layout_contains_seven_dash_tiles(session_factory):
 
     assert len(types) == 7
 
-    # Verify grid coords match emptyDashboardWidget defaults
+    # Verify grid coords match emptyDashboardWidget defaults. Heights are
+    # sized so each tile fully shows its default content WITHOUT the card's
+    # overflow-hidden clipping it (Reset-to-default sizing contract).
     by_type = {w["type"]: w for w in widgets}
     # Row 1
-    assert by_type["dash_on_track"]["grid"] == {"x": 0, "y": 0, "w": 12, "h": 3}
+    assert by_type["dash_on_track"]["grid"] == {"x": 0, "y": 0, "w": 12, "h": 4}
     # Row 2
-    assert by_type["dash_accounts"]["grid"] == {"x": 0, "y": 3, "w": 4, "h": 5}
-    assert by_type["dash_account_forecast"]["grid"] == {"x": 4, "y": 3, "w": 8, "h": 5}
+    assert by_type["dash_accounts"]["grid"] == {"x": 0, "y": 4, "w": 4, "h": 9}
+    assert by_type["dash_account_forecast"]["grid"] == {"x": 4, "y": 4, "w": 8, "h": 9}
     # Row 3
-    assert by_type["dash_spending"]["grid"] == {"x": 0, "y": 8, "w": 4, "h": 5}
-    assert by_type["dash_budget"]["grid"] == {"x": 4, "y": 8, "w": 4, "h": 5}
-    assert by_type["dash_forecast_category"]["grid"] == {"x": 8, "y": 8, "w": 4, "h": 5}
+    assert by_type["dash_spending"]["grid"] == {"x": 0, "y": 13, "w": 4, "h": 6}
+    assert by_type["dash_budget"]["grid"] == {"x": 4, "y": 13, "w": 4, "h": 6}
+    assert by_type["dash_forecast_category"]["grid"] == {"x": 8, "y": 13, "w": 4, "h": 6}
     # Row 4
-    assert by_type["dash_recent_transactions"]["grid"] == {"x": 0, "y": 13, "w": 12, "h": 9}
+    assert by_type["dash_recent_transactions"]["grid"] == {"x": 0, "y": 19, "w": 12, "h": 11}
+
+
+# Minimum grid heights (in rows) each default tile needs so its default
+# content is fully visible under the card's overflow-hidden. The canvas
+# renders a tile at h*60 + (h-1)*12 px (rowHeight 60 + 12px margin). These
+# floors back the Reset-to-default "accommodate all the original information"
+# contract; the seed may be >= these but never below.
+_MIN_CONTENT_H = {
+    "dash_on_track": 4,            # 3-stat hero + details link (~216px → 276px)
+    "dash_accounts": 9,           # ~8-account list (~456px) with headroom
+    "dash_account_forecast": 9,   # eyebrow hero + ~8-row table (~552px)
+    "dash_spending": 6,           # donut + ~8-row category legend
+    "dash_budget": 6,             # bar chart + header
+    "dash_forecast_category": 6,  # bar chart + header
+    "dash_recent_transactions": 11,  # 10-row page + header + sort + pager (~714px)
+}
+
+
+@pytest.mark.asyncio
+async def test_default_tile_heights_clear_content_floor(session_factory):
+    """Every default tile's grid height must be at least its content floor.
+
+    Guards the bug where Reset-to-default produced tiles too small for their
+    content (cards cut off; the recent-transactions tile grew an inner
+    scrollbar). A future seed tweak that shrinks a tile below its content
+    floor must fail here.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/dashboard/default")
+    assert res.status_code == 200, res.text
+    widgets = res.json()["layout_json"]["widgets"]
+    by_type = {w["type"]: w for w in widgets}
+    for tile_type, min_h in _MIN_CONTENT_H.items():
+        assert by_type[tile_type]["grid"]["h"] >= min_h, (
+            f"{tile_type} h={by_type[tile_type]['grid']['h']} < content floor {min_h}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_default_layout_tiles_do_not_overlap(session_factory):
+    """The 7 default tiles must tile the 12-col grid without overlapping.
+
+    Resizing the seed heights (this fix) must keep the rows stacked and
+    collision-free so the literal layout reads top-to-bottom as authored.
+    """
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.get("/api/v1/dashboard/default")
+    assert res.status_code == 200, res.text
+    widgets = res.json()["layout_json"]["widgets"]
+
+    # Build the set of occupied (col, row) cells; assert none collide and
+    # all stay within the 12-column grid.
+    occupied: set[tuple[int, int]] = set()
+    for w in widgets:
+        g = w["grid"]
+        assert g["x"] + g["w"] <= 12, f"{w['type']} overflows 12 cols"
+        for col in range(g["x"], g["x"] + g["w"]):
+            for row in range(g["y"], g["y"] + g["h"]):
+                cell = (col, row)
+                assert cell not in occupied, f"{w['type']} overlaps at {cell}"
+                occupied.add(cell)
 
 
 # ─── (i) PATCH accepts dash_* layout → 200; round-trips verbatim ─────────────

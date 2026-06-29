@@ -32,40 +32,51 @@ export interface DashboardWidget {
   config: Record<string, never>;
 }
 
+// Default grid placement + size for each dashboard tile. Heights are sized so
+// a tile shows ALL its default content WITHOUT the card's `overflow-hidden`
+// clipping it. The canvas renders each tile at `h*60 + (h-1)*12` px (rowHeight
+// 60 + 12px row margin — see components/reports/Canvas.tsx). These MUST stay in
+// sync with the backend DEFAULT_DASHBOARD_LAYOUT in routers/dashboard.py — that
+// backend seed is the source of truth for Reset-to-default; this table backs the
+// per-type "Add widget" placement, and a test pins the two to identical grids.
 const DASHBOARD_WIDGET_DEFAULTS: Record<
   DashboardWidgetType,
   { title: string; grid: WidgetGrid }
 > = {
   dash_on_track: {
     title: "On Track",
-    grid: { x: 0, y: 0, w: 12, h: 3 },
+    // h=4 (~276px) clears the 3-stat hero + "View details" link (~216px).
+    grid: { x: 0, y: 0, w: 12, h: 4 },
   },
   dash_accounts: {
     title: "Accounts",
-    grid: { x: 0, y: 3, w: 4, h: 5 },
+    // h=9 (~636px) fits an ~8-account list (~57px/row) without clipping.
+    grid: { x: 0, y: 4, w: 4, h: 9 },
   },
   dash_account_forecast: {
     title: "Month-End Forecast",
-    grid: { x: 4, y: 3, w: 8, h: 5 },
+    // h=9 (~636px) fits the eyebrow hero + ~8-row month-end table (~552px).
+    grid: { x: 4, y: 4, w: 8, h: 9 },
   },
   dash_spending: {
     title: "Spending by Category",
-    grid: { x: 0, y: 8, w: 4, h: 5 },
+    // h=6 (~420px) fits the 160px donut beside a ~8-row category legend.
+    grid: { x: 0, y: 13, w: 4, h: 6 },
   },
   dash_budget: {
     title: "Budget Progress",
-    grid: { x: 4, y: 8, w: 4, h: 5 },
+    grid: { x: 4, y: 13, w: 4, h: 6 },
   },
   dash_forecast_category: {
     title: "Forecast by Category",
-    grid: { x: 8, y: 8, w: 4, h: 5 },
+    grid: { x: 8, y: 13, w: 4, h: 6 },
   },
   dash_recent_transactions: {
     title: "Recent Transactions",
-    // h=9 (~636px) fits the ~10-row page without overflow; the widget's row
-    // region scrolls if resized smaller. Keep in sync with the backend
-    // DEFAULT_DASHBOARD_LAYOUT in routers/dashboard.py.
-    grid: { x: 0, y: 13, w: 12, h: 9 },
+    // h=11 (~780px) fits the 10-row default page + header + sort row + pager
+    // (~714px) without an inner scrollbar; the row region scrolls if resized
+    // smaller. Keep in sync with the backend DEFAULT_DASHBOARD_LAYOUT.
+    grid: { x: 0, y: 19, w: 12, h: 11 },
   },
 };
 

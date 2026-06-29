@@ -144,18 +144,23 @@ const DASHBOARD_RESPONSE = {
   canvas_filters_json: {},
 };
 
-/** The 7-tile seed that getDefaultDashboard resolves to. */
+/**
+ * The 7-tile seed that getDefaultDashboard resolves to. Grid heights match
+ * the canonical backend DEFAULT_DASHBOARD_LAYOUT (routers/dashboard.py): each
+ * tile is sized to fully show its default content without the card's
+ * overflow-hidden clipping it.
+ */
 const DEFAULT_SEED = {
   layout_json: {
     version: 1,
     widgets: [
-      { id: "default-on-track",           type: "dash_on_track",            title: "On Track",               grid: { x: 0, y: 0,  w: 12, h: 3 }, config: {} },
-      { id: "default-accounts",           type: "dash_accounts",            title: "Accounts",               grid: { x: 0, y: 3,  w: 4,  h: 5 }, config: {} },
-      { id: "default-account-forecast",   type: "dash_account_forecast",    title: "Month-End Forecast",     grid: { x: 4, y: 3,  w: 8,  h: 5 }, config: {} },
-      { id: "default-spending",           type: "dash_spending",            title: "Spending by Category",   grid: { x: 0, y: 8,  w: 4,  h: 5 }, config: {} },
-      { id: "default-budget",             type: "dash_budget",              title: "Budget Progress",        grid: { x: 4, y: 8,  w: 4,  h: 5 }, config: {} },
-      { id: "default-forecast-category",  type: "dash_forecast_category",   title: "Forecast by Category",  grid: { x: 8, y: 8,  w: 4,  h: 5 }, config: {} },
-      { id: "default-recent-transactions", type: "dash_recent_transactions", title: "Recent Transactions",   grid: { x: 0, y: 13, w: 12, h: 6 }, config: {} },
+      { id: "default-on-track",           type: "dash_on_track",            title: "On Track",               grid: { x: 0, y: 0,  w: 12, h: 4 },  config: {} },
+      { id: "default-accounts",           type: "dash_accounts",            title: "Accounts",               grid: { x: 0, y: 4,  w: 4,  h: 9 },  config: {} },
+      { id: "default-account-forecast",   type: "dash_account_forecast",    title: "Month-End Forecast",     grid: { x: 4, y: 4,  w: 8,  h: 9 },  config: {} },
+      { id: "default-spending",           type: "dash_spending",            title: "Spending by Category",   grid: { x: 0, y: 13, w: 4,  h: 6 },  config: {} },
+      { id: "default-budget",             type: "dash_budget",              title: "Budget Progress",        grid: { x: 4, y: 13, w: 4,  h: 6 },  config: {} },
+      { id: "default-forecast-category",  type: "dash_forecast_category",   title: "Forecast by Category",  grid: { x: 8, y: 13, w: 4,  h: 6 },  config: {} },
+      { id: "default-recent-transactions", type: "dash_recent_transactions", title: "Recent Transactions",   grid: { x: 0, y: 19, w: 12, h: 11 }, config: {} },
     ],
   },
   canvas_filters_json: {},
