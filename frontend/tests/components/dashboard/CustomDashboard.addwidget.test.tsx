@@ -338,6 +338,41 @@ describe("CustomDashboard — Add-widget picker", () => {
     expect(document.querySelector('[data-selected="true"]')).toBeNull();
   });
 
+  it("guards Done with unsaved changes; Discard reverts to the saved layout", async () => {
+    render(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Enter Customize and add a tile → dirty (saved layout is on_track only).
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /customize/i })); });
+    act(() => { fireEvent.click(screen.getByTestId("custom-dashboard-add-widget")); });
+    act(() => {
+      fireEvent.click(screen.getByTestId("add-widget-menu-option-dash_accounts"));
+    });
+    await screen.findByTestId("widget-dash_accounts");
+
+    // Done with unsaved changes opens the guard instead of exiting.
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /^done$/i })); });
+    expect(screen.getByText(/discard unsaved changes/i)).toBeInTheDocument();
+
+    // Keep editing → stays in Customize, tile remains.
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /keep editing/i })); });
+    expect(screen.getByTestId("widget-dash_accounts")).toBeInTheDocument();
+
+    // Done → Discard → exits Customize AND reverts to the saved layout.
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /^done$/i })); });
+    act(() => { fireEvent.click(screen.getByRole("button", { name: /discard changes/i })); });
+    expect(screen.queryByTestId("widget-dash_accounts")).not.toBeInTheDocument();
+    expect(screen.getByTestId("widget-dash_on_track")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /customize/i })).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("custom-dashboard-add-widget"),
+    ).not.toBeInTheDocument();
+  });
+
   it("does NOT show the Add-widget button when NOT in Customize mode", async () => {
     render(<CustomDashboard />);
 
