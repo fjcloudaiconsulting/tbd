@@ -130,18 +130,21 @@ describe("CategoriesPage — master list layout (2-col grid)", () => {
     setupApi();
   });
 
-  it("master-grid container has correct responsive classes and ≥2 master cards", async () => {
+  it("master-grid uses a responsive masonry (multi-column) layout with ≥2 master cards", async () => {
     render(<CategoriesPage />);
     // Wait for data to load (any master name appears).
     await waitFor(() => expect(screen.getByText("Food")).toBeInTheDocument());
 
     const grid = screen.getByTestId("categories-master-grid");
 
-    // Word-boundary matches to avoid false positives (e.g. grid-cols-1 inside lg:grid-cols-2).
-    expect(grid.className).toMatch(/\blg:grid-cols-2\b/);
-    expect(grid.className).toMatch(/\bgrid-cols-1\b/);
-    expect(grid.className).toMatch(/\bgrid\b/);
-    expect(grid.className).toMatch(/\bitems-start\b/);
+    // Masonry via CSS multi-column: 1 column, 2 at lg. Cards are kept whole
+    // across columns and the per-child margin provides the vertical gap.
+    expect(grid.className).toMatch(/\bcolumns-1\b/);
+    expect(grid.className).toMatch(/\blg:columns-2\b/);
+    expect(grid.className).toMatch(/break-inside-avoid/);
+    // The old fixed 2-col grid left big gaps under short cards — guard against
+    // a regression back to it.
+    expect(grid.className).not.toMatch(/\bgrid-cols-/);
 
     // Each master card has data-testid="master-row-{id}" and is a direct child.
     const masterRows = grid.querySelectorAll("[data-testid^='master-row-']");
