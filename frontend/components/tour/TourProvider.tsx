@@ -39,6 +39,10 @@ import {
   pagePrefix,
   routeForPrefix,
 } from "@/lib/help/tour";
+import {
+  safeTourStorageGet,
+  safeTourStorageRemove,
+} from "@/lib/help/tourStorage";
 
 import {
   TourContext,
@@ -56,21 +60,19 @@ function DashboardTourAutoStart({ api }: { api: TourApi }) {
     //   1. The context pending start (storage-independent). Set by the
     //      replay button / RestartTourCard; survives client nav and
     //      Safari private mode where sessionStorage writes throw.
-    //   2. The legacy sessionStorage flag, for the case where a full
-    //      page reload happened between the click and this mount (the
-    //      context state would have been lost).
+    //   2. The stored flag (via the safe accessor), for the case where a
+    //      full page reload happened between the click and this mount (the
+    //      context state would have been lost). The safe accessor reads
+    //      sessionStorage when available and an in-memory fallback when it
+    //      is not, so this path also works within a Safari-private-mode
+    //      session where sessionStorage throws.
     // We consume whichever is present, clear BOTH, and start once.
     let steps: string[] | null = null;
 
     if (pendingStart && pendingStart.length) {
       steps = pendingStart;
     } else {
-      let flag: string | null = null;
-      try {
-        flag = window.sessionStorage.getItem(TOUR_FLAG_KEY);
-      } catch {
-        flag = null;
-      }
+      const flag = safeTourStorageGet(TOUR_FLAG_KEY);
       if (flag === TOUR_FLAG_VALUE_EXTENDED) {
         steps = EXTENDED_TOUR_STEPS;
       } else if (flag === TOUR_FLAG_VALUE_DASHBOARD) {
@@ -80,13 +82,10 @@ function DashboardTourAutoStart({ api }: { api: TourApi }) {
 
     if (!steps) return;
 
-    // Clear the legacy flag regardless of which source we used so a
-    // later dashboard mount cannot start a second time.
-    try {
-      window.sessionStorage.removeItem(TOUR_FLAG_KEY);
-    } catch {
-      // best-effort
-    }
+    // Clear the flag regardless of which source we used so a later
+    // dashboard mount cannot start a second time. Clears both the
+    // sessionStorage entry and the in-memory fallback.
+    safeTourStorageRemove(TOUR_FLAG_KEY);
 
     // Defer one tick so the dashboard's TourAnchor DOM is mounted
     // before the engine measures positions. start() clears the context

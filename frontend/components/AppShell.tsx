@@ -34,6 +34,7 @@ import {
   TOUR_FLAG_KEY,
   TOUR_FLAG_VALUE_EXTENDED,
 } from "@/lib/help/tour";
+import { safeTourStorageSet } from "@/lib/help/tourStorage";
 import { useTour } from "@/components/tour/useTour";
 import AppShellAddTransactionCta, {
   shouldShowAddTransactionCta,
@@ -539,21 +540,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                   // state survives the client navigation to /dashboard
                   // and works even in Safari private mode.
                   tour.requestStart(EXTENDED_TOUR_STEPS);
-                  // Secondary fallback: the sessionStorage flag still
-                  // covers a full page reload between this click and the
-                  // dashboard mount (which would drop the context
-                  // state). DashboardTourAutoStart consumes whichever
+                  // Secondary fallback: the stored flag still covers a
+                  // full page reload between this click and the dashboard
+                  // mount (which would drop the context state).
+                  // safeTourStorageSet writes sessionStorage when it is
+                  // available and an in-memory fallback when it is not
+                  // (Safari private mode, disabled storage), so it never
+                  // throws. DashboardTourAutoStart consumes whichever
                   // source is present, exactly once.
-                  try {
-                    window.sessionStorage.setItem(
-                      TOUR_FLAG_KEY,
-                      TOUR_FLAG_VALUE_EXTENDED,
-                    );
-                  } catch {
-                    // sessionStorage unavailable (Safari private mode,
-                    // disabled storage). The context path above carries
-                    // the start, so the tour still runs.
-                  }
+                  safeTourStorageSet(TOUR_FLAG_KEY, TOUR_FLAG_VALUE_EXTENDED);
                   setUserExpanded(false);
                   setSidebarOpen(false);
                   router.push("/dashboard");
