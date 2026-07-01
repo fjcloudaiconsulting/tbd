@@ -105,6 +105,25 @@ function setupApiFetch(txs: ReturnType<typeof makeTx>[]) {
   });
 }
 
+// Open a row's inline edit form. The list re-renders once as the initial load
+// settles (loadTransactions re-fires when `periods` resolves), which can detach
+// the Edit button between query and click under CI CPU load and leave the form
+// unopened. Retry the click on a FRESH node until the edit form (its Description
+// input) actually mounts. Once open, the row's Edit button is gone, so key off
+// Description. Idempotent: re-running startEdit re-seeds the same fields, and it
+// self-terminates the moment Description appears.
+async function openEditForm(editName: RegExp) {
+  await waitFor(
+    () => {
+      if (screen.queryAllByLabelText("Description").length > 0) return;
+      const btns = screen.queryAllByRole("button", { name: editName });
+      if (btns.length > 0) fireEvent.click(btns[0]);
+      throw new Error("edit form not open yet");
+    },
+    { timeout: 8000 },
+  );
+}
+
 describe("TransactionsPage — transfer wiring (Task D7)", () => {
   const useAuthMock = vi.mocked(useAuth);
 
@@ -194,14 +213,9 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     // visible; the partner (id 11) is hidden because 11 > 10.
     await screen.findAllByText("Transfer out");
 
-    // Wait for the Edit button to render. The page loads transactions twice
-    // because the loadTransactions effect depends on `periods`, so the action
-    // column can lag the row text by one commit.
-    const editButtons = await screen.findAllByRole("button", { name: /^Edit:/ });
-    expect(editButtons.length).toBeGreaterThan(0);
-
-    // Click Edit on the visible linked row (desktop + mobile each render one).
-    fireEvent.click(editButtons[0]);
+    // Open the inline edit form on the visible linked row (desktop + mobile
+    // each render one). Retries the click across the initial-load settle.
+    await openEditForm(/^Edit: Transfer out$/);
 
     // Mirror-amount notice should now render (one for desktop, one for mobile).
     const notices = await screen.findAllByText(/Changes to amount apply to both rows/i);
@@ -242,7 +256,7 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
         /only accept categories that work for both income and expense/i
       );
     });
-  });
+  }, 20000);
 
   it("Saving an edit on a linked row omits 'type' from the PUT body", async () => {
     const expenseLeg = makeTx({
@@ -261,15 +275,12 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
 
     await screen.findAllByText("Linked out");
 
-    // Wait for the Edit button to render before clicking it.
-    const editButtons = await screen.findAllByRole("button", { name: /^Edit:/ });
-    expect(editButtons.length).toBeGreaterThan(0);
+    // Open the inline edit form on the visible (lower-id) linked row, retrying
+    // the click across the initial-load settle re-render.
+    await openEditForm(/^Edit: Linked out$/);
 
-    // Open edit on the visible (lower-id) linked row.
-    fireEvent.click(editButtons[0]);
-
-    // Wait for the edit form to render its Description input.
-    const descInputs = await screen.findAllByLabelText("Description");
+    // The edit form's Description input is now mounted.
+    const descInputs = screen.getAllByLabelText("Description");
     expect(descInputs.length).toBeGreaterThan(0);
 
     // Change description to something different.
@@ -301,7 +312,7 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     const body = JSON.parse((putCall[1] as RequestInit).body as string);
     expect(body).not.toHaveProperty("type");
     expect(body.description).toBe("Linked out edited");
-  });
+  }, 20000);
 
   it("Editing a regular row keeps the plain Category label and no transfer helper text", async () => {
     const tx = makeTx({
@@ -315,9 +326,8 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
 
     await screen.findAllByText("Groceries run");
 
-    const editButtons = await screen.findAllByRole("button", { name: /^Edit: Groceries run$/i });
-    expect(editButtons.length).toBeGreaterThan(0);
-    fireEvent.click(editButtons[0]);
+    // Open the inline edit form, retrying the click across the load settle.
+    await openEditForm(/^Edit: Groceries run$/);
 
     // A regular row uses the plain "Category" label.
     const catControls = await screen.findAllByLabelText("Category");
@@ -331,7 +341,7 @@ describe("TransactionsPage — transfer wiring (Task D7)", () => {
     catControls.forEach((control) => {
       expect(control.getAttribute("aria-describedby")).toBeNull();
     });
-  });
+  }, 20000);
 
   it("Per-row action column renders all actions on a single un-linked row (responsive layout)", async () => {
     // Smoke test for the responsive action-column fix: the Edit, Mark transfer,
