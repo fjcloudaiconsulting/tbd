@@ -21,6 +21,7 @@ from app.models.base import Base
 from app.models.billing import BillingPeriod
 from app.models.category import CategoryType
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
+from app.schemas.forecast import ForecastResponse
 from app.services import forecast_service
 
 
@@ -87,3 +88,39 @@ async def test_pending_window_buckets_by_effective_settled_date(db_session):
     )
     # GBLT must land in June's pending bucket via its settled date.
     assert float(fc["pending_expense"]) == 459.68
+
+
+@pytest.mark.asyncio
+async def test_response_model_validates_and_preserves_wire_shape(db_session):
+    """ForecastResponse validates the real compute_forecast payload and, once
+    serialised as JSON, reproduces the exact same wire shape the service emits
+    today — so adding response_model= to the endpoint is behaviour-preserving.
+    """
+    org, acct, cat = await _seed_org(db_session)
+    # One settled expense and one pending expense so both totals and the
+    # per-category breakdown are exercised.
+    db_session.add(Transaction(
+        org_id=org.id, account_id=acct.id, category_id=cat.id,
+        description="Groceries", amount=Decimal("120.50"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.SETTLED,
+        date=date(2026, 6, 5), settled_date=date(2026, 6, 5),
+    ))
+    db_session.add(Transaction(
+        org_id=org.id, account_id=acct.id, category_id=cat.id,
+        description="Pending", amount=Decimal("30.00"),
+        type=TransactionType.EXPENSE, status=TransactionStatus.PENDING,
+        date=date(2026, 6, 20), settled_date=date(2026, 6, 20),
+    ))
+    await db_session.commit()
+
+    fc = await forecast_service.compute_forecast(
+        db_session, org.id, period_start=date(2026, 6, 1)
+    )
+
+    # Model accepts the real payload.
+    model = ForecastResponse.model_validate(fc)
+
+    # Serialised JSON is byte-identical to the untyped dict the service
+    # returns today (money fields stay strings, dates stay ISO strings).
+    dumped = model.model_dump(mode="json")
+    assert dumped == fc
