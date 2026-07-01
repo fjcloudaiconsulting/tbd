@@ -91,16 +91,38 @@ describe("currencySymbol", () => {
 });
 
 describe("reportCurrency", () => {
-  it("takes the first account currency as the report currency", () => {
+  it("single distinct currency → that currency", () => {
+    expect(reportCurrency([{ currency: "EUR" }])).toBe("EUR");
+    // Duplicate of the same currency across accounts is still single-currency.
     expect(
-      reportCurrency([{ currency: "EUR" }, { currency: "USD" }]),
+      reportCurrency([{ currency: "EUR" }, { currency: "EUR" }]),
     ).toBe("EUR");
   });
 
-  it("skips accounts without a currency", () => {
+  it("more than one distinct currency → undefined (no symbol shown)", () => {
+    // Mixed-currency org: rather than mislabel every widget with the first
+    // account's symbol, suppress the symbol so widgets render raw numbers.
+    expect(
+      reportCurrency([{ currency: "EUR" }, { currency: "USD" }]),
+    ).toBeUndefined();
+  });
+
+  it("ignores accounts without a currency when counting distinct", () => {
+    // A single real currency plus currency-less accounts stays single-currency.
     expect(
       reportCurrency([{ currency: undefined }, { currency: "GBP" }]),
     ).toBe("GBP");
+    expect(
+      reportCurrency([{ currency: null }, { currency: "USD" }, { currency: null }]),
+    ).toBe("USD");
+    // Two distinct real currencies amid currency-less accounts still suppress.
+    expect(
+      reportCurrency([
+        { currency: null },
+        { currency: "USD" },
+        { currency: "EUR" },
+      ]),
+    ).toBeUndefined();
   });
 
   it("returns undefined when no account currency is available", () => {

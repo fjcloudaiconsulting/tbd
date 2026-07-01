@@ -96,22 +96,29 @@ export function currencySymbol(code: string | undefined | null): string {
 /**
  * Derive the single currency a report renders in from the org's accounts.
  * Reports are single-currency in practice (cross-currency mixing is not
- * done), so we take the first account's currency as the report currency.
- * Returns ``undefined`` when no account currency is available, in which
- * case currency formatting degrades to grouped numbers with no symbol.
+ * done), so a single distinct account currency becomes the report currency.
  *
- * Trade-off knowingly accepted: if an org legitimately holds accounts in
- * more than one currency, every widget is labeled with the first account's
- * symbol — a measure aggregating a differently-denominated account would be
- * mislabeled. This matches the rest of the report engine, which is not
- * currency-aware. A future gate (show no symbol when >1 distinct currency)
- * is the cleaner fix; tracked in the reports backlog.
+ * Multi-currency gate: when the org legitimately holds accounts in more than
+ * one distinct currency, there is no single correct symbol — labelling every
+ * widget with one currency's symbol would mislabel measures that aggregate
+ * differently-denominated accounts. In that case we return ``undefined`` so
+ * currency formatting degrades to grouped numbers with NO symbol. This
+ * suppression threads through every render site because the returned code is
+ * passed into ``formatMeasureValue`` (which drops the symbol prefix when the
+ * currency is undefined).
+ *
+ * Returns ``undefined`` when no account currency is available (same degraded,
+ * symbol-less formatting).
  */
 export function reportCurrency(
   accounts: Array<{ currency?: string | null }> | undefined | null,
 ): string | undefined {
-  const code = accounts?.find((a) => a.currency)?.currency;
-  return code ?? undefined;
+  const distinct = new Set<string>();
+  for (const a of accounts ?? []) {
+    if (a.currency) distinct.add(a.currency);
+  }
+  // Single-currency org keeps its symbol; zero or mixed currencies show none.
+  return distinct.size === 1 ? [...distinct][0] : undefined;
 }
 
 /** Format a measure value for display in widget tooltips, axes and cells.
