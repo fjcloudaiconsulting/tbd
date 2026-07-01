@@ -70,11 +70,12 @@ from typing import Any, Optional
 
 import structlog
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import redis_client
 from app.config import settings
+from app.database import async_session
 from app.models.ai_usage_ledger import AIUsageLedger
 from app.models.notification import NotificationCategory
 from app.models.org_ai_caps import OrgAIDefaultCaps, OrgAIFeatureCaps
@@ -1020,15 +1021,38 @@ async def call_llm(
     return DispatchResult(response=response, ledger_id=ledger.id)
 
 
-async def _touch_last_used(credential_id: int) -> None:  # pragma: no cover
-    """Stub for the deferred last_used_at refresh hook.
+async def _touch_last_used(credential_id: int) -> None:
+    """Best-effort refresh of a credential's ``last_used_at``.
 
-    PR1's credential_service.unwrap already has the bookkeeping live;
-    this stub is a placeholder so the call site in ``call_llm`` keeps
-    its current shape when the unified hook lands.
+    Fired fire-and-forget (``asyncio.create_task``) from every dispatch
+    success path, so it runs detached from the request. It therefore
+    opens its OWN short-lived session — never the caller's — so the
+    telemetry write can never touch or commit the caller's transaction
+    (see the ai-dispatch-session-isolation convention). A targeted
+    ``UPDATE`` is used instead of mutating a (possibly detached) ORM
+    instance to avoid async lazy-load / MissingGreenlet pitfalls.
+
+    ``last_used_at`` is telemetry, not correctness: any exception is
+    swallowed + logged and MUST NEVER propagate to fail an AI call.
     """
-    _ = credential_id
-    return
+    try:
+        async with async_session() as session:
+            await session.execute(
+                update(OrgAICredential)
+                .where(OrgAICredential.id == credential_id)
+                .values(
+                    last_used_at=datetime.now(timezone.utc).replace(
+                        tzinfo=None
+                    )
+                )
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - telemetry must never break dispatch
+        logger.warning(
+            "ai.dispatch.touch_last_used.failed",
+            credential_id=credential_id,
+            exc_info=True,
+        )
 
 
 # ----------------------------------------------------------------------
