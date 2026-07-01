@@ -45,6 +45,7 @@ import {
   TOUR_FLAG_KEY,
   TOUR_FLAG_VALUE_DASHBOARD,
 } from "@/lib/help/tour";
+import { safeTourStorageSet } from "@/lib/help/tourStorage";
 
 // sessionStorage flag the Google SSO callback page sets when a new
 // local user has just been created. Reading it here inserts a
@@ -160,14 +161,13 @@ export default function OnboardingPageBody() {
       await refreshMe();
       if (startTour) {
         // The dashboard is not yet mounted, so we cannot call
-        // tour.start() from here directly. Stash a flag in
-        // sessionStorage and the dashboard reads it on mount.
-        try {
-          window.sessionStorage.setItem(TOUR_FLAG_KEY, TOUR_FLAG_VALUE_DASHBOARD);
-        } catch {
-          // sessionStorage may be unavailable in private mode. The
-          // tour just will not start automatically — non-fatal.
-        }
+        // tour.start() from here directly. Stash a flag and the dashboard
+        // reads it on mount. safeTourStorageSet writes sessionStorage when
+        // available and an in-memory fallback otherwise, so the flag
+        // survives the client navigation to /dashboard even in Safari
+        // private mode where sessionStorage throws (this wizard has no
+        // TourContext pending-start path, so the flag is its only carrier).
+        safeTourStorageSet(TOUR_FLAG_KEY, TOUR_FLAG_VALUE_DASHBOARD);
       }
       router.replace("/dashboard");
     } catch (err) {
