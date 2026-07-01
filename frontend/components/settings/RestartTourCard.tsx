@@ -28,6 +28,7 @@ import {
   TOUR_FLAG_KEY,
   TOUR_FLAG_VALUE_DASHBOARD,
 } from "@/lib/help/tour";
+import { safeTourStorageSet } from "@/lib/help/tourStorage";
 
 export default function RestartTourCard() {
   const router = useRouter();
@@ -52,14 +53,11 @@ export default function RestartTourCard() {
       // above the page tree and survives the navigation to /dashboard
       // (and works in Safari private mode where sessionStorage throws).
       tour.requestStart(DASHBOARD_TOUR_STEPS);
-      // Secondary fallback: the sessionStorage flag still covers a full
-      // page reload between this click and the dashboard mount.
-      try {
-        window.sessionStorage.setItem(TOUR_FLAG_KEY, TOUR_FLAG_VALUE_DASHBOARD);
-      } catch {
-        // Private mode or storage disabled. The context path above
-        // carries the start, so the dashboard tour still runs.
-      }
+      // Secondary fallback: the stored flag still covers a full page
+      // reload between this click and the dashboard mount. safeTourStorageSet
+      // writes sessionStorage when available and an in-memory fallback
+      // otherwise (private mode / storage disabled), so it never throws.
+      safeTourStorageSet(TOUR_FLAG_KEY, TOUR_FLAG_VALUE_DASHBOARD);
       router.push("/dashboard");
     } catch (err) {
       setError(extractErrorMessage(err, "Could not restart the tour. Try again."));
