@@ -12,6 +12,7 @@
 import Link from "next/link";
 
 import { useDashboard } from "@/components/dashboard/DashboardDataProvider";
+import TourAnchor from "@/components/tour/TourAnchor";
 
 export default function DashboardPeriodNav() {
   const {
@@ -29,6 +30,13 @@ export default function DashboardPeriodNav() {
   const isNewest = periodIdx <= 0;
 
   return (
+    // Tour anchor: `as="child"` keeps the DOM shape (the flex row is a direct
+    // child of CustomDashboard's flex-column, so a wrapper <span> would break
+    // the layout). Only CustomDashboard renders this component — LegacyDashboard
+    // has its own inline period nav carrying the same id — so the two
+    // `dashboard.period-nav` anchors never coexist in the DOM (one dashboard
+    // renders at a time), keeping the id unique whenever the tour looks it up.
+    <TourAnchor id="dashboard.period-nav" as="child">
     <div
       data-testid="dashboard-period-nav"
       className="mb-4 flex flex-wrap items-center justify-between gap-y-2"
@@ -116,5 +124,6 @@ export default function DashboardPeriodNav() {
         View All Transactions
       </Link>
     </div>
+    </TourAnchor>
   );
 }

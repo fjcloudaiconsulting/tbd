@@ -106,12 +106,31 @@ async def test_unrecognized_org_value_falls_through(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_custom_dashboard_defaults_off(db_session, monkeypatch):
-    """Feature.CUSTOM_DASHBOARD must resolve OFF when env-floor is False and no
-    DB rows exist — fail-closed behaviour mirrors PLANS."""
+async def test_custom_dashboard_defaults_on(db_session):
+    """Feature.CUSTOM_DASHBOARD resolves ON by default now that the env-floor
+    ships True (global flip) and no DB overrides exist."""
     from app.config import settings
-    monkeypatch.setattr(settings, "feature_custom_dashboard", False)
-    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=1, db=db_session) is False
+    assert settings.feature_custom_dashboard is True
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=1, db=db_session) is True
+
+
+@pytest.mark.asyncio
+async def test_custom_dashboard_rolls_back_with_org_off_override(db_session, monkeypatch):
+    """A per-org OrgSetting of 'off' rolls CUSTOM_DASHBOARD back for one org even
+    when the env-floor ships True — the supported rollback that returns that org
+    to LegacyDashboard. Other orgs stay ON."""
+    from app.models.user import Organization
+    from app.config import settings
+    monkeypatch.setattr(settings, "feature_custom_dashboard", True)
+    db_session.add(Organization(id=11, name="Org Eleven", billing_cycle_day=1))
+    await db_session.flush()
+    db_session.add(
+        OrgSetting(org_id=11, key=feature_setting_key(Feature.CUSTOM_DASHBOARD), value="off")
+    )
+    await db_session.commit()
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=11, db=db_session) is False
+    # Other org (no override) stays on via the env-floor.
+    assert await resolve_feature(Feature.CUSTOM_DASHBOARD, org_id=999, db=db_session) is True
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,8 @@
  *
  * Tests the flag-switching behaviour of DashboardPage:
  *
- *   (a) Flag OFF (default): the existing legacy dashboard renders.
+ *   (a) Flag OFF (rollback via a per-org/global override — the flag now
+ *       defaults ON): the existing legacy dashboard renders.
  *       We assert a known testid / text that the legacy dashboard
  *       produces — ``data-testid="reset-banner"`` exists in the legacy
  *       code, but a simpler sentinel is the "Dashboard" heading that
@@ -321,7 +322,7 @@ describe("DashboardPage — feature flag", () => {
   // ────────────────────────────────────────────────────────────────────────
   // (a) FLAG OFF — legacy dashboard renders, Canvas shell absent
   // ────────────────────────────────────────────────────────────────────────
-  describe("flag OFF (default)", () => {
+  describe("flag OFF (rollback via override)", () => {
     beforeEach(() => {
       vi.mocked(useAuth).mockReturnValue({
         user: BASE_USER as never,

@@ -20,10 +20,10 @@ export const metadata: Metadata = {
     description,
     path: apexCanonical("/docs/dashboard"),
   }),
-  // NOTE: noindex until the customizable dashboard (Feature.CUSTOM_DASHBOARD)
-  // is generally available. Flip to { index: true, follow: true } when the
-  // flag defaults ON in prod, to match the /docs/plans precedent.
-  robots: { index: false, follow: true },
+  // The customizable dashboard (Feature.CUSTOM_DASHBOARD) now defaults ON in
+  // prod, so this guide is generally available — indexable, matching the
+  // /docs/plans precedent.
+  robots: { index: true, follow: true },
 };
 
 // Structured data for rich results + AI-engine entity resolution.
