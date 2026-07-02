@@ -32,12 +32,14 @@ export const TOUR_FLAG_VALUE_EXTENDED = "extended";
 /** Value written for the original first-run dashboard tour. */
 export const TOUR_FLAG_VALUE_DASHBOARD = "1";
 
+// Trimmed to the two anchors that exist on BOTH the CustomDashboard (now
+// the default) and LegacyDashboard: the header and the period nav. The
+// customizable dashboard's finance tiles are user-arrangeable, so the old
+// import-cta / on-track-tile / account-forecast anchors can't be relied on
+// there. Phase 2b will add stable finance-tile anchors and extend this list.
 export const DASHBOARD_TOUR_STEPS = [
   "dashboard.header",
-  "dashboard.import-cta",
   "dashboard.period-nav",
-  "dashboard.on-track-tile",
-  "dashboard.account-forecast",
 ];
 
 /**
