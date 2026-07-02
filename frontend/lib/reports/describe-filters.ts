@@ -143,7 +143,7 @@ function capitalize(s: string): string {
 // Currency symbol is a bare ``$`` prefix (not per-account currency),
 // consistent with the deferred chart currency-symbol work (roadmap §1b).
 function amountLabel(min?: number, max?: number): string {
-  if (min !== undefined && max !== undefined) return `$${min}–$${max}`;
+  if (min !== undefined && max !== undefined) return `$${min} to $${max}`;
   if (min !== undefined) return `≥ $${min}`;
   return `≤ $${max}`;
 }

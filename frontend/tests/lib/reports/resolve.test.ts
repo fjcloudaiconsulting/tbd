@@ -88,6 +88,54 @@ describe("resolveFilters status", () => {
   });
 });
 
+describe("resolveFilters amount_range", () => {
+  it("emits op:gte for a min-only bound", () => {
+    const out = resolveFilters(undefined, {
+      amount_range: { min: 50 },
+    } as WidgetFilters);
+    expect(out).toContainEqual({ field: "amount", op: "gte", value: 50 });
+    expect(out.filter((f) => f.field === "amount")).toHaveLength(1);
+  });
+  it("emits op:lte for a max-only bound", () => {
+    const out = resolveFilters(undefined, {
+      amount_range: { max: 200 },
+    } as WidgetFilters);
+    expect(out).toContainEqual({ field: "amount", op: "lte", value: 200 });
+    expect(out.filter((f) => f.field === "amount")).toHaveLength(1);
+  });
+  it("emits op:between when both bounds are set", () => {
+    const out = resolveFilters(undefined, {
+      amount_range: { min: 50, max: 200 },
+    } as WidgetFilters);
+    expect(out).toContainEqual({
+      field: "amount",
+      op: "between",
+      value: [50, 200],
+    });
+    expect(out.filter((f) => f.field === "amount")).toHaveLength(1);
+  });
+  it("still emits both clauses when min > max (backend returns empty set)", () => {
+    const out = resolveFilters(undefined, {
+      amount_range: { min: 200, max: 50 },
+    } as WidgetFilters);
+    expect(out).toContainEqual({
+      field: "amount",
+      op: "between",
+      value: [200, 50],
+    });
+  });
+  it("emits nothing when both bounds are undefined", () => {
+    expect(
+      resolveFilters(undefined, {
+        amount_range: {},
+      } as WidgetFilters),
+    ).not.toContainEqual(expect.objectContaining({ field: "amount" }));
+    expect(resolveFilters(undefined, {})).not.toContainEqual(
+      expect.objectContaining({ field: "amount" }),
+    );
+  });
+});
+
 /**
  * Phase 4b model: ``date_range`` is the ONLY canvas-shared field, so
  * it's the only field that can be an "override". Accounts and

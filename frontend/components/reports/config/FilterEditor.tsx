@@ -15,6 +15,7 @@
 import { useEffect } from "react";
 
 import AccountFilter from "@/components/reports/filters/AccountFilter";
+import AmountRangeFilter from "@/components/reports/filters/AmountRangeFilter";
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
 import DatePresetChips from "@/components/reports/filters/DatePresetChips";
 import StatusFilter from "@/components/reports/filters/StatusFilter";
@@ -145,43 +146,20 @@ export default function FilterEditor({
         </div>
       )}
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs text-text-secondary">Amount range</div>
-        <div className="flex gap-2">
-          <input
-            type="number"
-            aria-label="Widget amount min"
-            placeholder="min"
-            value={filters.amount_range?.min ?? ""}
-            onChange={(e) =>
-              onChange({
-                ...filters,
-                amount_range: {
-                  ...(filters.amount_range ?? {}),
-                  min: e.target.value === "" ? undefined : Number(e.target.value),
-                },
-              })
+      {/* Amount is a transactions-only filter (the only source
+          publishing an ``amount`` field), so the control is offered only
+          for transactions widgets — mirroring the Status gate. */}
+      {allowTransfer && (
+        <div className="flex flex-col gap-1">
+          <AmountRangeFilter
+            value={filters.amount_range}
+            ariaPrefix="Widget amount"
+            onChange={(amount_range) =>
+              onChange({ ...filters, amount_range })
             }
-            className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
-          />
-          <input
-            type="number"
-            aria-label="Widget amount max"
-            placeholder="max"
-            value={filters.amount_range?.max ?? ""}
-            onChange={(e) =>
-              onChange({
-                ...filters,
-                amount_range: {
-                  ...(filters.amount_range ?? {}),
-                  max: e.target.value === "" ? undefined : Number(e.target.value),
-                },
-              })
-            }
-            className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
           />
         </div>
-      </div>
+      )}
 
       <TagFilter
         value={filters.tag_names ?? []}

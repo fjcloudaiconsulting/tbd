@@ -172,6 +172,20 @@ describe("FilterEditor", () => {
     expect(screen.queryByTestId("status-filter")).not.toBeInTheDocument();
   });
 
+  it("offers the Amount range control for a transactions widget", async () => {
+    render({}, {}, () => {}, "transactions");
+    await screen.findByTestId("category-picker");
+    expect(screen.getByTestId("amount-range-filter")).toBeInTheDocument();
+    expect(screen.getByLabelText("Widget amount min")).toBeInTheDocument();
+    expect(screen.getByLabelText("Widget amount max")).toBeInTheDocument();
+  });
+
+  it("hides the Amount range control for a non-transactions (recurring) widget", async () => {
+    render({}, {}, () => {}, "recurring");
+    await screen.findByTestId("category-picker");
+    expect(screen.queryByTestId("amount-range-filter")).not.toBeInTheDocument();
+  });
+
   it("sets status on change", async () => {
     const calls: WidgetFilters[] = [];
     render({}, {}, (next) => calls.push(next), "transactions");
