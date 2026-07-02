@@ -152,6 +152,31 @@ describe("describeWidgetFilters", () => {
     expect(chips.find((c) => c.key === "txn_type")).toBeDefined();
   });
 
+  it("emits a Settled status chip when status is set", () => {
+    const chips = describeWidgetFilters(
+      bar({ status: "settled" }),
+      {},
+      NO_LOOKUPS,
+      NOW,
+    );
+    expect(chips.find((c) => c.key === "status")?.label).toBe("Settled");
+  });
+
+  it("emits a Pending status chip when status is set", () => {
+    const chips = describeWidgetFilters(
+      bar({ status: "pending" }),
+      {},
+      NO_LOOKUPS,
+      NOW,
+    );
+    expect(chips.find((c) => c.key === "status")?.label).toBe("Pending");
+  });
+
+  it("emits no status chip when status is unset", () => {
+    const chips = describeWidgetFilters(bar({}), {}, NO_LOOKUPS, NOW);
+    expect(chips.find((c) => c.key === "status")).toBeUndefined();
+  });
+
   it("resolves account ids to names with +N truncation", () => {
     const chips = describeWidgetFilters(
       bar({ account_ids: [1, 2, 3] }),
