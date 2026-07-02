@@ -33,8 +33,15 @@ describe("tour constants", () => {
     expect(TOUR_FLAG_VALUE_EXTENDED.length).toBeGreaterThan(0);
   });
 
-  it("dashboard tour has at least 5 steps and stays in /dashboard", () => {
-    expect(DASHBOARD_TOUR_STEPS.length).toBeGreaterThanOrEqual(5);
+  it("dashboard tour is the two shared anchors and stays in /dashboard", () => {
+    // Trimmed for the customizable-dashboard global flip: only the header and
+    // period nav exist on BOTH CustomDashboard (now default) and
+    // LegacyDashboard. Phase 2b will add stable finance-tile anchors and grow
+    // this list back out.
+    expect(DASHBOARD_TOUR_STEPS).toEqual([
+      "dashboard.header",
+      "dashboard.period-nav",
+    ]);
     for (const id of DASHBOARD_TOUR_STEPS) {
       expect(pagePrefix(id)).toBe("dashboard");
     }
