@@ -67,6 +67,11 @@ export type TagMatch = "all" | "any";
 
 export type TxnType = "income" | "expense" | "transfer";
 
+// Settled/Pending transaction status. Mirrors the backend
+// ``FilterField.STATUS`` enum (settled / pending). ``undefined`` on a
+// widget means "no status filter" (the "All" choice in the control).
+export type TxnStatus = "settled" | "pending";
+
 export type FilterValue =
   | string
   | number
@@ -149,6 +154,10 @@ export interface WidgetFilters {
   account_ids?: number[];
   category_ids?: number[];
   txn_type?: TxnType[];
+  // Settled/Pending status filter. ``undefined`` = no filter ("All").
+  // Transactions-only (the only source publishing a ``status`` filter);
+  // pruned off the widget when its source can't honor it.
+  status?: TxnStatus;
   amount_range?: { min?: number; max?: number };
   tag_names?: string[];
   tag_match?: TagMatch;
