@@ -233,7 +233,7 @@ export default async function DocsPage() {
             <h3>Promoting a transaction to recurring</h3>
             <p>
               When editing a transaction, the inline row exposes a
-              "Promote to recurring" action that turns the transaction
+              &#34;Promote to recurring&#34; action that turns the transaction
               into a recurring template, so the same charge generates
               automatically next period.
             </p>
@@ -319,8 +319,8 @@ export default async function DocsPage() {
             <p>
               A plan is a wish list with numbers. You write down what you
               want to spend on each category for the period. For example,
-              "I want to spend 600 on groceries this month and 80 on
-              coffee." That is the plan. Saving the plan does not move
+              &#34;I want to spend 600 on groceries this month and 80 on
+              coffee.&#34; That is the plan. Saving the plan does not move
               any money. It just records your intention.
             </p>
 
@@ -339,10 +339,10 @@ export default async function DocsPage() {
               </li>
               <li>
                 <strong>Your last 3 months of activity</strong>, averaged.
-                Used for categories that don't have a recurring bill.
+                Used for categories that don&#39;t have a recurring bill.
               </li>
               <li>
-                <strong>Whatever you've already booked in this period</strong>,
+                <strong>Whatever you&#39;ve already booked in this period</strong>,
                 blended in with the past 3 months so the suggestion reflects
                 your most recent reality. A category can be seeded from
                 current-period activity alone, even if it has no 3-month
@@ -351,7 +351,7 @@ export default async function DocsPage() {
             </ol>
             <p>
               Each row in the plan shows where its number came from: a
-              recurring template, your history (labeled "Auto"), or a
+              recurring template, your history (labeled &#34;Auto&#34;), or a
               manual edit you made.
             </p>
 
@@ -376,7 +376,7 @@ export default async function DocsPage() {
               </li>
             </ul>
 
-            <h3>Projected: the app's best guess for end of month</h3>
+            <h3>Projected: the app&#39;s best guess for end of month</h3>
             <p>
               The Projected number on the dashboard is a totally
               different idea from the plan. The plan is what you want
@@ -407,8 +407,8 @@ export default async function DocsPage() {
               upcoming recurring bills are bigger than you expected, or
               lower if life has been quiet and not many bills are
               scheduled. Treat Projected as a heads-up, not a verdict.
-              The dashboard's On Track verdict reads from what has
-              actually settled, so a noisy projection won't alarm you
+              The dashboard&#39;s On Track verdict reads from what has
+              actually settled, so a noisy projection won&#39;t alarm you
               before any money has moved.
             </p>
 
@@ -424,7 +424,7 @@ export default async function DocsPage() {
             <p>
               Refresh drops every row whose source is Recurring or Auto
               (the rows the system filled in) and re-runs Auto-populate
-              against today's templates and history. Rows you typed or
+              against today&#39;s templates and history. Rows you typed or
               edited yourself are kept untouched. Categories that have
               shown up since the first populate will be added in this
               pass too.
@@ -481,7 +481,7 @@ export default async function DocsPage() {
             <p>
               When something feels off (slow loads, missing data,
               dashboard not updating), superadmins can check the Admin
-              dashboard's System health card. It reports the live
+              dashboard&#39;s System health card. It reports the live
               status of the database and Redis, including latency.
               Failures there usually explain whatever the rest of the
               app is doing.
@@ -551,7 +551,7 @@ export default async function DocsPage() {
             <h3>How transfers are categorized</h3>
             <p>
               Both legs of a transfer share one category. That category
-              has to be transfer-compatible (its type is "both"), so it
+              has to be transfer-compatible (its type is &#34;both&#34;), so it
               works on the outgoing leg as well as the incoming leg. The
               transfer form filters the category picker to just these
               transfer-compatible categories. If you leave the picker
@@ -589,8 +589,8 @@ export default async function DocsPage() {
               </li>
             </ul>
             <p>
-              Heads up: an expense-only category (for example "Debt
-              Repayment / Credit Cards") cannot be used on a transfer.
+              Heads up: an expense-only category (for example &#34;Debt
+              Repayment / Credit Cards&#34;) cannot be used on a transfer.
               The picker hides those choices on the transfer form, and
               the backend rejects them on the API, since an
               expense-only category cannot apply to the incoming leg
@@ -604,18 +604,18 @@ export default async function DocsPage() {
               The Recurring page lists every template you have set up,
               split into Active and Paused. Templates are created by
               promoting an existing transaction (open the row on the
-              Transactions page and use "Promote to recurring"); they
+              Transactions page and use &#34;Promote to recurring&#34;); they
               are not authored directly here.
             </p>
             <h3>Generate this period</h3>
             <p>
-              "Generate this period" fills the current billing cycle
-              with this period's recurring transactions, materializing
+              &#34;Generate this period&#34; fills the current billing cycle
+              with this period&#39;s recurring transactions, materializing
               an occurrence for every active recurring template that
               falls within the cycle. Items due later in the period
               appear as pending until their date arrives, so you can
               forecast a credit card statement that has not closed yet.
-              Run it whenever you want this period's recurring rows to
+              Run it whenever you want this period&#39;s recurring rows to
               appear; they are not created automatically. Stopping a
               template removes its remaining pending future rows; settled
               past rows are kept because they are real money movements.
@@ -633,7 +633,7 @@ export default async function DocsPage() {
               charges on that card. From here you can add new accounts,
               set the default one (it shows first on the Dashboard
               strip), close an account, or post a manual balance
-              adjustment when the in-app total drifts from the bank's.
+              adjustment when the in-app total drifts from the bank&#39;s.
             </p>
           </section>
 
@@ -661,10 +661,10 @@ export default async function DocsPage() {
               per category that represents the cap you want to spend
               against for this period. The bar chart on the Budgets page
               colors each row by utilization (under, near, over), and
-              the Dashboard's Budget Progress card pulls the same
+              the Dashboard&#39;s Budget Progress card pulls the same
               numbers. Budgets are scoped to the open billing period.
               For future periods, use Forecast Plans instead, and click
-              From Forecast to seed the current period's budgets from
+              From Forecast to seed the current period&#39;s budgets from
               the matching plan.
             </p>
           </section>
@@ -697,24 +697,24 @@ export default async function DocsPage() {
               An org admin opens Settings, then AI providers, and adds a key for OpenAI,
               Anthropic, Ollama, or an OpenAI-compatible endpoint. Keys are encrypted at rest
               and never shown again after you save them. Until a provider is connected, each AI
-              action shows a "Set up AI" prompt instead of running.
+              action shows a &#34;Set up AI&#34; prompt instead of running.
             </p>
             <h3>Auto-categorize (Transactions)</h3>
             <p>
-              When you edit a transaction, "Suggest category" asks the AI for a category based
+              When you edit a transaction, &#34;Suggest category&#34; asks the AI for a category based
               on the description and amount. It only fills the picker; nothing is saved until
               you save the transaction.
             </p>
             <h3>Refine forecast with AI (Dashboard)</h3>
             <p>
-              "Refine forecast with AI" layers AI-detected seasonal patterns on top of your
+              &#34;Refine forecast with AI&#34; layers AI-detected seasonal patterns on top of your
               baseline forecast. You choose how much history and how many categories to analyze
               and see the estimated cost before confirming. The result is a preview you can
               revert; it does not change your saved data.
             </p>
             <h3>Suggest rebalance (Budgets)</h3>
             <p>
-              On the current period, "Suggest rebalance" asks the AI to propose budget changes
+              On the current period, &#34;Suggest rebalance&#34; asks the AI to propose budget changes
               across categories based on recent spending. You accept or skip each suggestion;
               nothing changes until you apply it.
             </p>
@@ -735,7 +735,7 @@ export default async function DocsPage() {
           </section>
 
           <section>
-            <h2 id="whats-next">What's next, known gaps</h2>
+            <h2 id="whats-next">What&#39;s next, known gaps</h2>
             <p>
               This page is rough scaffolding, not a finished manual.
               Expect more depth here over time, with screenshots,

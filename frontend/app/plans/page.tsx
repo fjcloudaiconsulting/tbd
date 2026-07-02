@@ -1087,7 +1087,7 @@ function TripParamsEditor({
           ))}
         </select>
         <p id="trip-account-hint" className={fieldHelp}>
-          Which account the trip's cash dip is deducted from in the projection.
+          Which account the trip&#39;s cash dip is deducted from in the projection.
         </p>
       </div>
     </>
@@ -1132,7 +1132,7 @@ function PurchaseParamsEditor({
           aria-describedby="p-label-hint"
         />
         <p id="p-label-hint" className={fieldHelp}>
-          Short name shown on the plan, for example "Family car 2027".
+          Short name shown on the plan, for example &#34;Family car 2027&#34;.
         </p>
       </div>
       <div>
