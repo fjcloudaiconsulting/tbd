@@ -188,7 +188,7 @@ export default async function DashboardDocsPage() {
               </li>
               <li>
                 <strong>Spending by Category.</strong> A donut of where this
-                period's money went, with a sortable breakdown.
+                period&#39;s money went, with a sortable breakdown.
               </li>
               <li>
                 <strong>Budget Progress.</strong> Spent versus budget per
@@ -200,7 +200,7 @@ export default async function DashboardDocsPage() {
               </li>
               <li>
                 <strong>Recent Transactions.</strong> A paginated table of
-                this period's transactions. See its own section below.
+                this period&#39;s transactions. See its own section below.
               </li>
             </ul>
             <p>
@@ -239,7 +239,7 @@ export default async function DashboardDocsPage() {
             </p>
             <h3>Resize a tile</h3>
             <p>
-              Drag the resize handle at a tile's bottom-right corner. Tiles
+              Drag the resize handle at a tile&#39;s bottom-right corner. Tiles
               snap to the grid. A wider tile shows more of a chart; a taller
               Recent Transactions tile shows more rows.
             </p>
@@ -292,13 +292,13 @@ export default async function DashboardDocsPage() {
           <section data-testid="dashboard-docs-section-recent-tx">
             <h2 id="recent-transactions">Recent Transactions</h2>
             <p>
-              The Recent Transactions tile is a table of this period's
+              The Recent Transactions tile is a table of this period&#39;s
               transactions, newest first. A few things are worth knowing:
             </p>
             <ul>
               <li>
                 <strong>Rows per page.</strong> Use the selector in the
-                tile's footer to show 10, 25, 50, or 100 rows. Raise it to
+                tile&#39;s footer to show 10, 25, 50, or 100 rows. Raise it to
                 fill a taller tile instead of leaving blank space.
               </li>
               <li>
@@ -307,7 +307,7 @@ export default async function DashboardDocsPage() {
                 header and the pager stay pinned.
               </li>
               <li>
-                <strong>Toggle status inline.</strong> Click a row's status
+                <strong>Toggle status inline.</strong> Click a row&#39;s status
                 pill to flip it between settled and pending. The charts and
                 balances refresh to match.
               </li>
@@ -342,7 +342,7 @@ export default async function DashboardDocsPage() {
             <p>
               Saving is explicit: press <strong>Save</strong> to store your
               layout. It is saved to your account and is private to you, so
-              it follows you across devices and survives a reload. A "Saved"
+              it follows you across devices and survives a reload. A &#34;Saved&#34;
               note confirms the write. Leaving Customize mode with Done
               discards unsaved changes.
             </p>
@@ -383,7 +383,7 @@ export default async function DashboardDocsPage() {
                 over time.
               </li>
               <li>
-                <strong>Pie / Donut.</strong> A measure's share across a
+                <strong>Pie / Donut.</strong> A measure&#39;s share across a
                 category.
               </li>
               <li>

@@ -149,7 +149,7 @@ export default async function PlansDocsPage() {
             </p>
             <ul>
               <li>
-                <strong>Trip.</strong> Model a single trip's cost on a
+                <strong>Trip.</strong> Model a single trip&#39;s cost on a
                 start date (transport plus accommodation per night plus
                 a daily budget multiplied by duration). The cost lands
                 in one dip; the rest of the horizon is just your
@@ -168,7 +168,7 @@ export default async function PlansDocsPage() {
               </li>
               <li>
                 <strong>Custom.</strong> A fully editable plan type for
-                anything that doesn't fit the three templates above.
+                anything that doesn&#39;t fit the three templates above.
                 You add a list of events to the timeline and the
                 simulator replays them month by month. Five event types
                 are available:
@@ -215,18 +215,18 @@ export default async function PlansDocsPage() {
             <ul>
               <li>
                 <strong>Green.</strong> Your accounts stay healthy and
-                the plan's end balance is at least 80 percent of where
+                the plan&#39;s end balance is at least 80 percent of where
                 it started (or, for retirement, at least the target).
               </li>
               <li>
-                <strong>Yellow.</strong> Either you'll briefly dip below
+                <strong>Yellow.</strong> Either you&#39;ll briefly dip below
                 zero on an account, or the plan eats more than 20
                 percent of your starting net worth. Doable, but not
                 comfortable.
               </li>
               <li>
                 <strong>Red.</strong> The plan causes an extended cash
-                crunch, or (for retirement) you'll fall more than 15
+                crunch, or (for retirement) you&#39;ll fall more than 15
                 percent short of your target. Tune the params and
                 re-simulate.
               </li>
@@ -234,7 +234,7 @@ export default async function PlansDocsPage() {
             <p>
               Below the verdict, the projection panel lists alerts (any
               month an account dips below zero) and suggestions
-              ("raise monthly contribution by 200 to close the gap").
+              (&#34;raise monthly contribution by 200 to close the gap&#34;).
               Suggestions are advisory, never automatic; the plan only
               changes when you change the params.
             </p>
@@ -247,11 +247,11 @@ export default async function PlansDocsPage() {
             <p>
               We project month by month. We start with your account
               balances as of today, apply your recurring income and
-              expenses plus current budget pace, and drop in the plan's
+              expenses plus current budget pace, and drop in the plan&#39;s
               cashflow events on their scheduled months. For a trip,
-              that's a single dip on the start month equal to transport
+              that&#39;s a single dip on the start month equal to transport
               plus (accommodation per night times duration) plus (daily
-              budget times duration). For a purchase, it's the down
+              budget times duration). For a purchase, it&#39;s the down
               payment on the target date.
             </p>
 
@@ -263,8 +263,8 @@ export default async function PlansDocsPage() {
             </p>
             <p>
               We also track the same balance in real (inflation-
-              adjusted) terms so the chart's red dashed line tells you
-              what your future money would be worth in today's pounds,
+              adjusted) terms so the chart&#39;s red dashed line tells you
+              what your future money would be worth in today&#39;s pounds,
               euros, or dollars. The formula:
             </p>
             <p>
@@ -292,9 +292,9 @@ export default async function PlansDocsPage() {
               straight line through your last 12 months of cashflow and
               use the trend instead of the raw recurring numbers. This
               is helpful when your income has been growing or your
-              spending has shifted, and you don't want a one-off month
+              spending has shifted, and you don&#39;t want a one-off month
               skewing the projection. The projection panel shows a
-              "Trend-adjusted" badge when this kicks in.
+              &#34;Trend-adjusted&#34; badge when this kicks in.
             </p>
           </section>
 
@@ -315,7 +315,7 @@ export default async function PlansDocsPage() {
               </li>
               <li>
                 Tweak params (raise the monthly contribution, push the
-                retirement date out, lower the trip's daily budget) and
+                retirement date out, lower the trip&#39;s daily budget) and
                 watch the chart respond.
               </li>
               <li>
@@ -343,7 +343,7 @@ export default async function PlansDocsPage() {
           <section data-testid="plans-docs-section-curve">
             <h2 id="curve">The contribution curve (step function)</h2>
             <p>
-              Most people don't save a flat amount across 30 years.
+              Most people don&#39;t save a flat amount across 30 years.
               Maybe you save 500 a month now but plan to bump to 1,000
               a month once your mortgage is paid off, then 1,500 a
               month when the kids leave school. The contribution curve
@@ -353,7 +353,7 @@ export default async function PlansDocsPage() {
               Each row in the curve table sets a new monthly
               contribution starting on a given date. Rows must be in
               chronological order. The base contribution applies before
-              the first row's date.
+              the first row&#39;s date.
             </p>
             <h3>Worked example</h3>
             <p>
@@ -371,7 +371,7 @@ export default async function PlansDocsPage() {
               <li>From age 50 to age 65: 1,200 per month.</li>
             </ul>
             <p>
-              If you fill in a curve row's amount but not its date, the
+              If you fill in a curve row&#39;s amount but not its date, the
               form shows an inline validation error and the auto re-
               simulate pauses until you fix it. The error is intentional;
               it stops a half-typed row from getting saved against your
