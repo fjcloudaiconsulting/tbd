@@ -11,6 +11,7 @@ vi.mock("@/lib/api", async () => {
 const GATES = [
   { feature: "reports", override: "inherit", effective: true },
   { feature: "plans", override: "off", effective: false },
+  { feature: "custom_dashboard", override: "inherit", effective: true },
 ];
 
 describe("OrgFeatureGateCard", () => {
@@ -26,9 +27,11 @@ describe("OrgFeatureGateCard", () => {
     // Loading state first.
     expect(screen.getByText(/loading feature gates/i)).toBeInTheDocument();
 
-    // Both feature names appear.
+    // Feature names appear with their friendly labels (not raw keys).
     expect(await screen.findByText("Reports")).toBeInTheDocument();
     expect(screen.getByText("Plans")).toBeInTheDocument();
+    expect(screen.getByText("Customizable dashboard")).toBeInTheDocument();
+    expect(screen.queryByText("custom_dashboard")).not.toBeInTheDocument();
 
     // "Reports" row has override "inherit" — the "inherit" button should be pressed.
     const groups = screen.getAllByRole("group");
