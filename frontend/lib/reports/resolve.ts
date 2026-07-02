@@ -174,6 +174,13 @@ export function resolveFilters(
     out.push({ field: "txn_type", op: "in", value: txnTypes });
   }
 
+  // Settled/Pending status — widget-only (like txn_type). Omitted
+  // entirely for the "All" choice (``status`` undefined). The backend
+  // ``FilterField.STATUS`` coerces the value to its enum server-side.
+  if (widget?.status) {
+    out.push({ field: "status", op: "eq", value: widget.status });
+  }
+
   if (widget?.amount_range) {
     const { min, max } = widget.amount_range;
     if (min !== undefined && max !== undefined) {
@@ -220,6 +227,7 @@ const FILTER_KEY_TO_SOURCE_FIELD: Record<keyof WidgetFilters, string> = {
   account_ids: "account_id",
   category_ids: "category_id",
   txn_type: "txn_type",
+  status: "status",
   amount_range: "amount",
   tag_names: "tag_name",
   tag_match: "tag_name",

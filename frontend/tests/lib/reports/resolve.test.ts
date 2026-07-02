@@ -54,6 +54,40 @@ describe("resolveFilters txn_type", () => {
   });
 });
 
+describe("resolveFilters status", () => {
+  it("emits op:eq for a settled status", () => {
+    const out = resolveFilters(undefined, {
+      status: "settled",
+    } as WidgetFilters);
+    expect(out).toContainEqual({ field: "status", op: "eq", value: "settled" });
+  });
+  it("emits op:eq for a pending status", () => {
+    const out = resolveFilters(undefined, {
+      status: "pending",
+    } as WidgetFilters);
+    expect(out).toContainEqual({ field: "status", op: "eq", value: "pending" });
+  });
+  it("emits nothing for the 'All' choice (undefined / omitted)", () => {
+    expect(
+      resolveFilters(undefined, { status: undefined } as WidgetFilters),
+    ).not.toContainEqual(expect.objectContaining({ field: "status" }));
+    expect(resolveFilters(undefined, {})).not.toContainEqual(
+      expect.objectContaining({ field: "status" }),
+    );
+  });
+  it("reads status off the widget only (canvas status is not consulted)", () => {
+    // Status is widget-only (like txn_type). A stray canvas value must
+    // never leak into the AST — only the widget's own value emits.
+    const out = resolveFilters(
+      { status: "pending" } as unknown as CanvasFilters,
+      { status: "settled" } as WidgetFilters,
+    );
+    expect(out).toContainEqual({ field: "status", op: "eq", value: "settled" });
+    // Exactly one status filter — the canvas value did not add a second.
+    expect(out.filter((f) => f.field === "status")).toHaveLength(1);
+  });
+});
+
 /**
  * Phase 4b model: ``date_range`` is the ONLY canvas-shared field, so
  * it's the only field that can be an "override". Accounts and

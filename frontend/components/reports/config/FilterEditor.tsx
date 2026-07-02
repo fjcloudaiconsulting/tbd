@@ -2,7 +2,7 @@
 
 /**
  * Per-widget filter editor (date / accounts / categories / txn_type /
- * amount_range / tags).
+ * status / amount_range / tags).
  *
  * Phase 4b: ``date_range`` is the ONLY canvas-shared field, so it is the
  * only field that can carry the "Overrides canvas" pill — the pill fires
@@ -17,6 +17,7 @@ import { useEffect } from "react";
 import AccountFilter from "@/components/reports/filters/AccountFilter";
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
 import DatePresetChips from "@/components/reports/filters/DatePresetChips";
+import StatusFilter from "@/components/reports/filters/StatusFilter";
 import TagFilter from "@/components/reports/filters/TagFilter";
 import { asTxnTypeArray, isFieldOverridden } from "@/lib/reports/resolve";
 import type {
@@ -127,6 +128,19 @@ export default function FilterEditor({
             value={filters.txn_type}
             allowTransfer={allowTransfer}
             onChange={(txn_type) => onChange({ ...filters, txn_type })}
+          />
+        </div>
+      )}
+
+      {/* Settled/Pending is a transactions-only filter (the only source
+          publishing a ``status`` field), so the control is offered only
+          for transactions widgets — mirroring the Transfer type gate. */}
+      {allowTransfer && (
+        <div className="flex flex-col gap-1">
+          <StatusFilter
+            value={filters.status}
+            ariaPrefix="Widget status"
+            onChange={(status) => onChange({ ...filters, status })}
           />
         </div>
       )}

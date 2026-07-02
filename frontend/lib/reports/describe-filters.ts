@@ -29,7 +29,14 @@ import type {
 import type { Account, Category } from "@/lib/types";
 
 export interface FilterChip {
-  key: "date" | "txn_type" | "amount" | "tags" | "accounts" | "categories";
+  key:
+    | "date"
+    | "txn_type"
+    | "status"
+    | "amount"
+    | "tags"
+    | "accounts"
+    | "categories";
   /** Human, truncated label, e.g. "Groceries +2". */
   label: string;
   /** Date only: true when the widget overrides the shared canvas date. */
@@ -80,6 +87,11 @@ export function describeWidgetFilters(
   const txnTypes = asTxnTypeArray(widgetFilters.txn_type);
   if (txnTypes) {
     chips.push({ key: "txn_type", label: txnTypes.map(capitalize).join(", ") });
+  }
+
+  // ── status ────────────────────────────────────────────────────
+  if (widgetFilters.status) {
+    chips.push({ key: "status", label: capitalize(widgetFilters.status) });
   }
 
   // ── amount ────────────────────────────────────────────────────
