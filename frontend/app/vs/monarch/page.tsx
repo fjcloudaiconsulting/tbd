@@ -51,7 +51,7 @@ export default async function VsMonarchPage() {
             EU-hosted, with no account linking required.
           </p>
           <p>
-            Monarch's automatic aggregation is genuinely strong, and this comparison concedes it.
+            Monarch&#39;s automatic aggregation is genuinely strong, and this comparison concedes it.
           </p>
         </>
       }

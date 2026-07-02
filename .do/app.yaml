@@ -273,6 +273,17 @@ services:
         scope: RUN_AND_BUILD_TIME
         value: "false"
 
+      # Custom Dashboard (W4 customizable dashboard) gate — env floor.
+      # "true" enables the customizable dashboard globally. The gate still
+      # resolves per-org override -> global system_settings default -> this
+      # floor, so a superadmin rolls back a specific org (or globally) at
+      # runtime from /system/features or the org "Feature Access" card by
+      # setting the override to "off" — no redeploy. LegacyDashboard is kept
+      # in the frontend as the off-path fallback.
+      - key: FEATURE_CUSTOM_DASHBOARD
+        scope: RUN_AND_BUILD_TIME
+        value: "true"
+
   - name: frontend
     github:
       repo: fjcloudaiconsulting/tbd

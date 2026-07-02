@@ -12,7 +12,7 @@ const upgradeFollowUps = {
   "react-hooks/purity": "warn",
   "react-hooks/preserve-manual-memoization": "warn",
   "react-hooks/exhaustive-deps": "warn",
-  "react/no-unescaped-entities": "warn",
+  "react/no-unescaped-entities": "error",
   "@next/next/no-html-link-for-pages": "warn",
 };
 
