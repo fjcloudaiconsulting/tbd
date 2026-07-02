@@ -291,7 +291,7 @@ describe("describeWidgetFilters", () => {
         NO_LOOKUPS,
         NOW,
       ).find((c) => c.key === "amount")?.label,
-    ).toBe("$100–$500");
+    ).toBe("$100 to $500");
     expect(
       describeWidgetFilters(
         bar({ amount_range: { min: 100 } }),
