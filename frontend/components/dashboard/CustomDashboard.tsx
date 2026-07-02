@@ -28,6 +28,7 @@ import { DashboardDataProvider } from "@/components/dashboard/DashboardDataProvi
 import DashboardPeriodNav from "@/components/dashboard/DashboardPeriodNav";
 import { renderDashboardWidget } from "@/components/dashboard/renderDashboardWidget";
 import ConfirmModal from "@/components/ui/ConfirmModal";
+import TourAnchor from "@/components/tour/TourAnchor";
 import { getDashboard, getDefaultDashboard, saveDashboard } from "@/lib/dashboard/api";
 import type { CanvasFilters, LayoutJson } from "@/lib/dashboard/types";
 import {
@@ -290,7 +291,9 @@ export default function CustomDashboard() {
         >
           {/* Header */}
           <div className="mb-6 flex items-center justify-between">
-            <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
+            <TourAnchor id="dashboard.header" as="child">
+              <h1 className={`${pageTitle} mb-0`}>Dashboard</h1>
+            </TourAnchor>
             <div className="flex items-center gap-2">
               {/* Save (only visible in Customize mode) */}
               {editModeActive && (

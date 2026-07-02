@@ -10,7 +10,8 @@ Coverage:
 - Authenticated: per-org OrgSetting override is applied.
 - Backward-compat: existing keys (needs_setup, captcha_required,
   billing_ui_enabled, feature_reports_v2) must still be present.
-- custom_dashboard defaults OFF (env-floor False, no DB rows).
+- custom_dashboard defaults ON (env-floor now ships True); a per-org OFF
+  override rolls it back.
 """
 from __future__ import annotations
 
@@ -108,7 +109,7 @@ async def test_unauthenticated_features_reflect_env_floor(
     """Without a token the endpoint resolves features from env only (no DB rows).
 
     feature_reports_v2=True, feature_plans=False → reports True, plans False.
-    custom_dashboard defaults False.
+    custom_dashboard env-floor pinned False here → off.
     """
     monkeypatch.setattr(app_settings, "feature_reports_v2", True)
     monkeypatch.setattr(app_settings, "feature_plans", False)
@@ -339,21 +340,23 @@ async def test_bad_token_treated_as_unauthenticated(session_factory, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# custom_dashboard — default OFF + org-override
+# custom_dashboard — default ON + org-override
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_custom_dashboard_defaults_off_in_status(
+async def test_custom_dashboard_defaults_on_in_status(
     session_factory, monkeypatch
 ) -> None:
-    """features.custom_dashboard is False when env-floor is False and no DB
-    rows exist — mirrors the PLANS default-OFF behaviour."""
+    """features.custom_dashboard is True by default now that the env-floor ships
+    True (global flip) and no DB overrides exist. feature_custom_dashboard is
+    left un-patched so this asserts the real shipped default."""
     monkeypatch.setattr(app_settings, "feature_reports_v2", False)
     monkeypatch.setattr(app_settings, "feature_plans", False)
-    monkeypatch.setattr(app_settings, "feature_custom_dashboard", False)
     monkeypatch.setattr(app_settings, "captcha_required", False)
     monkeypatch.setattr(app_settings, "billing_ui_enabled", False)
+
+    assert app_settings.feature_custom_dashboard is True
 
     app = _make_unauthed_app(session_factory)
     with TestClient(app) as client:
@@ -361,7 +364,7 @@ async def test_custom_dashboard_defaults_off_in_status(
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["features"]["custom_dashboard"] is False
+    assert body["features"]["custom_dashboard"] is True
 
 
 @pytest.mark.asyncio
