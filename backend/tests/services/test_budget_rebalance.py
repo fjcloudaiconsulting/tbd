@@ -5,14 +5,19 @@ Covers the public ``suggest_rebalance`` entry point in
 (``call_llm_structured``) is patched at the module boundary so these
 tests are completely offline.
 
+The LLM is demoted to a PRIORITY ordering + narrative; the deterministic
+allocator computes every money movement and conserves the total. Dispatch
+failures fall back to the deterministic baseline rather than aborting.
+
 Cases:
 - No current-period budgets → ``empty_no_budgets``.
 - Budgets exist but no settled history → ``empty_no_history``.
-- Happy path: LLM returns valid suggestions → ``ok`` + shaped deltas.
-- LLM returns an unknown ``category_id`` → ``llm_unavailable`` (the
-  cross-org / hallucination guard).
-- ``NoRoutingConfigured`` from the dispatch layer → ``llm_unavailable``.
-- ``StructuredOutputError`` (retry budget exhausted) → ``llm_unavailable``.
+- Happy path: LLM ranks the overspending category → ``ok`` + a zero-sum
+  reallocation (surplus moved into the deficit).
+- LLM returns an unknown ``category_id`` in its priority → the id is
+  filtered out; the deterministic allocation still runs (drift is not fatal).
+- ``NoRoutingConfigured`` from the dispatch layer → deterministic fallback.
+- ``StructuredOutputError`` (retry budget exhausted) → deterministic fallback.
 - Inputs to the prompt are aggregates only — no raw transaction data
   leaks into the message payload.
 """
@@ -276,8 +281,28 @@ def _make_structured_result(parsed: dict) -> StructuredDispatchResult:
     )
 
 
+async def _seed_reallocation_scenario(db, org, user, categories):
+    """Groceries projected to OVERSPEND (deficit), Dining with surplus.
+
+    Groceries: budget 400, 3-month total 1350 → avg 450 → projected 450 →
+    deficit 50. Dining: budget 200, 3-month total 300 → avg 100 →
+    projected 100 → surplus 100. A zero-sum rebalance moves 50 of
+    Dining's surplus into Groceries.
+    """
+    today = datetime.date.today()
+    last_month = today.replace(day=1) - datetime.timedelta(days=1)
+    await _seed_history(
+        db, org=org, user=user, category=categories["groceries"],
+        amount=Decimal("1350.00"), settled=last_month,
+    )
+    await _seed_history(
+        db, org=org, user=user, category=categories["dining"],
+        amount=Decimal("300.00"), settled=last_month,
+    )
+
+
 @pytest.mark.asyncio
-async def test_happy_path_returns_shaped_suggestions(
+async def test_happy_path_returns_zero_sum_reallocation(
     db: AsyncSession,
     org: Organization,
     user: User,
@@ -285,17 +310,8 @@ async def test_happy_path_returns_shaped_suggestions(
     categories,
     budgets,
 ):
-    """LLM returns valid suggestions for known category_ids → ok."""
-    today = datetime.date.today()
-    last_month = (today.replace(day=1) - datetime.timedelta(days=1))
-    await _seed_history(
-        db,
-        org=org,
-        user=user,
-        category=categories["groceries"],
-        amount=Decimal("450.00"),
-        settled=last_month,
-    )
+    """LLM ranks the overspending category → deterministic zero-sum plan."""
+    await _seed_reallocation_scenario(db, org, user, categories)
 
     captured_messages: list[list[dict]] = []
 
@@ -306,95 +322,11 @@ async def test_happy_path_returns_shaped_suggestions(
         return _make_structured_result(
             {
                 "summary": "Move money to groceries; you consistently overspend.",
-                "suggestions": [
+                "priority": [categories["groceries"].id],
+                "reasoning": [
                     {
                         "category_id": categories["groceries"].id,
-                        "suggested_amount": 450.0,
-                        "reasoning": "Trailing 3-month spend is well above the current limit.",
-                    },
-                    {
-                        "category_id": categories["dining"].id,
-                        "suggested_amount": 150.0,
-                        "reasoning": "You've been under budget here for months.",
-                    },
-                ],
-            }
-        )
-
-    with patch(
-        "app.services.budget_rebalance_service.call_llm_structured",
-        side_effect=fake_call,
-    ):
-        out = await budget_rebalance_service.suggest_rebalance(
-            db, org_id=org.id
-        )
-
-    assert out.status == "ok"
-    assert out.summary.startswith("Move money to groceries")
-    assert len(out.suggestions) == 2
-    g_sugg = next(
-        s for s in out.suggestions
-        if s.category_id == categories["groceries"].id
-    )
-    assert g_sugg.suggested_amount == Decimal("450.00")
-    assert g_sugg.current_amount == Decimal("400.00")
-    assert g_sugg.delta_amount == Decimal("50.00")
-    d_sugg = next(
-        s for s in out.suggestions
-        if s.category_id == categories["dining"].id
-    )
-    assert d_sugg.delta_amount == Decimal("-50.00")
-
-    # Aggregates-only: prompt must NOT carry raw transaction text. The
-    # _seed_history call above set description="x"; that string must
-    # not appear anywhere in the message payload.
-    flat = " ".join(
-        m.get("content", "") for ms in captured_messages for m in ms
-    )
-    assert "description" not in flat.lower()
-    # The trailing-spend aggregate (last_3mo_avg) for groceries is
-    # $450 / 3 = $150. The aggregate MUST be in the prompt.
-    assert "150.0" in flat or "150" in flat
-
-
-# ---------- defense-in-depth: unknown category_id --------------------
-
-
-@pytest.mark.asyncio
-async def test_unknown_category_id_in_response_returns_llm_unavailable(
-    db: AsyncSession,
-    org: Organization,
-    user: User,
-    period: BillingPeriod,
-    categories,
-    budgets,
-):
-    """LLM returns a category_id that is NOT in the org's budget set.
-
-    The service refuses to surface partial/hallucinated data and
-    returns the friendly empty state.
-    """
-    today = datetime.date.today()
-    last_month = today.replace(day=1) - datetime.timedelta(days=1)
-    await _seed_history(
-        db,
-        org=org,
-        user=user,
-        category=categories["groceries"],
-        amount=Decimal("100.00"),
-        settled=last_month,
-    )
-
-    async def fake_call(*args, **kw):
-        return _make_structured_result(
-            {
-                "summary": "drift",
-                "suggestions": [
-                    {
-                        # 99999 is NOT a real category for this org.
-                        "category_id": 99999,
-                        "suggested_amount": 250.0,
-                        "reasoning": "I am hallucinating.",
+                        "text": "Trailing 3-month spend is well above the limit.",
                     }
                 ],
             }
@@ -408,15 +340,46 @@ async def test_unknown_category_id_in_response_returns_llm_unavailable(
             db, org_id=org.id
         )
 
-    assert out.status == "llm_unavailable"
-    assert out.suggestions == []
+    assert out.status == "ok"
+    assert out.is_balanced is True
+    assert out.summary.startswith("Move money to groceries")
+    # Conservation across the two budgets (400 + 200 == 600).
+    assert out.total_budget == Decimal("600.00")
+    assert out.total_suggested == Decimal("600.00")
+    assert out.uncovered_overspend == Decimal("0.00")
+
+    assert len(out.suggestions) == 2
+    g_sugg = next(
+        s for s in out.suggestions
+        if s.category_id == categories["groceries"].id
+    )
+    assert g_sugg.suggested_amount == Decimal("450.00")
+    assert g_sugg.current_amount == Decimal("400.00")
+    assert g_sugg.delta_amount == Decimal("50.00")
+    d_sugg = next(
+        s for s in out.suggestions
+        if s.category_id == categories["dining"].id
+    )
+    assert d_sugg.suggested_amount == Decimal("150.00")
+    assert d_sugg.delta_amount == Decimal("-50.00")
+
+    # Aggregates-only: prompt must NOT carry raw transaction text. The
+    # _seed_history call above set description="x"; that string must
+    # not appear anywhere in the message payload.
+    flat = " ".join(
+        m.get("content", "") for ms in captured_messages for m in ms
+    )
+    assert "description" not in flat.lower()
+    # The trailing-spend aggregate (last_3mo_avg) for groceries is
+    # $1350 / 3 = $450. The aggregate MUST be in the prompt.
+    assert "450.0" in flat or "450" in flat
 
 
-# ---------- LLM unavailable paths ------------------------------------
+# ---------- defense-in-depth: unknown category_id --------------------
 
 
 @pytest.mark.asyncio
-async def test_no_routing_returns_llm_unavailable(
+async def test_unknown_category_id_in_priority_is_filtered(
     db: AsyncSession,
     org: Organization,
     user: User,
@@ -424,16 +387,66 @@ async def test_no_routing_returns_llm_unavailable(
     categories,
     budgets,
 ):
-    today = datetime.date.today()
-    last_month = today.replace(day=1) - datetime.timedelta(days=1)
-    await _seed_history(
-        db,
-        org=org,
-        user=user,
-        category=categories["groceries"],
-        amount=Decimal("100.00"),
-        settled=last_month,
+    """LLM ranks a category_id that is NOT in the org's budget set.
+
+    Drift is no longer fatal: ``_parse_ai_guidance`` drops the unknown id
+    and the deterministic allocator still runs. Since the allocator only
+    ever operates on the org's own facts, a hallucinated id can never
+    reach the output — the deficit is still covered largest-need-first.
+    """
+    await _seed_reallocation_scenario(db, org, user, categories)
+
+    async def fake_call(*args, **kw):
+        return _make_structured_result(
+            {
+                "summary": "drift",
+                # 99999 is NOT a real category for this org.
+                "priority": [99999],
+                "reasoning": [
+                    {"category_id": 99999, "text": "I am hallucinating."}
+                ],
+            }
+        )
+
+    with patch(
+        "app.services.budget_rebalance_service.call_llm_structured",
+        side_effect=fake_call,
+    ):
+        out = await budget_rebalance_service.suggest_rebalance(
+            db, org_id=org.id
+        )
+
+    assert out.status == "ok"
+    assert out.is_balanced is True
+    # The hallucinated id never appears in the (org-scoped) suggestions.
+    assert all(s.category_id != 99999 for s in out.suggestions)
+    # The real deficit (groceries) is still covered deterministically.
+    g_sugg = next(
+        s for s in out.suggestions
+        if s.category_id == categories["groceries"].id
     )
+    assert g_sugg.suggested_amount == Decimal("450.00")
+    assert out.total_suggested == out.total_budget == Decimal("600.00")
+
+
+# ---------- LLM unavailable paths ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_routing_falls_back_to_deterministic(
+    db: AsyncSession,
+    org: Organization,
+    user: User,
+    period: BillingPeriod,
+    categories,
+    budgets,
+):
+    """No AI routing configured → the rebalance still works offline.
+
+    The deterministic allocator covers the deficit largest-need-first and
+    conserves the total; the LLM's priority guidance is simply empty.
+    """
+    await _seed_reallocation_scenario(db, org, user, categories)
 
     async def fake_call(*args, **kw):
         raise NoRoutingConfigured()
@@ -446,12 +459,18 @@ async def test_no_routing_returns_llm_unavailable(
             db, org_id=org.id
         )
 
-    assert out.status == "llm_unavailable"
-    assert "AI rebalance is temporarily unavailable" in out.summary
+    assert out.status == "ok"
+    assert out.is_balanced is True
+    assert out.total_suggested == out.total_budget == Decimal("600.00")
+    g_sugg = next(
+        s for s in out.suggestions
+        if s.category_id == categories["groceries"].id
+    )
+    assert g_sugg.suggested_amount == Decimal("450.00")
 
 
 @pytest.mark.asyncio
-async def test_structured_output_exhausted_returns_llm_unavailable(
+async def test_structured_output_exhausted_falls_back_to_deterministic(
     db: AsyncSession,
     org: Organization,
     user: User,
@@ -459,16 +478,8 @@ async def test_structured_output_exhausted_returns_llm_unavailable(
     categories,
     budgets,
 ):
-    today = datetime.date.today()
-    last_month = today.replace(day=1) - datetime.timedelta(days=1)
-    await _seed_history(
-        db,
-        org=org,
-        user=user,
-        category=categories["groceries"],
-        amount=Decimal("100.00"),
-        settled=last_month,
-    )
+    """Retry budget exhausted → deterministic fallback, still balanced."""
+    await _seed_reallocation_scenario(db, org, user, categories)
 
     async def fake_call(*args, **kw):
         raise StructuredOutputError("STATUS_ERROR_STRUCTURED_OUTPUT")
@@ -481,7 +492,9 @@ async def test_structured_output_exhausted_returns_llm_unavailable(
             db, org_id=org.id
         )
 
-    assert out.status == "llm_unavailable"
+    assert out.status == "ok"
+    assert out.is_balanced is True
+    assert out.total_suggested == out.total_budget == Decimal("600.00")
 
 
 # ---------- contract: no auto-apply -----------------------------------
