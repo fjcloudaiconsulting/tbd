@@ -13,7 +13,8 @@ from app.schemas.budget import (
     BudgetUpdate,
     CopyBudgetsRequest,
 )
-from app.services import budget_service as svc
+from app.schemas.budget_draft import BudgetDraftResponse
+from app.services import budget_draft_service, budget_service as svc
 
 router = APIRouter(prefix="/api/v1/budgets", tags=["budgets"])
 
@@ -82,6 +83,23 @@ async def copy_from_period(
         current_user.org_id,
         source_period_start=body.source_period_start,
         target_period_start=body.target_period_start,
+    )
+
+
+@router.post("/draft-next", response_model=BudgetDraftResponse)
+async def draft_next_period(
+    period_start: datetime.date = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Draft budgets for a (next) period from the last 3 months of spend.
+
+    Projection-only (no LLM): each expense category with spend history
+    gets a proposed amount equal to its trailing 3-month average, skipping
+    categories already budgeted in the target period. Advisory — the
+    frontend applies accepted rows by CREATING budgets."""
+    return await budget_draft_service.suggest_next_period_budget(
+        db, current_user.org_id, period_start=period_start
     )
 
 
