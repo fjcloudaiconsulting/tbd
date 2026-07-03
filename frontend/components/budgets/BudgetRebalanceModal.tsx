@@ -11,6 +11,7 @@ export type RebalanceStatus =
   | "ok"
   | "empty_no_budgets"
   | "empty_no_history"
+  | "empty_no_surplus"
   | "llm_unavailable";
 
 export interface RebalanceSuggestion {
@@ -27,6 +28,12 @@ export interface RebalanceResponse {
   period_start: string | null;
   suggestions: RebalanceSuggestion[];
   summary: string;
+  // Conservation fields (zero-sum rebalance). Optional so older payloads
+  // still type-check; the meter/banner default to a balanced reading.
+  total_budget?: string | number;
+  total_suggested?: string | number;
+  uncovered_overspend?: string | number;
+  is_balanced?: boolean;
 }
 
 interface Budget {
@@ -289,6 +296,17 @@ export default function BudgetRebalanceModal({
                   {response.summary}
                 </p>
               )}
+              {Number(response.uncovered_overspend ?? 0) > 0 && (
+                <div
+                  data-testid="rebalance-uncovered"
+                  className="mb-4 rounded-md bg-warning-dim px-3 py-2 text-xs text-warning"
+                  role="status"
+                >
+                  You&apos;re {formatAmount(Number(response.uncovered_overspend))}{" "}
+                  over plan this period. Spending exceeds your total budget, so
+                  not every category could be fully covered.
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-sm" data-testid="rebalance-diff-table">
                   <thead>
@@ -388,11 +406,26 @@ export default function BudgetRebalanceModal({
                   </tbody>
                 </table>
               </div>
-              <p className="mt-3 text-xs text-text-muted">
+              <div
+                data-testid="rebalance-balance-meter"
+                className={`mt-3 rounded-md px-3 py-2 text-xs ${
+                  Math.abs(acceptedSum) < 0.005
+                    ? "bg-surface-raised/40 text-text-muted"
+                    : "bg-warning-dim text-warning"
+                }`}
+              >
                 {acceptedCount} of {response.suggestions.length} changes
-                selected. Net change: {acceptedSum > 0 ? "+" : ""}
-                {formatAmount(acceptedSum)}.
-              </p>
+                selected.{" "}
+                {Math.abs(acceptedSum) < 0.005 ? (
+                  <>Net change: {formatAmount(0)}. Balanced.</>
+                ) : (
+                  <>
+                    This changes your total budget by{" "}
+                    {acceptedSum > 0 ? "+" : ""}
+                    {formatAmount(acceptedSum)}.
+                  </>
+                )}
+              </div>
             </>
           )}
 
@@ -435,9 +468,11 @@ function EmptyState({
       ? "No budgets yet"
       : status === "empty_no_history"
         ? "Not enough history yet"
-        : status === "llm_unavailable"
-          ? "AI is unavailable"
-          : "Nothing to rebalance";
+        : status === "empty_no_surplus"
+          ? "Nothing to reallocate"
+          : status === "llm_unavailable"
+            ? "AI is unavailable"
+            : "Nothing to rebalance";
   return (
     <div className="py-10 text-center" data-testid="rebalance-empty-state">
       <p className="text-sm font-medium text-text-primary">{title}</p>
