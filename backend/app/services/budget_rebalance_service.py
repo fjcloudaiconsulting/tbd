@@ -165,18 +165,35 @@ def _allocate_rebalance(
     movable = min(total_headroom, total_deficit).quantize(CENT)
     uncovered = (total_deficit - movable).quantize(CENT)
 
-    # --- pull `movable` proportionally from headroom categories ---
+    # --- pull `movable` from headroom categories, proportional to each
+    # category's surplus, via largest-remainder (Hamilton) apportionment
+    # in integer cents. Working in cents keeps every giver's share within
+    # [0, its own headroom] AND makes sum(given) == movable exactly. A
+    # naive "float the rounding residual onto the last giver" approach can
+    # push that giver below its projected need (over-giving) or even hand
+    # it a negative give (raising a surplus category's budget), because the
+    # residual is unbounded; apportionment never does. ---
     given: dict[int, Decimal] = {}
     if total_headroom > 0 and movable > 0:
-        running = Decimal("0")
+        movable_c = int((movable / CENT).to_integral_value())
+        total_hr_c = int((total_headroom / CENT).to_integral_value())
         hids = list(headroom.keys())
-        for cid in hids[:-1]:
-            g = (movable * headroom[cid] / total_headroom).quantize(CENT)
-            given[cid] = g
-            running += g
-        # Assign the rounding residual to the last giver so
-        # sum(given) == movable exactly (never invents/drops a cent).
-        given[hids[-1]] = (movable - running).quantize(CENT)
+        floors: dict[int, int] = {}
+        remainders: dict[int, int] = {}
+        for cid in hids:
+            hr_c = int((headroom[cid] / CENT).to_integral_value())
+            num = movable_c * hr_c
+            floors[cid] = num // total_hr_c
+            remainders[cid] = num % total_hr_c
+        # Distribute the leftover cents to the largest fractional
+        # remainders (ties broken by lowest cid, for determinism). There
+        # are always strictly more positive remainders than leftover
+        # cents, so every +1 lands on a category with headroom to spare.
+        leftover = movable_c - sum(floors.values())
+        for cid in sorted(hids, key=lambda c: (-remainders[c], c))[:leftover]:
+            floors[cid] += 1
+        for cid in hids:
+            given[cid] = (Decimal(floors[cid]) * CENT).quantize(CENT)
 
     # --- distribute `movable` to deficits in priority order (waterfall) ---
     received: dict[int, Decimal] = {}
