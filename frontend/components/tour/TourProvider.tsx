@@ -178,6 +178,30 @@ function TourOverlay({ api }: { api: TourApi }) {
     recompute();
   }, [api.isActive, api.currentStep, recompute]);
 
+  // Bring the active step's anchor into view when it isn't fully visible.
+  // Anchors can sit below the fold (e.g. the recent-transactions dashboard
+  // tile at grid y=19), and the overlay positions its highlight and card from
+  // getBoundingClientRect — a viewport-relative measurement — so an off-screen
+  // anchor would render the step below the fold. We scroll only when the
+  // element is not already fully visible, so on-screen steps (the header,
+  // period nav) are never yanked out of place. The `scroll` listener below
+  // then refreshes the rect as the scroll settles.
+  useEffect(() => {
+    if (!api.isActive || !api.currentStep) return;
+    const el = document.querySelector<HTMLElement>(
+      `[data-tour-id="${CSS.escape(api.currentStep)}"]`,
+    );
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const fullyVisible = r.top >= 0 && r.bottom <= window.innerHeight;
+    if (fullyVisible) return;
+    el.scrollIntoView({
+      block: "center",
+      inline: "nearest",
+      behavior: reducedMotion ? "auto" : "smooth",
+    });
+  }, [api.isActive, api.currentStep, reducedMotion]);
+
   useEffect(() => {
     if (!api.isActive) return;
     const onResize = () => recompute();
@@ -270,9 +294,19 @@ function TourOverlay({ api }: { api: TourApi }) {
 
   // Position the card under the anchor. If the anchor is offscreen or
   // missing, center the card.
+  // Clamp the card's top so a tall or near-bottom anchor can't push the card
+  // below the fold. ESTIMATED_CARD_HEIGHT reserves room for the tallest step
+  // copy; the lower bound keeps it clear of the top edge.
+  const ESTIMATED_CARD_HEIGHT = 220;
   const cardStyle = rect
     ? {
-        top: Math.max(16, rect.top + rect.height + 12),
+        top: Math.max(
+          16,
+          Math.min(
+            rect.top + rect.height + 12,
+            window.innerHeight - ESTIMATED_CARD_HEIGHT,
+          ),
+        ),
         left: Math.max(16, Math.min(rect.left, window.innerWidth - 360)),
       }
     : {

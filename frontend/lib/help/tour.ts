@@ -32,14 +32,22 @@ export const TOUR_FLAG_VALUE_EXTENDED = "extended";
 /** Value written for the original first-run dashboard tour. */
 export const TOUR_FLAG_VALUE_DASHBOARD = "1";
 
-// Trimmed to the two anchors that exist on BOTH the CustomDashboard (now
-// the default) and LegacyDashboard: the header and the period nav. The
-// customizable dashboard's finance tiles are user-arrangeable, so the old
-// import-cta / on-track-tile / account-forecast anchors can't be relied on
-// there. Phase 2b will add stable finance-tile anchors and extend this list.
+// The first-run dashboard tour over the CustomDashboard (now the default).
+// header + period-nav are chrome shared with LegacyDashboard; the finance-tile
+// steps are anchored per tile TYPE in CustomDashboard (not by position), so
+// they stay stable as the user rearranges the canvas. The customize step
+// points at the Customize button that opens drag/resize/add/remove. A tile the
+// user has removed simply has no anchor in the DOM and the overlay auto-skips
+// it, so the tour degrades gracefully on any layout (including LegacyDashboard,
+// which only carries header / period-nav / on-track-tile / account-forecast).
 export const DASHBOARD_TOUR_STEPS = [
   "dashboard.header",
   "dashboard.period-nav",
+  "dashboard.on-track-tile",
+  "dashboard.accounts-tile",
+  "dashboard.account-forecast",
+  "dashboard.recent-transactions",
+  "dashboard.customize",
 ];
 
 /**
@@ -89,6 +97,18 @@ export const STEP_COPY: Record<string, TourStepCopy> = {
   "dashboard.account-forecast": {
     title: "Account forecast",
     body: "We project each account out to the end of the period using your recurring transactions and budgets.",
+  },
+  "dashboard.accounts-tile": {
+    title: "Your accounts",
+    body: "Every account and its balance in one place. Settled and pending are kept apart so the numbers stay honest.",
+  },
+  "dashboard.recent-transactions": {
+    title: "Recent activity",
+    body: "Your latest entries across all accounts. Sort them, page through, and mark anything settled right from here.",
+  },
+  "dashboard.customize": {
+    title: "Make it yours",
+    body: "Use this button to drag, resize, add, or remove tiles. Save when you like the layout, or reset to the default anytime.",
   },
   "transactions.title": {
     title: "Transactions",

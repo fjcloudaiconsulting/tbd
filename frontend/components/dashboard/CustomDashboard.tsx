@@ -17,7 +17,16 @@
  * the Reports editor. Customize mode is desktop-only; mobile renders
  * a read-only single-column stack (same mobileStackHeight pattern).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -51,6 +60,36 @@ import {
 } from "@/lib/reports/stack";
 
 const DEFAULT_LAYOUT: LayoutJson = { version: 1, widgets: [] };
+
+/**
+ * Wrap a tile with its first-run tour anchor (Phase 2b).
+ *
+ * Finance tiles are user-arrangeable, so the tour anchors by tile TYPE rather
+ * than position. ``as="child"`` injects ``data-tour-id`` onto the tile wrapper
+ * itself (no extra span that would break the grid), and a tile the user has
+ * removed simply leaves no anchor, so the tour overlay auto-skips it. The ids
+ * are literal (not a lookup map) so the tour source-scan guard in
+ * ``tests/lib/help-tour.test.ts`` can see each anchor. Keep these in sync with
+ * ``DASHBOARD_TOUR_STEPS`` in ``lib/help/tour.ts``.
+ *
+ * If a user has added two tiles of the same type, both carry the same
+ * data-tour-id; the tour resolves anchors with ``querySelector`` (first match
+ * wins) and highlights the first, which is acceptable.
+ */
+function withTileTourAnchor(type: string, node: ReactElement): ReactNode {
+  switch (type) {
+    case "dash_on_track":
+      return <TourAnchor id="dashboard.on-track-tile" as="child">{node}</TourAnchor>;
+    case "dash_accounts":
+      return <TourAnchor id="dashboard.accounts-tile" as="child">{node}</TourAnchor>;
+    case "dash_account_forecast":
+      return <TourAnchor id="dashboard.account-forecast" as="child">{node}</TourAnchor>;
+    case "dash_recent_transactions":
+      return <TourAnchor id="dashboard.recent-transactions" as="child">{node}</TourAnchor>;
+    default:
+      return node;
+  }
+}
 
 export default function CustomDashboard() {
   const isSmallScreen = useIsMobile();
@@ -331,14 +370,16 @@ export default function CustomDashboard() {
               )}
               {/* Customize / Done toggle — desktop-only */}
               {!isSmallScreen && (
-                <button
-                  type="button"
-                  data-testid="custom-dashboard-customize"
-                  onClick={() => (editMode ? leaveCustomize() : setEditMode(true))}
-                  className={editMode ? btnCanvasActive : btnCanvas}
-                >
-                  {editMode ? "Done" : "Customize"}
-                </button>
+                <TourAnchor id="dashboard.customize" as="child">
+                  <button
+                    type="button"
+                    data-testid="custom-dashboard-customize"
+                    onClick={() => (editMode ? leaveCustomize() : setEditMode(true))}
+                    className={editMode ? btnCanvasActive : btnCanvas}
+                  >
+                    {editMode ? "Done" : "Customize"}
+                  </button>
+                </TourAnchor>
               )}
             </div>
           </div>
@@ -382,15 +423,26 @@ export default function CustomDashboard() {
             >
               {orderedWidgets.map((w) => {
                 const h = mobileStackHeight(w);
+                // The list key lives on a keyed Fragment (renders no DOM), so
+                // the anchor can be applied to the height-constrained wrapper
+                // via as="child" without adding any element to the stack. (A
+                // key on the tile div would be lost: withTileTourAnchor may
+                // return a TourAnchor wrapper element, and that wrapper — not
+                // its cloned child — is the array member React reconciles.)
                 return (
-                  <div key={w.id} style={h ? { height: h } : undefined}>
-                    {renderDashboardWidget(
-                      w as DashboardWidget | Widget,
-                      canvasFilters,
-                      false,
-                      currency,
+                  <Fragment key={w.id}>
+                    {withTileTourAnchor(
+                      w.type,
+                      <div style={h ? { height: h } : undefined}>
+                        {renderDashboardWidget(
+                          w as DashboardWidget | Widget,
+                          canvasFilters,
+                          false,
+                          currency,
+                        )}
+                      </div>,
                     )}
-                  </div>
+                  </Fragment>
                 );
               })}
             </div>
@@ -400,7 +452,7 @@ export default function CustomDashboard() {
               editMode={editModeActive}
               compact
               onLayoutChange={updateLayout}
-              renderWidget={(w) => (
+              renderWidget={(w) =>
                 // h-full is load-bearing: react-grid-layout sizes the grid item
                 // to a fixed pixel box (h*rowHeight + margins); WidgetShell uses
                 // `h-full` to fill it. This wrapper sits between the two (it
@@ -408,28 +460,34 @@ export default function CustomDashboard() {
                 // breaks — tiles collapse to content height inside a taller box,
                 // floating the resize handle and overflowing neighbours. Reports
                 // has no such wrapper (WidgetShell is the grid item's direct child).
-                <div data-testid={`widget-${w.type}`} className="h-full">
-                  <WidgetShell
-                    widgetId={w.id}
-                    selected={selectedWidgetId === w.id}
-                    editMode={editModeActive}
-                    onSelect={() => setSelectedWidgetId(w.id)}
-                    widget={w}
-                    canvasFilters={canvasFilters}
-                    accounts={accounts}
-                    categories={categories}
-                    onRemove={() => removeWidget(w.id)}
-                    onSelectFilters={() => {}}
-                  >
-                    {renderDashboardWidget(
-                      w as DashboardWidget | Widget,
-                      canvasFilters,
-                      editModeActive,
-                      currency,
-                    )}
-                  </WidgetShell>
-                </div>
-              )}
+                // withTileTourAnchor injects the finance-tile tour anchor's
+                // data-tour-id onto this wrapper (no extra element) for the
+                // first-run tour; non-tour tiles pass through unchanged.
+                withTileTourAnchor(
+                  w.type,
+                  <div data-testid={`widget-${w.type}`} className="h-full">
+                    <WidgetShell
+                      widgetId={w.id}
+                      selected={selectedWidgetId === w.id}
+                      editMode={editModeActive}
+                      onSelect={() => setSelectedWidgetId(w.id)}
+                      widget={w}
+                      canvasFilters={canvasFilters}
+                      accounts={accounts}
+                      categories={categories}
+                      onRemove={() => removeWidget(w.id)}
+                      onSelectFilters={() => {}}
+                    >
+                      {renderDashboardWidget(
+                        w as DashboardWidget | Widget,
+                        canvasFilters,
+                        editModeActive,
+                        currency,
+                      )}
+                    </WidgetShell>
+                  </div>,
+                )
+              }
             />
           )}
 
