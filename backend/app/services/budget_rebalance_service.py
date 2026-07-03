@@ -134,6 +134,98 @@ def _project_period_spend(fact: "_CategoryFact") -> Decimal:
     return max(fact.current_mo_actual, fact.last_3mo_avg).quantize(CENT)
 
 
+def _allocate_rebalance(
+    facts: list["_CategoryFact"],
+    priority_ids: list[int],
+    reasoning_by_cat: Optional[dict[int, str]] = None,
+) -> tuple[list[BudgetDeltaSuggestion], Decimal]:
+    """Move available surplus into deficits, conserving the total.
+
+    Returns ``(suggestions_for_changed_rows, uncovered_overspend)``. The
+    sum of new amounts over ALL facts equals the sum of budgets over all
+    facts (zero-sum by construction): we only ever move money that a
+    category is projected NOT to need into categories projected to
+    overspend. ``priority_ids`` orders which deficits are covered first
+    (essential bills before discretionary); any deficit the AI did not
+    name is appended largest-need-first. ``reasoning_by_cat`` supplies
+    per-category narrative; missing entries get a deterministic default.
+    """
+    reasoning_by_cat = reasoning_by_cat or {}
+    proj = {f.category_id: _project_period_spend(f) for f in facts}
+
+    headroom: dict[int, Decimal] = {}  # cid -> positive surplus available
+    deficit: dict[int, Decimal] = {}  # cid -> positive need
+    for f in facts:
+        s = (f.budget_amount - proj[f.category_id]).quantize(CENT)
+        if s > 0:
+            headroom[f.category_id] = s
+        elif s < 0:
+            deficit[f.category_id] = -s
+
+    total_headroom = sum(headroom.values(), Decimal("0"))
+    total_deficit = sum(deficit.values(), Decimal("0"))
+    movable = min(total_headroom, total_deficit).quantize(CENT)
+    uncovered = (total_deficit - movable).quantize(CENT)
+
+    # --- pull `movable` proportionally from headroom categories ---
+    given: dict[int, Decimal] = {}
+    if total_headroom > 0 and movable > 0:
+        running = Decimal("0")
+        hids = list(headroom.keys())
+        for cid in hids[:-1]:
+            g = (movable * headroom[cid] / total_headroom).quantize(CENT)
+            given[cid] = g
+            running += g
+        # Assign the rounding residual to the last giver so
+        # sum(given) == movable exactly (never invents/drops a cent).
+        given[hids[-1]] = (movable - running).quantize(CENT)
+
+    # --- distribute `movable` to deficits in priority order (waterfall) ---
+    received: dict[int, Decimal] = {}
+    ordered = [cid for cid in priority_ids if cid in deficit]
+    # Append any deficit the AI did not name, largest-need first.
+    for cid in sorted(deficit, key=lambda c: deficit[c], reverse=True):
+        if cid not in ordered:
+            ordered.append(cid)
+    remaining = movable
+    for cid in ordered:
+        if remaining <= 0:
+            break
+        take = min(remaining, deficit[cid]).quantize(CENT)
+        received[cid] = take
+        remaining -= take
+
+    # --- build suggestions for changed rows only ---
+    suggestions: list[BudgetDeltaSuggestion] = []
+    for f in facts:
+        cid = f.category_id
+        new_amount = f.budget_amount
+        if cid in given:
+            new_amount = (f.budget_amount - given[cid]).quantize(CENT)
+        elif cid in received:
+            new_amount = (f.budget_amount + received[cid]).quantize(CENT)
+        delta = (new_amount - f.budget_amount).quantize(CENT)
+        if delta == 0:
+            continue
+        default_reason = (
+            f"Freeing {-delta:.2f} of projected surplus"
+            if delta < 0
+            else f"Covering {delta:.2f} of projected overspend"
+        )
+        suggestions.append(
+            BudgetDeltaSuggestion(
+                category_id=cid,
+                category_name=f.category_name,
+                current_amount=f.budget_amount,
+                suggested_amount=new_amount,
+                delta_amount=delta,
+                reasoning=(reasoning_by_cat.get(cid) or default_reason)[:400],
+            )
+        )
+
+    return suggestions, uncovered
+
+
 async def _gather_facts(
     db: AsyncSession,
     *,
