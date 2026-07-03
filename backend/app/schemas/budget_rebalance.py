@@ -41,9 +41,14 @@ class BudgetRebalanceResponse(BaseModel):
         "ok",
         "empty_no_budgets",
         "empty_no_history",
+        "empty_no_surplus",
         "llm_unavailable",
     ]
     period_start: Optional[str] = None
     suggestions: list[BudgetDeltaSuggestion] = Field(default_factory=list)
     summary: str = ""
+    total_budget: Decimal = Decimal("0")
+    total_suggested: Decimal = Decimal("0")
+    uncovered_overspend: Decimal = Decimal("0")
+    is_balanced: bool = True
     request_id: Optional[str] = None
