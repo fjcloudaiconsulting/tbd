@@ -33,6 +33,7 @@ const BudgetOverviewChart = dynamic(() => import("./BudgetOverviewChart"), {
 import { useAiStatus } from "@/lib/hooks/use-ai-status";
 import { SetUpAiCta } from "@/components/ai/SetUpAiCta";
 import BudgetRebalanceModal from "@/components/budgets/BudgetRebalanceModal";
+import BudgetDraftModal from "@/components/budgets/BudgetDraftModal";
 
 export default function BudgetsPage() {
   const { user, loading } = useAuth();
@@ -66,6 +67,8 @@ export default function BudgetsPage() {
   // and never auto-applies; user accept/skip per row, then Apply
   // writes via existing PUT /budgets/{id}.
   const [rebalanceOpen, setRebalanceOpen] = useState(false);
+  // Next-period AI draft (projection-only; applies by CREATING budgets).
+  const [draftOpen, setDraftOpen] = useState(false);
 
   const ai = useAiStatus();
   const budgetAi = ai?.budget;
@@ -74,19 +77,36 @@ export default function BudgetsPage() {
   const selectedPeriod = periods.length > 0 ? periods[periodIdx] : null;
   const periodStart = selectedPeriod?.start_date ?? "";
   const isCurrentPeriod = selectedPeriod?.end_date === null;
+  // A future stub (start_date after today) is the editable "next" period.
+  const isNextPeriod = selectedPeriod
+    ? selectedPeriod.start_date > todayISO()
+    : false;
+  // Current + next are editable; past (closed) periods are read-only.
+  const isEditable = isCurrentPeriod || isNextPeriod;
 
   const loadRefs = useCallback(async () => {
+    // Guarantee the immediate next-period stub exists so the user can
+    // always budget it (idempotent; no-op if it already exists).
+    await apiFetch("/api/v1/settings/billing-periods/ensure-future?count=1", {
+      method: "POST",
+    }).catch(() => {});
     const [c, p] = await Promise.all([
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
     ]);
     setCategories(c ?? []);
-    // Drop future stubs created by Forecasts /ensure-future. The Budget
-    // page is current-period control + past read-only review only.
+    // Show current + past periods, plus the single nearest FUTURE stub as
+    // the "next" period (design: current + next only, not multi-period).
     const today = todayISO();
-    const pl = (p ?? []).filter((bp) => bp.start_date <= today);
+    const past = (p ?? []).filter((bp) => bp.start_date <= today);
+    const future = (p ?? [])
+      .filter((bp) => bp.start_date > today)
+      .sort((a, b) => a.start_date.localeCompare(b.start_date));
+    // Prepend the next stub so index order stays newest-first (nav relies
+    // on it): [next, current, prev, ...].
+    const pl = future.length > 0 ? [future[0], ...past] : past;
     setPeriods(pl);
-    // Default to current period (open = no end_date), not index 0
+    // Default to the current period (open = no end_date), not the next one.
     const currentIdx = pl.findIndex((bp) => bp.end_date === null);
     if (currentIdx >= 0) setPeriodIdx(currentIdx);
   }, []);
@@ -130,17 +150,17 @@ export default function BudgetsPage() {
     void refreshAfterTransactionAdded();
   });
 
-  // C+ plan: all mutations are current-period-only. If the user
-  // navigates to a past period mid-edit, drop any open form/state so
-  // they can't submit against a closed period.
+  // Mutations are allowed only for editable (current + next) periods. If
+  // the user navigates to a past (closed) period mid-edit, drop any open
+  // form/state so they can't submit against a read-only period.
   useEffect(() => {
-    if (!isCurrentPeriod) {
+    if (!isEditable) {
       setShowForm(false);
       setEditingId(null);
       setTransferringId(null);
       setConfirmDeleteId(null);
     }
-  }, [isCurrentPeriod]);
+  }, [isEditable]);
 
   // Master categories that don't have a budget yet
   const masterCategories = categories.filter((c) => c.parent_id === null && c.type === "expense");
@@ -150,12 +170,36 @@ export default function BudgetsPage() {
   async function handleFromForecast() {
     setError("");
     try {
-      const updated = await apiFetch<Budget[]>("/api/v1/budgets/from-forecast", { method: "POST" });
+      const url = periodStart
+        ? `/api/v1/budgets/from-forecast?period_start=${periodStart}`
+        : "/api/v1/budgets/from-forecast";
+      const updated = await apiFetch<Budget[]>(url, { method: "POST" });
       setBudgets(updated ?? []);
     } catch (err) {
-      // Most common case: no plan exists for the current period — the
-      // backend's ValidationError message tells the user to create one
-      // on the Forecasts page first.
+      // Most common case: no plan exists for this period — the backend's
+      // ValidationError message tells the user to create one on the
+      // Forecasts page first.
+      setError(extractErrorMessage(err));
+    }
+  }
+
+  async function handleCopyForward() {
+    setError("");
+    const current = periods.find((p) => p.end_date === null);
+    if (!current || !periodStart) return;
+    try {
+      const updated = await apiFetch<Budget[]>(
+        "/api/v1/budgets/copy-from-period",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            source_period_start: current.start_date,
+            target_period_start: periodStart,
+          }),
+        },
+      );
+      setBudgets(updated ?? []);
+    } catch (err) {
       setError(extractErrorMessage(err));
     }
   }
@@ -264,7 +308,7 @@ export default function BudgetsPage() {
               />
             )
           )}
-          {isCurrentPeriod && availableCategories.length > 0 && (
+          {isEditable && availableCategories.length > 0 && (
             <button onClick={() => setShowForm(!showForm)} className={`${btnPrimary} sm:min-h-0`}>
               {showForm ? "Cancel" : "+ Add Budget"}
             </button>
@@ -281,6 +325,7 @@ export default function BudgetsPage() {
           <span className="text-sm text-text-secondary">
             {selectedPeriod?.start_date}{selectedPeriod?.end_date ? ` – ${selectedPeriod.end_date}` : ""}
             {isCurrentPeriod && <span className="ml-2 text-xs text-success font-medium">current</span>}
+            {isNextPeriod && <span className="ml-2 text-xs text-accent font-medium">next</span>}
           </span>
           <button onClick={() => setPeriodIdx(Math.max(periodIdx - 1, 0))} disabled={periodIdx <= 0} className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded p-1 text-text-muted hover:bg-surface-raised disabled:opacity-30 md:min-h-0 md:min-w-0" aria-label="Next period">
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
@@ -291,7 +336,7 @@ export default function BudgetsPage() {
         </div>
       )}
 
-      {!isCurrentPeriod && periods.length > 0 && (
+      {!isEditable && periods.length > 0 && (
         <div className="mb-5 rounded-md border border-border-subtle bg-surface-raised px-4 py-3 text-sm text-text-secondary">
           This period is closed (read-only).
         </div>
@@ -332,7 +377,7 @@ export default function BudgetsPage() {
         </div>
       )}
 
-      {showForm && isCurrentPeriod && (
+      {showForm && isEditable && (
         <div className={`mb-6 ${card} p-6`}>
           <form onSubmit={handleAdd} className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end">
             <div className="w-full sm:flex-1 sm:min-w-[200px]">
@@ -420,7 +465,7 @@ export default function BudgetsPage() {
                 const transferTargets = masterCategories.filter((c) => c.id !== b.category_id);
                 return (
                   <div key={b.id} className="px-6 py-3">
-                    {editingId === b.id && isCurrentPeriod ? (
+                    {editingId === b.id && isEditable ? (
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                         <span className="text-sm font-medium text-text-primary sm:flex-1">{b.category_name}</span>
                         <input type="number" step="0.01" min="0.01" value={editAmount} onChange={(e) => setEditAmount(e.target.value)}
@@ -447,7 +492,7 @@ export default function BudgetsPage() {
                             <span className={`text-xs tabular-nums ${overBudget ? "text-danger" : "text-text-muted"}`}>
                               {b.percent_used}%
                             </span>
-                            {isCurrentPeriod && (
+                            {isEditable && (
                               <div className="flex flex-wrap gap-2 ml-auto md:ml-0">
                                 <button onClick={() => { setTransferringId(transferringId === b.id ? null : b.id); setTransferCategoryId(""); setTransferAmount(""); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Transfer</button>
                                 <button onClick={() => { setEditingId(b.id); setEditAmount(String(b.amount)); }} className="min-h-[44px] text-xs text-text-muted hover:text-accent md:min-h-0">Edit</button>
@@ -456,7 +501,7 @@ export default function BudgetsPage() {
                             )}
                           </div>
                         </div>
-                        {transferringId === b.id && isCurrentPeriod && (
+                        {transferringId === b.id && isEditable && (
                           <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
                             <select value={transferCategoryId} onChange={(e) => setTransferCategoryId(e.target.value === "" ? "" : Number(e.target.value))} className={`w-full min-w-0 sm:flex-1 sm:basis-40 ${input}`}>
                               <option value="">Select target category</option>
@@ -477,12 +522,39 @@ export default function BudgetsPage() {
                 );
               })}
               {budgets.length === 0 && (
-                <div className="px-6 py-8 text-center text-sm text-text-muted">
-                  {isCurrentPeriod
-                    ? <>No budgets set. Use <strong>+ Add Budget</strong> to add one, or <strong>From Forecast</strong> to seed them from your plan.</>
-                    : <>No budgets were set for this period.</>
-                  }
-                </div>
+                isNextPeriod ? (
+                  <div className="px-6 py-8 text-center" data-testid="next-period-seed">
+                    <p className="mb-4 text-sm text-text-muted">
+                      Get a head start on next period. Seed its budgets, then
+                      fine-tune each one.
+                    </p>
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <button onClick={handleFromForecast} className={btnSecondary}>
+                        From forecast
+                      </button>
+                      <button onClick={handleCopyForward} className={btnSecondary}>
+                        Copy this period
+                      </button>
+                      <button
+                        onClick={() => setDraftOpen(true)}
+                        className={btnSecondary}
+                        data-testid="ai-draft-btn"
+                      >
+                        AI draft from trends
+                      </button>
+                      <button onClick={() => setShowForm(true)} className={btnPrimary}>
+                        Start blank
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="px-6 py-8 text-center text-sm text-text-muted">
+                    {isCurrentPeriod
+                      ? <>No budgets set. Use <strong>+ Add Budget</strong> to add one, or <strong>From Forecast</strong> to seed them from your plan.</>
+                      : <>No budgets were set for this period.</>
+                    }
+                  </div>
+                )
               )}
             </div>
             </div>
@@ -491,7 +563,7 @@ export default function BudgetsPage() {
         </div>
       )}
       <ConfirmModal
-        open={isCurrentPeriod && confirmDeleteId !== null}
+        open={isEditable && confirmDeleteId !== null}
         title="Remove Budget"
         message="Remove this budget? This cannot be undone."
         confirmLabel="Remove"
@@ -510,6 +582,14 @@ export default function BudgetsPage() {
           void loadBudgets();
         }}
         onClose={() => setRebalanceOpen(false)}
+      />
+      <BudgetDraftModal
+        open={draftOpen}
+        periodStart={periodStart}
+        onApplied={() => {
+          void loadBudgets();
+        }}
+        onClose={() => setDraftOpen(false)}
       />
     </AppShell>
   );
