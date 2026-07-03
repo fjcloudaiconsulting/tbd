@@ -33,14 +33,19 @@ describe("tour constants", () => {
     expect(TOUR_FLAG_VALUE_EXTENDED.length).toBeGreaterThan(0);
   });
 
-  it("dashboard tour is the two shared anchors and stays in /dashboard", () => {
-    // Trimmed for the customizable-dashboard global flip: only the header and
-    // period nav exist on BOTH CustomDashboard (now default) and
-    // LegacyDashboard. Phase 2b will add stable finance-tile anchors and grow
-    // this list back out.
+  it("dashboard tour walks the header, period nav, core finance tiles, and customize, all in /dashboard", () => {
+    // Phase 2b grew the first-run tour back out over the CustomDashboard
+    // (now the default): the header + period nav (shared with LegacyDashboard)
+    // plus the three core finance tiles, recent activity, and the Customize
+    // affordance. Tiles a user has removed simply auto-skip at the overlay.
     expect(DASHBOARD_TOUR_STEPS).toEqual([
       "dashboard.header",
       "dashboard.period-nav",
+      "dashboard.on-track-tile",
+      "dashboard.accounts-tile",
+      "dashboard.account-forecast",
+      "dashboard.recent-transactions",
+      "dashboard.customize",
     ]);
     for (const id of DASHBOARD_TOUR_STEPS) {
       expect(pagePrefix(id)).toBe("dashboard");
