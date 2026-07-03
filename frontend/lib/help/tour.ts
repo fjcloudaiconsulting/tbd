@@ -108,7 +108,7 @@ export const STEP_COPY: Record<string, TourStepCopy> = {
   },
   "dashboard.customize": {
     title: "Make it yours",
-    body: "Click Customize to drag, resize, add, or remove tiles. Save when you like the layout, or reset to the default anytime.",
+    body: "Use this button to drag, resize, add, or remove tiles. Save when you like the layout, or reset to the default anytime.",
   },
   "transactions.title": {
     title: "Transactions",

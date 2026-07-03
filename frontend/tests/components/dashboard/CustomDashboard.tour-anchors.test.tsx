@@ -87,10 +87,14 @@ vi.mock("@/lib/hooks/use-persisted-sort", async () => {
   };
 });
 
+const { mockIsMobile } = vi.hoisted(() => ({ mockIsMobile: vi.fn(() => false) }));
 vi.mock("@/lib/hooks/use-is-mobile", () => ({
-  useIsMobile: () => false,
+  useIsMobile: () => mockIsMobile(),
 }));
 
+// Faithful stand-in for the real Canvas, which wraps each renderWidget(w) in
+// `<div key={w.id} data-widget-id={w.id}>` (reports/Canvas.tsx). Mirroring the
+// wrapper keeps the mock from hiding an anchor-placement drift.
 vi.mock("@/components/reports/Canvas", () => ({
   default: ({
     renderWidget,
@@ -101,7 +105,9 @@ vi.mock("@/components/reports/Canvas", () => ({
   }) => (
     <div data-testid="canvas-stub">
       {layout.widgets.map((w) => (
-        <div key={w.id}>{renderWidget(w)}</div>
+        <div key={w.id} data-widget-id={w.id}>
+          {renderWidget(w)}
+        </div>
       ))}
     </div>
   ),
@@ -156,6 +162,7 @@ function makeApiFetchHandler() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockIsMobile.mockReturnValue(false);
   vi.mocked(dashboardApi.getDashboard).mockResolvedValue(DASHBOARD_RESPONSE as never);
   vi.mocked(apiFetch).mockImplementation(makeApiFetchHandler() as never);
 });
@@ -187,6 +194,17 @@ describe("CustomDashboard — first-run tour anchors", () => {
         `data-tour-id="${id}" should not be on a TourAnchor wrapper span`,
       ).not.toBe("tour-anchor");
     }
+
+    // The customize anchor must land on the actual clickable button, not a
+    // wrapper, so the tour highlights what the copy tells the user to use.
+    expect(container.querySelector('[data-tour-id="dashboard.customize"]')).toBe(
+      screen.getByTestId("custom-dashboard-customize"),
+    );
+
+    // Finance-tile anchors must be descendants of the Canvas grid item wrapper
+    // (data-widget-id), i.e. on the tile itself, not hoisted above the grid.
+    const onTrack = container.querySelector('[data-tour-id="dashboard.on-track-tile"]');
+    expect(onTrack?.closest("[data-widget-id]")).not.toBeNull();
   });
 
   it("covers all DASHBOARD_TOUR_STEPS between CustomDashboard and the period nav", () => {
@@ -217,5 +235,32 @@ describe("CustomDashboard — first-run tour anchors", () => {
     expect(container.querySelector('[data-tour-id="dashboard.accounts-tile"]')).toBeNull();
     // The other tiles' anchors are still present.
     expect(container.querySelector('[data-tour-id="dashboard.on-track-tile"]')).not.toBeNull();
+  });
+
+  it("keeps finance-tile anchors in the mobile single-column stack, without the desktop-only customize anchor", async () => {
+    mockIsMobile.mockReturnValue(true);
+    const { container } = render(<CustomDashboard />);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("custom-dashboard-loading")).not.toBeInTheDocument(),
+    );
+
+    // Mobile renders the read-only stack, not the Canvas.
+    expect(screen.getByTestId("custom-dashboard-stack")).toBeInTheDocument();
+
+    // The four finance-tile anchors still land on real elements in the stack.
+    for (const id of [
+      "dashboard.on-track-tile",
+      "dashboard.accounts-tile",
+      "dashboard.account-forecast",
+      "dashboard.recent-transactions",
+    ]) {
+      const el = container.querySelector(`[data-tour-id="${id}"]`);
+      expect(el, `missing mobile data-tour-id="${id}"`).not.toBeNull();
+      expect((el as HTMLElement).getAttribute("data-testid")).not.toBe("tour-anchor");
+    }
+
+    // The Customize button is desktop-only, so its anchor is legitimately absent.
+    expect(container.querySelector('[data-tour-id="dashboard.customize"]')).toBeNull();
   });
 });

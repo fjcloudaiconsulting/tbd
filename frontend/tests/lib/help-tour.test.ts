@@ -79,10 +79,13 @@ describe("tour constants", () => {
     }
   });
 
-  it("no copy uses an em-dash (house style)", () => {
+  it("no copy uses an em-dash or en-dash (house style)", () => {
+    // House style bans em-dashes; en-dashes are the same reading hazard, so
+    // guard both (U+2014 and U+2013).
+    const DASH = /[—–]/;
     for (const [id, copy] of Object.entries(STEP_COPY)) {
-      expect(copy.title, `id=${id}`).not.toMatch(/—/);
-      expect(copy.body, `id=${id}`).not.toMatch(/—/);
+      expect(copy.title, `id=${id}`).not.toMatch(DASH);
+      expect(copy.body, `id=${id}`).not.toMatch(DASH);
     }
   });
 
@@ -102,6 +105,11 @@ describe("tour constants", () => {
     // each step id appearing either as `data-tour-id="X"` or
     // `<TourAnchor id="X">`. Catches authoring drift (renamed step,
     // missing wiring) before it ships.
+    //
+    // Caveat: this proves the literal exists SOMEWHERE under app/ or
+    // components/, not that it sits on the surface the step routes to. A
+    // per-route assertion would be stronger; the runtime render tests
+    // (CustomDashboard.tour-anchors.test.tsx) cover the dashboard steps.
     const fs = await import("node:fs");
     const path = await import("node:path");
     const ROOT = path.resolve(__dirname, "../..");
@@ -137,6 +145,18 @@ describe("tour constants", () => {
       const anchor = `<TourAnchor id="${id}"`;
       const found = haystack.includes(direct) || haystack.includes(anchor);
       expect(found, `step "${id}" has no matching data-tour-id or <TourAnchor id="${id}"> in frontend/app or frontend/components`).toBe(true);
+    }
+
+    // Reverse guard: every STEP_COPY entry must also have a live anchor, so
+    // copy for a since-removed step can't rot silently in the map.
+    for (const id of Object.keys(STEP_COPY)) {
+      const found =
+        haystack.includes(`data-tour-id="${id}"`) ||
+        haystack.includes(`<TourAnchor id="${id}"`);
+      expect(
+        found,
+        `STEP_COPY["${id}"] is orphaned: no data-tour-id or <TourAnchor id="${id}"> in frontend/app or frontend/components`,
+      ).toBe(true);
     }
   });
 });

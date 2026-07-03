@@ -18,6 +18,7 @@
  * a read-only single-column stack (same mobileStackHeight pattern).
  */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -70,6 +71,10 @@ const DEFAULT_LAYOUT: LayoutJson = { version: 1, widgets: [] };
  * are literal (not a lookup map) so the tour source-scan guard in
  * ``tests/lib/help-tour.test.ts`` can see each anchor. Keep these in sync with
  * ``DASHBOARD_TOUR_STEPS`` in ``lib/help/tour.ts``.
+ *
+ * If a user has added two tiles of the same type, both carry the same
+ * data-tour-id; the tour resolves anchors with ``querySelector`` (first match
+ * wins) and highlights the first, which is acceptable.
  */
 function withTileTourAnchor(type: string, node: ReactElement): ReactNode {
   switch (type) {
@@ -418,19 +423,26 @@ export default function CustomDashboard() {
             >
               {orderedWidgets.map((w) => {
                 const h = mobileStackHeight(w);
-                // Apply the tour anchor to the existing height-constrained
-                // wrapper via as="child" (cloneElement preserves the key), so
-                // no extra element enters the fixed-height stack.
-                return withTileTourAnchor(
-                  w.type,
-                  <div key={w.id} style={h ? { height: h } : undefined}>
-                    {renderDashboardWidget(
-                      w as DashboardWidget | Widget,
-                      canvasFilters,
-                      false,
-                      currency,
+                // The list key lives on a keyed Fragment (renders no DOM), so
+                // the anchor can be applied to the height-constrained wrapper
+                // via as="child" without adding any element to the stack. (A
+                // key on the tile div would be lost: withTileTourAnchor may
+                // return a TourAnchor wrapper element, and that wrapper — not
+                // its cloned child — is the array member React reconciles.)
+                return (
+                  <Fragment key={w.id}>
+                    {withTileTourAnchor(
+                      w.type,
+                      <div style={h ? { height: h } : undefined}>
+                        {renderDashboardWidget(
+                          w as DashboardWidget | Widget,
+                          canvasFilters,
+                          false,
+                          currency,
+                        )}
+                      </div>,
                     )}
-                  </div>,
+                  </Fragment>
                 );
               })}
             </div>
