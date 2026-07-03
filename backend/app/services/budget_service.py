@@ -16,7 +16,11 @@ from app.models.category import Category
 from app.models.forecast_plan import ForecastItemType, ForecastPlan
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
-from app.services.billing_service import get_current_period, resolve_period
+from app.services.billing_service import (
+    ensure_future_periods,
+    get_current_period,
+    resolve_period,
+)
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.transaction_filters import (
     effective_period_date_expr,
@@ -307,18 +311,26 @@ async def _get_existing_budget_cat_ids(
 
 
 async def create_budgets_from_forecast(
-    db: AsyncSession, org_id: int,
+    db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
 ) -> list[BudgetResponse]:
-    """Copy expense items from the current period's forecast plan into
-    Budget rows for the same period. Categories that already have a
-    budget are skipped — calling this twice is a no-op on the second
-    call.
+    """Copy expense items from a period's forecast plan into Budget rows
+    for that same period. Categories that already have a budget are
+    skipped — calling this twice is a no-op on the second call.
 
-    Raises ValidationError if no plan exists for the current period;
+    ``period_start`` defaults to the current open period (back-compat).
+    Pass a future period's start to seed the NEXT period from its plan;
+    the next-period BillingPeriod stub is materialized on demand so
+    ``resolve_period`` can find it.
+
+    Raises ValidationError if no plan exists for the resolved period;
     the user is expected to create or copy one on the Forecasts page
     first. Returns the full budget list for the period.
     """
-    period = await get_current_period(db, org_id)
+    # Only touch the future-stub machinery when explicitly targeting a
+    # named period, so the current-period path stays side-effect-free.
+    if period_start is not None:
+        await ensure_future_periods(db, org_id=org_id)
+    period = await resolve_period(db, org_id, period_start)
 
     plan_result = await db.execute(
         select(ForecastPlan).where(
@@ -329,7 +341,7 @@ async def create_budgets_from_forecast(
     plan = plan_result.scalar_one_or_none()
     if plan is None:
         raise ValidationError(
-            "No forecast plan exists for the current period. "
+            "No forecast plan exists for this period. "
             "Create one on the Forecasts page first."
         )
     await db.refresh(plan, ["items"])
@@ -370,3 +382,61 @@ async def create_budgets_from_forecast(
         await db.commit()
 
     return await list_budgets(db, org_id, period_start=period.start_date)
+
+
+async def copy_budgets_from_period(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    source_period_start: datetime.date,
+    target_period_start: datetime.date | None = None,
+) -> list[BudgetResponse]:
+    """Seed a target period's budgets by copying a source period's amounts.
+
+    Categories already budgeted in the target are skipped, so a repeat
+    call is a no-op (idempotent). ``target_period_start`` defaults to the
+    current period; the next-period stub is materialized on demand so
+    ``resolve_period`` can find it. Raises ValidationError if the source
+    period has no budgets to copy.
+    """
+    await ensure_future_periods(db, org_id=org_id)
+    target = await resolve_period(db, org_id, target_period_start)
+    source = await resolve_period(db, org_id, source_period_start)
+
+    source_rows = (
+        await db.execute(
+            select(Budget).where(
+                Budget.org_id == org_id,
+                Budget.period_start == source.start_date,
+            )
+        )
+    ).scalars().all()
+    if not source_rows:
+        raise ValidationError("Source period has no budgets to copy")
+
+    existing_cat_ids = await _get_existing_budget_cat_ids(db, org_id, target.start_date)
+
+    # Per-row savepoint mirrors create_budgets_from_forecast: a concurrent
+    # insert of the same (org, category, period) only rolls back THAT row.
+    from sqlalchemy.exc import IntegrityError
+    inserted_any = False
+    for row in source_rows:
+        if row.category_id in existing_cat_ids:
+            continue
+        try:
+            async with db.begin_nested():
+                db.add(Budget(
+                    org_id=org_id,
+                    category_id=row.category_id,
+                    amount=row.amount,
+                    period_start=target.start_date,
+                    period_end=target.end_date,
+                ))
+                await db.flush()
+            inserted_any = True
+        except IntegrityError:
+            pass
+    if inserted_any:
+        await db.commit()
+
+    return await list_budgets(db, org_id, period_start=target.start_date)
