@@ -6,7 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
-from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetTransfer, BudgetUpdate
+from app.schemas.budget import (
+    BudgetCreate,
+    BudgetResponse,
+    BudgetTransfer,
+    BudgetUpdate,
+    CopyBudgetsRequest,
+)
 from app.services import budget_service as svc
 
 router = APIRouter(prefix="/api/v1/budgets", tags=["budgets"])
@@ -56,6 +62,26 @@ async def create_from_forecast(
     calls. Returns the full budget list for that period."""
     return await svc.create_budgets_from_forecast(
         db, current_user.org_id, period_start=period_start
+    )
+
+
+@router.post("/copy-from-period", response_model=list[BudgetResponse])
+async def copy_from_period(
+    body: CopyBudgetsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Seed a target period's budgets from a source period's amounts.
+
+    ``target_period_start`` defaults to the current period; pass a future
+    period's start to copy the current period forward. Skips categories
+    already budgeted in the target — idempotent. Returns the target
+    period's full budget list."""
+    return await svc.copy_budgets_from_period(
+        db,
+        current_user.org_id,
+        source_period_start=body.source_period_start,
+        target_period_start=body.target_period_start,
     )
 
 

@@ -20,6 +20,11 @@ class BudgetTransfer(BaseModel):
     amount: Decimal = Field(gt=0)
 
 
+class CopyBudgetsRequest(BaseModel):
+    source_period_start: datetime.date
+    target_period_start: Optional[datetime.date] = None
+
+
 class BudgetResponse(BaseModel):
     id: int
     category_id: int

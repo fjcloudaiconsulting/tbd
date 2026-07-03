@@ -382,3 +382,61 @@ async def create_budgets_from_forecast(
         await db.commit()
 
     return await list_budgets(db, org_id, period_start=period.start_date)
+
+
+async def copy_budgets_from_period(
+    db: AsyncSession,
+    org_id: int,
+    *,
+    source_period_start: datetime.date,
+    target_period_start: datetime.date | None = None,
+) -> list[BudgetResponse]:
+    """Seed a target period's budgets by copying a source period's amounts.
+
+    Categories already budgeted in the target are skipped, so a repeat
+    call is a no-op (idempotent). ``target_period_start`` defaults to the
+    current period; the next-period stub is materialized on demand so
+    ``resolve_period`` can find it. Raises ValidationError if the source
+    period has no budgets to copy.
+    """
+    await ensure_future_periods(db, org_id=org_id)
+    target = await resolve_period(db, org_id, target_period_start)
+    source = await resolve_period(db, org_id, source_period_start)
+
+    source_rows = (
+        await db.execute(
+            select(Budget).where(
+                Budget.org_id == org_id,
+                Budget.period_start == source.start_date,
+            )
+        )
+    ).scalars().all()
+    if not source_rows:
+        raise ValidationError("Source period has no budgets to copy")
+
+    existing_cat_ids = await _get_existing_budget_cat_ids(db, org_id, target.start_date)
+
+    # Per-row savepoint mirrors create_budgets_from_forecast: a concurrent
+    # insert of the same (org, category, period) only rolls back THAT row.
+    from sqlalchemy.exc import IntegrityError
+    inserted_any = False
+    for row in source_rows:
+        if row.category_id in existing_cat_ids:
+            continue
+        try:
+            async with db.begin_nested():
+                db.add(Budget(
+                    org_id=org_id,
+                    category_id=row.category_id,
+                    amount=row.amount,
+                    period_start=target.start_date,
+                    period_end=target.end_date,
+                ))
+                await db.flush()
+            inserted_any = True
+        except IntegrityError:
+            pass
+    if inserted_any:
+        await db.commit()
+
+    return await list_budgets(db, org_id, period_start=target.start_date)
