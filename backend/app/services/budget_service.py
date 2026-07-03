@@ -341,7 +341,7 @@ async def create_budgets_from_forecast(
     plan = plan_result.scalar_one_or_none()
     if plan is None:
         raise ValidationError(
-            "No forecast plan exists for the current period. "
+            "No forecast plan exists for this period. "
             "Create one on the Forecasts page first."
         )
     await db.refresh(plan, ["items"])
