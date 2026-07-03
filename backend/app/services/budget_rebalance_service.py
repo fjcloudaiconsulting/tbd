@@ -118,6 +118,22 @@ class _CategoryFact:
     current_mo_actual: Decimal
 
 
+# Money quantum for every rebalance computation.
+CENT = Decimal("0.01")
+
+
+def _project_period_spend(fact: "_CategoryFact") -> Decimal:
+    """Conservative projected full-period spend for one category.
+
+    ``max(current_mo_actual, last_3mo_avg)``: a category already pacing
+    above its 3-month average is projected at the higher run-rate, so the
+    allocator never frees money a category is on track to need. Early in a
+    period, ``current_mo_actual`` is small and the 3-month average drives
+    the projection.
+    """
+    return max(fact.current_mo_actual, fact.last_3mo_avg).quantize(CENT)
+
+
 async def _gather_facts(
     db: AsyncSession,
     *,
