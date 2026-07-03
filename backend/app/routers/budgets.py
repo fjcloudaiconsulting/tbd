@@ -43,15 +43,20 @@ async def update_budget(
 
 @router.post("/from-forecast", response_model=list[BudgetResponse])
 async def create_from_forecast(
+    period_start: datetime.date | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Seed current-period budgets from the active forecast plan.
+    """Seed a period's budgets from its forecast plan.
 
     Copies expense forecast items into Budget rows for the same period.
-    Skips categories that already have a budget — idempotent on repeat
-    calls. Returns the full budget list for the current period."""
-    return await svc.create_budgets_from_forecast(db, current_user.org_id)
+    ``period_start`` defaults to the current period; pass a future
+    period's start to seed the next period from its plan. Skips
+    categories that already have a budget — idempotent on repeat
+    calls. Returns the full budget list for that period."""
+    return await svc.create_budgets_from_forecast(
+        db, current_user.org_id, period_start=period_start
+    )
 
 
 @router.post("/transfer", response_model=list[BudgetResponse])

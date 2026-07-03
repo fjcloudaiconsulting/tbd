@@ -203,3 +203,49 @@ async def test_idempotent_on_repeat_call(session_factory):
     # Same set of budgets after both calls. Same row IDs => no new rows on call 2.
     assert {b.id for b in first} == {b.id for b in second}
     assert len(first) == 2
+
+
+@pytest.mark.asyncio
+async def test_from_forecast_seeds_named_next_period(session_factory):
+    """Period-aware seed: from-forecast can target the NEXT period's plan
+    without touching the current period. The next-period BillingPeriod
+    stub is materialized on demand (ensure_future_periods)."""
+    from app.services.billing_service import ensure_future_periods
+
+    seed = await _seed(session_factory, with_plan=True)  # current 2026-04-01 + plan
+    next_start = datetime.date(2026, 5, 1)
+
+    async with session_factory() as db:
+        await ensure_future_periods(db, seed["org_id"])
+        next_bp = await db.scalar(
+            select(BillingPeriod).where(
+                BillingPeriod.org_id == seed["org_id"],
+                BillingPeriod.start_date == next_start,
+            )
+        )
+        assert next_bp is not None, "ensure_future_periods should create the next stub"
+        plan = ForecastPlan(
+            org_id=seed["org_id"], billing_period_id=next_bp.id, status=PlanStatus.ACTIVE,
+        )
+        db.add(plan)
+        await db.commit()
+        db.add(ForecastPlanItem(
+            plan_id=plan.id, org_id=seed["org_id"], category_id=seed["cats"]["groceries"],
+            type=ForecastItemType.EXPENSE, planned_amount=Decimal("250"),
+            source=ItemSource.MANUAL,
+        ))
+        await db.commit()
+
+    async with session_factory() as db:
+        out = await budget_service.create_budgets_from_forecast(
+            db, seed["org_id"], period_start=next_start
+        )
+
+    by_cat = {r.category_id: r for r in out}
+    assert by_cat[seed["cats"]["groceries"]].amount == Decimal("250")
+    assert all(r.period_start == next_start for r in out)
+
+    # The current period was seeded nothing by the next-period call.
+    async with session_factory() as db:
+        current = await budget_service.list_budgets(db, seed["org_id"])
+    assert current == []

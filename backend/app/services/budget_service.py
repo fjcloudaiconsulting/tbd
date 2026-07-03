@@ -16,7 +16,11 @@ from app.models.category import Category
 from app.models.forecast_plan import ForecastItemType, ForecastPlan
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
 from app.schemas.budget import BudgetCreate, BudgetResponse, BudgetUpdate
-from app.services.billing_service import get_current_period, resolve_period
+from app.services.billing_service import (
+    ensure_future_periods,
+    get_current_period,
+    resolve_period,
+)
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.transaction_filters import (
     effective_period_date_expr,
@@ -307,18 +311,26 @@ async def _get_existing_budget_cat_ids(
 
 
 async def create_budgets_from_forecast(
-    db: AsyncSession, org_id: int,
+    db: AsyncSession, org_id: int, period_start: datetime.date | None = None,
 ) -> list[BudgetResponse]:
-    """Copy expense items from the current period's forecast plan into
-    Budget rows for the same period. Categories that already have a
-    budget are skipped — calling this twice is a no-op on the second
-    call.
+    """Copy expense items from a period's forecast plan into Budget rows
+    for that same period. Categories that already have a budget are
+    skipped — calling this twice is a no-op on the second call.
 
-    Raises ValidationError if no plan exists for the current period;
+    ``period_start`` defaults to the current open period (back-compat).
+    Pass a future period's start to seed the NEXT period from its plan;
+    the next-period BillingPeriod stub is materialized on demand so
+    ``resolve_period`` can find it.
+
+    Raises ValidationError if no plan exists for the resolved period;
     the user is expected to create or copy one on the Forecasts page
     first. Returns the full budget list for the period.
     """
-    period = await get_current_period(db, org_id)
+    # Only touch the future-stub machinery when explicitly targeting a
+    # named period, so the current-period path stays side-effect-free.
+    if period_start is not None:
+        await ensure_future_periods(db, org_id=org_id)
+    period = await resolve_period(db, org_id, period_start)
 
     plan_result = await db.execute(
         select(ForecastPlan).where(
