@@ -85,11 +85,19 @@ export default function BudgetsPage() {
   const isEditable = isCurrentPeriod || isNextPeriod;
 
   const loadRefs = useCallback(async () => {
-    // Guarantee the immediate next-period stub exists so the user can
-    // always budget it (idempotent; no-op if it already exists).
-    await apiFetch("/api/v1/settings/billing-periods/ensure-future?count=1", {
-      method: "POST",
-    }).catch(() => {});
+    // Materialize the immediate next-period stub so it can be budgeted.
+    // ensure-future is admin-only (mirrors the Forecasts page), so only
+    // fire it for users who can actually run it — a member would just get
+    // a swallowed 403. Members still see the next period once an admin (or
+    // a period close) has created the stub.
+    const canManagePeriods =
+      !!user &&
+      (user.role === "owner" || user.role === "admin" || user.is_superadmin);
+    if (canManagePeriods) {
+      await apiFetch("/api/v1/settings/billing-periods/ensure-future?count=1", {
+        method: "POST",
+      }).catch(() => {});
+    }
     const [c, p] = await Promise.all([
       apiFetch<Category[]>("/api/v1/categories"),
       apiFetch<BillingPeriod[]>("/api/v1/settings/billing-periods"),
@@ -109,7 +117,7 @@ export default function BudgetsPage() {
     // Default to the current period (open = no end_date), not the next one.
     const currentIdx = pl.findIndex((bp) => bp.end_date === null);
     if (currentIdx >= 0) setPeriodIdx(currentIdx);
-  }, []);
+  }, [user]);
 
   const loadBudgets = useCallback(async () => {
     const url = periodStart ? `/api/v1/budgets?period_start=${periodStart}` : "/api/v1/budgets";
