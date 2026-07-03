@@ -80,27 +80,25 @@ logger = structlog.stdlib.get_logger()
 ROUTING_KEY = "smart_budget"
 
 
-# The structured-output schema the LLM must satisfy. ``call_llm_structured``
-# validates ``type=object`` + required keys; we additionally validate
-# the final payload in ``_validate_and_shape`` for type + bounds.
+# The structured-output schema the LLM must satisfy. The model returns a
+# PRIORITY ORDERING + narrative only — never amounts. The deterministic
+# allocator (``_allocate_rebalance``) computes every money movement, so the
+# LLM cannot inflate or deflate the total. ``_parse_ai_guidance`` defensively
+# re-validates the shape and drops any ids outside the closed set.
 LLM_RESPONSE_SCHEMA: dict = {
     "type": "object",
-    "required": ["suggestions", "summary"],
+    "required": ["priority", "summary"],
     "properties": {
         "summary": {"type": "string"},
-        "suggestions": {
+        "priority": {"type": "array", "items": {"type": "integer"}},
+        "reasoning": {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": [
-                    "category_id",
-                    "suggested_amount",
-                    "reasoning",
-                ],
+                "required": ["category_id", "text"],
                 "properties": {
                     "category_id": {"type": "integer"},
-                    "suggested_amount": {"type": "number"},
-                    "reasoning": {"type": "string"},
+                    "text": {"type": "string"},
                 },
             },
         },
@@ -373,23 +371,25 @@ def _build_messages(
     """
     closed_set_ids = sorted(f.category_id for f in facts)
     system = (
-        "You are a budgeting assistant. Suggest small budget shifts based "
-        "on actual versus planned spending trends for ONE billing period.\n\n"
+        "You are a budgeting assistant. For ONE billing period you help "
+        "prioritize which overspending categories matter most, so a "
+        "deterministic system can move money from categories with surplus.\n\n"
         "RULES (must be followed):\n"
         "1. Output ONLY a JSON object matching the schema; no prose, no markdown.\n"
-        "2. Every suggestion MUST reference a category_id from this exact set: "
+        "2. Every category_id you reference MUST come from this exact set: "
         f"{closed_set_ids}. Reject any other id.\n"
-        "3. ``suggested_amount`` MUST be a non-negative number representing the "
-        "new monthly budget for that category. Do not return deltas; return the "
-        "new absolute amount.\n"
-        "4. Limit reasoning to 2 short sentences per category. No personal "
+        "3. Return ONLY a priority ordering of the category_ids that are "
+        "projected to OVERSPEND (most important to cover first — essential "
+        "bills before discretionary), short per-category reasoning, and a "
+        "one-line summary. Do NOT return any amounts; the system computes "
+        "the money movements.\n"
+        "4. Limit each reasoning ``text`` to 2 short sentences. No personal "
         "advice, no investment guidance.\n"
         "5. Suggestions are ADVISORY ONLY — they are NOT auto-applied.\n"
-        "6. The sum of ``suggested_amount`` across all categories should "
-        "stay close to the sum of current budgets (within 10%). Reallocate, "
-        "do not inflate.\n"
-        "7. If no meaningful change is warranted, return an empty "
-        "``suggestions`` array with a short ``summary`` saying so.\n"
+        "6. You are reallocating a FIXED total. You cannot add money; you can "
+        "only rank which overspending categories matter most.\n"
+        "7. If nothing is projected to overspend, return an empty "
+        "``priority`` array with a short ``summary`` saying so.\n"
     )
 
     aggregates = [
@@ -399,6 +399,10 @@ def _build_messages(
             "current_budget": float(f.budget_amount),
             "last_3mo_avg_actual": float(f.last_3mo_avg),
             "current_period_actual_so_far": float(f.current_mo_actual),
+            "projected_spend": float(_project_period_spend(f)),
+            "surplus": float(
+                (f.budget_amount - _project_period_spend(f)).quantize(CENT)
+            ),
         }
         for f in facts
     ]
@@ -411,7 +415,9 @@ def _build_messages(
     # JSON input — sort_keys keeps the payload stable across runs and
     # makes it easy for tests to parse with json.loads.
     user = (
-        "Given the per-category aggregates below, suggest budget shifts.\n\n"
+        "Given the per-category aggregates below (including each category's "
+        "projected end-of-period spend and surplus), rank which overspending "
+        "categories matter most to cover.\n\n"
         f"AGGREGATES:\n{json.dumps(user_payload, sort_keys=True)}"
     )
     return [
@@ -420,60 +426,31 @@ def _build_messages(
     ]
 
 
-def _validate_and_shape(
-    raw: dict, facts: list[_CategoryFact]
-) -> list[BudgetDeltaSuggestion]:
-    """Convert raw LLM JSON into typed suggestions, rejecting drift.
+def _parse_ai_guidance(
+    raw: dict, allowed_ids: set[int]
+) -> tuple[list[int], dict[int, str], str]:
+    """Extract ``(priority_ids, reasoning_by_cat, summary)`` from LLM JSON.
 
-    Raises ``ValueError`` if the response contains category ids not in
-    the org's current-period budget set, or if numeric coercion fails.
+    Drops any ids outside the closed set and de-dupes the priority list.
+    Never raises — a bad shape degrades to empty guidance so the
+    deterministic allocator still runs and produces a balanced result.
     """
-    allowed = {f.category_id: f for f in facts}
-    suggestions = raw.get("suggestions") or []
-    if not isinstance(suggestions, list):
-        raise ValueError("suggestions is not a list")
+    priority: list[int] = []
+    for cid in raw.get("priority") or []:
+        if isinstance(cid, int) and cid in allowed_ids and cid not in priority:
+            priority.append(cid)
 
-    shaped: list[BudgetDeltaSuggestion] = []
-    seen: set[int] = set()
-    for item in suggestions:
+    reasons: dict[int, str] = {}
+    for item in raw.get("reasoning") or []:
         if not isinstance(item, dict):
-            raise ValueError("suggestion item is not an object")
-        cid = item.get("category_id")
-        if not isinstance(cid, int) or cid not in allowed:
-            raise ValueError(f"category_id {cid!r} is not in the allowed set")
-        if cid in seen:
-            # Drop duplicate suggestions for the same category (LLM noise).
             continue
-        seen.add(cid)
-        suggested = item.get("suggested_amount")
-        try:
-            suggested_amount = Decimal(str(suggested)).quantize(Decimal("0.01"))
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(
-                f"suggested_amount not numeric: {suggested!r}"
-            ) from exc
-        if suggested_amount < 0:
-            raise ValueError(
-                f"suggested_amount must be >= 0 (got {suggested_amount})"
-            )
-        reasoning = item.get("reasoning") or ""
-        if not isinstance(reasoning, str):
-            raise ValueError("reasoning must be a string")
-        reasoning = reasoning.strip()[:400]
+        cid = item.get("category_id")
+        text = item.get("text")
+        if isinstance(cid, int) and cid in allowed_ids and isinstance(text, str):
+            reasons[cid] = text.strip()[:400]
 
-        fact = allowed[cid]
-        shaped.append(
-            BudgetDeltaSuggestion(
-                category_id=cid,
-                category_name=fact.category_name,
-                current_amount=fact.budget_amount,
-                suggested_amount=suggested_amount,
-                delta_amount=suggested_amount - fact.budget_amount,
-                reasoning=reasoning,
-            )
-        )
-
-    return shaped
+    summary = (raw.get("summary") or "").strip()[:400]
+    return priority, reasons, summary
 
 
 async def suggest_rebalance(
@@ -522,12 +499,46 @@ async def suggest_rebalance(
             ),
         )
 
+    # Short-circuit before spending an LLM call: if no category is
+    # projected to come in under budget, there is no surplus to move and
+    # the rebalance is a no-op. Refuse honestly instead of inventing money.
+    total_budget = sum((f.budget_amount for f in facts), Decimal("0")).quantize(CENT)
+    total_headroom = sum(
+        (
+            max(f.budget_amount - _project_period_spend(f), Decimal("0"))
+            for f in facts
+        ),
+        Decimal("0"),
+    )
+    if total_headroom <= 0:
+        return BudgetRebalanceResponse(
+            status="empty_no_surplus",
+            period_start=period.start_date.isoformat(),
+            total_budget=total_budget,
+            total_suggested=total_budget,
+            uncovered_overspend=Decimal("0.00"),
+            is_balanced=True,
+            summary=(
+                "Every category is projected at or over budget — there's "
+                "nothing to reallocate. Your total budget is below projected "
+                "spending this period."
+            ),
+        )
+
     messages = _build_messages(facts, period.start_date)
 
     # ``call_llm_structured`` commits the session it's given (via
     # ``_write_ledger_row`` in ai_dispatch.py). Use a dedicated session
     # when one is available so the dispatcher's commit can't bleed
     # into the request transaction. Same pattern as #368/#369.
+    #
+    # The LLM only supplies a PRIORITY ORDER + narrative. If dispatch
+    # fails for any reason, we fall through with empty guidance: the
+    # deterministic allocator still conserves the total and covers the
+    # largest deficits first, so the rebalance works fully offline.
+    priority: list[int] = []
+    reasons: dict[int, str] = {}
+    summary = ""
     try:
         if session_factory is not None:
             async with session_factory() as dispatch_db:
@@ -546,6 +557,9 @@ async def suggest_rebalance(
                 messages=messages,
                 response_schema=LLM_RESPONSE_SCHEMA,
             )
+        priority, reasons, summary = _parse_ai_guidance(
+            result.response.parsed, {f.category_id for f in facts}
+        )
     except (
         NoRoutingConfigured,
         AICapExceeded,
@@ -559,56 +573,49 @@ async def suggest_rebalance(
             org_id=org_id,
             error_class=type(exc).__name__,
         )
-        return BudgetRebalanceResponse(
-            status="llm_unavailable",
-            period_start=period.start_date.isoformat(),
-            summary=(
-                "AI rebalance is temporarily unavailable. Set up an AI "
-                "provider in Settings or try again later."
-            ),
-        )
     except Exception as exc:  # noqa: BLE001 - defensive
         # Anything unexpected (engine errors from session_factory(),
-        # transient DB blips, etc.) maps to the same friendly empty
-        # state instead of a 500. The dispatcher's typed errors are
-        # caught above; this is the last-resort containment.
+        # transient DB blips, a malformed parsed payload, etc.) degrades
+        # to empty guidance instead of a 500. The deterministic allocator
+        # below still yields a balanced suggestion.
         logger.warning(
             "ai.budget.rebalance.unexpected_error",
             org_id=org_id,
             error_class=type(exc).__name__,
         )
-        return BudgetRebalanceResponse(
-            status="llm_unavailable",
-            period_start=period.start_date.isoformat(),
-            summary=(
-                "AI rebalance is temporarily unavailable. Try again "
-                "in a moment."
-            ),
-        )
 
-    try:
-        shaped = _validate_and_shape(result.response.parsed, facts)
-    except ValueError as exc:
-        logger.info(
-            "ai.budget.rebalance.response_invalid",
+    suggestions, uncovered = _allocate_rebalance(facts, priority, reasons)
+
+    # Conservation guard: the allocator conserves the total by
+    # construction, but assert it before returning — if a future change
+    # ever drifts, re-run with empty guidance (pure deterministic
+    # baseline) and log rather than emit a non-zero-sum plan.
+    emitted = {s.category_id: s.suggested_amount for s in suggestions}
+    total_suggested = sum(
+        (emitted.get(f.category_id, f.budget_amount) for f in facts),
+        Decimal("0"),
+    ).quantize(CENT)
+    if abs(total_suggested - total_budget) > CENT:
+        logger.warning(
+            "ai.budget.rebalance.guard_tripped",
             org_id=org_id,
-            error=str(exc),
+            total_budget=str(total_budget),
+            total_suggested=str(total_suggested),
         )
-        return BudgetRebalanceResponse(
-            status="llm_unavailable",
-            period_start=period.start_date.isoformat(),
-            summary=(
-                "AI returned an unexpected response. Try again, or set "
-                "up a different model in Settings."
-            ),
-        )
-
-    summary_raw = (result.response.parsed.get("summary") or "").strip()
-    summary = summary_raw[:400]
+        suggestions, uncovered = _allocate_rebalance(facts, [], {})
+        emitted = {s.category_id: s.suggested_amount for s in suggestions}
+        total_suggested = sum(
+            (emitted.get(f.category_id, f.budget_amount) for f in facts),
+            Decimal("0"),
+        ).quantize(CENT)
 
     return BudgetRebalanceResponse(
         status="ok",
         period_start=period.start_date.isoformat(),
-        suggestions=shaped,
-        summary=summary,
+        suggestions=suggestions,
+        summary=summary or "Here's a balanced way to cover your overspending.",
+        total_budget=total_budget,
+        total_suggested=total_suggested,
+        uncovered_overspend=uncovered,
+        is_balanced=(uncovered == 0),
     )
