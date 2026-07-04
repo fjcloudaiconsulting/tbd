@@ -19,12 +19,12 @@ class BillingCloseJob:
     setting_key = org_settings.AUTOMATE_BILLING_KEY
 
     async def is_due(self, db: AsyncSession, org: Organization, today: datetime.date) -> bool:
-        boundary = billing_service._snap_to_cycle(today, org.billing_cycle_day)
+        boundary = billing_service.current_cycle_window(org.billing_cycle_day, today)[0]
         current = await billing_service.get_current_period(db, org.id)
         return current.start_date < boundary
 
     async def run(self, db: AsyncSession, org: Organization, today: datetime.date) -> JobResult:
-        boundary = billing_service._snap_to_cycle(today, org.billing_cycle_day)
+        boundary = billing_service.current_cycle_window(org.billing_cycle_day, today)[0]
         close_date = boundary - datetime.timedelta(days=1)
         new_period = await billing_service.close_period(db, org.id, close_date)
         await db.commit()

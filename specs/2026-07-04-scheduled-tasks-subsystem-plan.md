@@ -1044,7 +1044,7 @@ git commit -m "feat(scheduler): recurring-generation job"
 - Consumes: `billing_service.get_current_period`, `billing_service.close_period`, `billing_service._snap_to_cycle`; `sched_audit.record_run`; members fan-out; `scheduler_billing_closed` template.
 - Produces: `class BillingCloseJob` with `job_type="billing_close"`, `setting_key=org_settings.AUTOMATE_BILLING_KEY`, `is_due`, `run`.
 
-**Due rule:** let `boundary = _snap_to_cycle(today, org.billing_cycle_day)` (the cycle_day on/before today). Due iff `get_current_period().start_date < boundary` (the open period straddles the boundary and has not been closed for it). **Close date** = `boundary - 1 day` so the new period opens exactly on `boundary`. Idempotent: after close, `current.start_date == boundary`, so next `is_due` is False.
+**Due rule:** let `boundary = current_cycle_window(org.billing_cycle_day, today)[0]` (the most recent cycle_day boundary on OR before today; this helper rolls back a month when `cycle_day > today.day`, unlike the private `_snap_to_cycle`, which does NOT and would pick a future boundary for `cycle_day != 1` orgs). Due iff `get_current_period().start_date < boundary` (the open period straddles the boundary and has not been closed for it). **Close date** = `boundary - 1 day` so the new period opens exactly on `boundary`. Idempotent: after close, `current.start_date == boundary`, so next `is_due` is False. Tests MUST include a `cycle_day != 1` case (e.g. cycle_day=25): not-due on the 1st, due on the 25th, idempotent after.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1161,12 +1161,12 @@ class BillingCloseJob:
     setting_key = org_settings.AUTOMATE_BILLING_KEY
 
     async def is_due(self, db: AsyncSession, org: Organization, today: datetime.date) -> bool:
-        boundary = billing_service._snap_to_cycle(today, org.billing_cycle_day)
+        boundary = billing_service.current_cycle_window(org.billing_cycle_day, today)[0]
         current = await billing_service.get_current_period(db, org.id)
         return current.start_date < boundary
 
     async def run(self, db: AsyncSession, org: Organization, today: datetime.date) -> JobResult:
-        boundary = billing_service._snap_to_cycle(today, org.billing_cycle_day)
+        boundary = billing_service.current_cycle_window(org.billing_cycle_day, today)[0]
         close_date = boundary - datetime.timedelta(days=1)
         new_period = await billing_service.close_period(db, org.id, close_date)
         await db.commit()
