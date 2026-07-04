@@ -16,7 +16,7 @@ from app.services.scheduler.org_settings import get_reminder_lead_days
 
 
 class BillingReminderJob:
-    job_type = "billing_close"
+    job_type = "billing_reminder"
     setting_key = org_settings.AUTOMATE_BILLING_KEY
 
     def _next_boundary(self, org: Organization, today: datetime.date) -> datetime.date:

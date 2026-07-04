@@ -171,7 +171,7 @@ async def get_my_preferences(
     """Return the current user's preferences.
 
     Auto-creates the row on first read with the locked defaults
-    (security + account + org_admin = True, org_activity = False).
+    (security + account + org_admin = True, org_activity = True).
     The auto-create commits before returning so a subsequent GET hits
     the persisted row rather than re-creating.
     """

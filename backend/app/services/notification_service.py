@@ -106,7 +106,8 @@ async def _in_app_preference_allows(
     skip.
 
     A missing preference row is treated as the defaults (security +
-    account + org_admin allowed, org_activity not). ``get_preferences``
+    account + org_admin + org_activity all allowed; org_activity
+    defaults ON/opt-out as of the 2026-07-04 flip). ``get_preferences``
     auto-creates rows on first read, but during dispatch we avoid
     inserting a preference row purely for a dispatch decision — a
     direct SELECT is cheaper and the default-allow path mirrors
