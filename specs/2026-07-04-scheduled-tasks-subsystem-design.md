@@ -20,11 +20,10 @@ Do not over-engineer before customers.
 
 ## Scope (v1)
 
-Three jobs run automatically per org:
+Two jobs run automatically per org:
 
 1. Recurring-due generation
 2. Billing-period close
-3. Credit-card bill (statement cycle) close
 
 Each is independently switchable off per org. Members receive in-app and email
 notifications for meaningful events, with per-user opt-out. Operators see every
@@ -32,6 +31,15 @@ success and failure in the existing `/admin/audit` screen.
 
 Explicit non-goals for v1: a real job queue, retries with backoff, multi-step
 workflows, user-configurable run cadence, and a dedicated scheduler admin page.
+
+Deferred to v2 (its own spec): credit-card bill / statement close. The codebase
+has no persisted CC statement concept today; `cc_cycle_service` only DERIVES
+which cycle a date falls in. There is no "close" action to invoke and no
+open/closed state to make idempotent against. Automating it first requires
+designing what "closing" or "settling" a CC statement should DO (generate the
+payment transaction, mark a statement row, etc.). That is a separate subsystem
+and is intentionally out of this plan. The `ScheduledJob` protocol and registry
+below are built so adding it later is a drop-in.
 
 ## Execution model
 
@@ -117,15 +125,10 @@ in today, close yesterday"). Automation cannot observe salary arrival, so it
 anchors to the org's configured `billing_cycle_day`. Orgs that treat close as a
 ritual turn this job off.
 
-### Job 3: Credit-card bill close
+### Job 3 (deferred): Credit-card bill close
 
-- `setting_key`: `scheduler.automate_cc_close`
-- Due: for any credit-card account in the org, the statement `close_day` has
-  passed and the corresponding cycle is not yet closed (resolved via
-  `cc_cycle_service`).
-- Run: close the due statement cycle(s) via `cc_cycle_service`. Idempotent: an
-  already-closed cycle is a noop.
-- Result: per-account closed cycle info. `noop` when nothing to close.
+Out of scope for v1 (see Scope). Added later as a new registry entry once the CC
+statement-close concept is designed and built.
 
 ## Toggles and config (per org)
 
@@ -138,8 +141,10 @@ reserved-namespace guard is needed.
 
 - `scheduler.automate_recurring_generation` — bool, default true
 - `scheduler.automate_billing_close` — bool, default true
-- `scheduler.automate_cc_close` — bool, default true
 - `scheduler.billing_close_reminder_lead_days` — int, default 3
+
+(`scheduler.automate_cc_close` is reserved for the deferred CC job; not written
+or read in v1.)
 
 Defaults are ON so behavior is automatic out of the box; an org opts out per job.
 Reading an unset key returns the default (no backfill migration needed).
@@ -191,7 +196,6 @@ This prevents daily "generated 0" spam.
    `scheduler.billing_close.reminder` audit row for this org and target period,
    so the multi-day lead window sends it only once.
 3. Billing-period close confirmation — after a successful auto-close.
-4. Credit-card bill close confirmation — after a successful CC cycle close.
 
 New template functions in `notification_templates.py`, each returning the
 existing `(title, body, link_url)` shape, matching the sibling templates.
@@ -216,7 +220,7 @@ Backend unit/integration tests:
 - Per job `is_due`: fires exactly at the boundary, not before; catch-up after a
   simulated downtime gap closes the correct anchored boundary (not "today").
 - Per job idempotency: running twice in a row produces a noop the second time
-  (no double close, no duplicate transactions, no double CC close).
+  (no double period close, no duplicate transactions).
 - Toggle gating: job disabled for an org -> not run, no audit row.
 - Redis single-runner: with the lock held, a concurrent tick is skipped.
 - Reminder dedup: the pre-close reminder sends once across multiple ticks within
