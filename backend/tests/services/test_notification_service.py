@@ -519,11 +519,11 @@ async def test_get_preferences_auto_creates_row_with_defaults(session_factory):
     assert prefs.email_security is True
     assert prefs.email_account is True
     assert prefs.email_org_admin is True
-    assert prefs.email_org_activity is False
+    assert prefs.email_org_activity is True
     assert prefs.in_app_security is True
     assert prefs.in_app_account is True
     assert prefs.in_app_org_admin is True
-    assert prefs.in_app_org_activity is False
+    assert prefs.in_app_org_activity is True
 
     # Second call returns the same row.
     async with session_factory() as db:
