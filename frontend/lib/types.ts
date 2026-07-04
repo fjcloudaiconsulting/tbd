@@ -187,6 +187,16 @@ export interface OrgSetting {
   value: string;
 }
 
+// Per-org scheduler automation toggles (GET/PUT /api/v1/scheduler/settings).
+// automate_billing_close gates BOTH the pre-close reminder and the close
+// job itself (see backend AUTOMATE_BILLING_KEY) — turning it off silences
+// both.
+export interface SchedulerSettings {
+  automate_recurring_generation: boolean;
+  automate_billing_close: boolean;
+  billing_close_reminder_lead_days: number;
+}
+
 export interface ForecastPlanItem {
   id: number;
   plan_id: number;
