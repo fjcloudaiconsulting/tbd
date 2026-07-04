@@ -183,7 +183,15 @@ All notifications go to ALL org members via
 `notification_service.dispatch_notification` fanned across the org's users, in
 the existing `org_activity` NotificationCategory. Members opt out through the
 existing per-user `email_org_activity` / `in_app_org_activity` preferences, so
-no new preference plumbing is required. New event_type strings are added for
+no new preference plumbing is required.
+
+DECISION (2026-07-04): the `org_activity` category previously defaulted OFF
+(opt-in, an architect "noisy by nature" call). Since it had NO consumers yet
+and the operator wants all members notified by default with an opt-out, its
+default is flipped to ON (email + in-app): `_default_preferences` sets both
+`*_org_activity=True`, and the missing-row default in
+`_in_app_preference_allows` returns True for `ORG_ACTIVITY`. Existing opt-out
+toggles in the notifications settings UI already cover turning it off. New event_type strings are added for
 correlation with audit rows.
 
 Post-run confirmations are RESULT-GATED: they fire only when the job actually
