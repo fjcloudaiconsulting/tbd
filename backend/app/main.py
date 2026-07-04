@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 from contextlib import asynccontextmanager
@@ -23,6 +24,7 @@ from app.rate_limit import limiter
 from app.routers import account_types, accounts, admin, admin_ai_usage, admin_analytics, admin_announcements, admin_audit, admin_features, admin_orgs, admin_rate_limit_overrides, admin_roles, admin_subscriptions, admin_users, ai_budget, ai_categorize, ai_forecast, ai_providers, ai_status, announcements, auth, budgets, categories, dashboard, feedback, forecast, forecast_plans, import_router, notifications, onboarding, org_data, org_members, orgs, plans, public_stats, recurring, reports, scenarios, security, settings, subscriptions, tags, transactions, users
 from app.routers import scheduler as scheduler_router
 from app.services.exceptions import ConflictError, NotFoundError, ValidationError
+from app.services.scheduler.loop import scheduler_loop
 
 # Setup JSON logging early so uvicorn's loggers are captured
 setup_logging()
@@ -269,7 +271,28 @@ async def lifespan(app: FastAPI):
     # constraint on subscriptions.org_id). Multi-replica safe. For manual
     # re-runs, see `backend/scripts/backfill_subscriptions.py`.
     await logger.ainfo("starting", app=app_settings.app_name, env=app_settings.app_env)
+    if app_settings.scheduler_enabled:
+        app.state.scheduler_stop = asyncio.Event()
+        app.state.scheduler_task = asyncio.create_task(
+            scheduler_loop(
+                app.state.scheduler_stop,
+                tick_seconds=app_settings.scheduler_tick_seconds,
+                lock_ttl=app_settings.scheduler_lock_ttl_seconds,
+            )
+        )
+        # Yield control once so the just-created task actually starts
+        # running (up to its first internal suspension point) before we
+        # hand control back to uvicorn. asyncio.create_task only
+        # schedules the coroutine; without this checkpoint the task
+        # would not get a turn until something else awaits.
+        await asyncio.sleep(0)
     yield
+    if app_settings.scheduler_enabled and getattr(app.state, "scheduler_task", None):
+        app.state.scheduler_stop.set()
+        try:
+            await asyncio.wait_for(app.state.scheduler_task, timeout=10)
+        except asyncio.TimeoutError:
+            app.state.scheduler_task.cancel()
     await redis_client.close_client()
     await engine.dispose()
     await logger.ainfo("shutdown complete")
