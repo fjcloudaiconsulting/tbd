@@ -683,9 +683,18 @@ git commit -m "feat(scheduler): audit-run + reminder-dedup helpers"
 
 ### Task 6: All-members notification fan-out + templates
 
+> **EXPANDED 2026-07-04 (two operator decisions found during execution):**
+> (1) `org_activity` category defaults are flipped ON (email + in-app) — it was
+> opt-in; operator wants opt-out. (2) Email is NOT wired today (`dispatch_notification`
+> is in-app only); this task now also builds a generic notification email path and
+> makes the members fan-out dual-channel. Authoritative expanded requirements live in
+> the hand-authored brief `.superpowers/sdd/task-6-brief.md`.
+
 **Files:**
-- Modify: `backend/app/services/notification_service.py` (add members fan-out)
+- Modify: `backend/app/services/notification_service.py` (members fan-out, dual-channel; org_activity default flip)
+- Modify: `backend/app/services/email_service.py` (add `send_notification_email`)
 - Modify: `backend/app/services/notification_templates.py` (add 3 templates)
+- Modify existing tests asserting the old org_activity default-off
 - Test: `backend/tests/services/test_scheduler_notifications.py`
 
 **Interfaces:**
