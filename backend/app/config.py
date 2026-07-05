@@ -229,6 +229,15 @@ class Settings(BaseSettings):
     # falls back to LegacyDashboard, which is kept for exactly this reason.
     feature_custom_dashboard: bool = True
 
+    # Scheduled Tasks (recurring org operations — billing-period close, recurring transactions, etc.)
+    # When ``scheduler_enabled`` is False, the tick loop does not run and no
+    # scheduled tasks execute. When True, the tick loop runs with an interval
+    # of ``scheduler_tick_seconds`` and acquires a distributed lock with TTL
+    # ``scheduler_lock_ttl_seconds`` to prevent concurrent runs across replicas.
+    scheduler_enabled: bool = True
+    scheduler_tick_seconds: int = 900
+    scheduler_lock_ttl_seconds: int = 600
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:

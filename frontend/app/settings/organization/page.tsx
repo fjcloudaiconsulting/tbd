@@ -17,6 +17,7 @@ import {
 import { projectedPeriodEnd } from "@/lib/format";
 import { isAdmin } from "@/lib/auth";
 import DemoDataCard from "@/components/settings/DemoDataCard";
+import SchedulerSettingsCard from "@/components/settings/SchedulerSettingsCard";
 import MembersSection from "@/components/settings/MembersSection";
 import SmartRulesSection from "@/components/settings/SmartRulesSection";
 import {
@@ -664,6 +665,11 @@ export default function OrganizationSettingsPage() {
             </div>
           </div>
         </div>
+
+        {/* Automatic tasks (scheduler) — this whole page is already
+            admin-gated by the early return above, matching how the
+            Manual Balance Adjustment card just above is scoped. */}
+        <SchedulerSettingsCard />
 
         {/* Advanced Configuration */}
         <div className={card}>

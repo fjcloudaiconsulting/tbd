@@ -375,6 +375,27 @@ async def send_trial_expiring_email(to: str, days_left: int, org_name: str) -> b
     return await send_email(to, subject, body_html, body_text)
 
 
+async def send_notification_email(
+    to: str, *, title: str, body: str, link_url: str | None = None
+) -> bool:
+    """Send a generic notification email (title + body + optional CTA link).
+
+    Mirrors the branded transactional emails. Best-effort: delegates to
+    send_email, which logs-and-returns in dev and never raises here.
+    """
+    cta_url = f"{settings.app_url}{link_url}" if link_url else None
+    title_safe = html.escape(title)
+    body_safe = html.escape(body)
+    body_html = _render_html(
+        heading=title,
+        paragraphs=[body_safe],
+        cta_label="Open The Better Decision" if cta_url else None,
+        cta_url=cta_url,
+    )
+    body_text = f"{title}\n\n{body}" + (f"\n\n{cta_url}" if cta_url else "")
+    return await send_email(to, title_safe, body_html, body_text)
+
+
 async def send_account_deleted_email(
     to: str,
     username: str,

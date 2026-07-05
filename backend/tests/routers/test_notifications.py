@@ -602,11 +602,11 @@ async def test_preferences_get_auto_creates_with_defaults(session_factory):
     assert body["email_security"] is True
     assert body["email_account"] is True
     assert body["email_org_admin"] is True
-    assert body["email_org_activity"] is False
+    assert body["email_org_activity"] is True
     assert body["in_app_security"] is True
     assert body["in_app_account"] is True
     assert body["in_app_org_admin"] is True
-    assert body["in_app_org_activity"] is False
+    assert body["in_app_org_activity"] is True
 
     # The row now exists.
     async with session_factory() as db:
