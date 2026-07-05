@@ -21,6 +21,7 @@ Module shape:
 """
 from __future__ import annotations
 
+import datetime
 from typing import Optional
 
 
@@ -201,3 +202,38 @@ def org_data_reset(
         "removed and defaults restored."
     )
     return (title, body, None)
+
+
+# ── scheduler notification templates ────────────────────────────────
+
+
+def scheduler_recurring_generated(*, generated: int, settled: int) -> tuple[str, str, Optional[str]]:
+    """Copy for scheduler.recurring_generation.success (org_activity)."""
+    title = "Recurring transactions generated"
+    body = (
+        f"We added {generated} scheduled transaction(s) to your ledger "
+        f"({settled} already settled). Review them on your transactions page."
+    )
+    return (title, body, "/transactions")
+
+
+def scheduler_billing_close_reminder(
+    *, close_date: datetime.date, days_until: int
+) -> tuple[str, str, Optional[str]]:
+    """Copy for scheduler.billing_close.reminder (org_activity)."""
+    title = "Your budget period closes soon"
+    body = (
+        f"Your current budget period closes on {close_date.isoformat()} "
+        f"(in {days_until} day(s)). A new period will open automatically."
+    )
+    return (title, body, "/budgets")
+
+
+def scheduler_billing_closed(*, new_period_start: datetime.date) -> tuple[str, str, Optional[str]]:
+    """Copy for scheduler.billing_close.success (org_activity)."""
+    title = "Your budget period closed"
+    body = (
+        f"Your budget period was closed and a new one started on "
+        f"{new_period_start.isoformat()}."
+    )
+    return (title, body, "/budgets")

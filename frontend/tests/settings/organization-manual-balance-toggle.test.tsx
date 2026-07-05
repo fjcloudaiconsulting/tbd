@@ -6,7 +6,21 @@ import { useAuth } from "@/components/auth/AuthProvider";
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
-  return { ...actual, apiFetch: vi.fn() };
+  return {
+    ...actual,
+    apiFetch: vi.fn(),
+    // SchedulerSettingsCard (mounted on this page) calls these directly;
+    // they wrap the same module's own apiFetch internally, so overriding
+    // apiFetch above does NOT intercept them. Stub them here so mounting
+    // the full page doesn't attempt a real network call in tests that
+    // don't care about scheduler settings.
+    getSchedulerSettings: vi.fn().mockResolvedValue({
+      automate_recurring_generation: true,
+      automate_billing_close: true,
+      billing_close_reminder_lead_days: 3,
+    }),
+    updateSchedulerSettings: vi.fn(),
+  };
 });
 
 vi.mock("swr", async () => {

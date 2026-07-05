@@ -1,3 +1,5 @@
+import type { SchedulerSettings } from "@/lib/types";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 const DEFAULT_TIMEOUT_MS = 10_000;
 // Auth recovery paths (/auth/refresh, /auth/me, /auth/status) get a
@@ -695,6 +697,22 @@ export async function apiFetch<T>(
   }
 
   return res.json();
+}
+
+// Per-org scheduler automation settings (Task 13 — org settings UI).
+// GET/PUT /api/v1/scheduler/settings. PUT accepts a partial patch; callers
+// should only send the field(s) that changed.
+export async function getSchedulerSettings(): Promise<SchedulerSettings> {
+  return apiFetch<SchedulerSettings>("/api/v1/scheduler/settings");
+}
+
+export async function updateSchedulerSettings(
+  patch: Partial<SchedulerSettings>,
+): Promise<SchedulerSettings> {
+  return apiFetch<SchedulerSettings>("/api/v1/scheduler/settings", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
 }
 
 export function extractErrorMessage(err: unknown, fallback = "Failed"): string {

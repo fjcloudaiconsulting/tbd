@@ -314,6 +314,31 @@ def _autouse_enable_auth_debug_logging(monkeypatch):
     monkeypatch.setattr(settings, "auth_debug_logging", True)
 
 
+@pytest.fixture(autouse=True)
+def _autouse_disable_scheduler(monkeypatch):
+    """Disable the background scheduler for every test by default.
+
+    Task 12 wired ``scheduler_loop`` into the FastAPI ``lifespan`` (see
+    ``app/main.py``), started whenever ``app_settings.scheduler_enabled``
+    is True (the production default). Any test that boots the real app
+    with its lifespan (e.g. ``with TestClient(app_main.app)``) would
+    otherwise start a live scheduler that queries orgs and can COMMIT
+    recurring-generation / billing-close writes concurrently with the
+    test — nondeterministic, suite-wide.
+
+    ``app/main.py`` imports the settings singleton as
+    ``from app.config import settings as app_settings``, so patching
+    ``app.config.settings`` here is patching the exact object the
+    lifespan reads. The dedicated
+    ``tests/test_scheduler_lifespan.py`` test re-enables the scheduler
+    itself (inside the test body, after fixtures run), so its own
+    ``monkeypatch.setattr`` on the same attribute takes precedence there.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "scheduler_enabled", False)
+
+
 def issue_test_refresh_token(user_id: int, **kwargs) -> str:
     """Test helper: mint a refresh JWT AND seed its Redis row in the
     autouse fake. Replaces direct ``create_refresh_token(user_id)`` calls

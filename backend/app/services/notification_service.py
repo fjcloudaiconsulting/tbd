@@ -48,6 +48,7 @@ from app.models.notification import (
     UserNotificationPreferences,
 )
 from app.models.user import Role, User
+from app.services.email_service import send_notification_email
 
 
 logger = structlog.stdlib.get_logger()
@@ -82,6 +83,16 @@ _IN_APP_PREF_FIELD: dict[NotificationCategory, str] = {
     NotificationCategory.ORG_ACTIVITY: "in_app_org_activity",
 }
 
+# Email category → preference-column mapping, mirroring
+# ``_IN_APP_PREF_FIELD`` but for the email columns. Used by
+# ``_email_preference_allows``. ``security`` is intentionally absent —
+# that category is force-on and never consults the preference row.
+_EMAIL_PREF_FIELD: dict[NotificationCategory, str] = {
+    NotificationCategory.ACCOUNT: "email_account",
+    NotificationCategory.ORG_ADMIN: "email_org_admin",
+    NotificationCategory.ORG_ACTIVITY: "email_org_activity",
+}
+
 
 async def _in_app_preference_allows(
     db: AsyncSession, *, user_id: int, category: NotificationCategory
@@ -95,7 +106,8 @@ async def _in_app_preference_allows(
     skip.
 
     A missing preference row is treated as the defaults (security +
-    account + org_admin allowed, org_activity not). ``get_preferences``
+    account + org_admin + org_activity all allowed; org_activity
+    defaults ON/opt-out as of the 2026-07-04 flip). ``get_preferences``
     auto-creates rows on first read, but during dispatch we avoid
     inserting a preference row purely for a dispatch decision — a
     direct SELECT is cheaper and the default-allow path mirrors
@@ -117,10 +129,35 @@ async def _in_app_preference_allows(
     result = await db.execute(stmt)
     prefs = result.scalar_one_or_none()
     if prefs is None:
-        # No preference row → defaults apply. account + org_admin
-        # default-on; org_activity default-off.
-        if category == NotificationCategory.ORG_ACTIVITY:
-            return False
+        # No preference row → defaults apply. All non-security categories
+        # default-on (org_activity flipped ON 2026-07-04; see _default_preferences).
+        return True
+    return bool(getattr(prefs, field))
+
+
+async def _email_preference_allows(
+    db: AsyncSession, *, user_id: int, category: NotificationCategory
+) -> bool:
+    """Return whether an email should be sent for ``user_id`` / ``category``.
+
+    Mirrors ``_in_app_preference_allows`` exactly but consults the
+    email preference columns. Always True for ``security`` (force-on).
+    A missing preference row is treated as all-defaults-on (org_activity
+    flipped ON 2026-07-04; see ``_default_preferences``).
+    """
+    if category == NotificationCategory.SECURITY:
+        return True
+
+    field = _EMAIL_PREF_FIELD.get(category)
+    if field is None:
+        return True
+
+    stmt = select(UserNotificationPreferences).where(
+        UserNotificationPreferences.user_id == user_id
+    )
+    result = await db.execute(stmt)
+    prefs = result.scalar_one_or_none()
+    if prefs is None:
         return True
     return bool(getattr(prefs, field))
 
@@ -302,6 +339,52 @@ async def dispatch_notification_to_org_admins(
     return written
 
 
+async def dispatch_notification_to_org_members(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    category: NotificationCategory,
+    event_type: str,
+    title: str,
+    body: str,
+    link_url: Optional[str] = None,
+    audit_event_id: Optional[int] = None,
+) -> int:
+    """Fan out to every ACTIVE user of ``org_id`` (all roles), dual-channel.
+
+    In-app: written via dispatch_notification (respects in_app pref), each in a
+    savepoint so one bad row does not poison the txn. Email: sent best-effort
+    via send_notification_email when the user's email pref for ``category``
+    allows. Returns the count of IN-APP rows actually written (email is
+    fire-and-forget and not counted).
+    """
+    rows = (
+        await db.execute(
+            select(User.id, User.email).where(
+                User.org_id == org_id, User.is_active == True  # noqa: E712
+            )
+        )
+    ).all()
+    written = 0
+    for uid, email in rows:
+        try:
+            async with db.begin_nested():
+                row = await dispatch_notification(
+                    db, user_id=uid, category=category, event_type=event_type,
+                    title=title, body=body, link_url=link_url, audit_event_id=audit_event_id,
+                )
+            if row is not None:
+                written += 1
+        except Exception:  # noqa: BLE001 — best-effort fanout
+            await logger.awarning("notification.fanout.member_failed", user_id=uid, event_type=event_type)
+        try:
+            if await _email_preference_allows(db, user_id=uid, category=category):
+                await send_notification_email(email, title=title, body=body, link_url=link_url)
+        except Exception:  # noqa: BLE001 — email never fails the fanout
+            await logger.awarning("notification.fanout.email_failed", user_id=uid, event_type=event_type)
+    return written
+
+
 # ── reads ─────────────────────────────────────────────────────────
 
 
@@ -466,20 +549,20 @@ def _default_preferences(user_id: int) -> UserNotificationPreferences:
 
     ``email_security`` is forced TRUE — the API layer rejects writes
     that flip it OFF, but the column shape is preserved so a future
-    "really opt me out" exception is a one-line change. The other
-    defaults mirror the parent spec's "noisy by nature" call on
-    ``org_activity``.
+    "really opt me out" exception is a one-line change. ``org_activity``
+    now defaults ON (opt-out) per the 2026-07-04 operator decision, so
+    every category defaults on until the user explicitly opts out.
     """
     return UserNotificationPreferences(
         user_id=user_id,
         email_security=True,
         email_account=True,
         email_org_admin=True,
-        email_org_activity=False,
+        email_org_activity=True,
         in_app_security=True,
         in_app_account=True,
         in_app_org_admin=True,
-        in_app_org_activity=False,
+        in_app_org_activity=True,
     )
 
 
