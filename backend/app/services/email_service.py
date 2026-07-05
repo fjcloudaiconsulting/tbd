@@ -384,6 +384,7 @@ async def send_notification_email(
     send_email, which logs-and-returns in dev and never raises here.
     """
     cta_url = f"{settings.app_url}{link_url}" if link_url else None
+    prefs_url = f"{settings.app_url}/settings/notifications"
     title_safe = html.escape(title)
     body_safe = html.escape(body)
     body_html = _render_html(
@@ -391,8 +392,18 @@ async def send_notification_email(
         paragraphs=[body_safe],
         cta_label="Open The Better Decision" if cta_url else None,
         cta_url=cta_url,
+        footnote=(
+            "You are receiving this because you are a member of this workspace. "
+            f'<a href="{prefs_url}">Manage your notification preferences</a> '
+            "to change or turn off these emails."
+        ),
     )
-    body_text = f"{title}\n\n{body}" + (f"\n\n{cta_url}" if cta_url else "")
+    body_text = (
+        f"{title}\n\n{body}"
+        + (f"\n\n{cta_url}" if cta_url else "")
+        + f"\n\nManage your notification preferences to change or turn off "
+        f"these emails: {prefs_url}"
+    )
     return await send_email(to, title_safe, body_html, body_text)
 
 
