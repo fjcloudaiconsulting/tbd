@@ -102,7 +102,7 @@ describe("ReconcileClient", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (apiFetch as ReturnType<typeof vi.fn>).mockImplementation(
-      async (path: string) => makeBatch(),
+      async (_path: string) => makeBatch(),
     );
   });
 
