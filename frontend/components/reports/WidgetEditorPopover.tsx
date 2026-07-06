@@ -99,7 +99,7 @@ export default function WidgetEditorPopover({
   // NOT re-fire and clobber the active tab back to Data.
   useEffect(() => {
     setTab(requestedTab ?? "data");
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional:
+    // intentional:
     // reset only on widget-identity change; requestedTab is read at
     // switch time, not a dependency (adding it causes a clobber-to-Data).
   }, [widget.id]);
@@ -114,7 +114,7 @@ export default function WidgetEditorPopover({
       setTab(requestedTab);
       onTabConsumed?.();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional:
+    // intentional:
     // honor a request ONLY on a requestedTab transition. ``onTabConsumed``
     // is a page callback whose identity isn't guaranteed stable across
     // renders; listing it would re-fire this effect on its identity change

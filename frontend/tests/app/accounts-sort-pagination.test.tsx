@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";

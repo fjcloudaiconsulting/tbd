@@ -365,7 +365,6 @@ function TransactionsPageContent() {
   // or page size) so navigation never leaves an invisible selection behind.
   useEffect(() => {
     clearSelection();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, sortField, sortDir, page, pageSize]);
 
   useEffect(() => {

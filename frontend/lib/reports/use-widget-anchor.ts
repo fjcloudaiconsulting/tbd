@@ -35,7 +35,6 @@ export function useWidgetAnchor(
       ) as HTMLElement | null,
     );
     // ``reResolveTrigger`` is the re-resolve dependency (the widgets list).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, selectedWidgetId, reResolveTrigger]);
 
   return anchorEl;

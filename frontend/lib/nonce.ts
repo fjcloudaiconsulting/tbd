@@ -49,7 +49,6 @@ export async function readNonce(): Promise<string> {
     // its own nonce; the inline script just won't pass that nonce
     // and would be blocked. Surface in logs so we notice.
     if (process.env.NODE_ENV !== "production") {
-      // eslint-disable-next-line no-console
       console.warn(
         "readNonce: headers() unavailable outside request scope; " +
           "inline scripts in this render will lack a nonce.",
