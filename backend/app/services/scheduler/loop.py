@@ -22,20 +22,22 @@ async def acquire_tick_lock(ttl_seconds: int) -> bool:
     return bool(got)
 
 
-async def run_one_tick(today: datetime.date, *, lock_ttl: int) -> bool:
+async def run_one_tick(today: datetime.date, *, lock_ttl: int, max_orgs: int | None = None) -> bool:
     if not await acquire_tick_lock(lock_ttl):
         await logger.ainfo("scheduler.tick.skip_locked")
         return False
     await logger.ainfo("scheduler.tick.start")
-    await run_all_due(today)
+    await run_all_due(today, max_orgs=max_orgs)
     await logger.ainfo("scheduler.tick.complete")
     return True
 
 
-async def scheduler_loop(stop_event: asyncio.Event, *, tick_seconds: int, lock_ttl: int) -> None:
+async def scheduler_loop(
+    stop_event: asyncio.Event, *, tick_seconds: int, lock_ttl: int, max_orgs: int | None = None
+) -> None:
     while not stop_event.is_set():
         try:
-            await run_one_tick(datetime.date.today(), lock_ttl=lock_ttl)
+            await run_one_tick(datetime.date.today(), lock_ttl=lock_ttl, max_orgs=max_orgs)
         except Exception as exc:  # noqa: BLE001 — never let the ticker die
             await logger.aerror("scheduler.tick.error", error=str(exc))
         try:
