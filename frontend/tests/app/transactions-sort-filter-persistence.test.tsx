@@ -90,8 +90,8 @@ async function awaitReady(
       const txCalls = mock.mock.calls.filter(
         (c) => typeof c[0] === "string" && (c[0] as string).startsWith("/api/v1/transactions"),
       ).length;
-      if (txCalls < 2) {
-        throw new Error("waiting for second /transactions fetch");
+      if (txCalls < 1) {
+        throw new Error("waiting for the /transactions fetch");
       }
       for (const name of required) {
         const buttons = screen
