@@ -3,17 +3,16 @@ import { screen, waitFor } from "@testing-library/react";
 import { apiFetch } from "@/lib/api";
 
 /**
- * The transactions page issues two fetches at mount: loadRefs (which
- * updates `periods`) and loadTransactions. Because loadTransactions
- * depends on `periods`, the second setPeriods call (even to the same
- * empty array) re-triggers loadTransactions, briefly flipping the
- * `fetching` flag back to true and replacing the table with a Spinner.
- * Tests that race past the spinner can land between Edit-button clicks
- * and the post-spinner re-render, dropping the just-set editingId.
+ * The transactions page now issues a single GET /api/v1/transactions at
+ * mount: the initial list fetch waits for the billing-periods SWR request
+ * to settle first (the cold-mount single-fetch guard), so loadTransactions
+ * no longer re-fires when `periods` resolves. That removes the old flicker
+ * where the table briefly reverted to a Spinner and dropped a just-set
+ * editingId between an Edit click and the re-render.
  *
- * This helper waits for the GET /api/v1/transactions call to have
- * happened at least twice (initial + post-loadRefs re-fetch) AND for
- * the Edit buttons to be present, so subsequent clicks aren't clobbered.
+ * This helper waits for that one GET /api/v1/transactions call to have
+ * happened AND for the Edit buttons to be present, so subsequent clicks
+ * aren't clobbered.
  *
  * Callers must have `vi.mock("@/lib/api", ...)` in scope so that the
  * imported `apiFetch` here is the same mocked function the test wires up.
@@ -27,7 +26,7 @@ export async function waitForStableTxList(): Promise<void> {
         (c[0] as string).startsWith("/api/v1/transactions") &&
         ((c[1] as RequestInit | undefined)?.method ?? "GET") === "GET",
     );
-    expect(txGetCalls.length).toBeGreaterThanOrEqual(2);
+    expect(txGetCalls.length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByRole("status", { name: /loading/i })).toBeNull();
     expect(
       screen.queryAllByRole("button", { name: /^Edit:/ }).length,

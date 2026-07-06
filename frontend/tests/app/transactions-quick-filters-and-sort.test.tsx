@@ -362,27 +362,20 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
   async function awaitHeadersReady(
     mock: ReturnType<typeof vi.mocked<typeof apiFetch>>,
   ) {
-    // The page kicks off two fetches in parallel: loadRefs() (sets accounts,
-    // categories, billing periods) and loadTransactions() (the row data).
-    // When loadRefs finishes, periods updates which re-creates the
-    // loadTransactions callback, which re-runs the load effect and flips
-    // `fetching` back to true briefly. Headers disappear during that window.
-    //
-    // A "two consecutive polls" stability check isn't enough — under CI's
-    // slower scheduler the flicker can land between awaitHeadersReady
-    // returning and the next getDesktopHeader call. Instead, gate on a
-    // deterministic signal: the page has issued a SECOND /transactions
-    // request (the post-periods refetch) AND headers are currently visible.
-    // After the second transactions response resolves, fetching settles
-    // permanently because nothing else updates loadTransactions' deps.
+    // The initial list fetch now waits for billing periods to settle before it
+    // runs (the cold-mount single-fetch guard), so the page issues exactly one
+    // /transactions request and `fetching` flips true -> false once and stays
+    // false — no post-periods refetch flicker to race against. Gate on a
+    // deterministic settled signal: the one /transactions request has been
+    // issued AND every sortable header is currently visible.
     const required = ["Date", "Description", "Account", "Category", "Status", "Amount"];
     await waitFor(
       () => {
         const txCalls = mock.mock.calls.filter(
           (c) => typeof c[0] === "string" && (c[0] as string).startsWith("/api/v1/transactions"),
         ).length;
-        if (txCalls < 2) {
-          throw new Error(`waiting for post-periods refetch (saw ${txCalls})`);
+        if (txCalls < 1) {
+          throw new Error(`waiting for the /transactions fetch (saw ${txCalls})`);
         }
         const labels = screen.queryAllByRole("button").map((b) => b.textContent ?? "");
         const allPresent = required.every((name) =>
