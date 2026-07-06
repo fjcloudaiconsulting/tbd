@@ -237,6 +237,13 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_tick_seconds: int = 900
     scheduler_lock_ttl_seconds: int = 600
+    # Rollout guard: cap how many orgs may perform real work (a job that closes a
+    # billing period, generates recurring transactions, or emails members) in a
+    # single tick. A fresh deploy or long-downtime catch-up would otherwise mutate
+    # and email every org at once; the cap drains the backlog across ticks instead
+    # (skipped orgs stay due and are picked up next tick). Set to 0 (or any value
+    # <= 0) for no cap (pre-guard burst behavior).
+    scheduler_max_orgs_per_tick: int = 25
 
     @field_validator("session_lifetime_days")
     @classmethod

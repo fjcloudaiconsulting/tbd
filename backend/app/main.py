@@ -278,6 +278,7 @@ async def lifespan(app: FastAPI):
                 app.state.scheduler_stop,
                 tick_seconds=app_settings.scheduler_tick_seconds,
                 lock_ttl=app_settings.scheduler_lock_ttl_seconds,
+                max_orgs=app_settings.scheduler_max_orgs_per_tick,
             )
         )
         # Yield control once so the just-created task actually starts
