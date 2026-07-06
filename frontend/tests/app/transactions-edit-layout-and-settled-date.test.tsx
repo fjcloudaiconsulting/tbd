@@ -1,5 +1,6 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -124,7 +125,7 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
     // containers exist and are NOT the legacy single-col-span elements.
     const tx = makeTx({ id: 70, description: "Edit me", status: "settled" });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -212,7 +213,7 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
       return null as never;
     });
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -289,7 +290,7 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
       return null as never;
     });
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -317,7 +318,7 @@ describe("TransactionsPage - edit row layout (Punch-list Item 7)", () => {
     // PRs #173/#174. Mirror the mobile-form action floor here.
     const tx = makeTx({ id: 71, description: "Touch me" });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -345,7 +346,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
       settled_date: "2026-06-10",
     });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -363,7 +364,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
       settled_date: null,
     });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -401,7 +402,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
       settled_date: "2026-05-01",
     });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -438,7 +439,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
       settled_date: "2026-06-15",
     });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await screen.findAllByText("Pending CC");
     // The always-on mobile settled line shows the settled date exactly
@@ -459,7 +460,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
       settled_date: "2026-05-01",
     });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await screen.findAllByText("Pending same date");
     // The always-on line renders regardless of whether the dates match;
@@ -483,7 +484,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
       settled_date: "2026-06-15",
     });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -528,7 +529,7 @@ describe("TransactionsPage - settled_date (Punch-list Item 13)", () => {
       settled_date: null,
     });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);

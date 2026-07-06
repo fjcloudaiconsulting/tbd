@@ -1,5 +1,6 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -127,7 +128,7 @@ describe("TransactionsPage — quick filter buttons", () => {
     ];
     const mock = setupApiFetch(periods);
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     // Wait for initial fetches.
     await waitFor(() => {
@@ -161,7 +162,7 @@ describe("TransactionsPage — quick filter buttons", () => {
   it("This Month button sends date_from=first-of-month and date_to=last-of-month", async () => {
     const mock = setupApiFetch();
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitFor(() => expect(lastListUrl(mock)).not.toBeNull());
 
@@ -183,7 +184,7 @@ describe("TransactionsPage — quick filter buttons", () => {
   it("This Week button sends date_from=Monday-of-this-week and date_to=today", async () => {
     const mock = setupApiFetch();
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitFor(() => expect(lastListUrl(mock)).not.toBeNull());
 
@@ -213,7 +214,7 @@ describe("TransactionsPage — quick filter buttons", () => {
     ];
     const mock = setupApiFetch(periods);
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
     await waitFor(() => expect(lastListUrl(mock)).not.toBeNull());
 
     // Seed: pick a closed period from the dropdown.
@@ -243,7 +244,7 @@ describe("TransactionsPage — quick filter buttons", () => {
     ];
     setupApiFetch(periods);
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     expect(screen.queryByRole("button", { name: /current period/i })).toBeNull();
 
@@ -273,7 +274,7 @@ describe("TransactionsPage — quick filter buttons", () => {
     ];
     const mock = setupApiFetch(periods);
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await screen.findByLabelText("Billing period");
     await waitFor(() => {
@@ -300,7 +301,7 @@ describe("TransactionsPage — quick filter buttons", () => {
     const periods: Period[] = [{ id: 7, start_date: "2026-04-01", end_date: "2026-04-30" }];
     const mock = setupApiFetch(periods);
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
     await waitFor(() => expect(lastListUrl(mock)).not.toBeNull());
 
     // Pin a closed period via the dropdown first.
@@ -397,7 +398,7 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
 
   it("Default state: Date column shows desc indicator", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await awaitHeadersReady(mock);
     expect(getDesktopHeader("Date").textContent).toMatch(/Date.*↓/);
@@ -405,7 +406,7 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
 
   it("Switching from Date (desc) to Description applies the column's natural default (asc)", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await awaitHeadersReady(mock);
 
@@ -418,7 +419,7 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
 
   it("Switching from Description (asc) to Amount applies Amount's natural default (desc), not asc", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await awaitHeadersReady(mock);
 
@@ -438,7 +439,7 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
 
   it("Same-column click toggles direction (Date desc -> Date asc -> Date desc)", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await awaitHeadersReady(mock);
     expect(getDesktopHeader("Date").textContent).toMatch(/Date.*↓/);
@@ -456,7 +457,7 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
 
   it("Switching from Amount (desc) to Status applies Status's natural default (asc)", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await awaitHeadersReady(mock);
 
@@ -474,7 +475,7 @@ describe("TransactionsPage — sort direction across columns (Option B)", () => 
 
   it("Mobile tap targets: every sortable header carries min-h-[32px] (WCAG 2.5.8)", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await awaitHeadersReady(mock);
 

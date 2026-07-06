@@ -1,5 +1,6 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -142,7 +143,7 @@ describe("TransactionsPage - batch edit wiring", () => {
       makeTx({ id: 71, description: "Two" }),
     ];
     setupApiFetch(txs, { requested_count: 2, updated_count: 2, skipped: [] });
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     const dialog = await selectAllAndOpenModal();
 
@@ -198,7 +199,7 @@ describe("TransactionsPage - batch edit wiring", () => {
       updated_count: 1,
       skipped: [{ id: 81, reason: "Manual balance adjustments cannot be edited" }],
     });
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     const dialog = await selectAllAndOpenModal();
 

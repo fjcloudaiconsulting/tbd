@@ -90,6 +90,11 @@ function makeTx(over: Partial<{
   };
 }
 
+// NOTE: TransactionsPage reads accounts/categories/billing-periods via SWR,
+// whose default cache is warm across this file's `it` blocks. These tests are
+// safe on plain render() because setupApiFetch returns CONSTANT refs. If you add
+// a case that needs DIFFERENT ref data, switch it to renderWithSWR (fresh cache)
+// or it will silently receive an earlier test's cached refs.
 function setupApiFetch(txs: ReturnType<typeof makeTx>[]) {
   const apiFetchMock = vi.mocked(apiFetch);
   apiFetchMock.mockReset();
