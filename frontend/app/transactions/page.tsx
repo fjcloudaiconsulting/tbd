@@ -13,8 +13,17 @@ import { apiFetch, extractErrorMessage } from "@/lib/api";
 import { equalsAmount, formatAmount, formatLocalDate, toEditAmount, todayISO } from "@/lib/format";
 import { input, label, btnPrimary, btnSecondary, btnDangerSolid, card, error as errorCls, pageTitle, stickyBar } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
+import { useAccounts } from "@/lib/hooks/use-accounts";
+import { useCategories } from "@/lib/hooks/use-categories";
+import { useBillingPeriods } from "@/lib/hooks/use-billing-periods";
 import CategorySelect from "@/components/ui/CategorySelect";
-import type { Account, Category, Transaction } from "@/lib/types";
+import type { Account, BillingPeriod, Category, Transaction } from "@/lib/types";
+
+// Stable empty-array fallbacks so a still-loading SWR ref (data === undefined)
+// yields the same reference across renders, keeping memo/callback deps stable.
+const EMPTY_ACCOUNTS: Account[] = [];
+const EMPTY_CATEGORIES: Category[] = [];
+const EMPTY_PERIODS: BillingPeriod[] = [];
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import LinkAsTransferModal from "@/components/transactions/LinkAsTransferModal";
 import MarkAsTransferModal from "@/components/transactions/MarkAsTransferModal";
@@ -83,8 +92,17 @@ function TransactionsPageContent() {
   const targetDesktopRowRef = useRef<HTMLDivElement | null>(null);
   const targetMobileRowRef = useRef<HTMLElement | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
+  // Reference data via shared SWR hooks (SWR Phase 2). Gated on resolved
+  // auth so a fetch never fires before the bearer token is set. ``mutate``
+  // is how the post-write event and inline category-create force a refresh.
+  const refsEnabled = !loading && !!user;
+  const { data: accountsData, mutate: mutateAccounts } = useAccounts(refsEnabled);
+  const { data: categoriesData, mutate: mutateCategories } = useCategories(refsEnabled);
+  const { data: periodsData, mutate: mutateBillingPeriods } = useBillingPeriods(refsEnabled);
+  const accounts = accountsData ?? EMPTY_ACCOUNTS;
+  const categories = categoriesData ?? EMPTY_CATEGORIES;
+  const periods = periodsData ?? EMPTY_PERIODS;
+  const periodsLoaded = periodsData !== undefined;
   const [error, setError] = useState("");
   // Non-blocking refresh-error state for the AppShell post-write event
   // listener. The page keeps the previous list; banner offers a Retry.
@@ -197,10 +215,6 @@ function TransactionsPageContent() {
   const sortField = persistedSort.field;
   const sortDir = persistedSort.dir;
 
-  // Billing periods for filter
-  const [periods, setPeriods] = useState<{ id: number; start_date: string; end_date: string | null }[]>([]);
-  const [periodsLoaded, setPeriodsLoaded] = useState(false);
-
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
@@ -216,18 +230,6 @@ function TransactionsPageContent() {
   // the visible list when possible, otherwise fetched on demand. Used to
   // filter the Account select and to render the mirror-amount notice.
   const [editPartner, setEditPartner] = useState<Transaction | null>(null);
-
-  const loadRefs = useCallback(async () => {
-    const [accts, cats, pers] = await Promise.all([
-      apiFetch<Account[]>("/api/v1/accounts"),
-      apiFetch<Category[]>("/api/v1/categories"),
-      apiFetch<{ id: number; start_date: string; end_date: string | null }[]>("/api/v1/settings/billing-periods"),
-    ]);
-    setAccounts(accts ?? []);
-    setCategories(cats ?? []);
-    setPeriods(pers ?? []);
-    setPeriodsLoaded(true);
-  }, []);
 
   const loadTransactions = useCallback(async (p: number) => {
     let url = `/api/v1/transactions?limit=${pageSize}&offset=${p * pageSize}`;
@@ -256,9 +258,8 @@ function TransactionsPageContent() {
     setFetching(false);
   }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod, periods, pageSize, sortField, sortDir]);
 
-  useEffect(() => {
-    if (!loading && user) loadRefs().catch(() => {});
-  }, [loading, user, loadRefs]);
+  // Reference data (accounts/categories/periods) auto-fetches via the SWR
+  // hooks above once ``refsEnabled`` flips true — no explicit mount effect.
 
   // Apply supported URL params once so dashboard deep links don't fight
   // user-edited filters after initial hydration.
@@ -342,13 +343,19 @@ function TransactionsPageContent() {
   const refreshAfterTransactionAdded = useCallback(async () => {
     if (loading || !user) return;
     setRefreshing(true);
+    // Revalidate each SWR ref (a freshly-created category must show in the
+    // filter dropdown) and re-pull the visible list. allSettled keeps them
+    // independent so a transient ref failure doesn't block the list refresh,
+    // and any rejection surfaces the inline retry banner.
     const results = await Promise.allSettled([
-      loadRefs(),
+      mutateAccounts(),
+      mutateCategories(),
+      mutateBillingPeriods(),
       loadTransactions(page),
     ]);
     setRefreshing(false);
     setRefreshError(results.some((r) => r.status === "rejected"));
-  }, [loading, user, loadRefs, loadTransactions, page]);
+  }, [loading, user, mutateAccounts, mutateCategories, mutateBillingPeriods, loadTransactions, page]);
 
   useTransactionAddedListener(() => {
     void refreshAfterTransactionAdded();
@@ -1135,7 +1142,7 @@ function TransactionsPageContent() {
                             </div>
                             <div>
                               <label htmlFor={`edit-cat-${tx.id}`} className={label}>{isTransfer ? "Transfer category" : "Category"}</label>
-                              <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-${tx.id}-help` : undefined} id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
+                              <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-${tx.id}-help` : undefined} id={`edit-cat-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
                               {isTransfer && (
                                 <p id={`edit-cat-${tx.id}-help`} className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
                               )}
@@ -1452,7 +1459,7 @@ function TransactionsPageContent() {
                               </div>
                               <div>
                                 <label htmlFor={`edit-cat-mobile-${tx.id}`} className={label}>{isTransfer ? "Transfer category" : "Category"}</label>
-                                <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-mobile-${tx.id}-help` : undefined} id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => setCategories((prev) => [...prev, cat])} />
+                                <CategorySelect aria-label={isTransfer ? "Transfer category" : "Category"} aria-describedby={isTransfer ? `edit-cat-mobile-${tx.id}-help` : undefined} id={`edit-cat-mobile-${tx.id}`} categories={categories} value={editCategoryId} onChange={setEditCategoryId} filterType={isTransfer ? undefined : editType} typeFilter={isTransfer ? "BOTH" : undefined} className={`text-sm ${input}`} onCategoryCreated={(cat) => mutateCategories((prev) => [...(prev ?? []), cat], { revalidate: false })} />
                                 {isTransfer && (
                                   <p id={`edit-cat-mobile-${tx.id}-help`} className="mt-1 text-xs text-text-secondary">Transfers only accept categories that work for both income and expense (for example, Transfer).</p>
                                 )}
