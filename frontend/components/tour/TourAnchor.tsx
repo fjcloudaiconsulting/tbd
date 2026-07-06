@@ -54,7 +54,6 @@ export default function TourAnchor({
       // Fail soft in production; the tour will simply not find this
       // anchor. We log to console in dev to surface mis-usage.
       if (process.env.NODE_ENV !== "production") {
-        // eslint-disable-next-line no-console
         console.warn(
           `[TourAnchor] as="child" requires a single ReactElement child (id: ${id}).`,
         );

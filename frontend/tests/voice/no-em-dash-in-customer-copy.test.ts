@@ -134,7 +134,6 @@ describe("customer-copy voice policy", () => {
     if (hits.length > 0) {
       // Surface every offending location so a regression is easy to
       // pin to a file:line rather than "somewhere in the bundle".
-      // eslint-disable-next-line no-console
       console.error(
         "Em-dash policy violations:\n" + hits.map((h) => `  ${h}`).join("\n"),
       );

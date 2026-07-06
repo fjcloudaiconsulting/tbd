@@ -19,7 +19,6 @@ export default function GlobalError({
   // by the structured logger upstream.
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") {
-      // eslint-disable-next-line no-console
       console.error("[error.tsx] caught:", error);
     }
   }, [error]);

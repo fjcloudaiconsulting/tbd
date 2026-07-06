@@ -505,17 +505,6 @@ function LegacyDashboard() {
   // "no rows yet" hint.
   const canAdd = activeAccounts.length > 0 && categories.length > 0;
 
-  // Total balance by currency (settled only — what's in the accounts)
-  const balanceByCurrency = activeAccounts.reduce<Record<string, number>>(
-    (acc, a) => {
-      const cur = a.currency || "EUR";
-      acc[cur] = (acc[cur] || 0) + Number(a.balance);
-      return acc;
-    },
-    {}
-  );
-  const currencies = Object.entries(balanceByCurrency);
-
   // All active accounts for individual tiles
   const accountsWithBalance = activeAccounts;
 

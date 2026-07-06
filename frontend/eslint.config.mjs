@@ -14,6 +14,12 @@ const upgradeFollowUps = {
   "react-hooks/exhaustive-deps": "warn",
   "react/no-unescaped-entities": "error",
   "@next/next/no-html-link-for-pages": "warn",
+  "@typescript-eslint/no-unused-vars": ["error", {
+    argsIgnorePattern: "^_",
+    varsIgnorePattern: "^_",
+    caughtErrorsIgnorePattern: "^_",
+    destructuredArrayIgnorePattern: "^_",
+  }],
 };
 
 const eslintConfig = [

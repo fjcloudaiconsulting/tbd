@@ -118,7 +118,6 @@ function TourRouter({ api }: { api: TourApi }) {
       // found, but surfacing it as a console warning makes the
       // missing entry visible in CI smoke runs / E2E logs instead of
       // silently no-opping.
-      // eslint-disable-next-line no-console
       console.warn(
         `[tour] no route mapped for step prefix "${pagePrefix(currentStep)}" ` +
           `(step="${currentStep}"). Add an entry to routeForPrefix() in lib/help/tour.ts.`,

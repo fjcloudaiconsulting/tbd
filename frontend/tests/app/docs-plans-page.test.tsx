@@ -4,7 +4,6 @@
  * documented sections are present, and the link from /docs back to
  * the guide is wired.
  */
-import React from "react";
 import { render, screen } from "@testing-library/react";
 
 import PlansDocsPage from "@/app/docs/plans/page";

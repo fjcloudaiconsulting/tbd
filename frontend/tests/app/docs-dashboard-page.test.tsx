@@ -4,7 +4,6 @@
  * the page renders, the documented sections are present, key product facts
  * are pinned, and the link from /docs to the guide is wired.
  */
-import React from "react";
 import { render, screen } from "@testing-library/react";
 
 import DashboardDocsPage from "@/app/docs/dashboard/page";
