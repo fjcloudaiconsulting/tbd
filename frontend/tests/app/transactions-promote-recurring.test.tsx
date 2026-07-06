@@ -1,5 +1,6 @@
 import React from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -119,7 +120,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
   it("non-recurring row: toggle reveals frequency + next-due-date inputs", async () => {
     const tx = makeTx({ id: 70, description: "Promo me" });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -145,7 +146,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
       [`PUT /api/v1/transactions/71`]: { ...tx, description: "Save me edited" },
       [`POST /api/v1/transactions/71/promote-to-recurring`]: promotedResponse,
     });
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -221,7 +222,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
       return null as never;
     });
 
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -253,7 +254,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
     setupApiFetch([tx], {
       [`PUT /api/v1/transactions/72`]: tx,
     });
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -280,7 +281,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
   it("already-recurring row: shows static 'Recurring' chip, no toggle", async () => {
     const tx = makeTx({ id: 73, description: "Already promo", recurring_id: 5 });
     setupApiFetch([tx]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);
@@ -305,7 +306,7 @@ describe("TransactionsPage — promote to recurring (L3.12)", () => {
       linked_transaction_id: 80,
     });
     setupApiFetch([expenseLeg, incomeLeg]);
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
 
     await waitForStableTxList();
     fireEvent.click(screen.getAllByRole("button", { name: /^Edit:/ })[0]);

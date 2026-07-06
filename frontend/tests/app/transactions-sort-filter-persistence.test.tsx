@@ -1,5 +1,6 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import TransactionsPage from "@/app/transactions/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -126,7 +127,7 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
 
   it("writes the sort selection to localStorage when a column header is clicked", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
     await awaitReady(mock);
 
     fireEvent.click(getHeader("Description"));
@@ -143,7 +144,7 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
       JSON.stringify({ field: "amount", dir: "asc" }),
     );
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
     await awaitReady(mock);
 
     // Active sort renders an indicator suffix on the matching header. Default
@@ -156,7 +157,7 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
 
   it("Reset filters and sort button is hidden when defaults are active", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
     await awaitReady(mock);
 
     expect(screen.queryByTestId("reset-sort-filters")).toBeNull();
@@ -164,7 +165,7 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
 
   it("Reset filters and sort button appears when sort differs from default and clears persistence on click", async () => {
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
     await awaitReady(mock);
 
     fireEvent.click(getHeader("Description"));
@@ -206,7 +207,7 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
       }),
     );
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
     await awaitReady(mock);
 
     const search = screen.getByLabelText("Search transactions") as HTMLInputElement;
@@ -230,7 +231,7 @@ describe("TransactionsPage - persisted sort and filters (item 6)", () => {
       }),
     );
     const mock = setupApiFetch();
-    render(<TransactionsPage />);
+    renderWithSWR(<TransactionsPage />);
     await awaitReady(mock);
 
     const resetBtn = screen.getByTestId("reset-sort-filters");
