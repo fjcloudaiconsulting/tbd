@@ -768,6 +768,73 @@ async def test_dispatch_org_admin_fanout_to_multiple_admins(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_org_admin_fanout_dual_channel_respects_email_optout(
+    session_factory, monkeypatch
+):
+    """The admin fan-out emails each admin best-effort (pref-gated), mirroring
+    the member fan-out. An admin who opted out of ``email_org_admin`` still gets
+    the in-app row but no email; a MEMBER gets neither channel.
+    """
+    seed_user_id = await _seed_user(session_factory, username="owner", email="owner@ex.io")
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        assert owner is not None
+        org_id = owner.org_id
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_email_optout = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+    admin_inapp_optout = await _seed_extra_admin(
+        session_factory, org_id, username="admin_c", email="c@ex.io", role=Role.ADMIN
+    )
+    await _seed_extra_admin(
+        session_factory, org_id, username="member", email="m@ex.io", role=Role.MEMBER
+    )
+
+    # Two admins opt out of DIFFERENT single channels, proving the channels are
+    # independent in both directions:
+    #   admin_email_optout: email OFF, in-app ON  -> in-app row, no email
+    #   admin_inapp_optout: in-app OFF, email ON   -> no in-app row, email sent
+    async with session_factory() as db:
+        p1 = notification_service._default_preferences(admin_email_optout)
+        p1.email_org_admin = False
+        p2 = notification_service._default_preferences(admin_inapp_optout)
+        p2.in_app_org_admin = False
+        db.add_all([p1, p2])
+        await db.commit()
+
+    emails_sent: list[str] = []
+
+    async def _fake_email(to, *, title, body, link_url=None):
+        emails_sent.append(to)
+        return True
+
+    monkeypatch.setattr(notification_service, "send_notification_email", _fake_email)
+
+    async with session_factory() as db:
+        written = await notification_service.dispatch_notification_to_org_admins(
+            db,
+            org_id=org_id,
+            category=NotificationCategory.ORG_ADMIN,
+            event_type="org.renamed",
+            title="Org renamed",
+            body="Body",
+        )
+        await db.commit()
+
+    # In-app rows: owner + admin_a + admin_email_optout (in-app on) = 3.
+    # admin_inapp_optout writes no row.
+    assert written == 3
+    # Email: owner + admin_a + admin_inapp_optout (email on). admin_email_optout
+    # skipped; member never targeted on either channel.
+    assert set(emails_sent) == {"owner@ex.io", "a@ex.io", "c@ex.io"}
+    assert "b@ex.io" not in emails_sent
+    assert "m@ex.io" not in emails_sent
+
+
+@pytest.mark.asyncio
 async def test_dispatch_org_admin_fanout_continues_on_individual_failure(
     session_factory, monkeypatch
 ):
@@ -825,6 +892,66 @@ async def test_dispatch_org_admin_fanout_continues_on_individual_failure(
     assert seed_user_id in recipient_ids
     assert admin_b in recipient_ids
     assert admin_a not in recipient_ids
+
+
+@pytest.mark.asyncio
+async def test_org_admin_fanout_emails_even_when_in_app_write_fails(
+    session_factory, monkeypatch
+):
+    """An admin whose in-app row write RAISES must still receive the email.
+
+    This pins the load-bearing behavior of the dual-channel change: email is an
+    independent channel sent outside the savepoint, so a failed in-app write must
+    not suppress it (the removed ``continue`` in the except branch). A future
+    re-introduction of that ``continue`` would pass every other test but fail this.
+    """
+    seed_user_id = await _seed_user(
+        session_factory, username="owner", email="owner@ex.io"
+    )
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        org_id = owner.org_id
+
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_b = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+
+    real_dispatch = notification_service.dispatch_notification
+
+    async def flaky_dispatch(db, *, user_id, **kwargs):
+        if user_id == admin_a:
+            raise RuntimeError("simulated per-user in-app failure")
+        return await real_dispatch(db, user_id=user_id, **kwargs)
+
+    monkeypatch.setattr(notification_service, "dispatch_notification", flaky_dispatch)
+
+    emails_sent: list[str] = []
+
+    async def _fake_email(to, *, title, body, link_url=None):
+        emails_sent.append(to)
+        return True
+
+    monkeypatch.setattr(notification_service, "send_notification_email", _fake_email)
+
+    async with session_factory() as db:
+        written = await notification_service.dispatch_notification_to_org_admins(
+            db,
+            org_id=org_id,
+            category=NotificationCategory.ORG_ADMIN,
+            event_type="admin.org.plan.changed",
+            title="Plan changed",
+            body="Body",
+        )
+        await db.commit()
+
+    assert written == 2  # owner + admin_b in-app rows; admin_a's raised
+    # The load-bearing assertion: admin_a's email is sent DESPITE its in-app
+    # write failing. All three admins are emailed.
+    assert "a@ex.io" in emails_sent
+    assert set(emails_sent) == {"owner@ex.io", "a@ex.io", "b@ex.io"}
 
 
 @pytest.mark.asyncio
