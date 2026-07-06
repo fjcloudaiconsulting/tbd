@@ -8,9 +8,10 @@
  * SECOND identical list request — once against the empty period fallback, then
  * again after periods loaded.
  *
- * A fresh SWR cache (``renderWithSWR``) is required to reproduce it: with the
- * suite's warm module cache periods are already resolved on mount, so the
- * loading -> resolved transition that triggers the second fetch never happens.
+ * A fresh SWR cache (``renderWithSWR``) is required to reproduce it: the
+ * periods request must go through a loading -> resolved transition on this
+ * mount for the second fetch to fire. A cache already holding periods (warm
+ * from an earlier render) skips that transition and hides the bug.
  *
  * The fix gates the initial list fetch until periods have SETTLED (resolved or
  * errored), so the list is fetched exactly once, after periods are available.
@@ -93,6 +94,10 @@ describe("TransactionsPage cold mount", () => {
     // so awaiting it guarantees the loading -> resolved transition has run and
     // any second fetch has been dispatched by the mount effect.
     await screen.findByLabelText("Billing period");
+
+    // The single fetch must also actually populate the list (the description
+    // renders in both the desktop table and the mobile card, so match all).
+    await screen.findAllByText("Tx");
 
     // Flush any trailing effect-driven fetch before asserting the final count.
     await waitFor(() => expect(txListCallCount()).toBeGreaterThan(0));

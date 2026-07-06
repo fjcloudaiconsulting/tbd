@@ -5,10 +5,12 @@ import { apiFetch } from "@/lib/api";
 /**
  * The transactions page now issues a single GET /api/v1/transactions at
  * mount: the initial list fetch waits for the billing-periods SWR request
- * to settle first (the cold-mount single-fetch guard), so loadTransactions
- * no longer re-fires when `periods` resolves. That removes the old flicker
- * where the table briefly reverted to a Spinner and dropped a just-set
- * editingId between an Edit click and the re-render.
+ * to settle first (the cold-mount single-fetch guard). loadTransactions is
+ * still recreated when `periods` resolves, but the mount effect no longer
+ * issues a fetch against the empty-periods fallback beforehand, so there is
+ * no second fetch. That removes the old flicker where the table briefly
+ * reverted to a Spinner and dropped a just-set editingId between an Edit
+ * click and the re-render.
  *
  * This helper waits for that one GET /api/v1/transactions call to have
  * happened AND for the Edit buttons to be present, so subsequent clicks
