@@ -99,6 +99,31 @@ def _assert_brand_voice(*texts: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_notification_email_includes_preferences_link(
+    captured_send: list[dict[str, Any]],
+):
+    """Scheduler/generic notification emails carry a link to the notification
+    preferences page so members can opt out of these notifications."""
+    ok = await email_service.send_notification_email(
+        to="member@example.com",
+        title="Your budget period closed",
+        body="Your budget period was closed and a new one started on 2026-08-01.",
+        link_url="/budgets",
+    )
+    assert ok is True
+    assert len(captured_send) == 1
+    sent = captured_send[0]
+    prefs_url = f"{email_service.settings.app_url}/settings/notifications"
+    # HTML body: a clickable manage-preferences link
+    assert prefs_url in sent["body_html"]
+    assert "notification preferences" in sent["body_html"].lower()
+    # plain-text alternative carries the same URL
+    assert prefs_url in sent["body_text"]
+    assert "notification preferences" in sent["body_text"].lower()
+    _assert_brand_voice(sent["body_text"])
+
+
+@pytest.mark.asyncio
 async def test_password_reset_template(captured_send: list[dict[str, Any]]):
     ok = await email_service.send_password_reset_email(
         "user@example.com", "tok_abc123"
