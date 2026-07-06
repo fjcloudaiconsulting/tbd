@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -133,3 +134,71 @@ async def test_zero_cap_means_no_cap(session_factory, monkeypatch):
     await R.run_all_due(datetime.date(2026, 7, 4), session_factory=session_factory,
                         registry=reg, max_orgs=0)
     assert log.count(("ran", "j")) == 4
+
+
+async def test_backlog_drains_across_ticks_without_starving_tail(session_factory, monkeypatch):
+    # The headline promise: a capped backlog drains across ticks, advancing to the
+    # orgs skipped last tick (no cursor is kept — convergence relies purely on the
+    # job's is_due flipping False after work). Uses a stateful is_due to prove it.
+    monkeypatch.setattr(R, "async_session", session_factory)
+    async def _enabled(db, org_id, key): return True
+    monkeypatch.setattr(R.org_settings, "get_bool", _enabled)
+    await _seed_orgs(session_factory, 5)
+    async with session_factory() as db:
+        ids = [o.id for o in (
+            await db.execute(select(Organization).order_by(Organization.id))
+        ).scalars().all()]
+
+    done: set[int] = set()
+    per_tick: list[list[int]] = []
+
+    class _Stateful:
+        job_type = "s"; setting_key = "k"
+        async def is_due(self, db, org, today): return org.id not in done
+        async def run(self, db, org, today):
+            done.add(org.id); per_tick[-1].append(org.id)
+            return JobResult.ok({})
+
+    reg = [_Stateful()]
+    for _ in range(3):
+        per_tick.append([])
+        await R.run_all_due(datetime.date(2026, 7, 4), session_factory=session_factory,
+                            registry=reg, max_orgs=2)
+
+    assert per_tick[0] == ids[0:2]   # tick 1: first two
+    assert per_tick[1] == ids[2:4]   # tick 2: the previously-skipped next two
+    assert per_tick[2] == ids[4:5]   # tick 3: the tail
+    assert done == set(ids)          # fully drained, nothing starved
+
+
+async def test_cap_counts_per_org_not_per_job(session_factory, monkeypatch):
+    # An org with a multi-job registry consumes exactly ONE budget slot, not one
+    # per job — so the cap is a count of orgs, and a capped org runs ALL its jobs.
+    log = []
+    monkeypatch.setattr(R, "async_session", session_factory)
+    async def _enabled(db, org_id, key): return True
+    monkeypatch.setattr(R.org_settings, "get_bool", _enabled)
+    await _seed_orgs(session_factory, 3)
+    reg = [_Job("a", "k", log=log), _Job("b", "k", log=log), _Job("c", "k", log=log)]
+    await R.run_all_due(datetime.date(2026, 7, 4), session_factory=session_factory,
+                        registry=reg, max_orgs=2)
+    assert len(log) == 6                       # 2 orgs x 3 jobs each
+    assert log.count(("ran", "a")) == 2        # third org fully skipped, not half-run
+
+
+async def test_failure_outcome_does_not_consume_budget(session_factory, monkeypatch):
+    # A wall of failing orgs must not exhaust the budget and block healthy ones:
+    # the exception path is distinct from a returned non-success outcome.
+    failures = {"n": 0}
+    monkeypatch.setattr(R, "async_session", session_factory)
+    async def _enabled(db, org_id, key): return True
+    async def _audit(**k):
+        if k.get("outcome") == "failure": failures["n"] += 1
+        return 1
+    monkeypatch.setattr(R.org_settings, "get_bool", _enabled)
+    monkeypatch.setattr(R, "record_run", _audit)
+    await _seed_orgs(session_factory, 3)
+    reg = [_Job("boom", "k", boom=True)]
+    await R.run_all_due(datetime.date(2026, 7, 4), session_factory=session_factory,
+                        registry=reg, max_orgs=1)
+    assert failures["n"] == 3  # all 3 attempted despite cap=1 (failures don't count)
