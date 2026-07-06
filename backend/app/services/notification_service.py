@@ -162,6 +162,38 @@ async def _email_preference_allows(
     return bool(getattr(prefs, field))
 
 
+async def _send_notification_email_best_effort(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    email: str,
+    category: NotificationCategory,
+    event_type: str,
+    title: str,
+    body: str,
+    link_url: Optional[str] = None,
+) -> None:
+    """Send the notification email for one recipient, gated by the email pref.
+
+    Best-effort and channel-independent from the in-app row: email failure is
+    logged and swallowed (the in-app row is the source of truth). ``security``
+    is force-on via ``_email_preference_allows``; other categories respect the
+    user's ``email_{category}`` toggle.
+
+    Callers MUST invoke this AFTER the in-app savepoint has closed, so the
+    outbound Mailgun HTTP call never holds a DB transaction open. Shared by both
+    org fan-outs (``dispatch_notification_to_org_admins`` and
+    ``dispatch_notification_to_org_members``) so the two channels stay in sync.
+    """
+    try:
+        if await _email_preference_allows(db, user_id=user_id, category=category):
+            await send_notification_email(email, title=title, body=body, link_url=link_url)
+    except Exception:  # noqa: BLE001 — email never fails the fan-out
+        await logger.awarning(
+            "notification.fanout.email_failed", user_id=user_id, event_type=event_type
+        )
+
+
 async def dispatch_notification(
     db: AsyncSession,
     *,
@@ -318,15 +350,27 @@ async def dispatch_notification_to_org_admins(
                 error_class=type(exc).__name__,
             )
             failures += 1
-            # Continue to the next admin — one user's failure must
-            # not poison the rest of the broadcast.
-            continue
         else:
             # Commit the savepoint; the row stays pending in the
             # outer transaction (so the caller still owns commit).
             await savepoint.commit()
             if row is not None:
                 written += 1
+        # Email is an independent channel: send it outside the savepoint
+        # (no DB transaction held during the Mailgun call) and regardless
+        # of whether the in-app row was written or failed — an admin who
+        # opted out of in-app but not email must still be reached, and a
+        # failed in-app write must not suppress the more important email.
+        await _send_notification_email_best_effort(
+            db,
+            user_id=admin.id,
+            email=admin.email,
+            category=category,
+            event_type=event_type,
+            title=title,
+            body=body,
+            link_url=link_url,
+        )
 
     await logger.ainfo(
         "notification.dispatch.fanout.complete",
@@ -377,11 +421,11 @@ async def dispatch_notification_to_org_members(
                 written += 1
         except Exception:  # noqa: BLE001 — best-effort fanout
             await logger.awarning("notification.fanout.member_failed", user_id=uid, event_type=event_type)
-        try:
-            if await _email_preference_allows(db, user_id=uid, category=category):
-                await send_notification_email(email, title=title, body=body, link_url=link_url)
-        except Exception:  # noqa: BLE001 — email never fails the fanout
-            await logger.awarning("notification.fanout.email_failed", user_id=uid, event_type=event_type)
+        # Email outside the savepoint, gated by the email pref (shared helper).
+        await _send_notification_email_best_effort(
+            db, user_id=uid, email=email, category=category, event_type=event_type,
+            title=title, body=body, link_url=link_url,
+        )
     return written
 
 
