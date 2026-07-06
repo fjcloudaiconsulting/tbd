@@ -3,7 +3,7 @@
  * the two verbatim transcription hotspots (the measure cast-and-extract and
  * the area/stacked_bar stacked label+default split).
  */
-import { renderWithSWR, fireEvent, screen } from "../../../utils/render-with-swr";
+import { renderWithSWR, screen } from "../../../utils/render-with-swr";
 
 import DataTab from "@/components/reports/config/DataTab";
 import StyleTab from "@/components/reports/config/StyleTab";
