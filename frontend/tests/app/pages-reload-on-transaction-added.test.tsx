@@ -1,5 +1,6 @@
 import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import AccountsPage from "@/app/accounts/page";
 import BudgetsPage from "@/app/budgets/page";
@@ -182,7 +183,9 @@ describe("Accounts page subscribes to pfv:transaction-added", () => {
       return null as never;
     });
 
-    render(<AccountsPage />);
+    // AccountsPage reads accounts via the shared SWR hook; a fresh cache keeps
+    // an earlier section's cached accounts from suppressing this mount's fetch.
+    renderWithSWR(<AccountsPage />);
 
     await waitFor(() => {
       expect(countCalls("/api/v1/accounts")).toBeGreaterThanOrEqual(1);
@@ -209,7 +212,9 @@ describe("Accounts page subscribes to pfv:transaction-added", () => {
       return null as never;
     });
 
-    render(<AccountsPage />);
+    // AccountsPage reads accounts via the shared SWR hook; a fresh cache keeps
+    // an earlier section's cached accounts from suppressing this mount's fetch.
+    renderWithSWR(<AccountsPage />);
 
     await waitFor(() => {
       expect(countCalls("/api/v1/accounts")).toBe(1);

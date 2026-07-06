@@ -22,10 +22,15 @@ import {
 import { SORT_KEY_ACCOUNTS } from "@/lib/hooks/persisted-keys";
 import { input, label, btnPrimary, card, cardHeader, cardTitle, error as errorCls, pageTitle } from "@/lib/styles";
 import { useTransactionAddedListener } from "@/lib/hooks/use-transaction-added";
+import { useAccounts, ACCOUNTS_KEY } from "@/lib/hooks/use-accounts";
 import type { Account, AccountType, Transaction } from "@/lib/types";
 import ConfirmModal from "@/components/ui/ConfirmModal";
 import OverflowMenu, { type OverflowMenuItem } from "@/components/ui/OverflowMenu";
 import AdjustBalanceModal from "@/components/accounts/AdjustBalanceModal";
+
+// Stable empty-array fallback so the SWR loading state (accountsData ===
+// undefined) doesn't hand a fresh [] to memos/effects on every render.
+const EMPTY_ACCOUNTS: Account[] = [];
 
 // Sortable column identifiers for the accounts list.
 type AccountSortField = "name" | "type" | "balance";
@@ -77,12 +82,22 @@ function sortAccounts(
 export default function AccountsPage() {
   const { user, loading } = useAuth();
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  // Accounts come from the shared SWR hook (SWR Phase 2, bare-path key) so
+  // every surface dedupes onto one cache entry. The `enabled` gate blocks the
+  // fetch until auth resolves (a null key), mirroring the pre-SWR guard.
+  const { data: accountsData, error: accountsError, mutate: mutateAccounts } =
+    useAccounts(!loading && !!user);
+  const accounts = accountsData ?? EMPTY_ACCOUNTS;
+  const accountsSettled = accountsData !== undefined || accountsError !== undefined;
   // All-time pending transactions for the per-account "Pending: €X.XX"
   // row. Pending is a status, not a period concept; a CC charge sitting
   // in pending must be visible whether it was made this month or last.
   const [pendingTransactions, setPendingTransactions] = useState<Transaction[]>([]);
-  const [fetching, setFetching] = useState(true);
+  // Account types + pending are still fetched imperatively via reload(); this
+  // flag tracks that first load. The spinner waits for BOTH it and the SWR
+  // accounts request so the list never flashes empty before accounts arrive.
+  const [auxLoaded, setAuxLoaded] = useState(false);
+  const fetching = !auxLoaded || !accountsSettled;
 
   const [typeName, setTypeName] = useState("");
   const [editingTypeId, setEditingTypeId] = useState<number | null>(null);
@@ -139,50 +154,65 @@ export default function AccountsPage() {
 
   const canAdjustBalance = !!user && isAdmin(user) && user.allow_manual_balance_adjustment;
 
+  // reload() now covers the non-SWR data only: account types + all-time
+  // pending. Accounts flow through the useAccounts SWR hook above; a mutation
+  // refreshes them via mutateAccounts() (see refreshAll). A types fetch
+  // failure still rejects so callers' catch blocks surface it, but auxLoaded
+  // flips either way so a failure doesn't strand the page on the spinner.
   const reload = useCallback(async () => {
-    // Primary fetches: account types + accounts. A failure here is a
-    // real failure — surface it through the existing reload().catch.
-    // Run in parallel with the supplementary pending fetch but don't
-    // let pending's failure bring the whole page down.
     const pendingPromise = fetchAll<Transaction>("/api/v1/transactions?status=pending")
-      // Best-effort: a pending fetch failure must not (a) blank the
-      // accounts list on initial load, or (b) make a successful
-      // mutation look failed because reload() rejected only due to
-      // the pending augment. Resolve with `null` to signal "skip the
-      // setState" without rejecting the parent Promise.all.
+      // Best-effort: a pending fetch failure must not (a) blank the page on
+      // initial load, or (b) make a successful mutation look failed because
+      // reload() rejected only due to the pending augment. Resolve with `null`
+      // to signal "skip the setState" without rejecting the parent Promise.all.
       .catch(() => null);
-    const [types, accts, pending] = await Promise.all([
-      apiFetch<AccountType[]>("/api/v1/account-types"),
-      apiFetch<Account[]>("/api/v1/accounts"),
-      pendingPromise,
-    ]);
-    setAccountTypes(types ?? []);
-    setAccounts(accts ?? []);
-    if (pending !== null) setPendingTransactions(pending);
-    setFetching(false);
+    try {
+      const [types, pending] = await Promise.all([
+        apiFetch<AccountType[]>("/api/v1/account-types"),
+        pendingPromise,
+      ]);
+      setAccountTypes(types ?? []);
+      if (pending !== null) setPendingTransactions(pending);
+    } finally {
+      setAuxLoaded(true);
+    }
   }, []);
 
+  // Full post-mutation refresh, used everywhere a write can change balances,
+  // the account list, or a denormalized type name. reload() covers types +
+  // pending. Accounts are fetched directly and written into the SWR cache
+  // (revalidate:false, so no second request): a plain mutate() revalidation
+  // swallows fetch errors (keeps stale data), but callers here need a failed
+  // accounts refresh to reject so the inline retry banner surfaces.
+  const refreshAll = useCallback(async () => {
+    const [, accts] = await Promise.all([
+      reload(),
+      apiFetch<Account[]>(ACCOUNTS_KEY),
+    ]);
+    await mutateAccounts(accts, { revalidate: false });
+  }, [reload, mutateAccounts]);
+
   useEffect(() => {
-    if (!loading && user) reload().catch(() => setFetching(false));
+    if (!loading && user) reload().catch(() => {});
   }, [loading, user, reload]);
 
   // After a write from the AppShell-level "+ New Transaction" CTA the
   // accounts page must refresh balances and pending totals (a new
   // expense/income mutates the relevant account's balance and may add
-  // a new pending row). reload() is a single composite call; a plain
-  // try/catch is enough to drive the inline retry banner.
+  // a new pending row). refreshAll() revalidates accounts (SWR) and reloads
+  // types + pending; a plain try/catch drives the inline retry banner.
   const refreshAfterTransactionAdded = useCallback(async () => {
     if (loading || !user) return;
     setRefreshing(true);
     try {
-      await reload();
+      await refreshAll();
       setRefreshError(false);
     } catch {
       setRefreshError(true);
     } finally {
       setRefreshing(false);
     }
-  }, [loading, user, reload]);
+  }, [loading, user, refreshAll]);
 
   useTransactionAddedListener(() => {
     void refreshAfterTransactionAdded();
@@ -194,7 +224,7 @@ export default function AccountsPage() {
     try {
       await apiFetch("/api/v1/account-types", { method: "POST", body: JSON.stringify({ name: typeName }) });
       setTypeName("");
-      await reload();
+      await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -203,7 +233,7 @@ export default function AccountsPage() {
     try {
       await apiFetch(`/api/v1/account-types/${id}`, { method: "PUT", body: JSON.stringify({ name: editingTypeName }) });
       setEditingTypeId(null);
-      await reload();
+      await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -212,7 +242,7 @@ export default function AccountsPage() {
     setError("");
     try {
       await apiFetch(`/api/v1/account-types/${id}`, { method: "DELETE" });
-      await reload();
+      await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -233,7 +263,7 @@ export default function AccountsPage() {
       setAcctName(""); setAcctTypeId(""); setAcctCloseDay("");
       setAcctOpeningBalance("0.00"); setAcctOpeningBalanceDate(todayIso);
       setShowAccountForm(false);
-      await reload();
+      await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -242,7 +272,7 @@ export default function AccountsPage() {
     setError("");
     try {
       await apiFetch(`/api/v1/accounts/${id}`, { method: "DELETE" });
-      await reload();
+      await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -294,7 +324,7 @@ export default function AccountsPage() {
     setEditAcctId(null);
     setEditAcctTypeId("");
     setPendingTypeChange(null);
-    await reload();
+    await refreshAll();
   }
 
   async function handleSaveAcct() {
@@ -351,14 +381,14 @@ export default function AccountsPage() {
   async function handleToggleActive(account: Account) {
     try {
       await apiFetch(`/api/v1/accounts/${account.id}`, { method: "PUT", body: JSON.stringify({ is_active: !account.is_active }) });
-      await reload();
+      await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
   async function handleSetDefault(account: Account) {
     try {
       await apiFetch(`/api/v1/accounts/${account.id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) });
-      await reload();
+      await refreshAll();
     } catch (err) { setError(extractErrorMessage(err)); }
   }
 
@@ -891,7 +921,7 @@ export default function AccountsPage() {
           onClose={() => setAdjustingAccount(null)}
           onAdjusted={async () => {
             setAdjustingAccount(null);
-            await reload();
+            await refreshAll();
           }}
         />
       )}

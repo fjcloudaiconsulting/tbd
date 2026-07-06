@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -133,21 +134,21 @@ beforeEach(() => {
 
 describe("AccountsPage — sortable columns", () => {
   it("defaults to name ascending (case-insensitive)", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Charlie/)).toBeInTheDocument());
     // alpha, Bravo, Charlie — case-insensitive ascending.
     expect(rowNames()).toEqual(["alpha", "Bravo", "Charlie"]);
   });
 
   it("toggles name to descending on second click of the Account header", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Charlie/)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /^Account/ }));
     expect(rowNames()).toEqual(["Charlie", "Bravo", "alpha"]);
   });
 
   it("sorts by type ascending then descending", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Charlie/)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /^Type/ }));
     // Checking, Credit Card, Savings -> Charlie, alpha, Bravo
@@ -157,7 +158,7 @@ describe("AccountsPage — sortable columns", () => {
   });
 
   it("sorts by balance numerically", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Charlie/)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /^Balance/ }));
     // -100 (alpha), 500 (Charlie), 2000 (Bravo)
@@ -199,7 +200,7 @@ describe("AccountsPage — page clamping when row count shrinks", () => {
       return Promise.resolve({});
     }) as never);
 
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
 
     // Wait for first 25 rows.
     await waitFor(() => expect(screen.getByText("Acct 024")).toBeInTheDocument());
@@ -263,14 +264,14 @@ describe("AccountsPage — pagination", () => {
 
   it("does not render pagination when rows fit one page", async () => {
     mockApi(manyAccounts(3));
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText("Acct 000")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /Next page/ })).toBeNull();
   });
 
   it("paginates and Next/Previous change the visible rows", async () => {
     mockApi(manyAccounts(30)); // > default page size 25
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText("Acct 000")).toBeInTheDocument());
 
     // Page 1: first 25 (Acct 000 .. Acct 024). Acct 025 not yet visible.
@@ -340,7 +341,7 @@ describe("AccountsPage — nulls-last stable sort", () => {
   });
 
   it("keeps empty account_type_name last when sorting by Type descending", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Charlie/)).toBeInTheDocument());
 
     // Click Type once: asc => Alpha (Bravo), Zeta (alpha), empty (Charlie)
