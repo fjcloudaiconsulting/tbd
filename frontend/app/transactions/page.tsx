@@ -98,11 +98,25 @@ function TransactionsPageContent() {
   const refsEnabled = !loading && !!user;
   const { data: accountsData, mutate: mutateAccounts } = useAccounts(refsEnabled);
   const { data: categoriesData, mutate: mutateCategories } = useCategories(refsEnabled);
-  const { data: periodsData, mutate: mutateBillingPeriods } = useBillingPeriods(refsEnabled);
+  const { data: periodsData, error: periodsError, mutate: mutateBillingPeriods } = useBillingPeriods(refsEnabled);
   const accounts = accountsData ?? EMPTY_ACCOUNTS;
   const categories = categoriesData ?? EMPTY_CATEGORIES;
   const periods = periodsData ?? EMPTY_PERIODS;
   const periodsLoaded = periodsData !== undefined;
+  // "Settled" = resolved OR errored. The initial list fetch waits for this so a
+  // period filter resolves against real periods and the list is fetched once
+  // (not once on the empty fallback, then again when periods land — the #519
+  // double-fetch). Treating an error as settled keeps a failed periods request
+  // from blanking the whole list: it just loads without period-range filtering.
+  const periodsSettled = periodsData !== undefined || periodsError !== undefined;
+  // Defense in depth: a billing-periods request that never settles (a stalled
+  // connection that neither resolves nor errors) must not strand the list on
+  // the spinner forever now that the initial fetch waits on periods. After a
+  // generous delay we let the list load anyway; if periods do eventually arrive
+  // it re-fetches with the real range, matching the old periods-independent
+  // behavior for this rare case.
+  const [periodsWaitElapsed, setPeriodsWaitElapsed] = useState(false);
+  const canLoadList = periodsSettled || periodsWaitElapsed;
   const [error, setError] = useState("");
   // Non-blocking refresh-error state for the AppShell post-write event
   // listener. The page keeps the previous list; banner offers a Retry.
@@ -317,12 +331,19 @@ function TransactionsPageContent() {
     if (!selectedClosedPeriod) setFilterPeriod("");
   }, [closedPeriods, filterPeriod, periodsLoaded]);
 
+  // Arm the stalled-periods fallback only while we are actually waiting.
   useEffect(() => {
-    if (!loading && user) {
+    if (loading || !user || periodsSettled) return;
+    const timer = setTimeout(() => setPeriodsWaitElapsed(true), 10000);
+    return () => clearTimeout(timer);
+  }, [loading, user, periodsSettled]);
+
+  useEffect(() => {
+    if (!loading && user && canLoadList) {
       setFetching(true);
       loadTransactions(page).catch(() => setFetching(false));
     }
-  }, [loading, user, loadTransactions, page]);
+  }, [loading, user, canLoadList, loadTransactions, page]);
 
   useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
 

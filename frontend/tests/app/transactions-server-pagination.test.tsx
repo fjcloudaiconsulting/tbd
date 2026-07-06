@@ -145,12 +145,12 @@ function setupApiFetch() {
 }
 
 async function waitForStableTxList() {
-  // Page kicks off loadRefs() + loadTransactions(0); the list effect re-fires
-  // (setFetching(true) -> Spinner) once `periods` settles, then resolves to
-  // the table. findAllByText drives the act() flush through the full
-  // spinner -> table settle (this is the same settle pattern the sibling
-  // transactions-page test relies on). Once a row is visible the page is in
-  // its non-fetching branch, so the shared Pagination has mounted too.
+  // Page mounts the SWR refs and, once periods have settled, issues a single
+  // loadTransactions(0) that resolves the Spinner to the table. findAllByText
+  // drives the act() flush through the spinner -> table settle (the same settle
+  // pattern the sibling transactions-page test relies on). Once a row is
+  // visible the page is in its non-fetching branch, so the shared Pagination
+  // has mounted too.
   await screen.findAllByText("Row 1", undefined, { timeout: 8000 });
   // The shared Pagination (which owns the "Per page" / "Next page"
   // controls) mounts one React tick after the rows, once `total` state
