@@ -157,6 +157,14 @@ describe("Transactions page subscribes to pfv:transaction-added", () => {
       return null as never;
     });
 
+    // NOTE: TransactionsPage stays on plain render() (not renderWithSWR) on
+    // purpose. Its `toBe(1)` below depends on periods already being warm in the
+    // module-global SWR cache from an earlier `it` in this file, so the initial
+    // loadTransactions runs once. A fresh cache would make periods resolve
+    // mid-mount and re-fire the list fetch (the cold-mount double-fetch), giving
+    // count 2. When the transactions cold-mount single-fetch guard lands, move
+    // this section to renderWithSWR in that same change; until then this test
+    // must run after the warming test above (do not reorder).
     render(<TransactionsPage />);
 
     await waitFor(() => {
@@ -197,6 +205,11 @@ describe("Accounts page subscribes to pfv:transaction-added", () => {
     await waitFor(() => {
       expect(countCalls("/api/v1/accounts")).toBeGreaterThan(before);
     });
+    // Exactly one refetch per mutation: refreshAll fetches accounts directly
+    // and seeds the SWR cache with revalidate:false, so no second revalidation
+    // request follows. Flush first so any stray follow-up would be counted.
+    await act(async () => { await Promise.resolve(); });
+    expect(countCalls("/api/v1/accounts")).toBe(before + 1);
   });
 
   it("surfaces the inline retry banner when reload rejects", async () => {

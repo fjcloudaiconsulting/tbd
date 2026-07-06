@@ -8,7 +8,7 @@
  */
 import React from "react";
 
-import { renderWithSWR, screen, waitFor } from "@/tests/utils/render-with-swr";
+import { renderWithSWR, screen, waitFor, act } from "@/tests/utils/render-with-swr";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 
@@ -61,8 +61,12 @@ describe("AccountsPage SWR auth gate", () => {
     vi.mocked(useAuth).mockReturnValue({ user: null, loading: true } as never);
     renderWithSWR(<AccountsPage />);
 
-    // Give any effects a chance to run; the gate must keep the key null.
-    await waitFor(() => expect(screen.getByTestId("app-shell")).toBeInTheDocument());
+    // Flush microtasks so SWR's mount effect gets a real chance to fire a
+    // fetch; the gate must keep the key null so none is issued.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(accountsFetchCount()).toBe(0);
   });
 
@@ -71,5 +75,37 @@ describe("AccountsPage SWR auth gate", () => {
     renderWithSWR(<AccountsPage />);
 
     await waitFor(() => expect(accountsFetchCount()).toBeGreaterThan(0));
+  });
+});
+
+describe("AccountsPage spinner waits for both loads", () => {
+  it("keeps the spinner until the SWR accounts request settles, even after aux loads", async () => {
+    vi.mocked(useAuth).mockReturnValue({ user: USER, loading: false } as never);
+
+    // Account types + pending (the aux load) resolve immediately, but the
+    // accounts SWR request is held in flight. fetching = !auxLoaded ||
+    // !accountsSettled, so the spinner must stay until accounts settle too.
+    let resolveAccounts!: (v: unknown) => void;
+    const accountsInFlight = new Promise((res) => { resolveAccounts = res; });
+    vi.mocked(apiFetch).mockImplementation(async (url: string) => {
+      if (url.startsWith("/api/v1/accounts")) return accountsInFlight as never;
+      if (url.startsWith("/api/v1/account-types")) return [] as never;
+      return null as never;
+    });
+
+    renderWithSWR(<AccountsPage />);
+
+    // Let the aux load settle; accounts is still pending → spinner stays.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("status", { name: /loading/i })).toBeInTheDocument();
+
+    // Accounts settle → spinner clears.
+    await act(async () => { resolveAccounts([]); });
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: /loading/i })).toBeNull(),
+    );
   });
 });

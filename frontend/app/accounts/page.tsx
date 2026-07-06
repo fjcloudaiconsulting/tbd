@@ -85,8 +85,9 @@ export default function AccountsPage() {
   // Accounts come from the shared SWR hook (SWR Phase 2, bare-path key) so
   // every surface dedupes onto one cache entry. The `enabled` gate blocks the
   // fetch until auth resolves (a null key), mirroring the pre-SWR guard.
+  const refsEnabled = !loading && !!user;
   const { data: accountsData, error: accountsError, mutate: mutateAccounts } =
-    useAccounts(!loading && !!user);
+    useAccounts(refsEnabled);
   const accounts = accountsData ?? EMPTY_ACCOUNTS;
   const accountsSettled = accountsData !== undefined || accountsError !== undefined;
   // All-time pending transactions for the per-account "Pending: €X.XX"
@@ -154,43 +155,51 @@ export default function AccountsPage() {
 
   const canAdjustBalance = !!user && isAdmin(user) && user.allow_manual_balance_adjustment;
 
-  // reload() now covers the non-SWR data only: account types + all-time
-  // pending. Accounts flow through the useAccounts SWR hook above; a mutation
-  // refreshes them via mutateAccounts() (see refreshAll). A types fetch
-  // failure still rejects so callers' catch blocks surface it, but auxLoaded
-  // flips either way so a failure doesn't strand the page on the spinner.
-  const reload = useCallback(async () => {
+  // Fetch the non-SWR reference data (account types + all-time pending) WITHOUT
+  // committing it, so callers can decide when to commit. Account types are
+  // hard (a failure rejects); pending is best-effort and resolves to `null` on
+  // failure so it never (a) blanks the page on initial load, nor (b) makes a
+  // successful mutation look failed because only the pending augment rejected.
+  const fetchAux = useCallback(async () => {
     const pendingPromise = fetchAll<Transaction>("/api/v1/transactions?status=pending")
-      // Best-effort: a pending fetch failure must not (a) blank the page on
-      // initial load, or (b) make a successful mutation look failed because
-      // reload() rejected only due to the pending augment. Resolve with `null`
-      // to signal "skip the setState" without rejecting the parent Promise.all.
       .catch(() => null);
+    const [types, pending] = await Promise.all([
+      apiFetch<AccountType[]>("/api/v1/account-types"),
+      pendingPromise,
+    ]);
+    return { types: types ?? [], pending };
+  }, []);
+
+  // reload() covers the non-SWR data only (accounts flow through the useAccounts
+  // SWR hook above). auxLoaded flips even on failure so a types error doesn't
+  // strand the page on the spinner; the rejection still reaches callers' catch.
+  const reload = useCallback(async () => {
     try {
-      const [types, pending] = await Promise.all([
-        apiFetch<AccountType[]>("/api/v1/account-types"),
-        pendingPromise,
-      ]);
-      setAccountTypes(types ?? []);
-      if (pending !== null) setPendingTransactions(pending);
+      const aux = await fetchAux();
+      setAccountTypes(aux.types);
+      if (aux.pending !== null) setPendingTransactions(aux.pending);
     } finally {
       setAuxLoaded(true);
     }
-  }, []);
+  }, [fetchAux]);
 
   // Full post-mutation refresh, used everywhere a write can change balances,
-  // the account list, or a denormalized type name. reload() covers types +
-  // pending. Accounts are fetched directly and written into the SWR cache
-  // (revalidate:false, so no second request): a plain mutate() revalidation
-  // swallows fetch errors (keeps stale data), but callers here need a failed
-  // accounts refresh to reject so the inline retry banner surfaces.
+  // the account list, or a denormalized type name. Everything is fetched
+  // BEFORE anything commits, so a partial failure never leaves types updated
+  // while accounts stay stale (or vice versa): if either hard fetch rejects,
+  // Promise.all rejects, nothing commits, and the caller's catch surfaces the
+  // retry banner. Accounts are fetched directly (a plain mutate() revalidation
+  // swallows fetch errors) and seeded into the SWR cache with revalidate:false
+  // so the seed doesn't trigger a second request.
   const refreshAll = useCallback(async () => {
-    const [, accts] = await Promise.all([
-      reload(),
+    const [aux, accts] = await Promise.all([
+      fetchAux(),
       apiFetch<Account[]>(ACCOUNTS_KEY),
     ]);
+    setAccountTypes(aux.types);
+    if (aux.pending !== null) setPendingTransactions(aux.pending);
     await mutateAccounts(accts, { revalidate: false });
-  }, [reload, mutateAccounts]);
+  }, [fetchAux, mutateAccounts]);
 
   useEffect(() => {
     if (!loading && user) reload().catch(() => {});
