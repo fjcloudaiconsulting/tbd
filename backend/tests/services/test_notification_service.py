@@ -768,6 +768,62 @@ async def test_dispatch_org_admin_fanout_to_multiple_admins(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_org_admin_fanout_dual_channel_respects_email_optout(
+    session_factory, monkeypatch
+):
+    """The admin fan-out emails each admin best-effort (pref-gated), mirroring
+    the member fan-out. An admin who opted out of ``email_org_admin`` still gets
+    the in-app row but no email; a MEMBER gets neither channel.
+    """
+    seed_user_id = await _seed_user(session_factory, username="owner", email="owner@ex.io")
+    async with session_factory() as db:
+        owner = await db.get(User, seed_user_id)
+        assert owner is not None
+        org_id = owner.org_id
+    admin_a = await _seed_extra_admin(
+        session_factory, org_id, username="admin_a", email="a@ex.io", role=Role.ADMIN
+    )
+    admin_optout = await _seed_extra_admin(
+        session_factory, org_id, username="admin_b", email="b@ex.io", role=Role.ADMIN
+    )
+    await _seed_extra_admin(
+        session_factory, org_id, username="member", email="m@ex.io", role=Role.MEMBER
+    )
+
+    # admin_optout opts out of the EMAIL channel for org_admin (in-app stays on).
+    async with session_factory() as db:
+        prefs = notification_service._default_preferences(admin_optout)
+        prefs.email_org_admin = False
+        db.add(prefs)
+        await db.commit()
+
+    emails_sent: list[str] = []
+
+    async def _fake_email(to, *, title, body, link_url=None):
+        emails_sent.append(to)
+        return True
+
+    monkeypatch.setattr(notification_service, "send_notification_email", _fake_email)
+
+    async with session_factory() as db:
+        written = await notification_service.dispatch_notification_to_org_admins(
+            db,
+            org_id=org_id,
+            category=NotificationCategory.ORG_ADMIN,
+            event_type="org.renamed",
+            title="Org renamed",
+            body="Body",
+        )
+        await db.commit()
+
+    assert written == 3  # all three admins got in-app rows
+    # Email: owner + admin_a only. Opted-out admin skipped; member never targeted.
+    assert set(emails_sent) == {"owner@ex.io", "a@ex.io"}
+    assert "b@ex.io" not in emails_sent
+    assert "m@ex.io" not in emails_sent
+
+
+@pytest.mark.asyncio
 async def test_dispatch_org_admin_fanout_continues_on_individual_failure(
     session_factory, monkeypatch
 ):
