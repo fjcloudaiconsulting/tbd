@@ -90,6 +90,13 @@ export default function AccountsPage() {
     useAccounts(refsEnabled);
   const accounts = accountsData ?? EMPTY_ACCOUNTS;
   const accountsSettled = accountsData !== undefined || accountsError !== undefined;
+  // Initial-load failure: the SWR accounts request settled with an error and
+  // there is NO data (not even stale) to fall back on. This drives the
+  // blocking error+Retry state below instead of the misleading "no accounts
+  // yet" empty state. When stale data exists alongside a background
+  // revalidation error, the data wins and renders as usual.
+  const initialAccountsLoadFailed =
+    accountsData === undefined && accountsError !== undefined;
   // All-time pending transactions for the per-account "Pending: €X.XX"
   // row. Pending is a status, not a period concept; a CC charge sitting
   // in pending must be visible whether it was made this month or last.
@@ -146,6 +153,9 @@ export default function AccountsPage() {
   // listener. The page keeps the previous list; banner offers a Retry.
   const [refreshError, setRefreshError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // In-flight flag for the initial-load Retry button (drives the
+  // "Retrying..." label + disabled state, mirroring the refresh banner).
+  const [retryingInitial, setRetryingInitial] = useState(false);
   const [confirmDeleteTypeId, setConfirmDeleteTypeId] = useState<number | null>(null);
   const [confirmDeleteAcctId, setConfirmDeleteAcctId] = useState<number | null>(null);
   // Track E: account being adjusted (or null when the modal is closed).
@@ -226,6 +236,25 @@ export default function AccountsPage() {
   useTransactionAddedListener(() => {
     void refreshAfterTransactionAdded();
   });
+
+  // Retry for a failed INITIAL load. mutateAccounts() re-triggers the SWR
+  // fetch; when that refetch fails again SWR keeps `accountsError` set (and
+  // `accountsData` undefined), so the error state above stays rendered
+  // rather than silently spinning or falling through to the empty state.
+  // reload() re-pulls the non-SWR aux data (types + pending), which most
+  // likely failed for the same reason. Both rejections are swallowed here
+  // on purpose — the rendered state is driven by the SWR error, not by
+  // this promise.
+  const retryInitialLoad = useCallback(async () => {
+    setRetryingInitial(true);
+    try {
+      await Promise.all([mutateAccounts(), reload()]);
+    } catch {
+      // accountsError stays set on failure → error state persists.
+    } finally {
+      setRetryingInitial(false);
+    }
+  }, [mutateAccounts, reload]);
 
   async function handleAddType(e: FormEvent) {
     e.preventDefault();
@@ -496,6 +525,26 @@ export default function AccountsPage() {
 
       {fetching ? (
         <Spinner />
+      ) : initialAccountsLoadFailed ? (
+        // Initial accounts fetch failed and there is nothing cached to show.
+        // Same visual language as the post-write refresh banner above, but
+        // blocking (it replaces the page body — there is no data to render)
+        // and announced as an alert.
+        <div
+          className={`flex items-center justify-between gap-3 ${errorCls}`}
+          role="alert"
+          data-testid="accounts-initial-load-error"
+        >
+          <span>Failed to load your accounts. Try again.</span>
+          <button
+            type="button"
+            onClick={() => void retryInitialLoad()}
+            disabled={retryingInitial}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+          >
+            {retryingInitial ? "Retrying..." : "Retry"}
+          </button>
+        </div>
       ) : (
         // Layout: stacks vertically on mobile/tablet (default flex-col),
         // splits into a 1/3 + 2/3 grid at lg+ so the short Account Types
