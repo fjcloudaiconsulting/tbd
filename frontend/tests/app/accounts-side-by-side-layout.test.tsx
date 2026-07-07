@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -94,7 +95,7 @@ describe("AccountsPage — side-by-side layout (post-#199 follow-up)", () => {
   });
 
   it("wraps the two cards in a 3-column grid at lg+ that stacks below lg", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
 
     const grid = screen.getByTestId("accounts-page-grid");
@@ -112,7 +113,7 @@ describe("AccountsPage — side-by-side layout (post-#199 follow-up)", () => {
   });
 
   it("places Account Types in col-span-1 and Accounts in col-span-2 at lg+", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
 
     const grid = screen.getByTestId("accounts-page-grid");
@@ -126,7 +127,7 @@ describe("AccountsPage — side-by-side layout (post-#199 follow-up)", () => {
   });
 
   it("still renders the Account Types and Accounts cards with all controls", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
 
     // Account Types card content survived the reflow.

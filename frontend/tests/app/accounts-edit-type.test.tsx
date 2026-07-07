@@ -4,7 +4,8 @@
 // close-day input, confirm modal, error handling. Mirrors the
 // mocking pattern in accounts-adjust-balance-button.test.tsx.
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -126,7 +127,7 @@ async function openEditRow(accountId: number) {
 describe("Edit Account Type — inline edit row", () => {
   test("renders type select pre-filled with current type", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(10);
     const select = await screen.findByLabelText("Account type");
     expect((select as HTMLSelectElement).value).toBe("1");
@@ -134,7 +135,7 @@ describe("Edit Account Type — inline edit row", () => {
 
   test("changing to Credit Card reveals close-day input", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(10);
     expect(screen.queryByLabelText("Close day")).toBeNull();
     fireEvent.change(await screen.findByLabelText("Account type"), {
@@ -145,7 +146,7 @@ describe("Edit Account Type — inline edit row", () => {
 
   test("changing away from Credit Card hides close-day input and clears its local value", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(11); // CC account
     const closeDay = (await screen.findByLabelText("Close day")) as HTMLInputElement;
     fireEvent.change(closeDay, { target: { value: "20" } });
@@ -167,7 +168,7 @@ describe("Edit Account Type — inline edit row", () => {
 
   test("clicking Save with type change shows the confirmation dialog", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(10);
     fireEvent.change(await screen.findByLabelText("Account type"), {
       target: { value: "2" },
@@ -181,7 +182,7 @@ describe("Edit Account Type — inline edit row", () => {
 
   test("clicking Cancel in the dialog leaves the row in edit mode and sends no request", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(10);
     fireEvent.change(await screen.findByLabelText("Account type"), {
       target: { value: "2" },
@@ -207,7 +208,7 @@ describe("Edit Account Type — inline edit row", () => {
 
   test("clicking Change type in the dialog issues PUT with {account_type_id, close_day}", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(10);
     fireEvent.change(await screen.findByLabelText("Account type"), {
       target: { value: "2" },
@@ -235,7 +236,7 @@ describe("Edit Account Type — inline edit row", () => {
 
   test("name-only edit does not show the confirmation dialog", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(10);
     fireEvent.change(await screen.findByLabelText("Account name"), {
       target: { value: "Renamed" },
@@ -253,7 +254,7 @@ describe("Edit Account Type — inline edit row", () => {
 
   test("close-day-only edit on a CC account does not show the confirmation dialog", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(11);
     fireEvent.change(await screen.findByLabelText("Close day"), {
       target: { value: "20" },
@@ -282,7 +283,7 @@ describe("Edit Account Type — inline edit row", () => {
       return Promise.resolve([]);
     });
 
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await openEditRow(11);
     fireEvent.change(await screen.findByLabelText("Account type"), {
       target: { value: "1" },
@@ -296,7 +297,7 @@ describe("Edit Account Type — inline edit row", () => {
 
   test("dialog message mentions clearing close day when leaving CC and Pending default when entering CC", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     // Entering CC.
     await openEditRow(10);
     fireEvent.change(await screen.findByLabelText("Account type"), {
@@ -325,7 +326,7 @@ describe("Edit Account Type — inline edit row", () => {
 describe("Edit Account Type — create form close_day required (§ 5.6)", () => {
   test("create form marks close_day as required when type is credit_card", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     fireEvent.click(await screen.findByRole("button", { name: /\+ Add Account/i }));
     fireEvent.change(await screen.findByLabelText(/^Type$/), {
       target: { value: "2" },
@@ -336,7 +337,7 @@ describe("Edit Account Type — create form close_day required (§ 5.6)", () => 
 
   test("create form blocks submission when close_day is empty and type is credit_card", async () => {
     mockApi();
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     fireEvent.click(await screen.findByRole("button", { name: /\+ Add Account/i }));
     fireEvent.change(await screen.findByLabelText(/Account name/i), {
       target: { value: "New CC" },
