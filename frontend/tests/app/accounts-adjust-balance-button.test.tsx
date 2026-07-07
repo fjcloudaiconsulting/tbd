@@ -1,4 +1,5 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -98,7 +99,7 @@ describe("AccountsPage — Adjust balance button gating (Track E)", () => {
 
   it("hides the Adjust balance button when allow_manual_balance_adjustment is false", async () => {
     setUser("owner", false);
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => {
       expect(screen.getByText("Primary")).toBeTruthy();
     });
@@ -107,7 +108,7 @@ describe("AccountsPage — Adjust balance button gating (Track E)", () => {
 
   it("hides the Adjust balance button for non-admin users even when the flag is true", async () => {
     setUser("member", true);
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => {
       expect(screen.getByText("Primary")).toBeTruthy();
     });
@@ -116,7 +117,7 @@ describe("AccountsPage — Adjust balance button gating (Track E)", () => {
 
   it("shows the Adjust balance button when admin AND flag is true", async () => {
     setUser("admin", true);
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: /Adjust balance of Primary/i })
@@ -131,7 +132,7 @@ describe("AccountsPage — Adjust balance button gating (Track E)", () => {
     // bug this refactor fixes). The other (5rem) branch is covered in
     // accounts-list-headers.test.tsx.
     setUser("admin", true);
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText("Primary")).toBeTruthy());
 
     const gridCols = (el: HTMLElement) =>

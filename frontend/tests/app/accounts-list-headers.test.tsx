@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -110,7 +111,7 @@ describe("AccountsPage — list header row and fixed action column", () => {
   });
 
   it("renders sortable Account / Type / Balance headers above the accounts list", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
 
     const header = screen.getByTestId("accounts-list-header");
@@ -144,7 +145,7 @@ describe("AccountsPage — list header row and fixed action column", () => {
       return Promise.resolve({});
     }) as never);
 
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() =>
       expect(screen.getByText(/No accounts yet/)).toBeInTheDocument(),
     );
@@ -152,7 +153,7 @@ describe("AccountsPage — list header row and fixed action column", () => {
   });
 
   it("uses the same shared grid template on header and rows so columns align", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
 
     // The header <tr> and each row <article> must carry the IDENTICAL
@@ -174,7 +175,7 @@ describe("AccountsPage — list header row and fixed action column", () => {
   });
 
   it("keeps the inline Edit button and exposes the rest via the overflow menu", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/ING Joint/)).toBeInTheDocument());
 
     // Edit stays inline on every row.
@@ -206,7 +207,7 @@ describe("AccountsPage — list header row and fixed action column", () => {
   });
 
   it("offers Set default in the overflow menu only on a non-default active row", async () => {
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
 
     const actions = screen.getByTestId("account-row-actions-10");

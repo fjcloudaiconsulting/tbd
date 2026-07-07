@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "../utils/render-with-swr";
 
 import AccountsPage from "@/app/accounts/page";
 import { apiFetch } from "@/lib/api";
@@ -105,7 +106,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
 
   it("renders no Pending line when there are no pending transactions", async () => {
     mockAccountsAPI([]);
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
     expect(screen.queryByText(/^Pending:/)).not.toBeInTheDocument();
   });
@@ -131,7 +132,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
         settled_date: null,
       },
     ]);
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Pending: 150\.00/)).toBeInTheDocument());
     // The CC tile keeps its 0.00 balance display.
     expect(screen.getAllByText(/0\.00/).length).toBeGreaterThan(0);
@@ -151,7 +152,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
         return Promise.reject(new Error("backend down"));
       return Promise.resolve({});
     }) as never);
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Amex Primary/)).toBeInTheDocument());
     expect(screen.getByText(/ING Joint/)).toBeInTheDocument();
     // Without the best-effort handling, the spinner would never clear
@@ -164,7 +165,7 @@ describe("AccountsPage — pending visibility (L3.4)", () => {
       { id: 1, account_id: 10, amount: "120.00", type: "expense", status: "pending", date: "2026-04-15", description: "a", category_id: null, category_name: null, account_name: "Amex Primary", currency: "EUR", linked_transaction_id: null, is_imported: false, settled_date: null },
       { id: 2, account_id: 10, amount: "30.00", type: "expense", status: "pending", date: "2026-04-16", description: "b", category_id: null, category_name: null, account_name: "Amex Primary", currency: "EUR", linked_transaction_id: null, is_imported: false, settled_date: null },
     ]);
-    render(<AccountsPage />);
+    renderWithSWR(<AccountsPage />);
     await waitFor(() => expect(screen.getByText(/Pending: 150\.00/)).toBeInTheDocument());
   });
 });
