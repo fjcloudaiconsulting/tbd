@@ -123,7 +123,9 @@ describe("Transactions page subscribes to pfv:transaction-added", () => {
       return null as never;
     });
 
-    render(<TransactionsPage />);
+    // TransactionsPage reads refs via the shared SWR hooks; a fresh cache
+    // keeps another section's cached refs from suppressing this mount's fetch.
+    renderWithSWR(<TransactionsPage />);
 
     await waitFor(() => {
       expect(countCalls("/api/v1/transactions")).toBeGreaterThanOrEqual(1);
@@ -157,19 +159,19 @@ describe("Transactions page subscribes to pfv:transaction-added", () => {
       return null as never;
     });
 
-    // NOTE: TransactionsPage stays on plain render() (not renderWithSWR) on
-    // purpose. Its `toBe(1)` below depends on periods already being warm in the
-    // module-global SWR cache from an earlier `it` in this file, so the initial
-    // loadTransactions runs once. A fresh cache would make periods resolve
-    // mid-mount and re-fire the list fetch (the cold-mount double-fetch), giving
-    // count 2. When the transactions cold-mount single-fetch guard lands, move
-    // this section to renderWithSWR in that same change; until then this test
-    // must run after the warming test above (do not reorder).
-    render(<TransactionsPage />);
+    // The cold-mount single-fetch guard (#520) gates the initial list fetch
+    // until periods settle, so a fresh SWR cache still yields exactly one
+    // initial /transactions call and the `toBe(1)` below holds without
+    // depending on a warm cache from an earlier `it` in this file.
+    renderWithSWR(<TransactionsPage />);
 
     await waitFor(() => {
       expect(countCalls("/api/v1/transactions")).toBe(1);
     });
+    // Flush so a delayed second initial fetch would be counted before we
+    // treat the mount as single-fetch (mirrors the accounts section below).
+    await act(async () => { await Promise.resolve(); });
+    expect(countCalls("/api/v1/transactions")).toBe(1);
     const acctsBefore = countCalls("/api/v1/accounts");
 
     dispatchTransactionAdded();
