@@ -24,6 +24,8 @@ from app.services import audit_service, notification_service
 from app.services.email_service import send_verification_email
 from app.services.notification_templates import (
     user_email_changed as _tpl_user_email_changed,
+    user_email_changed_new_address as _tpl_user_email_changed_new_address,
+    user_email_changed_old_address as _tpl_user_email_changed_old_address,
     user_password_changed as _tpl_user_password_changed,
 )
 
@@ -249,6 +251,46 @@ async def update_profile(
             )
             await db.commit()
 
+            # Dual-channel to BOTH addresses (operator decision), sent
+            # AFTER the in-app row commits (outside its savepoint).
+            # Force-on + best-effort: each send independently swallows
+            # its own failure, so the second address is always attempted
+            # even when the first raises, and neither can roll back the
+            # email change or the in-app row.
+            #   OLD address (pre-mutation snapshot ``old_email_for_audit``)
+            #     → security ALERT naming the new address; the old inbox
+            #     is what a hijack victim still controls. Sent FIRST.
+            #   NEW address (``current_user.email``) → CONFIRMATION naming
+            #     the old address.
+            alert_title, alert_body, alert_link = (
+                _tpl_user_email_changed_old_address(
+                    new_email=current_user.email
+                )
+            )
+            await notification_service.send_security_email_best_effort(
+                db,
+                user_id=current_user.id,
+                email=old_email_for_audit,
+                event_type="user.email.changed",
+                title=alert_title,
+                body=alert_body,
+                link_url=alert_link,
+            )
+            confirm_title, confirm_body, confirm_link = (
+                _tpl_user_email_changed_new_address(
+                    old_email=old_email_for_audit
+                )
+            )
+            await notification_service.send_security_email_best_effort(
+                db,
+                user_id=current_user.id,
+                email=current_user.email,
+                event_type="user.email.changed",
+                title=confirm_title,
+                body=confirm_body,
+                link_url=confirm_link,
+            )
+
     return _user_response(current_user)
 
 
@@ -350,3 +392,17 @@ async def change_password(
             audit_event_id=audit_event_id,
         )
         await db.commit()
+
+        # Dual-channel: email the account's current address AFTER the
+        # in-app row commits (outside its savepoint). Force-on +
+        # best-effort — a raising mailer never fails the request, rolls
+        # back the password change, or rolls back the in-app row.
+        await notification_service.send_security_email_best_effort(
+            db,
+            user_id=current_user.id,
+            email=current_user.email,
+            event_type="user.password.changed",
+            title=title,
+            body=body,
+            link_url=link_url,
+        )
