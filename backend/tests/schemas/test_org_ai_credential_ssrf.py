@@ -5,14 +5,20 @@ admin must not be able to point ``base_url`` at the cloud metadata
 service or any private/loopback/link-local literal IP, even though
 they can configure the OAI-compatible adapter freely.
 
-DNS names still pass — the v1 mitigation is literal-IP-only. The
-DNS-rebinding residual is documented in the schema docstring.
+DNS names still pass at save time — this layer is literal-IP
+fast-feedback defense-in-depth. The enforcement point is the
+connect-time guard (``services.ai_providers.egress_guard``), which
+resolves DNS names, validates every record, and pins the connection
+(see tests/services/test_ai_provider_egress_guard.py). The Ollama
+LAN/loopback exemption is gated on the
+``AI_PROVIDER_ALLOW_PRIVATE_NETWORKS`` setting (default OFF).
 """
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
+from app.config import settings
 from app.models.org_ai_credential import AiProvider
 from app.schemas.org_ai_credential import OrgAICredentialCreate
 
@@ -142,26 +148,47 @@ def test_non_ollama_credential_still_rejects_short_api_key() -> None:
             )
 
 
-# --- 2026-05-29: Ollama LAN/loopback policy ---
+# --- 2026-05-29 Ollama LAN/loopback policy, re-gated 2026-07-07 behind
+# --- AI_PROVIDER_ALLOW_PRIVATE_NETWORKS (default OFF).
+
+_OLLAMA_LAN_URLS = [
+    "http://192.168.1.163:11434/",   # RFC1918 192.168/16
+    "http://10.0.0.5:11434/",        # RFC1918 10/8
+    "http://172.16.5.5:11434/",      # RFC1918 172.16/12
+    "http://127.0.0.1:11434/",       # loopback IPv4
+    "http://[::1]:11434/",           # loopback IPv6
+    "http://[::ffff:192.168.1.1]/",  # IPv4-mapped IPv6 LAN
+]
 
 
-@pytest.mark.parametrize(
-    "base_url",
-    [
-        "http://192.168.1.163:11434/",   # RFC1918 192.168/16
-        "http://10.0.0.5:11434/",        # RFC1918 10/8
-        "http://172.16.5.5:11434/",      # RFC1918 172.16/12
-        "http://127.0.0.1:11434/",       # loopback IPv4
-        "http://[::1]:11434/",           # loopback IPv6
-        "http://[::ffff:192.168.1.1]/",  # IPv4-mapped IPv6 LAN
-    ],
-)
-def test_ollama_accepts_lan_and_loopback_ip(base_url: str) -> None:
+@pytest.mark.parametrize("base_url", _OLLAMA_LAN_URLS)
+def test_ollama_accepts_lan_and_loopback_ip_with_flag_on(
+    base_url: str, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        settings, "ai_provider_allow_private_networks", True
+    )
     cred = OrgAICredentialCreate(
         provider=AiProvider.OLLAMA,
         base_url=base_url,
     )
     assert cred.base_url == base_url
+
+
+@pytest.mark.parametrize("base_url", _OLLAMA_LAN_URLS)
+def test_ollama_rejects_lan_and_loopback_ip_by_default(
+    base_url: str, monkeypatch
+) -> None:
+    """Flag OFF (the default everywhere): Ollama gets the same full
+    denylist as every other provider."""
+    monkeypatch.setattr(
+        settings, "ai_provider_allow_private_networks", False
+    )
+    with pytest.raises(ValidationError):
+        OrgAICredentialCreate(
+            provider=AiProvider.OLLAMA,
+            base_url=base_url,
+        )
 
 
 @pytest.mark.parametrize(
@@ -174,7 +201,13 @@ def test_ollama_accepts_lan_and_loopback_ip(base_url: str) -> None:
         "http://224.0.0.1/",                         # multicast
     ],
 )
-def test_ollama_still_rejects_metadata_and_unsafe(base_url: str) -> None:
+def test_ollama_still_rejects_metadata_and_unsafe(
+    base_url: str, monkeypatch
+) -> None:
+    """Blocked even with the private-networks escape hatch enabled."""
+    monkeypatch.setattr(
+        settings, "ai_provider_allow_private_networks", True
+    )
     with pytest.raises(ValidationError):
         OrgAICredentialCreate(
             provider=AiProvider.OLLAMA,
