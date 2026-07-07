@@ -138,21 +138,22 @@ def test_hash_recovery_code_uses_derived_key_not_raw_jwt_secret() -> None:
     assert hash_recovery_code(code) != _legacy_hash(code)
 
 
-def test_verify_recovery_code_accepts_legacy_hash_and_migrates_it() -> None:
+def test_verify_recovery_code_accepts_legacy_hash_via_permanent_fallback() -> None:
     """Hashes stored under the raw jwt_secret_key (pre-derivation deploys)
-    must keep verifying, and get lazily re-hashed to the derived scheme."""
+    must keep verifying via the permanent legacy fallback. There is no
+    in-place migration: verification does not mutate the stored list, so a
+    legacy hash stays legacy until the user regenerates their recovery codes.
+    """
     legacy = _legacy_hash("aaaa-bbbb-cccc-dddd")
     other = hash_recovery_code("1111-2222-3333-4444")
     hashed_codes = [legacy, other]
+    snapshot = list(hashed_codes)
 
     idx = verify_recovery_code("aaaa-bbbb-cccc-dddd", hashed_codes)
 
     assert idx == 0
-    # The matched entry was migrated in place to the derived-key scheme.
-    assert hashed_codes[0] != legacy
-    assert hashed_codes[0] == hash_recovery_code("aaaa-bbbb-cccc-dddd")
-    # Untouched entries stay as they were.
-    assert hashed_codes[1] == other
+    # No lazy migration: the stored list is untouched by verification.
+    assert hashed_codes == snapshot
 
 
 def test_verify_recovery_code_wrong_code_fails_under_both_schemes() -> None:

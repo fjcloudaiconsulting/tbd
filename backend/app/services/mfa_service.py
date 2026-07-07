@@ -123,11 +123,21 @@ def _hash_recovery_code_legacy(code: str) -> str:
 def verify_recovery_code(code: str, hashed_codes: list[str]) -> int | None:
     """Check if a code matches any stored HMAC. Constant-time, no early exit.
 
-    Tries the purpose-bound derived key first, then falls back to the
-    legacy raw-jwt_secret_key scheme so hashes stored before the derived
-    key shipped keep verifying. On a legacy match the entry is re-hashed
-    in place under the new scheme (lazy migration); callers that persist
-    ``hashed_codes`` after a match therefore write the upgraded value.
+    Verification tries the purpose-bound derived key first, then falls back
+    to the legacy raw-jwt_secret_key scheme. This legacy fallback is
+    PERMANENT, not transitional: recovery hashes enrolled before the
+    derived-key scheme keep verifying via the fallback until the user
+    regenerates their recovery codes. Only NEW enrollments (and regenerated
+    codes) are stored under the derived key. There is no lazy in-place
+    migration — the sole caller pops the matched entry to enforce single-use
+    (so any re-hash would be discarded), and non-matched legacy entries can
+    never be upgraded because their plaintext is unknown (a hash cannot be
+    re-HMACed). The fallback must NOT be removed: doing so would lock out
+    every pre-deploy user who never regenerated their codes.
+
+    Both candidates are computed up front and every stored entry is compared
+    against both with no early break, so timing does not leak which scheme
+    (or whether any) matched.
     """
     candidate = hash_recovery_code(code)
     legacy_candidate = _hash_recovery_code_legacy(code)
@@ -136,6 +146,5 @@ def verify_recovery_code(code: str, hashed_codes: list[str]) -> int | None:
         if hmac.compare_digest(candidate, stored):
             match_idx = i
         elif hmac.compare_digest(legacy_candidate, stored):
-            hashed_codes[i] = candidate
             match_idx = i
     return match_idx
