@@ -69,6 +69,12 @@ from app.services.ai_providers.openai_compatible import (
         "::ffff:127.0.0.1",
         "::ffff:10.0.0.1",
         "::ffff:169.254.169.254",
+        # IPv6 transition-mechanism literals embedding an internal v4.
+        "2002:a9fe:a9fe::",  # 6to4 -> 169.254.169.254 (metadata)
+        "2002:7f00:1::",     # 6to4 -> 127.0.0.1 (loopback)
+        "2001::7f00:1",      # Teredo literal
+        # Alibaba Cloud metadata (CGNAT 100.64/10 shared range).
+        "100.100.100.200",
     ],
 )
 def test_check_ip_blocks_non_public(blocked: str) -> None:
@@ -91,7 +97,14 @@ def test_check_ip_allows_public(allowed: str) -> None:
 
 @pytest.mark.parametrize(
     "allowed_private",
-    ["10.0.0.5", "192.168.1.163", "127.0.0.1", "::1", "fc00::1"],
+    [
+        "10.0.0.5",
+        "192.168.1.10",
+        "192.168.1.163",
+        "127.0.0.1",
+        "::1",
+        "fc00::1",
+    ],
 )
 def test_check_ip_allow_private_permits_private_and_loopback(
     allowed_private: str,
@@ -112,6 +125,13 @@ def test_check_ip_allow_private_permits_private_and_loopback(
         "0.0.0.0",
         "240.0.0.1",
         "::ffff:169.254.169.254",
+        # Defense-in-depth: the escape hatch relaxes RFC1918 + loopback
+        # but must NOT open transition-mechanism literals that embed an
+        # internal v4, nor alternate-cloud metadata in the CGNAT range.
+        "2002:a9fe:a9fe::",  # 6to4 -> 169.254.169.254 (metadata)
+        "2002:7f00:1::",     # 6to4 -> 127.0.0.1 (loopback)
+        "2001::7f00:1",      # Teredo literal
+        "100.100.100.200",   # Alibaba Cloud metadata
     ],
 )
 def test_check_ip_allow_private_still_blocks_unsafe(

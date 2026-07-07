@@ -35,10 +35,16 @@ from ipaddress import IPv4Address, IPv6Address
 
 import httpx
 
-# Cloud metadata IPs (AWS / GCP / Azure / DO all converge on the v4
-# address; the v6 one is AWS's IMDS address). Blocked even when
-# ``allow_private`` is set.
-METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
+# Cloud metadata IPs, blocked even when ``allow_private`` is set.
+# - 169.254.169.254: AWS / GCP / Azure / DO / Oracle all converge on
+#   this v4 IMDS address (it is also link-local, so doubly covered).
+# - fd00:ec2::254: AWS IPv6 IMDS.
+# - 100.100.100.200: Alibaba Cloud metadata. It lives in the CGNAT
+#   shared range (100.64/10), which ``is_private`` covers — so the
+#   ollama escape hatch (allow_private=True) would otherwise permit it.
+METADATA_IPS = frozenset(
+    {"169.254.169.254", "fd00:ec2::254", "100.100.100.200"}
+)
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
@@ -103,6 +109,20 @@ def check_ip(
     if str(ip) in METADATA_IPS:
         raise BlockedAddressError(
             "blocked address: cloud metadata endpoint"
+        )
+    # IPv6 transition-mechanism literals embed an internal IPv4 while the
+    # outer IPv6 form looks globally routable, so they would slip past
+    # the is_global catch-all (and every private/loopback check) below.
+    # 6to4 (2002::/16, exposes ip.sixtofour) and Teredo (2001:0::/32,
+    # exposes ip.teredo) are never a legitimate LAN-ollama target, so
+    # refuse outright regardless of allow_private. IPv4-mapped IPv6 is
+    # already unwrapped above and reports sixtofour/teredo as None.
+    if isinstance(ip, IPv6Address) and (
+        ip.sixtofour is not None or ip.teredo is not None
+    ):
+        raise BlockedAddressError(
+            "blocked address: IPv6 transition mechanism "
+            "(6to4/Teredo) embedding an internal address"
         )
     # Loopback first: Python 3.12 marks ::1 is_reserved=True, so the
     # reserved check below would otherwise swallow the allow_private
