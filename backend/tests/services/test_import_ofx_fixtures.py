@@ -36,7 +36,6 @@ router wiring.
 """
 from __future__ import annotations
 
-import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -178,14 +177,14 @@ async def test_malformed_truncated_raises_parse_error():
 
 
 @pytest.mark.asyncio
-async def test_ofx_parser_enforces_production_timeout(monkeypatch):
-    """Spec §1.4 timeout contract: ``asyncio.wait_for`` raises HTTP 400
-    when the underlying parse exceeds ``timeout_s``.
+async def test_ofx_parser_enforces_production_timeout(monkeypatch, tmp_path):
+    """Spec §1.4 timeout contract: an overrunning parse raises HTTP 400.
 
-    Deterministic via monkeypatch — does not depend on the CI runner's
-    speed and runs in well under a second. Stubs ``_parse_in_executor``
-    with a sync call that sleeps past the (shortened) budget so the
-    ``asyncio.wait_for`` wrapper inside ``parse_ofx`` fires reliably.
+    Post-isolation, parsing runs in a hard-killable child process. The
+    ``PFV_OFX_TEST_HANG_S`` worker seam spins that child in a real CPU
+    busy-loop; ``parse_ofx`` must terminate it once ``timeout_s`` elapses
+    and raise HTTP 400. The sentinel proves the runaway was killed, not
+    merely abandoned.
 
     The router-layer mirror of this contract is
     ``test_ofx_preview_timeout_returns_400`` in
@@ -194,20 +193,17 @@ async def test_ofx_parser_enforces_production_timeout(monkeypatch):
     """
     from fastapi import HTTPException
 
-    def _slow_parse(_raw: bytes):
-        # Sleep longer than the timeout we pass to parse_ofx below.
-        # 0.2s comfortably overruns the 0.05s budget without making the
-        # test itself slow.
-        time.sleep(0.2)
-        return None
-
-    monkeypatch.setattr(import_ofx_service, "_parse_in_executor", _slow_parse)
+    sentinel = tmp_path / "completed.flag"
+    monkeypatch.setenv("PFV_OFX_TEST_HANG_S", "10")
+    monkeypatch.setenv("PFV_OFX_TEST_SENTINEL", str(sentinel))
 
     with pytest.raises(HTTPException) as exc_info:
-        await parse_ofx(b"<OFX>stub</OFX>", timeout_s=0.05)
+        await parse_ofx(b"<OFX>stub</OFX>", timeout_s=0.5)
     assert exc_info.value.status_code == 400
     detail = str(exc_info.value.detail).lower()
     assert "complex" in detail or "seconds" in detail
+    # Hard-killed: worker never completed its busy-loop.
+    assert not sentinel.exists()
 
 
 # ── quicken_qfx.qfx: 12-row OFX 1.x .qfx variant ────────────────────────────
