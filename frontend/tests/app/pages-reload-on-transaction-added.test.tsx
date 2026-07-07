@@ -168,6 +168,10 @@ describe("Transactions page subscribes to pfv:transaction-added", () => {
     await waitFor(() => {
       expect(countCalls("/api/v1/transactions")).toBe(1);
     });
+    // Flush so a delayed second initial fetch would be counted before we
+    // treat the mount as single-fetch (mirrors the accounts section below).
+    await act(async () => { await Promise.resolve(); });
+    expect(countCalls("/api/v1/transactions")).toBe(1);
     const acctsBefore = countCalls("/api/v1/accounts");
 
     dispatchTransactionAdded();
