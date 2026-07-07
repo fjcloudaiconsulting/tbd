@@ -455,12 +455,19 @@ class OFXParseExecutor:
         finally:
             if acquired:
                 self._sem.release()
-            async with self._lock:
-                remaining = self._org_counts.get(org_id, 0) - 1
-                if remaining <= 0:
-                    self._org_counts.pop(org_id, None)
-                else:
-                    self._org_counts[org_id] = remaining
+            # Decrement the per-org counter lock-free. Taking ``self._lock``
+            # here would introduce an ``await`` in the ``finally``: if the task
+            # is cancelled at that await the decrement never runs and the org's
+            # counter stays permanently inflated (a self-inflicted DoS that
+            # lowers the org's cap until process restart). A single-threaded
+            # asyncio read-modify-write with no ``await`` between is atomic, so
+            # no lock is needed. The reserve-side increment stays under the
+            # lock (it guards the check-then-increment against interleaving).
+            remaining = self._org_counts.get(org_id, 0) - 1
+            if remaining <= 0:
+                self._org_counts.pop(org_id, None)
+            else:
+                self._org_counts[org_id] = remaining
 
     async def run(
         self, raw: bytes, *, timeout_s: float, max_rows: int
@@ -477,12 +484,17 @@ class OFXParseExecutor:
             args=(child_conn, raw, max_rows),
             daemon=True,
         )
-        proc.start()
+        loop = asyncio.get_running_loop()
+        # ``spawn`` ``proc.start()`` synchronously forks+execs a fresh
+        # interpreter AND pickles the args (``raw`` up to ~5 MB) to the child.
+        # That is a measurable stall, so run it off the event loop — matching
+        # the ``poll`` / ``_reap`` pattern below — to keep health checks and
+        # every other request responsive during the spawn+pickle window.
+        await loop.run_in_executor(None, proc.start)
         # The parent never sends; close its copy of the send end so that if
         # the child dies without sending, ``recv`` raises EOFError promptly.
         child_conn.close()
 
-        loop = asyncio.get_running_loop()
         try:
             # ``poll`` blocks the worker thread for at most ``timeout_s`` —
             # a bounded call, so no thread is leaked (unlike a bare ``recv``).
@@ -490,7 +502,12 @@ class OFXParseExecutor:
             if not ready:
                 raise _ParseTimeout()
             try:
-                payload = parent_conn.recv()
+                # ``recv`` reads AND unpickles the entire result (up to
+                # OFX_MAX_ROWS rows, a multi-MB pickle). Off-load it so the
+                # unpickle does not block the loop — up to
+                # OFX_PARSE_MAX_CONCURRENT of these could otherwise serialize
+                # on the loop thread.
+                payload = await loop.run_in_executor(None, parent_conn.recv)
             except EOFError:
                 raise ParseError(
                     "OFX parse failed: parser process exited before producing a result."

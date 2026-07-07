@@ -40,6 +40,53 @@ def _read(name: str) -> bytes:
     return (FIXTURES / name).read_bytes()
 
 
+def _make_ofx_with_rows(n: int) -> bytes:
+    """Build a minimal OFX 2.x statement with exactly ``n`` transactions.
+
+    Mirrors the on-disk ``large_10k_rows.ofx`` fixture shape but is
+    generated in-memory so a boundary test can pick any row count cheaply.
+    """
+    header = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<?OFX OFXHEADER="200" VERSION="200" SECURITY="NONE" '
+        'OLDFILEUID="NONE" NEWFILEUID="NONE"?>\n'
+        "<OFX>\n"
+        "  <SIGNONMSGSRSV1><SONRS>\n"
+        "    <STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>\n"
+        "    <DTSERVER>20260501120000</DTSERVER>\n"
+        "    <LANGUAGE>ENG</LANGUAGE>\n"
+        "  </SONRS></SIGNONMSGSRSV1>\n"
+        "  <BANKMSGSRSV1><STMTTRNRS>\n"
+        "    <TRNUID>1</TRNUID>\n"
+        "    <STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>\n"
+        "    <STMTRS>\n"
+        "      <CURDEF>EUR</CURDEF>\n"
+        "      <BANKACCTFROM>\n"
+        "        <BANKID>INGBNL2A</BANKID>\n"
+        "        <ACCTID>NL03TEST0000000003</ACCTID>\n"
+        "        <ACCTTYPE>CHECKING</ACCTTYPE>\n"
+        "      </BANKACCTFROM>\n"
+        "      <BANKTRANLIST>\n"
+        "        <DTSTART>20240101</DTSTART>\n"
+        "        <DTEND>20260430</DTEND>\n"
+    )
+    rows = "\n".join(
+        "<STMTTRN><TRNTYPE>DEBIT</TRNTYPE><DTPOSTED>20240101</DTPOSTED>"
+        f"<TRNAMT>-1.00</TRNAMT><FITID>GEN{i:07d}</FITID>"
+        f"<NAME>Row{i}</NAME></STMTTRN>"
+        for i in range(1, n + 1)
+    )
+    footer = (
+        "\n      </BANKTRANLIST>\n"
+        "      <LEDGERBAL><BALAMT>0.00</BALAMT><DTASOF>20260430</DTASOF>"
+        "</LEDGERBAL>\n"
+        "    </STMTRS>\n"
+        "  </STMTTRNRS></BANKMSGSRSV1>\n"
+        "</OFX>\n"
+    )
+    return (header + rows + footer).encode()
+
+
 # ── Config knobs resolve from settings ──────────────────────────────────────
 
 
@@ -172,6 +219,32 @@ async def test_row_cap_at_limit_is_accepted(monkeypatch):
     monkeypatch.setattr(import_ofx_service.settings, "ofx_max_rows", 15)
     rows = await parse_ofx(_read("rabobank_ofx_1x.ofx"), org_id=1)
     assert len(rows) == 15
+
+
+@pytest.mark.asyncio
+async def test_row_cap_exact_plus_one_returns_413(monkeypatch):
+    """Boundary: exactly ``ofx_max_rows`` + 1 rows is rejected with 413,
+    while exactly ``ofx_max_rows`` rows is accepted — the ``> max_rows``
+    check is inclusive at the cap and rejects one past it.
+
+    The production default is 10 000, but a real 10 001-row parse is the
+    same heavy, flake-prone cost as ``test_row_cap_default_10k_accepts_...``
+    (which needs a 60s budget). This pins the exact cap+1 boundary cheaply
+    via a lowered ``ofx_max_rows`` + an in-memory generated fixture, so no
+    real 10k-row parse is added to the suite.
+    """
+    cap = 200
+    monkeypatch.setattr(import_ofx_service.settings, "ofx_max_rows", cap)
+
+    # Exactly cap+1 → 413.
+    with pytest.raises(HTTPException) as exc_info:
+        await parse_ofx(_make_ofx_with_rows(cap + 1), org_id=1)
+    assert exc_info.value.status_code == 413
+    assert "transactions" in str(exc_info.value.detail).lower()
+
+    # Exactly cap → accepted (inclusive boundary), same generated shape.
+    rows = await parse_ofx(_make_ofx_with_rows(cap), org_id=1)
+    assert len(rows) == cap
 
 
 @pytest.mark.asyncio
