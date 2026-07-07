@@ -335,14 +335,20 @@ export function DashboardDataProvider({
   const periodsSettled = periodsData !== undefined || periodsError !== undefined;
   const [auxSettled, setAuxSettled] = useState(false);
   const [auxError, setAuxError] = useState<string | null>(null);
-  // Defense in depth: a billing-periods request that never settles (a stalled
-  // connection that neither resolves nor errors) must not strand the dashboard
-  // forever. After a generous delay we render anyway — period-scoped tiles
-  // show their empty/unavailable states, and if periods do eventually arrive
-  // everything re-derives from the real list.
-  const [periodsWaitElapsed, setPeriodsWaitElapsed] = useState(false);
-  const periodsResolved = periodsSettled || periodsWaitElapsed;
-  const loading = !(accountsSettled && periodsResolved && auxSettled);
+  // Defense in depth: a refs request that never settles (a stalled connection
+  // that neither resolves nor errors) must not strand the dashboard forever.
+  // The bound covers ALL loading legs — accounts, billing periods, AND the
+  // settings aux load: after a generous delay we render anyway. Tiles show
+  // their empty/unavailable states, and if the data does eventually arrive
+  // everything re-derives from it.
+  const refsSettled = accountsSettled && periodsSettled && auxSettled;
+  const [refsWaitElapsed, setRefsWaitElapsed] = useState(false);
+  const periodsResolved = periodsSettled || refsWaitElapsed;
+  const loading = !refsSettled && !refsWaitElapsed;
+  // NOTE: refsError is live SWR state — a failed BACKGROUND revalidation also
+  // sets it while the last-good data keeps rendering. No production consumer
+  // reads `error` today (only tests do); a future consumer must not render it
+  // over still-valid data without checking `data !== undefined` first.
   const refsError = accountsError ?? periodsError;
   const error =
     auxError ??
@@ -402,13 +408,28 @@ export function DashboardDataProvider({
   );
 
   // ── jumpToCurrentPeriod — clears chartFilter on period nav ─────────────────
+  // Restores the never-navigated default (selectedStart = null → follow the
+  // current open period) rather than pinning to the current period's
+  // identity: a pin would park the user on the then-closed period after a
+  // month rollover, the opposite of what "Today" means.
   const jumpToCurrentPeriod = useCallback(() => {
     const idx = periods.findIndex((p) => p.end_date === null);
     if (idx >= 0) {
-      setSelectedStart(periods[idx].start_date);
+      setSelectedStart(null);
       setChartFilter(null);
     }
   }, [periods]);
+
+  // If the selected period disappears from the list (the derivation above is
+  // already rendering the current-period fallback), drop the pin too — a
+  // later revalidation reintroducing the same start_date must not silently
+  // resurrect a selection the user has visibly lost.
+  useEffect(() => {
+    if (selectedStart === null || periods.length === 0) return;
+    if (!periods.some((p) => p.start_date === selectedStart)) {
+      setSelectedStart(null);
+    }
+  }, [periods, selectedStart]);
 
   // ── loadTransactionSnapshot ─────────────────────────────────────────────────
   // Full-period snapshot: GET /api/v1/transactions?limit=200&date_from=…&date_to=…
@@ -499,6 +520,9 @@ export function DashboardDataProvider({
     ]);
     if (bc) setBillingCycleDay(bc.billing_cycle_day);
     if (per) setPeriod(per);
+    // Self-heal like the SWR error channels: a later successful load (e.g. a
+    // post-write refresh) clears a stale mount-time error.
+    setAuxError(null);
   }, []);
 
   // ── loadPendingTransactions ─────────────────────────────────────────────────
@@ -604,13 +628,15 @@ export function DashboardDataProvider({
     void loadPendingTransactions();
   }, [refsEnabled, loadAux, loadPendingTransactions]);
 
-  // Arm the stalled-periods fallback only while we are actually waiting
-  // (same 10s bound as the transactions page, #520).
+  // Arm the stalled-refs fallback only while we are actually waiting (same
+  // 10s bound as the transactions page, #520). Covers all three loading legs
+  // (accounts / billing periods / settings aux): any of them stalling would
+  // otherwise strand the skeleton forever.
   useEffect(() => {
-    if (!refsEnabled || periodsSettled) return;
-    const timer = setTimeout(() => setPeriodsWaitElapsed(true), 10000);
+    if (!refsEnabled || refsSettled) return;
+    const timer = setTimeout(() => setRefsWaitElapsed(true), 10000);
     return () => clearTimeout(timer);
-  }, [refsEnabled, periodsSettled]);
+  }, [refsEnabled, refsSettled]);
 
   // ── Period-scoped loads (fire when realPeriodStart is known) ────────────────
   useEffect(() => {

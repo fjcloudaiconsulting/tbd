@@ -1498,6 +1498,41 @@ describe("DashboardDataProvider — SWR refs auth gate", () => {
     expect(vi.mocked(pagination.fetchAll)).not.toHaveBeenCalled();
     expect(screen.getByTestId("loading").textContent).toBe("true");
   });
+
+  it("fetches each ref exactly once when the auth gate opens", async () => {
+    vi.mocked(useAuth).mockReturnValue({ user: null, loading: true } as never);
+    vi.mocked(apiFetch).mockImplementation(makeApiFetchHandler() as never);
+
+    const view = renderProvider();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(vi.mocked(apiFetch)).not.toHaveBeenCalled();
+
+    // Auth resolves: the gate opens on the SAME mounted provider.
+    vi.mocked(useAuth).mockReturnValue({
+      user: { billing_cycle_day: 1 },
+      loading: false,
+    } as never);
+    view.rerender(
+      <DashboardDataProvider>
+        <Consumer />
+      </DashboardDataProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(countCallsByPrefix("/api/v1/transactions?limit=10")).toBeGreaterThan(0),
+    );
+
+    expect(countCallsByPrefix("/api/v1/accounts")).toBe(1);
+    expect(countCallsByPrefix("/api/v1/settings/billing-periods")).toBe(1);
+    expect(countCallsByPrefix("/api/v1/settings/billing-cycle")).toBe(1);
+  });
 });
 
 describe("DashboardDataProvider — cold-mount single fetch per endpoint", () => {
@@ -1627,6 +1662,24 @@ describe("DashboardDataProvider — period selection survives refs revalidation"
     );
     expect(screen.getByTestId("month-from").textContent).toBe("2026-04-01");
     expect(screen.getByTestId("is-current").textContent).toBe("false");
+
+    // Flush trailing effect-driven fetches, then verify the period-scoped
+    // loads stayed on the SELECTED period: no request was ever issued for
+    // the new current period (a transient idx flap would have fired one).
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const budgetCalls = vi
+      .mocked(apiFetch)
+      .mock.calls.map((c) => c[0] as string)
+      .filter((u) => u.startsWith("/api/v1/budgets"));
+    expect(budgetCalls.some((u) => u.includes("period_start=2026-04-01"))).toBe(
+      true,
+    );
+    expect(
+      budgetCalls.every((u) => !u.includes("period_start=2026-06-01")),
+    ).toBe(true);
   });
 
   it("follows the new current period after revalidation when the user never navigated", async () => {
@@ -1658,6 +1711,166 @@ describe("DashboardDataProvider — period selection survives refs revalidation"
       expect(screen.getByTestId("month-from").textContent).toBe("2026-06-01"),
     );
     expect(screen.getByTestId("is-current").textContent).toBe("true");
+  });
+
+  it("jumpToCurrentPeriod restores follow-current: a later rollover tracks the NEW current period", async () => {
+    let servedPeriods: unknown = PERIODS;
+    const base = makeApiFetchHandler();
+    vi.mocked(apiFetch).mockImplementation((async (url: string) => {
+      if (url.startsWith("/api/v1/settings/billing-periods")) {
+        return servedPeriods;
+      }
+      return base(url);
+    }) as never);
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("is-current").textContent).toBe("true"),
+    );
+
+    // Navigate away, then come back with "Today".
+    act(() => {
+      screen.getByTestId("set-period-idx-1").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("month-from").textContent).toBe("2026-04-01"),
+    );
+    act(() => {
+      screen.getByTestId("jump-to-current").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("is-current").textContent).toBe("true"),
+    );
+
+    // Month rollover: a new period opens. The jump must NOT have pinned the
+    // user to 05-01's identity — the dashboard follows the new current.
+    servedPeriods = [NEW_CURRENT, CLOSED_MAY, PAST_PERIOD];
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("month-from").textContent).toBe("2026-06-01"),
+    );
+    expect(screen.getByTestId("is-current").textContent).toBe("true");
+  });
+
+  it("falls back to the CURRENT open period (not index 0) when the selected period disappears, and never resurrects it", async () => {
+    let servedPeriods: unknown = PERIODS; // [CURRENT(05-01, open), PAST(04-01)]
+    const base = makeApiFetchHandler();
+    vi.mocked(apiFetch).mockImplementation((async (url: string) => {
+      if (url.startsWith("/api/v1/settings/billing-periods")) {
+        return servedPeriods;
+      }
+      return base(url);
+    }) as never);
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("is-current").textContent).toBe("true"),
+    );
+
+    // Select PAST (04-01).
+    act(() => {
+      screen.getByTestId("set-period-idx-1").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("month-from").textContent).toBe("2026-04-01"),
+    );
+
+    // The selected period vanishes. The new list is deliberately ordered
+    // with the open period at a NON-zero index: an index-0 fallback (instead
+    // of the current-open fallback) would land on the future period.
+    servedPeriods = [FUTURE_PERIOD, CURRENT_PERIOD];
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("month-from").textContent).toBe("2026-05-01"),
+    );
+    expect(screen.getByTestId("period-idx").textContent).toBe("1");
+    expect(screen.getByTestId("is-current").textContent).toBe("true");
+    expect(screen.getByTestId("is-future").textContent).toBe("false");
+
+    // Resurrection guard: the old selection's start_date reappears in a
+    // later revalidation — the dashboard must stay on current, because the
+    // stale pin was cleared when the fallback engaged.
+    servedPeriods = [FUTURE_PERIOD, CURRENT_PERIOD, PAST_PERIOD];
+    const periodsCallsBefore = countCallsByPrefix(
+      "/api/v1/settings/billing-periods",
+    );
+    act(() => {
+      window.dispatchEvent(new Event("pfv:transaction-added"));
+    });
+    await waitFor(() =>
+      expect(
+        countCallsByPrefix("/api/v1/settings/billing-periods"),
+      ).toBeGreaterThan(periodsCallsBefore),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("month-from").textContent).toBe("2026-05-01");
+    expect(screen.getByTestId("is-current").textContent).toBe("true");
+  });
+
+  it("onToggleTransactionStatus preserves the selected period (the other legacy loadRefs reset site)", async () => {
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({
+        transactions: { items: [TX_EXPENSE], total: 1 },
+      }) as never,
+    );
+
+    renderProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("sorted-visible-count").textContent).toBe("1"),
+    );
+
+    // Navigate to the past period; the period-scoped refetch repopulates
+    // the visible row for it (same mock payload).
+    act(() => {
+      screen.getByTestId("set-period-idx-1").click();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("month-from").textContent).toBe("2026-04-01"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("sorted-visible-count").textContent).toBe("1"),
+    );
+
+    const refsBefore = countCallsByPrefix("/api/v1/accounts");
+    act(() => {
+      screen.getByTestId("toggle-status").click();
+    });
+
+    // Wait for the refs step of the toggle cascade (accounts revalidation)…
+    await waitFor(() =>
+      expect(countCallsByPrefix("/api/v1/accounts")).toBeGreaterThan(
+        refsBefore,
+      ),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // …the user stays on the period they were viewing.
+    expect(screen.getByTestId("period-idx").textContent).toBe("1");
+    expect(screen.getByTestId("month-from").textContent).toBe("2026-04-01");
   });
 });
 
@@ -1695,7 +1908,54 @@ describe("DashboardDataProvider — stalled billing-periods fallback", () => {
       // the skeleton; the single-period settings fallback still provides a
       // real period, so period-scoped tiles keep working.
       expect(screen.getByTestId("loading").textContent).toBe("false");
-      expect(countCallsByPrefix("/api/v1/budgets")).toBe(1);
+      const budgetCalls = vi
+        .mocked(apiFetch)
+        .mock.calls.map((c) => c[0] as string)
+        .filter((u) => u.startsWith("/api/v1/budgets"));
+      expect(budgetCalls).toHaveLength(1);
+      // …and the budgets request carries the settings-fallback period.
+      expect(budgetCalls[0]).toContain("period_start=2026-05-01");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("renders after the bound when the ACCOUNTS and settings-aux requests never settle (all legs covered)", async () => {
+    vi.useFakeTimers();
+    try {
+      const base = makeApiFetchHandler();
+      vi.mocked(apiFetch).mockImplementation(((url: string) => {
+        // Stall the accounts SWR leg AND the imperative aux leg — the bound
+        // must cover every loading leg, not just billing periods.
+        if (url.startsWith("/api/v1/accounts")) return new Promise(() => {});
+        if (url.startsWith("/api/v1/settings/billing-cycle")) {
+          return new Promise(() => {});
+        }
+        return base(url);
+      }) as never);
+
+      renderProvider();
+
+      // Periods settle, but accounts + aux never do → still loading.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId("loading").textContent).toBe("true");
+
+      await act(async () => {
+        vi.advanceTimersByTime(10001);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // The page renders with what it has: periods drive the tiles, the
+      // accounts strip shows its empty state.
+      expect(screen.getByTestId("loading").textContent).toBe("false");
+      expect(screen.getByTestId("accounts-count").textContent).toBe("0");
+      expect(screen.getByTestId("month-from").textContent).toBe("2026-05-01");
     } finally {
       vi.useRealTimers();
     }
