@@ -11,6 +11,7 @@ import qrcode.constants
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import settings
+from app.security import derive_hmac_key
 
 
 # ── Encryption ──────────────────────────────────────────────────────────────
@@ -88,22 +89,53 @@ def generate_recovery_codes(count: int = 8) -> list[str]:
     return codes
 
 
+RECOVERY_CODE_PURPOSE = b"mfa-recovery-code-v1"
+
+
 def _hmac_key() -> bytes:
-    """Return the HMAC key for recovery code hashing (derived from JWT secret)."""
+    """Purpose-bound HMAC key for recovery code hashing.
+
+    Derived from the JWT secret rather than using it raw, so the JWT
+    signing key is never reused directly as hashing key material.
+    """
+    return derive_hmac_key(RECOVERY_CODE_PURPOSE)
+
+
+def _legacy_hmac_key() -> bytes:
+    """Pre-derivation key (the raw JWT secret). Verify-only fallback for
+    recovery-code hashes stored before the purpose-bound scheme."""
     return settings.jwt_secret_key.encode()
+
+
+def _normalize(code: str) -> str:
+    return code.strip().lower().replace("-", "")
 
 
 def hash_recovery_code(code: str) -> str:
     """HMAC-SHA256 a recovery code for storage (keyed, not brute-forceable)."""
-    normalized = code.strip().lower().replace("-", "")
-    return hmac.new(_hmac_key(), normalized.encode(), "sha256").hexdigest()
+    return hmac.new(_hmac_key(), _normalize(code).encode(), "sha256").hexdigest()
+
+
+def _hash_recovery_code_legacy(code: str) -> str:
+    return hmac.new(_legacy_hmac_key(), _normalize(code).encode(), "sha256").hexdigest()
 
 
 def verify_recovery_code(code: str, hashed_codes: list[str]) -> int | None:
-    """Check if a code matches any stored HMAC. Constant-time, no early exit."""
+    """Check if a code matches any stored HMAC. Constant-time, no early exit.
+
+    Tries the purpose-bound derived key first, then falls back to the
+    legacy raw-jwt_secret_key scheme so hashes stored before the derived
+    key shipped keep verifying. On a legacy match the entry is re-hashed
+    in place under the new scheme (lazy migration); callers that persist
+    ``hashed_codes`` after a match therefore write the upgraded value.
+    """
     candidate = hash_recovery_code(code)
+    legacy_candidate = _hash_recovery_code_legacy(code)
     match_idx: int | None = None
     for i, stored in enumerate(hashed_codes):
         if hmac.compare_digest(candidate, stored):
+            match_idx = i
+        elif hmac.compare_digest(legacy_candidate, stored):
+            hashed_codes[i] = candidate
             match_idx = i
     return match_idx

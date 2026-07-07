@@ -1,4 +1,6 @@
 import base64
+import hashlib
+import hmac
 from base64 import urlsafe_b64encode
 
 import pyotp
@@ -6,6 +8,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.config import settings
+from app.security import derive_hmac_key, mfa_email_code_hmac
 from app.services.mfa_service import (
     MfaConfigError,
     decrypt_secret,
@@ -109,3 +112,79 @@ def test_verify_recovery_code_returns_matching_index_or_none() -> None:
 
     assert verify_recovery_code("1111222233334444", hashed_codes) == 1
     assert verify_recovery_code("ffff-eeee-dddd-cccc", hashed_codes) is None
+
+
+# ── Purpose-bound HMAC key derivation ────────────────────────────────────────
+
+
+def _legacy_hash(code: str) -> str:
+    """Hash a recovery code the pre-derivation way: raw jwt_secret_key."""
+    normalized = code.strip().lower().replace("-", "")
+    return hmac.new(
+        settings.jwt_secret_key.encode(), normalized.encode(), "sha256"
+    ).hexdigest()
+
+
+def test_hash_recovery_code_uses_derived_key_not_raw_jwt_secret() -> None:
+    code = "aaaa-bbbb-cccc-dddd"
+
+    expected = hmac.new(
+        derive_hmac_key(b"mfa-recovery-code-v1"),
+        "aaaabbbbccccdddd".encode(),
+        "sha256",
+    ).hexdigest()
+
+    assert hash_recovery_code(code) == expected
+    assert hash_recovery_code(code) != _legacy_hash(code)
+
+
+def test_verify_recovery_code_accepts_legacy_hash_and_migrates_it() -> None:
+    """Hashes stored under the raw jwt_secret_key (pre-derivation deploys)
+    must keep verifying, and get lazily re-hashed to the derived scheme."""
+    legacy = _legacy_hash("aaaa-bbbb-cccc-dddd")
+    other = hash_recovery_code("1111-2222-3333-4444")
+    hashed_codes = [legacy, other]
+
+    idx = verify_recovery_code("aaaa-bbbb-cccc-dddd", hashed_codes)
+
+    assert idx == 0
+    # The matched entry was migrated in place to the derived-key scheme.
+    assert hashed_codes[0] != legacy
+    assert hashed_codes[0] == hash_recovery_code("aaaa-bbbb-cccc-dddd")
+    # Untouched entries stay as they were.
+    assert hashed_codes[1] == other
+
+
+def test_verify_recovery_code_wrong_code_fails_under_both_schemes() -> None:
+    hashed_codes = [
+        _legacy_hash("aaaa-bbbb-cccc-dddd"),
+        hash_recovery_code("1111-2222-3333-4444"),
+    ]
+    snapshot = list(hashed_codes)
+
+    assert verify_recovery_code("ffff-eeee-dddd-cccc", hashed_codes) is None
+    assert hashed_codes == snapshot  # no migration on failure
+
+
+def test_derived_keys_are_purpose_bound_and_distinct() -> None:
+    recovery_key = derive_hmac_key(b"mfa-recovery-code-v1")
+    email_key = derive_hmac_key(b"mfa-email-code-v1")
+    raw = settings.jwt_secret_key.encode()
+
+    assert recovery_key != email_key
+    assert recovery_key != raw
+    assert email_key != raw
+    # Derivation is HMAC-SHA256(jwt_secret_key, purpose)
+    assert recovery_key == hmac.new(raw, b"mfa-recovery-code-v1", hashlib.sha256).digest()
+
+
+def test_mfa_email_code_hmac_uses_derived_email_key() -> None:
+    code = "482913"
+    expected = hmac.new(
+        derive_hmac_key(b"mfa-email-code-v1"), code.encode(), "sha256"
+    ).hexdigest()
+    raw_keyed = hmac.new(settings.jwt_secret_key.encode(), code.encode(), "sha256").hexdigest()
+
+    assert mfa_email_code_hmac(code) == expected
+    assert mfa_email_code_hmac(code) != raw_keyed
+    assert mfa_email_code_hmac(code) != hash_recovery_code(code)
