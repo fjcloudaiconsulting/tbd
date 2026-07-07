@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "@/components/AppShell";
 import HelpAnchor from "@/components/HelpAnchor";
 import HelpTooltip from "@/components/help/HelpTooltip";
@@ -90,13 +90,6 @@ export default function AccountsPage() {
     useAccounts(refsEnabled);
   const accounts = accountsData ?? EMPTY_ACCOUNTS;
   const accountsSettled = accountsData !== undefined || accountsError !== undefined;
-  // Initial-load failure: the SWR accounts request settled with an error and
-  // there is NO data (not even stale) to fall back on. This drives the
-  // blocking error+Retry state below instead of the misleading "no accounts
-  // yet" empty state. When stale data exists alongside a background
-  // revalidation error, the data wins and renders as usual.
-  const initialAccountsLoadFailed =
-    accountsData === undefined && accountsError !== undefined;
   // All-time pending transactions for the per-account "Pending: €X.XX"
   // row. Pending is a status, not a period concept; a CC charge sitting
   // in pending must be visible whether it was made this month or last.
@@ -105,7 +98,21 @@ export default function AccountsPage() {
   // flag tracks that first load. The spinner waits for BOTH it and the SWR
   // accounts request so the list never flashes empty before accounts arrive.
   const [auxLoaded, setAuxLoaded] = useState(false);
+  // Set when reload() — the initial aux load (types + pending) or its Retry —
+  // fails. Without it, an aux failure would render the success branch with
+  // accountTypes=[]: a "No account types yet" card and a hidden "+ Add
+  // Account" button, i.e. a load failure masquerading as an empty org.
+  const [auxLoadError, setAuxLoadError] = useState(false);
   const fetching = !auxLoaded || !accountsSettled;
+  // Blocking initial-load failure: the SWR accounts request settled with an
+  // error and there is NO data (not even stale) to fall back on, OR the aux
+  // load failed. This drives the error+Retry state below instead of the
+  // misleading empty states. When stale accounts data exists alongside a
+  // background revalidation error, the data wins and renders as usual —
+  // auxLoadError is only ever set by reload() (initial load / its Retry);
+  // the post-write refresh path drives the non-blocking banner instead.
+  const initialLoadFailed =
+    (accountsData === undefined && accountsError !== undefined) || auxLoadError;
 
   const [typeName, setTypeName] = useState("");
   const [editingTypeId, setEditingTypeId] = useState<number | null>(null);
@@ -154,8 +161,15 @@ export default function AccountsPage() {
   const [refreshError, setRefreshError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // In-flight flag for the initial-load Retry button (drives the
-  // "Retrying..." label + disabled state, mirroring the refresh banner).
+  // "Retrying..." label + aria-disabled state, mirroring the refresh banner).
   const [retryingInitial, setRetryingInitial] = useState(false);
+  // Flips true when a Retry attempt fails again: the role="alert" copy
+  // changes so screen readers re-announce the failed outcome.
+  const [retryFailed, setRetryFailed] = useState(false);
+  // Focus target after a successful Retry — the banner (which held focus on
+  // its button) unmounts, so we move focus to the page heading instead of
+  // letting it drop to <body>.
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const [confirmDeleteTypeId, setConfirmDeleteTypeId] = useState<number | null>(null);
   const [confirmDeleteAcctId, setConfirmDeleteAcctId] = useState<number | null>(null);
   // Track E: account being adjusted (or null when the modal is closed).
@@ -182,12 +196,18 @@ export default function AccountsPage() {
 
   // reload() covers the non-SWR data only (accounts flow through the useAccounts
   // SWR hook above). auxLoaded flips even on failure so a types error doesn't
-  // strand the page on the spinner; the rejection still reaches callers' catch.
+  // strand the page on the spinner; the rejection still reaches callers' catch,
+  // and auxLoadError drives the blocking error state so the failure is never
+  // rendered as an empty Types card.
   const reload = useCallback(async () => {
     try {
       const aux = await fetchAux();
       setAccountTypes(aux.types);
       if (aux.pending !== null) setPendingTransactions(aux.pending);
+      setAuxLoadError(false);
+    } catch (err) {
+      setAuxLoadError(true);
+      throw err;
     } finally {
       setAuxLoaded(true);
     }
@@ -208,6 +228,7 @@ export default function AccountsPage() {
     ]);
     setAccountTypes(aux.types);
     if (aux.pending !== null) setPendingTransactions(aux.pending);
+    setAuxLoadError(false);
     await mutateAccounts(accts, { revalidate: false });
   }, [fetchAux, mutateAccounts]);
 
@@ -237,24 +258,36 @@ export default function AccountsPage() {
     void refreshAfterTransactionAdded();
   });
 
-  // Retry for a failed INITIAL load. mutateAccounts() re-triggers the SWR
-  // fetch; when that refetch fails again SWR keeps `accountsError` set (and
-  // `accountsData` undefined), so the error state above stays rendered
-  // rather than silently spinning or falling through to the empty state.
-  // reload() re-pulls the non-SWR aux data (types + pending), which most
-  // likely failed for the same reason. Both rejections are swallowed here
-  // on purpose — the rendered state is driven by the SWR error, not by
-  // this promise.
+  // Retry for a failed INITIAL load. Accounts are fetched directly and
+  // seeded into the SWR cache — the same pattern as refreshAll(), because a
+  // bare mutate() revalidation swallows fetch errors — so a failing retry is
+  // guaranteed to land in the catch and keep the error state (with
+  // re-announced copy) rather than silently spinning or falling through to
+  // the empty state. reload() re-pulls the non-SWR aux data (types +
+  // pending), which most likely failed for the same reason; its failure
+  // keeps auxLoadError set, which also keeps the error state up. Nothing
+  // commits unless BOTH succeed, mirroring refreshAll()'s atomicity.
   const retryInitialLoad = useCallback(async () => {
+    if (retryingInitial) return;
     setRetryingInitial(true);
     try {
-      await Promise.all([mutateAccounts(), reload()]);
+      const [accts] = await Promise.all([
+        apiFetch<Account[]>(ACCOUNTS_KEY),
+        reload(),
+      ]);
+      await mutateAccounts(accts, { revalidate: false });
+      setRetryFailed(false);
+      // Success unmounts the banner (and its Retry button, which held
+      // focus); land keyboard/screen-reader users on the page heading.
+      headingRef.current?.focus();
     } catch {
-      // accountsError stays set on failure → error state persists.
+      // accountsError / auxLoadError stay set → error state persists. The
+      // changed alert copy makes screen readers announce the failed retry.
+      setRetryFailed(true);
     } finally {
       setRetryingInitial(false);
     }
-  }, [mutateAccounts, reload]);
+  }, [retryingInitial, reload, mutateAccounts]);
 
   async function handleAddType(e: FormEvent) {
     e.preventDefault();
@@ -496,7 +529,9 @@ export default function AccountsPage() {
         className="mb-8 flex items-start gap-1"
         data-tour-id="accounts.title"
       >
-        <h1 className={`${pageTitle} mb-0`}>Accounts</h1>
+        {/* tabIndex={-1}: programmatic focus target after a successful
+            initial-load Retry (the banner that held focus unmounts). */}
+        <h1 ref={headingRef} tabIndex={-1} className={`${pageTitle} mb-0 outline-none`}>Accounts</h1>
         <HelpAnchor section="accounts" label="Accounts" />
       </div>
 
@@ -525,22 +560,29 @@ export default function AccountsPage() {
 
       {fetching ? (
         <Spinner />
-      ) : initialAccountsLoadFailed ? (
-        // Initial accounts fetch failed and there is nothing cached to show.
-        // Same visual language as the post-write refresh banner above, but
-        // blocking (it replaces the page body — there is no data to render)
-        // and announced as an alert.
+      ) : initialLoadFailed ? (
+        // Initial load failed (accounts with nothing cached, and/or the aux
+        // types+pending load). Same visual language as the post-write
+        // refresh banner above, but blocking — rendering the page body here
+        // would fake an empty org — and announced as an alert. The Retry
+        // button uses aria-disabled (not native disabled) so keyboard focus
+        // isn't dropped to <body> mid-retry; retryInitialLoad guards
+        // re-entry itself.
         <div
           className={`flex items-center justify-between gap-3 ${errorCls}`}
           role="alert"
           data-testid="accounts-initial-load-error"
         >
-          <span>Failed to load your accounts. Try again.</span>
+          <span>
+            {retryFailed
+              ? "Still couldn't load your accounts. Try again."
+              : "Failed to load your accounts. Try again."}
+          </span>
           <button
             type="button"
             onClick={() => void retryInitialLoad()}
-            disabled={retryingInitial}
-            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 disabled:opacity-50"
+            aria-disabled={retryingInitial}
+            className="rounded-md border border-danger/40 px-3 py-1 text-xs font-medium text-danger hover:bg-danger/10 aria-disabled:opacity-50"
           >
             {retryingInitial ? "Retrying..." : "Retry"}
           </button>
