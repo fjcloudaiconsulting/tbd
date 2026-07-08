@@ -15,7 +15,8 @@
  * mounts — keeping the mock surface minimal.
  */
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "@/tests/utils/render-with-swr";
+import { screen, waitFor } from "@testing-library/react";
 
 vi.mock("@/components/AppShell", () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -54,7 +55,7 @@ describe("CustomDashboard — auth-readiness gate", () => {
 
   it("does NOT fetch the layout while user is null; shows the loader", () => {
     vi.mocked(useAuth).mockReturnValue({ user: null } as never);
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
     expect(screen.getByTestId("custom-dashboard-loading")).toBeInTheDocument();
     expect(getDashboard).not.toHaveBeenCalled();
   });
@@ -63,7 +64,7 @@ describe("CustomDashboard — auth-readiness gate", () => {
     vi.mocked(useAuth).mockReturnValue({ user: { id: 1 } } as never);
     // Pending so the component stays on the loader (no loaded-branch mounts).
     vi.mocked(getDashboard).mockReturnValue(new Promise(() => {}) as never);
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
     await waitFor(() => expect(getDashboard).toHaveBeenCalledTimes(1));
   });
 });

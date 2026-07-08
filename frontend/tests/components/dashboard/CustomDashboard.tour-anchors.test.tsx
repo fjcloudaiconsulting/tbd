@@ -9,7 +9,8 @@
  * a real element, and that the Customize button carries its anchor too.
  */
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "@/tests/utils/render-with-swr";
+import { screen, waitFor } from "@testing-library/react";
 
 // ── mocks (must precede component imports) ────────────────────────────────────
 
@@ -179,7 +180,7 @@ const CUSTOM_DASHBOARD_ANCHORS = [
 
 describe("CustomDashboard — first-run tour anchors", () => {
   it("renders every finance-tile and customize tour anchor on the default layout", async () => {
-    const { container } = render(<CustomDashboard />);
+    const { container } = renderWithSWR(<CustomDashboard />);
 
     await waitFor(() =>
       expect(screen.queryByTestId("custom-dashboard-loading")).not.toBeInTheDocument(),
@@ -227,7 +228,7 @@ describe("CustomDashboard — first-run tour anchors", () => {
       },
     } as never);
 
-    const { container } = render(<CustomDashboard />);
+    const { container } = renderWithSWR(<CustomDashboard />);
     await waitFor(() =>
       expect(screen.queryByTestId("custom-dashboard-loading")).not.toBeInTheDocument(),
     );
@@ -239,7 +240,7 @@ describe("CustomDashboard — first-run tour anchors", () => {
 
   it("keeps finance-tile anchors in the mobile single-column stack, without the desktop-only customize anchor", async () => {
     mockIsMobile.mockReturnValue(true);
-    const { container } = render(<CustomDashboard />);
+    const { container } = renderWithSWR(<CustomDashboard />);
 
     await waitFor(() =>
       expect(screen.queryByTestId("custom-dashboard-loading")).not.toBeInTheDocument(),

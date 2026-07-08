@@ -19,7 +19,8 @@
  *       nav renders, the 3 finance tiles are present, Save calls
  *       saveDashboard with the dash_* widget types.
  */
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "@/tests/utils/render-with-swr";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 
 import DashboardPage from "@/app/dashboard/page";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -338,7 +339,7 @@ describe("DashboardPage — feature flag", () => {
     });
 
     it("renders the legacy dashboard heading", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       // The legacy DashboardPage renders an <h1>Dashboard</h1>
       await waitFor(() =>
         expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(),
@@ -346,14 +347,14 @@ describe("DashboardPage — feature flag", () => {
     });
 
     it("does NOT render the custom dashboard shell", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.queryByTestId("custom-dashboard")).toBeNull(),
       );
     });
 
     it("does NOT call getDashboard", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(),
       );
@@ -361,7 +362,7 @@ describe("DashboardPage — feature flag", () => {
     });
 
     it("does NOT render the period nav", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument(),
       );
@@ -396,21 +397,21 @@ describe("DashboardPage — feature flag", () => {
     });
 
     it("renders the custom dashboard shell after load", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("custom-dashboard")).toBeInTheDocument(),
       );
     });
 
     it("calls getDashboard on mount", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(vi.mocked(dashboardApi.getDashboard)).toHaveBeenCalledTimes(1),
       );
     });
 
     it("shows the Canvas after load with the widget from the layout", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("reports-canvas")).toBeInTheDocument(),
       );
@@ -418,21 +419,21 @@ describe("DashboardPage — feature flag", () => {
     });
 
     it("renders DashboardDataProvider wrapper", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("dashboard-data-provider")).toBeInTheDocument(),
       );
     });
 
     it("renders the period nav chrome", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("dashboard-period-nav")).toBeInTheDocument(),
       );
     });
 
     it("clicking Save calls saveDashboard", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       // Wait for load to complete.
       await waitFor(() =>
         expect(screen.getByTestId("custom-dashboard")).toBeInTheDocument(),
@@ -471,7 +472,7 @@ describe("DashboardPage — feature flag", () => {
     it("shows a loading spinner before getDashboard resolves", async () => {
       // Never resolve getDashboard — keeps the loading state indefinitely.
       vi.mocked(dashboardApi.getDashboard).mockReturnValue(new Promise(() => {}));
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       expect(screen.getByTestId("custom-dashboard-loading")).toBeInTheDocument();
     });
 
@@ -479,7 +480,7 @@ describe("DashboardPage — feature flag", () => {
       vi.mocked(dashboardApi.getDashboard).mockRejectedValue(
         new Error("Network error"),
       );
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("custom-dashboard-error")).toBeInTheDocument(),
       );
@@ -516,21 +517,21 @@ describe("DashboardPage — feature flag", () => {
     });
 
     it("renders the period nav after load", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("dashboard-period-nav")).toBeInTheDocument(),
       );
     });
 
     it("renders the CURRENT period badge in the period nav", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("period-nav-current-badge")).toBeInTheDocument(),
       );
     });
 
     it("renders the View All Transactions link", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(
           screen.getByRole("link", { name: /view all transactions/i }),
@@ -539,7 +540,7 @@ describe("DashboardPage — feature flag", () => {
     });
 
     it("renders all 3 dash_* tile widgets via the canvas dispatch", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("reports-canvas")).toBeInTheDocument(),
       );
@@ -550,14 +551,14 @@ describe("DashboardPage — feature flag", () => {
     });
 
     it("wraps content in DashboardDataProvider", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("dashboard-data-provider")).toBeInTheDocument(),
       );
     });
 
     it("Save calls saveDashboard with the dash_* layout", async () => {
-      render(<DashboardPage />);
+      renderWithSWR(<DashboardPage />);
       await waitFor(() =>
         expect(screen.getByTestId("custom-dashboard")).toBeInTheDocument(),
       );
