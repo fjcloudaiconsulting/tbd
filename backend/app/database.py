@@ -1,4 +1,3 @@
-import ssl
 from urllib.parse import urlparse
 
 import structlog
@@ -13,9 +12,12 @@ logger = structlog.stdlib.get_logger()
 def _build_connect_args() -> dict:
     """Build connect_args for the async engine.
 
-    DO managed MySQL requires SSL on external connections. When the DATABASE_URL
-    contains a DO-style host (port 25060), enable SSL with server verification
-    disabled (DO uses self-signed certs with their own CA).
+    Production MySQL is self-hosted on the data-plane droplet (:3306) and
+    reached over the private VPC, so no TLS is configured here. The old
+    DO-managed-DB (:25060) branch that built an unverified SSL context
+    (CERT_NONE) was removed; if a managed/remote DB ever returns, add TLS
+    back by loading the provider CA into an ssl.SSLContext with
+    check_hostname=True / CERT_REQUIRED — never CERT_NONE.
 
     ``connect_timeout`` bounds how long aiomysql will block while
     establishing a new connection — important for cold-start and
@@ -31,11 +33,6 @@ def _build_connect_args() -> dict:
     args: dict = {
         "connect_timeout": settings.db_connect_timeout,
     }
-    if ":25060" in settings.database_url:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        args["ssl"] = ctx
     return args
 
 
