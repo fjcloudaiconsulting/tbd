@@ -65,7 +65,11 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import router as auth_router
 from app.routers.users import router as users_router
-from app.security import hash_password, verify_password
+from app.security import (
+    create_password_reset_token,
+    hash_password,
+    verify_password,
+)
 from app.services import notification_service
 from app.services.mfa_service import encrypt_secret, generate_totp_secret
 
@@ -478,3 +482,140 @@ async def test_profile_edit_without_email_change_sends_nothing(
         res = client.put("/api/v1/users/me", json={"first_name": "Alicia"})
     assert res.status_code == 200, res.text
     assert sent_emails == []
+
+
+# ── password RESET (forgot-password completion, unauthenticated) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_password_reset_sends_security_email(session_factory, sent_emails):
+    """A completed password reset writes the in-app row (FK-correlated to
+    the audit event) AND emails the account address. This is the
+    account-takeover path — the highest-value alert of the batch."""
+    seed = await _seed_user(session_factory)
+    token = create_password_reset_token(seed["user_id"])
+    # reset-password is unauthenticated; the router override for
+    # get_current_user is unused by this route.
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/reset-password",
+            json={"token": token, "new_password": "brand-new-passw0rd"},
+        )
+    assert res.status_code == 200, res.text
+
+    notifs = await _notif_rows(session_factory, "user.password.reset")
+    assert len(notifs) == 1
+    assert notifs[0].category == NotificationCategory.SECURITY
+    # FK-correlated to the audit row that triggered it.
+    assert notifs[0].audit_event_id is not None
+
+    assert len(sent_emails) == 1
+    email = sent_emails[0]
+    assert email["to"] == OLD_EMAIL
+    assert email["title"] == "Your password was reset"
+    assert email["link_url"] == "/settings/security"
+
+
+@pytest.mark.asyncio
+async def test_password_reset_email_force_on_despite_optout(
+    session_factory, sent_emails
+):
+    """A user opted out of every email category still receives the
+    reset alert (security is force-on)."""
+    seed = await _seed_user(session_factory)
+    await _opt_out_of_everything(session_factory, seed["user_id"])
+    token = create_password_reset_token(seed["user_id"])
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/reset-password",
+            json={"token": token, "new_password": "brand-new-passw0rd"},
+        )
+    assert res.status_code == 200, res.text
+    assert len(sent_emails) == 1
+    assert sent_emails[0]["to"] == OLD_EMAIL
+
+
+@pytest.mark.asyncio
+async def test_password_reset_survives_mailer_failure(
+    session_factory, failing_mailer
+):
+    """A raising mailer must not fail the reset, revert the password, or
+    roll back the in-app row."""
+    seed = await _seed_user(session_factory)
+    token = create_password_reset_token(seed["user_id"])
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/reset-password",
+            json={"token": token, "new_password": "brand-new-passw0rd"},
+        )
+    assert res.status_code == 200, res.text
+    assert failing_mailer == [OLD_EMAIL]  # the send was attempted
+
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        assert verify_password("brand-new-passw0rd", user.password_hash)
+
+    notifs = await _notif_rows(session_factory, "user.password.reset")
+    assert len(notifs) == 1
+
+
+# ── MFA recovery-code regeneration ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_mfa_regenerate_sends_security_email(session_factory, sent_emails):
+    """Regenerating recovery codes writes the in-app row (FK-correlated)
+    AND emails the account address."""
+    secret = generate_totp_secret()
+    seed = await _seed_user(
+        session_factory,
+        totp_secret=encrypt_secret(secret),
+        mfa_enabled=True,
+    )
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/mfa/recovery-codes", json={"password": PASSWORD}
+        )
+    assert res.status_code == 200, res.text
+
+    notifs = await _notif_rows(
+        session_factory, "user.mfa.recovery_codes.regenerated"
+    )
+    assert len(notifs) == 1
+    assert notifs[0].category == NotificationCategory.SECURITY
+    assert notifs[0].audit_event_id is not None
+
+    assert len(sent_emails) == 1
+    email = sent_emails[0]
+    assert email["to"] == OLD_EMAIL
+    assert email["title"] == "Recovery codes regenerated"
+
+
+@pytest.mark.asyncio
+async def test_mfa_regenerate_survives_mailer_failure(
+    session_factory, failing_mailer
+):
+    """A raising mailer must not fail the regeneration or roll back the
+    in-app row."""
+    secret = generate_totp_secret()
+    seed = await _seed_user(
+        session_factory,
+        totp_secret=encrypt_secret(secret),
+        mfa_enabled=True,
+    )
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/mfa/recovery-codes", json={"password": PASSWORD}
+        )
+    assert res.status_code == 200, res.text
+    assert failing_mailer == [OLD_EMAIL]
+
+    notifs = await _notif_rows(
+        session_factory, "user.mfa.recovery_codes.regenerated"
+    )
+    assert len(notifs) == 1

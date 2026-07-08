@@ -77,6 +77,8 @@ from app.services.email_service import send_mfa_email_code, send_password_reset_
 from app.services.notification_templates import (
     user_mfa_disabled as _tpl_user_mfa_disabled,
     user_mfa_enabled as _tpl_user_mfa_enabled,
+    user_mfa_recovery_codes_regenerated as _tpl_user_mfa_recovery_codes_regenerated,
+    user_password_reset as _tpl_user_password_reset,
 )
 from app.services.mfa_service import (
     MfaConfigError,
@@ -1646,7 +1648,12 @@ async def forgot_password(
 
 
 @router.post("/reset-password")
-async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+async def reset_password(
+    request: Request,
+    body: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
     """Reset password using a valid reset token."""
     payload = decode_token(body.token)
     if payload is None or payload.get("type") != "password_reset":
@@ -1685,6 +1692,57 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncSession = Depends(
     user.password_changed_at = now
     user.sessions_invalidated_at = now
     await db.commit()
+
+    # Audit AFTER the business commit succeeds. This is the
+    # account-takeover path (a completed forgot-password flow), so the
+    # security notification uses this row as its trigger source. Mirrors
+    # the mfa_enable / user.password.changed shape. Everything below is
+    # best-effort: a failure here must never break a completed reset.
+    audit_event_id = await audit_service.record_audit_event(
+        session_factory,
+        event_type="user.password.reset",
+        actor_user_id=user.id,
+        actor_email=user.email,
+        target_org_id=user.org_id,
+        target_org_name=None,
+        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=None,
+    )
+
+    # Dispatch the in-app security notification AFTER the audit row
+    # commits (audit IS the trigger — skip the notification when audit
+    # failed so the forensic trail stays consistent). Self-target: the
+    # user whose password was just reset.
+    if audit_event_id is not None:
+        title, notif_body, link_url = _tpl_user_password_reset()
+        await notification_service.dispatch_notification(
+            db,
+            user_id=user.id,
+            category=NotificationCategory.SECURITY,
+            event_type="user.password.reset",
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await db.commit()
+
+        # Dual-channel: email the account address AFTER the in-app row
+        # commits (outside its savepoint). Force-on + best-effort — a
+        # raising mailer never fails the reset or rolls back the in-app
+        # row.
+        await notification_service.send_security_email_best_effort(
+            db,
+            user_id=user.id,
+            email=user.email,
+            event_type="user.password.reset",
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+        )
+
     return {"detail": "Password has been reset"}
 
 
@@ -2229,8 +2287,10 @@ async def mfa_disable(
 @router.post("/mfa/recovery-codes", response_model=MfaEnableResponse)
 async def mfa_regenerate_codes(
     body: MfaRegenerateRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
 ):
     """Regenerate recovery codes. Requires password confirmation."""
     if not current_user.mfa_enabled:
@@ -2241,6 +2301,50 @@ async def mfa_regenerate_codes(
     codes = generate_recovery_codes()
     current_user.recovery_codes = ",".join(hash_recovery_code(c) for c in codes)
     await db.commit()
+
+    # Audit AFTER the business commit succeeds. Regenerating recovery
+    # codes invalidates every prior code, so it is a security-relevant
+    # event the user should be able to react to. Mirrors the mfa_enable
+    # shape; everything below is best-effort and never fails the request.
+    audit_event_id = await audit_service.record_audit_event(
+        session_factory,
+        event_type="user.mfa.recovery_codes.regenerated",
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+        target_org_id=current_user.org_id,
+        target_org_name=None,
+        request_id=structlog.contextvars.get_contextvars().get("request_id"),
+        ip_address=get_client_ip(request),
+        outcome="success",
+        detail=None,
+    )
+
+    if audit_event_id is not None:
+        title, notif_body, link_url = _tpl_user_mfa_recovery_codes_regenerated()
+        await notification_service.dispatch_notification(
+            db,
+            user_id=current_user.id,
+            category=NotificationCategory.SECURITY,
+            event_type="user.mfa.recovery_codes.regenerated",
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await db.commit()
+
+        # Dual-channel: email the account address AFTER the in-app row
+        # commits (outside its savepoint). Force-on + best-effort — a
+        # raising mailer never fails the request or rolls back the codes.
+        await notification_service.send_security_email_best_effort(
+            db,
+            user_id=current_user.id,
+            email=current_user.email,
+            event_type="user.mfa.recovery_codes.regenerated",
+            title=title,
+            body=notif_body,
+            link_url=link_url,
+        )
 
     return MfaEnableResponse(recovery_codes=codes)
 
