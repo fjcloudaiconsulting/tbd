@@ -7,7 +7,8 @@
  * yet persisted.
  */
 import React from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "@/tests/utils/render-with-swr";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 // ── mocks (must precede component imports) ────────────────────────────────────
 
@@ -196,7 +197,7 @@ beforeEach(() => {
 
 describe("CustomDashboard — Reset to default", () => {
   it("resets to the 7-tile seed on confirm and marks canvas dirty without saving", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     // Wait for the initial load to complete.
     await waitFor(() =>
@@ -248,7 +249,7 @@ describe("CustomDashboard — Reset to default", () => {
   });
 
   it("does NOT show Reset to default when NOT in Customize mode", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     await waitFor(() =>
       expect(screen.queryByTestId("custom-dashboard-loading")).not.toBeInTheDocument(),
@@ -259,7 +260,7 @@ describe("CustomDashboard — Reset to default", () => {
   });
 
   it("cancels the reset when the modal Cancel button is clicked", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     await waitFor(() =>
       expect(screen.queryByTestId("custom-dashboard-loading")).not.toBeInTheDocument(),
