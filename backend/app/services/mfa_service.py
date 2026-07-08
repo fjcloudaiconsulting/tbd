@@ -11,6 +11,7 @@ import qrcode.constants
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import settings
+from app.security import derive_hmac_key
 
 
 # ── Encryption ──────────────────────────────────────────────────────────────
@@ -88,22 +89,62 @@ def generate_recovery_codes(count: int = 8) -> list[str]:
     return codes
 
 
+RECOVERY_CODE_PURPOSE = b"mfa-recovery-code-v1"
+
+
 def _hmac_key() -> bytes:
-    """Return the HMAC key for recovery code hashing (derived from JWT secret)."""
+    """Purpose-bound HMAC key for recovery code hashing.
+
+    Derived from the JWT secret rather than using it raw, so the JWT
+    signing key is never reused directly as hashing key material.
+    """
+    return derive_hmac_key(RECOVERY_CODE_PURPOSE)
+
+
+def _legacy_hmac_key() -> bytes:
+    """Pre-derivation key (the raw JWT secret). Verify-only fallback for
+    recovery-code hashes stored before the purpose-bound scheme."""
     return settings.jwt_secret_key.encode()
+
+
+def _normalize(code: str) -> str:
+    return code.strip().lower().replace("-", "")
 
 
 def hash_recovery_code(code: str) -> str:
     """HMAC-SHA256 a recovery code for storage (keyed, not brute-forceable)."""
-    normalized = code.strip().lower().replace("-", "")
-    return hmac.new(_hmac_key(), normalized.encode(), "sha256").hexdigest()
+    return hmac.new(_hmac_key(), _normalize(code).encode(), "sha256").hexdigest()
+
+
+def _hash_recovery_code_legacy(code: str) -> str:
+    return hmac.new(_legacy_hmac_key(), _normalize(code).encode(), "sha256").hexdigest()
 
 
 def verify_recovery_code(code: str, hashed_codes: list[str]) -> int | None:
-    """Check if a code matches any stored HMAC. Constant-time, no early exit."""
+    """Check if a code matches any stored HMAC. Constant-time, no early exit.
+
+    Verification tries the purpose-bound derived key first, then falls back
+    to the legacy raw-jwt_secret_key scheme. This legacy fallback is
+    PERMANENT, not transitional: recovery hashes enrolled before the
+    derived-key scheme keep verifying via the fallback until the user
+    regenerates their recovery codes. Only NEW enrollments (and regenerated
+    codes) are stored under the derived key. There is no lazy in-place
+    migration — the sole caller pops the matched entry to enforce single-use
+    (so any re-hash would be discarded), and non-matched legacy entries can
+    never be upgraded because their plaintext is unknown (a hash cannot be
+    re-HMACed). The fallback must NOT be removed: doing so would lock out
+    every pre-deploy user who never regenerated their codes.
+
+    Both candidates are computed up front and every stored entry is compared
+    against both with no early break, so timing does not leak which scheme
+    (or whether any) matched.
+    """
     candidate = hash_recovery_code(code)
+    legacy_candidate = _hash_recovery_code_legacy(code)
     match_idx: int | None = None
     for i, stored in enumerate(hashed_codes):
         if hmac.compare_digest(candidate, stored):
+            match_idx = i
+        elif hmac.compare_digest(legacy_candidate, stored):
             match_idx = i
     return match_idx

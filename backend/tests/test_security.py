@@ -128,6 +128,11 @@ def test_create_mfa_email_token_bakes_hmac_and_jti_into_token() -> None:
     assert payload["jti"] == jti
     assert payload["code_hmac"] != "482913"
 
+    # Generation and verification must share the same purpose-bound key.
+    from app.security import mfa_email_code_hmac
+
+    assert payload["code_hmac"] == mfa_email_code_hmac("482913")
+
 
 def test_decode_token_returns_none_for_tampered_token() -> None:
     token = create_access_token(subject=7, org_id=3, role="owner")
