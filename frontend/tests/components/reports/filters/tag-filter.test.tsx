@@ -1,11 +1,15 @@
-import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
+import { renderWithSWR, act, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import TagFilter from "@/components/reports/filters/TagFilter";
+import { useTags } from "@/lib/hooks/use-tags";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   apiFetch: vi.fn(),
 }));
+
+vi.mock("@/components/auth/AuthProvider", () => ({ useAuth: vi.fn() }));
 
 const TAGS = [
   { id: 1, name: "groceries", name_normalized: "groceries", usage_count: 5 },
@@ -17,6 +21,7 @@ describe("TagFilter", () => {
 
   beforeEach(() => {
     apiFetchMock.mockReset();
+    vi.mocked(useAuth).mockReturnValue({ user: { id: 1 }, loading: false } as never);
   });
 
   it("fetches tags on mount and renders chips", async () => {
@@ -101,5 +106,47 @@ describe("TagFilter", () => {
     await waitFor(() =>
       expect(screen.getByTestId("tag-filter-error")).toBeInTheDocument(),
     );
+  });
+
+  it("shares the bare-path tags key (no duplicate ?for=reports-filter fetch)", async () => {
+    apiFetchMock.mockResolvedValue(TAGS as never);
+
+    function Harness() {
+      useTags(true);
+      return <TagFilter value={[]} match="all" onChange={() => {}} />;
+    }
+
+    renderWithSWR(<Harness />);
+
+    await screen.findByTestId("tag-filter-chip-groceries");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const tagsCalls = apiFetchMock.mock.calls.filter(
+      ([url]) => url === "/api/v1/tags",
+    );
+    expect(tagsCalls).toHaveLength(1);
+    expect(
+      apiFetchMock.mock.calls.some(
+        ([url]) =>
+          typeof url === "string" && url.includes("for=reports-filter"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not fetch while auth is still loading (auth gate)", async () => {
+    vi.mocked(useAuth).mockReturnValue({ user: null, loading: true } as never);
+    apiFetchMock.mockResolvedValue(TAGS as never);
+
+    renderWithSWR(
+      <TagFilter value={[]} match="all" onChange={() => {}} />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(apiFetchMock).not.toHaveBeenCalled();
   });
 });

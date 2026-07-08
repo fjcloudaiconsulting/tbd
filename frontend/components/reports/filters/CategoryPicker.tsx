@@ -19,21 +19,15 @@
  * understand the hierarchy, so we always materialize the full list.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import useSWR from "swr";
 
-import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { useCategories } from "@/lib/hooks/use-categories";
 import type { Category } from "@/lib/types";
 
 interface Props {
   value: number[];
   onChange: (next: number[]) => void;
   label?: string;
-}
-
-const CATEGORIES_SWR_KEY = "/api/v1/categories?for=reports-filter";
-
-async function fetchCategories(): Promise<Category[]> {
-  return apiFetch<Category[]>("/api/v1/categories");
 }
 
 interface TreeNode {
@@ -56,11 +50,10 @@ export default function CategoryPicker({
   onChange,
   label = "Categories",
 }: Props) {
-  const { data, error, isLoading } = useSWR<Category[]>(
-    CATEGORIES_SWR_KEY,
-    fetchCategories,
-    { revalidateOnFocus: false },
-  );
+  // Share the org categories cache via the bare-path `useCategories` hook,
+  // auth-gated (`!loading && !!user`) like the page-level consumers.
+  const { user, loading } = useAuth();
+  const { data, error, isLoading } = useCategories(!loading && !!user);
 
   const [search, setSearch] = useState("");
   const selected = useMemo(() => new Set(value), [value]);

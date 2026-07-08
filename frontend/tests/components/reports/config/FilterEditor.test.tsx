@@ -13,6 +13,9 @@ import type { Account, Category } from "@/lib/types";
 vi.mock("@/lib/api", () => ({
   apiFetch: vi.fn(),
 }));
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: () => ({ user: { id: 1 }, loading: false }),
+}));
 
 const CATEGORIES: Category[] = [
   {

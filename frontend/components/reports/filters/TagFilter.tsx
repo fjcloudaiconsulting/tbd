@@ -14,17 +14,10 @@
  * UI. ``resolveFilters`` still emits the correct AST.
  */
 import { useId } from "react";
-import useSWR from "swr";
 
-import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { useTags } from "@/lib/hooks/use-tags";
 import type { TagMatch } from "@/lib/reports/types";
-
-interface TagResponse {
-  id: number;
-  name: string;
-  name_normalized: string;
-  usage_count: number;
-}
 
 interface Props {
   value: string[];
@@ -36,12 +29,6 @@ interface Props {
   ariaPrefix?: string;
 }
 
-const TAGS_SWR_KEY = "/api/v1/tags?for=reports-filter";
-
-async function fetchTags(): Promise<TagResponse[]> {
-  return apiFetch<TagResponse[]>("/api/v1/tags");
-}
-
 export default function TagFilter({
   value,
   match,
@@ -49,11 +36,10 @@ export default function TagFilter({
   label = "Tags",
   ariaPrefix = "Tag",
 }: Props) {
-  const { data, error, isLoading } = useSWR<TagResponse[]>(
-    TAGS_SWR_KEY,
-    fetchTags,
-    { revalidateOnFocus: false },
-  );
+  // Share the org tags cache via the bare-path `useTags` hook, auth-gated
+  // (`!loading && !!user`) like the other reference-data consumers.
+  const { user, loading } = useAuth();
+  const { data, error, isLoading } = useTags(!loading && !!user);
 
   const radioName = useId();
   const tags = data ?? [];
