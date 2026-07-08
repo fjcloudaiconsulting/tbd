@@ -6,7 +6,8 @@
  * tile appended to the canvas with the Save button enabled (dirty).
  */
 import React from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { renderWithSWR } from "@/tests/utils/render-with-swr";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 
 // ── mocks (must precede component imports) ────────────────────────────────────
 
@@ -222,7 +223,7 @@ beforeEach(() => {
 
 describe("CustomDashboard — Add-widget picker", () => {
   it("re-adds a removed dash tile from the Add-widget menu", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     // Wait for the initial load to complete (loading spinner disappears).
     await waitFor(() =>
@@ -261,7 +262,7 @@ describe("CustomDashboard — Add-widget picker", () => {
   });
 
   it("removes a tile via its Remove button in Customize mode", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
     await waitFor(() =>
       expect(
         screen.queryByTestId("custom-dashboard-loading"),
@@ -304,7 +305,7 @@ describe("CustomDashboard — Add-widget picker", () => {
       canvas_filters_json: {},
     } as never);
 
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
     await waitFor(() =>
       expect(
         screen.queryByTestId("custom-dashboard-loading"),
@@ -339,7 +340,7 @@ describe("CustomDashboard — Add-widget picker", () => {
   });
 
   it("guards Done with unsaved changes; Discard reverts to the saved layout", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
     await waitFor(() =>
       expect(
         screen.queryByTestId("custom-dashboard-loading"),
@@ -374,7 +375,7 @@ describe("CustomDashboard — Add-widget picker", () => {
   });
 
   it("does NOT show the Add-widget button when NOT in Customize mode", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     await waitFor(() =>
       expect(
@@ -389,7 +390,7 @@ describe("CustomDashboard — Add-widget picker", () => {
   });
 
   it("closes the Add-widget menu when Escape is pressed", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     await waitFor(() =>
       expect(
@@ -412,7 +413,7 @@ describe("CustomDashboard — Add-widget picker", () => {
   });
 
   it("closes the Add-widget menu when the backdrop is clicked", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     await waitFor(() =>
       expect(
@@ -436,7 +437,7 @@ describe("CustomDashboard — Add-widget picker", () => {
   });
 
   it("does NOT close the Add-widget menu when clicking inside the panel", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     await waitFor(() =>
       expect(
@@ -491,7 +492,7 @@ describe("CustomDashboard — clone widget from a report", () => {
   });
 
   it("clones a bar widget from a report onto the canvas, then saves with the cloned widget", async () => {
-    render(<CustomDashboard />);
+    renderWithSWR(<CustomDashboard />);
 
     // Wait for initial load.
     await waitFor(() =>
