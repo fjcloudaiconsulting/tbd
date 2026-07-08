@@ -1,12 +1,16 @@
-import { renderWithSWR, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
+import { renderWithSWR, act, fireEvent, screen, waitFor } from "../../../utils/render-with-swr";
 
 import CategoryPicker from "@/components/reports/filters/CategoryPicker";
+import { useCategories } from "@/lib/hooks/use-categories";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { apiFetch } from "@/lib/api";
 import type { Category } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({
   apiFetch: vi.fn(),
 }));
+
+vi.mock("@/components/auth/AuthProvider", () => ({ useAuth: vi.fn() }));
 
 const CATEGORIES: Category[] = [
   {
@@ -71,6 +75,7 @@ describe("CategoryPicker", () => {
 
   beforeEach(() => {
     apiFetchMock.mockReset();
+    vi.mocked(useAuth).mockReturnValue({ user: { id: 1 }, loading: false } as never);
   });
 
   it("fetches categories on mount and renders the master/sub tree", async () => {
@@ -141,5 +146,53 @@ describe("CategoryPicker", () => {
     await waitFor(() =>
       expect(screen.getByTestId("category-picker-error")).toBeInTheDocument(),
     );
+  });
+
+  it("shares the bare-path categories key (no duplicate ?for=reports-filter fetch)", async () => {
+    apiFetchMock.mockResolvedValue(CATEGORIES as never);
+
+    function Harness() {
+      useCategories(true);
+      return <CategoryPicker value={[]} onChange={() => {}} />;
+    }
+
+    renderWithSWR(<Harness />);
+
+    await screen.findByTestId("category-master-10");
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    const categoriesCalls = apiFetchMock.mock.calls.filter(
+      ([url]) => url === "/api/v1/categories",
+    );
+    expect(categoriesCalls).toHaveLength(1);
+  });
+
+  it("shows the loading skeleton (not the empty state) while auth is gated off", async () => {
+    vi.mocked(useAuth).mockReturnValue({ user: null, loading: true } as never);
+    apiFetchMock.mockResolvedValue(CATEGORIES as never);
+
+    renderWithSWR(<CategoryPicker value={[]} onChange={() => {}} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("category-picker-loading")).toBeInTheDocument();
+    expect(screen.queryByText("No categories yet")).not.toBeInTheDocument();
+  });
+
+  it("does not fetch while auth is still loading (auth gate)", async () => {
+    vi.mocked(useAuth).mockReturnValue({ user: null, loading: true } as never);
+    apiFetchMock.mockResolvedValue(CATEGORIES as never);
+
+    renderWithSWR(<CategoryPicker value={[]} onChange={() => {}} />);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(apiFetchMock).not.toHaveBeenCalled();
   });
 });
