@@ -53,7 +53,8 @@ export default function CategoryPicker({
   // Share the org categories cache via the bare-path `useCategories` hook,
   // auth-gated (`!loading && !!user`) like the page-level consumers.
   const { user, loading } = useAuth();
-  const { data, error, isLoading } = useCategories(!loading && !!user);
+  const enabled = !loading && !!user;
+  const { data, error, isLoading } = useCategories(enabled);
 
   const [search, setSearch] = useState("");
   const selected = useMemo(() => new Set(value), [value]);
@@ -106,7 +107,10 @@ export default function CategoryPicker({
         >
           Couldn&apos;t load categories
         </div>
-      ) : isLoading ? (
+      ) : isLoading || !enabled || (data === undefined && !error) ? (
+        // Treat "auth gate off" and "data not yet arrived" as loading, not
+        // empty — otherwise a picker mounted above an auth/loading gate would
+        // flash the "No categories yet" empty state on a null SWR key.
         <div
           data-testid="category-picker-loading"
           className="h-6 w-32 animate-pulse rounded bg-border/40"

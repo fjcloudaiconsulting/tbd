@@ -39,7 +39,8 @@ export default function TagFilter({
   // Share the org tags cache via the bare-path `useTags` hook, auth-gated
   // (`!loading && !!user`) like the other reference-data consumers.
   const { user, loading } = useAuth();
-  const { data, error, isLoading } = useTags(!loading && !!user);
+  const enabled = !loading && !!user;
+  const { data, error, isLoading } = useTags(enabled);
 
   const radioName = useId();
   const tags = data ?? [];
@@ -69,7 +70,10 @@ export default function TagFilter({
         >
           Couldn&apos;t load tags
         </div>
-      ) : isLoading ? (
+      ) : isLoading || !enabled || (data === undefined && !error) ? (
+        // Treat "auth gate off" and "data not yet arrived" as loading, not
+        // empty — otherwise a filter mounted above an auth/loading gate would
+        // flash the "No tags yet" empty state on a null SWR key.
         <div
           data-testid="tag-filter-loading"
           className="h-6 w-28 animate-pulse rounded bg-border/40"

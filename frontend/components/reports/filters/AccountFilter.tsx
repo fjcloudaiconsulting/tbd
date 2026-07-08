@@ -31,7 +31,8 @@ export default function AccountFilter({
   // `useAccounts` hook. Gate the fetch on auth-readiness (`!loading && !!user`)
   // like the page-level consumers so a cold mount never fires token-less.
   const { user, loading } = useAuth();
-  const { data, error, isLoading } = useAccounts(!loading && !!user);
+  const enabled = !loading && !!user;
+  const { data, error, isLoading } = useAccounts(enabled);
 
   // Deactivated accounts must not be selectable as report filters; the
   // shared /api/v1/accounts endpoint returns active + inactive (the
@@ -59,7 +60,10 @@ export default function AccountFilter({
         >
           Couldn&apos;t load accounts
         </div>
-      ) : isLoading ? (
+      ) : isLoading || !enabled || (data === undefined && !error) ? (
+        // Treat "auth gate off" and "data not yet arrived" as loading, not
+        // empty — otherwise a filter mounted above an auth/loading gate would
+        // flash the "No accounts yet" empty state on a null SWR key.
         <div
           data-testid="account-filter-loading"
           className="h-6 w-32 animate-pulse rounded bg-border/40"

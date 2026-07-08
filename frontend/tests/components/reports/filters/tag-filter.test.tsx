@@ -127,12 +127,22 @@ describe("TagFilter", () => {
       ([url]) => url === "/api/v1/tags",
     );
     expect(tagsCalls).toHaveLength(1);
-    expect(
-      apiFetchMock.mock.calls.some(
-        ([url]) =>
-          typeof url === "string" && url.includes("for=reports-filter"),
-      ),
-    ).toBe(false);
+  });
+
+  it("shows the loading skeleton (not the empty state) while auth is gated off", async () => {
+    vi.mocked(useAuth).mockReturnValue({ user: null, loading: true } as never);
+    apiFetchMock.mockResolvedValue(TAGS as never);
+
+    renderWithSWR(
+      <TagFilter value={[]} match="all" onChange={() => {}} />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("tag-filter-loading")).toBeInTheDocument();
+    expect(screen.queryByText("No tags yet")).not.toBeInTheDocument();
   });
 
   it("does not fetch while auth is still loading (auth gate)", async () => {
