@@ -211,7 +211,7 @@ async def preview_ofx_import(
     """
     raw = await file.read()
     try:
-        parsed_rows = await parse_ofx(raw)
+        parsed_rows = await parse_ofx(raw, org_id=current_user.org_id)
     except ParseError as exc:
         raise ValidationError(str(exc))
     try:
