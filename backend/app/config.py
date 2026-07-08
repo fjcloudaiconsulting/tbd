@@ -100,6 +100,19 @@ class Settings(BaseSettings):
     # when the current key fails, enabling lazy rotation in place.
     ai_credential_encryption_key: str = ""
     ai_credential_encryption_key_prev: str = ""
+    # Connect-time SSRF guard escape hatch for the ollama provider ONLY.
+    # By default every outbound request to an org-configured base_url
+    # resolves the hostname, validates EVERY A/AAAA record against the
+    # egress denylist (loopback, RFC1918/ULA, link-local, metadata,
+    # multicast, reserved, non-global), and pins the connection to a
+    # validated IP (see services/ai_providers/egress_guard.py). A
+    # self-hosted operator who genuinely runs Ollama on a private or
+    # loopback address can set AI_PROVIDER_ALLOW_PRIVATE_NETWORKS=1 to
+    # permit private + loopback targets for ollama credentials.
+    # Link-local / cloud-metadata / multicast / reserved addresses stay
+    # blocked regardless, and openai_compatible always gets the full
+    # denylist. Default OFF in all environments.
+    ai_provider_allow_private_networks: bool = False
     # Master gate for the native (server-hosted) provider option. Stays
     # OFF in PR1 — flipped on later when the native adapter ships
     # alongside the consent UI (PR4).

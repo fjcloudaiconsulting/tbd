@@ -21,6 +21,7 @@ from typing import AsyncIterator, Optional
 
 import httpx
 
+from app.config import settings
 from app.services.ai_providers.base import (
     AIProviderError,
     CapabilityNotSupported,
@@ -30,6 +31,11 @@ from app.services.ai_providers.base import (
     StreamChunk,
     TokenUsage,
     ValidateResult,
+)
+from app.services.ai_providers.egress_guard import (
+    BLOCKED_ADDRESS_VALIDATION_ERROR,
+    BlockedAddressError,
+    guarded_async_client,
 )
 
 
@@ -80,12 +86,29 @@ class OllamaAdapter:
             headers["Authorization"] = f"Bearer {self.bearer_token}"
         return headers
 
+    def _client(self, *, timeout: float) -> httpx.AsyncClient:
+        """Guarded client: resolve + validate + pin at connect time.
+
+        Ollama is the one provider with a private-network escape hatch
+        (self-hosted LAN / loopback), gated on
+        ``AI_PROVIDER_ALLOW_PRIVATE_NETWORKS`` (default OFF). Read at
+        call time so the setting is honored per request.
+        """
+        return guarded_async_client(
+            timeout=timeout,
+            allow_private=settings.ai_provider_allow_private_networks,
+        )
+
     async def validate(self) -> ValidateResult:
         headers = self._headers()
         url = f"{self.base_url}/api/tags"
         try:
-            async with httpx.AsyncClient(timeout=VALIDATE_TIMEOUT_S) as client:
+            async with self._client(timeout=VALIDATE_TIMEOUT_S) as client:
                 resp = await client.get(url, headers=headers)
+        except BlockedAddressError:
+            return ValidateResult(
+                ok=False, error=BLOCKED_ADDRESS_VALIDATION_ERROR
+            )
         except (httpx.HTTPError, httpx.TimeoutException) as exc:
             return ValidateResult(
                 ok=False, error=f"Network error: {type(exc).__name__}"
@@ -145,7 +168,7 @@ class OllamaAdapter:
             body["options"] = {"num_predict": max_tokens}
         url = f"{self.base_url}/api/chat"
         try:
-            async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
+            async with self._client(timeout=CHAT_TIMEOUT_S) as client:
                 resp = await client.post(url, headers=headers, json=body)
         except (httpx.HTTPError, httpx.TimeoutException) as exc:
             raise AIProviderError(
@@ -194,7 +217,7 @@ class OllamaAdapter:
         vectors: list[list[float]] = []
         actual_model = model
         try:
-            async with httpx.AsyncClient(timeout=EMBED_TIMEOUT_S) as client:
+            async with self._client(timeout=EMBED_TIMEOUT_S) as client:
                 for text in texts:
                     resp = await client.post(
                         url,
@@ -266,7 +289,7 @@ class OllamaAdapter:
             body["options"] = {"num_predict": max_tokens}
         url = f"{self.base_url}/api/chat"
         try:
-            async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
+            async with self._client(timeout=CHAT_TIMEOUT_S) as client:
                 resp = await client.post(url, headers=headers, json=body)
         except (httpx.HTTPError, httpx.TimeoutException) as exc:
             raise AIProviderError(
@@ -332,7 +355,7 @@ class OllamaAdapter:
             body["options"] = {"num_predict": max_tokens}
         url = f"{self.base_url}/api/chat"
         try:
-            async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
+            async with self._client(timeout=CHAT_TIMEOUT_S) as client:
                 resp = await client.post(url, headers=headers, json=body)
         except (httpx.HTTPError, httpx.TimeoutException) as exc:
             raise AIProviderError(
@@ -405,7 +428,7 @@ class OllamaAdapter:
         prompt_tokens = 0
         completion_tokens = 0
         try:
-            async with httpx.AsyncClient(timeout=STREAM_TIMEOUT_S) as client:
+            async with self._client(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
                     "POST", url, headers=headers, json=body
                 ) as resp:
