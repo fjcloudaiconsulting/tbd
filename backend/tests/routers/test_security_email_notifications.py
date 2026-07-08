@@ -56,6 +56,7 @@ from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
 from app.models import Base
+from app.models.audit_event import AuditEvent, AuditOutcome
 from app.models.notification import (
     Notification,
     NotificationCategory,
@@ -236,6 +237,28 @@ async def _notif_rows(session_factory, event_type: str) -> list[Notification]:
             .scalars()
             .all()
         )
+
+
+async def _audit_rows(session_factory, event_type: str) -> list[AuditEvent]:
+    async with session_factory() as db:
+        return (
+            (
+                await db.execute(
+                    select(AuditEvent).where(
+                        AuditEvent.event_type == event_type
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def _audit_by_id(session_factory, audit_event_id: int) -> AuditEvent:
+    async with session_factory() as db:
+        row = await db.get(AuditEvent, audit_event_id)
+        assert row is not None
+        return row
 
 
 # ── password change ─────────────────────────────────────────────────────────
@@ -507,8 +530,14 @@ async def test_password_reset_sends_security_email(session_factory, sent_emails)
     notifs = await _notif_rows(session_factory, "user.password.reset")
     assert len(notifs) == 1
     assert notifs[0].category == NotificationCategory.SECURITY
-    # FK-correlated to the audit row that triggered it.
+    # FK-correlated to the audit row that triggered it — and that row is
+    # the exact success event for this user/org.
     assert notifs[0].audit_event_id is not None
+    audit = await _audit_by_id(session_factory, notifs[0].audit_event_id)
+    assert audit.event_type == "user.password.reset"
+    assert audit.actor_user_id == seed["user_id"]
+    assert audit.target_org_id == seed["org_id"]
+    assert audit.outcome == AuditOutcome.SUCCESS
 
     assert len(sent_emails) == 1
     email = sent_emails[0]
@@ -562,6 +591,32 @@ async def test_password_reset_survives_mailer_failure(
     assert len(notifs) == 1
 
 
+@pytest.mark.asyncio
+async def test_password_reset_invalid_token_emits_nothing(
+    session_factory, sent_emails
+):
+    """A reset with a garbage/wrong-type token is rejected (400) BEFORE
+    any password mutation — so no audit row, no in-app notification, and
+    no security email are produced."""
+    seed = await _seed_user(session_factory)
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/reset-password",
+            json={"token": "not-a-valid-token", "new_password": "brand-new-passw0rd"},
+        )
+    assert res.status_code == 400, res.text
+
+    # Password unchanged.
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        assert verify_password(PASSWORD, user.password_hash)
+
+    assert await _audit_rows(session_factory, "user.password.reset") == []
+    assert await _notif_rows(session_factory, "user.password.reset") == []
+    assert sent_emails == []
+
+
 # ── MFA recovery-code regeneration ───────────────────────────────────────────
 
 
@@ -588,11 +643,17 @@ async def test_mfa_regenerate_sends_security_email(session_factory, sent_emails)
     assert len(notifs) == 1
     assert notifs[0].category == NotificationCategory.SECURITY
     assert notifs[0].audit_event_id is not None
+    audit = await _audit_by_id(session_factory, notifs[0].audit_event_id)
+    assert audit.event_type == "user.mfa.recovery_codes.regenerated"
+    assert audit.actor_user_id == seed["user_id"]
+    assert audit.target_org_id == seed["org_id"]
+    assert audit.outcome == AuditOutcome.SUCCESS
 
     assert len(sent_emails) == 1
     email = sent_emails[0]
     assert email["to"] == OLD_EMAIL
     assert email["title"] == "Recovery codes regenerated"
+    assert email["link_url"] == "/settings/security"
 
 
 @pytest.mark.asyncio
@@ -615,7 +676,61 @@ async def test_mfa_regenerate_survives_mailer_failure(
     assert res.status_code == 200, res.text
     assert failing_mailer == [OLD_EMAIL]
 
+    # The codes were actually regenerated (the "never rolls back the
+    # codes" claim): the response carries a non-empty fresh set.
+    codes = res.json()["recovery_codes"]
+    assert isinstance(codes, list) and len(codes) > 0
+
     notifs = await _notif_rows(
         session_factory, "user.mfa.recovery_codes.regenerated"
     )
     assert len(notifs) == 1
+
+
+@pytest.mark.asyncio
+async def test_mfa_regenerate_email_force_on_despite_optout(
+    session_factory, sent_emails
+):
+    """A user opted out of every email category still receives the
+    recovery-codes-regenerated alert (security is force-on)."""
+    secret = generate_totp_secret()
+    seed = await _seed_user(
+        session_factory,
+        totp_secret=encrypt_secret(secret),
+        mfa_enabled=True,
+    )
+    await _opt_out_of_everything(session_factory, seed["user_id"])
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/mfa/recovery-codes", json={"password": PASSWORD}
+        )
+    assert res.status_code == 200, res.text
+    assert len(sent_emails) == 1
+    assert sent_emails[0]["to"] == OLD_EMAIL
+
+
+@pytest.mark.asyncio
+async def test_mfa_regenerate_without_mfa_emits_nothing(
+    session_factory, sent_emails
+):
+    """Regenerating recovery codes when MFA is disabled is rejected (400)
+    BEFORE any mutation — so no audit row, no in-app notification, and no
+    security email are produced."""
+    seed = await _seed_user(session_factory, mfa_enabled=False)
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/mfa/recovery-codes", json={"password": PASSWORD}
+        )
+    assert res.status_code == 400, res.text
+
+    assert (
+        await _audit_rows(session_factory, "user.mfa.recovery_codes.regenerated")
+        == []
+    )
+    assert (
+        await _notif_rows(session_factory, "user.mfa.recovery_codes.regenerated")
+        == []
+    )
+    assert sent_emails == []
