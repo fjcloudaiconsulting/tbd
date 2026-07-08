@@ -118,6 +118,59 @@ def user_email_changed(*, new_email: str) -> tuple[str, str, Optional[str]]:
     return (title, body, "/settings/security")
 
 
+def user_email_changed_old_address(
+    *, new_email: str
+) -> tuple[str, str, Optional[str]]:
+    """EMAIL copy for ``user.email.changed``, sent to the OLD address.
+
+    This is the critical hijack signal — the old inbox is what a victim
+    still controls after a malicious email swap, so the copy names the
+    new address and tells the reader to act immediately if the change
+    wasn't theirs. The recipient value must be the PRE-mutation snapshot
+    captured by the route before the user row is updated.
+
+    Email-only copy: the in-app row keeps using ``user_email_changed``
+    (the account holder sees it wherever they log in). Rendering goes
+    through ``send_notification_email``, which HTML-escapes title and
+    body — interpolating the raw address here is safe.
+
+    Args:
+        new_email: the address the account was changed TO.
+    """
+    title = "Your account email was changed"
+    body = (
+        f"The login email for your account was changed to {new_email}. "
+        "This notice was sent to the previous address on the account. "
+        "If this wasn't you, your account may be compromised. Reset "
+        "your password immediately and contact support."
+    )
+    return (title, body, "/settings/security")
+
+
+def user_email_changed_new_address(
+    *, old_email: str
+) -> tuple[str, str, Optional[str]]:
+    """EMAIL copy for ``user.email.changed``, sent to the NEW address.
+
+    Confirmation counterpart of ``user_email_changed_old_address`` —
+    tells the new inbox it is now the login email and names the address
+    it replaced. A separate verification email (with the confirm link)
+    is issued by the route; this message is the security notice, not
+    the verification carrier.
+
+    Args:
+        old_email: the address the account was changed FROM.
+    """
+    title = "This address is now your login email"
+    body = (
+        f"This address is now the login email for your The Better "
+        f"Decision account, replacing {old_email}. A separate "
+        "verification email is on its way; confirm it to finish the "
+        "change. If this wasn't you, contact support."
+    )
+    return (title, body, "/settings/security")
+
+
 def admin_org_plan_changed(
     *, new_plan_name: str, actor_email: str
 ) -> tuple[str, str, Optional[str]]:

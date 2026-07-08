@@ -2140,6 +2140,19 @@ async def mfa_enable(
         )
         await db.commit()
 
+        # Dual-channel: email the account address AFTER the in-app row
+        # commits (outside its savepoint). Force-on + best-effort — a
+        # raising mailer never fails the request or rolls back MFA.
+        await notification_service.send_security_email_best_effort(
+            db,
+            user_id=current_user.id,
+            email=current_user.email,
+            event_type="user.mfa.enabled",
+            title=title,
+            body=body,
+            link_url=link_url,
+        )
+
     return MfaEnableResponse(recovery_codes=codes)
 
 
@@ -2195,6 +2208,20 @@ async def mfa_disable(
             audit_event_id=audit_event_id,
         )
         await db.commit()
+
+        # Dual-channel: email the account address AFTER the in-app row
+        # commits (outside its savepoint). MFA-disabled is the louder
+        # signal — force-on + best-effort, a raising mailer never fails
+        # the request or resurrects MFA.
+        await notification_service.send_security_email_best_effort(
+            db,
+            user_id=current_user.id,
+            email=current_user.email,
+            event_type="user.mfa.disabled",
+            title=title,
+            body=body,
+            link_url=link_url,
+        )
 
     return {"detail": "MFA disabled"}
 

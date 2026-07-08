@@ -194,6 +194,45 @@ async def _send_notification_email_best_effort(
         )
 
 
+async def send_security_email_best_effort(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    email: str,
+    event_type: str,
+    title: str,
+    body: str,
+    link_url: Optional[str] = None,
+) -> None:
+    """Send a single-user SECURITY email, best-effort.
+
+    Thin public wrapper over ``_send_notification_email_best_effort`` for
+    the single-user security hooks (password change, MFA enable/disable,
+    email change). The category is pinned to ``security`` — force-on per
+    the architect-locked rule, so the user's email preferences are never
+    consulted and opt-out does not apply. Failure is logged and swallowed
+    (same contract as the fan-outs).
+
+    Callers MUST invoke this only AFTER the in-app row's transaction has
+    committed, so the outbound Mailgun call never holds a DB transaction
+    open and a send failure can never roll back the security action or
+    the in-app row.
+
+    ``email`` is caller-supplied rather than read from the user row so
+    the email-change hook can target the OLD (pre-mutation) address.
+    """
+    await _send_notification_email_best_effort(
+        db,
+        user_id=user_id,
+        email=email,
+        category=NotificationCategory.SECURITY,
+        event_type=event_type,
+        title=title,
+        body=body,
+        link_url=link_url,
+    )
+
+
 async def dispatch_notification(
     db: AsyncSession,
     *,
