@@ -1,3 +1,4 @@
+import hashlib
 import hmac as _hmac
 import secrets
 import uuid
@@ -10,6 +11,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.user import User
+
+
+def derive_hmac_key(purpose: bytes) -> bytes:
+    """Derive a purpose-bound HMAC key from the JWT signing secret.
+
+    Keeps the app's key-separation posture without provisioning a new
+    secret: HMAC-SHA256(jwt_secret_key, purpose) gives each use of the
+    JWT secret (MFA recovery codes, MFA email codes, ...) its own key,
+    so no purpose uses the raw signing secret directly.
+    Computed at call time so a rotated jwt_secret_key is picked up.
+    """
+    return _hmac.new(settings.jwt_secret_key.encode(), purpose, hashlib.sha256).digest()
+
+
+MFA_EMAIL_CODE_PURPOSE = b"mfa-email-code-v1"
+
+
+def mfa_email_code_hmac(code: str) -> str:
+    """HMAC an MFA email code with the purpose-bound email-code key.
+
+    Email codes live only inside a 10-minute signed token (plus a Redis
+    jti nonce with the same TTL), so unlike recovery codes there is no
+    long-lived stored hash and no legacy-key fallback is needed: codes
+    issued before a deploy of this scheme simply fail and the user
+    re-requests one.
+    """
+    return _hmac.new(
+        derive_hmac_key(MFA_EMAIL_CODE_PURPOSE), code.encode(), "sha256"
+    ).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -197,8 +227,9 @@ MFA_EMAIL_TOKEN_TTL_SECONDS = 10 * 60
 def create_mfa_email_token(user_id: int, code: str) -> tuple[str, str]:
     """Create a short-lived token containing an MFA email code (10 minutes).
 
-    Uses HMAC-SHA256 keyed with jwt_secret_key so the code hash cannot be
-    brute-forced offline even though JWT payloads are readable.
+    Uses HMAC-SHA256 keyed with a purpose-bound key derived from
+    jwt_secret_key so the code hash cannot be brute-forced offline even
+    though JWT payloads are readable.
 
     Returns (token, jti). The caller stores the jti in Redis (key with the
     same TTL) and deletes it on first successful verify to enforce
@@ -206,9 +237,7 @@ def create_mfa_email_token(user_id: int, code: str) -> tuple[str, str]:
     within its TTL.
     """
     expire = datetime.now(timezone.utc) + timedelta(seconds=MFA_EMAIL_TOKEN_TTL_SECONDS)
-    code_hmac = _hmac.new(
-        settings.jwt_secret_key.encode(), code.encode(), "sha256"
-    ).hexdigest()
+    code_hmac = mfa_email_code_hmac(code)
     jti = secrets.token_urlsafe(16)
     payload = {
         "sub": str(user_id),
