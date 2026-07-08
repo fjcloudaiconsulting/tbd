@@ -9,10 +9,8 @@
  * toggleable chip. Selecting / deselecting a chip flips its id in
  * the ``value`` list. Empty list = no filter (inherit / unfiltered).
  */
-import useSWR from "swr";
-
-import { apiFetch } from "@/lib/api";
-import type { Account } from "@/lib/types";
+import { useAuth } from "@/components/auth/AuthProvider";
+import { useAccounts } from "@/lib/hooks/use-accounts";
 
 interface Props {
   value: number[];
@@ -23,23 +21,18 @@ interface Props {
   ariaPrefix?: string;
 }
 
-const ACCOUNTS_SWR_KEY = "/api/v1/accounts?for=reports-filter";
-
-async function fetchAccounts(): Promise<Account[]> {
-  return apiFetch<Account[]>("/api/v1/accounts");
-}
-
 export default function AccountFilter({
   value,
   onChange,
   label = "Accounts",
   ariaPrefix = "Account",
 }: Props) {
-  const { data, error, isLoading } = useSWR<Account[]>(
-    ACCOUNTS_SWR_KEY,
-    fetchAccounts,
-    { revalidateOnFocus: false },
-  );
+  // Share the org accounts cache with every other consumer via the bare-path
+  // `useAccounts` hook. Gate the fetch on auth-readiness (`!loading && !!user`)
+  // like the page-level consumers so a cold mount never fires token-less.
+  const { user, loading } = useAuth();
+  const enabled = !loading && !!user;
+  const { data, error, isLoading } = useAccounts(enabled);
 
   // Deactivated accounts must not be selectable as report filters; the
   // shared /api/v1/accounts endpoint returns active + inactive (the
@@ -67,7 +60,10 @@ export default function AccountFilter({
         >
           Couldn&apos;t load accounts
         </div>
-      ) : isLoading ? (
+      ) : isLoading || !enabled || (data === undefined && !error) ? (
+        // Treat "auth gate off" and "data not yet arrived" as loading, not
+        // empty — otherwise a filter mounted above an auth/loading gate would
+        // flash the "No accounts yet" empty state on a null SWR key.
         <div
           data-testid="account-filter-loading"
           className="h-6 w-32 animate-pulse rounded bg-border/40"

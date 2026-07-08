@@ -5,10 +5,10 @@
  * (``/reports/[id]`` and ``/reports/new``). Both pages need the same
  * boilerplate to drive the per-widget filter chips:
  *
- *  - the accounts + categories SWR fetches (same ``?for=reports-filter``
- *    keys ``AccountFilter`` / ``CategoryPicker`` use, so the cache is
- *    shared and ids resolve to names in the chip header without an extra
- *    round-trip),
+ *  - the accounts + categories SWR fetches (the shared bare-path
+ *    ``useAccounts`` / ``useCategories`` hooks ``AccountFilter`` /
+ *    ``CategoryPicker`` use, so the cache is shared and ids resolve to
+ *    names in the chip header without an extra round-trip),
  *  - the ``requestedTab`` deep-link state (a chip click requests the
  *    popover's Filters tab; consume-and-clear resets it to null),
  *  - ``selectWidgetFilters`` (select the widget AND request Filters),
@@ -21,10 +21,10 @@
  * both pages.
  */
 import { useCallback, useState } from "react";
-import useSWR from "swr";
 
-import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { useAccounts } from "@/lib/hooks/use-accounts";
+import { useCategories } from "@/lib/hooks/use-categories";
 import type { TabKey } from "@/components/reports/WidgetEditorPopover";
 import type { Account, Category } from "@/lib/types";
 
@@ -53,19 +53,11 @@ export function useFilterChipState(
   // and 403). On the reports editors `user` is already present when this hook
   // mounts, so the key is immediately live — behavior there is unchanged.
   const { user } = useAuth();
-  // Reuse the EXACT SWR keys ``AccountFilter`` / ``CategoryPicker`` use so
-  // the cache is shared (no extra network round-trip). Default to []
-  // (count-fallback) while warm.
-  const { data: accounts } = useSWR<Account[]>(
-    user ? "/api/v1/accounts?for=reports-filter" : null,
-    () => apiFetch<Account[]>("/api/v1/accounts"),
-    { revalidateOnFocus: false },
-  );
-  const { data: categories } = useSWR<Category[]>(
-    user ? "/api/v1/categories?for=reports-filter" : null,
-    () => apiFetch<Category[]>("/api/v1/categories"),
-    { revalidateOnFocus: false },
-  );
+  // Reuse the shared bare-path reference-data hooks ``AccountFilter`` /
+  // ``CategoryPicker`` use so the cache is shared (no extra network
+  // round-trip). Default to [] (count-fallback) while warm.
+  const { data: accounts } = useAccounts(!!user);
+  const { data: categories } = useCategories(!!user);
 
   // Deep-link request: a filter-chip click sets this to "filters" so the
   // popover opens on its Filters tab. Cleared the instant the popover
