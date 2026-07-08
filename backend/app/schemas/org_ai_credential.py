@@ -6,15 +6,19 @@ the last-4 + fingerprint + provider metadata.
 """
 from __future__ import annotations
 
-import ipaddress
 from datetime import datetime
-from ipaddress import IPv4Address, IPv6Address
 from typing import Optional
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.config import settings
 from app.models.org_ai_credential import AiProvider
+from app.services.ai_providers.egress_guard import (
+    BlockedAddressError,
+    check_ip,
+    ip_literal_or_none,
+)
 
 
 LABEL_MAX_LENGTH = 120
@@ -22,74 +26,37 @@ API_KEY_MIN_LENGTH = 4
 API_KEY_MAX_LENGTH = 4096
 BASE_URL_MAX_LENGTH = 512
 
-# Cloud metadata IPs (AWS / GCP / Azure / DO all converge on this address;
-# also the AWS IPv6 metadata address).
-_METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
-
-
-def _ip_or_none(host: str) -> IPv4Address | IPv6Address | None:
-    """Return the parsed IP if ``host`` is a literal address (with IPv4-mapped
-    IPv6 unwrapped to its IPv4 form), or None if it's a DNS name."""
-    if not host:
-        return None
-    candidate = host.strip("[]")
-    try:
-        ip = ipaddress.ip_address(candidate)
-    except ValueError:
-        return None
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return ip
-
 
 def _reject_metadata_or_unsafe(host: str) -> None:
-    """Always-blocked classes (safe for all providers including Ollama):
-    cloud-metadata IPs, link-local (covers the rest of 169.254/16 beyond
-    the metadata constant), multicast, unspecified, and IETF-reserved IPs
-    (240/4, 255.255.255.255, etc.).
+    """Always-blocked classes (for all providers, even Ollama with
+    AI_PROVIDER_ALLOW_PRIVATE_NETWORKS set): cloud-metadata IPs,
+    link-local, multicast, unspecified, and IETF-reserved IPs.
 
-    Loopback (127/8, ::1) is intentionally excluded here — it is handled
-    by _reject_private_or_loopback, which Ollama bypasses. Python 3.12
-    marks ::1 as is_reserved=True, so we must check is_loopback first to
-    avoid accidentally blocking it in this always-blocked layer.
-
-    RFC1918 private addresses (is_private) are intentionally absent — they
-    are the whole point of the provider-conditional layer; non-Ollama
-    providers hit them in _reject_private_or_loopback.
-
-    DNS names pass through (see _validate_base_url docstring for the DNS
-    rebinding note)."""
-    ip = _ip_or_none(host)
+    Delegates to the canonical denylist in
+    ``services.ai_providers.egress_guard`` (``allow_private=True`` is
+    exactly the always-blocked layer). Literal IPs only — DNS names
+    pass through here and are enforced at connect time by
+    ``egress_guard.GuardedTransport`` (resolve + validate + pin)."""
+    ip = ip_literal_or_none(host)
     if ip is None:
         return
-    if str(ip) in _METADATA_IPS:
-        raise ValueError("base_url cannot point at a cloud metadata endpoint")
-    # Loopback is provider-conditional (allowed for Ollama); skip it here.
-    if ip.is_loopback:
-        return
-    if (
-        ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-        or ip.is_reserved
-    ):
-        raise ValueError(
-            "base_url cannot point at a link-local, multicast, "
-            "unspecified, or reserved IP"
-        )
+    try:
+        check_ip(ip, allow_private=True)
+    except BlockedAddressError as exc:
+        raise ValueError(f"base_url is not allowed: {exc}") from None
 
 
 def _reject_private_or_loopback(host: str) -> None:
-    """RFC1918 (10/8, 172.16/12, 192.168/16) and loopback (127.0.0.0/8, ::1).
-    Blocked for hosted providers; allowed for Ollama (operator's own LAN /
-    homelab — see spec 2026-05-29 section 3)."""
-    ip = _ip_or_none(host)
+    """Strict layer: loopback, RFC1918/ULA, and any non-public literal.
+    Applied to every provider except Ollama when the
+    AI_PROVIDER_ALLOW_PRIVATE_NETWORKS escape hatch is enabled."""
+    ip = ip_literal_or_none(host)
     if ip is None:
         return
-    if ip.is_private or ip.is_loopback:
-        raise ValueError(
-            "base_url cannot point at a private (RFC1918) or loopback IP"
-        )
+    try:
+        check_ip(ip, allow_private=False)
+    except BlockedAddressError as exc:
+        raise ValueError(f"base_url is not allowed: {exc}") from None
 
 
 def _validate_base_url(value: str) -> str:
@@ -97,11 +64,12 @@ def _validate_base_url(value: str) -> str:
     provider. Provider-conditional checks (RFC1918 / loopback) run in
     the model validator where ``provider`` is known.
 
-    Allowed: http/https scheme + public hostname/IP. Private DNS names
-    (``ollama.internal``, ``my-llm.local``) ARE allowed — operators
-    fronting Ollama in their VPC need them. DNS rebinding remains a
-    residual v1 risk; a future iteration can add a custom httpx
-    transport that re-checks the resolved address before connect.
+    This save-time check is fast-feedback defense-in-depth over literal
+    IPs; the enforcement point is the connect-time guard
+    (``services.ai_providers.egress_guard``), which resolves DNS names,
+    validates every record, and pins the connection — so a hostname
+    whose A record points at a private/metadata address is refused at
+    request time even though it passes here.
     """
     parsed = urlparse(value)
     if parsed.scheme not in ("http", "https"):
@@ -140,9 +108,17 @@ class OrgAICredentialCreate(BaseModel):
                     "base_url is required for ollama and openai_compatible providers"
                 )
         # Provider-conditional SSRF policy:
-        # - Ollama: operator's own LAN/homelab, allow RFC1918 + loopback.
-        # - All other providers: strict block per the v1 SSRF guard.
-        if self.base_url and self.provider != AiProvider.OLLAMA:
+        # - Ollama with AI_PROVIDER_ALLOW_PRIVATE_NETWORKS=1 (operator's
+        #   own LAN/homelab escape hatch): allow RFC1918 + loopback.
+        # - Everything else (including Ollama with the flag OFF — the
+        #   default): strict block. Mirrors the connect-time guard in
+        #   services.ai_providers.egress_guard, which is the actual
+        #   enforcement point.
+        allow_private = (
+            self.provider == AiProvider.OLLAMA
+            and settings.ai_provider_allow_private_networks
+        )
+        if self.base_url and not allow_private:
             parsed = urlparse(self.base_url)
             if parsed.hostname:
                 _reject_private_or_loopback(parsed.hostname)
