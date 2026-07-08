@@ -258,6 +258,32 @@ class Settings(BaseSettings):
     # <= 0) for no cap (pre-guard burst behavior).
     scheduler_max_orgs_per_tick: int = 25
 
+    # OFX statement-import parsing isolation + concurrency (DoS mitigation).
+    # OFX files are parsed in a hard-killable child process
+    # (``app.services.import_ofx_service``): on timeout the process is
+    # terminated so a pathological / adversarial file cannot pin a CPU core
+    # after the request returns. These knobs bound the blast radius on the
+    # single-replica prod box. Each replica runs its own executor + child
+    # processes (compute-only isolation), so the caps are per-replica and
+    # horizontally-scale-safe.
+    #
+    # ``ofx_parse_max_concurrent``: global ceiling on simultaneous OFX
+    #   parses (child processes) in this process.
+    # ``ofx_parse_max_per_org``: per-org ceiling — one org cannot occupy
+    #   every slot. Over-cap → HTTP 429 immediately.
+    # ``ofx_parse_queue_wait_s``: bounded wait for a free GLOBAL slot before
+    #   returning 429 (smooths transient bursts; 0 = reject immediately).
+    # ``ofx_parse_timeout_s``: wall-clock parse budget; on overrun the child
+    #   is terminated and the request gets HTTP 400.
+    # ``ofx_max_rows``: post-parse transaction cap → HTTP 413. Restored to
+    #   10 000 now that parsing is isolated + killable (was temporarily
+    #   lowered to 2 000 as a pre-isolation DoS stopgap).
+    ofx_parse_max_concurrent: int = 4
+    ofx_parse_max_per_org: int = 2
+    ofx_parse_queue_wait_s: float = 5.0
+    ofx_parse_timeout_s: float = 10.0
+    ofx_max_rows: int = 10_000
+
     @field_validator("session_lifetime_days")
     @classmethod
     def _validate_session_lifetime_days(cls, v: int) -> int:

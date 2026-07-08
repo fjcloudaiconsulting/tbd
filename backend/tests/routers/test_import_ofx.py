@@ -17,7 +17,6 @@ import os
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -265,137 +264,86 @@ async def test_ofx_preview_oversize_returns_413(session_factory):
 
 
 @pytest.mark.asyncio
-async def test_ofx_preview_timeout_returns_400(session_factory, monkeypatch):
-    """A pathological parse that exceeds 10 s surfaces as 400.
+async def test_ofx_preview_timeout_returns_400(session_factory, monkeypatch, tmp_path):
+    """A parse that overruns the timeout is HARD-KILLED and surfaces as 400.
 
-    Mocked by stubbing ``_parse_in_executor`` with a function that blocks
-    longer than the (shortened) timeout. ``asyncio.wait_for`` raises
-    ``TimeoutError`` inside ``parse_ofx``, which the handler maps to
-    HTTP 400.
+    Post-isolation contract: parsing runs in a child process. The
+    ``PFV_OFX_TEST_HANG_S`` worker seam spins that child in a real CPU
+    busy-loop; the parent must ``terminate()`` it once the (shortened)
+    timeout elapses. The sentinel file proves the runaway never completed
+    — i.e. the CPU was genuinely reclaimed, not left pinned.
     """
     seed = await _seed(session_factory)
     app = _make_app(session_factory)
 
-    def slow_parse(_raw):
-        import time
-        time.sleep(0.5)
-        return None
+    sentinel = tmp_path / "completed.flag"
+    monkeypatch.setenv("PFV_OFX_TEST_HANG_S", "10")
+    monkeypatch.setenv("PFV_OFX_TEST_SENTINEL", str(sentinel))
+    monkeypatch.setattr(import_ofx_service.settings, "ofx_parse_timeout_s", 0.5)
 
-    # Use a 0.05 s timeout so the slow_parse stub overruns reliably.
-    async def patched_parse_ofx(file_bytes, **kw):
-        kw.setdefault("timeout_s", 0.05)
-        return await parse_ofx(file_bytes, **kw)
-
-    with patch.object(import_ofx_service, "_parse_in_executor", slow_parse), \
-            patch("app.routers.import_router.parse_ofx", patched_parse_ofx):
-        with TestClient(app) as client:
-            resp = client.post(
-                "/api/v1/import/ofx/preview",
-                files={"file": ("x.ofx", io.BytesIO(b"<OFX>...</OFX>"), "application/x-ofx")},
-                data={"account_id": str(seed["account_id"])},
-            )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/import/ofx/preview",
+            files={"file": ("x.ofx", io.BytesIO(b"<OFX>hang</OFX>"), "application/x-ofx")},
+            data={"account_id": str(seed["account_id"])},
+        )
     assert resp.status_code == 400
-    assert "complex" in resp.json()["detail"].lower() or "seconds" in resp.json()["detail"].lower()
+    detail = resp.json()["detail"].lower()
+    assert "complex" in detail or "seconds" in detail
+    # Hard-killed: the runaway worker never reached its completion write.
+    assert not sentinel.exists()
 
 
-# ── Row-count cap → 413 ──
-
-
-class _FakeTx:
-    """Minimal STMTTRN stand-in for the row-cap test.
-
-    We mock at the ``_parse_in_executor`` boundary so the test exercises
-    the post-parse row-cap branch deterministically, without racing
-    against ofxtools' wall-clock parse time on slow CI runners.
-    """
-
-    def __init__(self, i: int):
-        from datetime import datetime, timezone
-        from decimal import Decimal
-        self.fitid = f"FAKE{i:06d}"
-        self.dtposted = datetime(2026, 4, 1, tzinfo=timezone.utc)
-        self.trnamt = Decimal("-1.00")
-        self.name = f"Row{i}"
-        self.memo = None
-        self.trntype = "DEBIT"
-        self.payee = None
-
-
-class _FakeAccount:
-    bankid = "FAKEBANK"
-    accttype = "CHECKING"
-
-
-class _FakeStatement:
-    def __init__(self, count: int):
-        self.account = _FakeAccount()
-        self.transactions = [_FakeTx(i) for i in range(count)]
-
-
-class _FakeOFX:
-    def __init__(self, count: int):
-        self.statements = [_FakeStatement(count)]
+# ── Row-count cap → 413 (real parse, cap lowered via settings) ──
 
 
 @pytest.mark.asyncio
-async def test_ofx_preview_too_many_rows_returns_413(session_factory):
-    """Post-parse row cap (> MAX_ROWS) → 413 (spec §1.5).
+async def test_ofx_preview_too_many_rows_returns_413(session_factory, monkeypatch):
+    """Post-parse row cap (> ``ofx_max_rows``) → 413 (spec §1.5).
 
-    The cap is the DoS stopgap at ``import_ofx_service.MAX_ROWS`` (2 000).
-    One row over the cap must be rejected with 413.
-
-    We stub ``_parse_in_executor`` so the test does not depend on
-    ofxtools' wall-clock parse speed. Slow CI runners would otherwise
-    hit the 10s timeout (400) before reaching the row-cap branch (413);
-    mocking keeps the assertion deterministic.
+    Exercises the REAL parser + subprocess boundary: the 15-row rabobank
+    fixture with the row cap lowered to 10 must be rejected with 413. The
+    cap is now configurable (``settings.ofx_max_rows``, default 10 000);
+    this test lowers it rather than mocking the parser internals.
     """
     seed = await _seed(session_factory)
     app = _make_app(session_factory)
+    monkeypatch.setattr(import_ofx_service.settings, "ofx_max_rows", 10)
 
-    over = import_ofx_service.MAX_ROWS + 1  # 2 001
-
-    def fake_parse(_raw: bytes):
-        return _FakeOFX(over)
-
-    with patch.object(import_ofx_service, "_parse_in_executor", fake_parse):
-        with TestClient(app) as client:
-            resp = client.post(
-                "/api/v1/import/ofx/preview",
-                files={"file": ("big.ofx", io.BytesIO(b"<OFX>stub</OFX>"), "application/x-ofx")},
-                data={"account_id": str(seed["account_id"])},
-            )
+    payload = _read_fixture("rabobank_ofx_1x.ofx")  # 15 transaction rows
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/import/ofx/preview",
+            files={"file": ("big.ofx", io.BytesIO(payload), "application/x-ofx")},
+            data={"account_id": str(seed["account_id"])},
+        )
     assert resp.status_code == 413
     detail = resp.json()["detail"]
-    assert str(over) in detail or str(import_ofx_service.MAX_ROWS) in detail
+    assert "15" in detail or "10" in detail
     assert "transactions" in detail.lower()
 
 
 @pytest.mark.asyncio
-async def test_ofx_preview_at_row_cap_is_accepted(session_factory):
-    """Exactly MAX_ROWS rows (2 000) is at the boundary and must not return 413.
+async def test_ofx_preview_at_row_cap_is_accepted(session_factory, monkeypatch):
+    """Exactly ``ofx_max_rows`` rows is at the boundary and must not 413.
 
     Pairs with ``test_ofx_preview_too_many_rows_returns_413`` to pin the
-    DoS-stopgap cap at exactly ``import_ofx_service.MAX_ROWS``. Asserting
-    the real 200 success (not merely "not 413") proves the at-cap file is
-    genuinely accepted, and that all MAX_ROWS rows survive to the preview.
+    row cap at exactly ``settings.ofx_max_rows``. The 15-row rabobank
+    fixture with the cap set to 15 must return a real 200 with all 15 rows.
     """
     seed = await _seed(session_factory)
     app = _make_app(session_factory)
+    monkeypatch.setattr(import_ofx_service.settings, "ofx_max_rows", 15)
 
-    at_cap = import_ofx_service.MAX_ROWS  # 2 000
-
-    def fake_parse(_raw: bytes):
-        return _FakeOFX(at_cap)
-
-    with patch.object(import_ofx_service, "_parse_in_executor", fake_parse):
-        with TestClient(app) as client:
-            resp = client.post(
-                "/api/v1/import/ofx/preview",
-                files={"file": ("ok.ofx", io.BytesIO(b"<OFX>stub</OFX>"), "application/x-ofx")},
-                data={"account_id": str(seed["account_id"])},
-            )
+    payload = _read_fixture("rabobank_ofx_1x.ofx")  # exactly 15 rows
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/import/ofx/preview",
+            files={"file": ("ok.ofx", io.BytesIO(payload), "application/x-ofx")},
+            data={"account_id": str(seed["account_id"])},
+        )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["total_rows"] == import_ofx_service.MAX_ROWS
+    assert resp.json()["total_rows"] == 15
 
 
 # ── Auth gate ──
