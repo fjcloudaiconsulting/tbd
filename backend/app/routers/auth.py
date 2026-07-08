@@ -65,6 +65,7 @@ from app.security import (
     default_session_ttl_seconds,
     get_org_session_ttl_seconds,
     hash_password,
+    mfa_email_code_hmac,
     token_cutoff,
     verify_password,
 )
@@ -2393,9 +2394,7 @@ async def mfa_email_verify(
     # Verify the code matches using HMAC (keyed hash, not brute-forceable).
     # Must happen BEFORE consuming the nonce — otherwise a typo burns the
     # token and forces a resend (one-attempt-only regression).
-    expected_hmac = _hmac.new(
-        app_settings.jwt_secret_key.encode(), body.code.encode(), "sha256"
-    ).hexdigest()
+    expected_hmac = mfa_email_code_hmac(body.code)
     if not _hmac.compare_digest(expected_hmac, email_payload.get("code_hmac", "")):
         raise HTTPException(status_code=401, detail="Invalid code")
 

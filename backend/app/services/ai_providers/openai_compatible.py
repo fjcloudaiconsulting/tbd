@@ -32,6 +32,11 @@ from app.services.ai_providers.base import (
     TokenUsage,
     ValidateResult,
 )
+from app.services.ai_providers.egress_guard import (
+    BLOCKED_ADDRESS_VALIDATION_ERROR,
+    BlockedAddressError,
+    guarded_async_client,
+)
 
 
 VALIDATE_TIMEOUT_S = 10.0
@@ -83,8 +88,12 @@ class OpenAICompatibleAdapter:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         url = f"{self.base_url}/v1/models"
         try:
-            async with httpx.AsyncClient(timeout=VALIDATE_TIMEOUT_S) as client:
+            async with guarded_async_client(timeout=VALIDATE_TIMEOUT_S) as client:
                 resp = await client.get(url, headers=headers)
+        except BlockedAddressError:
+            return ValidateResult(
+                ok=False, error=BLOCKED_ADDRESS_VALIDATION_ERROR
+            )
         except (httpx.HTTPError, httpx.TimeoutException) as exc:
             # NEVER ``str(exc)`` — exception reprs from httpx can include
             # the URL (with embedded creds) or other request context.
@@ -132,7 +141,7 @@ class OpenAICompatibleAdapter:
             body["max_tokens"] = max_tokens
         url = f"{self.base_url}/v1/chat/completions"
         try:
-            async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
+            async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 resp = await client.post(
                     url, headers=self._headers(), json=body
                 )
@@ -179,7 +188,7 @@ class OpenAICompatibleAdapter:
         body = {"model": model, "input": texts}
         url = f"{self.base_url}/v1/embeddings"
         try:
-            async with httpx.AsyncClient(timeout=EMBED_TIMEOUT_S) as client:
+            async with guarded_async_client(timeout=EMBED_TIMEOUT_S) as client:
                 resp = await client.post(
                     url, headers=self._headers(), json=body
                 )
@@ -242,7 +251,7 @@ class OpenAICompatibleAdapter:
             body["max_tokens"] = max_tokens
         url = f"{self.base_url}/v1/chat/completions"
         try:
-            async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
+            async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 resp = await client.post(
                     url, headers=self._headers(), json=body
                 )
@@ -294,7 +303,7 @@ class OpenAICompatibleAdapter:
             body["max_tokens"] = max_tokens
         url = f"{self.base_url}/v1/chat/completions"
         try:
-            async with httpx.AsyncClient(timeout=CHAT_TIMEOUT_S) as client:
+            async with guarded_async_client(timeout=CHAT_TIMEOUT_S) as client:
                 resp = await client.post(
                     url, headers=self._headers(), json=body
                 )
@@ -368,7 +377,7 @@ class OpenAICompatibleAdapter:
 
         final_usage: Optional[TokenUsage] = None
         try:
-            async with httpx.AsyncClient(timeout=STREAM_TIMEOUT_S) as client:
+            async with guarded_async_client(timeout=STREAM_TIMEOUT_S) as client:
                 async with client.stream(
                     "POST", url, headers=headers, json=body
                 ) as resp:
