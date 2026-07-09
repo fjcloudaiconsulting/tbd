@@ -334,6 +334,37 @@ describe("BudgetBarsWidget", () => {
     fireEvent.click(screen.getByTestId("bar-spent"));
     expect(setChartFilter).toHaveBeenCalledWith(null);
   });
+
+  it("chart area flex-fills its box (flex-1 min-h-0, no fixed inline height) so all categories fit the resizable tile", () => {
+    mockWith({
+      budgets: [MOCK_BUDGET],
+      dashBudgets: [MOCK_BUDGET],
+      budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
+    const wrapper = screen.getByTestId("responsive-container").parentElement!;
+    // The old code hard-coded style={{ height: dashBudgets.length * 40 }},
+    // which capped the tile to the sliced count. The chart must now flex-fill.
+    expect(wrapper.classList.contains("flex-1")).toBe(true);
+    expect(wrapper.classList.contains("min-h-0")).toBe(true);
+    expect(wrapper.style.height).toBe("");
+  });
+
+  it("card root is a flex column that fills its box (h-full flex flex-col)", () => {
+    mockWith({
+      budgets: [MOCK_BUDGET],
+      dashBudgets: [MOCK_BUDGET],
+      budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
+    });
+    const { container } = render(
+      <>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>,
+    );
+    // The card root is the single child of the fill() wrapper.
+    const cardRoot = container.querySelector(".h-full > *") as HTMLElement;
+    expect(cardRoot).not.toBeNull();
+    expect(cardRoot.classList.contains("flex")).toBe(true);
+    expect(cardRoot.classList.contains("flex-col")).toBe(true);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -425,6 +456,36 @@ describe("ForecastBarsWidget", () => {
     render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
     fireEvent.click(screen.getByTestId("bar-planned"));
     expect(setChartFilter).toHaveBeenCalledWith(null);
+  });
+
+  it("chart area flex-fills its box (flex-1 min-h-0, no fixed inline height) so all categories fit the resizable tile", () => {
+    mockWith({
+      forecast: MOCK_FORECAST,
+      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
+      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
+    });
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
+    const wrapper = screen.getByTestId("responsive-container").parentElement!;
+    // The old code hard-coded style={{ height: min(items,8) * 32 }}, capping
+    // the tile to the sliced count. The chart must now flex-fill.
+    expect(wrapper.classList.contains("flex-1")).toBe(true);
+    expect(wrapper.classList.contains("min-h-0")).toBe(true);
+    expect(wrapper.style.height).toBe("");
+  });
+
+  it("card root is a flex column that fills its box (h-full flex flex-col)", () => {
+    mockWith({
+      forecast: MOCK_FORECAST,
+      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
+      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
+    });
+    const { container } = render(
+      <>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>,
+    );
+    const cardRoot = container.querySelector(".h-full > *") as HTMLElement;
+    expect(cardRoot).not.toBeNull();
+    expect(cardRoot.classList.contains("flex")).toBe(true);
+    expect(cardRoot.classList.contains("flex-col")).toBe(true);
   });
 });
 

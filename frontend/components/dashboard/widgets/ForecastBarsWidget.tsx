@@ -39,12 +39,14 @@ export default function ForecastBarsWidget() {
   } = useDashboard();
 
   return (
-    <div className={`${card} overflow-hidden p-5`}>
+    <div className={`${card} flex flex-col overflow-hidden p-5`}>
       <h2 className={`mb-3 ${cardTitle}`}>Forecast by Category</h2>
       {(() => {
         if (forecast && forecastExpenseItems.length > 0) {
           return (
-            <div className="w-full min-w-0" style={{ height: Math.max(Math.min(forecastExpenseItems.length, 8) * 32, 100) }}>
+            // Flex-fill so every expense category fits the resizable tile —
+            // more categories = thinner bars.
+            <div className="w-full min-w-0 flex-1 min-h-0">
               <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                 <BarChart
                   data={forecastChartRows}
