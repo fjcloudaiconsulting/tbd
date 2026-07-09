@@ -69,6 +69,42 @@ def user_password_changed() -> tuple[str, str, Optional[str]]:
     return (title, body, "/settings/security")
 
 
+def user_password_reset() -> tuple[str, str, Optional[str]]:
+    """Copy for ``user.password.reset`` (security category).
+
+    Self-target; recipient is the user who just completed the
+    forgot-password flow. This is the account-takeover path — the
+    highest-value alert of the batch, since a reset without the user's
+    knowledge means an attacker holds a valid reset link. Copy names
+    the action and tells the reader to act if it wasn't them. Always
+    written — security category is force-on and cannot be opted out.
+    """
+    title = "Your password was reset"
+    body = (
+        "Your account password was reset using the forgot-password flow. "
+        "If this wasn't you, your account may be compromised — reset your "
+        "password again and contact support immediately."
+    )
+    return (title, body, "/settings/security")
+
+
+def user_mfa_recovery_codes_regenerated() -> tuple[str, str, Optional[str]]:
+    """Copy for ``user.mfa.recovery_codes.regenerated`` (security category).
+
+    Self-target. Regenerating recovery codes invalidates every prior
+    code, so an actor who did this without the user's knowledge has
+    replaced the account's fallback authentication set. Copy encourages
+    review if the regeneration was unexpected. Always written — security
+    category is force-on.
+    """
+    title = "Recovery codes regenerated"
+    body = (
+        "Your MFA recovery codes were regenerated. Your previous codes no "
+        "longer work. If this wasn't you, secure your account immediately."
+    )
+    return (title, body, "/settings/security")
+
+
 def user_mfa_enabled() -> tuple[str, str, Optional[str]]:
     """Copy for ``user.mfa.enabled`` (security category).
 
