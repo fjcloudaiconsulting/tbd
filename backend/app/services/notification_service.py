@@ -310,6 +310,63 @@ async def dispatch_notification(
     return row
 
 
+async def dispatch_notification_best_effort(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    category: NotificationCategory,
+    event_type: str,
+    title: str,
+    body: str,
+    link_url: Optional[str] = None,
+    audit_event_id: Optional[int] = None,
+) -> None:
+    """Write the single-user in-app notification row and commit it, best-effort.
+
+    Wraps ``dispatch_notification`` (the ROW write) AND owns the trailing
+    ``await db.commit()`` for that write. The single-user SECURITY hooks
+    (password change/reset, MFA enable/disable/regenerate, email change)
+    call this AFTER their business mutation has already committed durably,
+    so the in-app row is a separate, best-effort transaction.
+
+    On ANY failure — a flush/refresh error inside ``dispatch_notification``
+    or a failing ``commit`` — the partial write is rolled back so the
+    session is left usable, a ``notification.dispatch_failed`` event is
+    logged, and control RETURNS normally. The completed security action is
+    never broken by an in-app-notification failure. This mirrors the
+    contract of ``send_security_email_best_effort`` (log-and-swallow) but
+    guards the in-app channel instead of the email channel — the piece the
+    single-user hooks previously left unguarded.
+
+    The rollback only ever discards the uncommitted ``Notification`` insert
+    because the business mutation committed before this runs. FK
+    correlation to the audit row is preserved by threading
+    ``audit_event_id`` straight through to ``dispatch_notification`` (the
+    row is written only when the caller passes a non-None id, matching the
+    "audit IS the trigger" gate the call sites keep).
+    """
+    try:
+        await dispatch_notification(
+            db,
+            user_id=user_id,
+            category=category,
+            event_type=event_type,
+            title=title,
+            body=body,
+            link_url=link_url,
+            audit_event_id=audit_event_id,
+        )
+        await db.commit()
+    except Exception:  # noqa: BLE001 — in-app dispatch never fails a completed action
+        await db.rollback()
+        await logger.awarning(
+            "notification.dispatch_failed",
+            user_id=user_id,
+            event_type=event_type,
+            audit_event_id=audit_event_id,
+        )
+
+
 async def dispatch_notification_to_org_admins(
     db: AsyncSession,
     *,

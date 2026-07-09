@@ -204,6 +204,12 @@ async def update_profile(
     await db.commit()
     await db.refresh(current_user, ["organization"])
 
+    # Materialize the response NOW, off the freshly-committed instance. The
+    # best-effort notification block below may roll back on dispatch failure,
+    # which expires the ORM instance; building the response here keeps the
+    # return value independent of that and avoids a post-rollback lazy-load.
+    user_response = _user_response(current_user)
+
     if email_changing:
         # Audit AFTER the business commit succeeds. Independent-session
         # write — a failure here does not roll back the email change.
@@ -236,12 +242,16 @@ async def update_profile(
         # The NEW email is interpolated into the body so the recipient
         # can confirm the change at a glance.
         if audit_event_id is not None:
+            # Snapshot the recipient id BEFORE the best-effort dispatch: on
+            # failure the wrapper rolls back and expires ORM instances, so
+            # even a post-wrapper ``current_user.id`` read would lazy-load.
+            recipient_user_id = current_user.id
             title, body, link_url = _tpl_user_email_changed(
-                new_email=current_user.email
+                new_email=new_email
             )
-            await notification_service.dispatch_notification(
+            await notification_service.dispatch_notification_best_effort(
                 db,
-                user_id=current_user.id,
+                user_id=recipient_user_id,
                 category=NotificationCategory.SECURITY,
                 event_type="user.email.changed",
                 title=title,
@@ -249,7 +259,6 @@ async def update_profile(
                 link_url=link_url,
                 audit_event_id=audit_event_id,
             )
-            await db.commit()
 
             # Dual-channel to BOTH addresses (operator decision), sent
             # AFTER the in-app row commits (outside its savepoint).
@@ -260,16 +269,21 @@ async def update_profile(
             #   OLD address (pre-mutation snapshot ``old_email_for_audit``)
             #     → security ALERT naming the new address; the old inbox
             #     is what a hijack victim still controls. Sent FIRST.
-            #   NEW address (``current_user.email``) → CONFIRMATION naming
+            #   NEW address (``new_email`` snapshot) → CONFIRMATION naming
             #     the old address.
+            # Both reads below use the ``new_email`` string snapshot rather
+            # than ``current_user.email``: the best-effort dispatch above may
+            # have rolled back on failure, which expires ORM instances, so a
+            # post-wrapper ``current_user.email`` access would trigger a
+            # lazy-load and turn a swallowed dispatch failure back into a 500.
             alert_title, alert_body, alert_link = (
                 _tpl_user_email_changed_old_address(
-                    new_email=current_user.email
+                    new_email=new_email
                 )
             )
             await notification_service.send_security_email_best_effort(
                 db,
-                user_id=current_user.id,
+                user_id=recipient_user_id,
                 email=old_email_for_audit,
                 event_type="user.email.changed",
                 title=alert_title,
@@ -283,15 +297,15 @@ async def update_profile(
             )
             await notification_service.send_security_email_best_effort(
                 db,
-                user_id=current_user.id,
-                email=current_user.email,
+                user_id=recipient_user_id,
+                email=new_email,
                 event_type="user.email.changed",
                 title=confirm_title,
                 body=confirm_body,
                 link_url=confirm_link,
             )
 
-    return _user_response(current_user)
+    return user_response
 
 
 @router.post("/me/password", status_code=204)
@@ -380,8 +394,13 @@ async def change_password(
     # notification when audit failed so the forensic trail stays
     # consistent (architect-locked ordering — audit IS the trigger).
     if audit_event_id is not None:
+        # Snapshot the recipient BEFORE the best-effort dispatch: on failure
+        # the wrapper rolls back, which expires ORM instances, so a later
+        # ``current_user.email`` read would lazy-load and re-raise as a 500.
+        recipient_user_id = current_user.id
+        recipient_email = current_user.email
         title, body, link_url = _tpl_user_password_changed()
-        await notification_service.dispatch_notification(
+        await notification_service.dispatch_notification_best_effort(
             db,
             user_id=current_user.id,
             category=NotificationCategory.SECURITY,
@@ -391,7 +410,6 @@ async def change_password(
             link_url=link_url,
             audit_event_id=audit_event_id,
         )
-        await db.commit()
 
         # Dual-channel: email the account's current address AFTER the
         # in-app row commits (outside its savepoint). Force-on +
@@ -399,8 +417,8 @@ async def change_password(
         # back the password change, or rolls back the in-app row.
         await notification_service.send_security_email_best_effort(
             db,
-            user_id=current_user.id,
-            email=current_user.email,
+            user_id=recipient_user_id,
+            email=recipient_email,
             event_type="user.password.changed",
             title=title,
             body=body,
