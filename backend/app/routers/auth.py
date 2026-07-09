@@ -1716,8 +1716,13 @@ async def reset_password(
     # failed so the forensic trail stays consistent). Self-target: the
     # user whose password was just reset.
     if audit_event_id is not None:
+        # Snapshot the recipient BEFORE the best-effort dispatch: on failure
+        # the wrapper rolls back, which expires ORM instances, so a later
+        # ``user.email`` read would lazy-load and re-raise as a 500.
+        recipient_user_id = user.id
+        recipient_email = user.email
         title, notif_body, link_url = _tpl_user_password_reset()
-        await notification_service.dispatch_notification(
+        await notification_service.dispatch_notification_best_effort(
             db,
             user_id=user.id,
             category=NotificationCategory.SECURITY,
@@ -1727,7 +1732,6 @@ async def reset_password(
             link_url=link_url,
             audit_event_id=audit_event_id,
         )
-        await db.commit()
 
         # Dual-channel: email the account address AFTER the in-app row
         # commits (outside its savepoint). Force-on + best-effort — a
@@ -1735,8 +1739,8 @@ async def reset_password(
         # row.
         await notification_service.send_security_email_best_effort(
             db,
-            user_id=user.id,
-            email=user.email,
+            user_id=recipient_user_id,
+            email=recipient_email,
             event_type="user.password.reset",
             title=title,
             body=notif_body,
@@ -2185,8 +2189,13 @@ async def mfa_enable(
     # notification AFTER the audit row commits. Self-target — the
     # user who flipped MFA on receives the confirmation.
     if audit_event_id is not None:
+        # Snapshot the recipient BEFORE the best-effort dispatch: on failure
+        # the wrapper rolls back, which expires ORM instances, so a later
+        # ``current_user.email`` read would lazy-load and re-raise as a 500.
+        recipient_user_id = current_user.id
+        recipient_email = current_user.email
         title, body, link_url = _tpl_user_mfa_enabled()
-        await notification_service.dispatch_notification(
+        await notification_service.dispatch_notification_best_effort(
             db,
             user_id=current_user.id,
             category=NotificationCategory.SECURITY,
@@ -2196,15 +2205,14 @@ async def mfa_enable(
             link_url=link_url,
             audit_event_id=audit_event_id,
         )
-        await db.commit()
 
         # Dual-channel: email the account address AFTER the in-app row
         # commits (outside its savepoint). Force-on + best-effort — a
         # raising mailer never fails the request or rolls back MFA.
         await notification_service.send_security_email_best_effort(
             db,
-            user_id=current_user.id,
-            email=current_user.email,
+            user_id=recipient_user_id,
+            email=recipient_email,
             event_type="user.mfa.enabled",
             title=title,
             body=body,
@@ -2254,8 +2262,13 @@ async def mfa_disable(
     # since a stolen credential is now sufficient for full access; the
     # template recommends re-enable.
     if audit_event_id is not None:
+        # Snapshot the recipient BEFORE the best-effort dispatch: on failure
+        # the wrapper rolls back, which expires ORM instances, so a later
+        # ``current_user.email`` read would lazy-load and re-raise as a 500.
+        recipient_user_id = current_user.id
+        recipient_email = current_user.email
         title, body, link_url = _tpl_user_mfa_disabled()
-        await notification_service.dispatch_notification(
+        await notification_service.dispatch_notification_best_effort(
             db,
             user_id=current_user.id,
             category=NotificationCategory.SECURITY,
@@ -2265,7 +2278,6 @@ async def mfa_disable(
             link_url=link_url,
             audit_event_id=audit_event_id,
         )
-        await db.commit()
 
         # Dual-channel: email the account address AFTER the in-app row
         # commits (outside its savepoint). MFA-disabled is the louder
@@ -2273,8 +2285,8 @@ async def mfa_disable(
         # the request or resurrects MFA.
         await notification_service.send_security_email_best_effort(
             db,
-            user_id=current_user.id,
-            email=current_user.email,
+            user_id=recipient_user_id,
+            email=recipient_email,
             event_type="user.mfa.disabled",
             title=title,
             body=body,
@@ -2320,8 +2332,13 @@ async def mfa_regenerate_codes(
     )
 
     if audit_event_id is not None:
+        # Snapshot the recipient BEFORE the best-effort dispatch: on failure
+        # the wrapper rolls back, which expires ORM instances, so a later
+        # ``current_user.email`` read would lazy-load and re-raise as a 500.
+        recipient_user_id = current_user.id
+        recipient_email = current_user.email
         title, notif_body, link_url = _tpl_user_mfa_recovery_codes_regenerated()
-        await notification_service.dispatch_notification(
+        await notification_service.dispatch_notification_best_effort(
             db,
             user_id=current_user.id,
             category=NotificationCategory.SECURITY,
@@ -2331,15 +2348,14 @@ async def mfa_regenerate_codes(
             link_url=link_url,
             audit_event_id=audit_event_id,
         )
-        await db.commit()
 
         # Dual-channel: email the account address AFTER the in-app row
         # commits (outside its savepoint). Force-on + best-effort — a
         # raising mailer never fails the request or rolls back the codes.
         await notification_service.send_security_email_best_effort(
             db,
-            user_id=current_user.id,
-            email=current_user.email,
+            user_id=recipient_user_id,
+            email=recipient_email,
             event_type="user.mfa.recovery_codes.regenerated",
             title=title,
             body=notif_body,
