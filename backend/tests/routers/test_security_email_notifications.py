@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app._time import utcnow_naive
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -157,12 +158,29 @@ def failing_dispatch(monkeypatch):
 
     async def _boom(db, *, user_id, **kwargs):
         attempts.append(user_id)
-        # Touch the DB first so a transaction is OPEN when the wrapper rolls
-        # back — that is what expires the ORM instances. This reproduces a
-        # real flush/commit failure (dispatch runs queries before it fails),
-        # not just an early raise, so the handler's post-rollback attribute
-        # reads are genuinely exercised.
-        await db.execute(select(User).where(User.id == user_id))
+        # Mirror the REAL dispatch_notification: construct the row from the
+        # caller's kwargs, db.add it, and flush so it is PENDING (INSERTed,
+        # uncommitted) in the session — THEN raise. Two properties ride on
+        # this:
+        #   * The wrapper must db.rollback() to discard this pending insert.
+        #     Without the fix it would db.commit() and the row would persist,
+        #     so the per-test ``_notif_rows(...) == []`` assertion has teeth:
+        #     it now proves the rollback actually threw the row away.
+        #   * The flush does real DB IO, leaving a transaction OPEN and
+        #     expiring the ORM instances on rollback — the load-bearing
+        #     post-rollback lazy-load regression stays exercised.
+        row = Notification(
+            user_id=user_id,
+            category=kwargs["category"],
+            event_type=kwargs["event_type"],
+            title=kwargs["title"],
+            body=kwargs["body"],
+            link_url=kwargs.get("link_url"),
+            audit_event_id=kwargs.get("audit_event_id"),
+            created_at=utcnow_naive(),
+        )
+        db.add(row)
+        await db.flush()
         raise RuntimeError("notification insert exploded")
 
     monkeypatch.setattr(notification_service, "dispatch_notification", _boom)
@@ -917,6 +935,15 @@ async def test_mfa_regenerate_survives_dispatch_failure(
     # Codes were actually regenerated (never rolled back).
     codes = res.json()["recovery_codes"]
     assert isinstance(codes, list) and len(codes) > 0
+
+    # And the regeneration landed in the DB, not just the response body:
+    # re-read the user and confirm the stored (hashed) recovery-code set is
+    # populated. The seed leaves recovery_codes NULL, so a non-empty hash
+    # set here proves the mutation persisted through the dispatch failure.
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        stored_hashes = [h for h in (user.recovery_codes or "").split(",") if h]
+        assert len(stored_hashes) == len(codes)
 
     assert (
         await _notif_rows(session_factory, "user.mfa.recovery_codes.regenerated")
