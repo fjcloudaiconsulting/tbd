@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app._time import utcnow_naive
 from app.config import settings as app_settings
 from app.database import get_db
 from app.deps import get_current_user, get_session_factory
@@ -140,6 +141,49 @@ def failing_mailer(monkeypatch):
         raise RuntimeError("mailgun is down")
 
     monkeypatch.setattr(notification_service, "send_notification_email", _boom)
+    return attempts
+
+
+@pytest.fixture
+def failing_dispatch(monkeypatch):
+    """Make the in-app notification ROW write blow up.
+
+    Patches ``dispatch_notification`` in the ``notification_service``
+    namespace (the name the best-effort wrapper calls). A raising in-app
+    write must never fail the request, roll back the business mutation
+    that already committed, or leave the session unusable for the
+    subsequent email send.
+    """
+    attempts: list[int] = []
+
+    async def _boom(db, *, user_id, **kwargs):
+        attempts.append(user_id)
+        # Mirror the REAL dispatch_notification: construct the row from the
+        # caller's kwargs, db.add it, and flush so it is PENDING (INSERTed,
+        # uncommitted) in the session — THEN raise. Two properties ride on
+        # this:
+        #   * The wrapper must db.rollback() to discard this pending insert.
+        #     Without the fix it would db.commit() and the row would persist,
+        #     so the per-test ``_notif_rows(...) == []`` assertion has teeth:
+        #     it now proves the rollback actually threw the row away.
+        #   * The flush does real DB IO, leaving a transaction OPEN and
+        #     expiring the ORM instances on rollback — the load-bearing
+        #     post-rollback lazy-load regression stays exercised.
+        row = Notification(
+            user_id=user_id,
+            category=kwargs["category"],
+            event_type=kwargs["event_type"],
+            title=kwargs["title"],
+            body=kwargs["body"],
+            link_url=kwargs.get("link_url"),
+            audit_event_id=kwargs.get("audit_event_id"),
+            created_at=utcnow_naive(),
+        )
+        db.add(row)
+        await db.flush()
+        raise RuntimeError("notification insert exploded")
+
+    monkeypatch.setattr(notification_service, "dispatch_notification", _boom)
     return attempts
 
 
@@ -734,3 +778,175 @@ async def test_mfa_regenerate_without_mfa_emits_nothing(
         == []
     )
     assert sent_emails == []
+
+
+# ── in-app dispatch is best-effort: a raising dispatch/commit never
+#    breaks the already-committed security action ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_password_change_survives_dispatch_failure(
+    session_factory, sent_emails, failing_dispatch
+):
+    """If the in-app notification write raises, the password change still
+    succeeds (204) and persists — no exception propagates."""
+    seed = await _seed_user(session_factory)
+    app = _make_app(session_factory, seed["user_id"], router=users_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/users/me/password",
+            json={
+                "current_password": PASSWORD,
+                "new_password": "brand-new-passw0rd",
+            },
+        )
+    assert res.status_code == 204, res.text
+    assert failing_dispatch == [seed["user_id"]]  # the write was attempted
+
+    # Business mutation stuck.
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        assert verify_password("brand-new-passw0rd", user.password_hash)
+
+    # No in-app row (the failed insert was rolled back).
+    assert await _notif_rows(session_factory, "user.password.changed") == []
+    # The email send still ran after the rollback (session left usable).
+    assert len(sent_emails) == 1
+
+
+@pytest.mark.asyncio
+async def test_email_change_survives_dispatch_failure(
+    session_factory, sent_emails, failing_dispatch
+):
+    """A raising in-app write must not fail the email change or roll it
+    back; both address emails still go out."""
+    seed = await _seed_user(session_factory)
+    app = _make_app(session_factory, seed["user_id"], router=users_router)
+    with TestClient(app) as client:
+        res = client.put(
+            "/api/v1/users/me",
+            json={"email": NEW_EMAIL, "current_password": PASSWORD},
+        )
+    assert res.status_code == 200, res.text
+    assert failing_dispatch == [seed["user_id"]]
+
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        assert user.email == NEW_EMAIL
+
+    assert await _notif_rows(session_factory, "user.email.changed") == []
+    assert len(sent_emails) == 2
+
+
+@pytest.mark.asyncio
+async def test_mfa_enable_survives_dispatch_failure(
+    session_factory, sent_emails, failing_dispatch
+):
+    secret = generate_totp_secret()
+    seed = await _seed_user(
+        session_factory,
+        totp_secret=encrypt_secret(secret),
+        mfa_enabled=False,
+    )
+    code = pyotp.TOTP(secret).now()
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post("/api/v1/auth/mfa/enable", json={"code": code})
+    assert res.status_code == 200, res.text
+    assert failing_dispatch == [seed["user_id"]]
+
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        assert user.mfa_enabled is True
+
+    assert await _notif_rows(session_factory, "user.mfa.enabled") == []
+    assert len(sent_emails) == 1
+
+
+@pytest.mark.asyncio
+async def test_mfa_disable_survives_dispatch_failure(
+    session_factory, sent_emails, failing_dispatch
+):
+    secret = generate_totp_secret()
+    seed = await _seed_user(
+        session_factory,
+        totp_secret=encrypt_secret(secret),
+        mfa_enabled=True,
+    )
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/mfa/disable", json={"password": PASSWORD}
+        )
+    assert res.status_code == 200, res.text
+    assert failing_dispatch == [seed["user_id"]]
+
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        assert user.mfa_enabled is False
+
+    assert await _notif_rows(session_factory, "user.mfa.disabled") == []
+    assert len(sent_emails) == 1
+
+
+@pytest.mark.asyncio
+async def test_password_reset_survives_dispatch_failure(
+    session_factory, sent_emails, failing_dispatch
+):
+    """The account-takeover path: a raising in-app write must not fail the
+    reset or revert the password."""
+    seed = await _seed_user(session_factory)
+    token = create_password_reset_token(seed["user_id"])
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/reset-password",
+            json={"token": token, "new_password": "brand-new-passw0rd"},
+        )
+    assert res.status_code == 200, res.text
+    assert failing_dispatch == [seed["user_id"]]
+
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        assert verify_password("brand-new-passw0rd", user.password_hash)
+
+    assert await _notif_rows(session_factory, "user.password.reset") == []
+    assert len(sent_emails) == 1
+
+
+@pytest.mark.asyncio
+async def test_mfa_regenerate_survives_dispatch_failure(
+    session_factory, sent_emails, failing_dispatch
+):
+    secret = generate_totp_secret()
+    seed = await _seed_user(
+        session_factory,
+        totp_secret=encrypt_secret(secret),
+        mfa_enabled=True,
+    )
+    app = _make_app(session_factory, seed["user_id"], router=auth_router)
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/auth/mfa/recovery-codes", json={"password": PASSWORD}
+        )
+    assert res.status_code == 200, res.text
+    assert failing_dispatch == [seed["user_id"]]
+
+    # Codes were actually regenerated (never rolled back).
+    codes = res.json()["recovery_codes"]
+    assert isinstance(codes, list) and len(codes) > 0
+
+    # And the regeneration landed in the DB, not just the response body:
+    # re-read the user and confirm the stored (hashed) recovery-code set is
+    # populated. The seed leaves recovery_codes NULL, so a non-empty hash
+    # set here proves the mutation persisted through the dispatch failure.
+    async with session_factory() as db:
+        user = await db.get(User, seed["user_id"])
+        stored_hashes = [h for h in (user.recovery_codes or "").split(",") if h]
+        assert len(stored_hashes) == len(codes)
+
+    assert (
+        await _notif_rows(session_factory, "user.mfa.recovery_codes.regenerated")
+        == []
+    )
+    assert len(sent_emails) == 1
