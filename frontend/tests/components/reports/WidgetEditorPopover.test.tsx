@@ -21,6 +21,9 @@ import type {
 } from "@/lib/reports/types";
 
 vi.mock("@/lib/api", () => ({ apiFetch: vi.fn() }));
+vi.mock("@/components/auth/AuthProvider", () => ({
+  useAuth: () => ({ user: { id: 1 }, loading: false }),
+}));
 
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
