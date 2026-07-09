@@ -594,17 +594,17 @@ function LegacyDashboard() {
     return txSource.filter((tx) => !hiddenIds.has(tx.id));
   }, [chartFilter, allTransactions, transactions]);
 
-  // First six budgets feed the "Budget Overview" mini bar chart on the
-  // dashboard. Memoizing prevents Recharts from re-laying out the bars
-  // every time an unrelated piece of dashboard state (sort toggle,
-  // expansion, hover) re-renders the parent.
+  // All budgets feed the "Budget Progress" mini bar chart on the dashboard.
+  // Memoizing prevents Recharts from re-laying out the bars every time an
+  // unrelated piece of dashboard state (sort toggle, expansion, hover)
+  // re-renders the parent.
   //
   // Defensive Array.isArray guard: some API responses return objects on
   // empty/error paths, and the chart is only rendered when budgets is
-  // actually populated — we just don't want this hoisted slice to throw
+  // actually populated — we just don't want this hoisted memo to throw
   // before that conditional renders.
   const dashBudgets = useMemo(
-    () => (Array.isArray(budgets) ? budgets.slice(0, 6) : []),
+    () => (Array.isArray(budgets) ? budgets : []),
     [budgets],
   );
   const budgetChartData = useMemo(
@@ -618,15 +618,15 @@ function LegacyDashboard() {
     [dashBudgets],
   );
 
-  // First eight expense items feed the "Forecast by Category" mini bar
-  // chart. Same memoization rationale as the donut and budget charts.
+  // All expense items feed the "Forecast by Category" mini bar chart. Same
+  // memoization rationale as the donut and budget charts.
   const forecastExpenseItems = useMemo(
     () => forecast?.items.filter((it) => it.type === "expense") ?? [],
     [forecast],
   );
   const forecastChartRows = useMemo(
     () =>
-      forecastExpenseItems.slice(0, 8).map((it) => ({
+      forecastExpenseItems.map((it) => ({
         categoryId: it.category_id,
         name:
           it.category_name.length > 12
@@ -1118,7 +1118,7 @@ function LegacyDashboard() {
               {(() => {
                 if (forecast && forecastExpenseItems.length > 0) {
                   return (
-                    <div className="w-full min-w-0" style={{ height: Math.max(Math.min(forecastExpenseItems.length, 8) * 32, 100) }}>
+                    <div className="w-full min-w-0" style={{ height: Math.max(forecastExpenseItems.length * 32, 100) }}>
                       <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
                         <BarChart
                           data={forecastChartRows}

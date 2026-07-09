@@ -43,14 +43,16 @@ export default function BudgetBarsWidget() {
   } = useDashboard();
 
   return (
-    <div className={`${card} overflow-hidden`}>
+    <div className={`${card} flex flex-col overflow-hidden`}>
       <div className={`flex items-center justify-between ${cardHeader}`}>
         <h2 className={cardTitle}>Budget Progress</h2>
         <Link href="/budgets" className="text-xs text-text-secondary underline underline-offset-2 hover:text-text-primary">Manage</Link>
       </div>
       {budgets.length > 0 ? (
         <>
-        <div className="w-full min-w-0 p-4" style={{ height: Math.max(dashBudgets.length * 40, 100) }}>
+        {/* Flex-fill the space between header and legend so every category
+            fits the resizable tile — more categories = thinner bars. */}
+        <div className="w-full min-w-0 flex-1 min-h-0 p-4">
           <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 1, height: 1 }}>
             <BarChart data={budgetChartData} layout="vertical" margin={{ left: 0, right: 20, top: 0, bottom: 0 }}>
               <XAxis type="number" hide />

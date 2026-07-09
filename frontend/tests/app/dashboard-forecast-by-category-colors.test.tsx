@@ -210,3 +210,146 @@ describe("DashboardPage - Forecast by Category over/under-plan colors", () => {
     expect(screen.getByText("Over plan")).toBeTruthy();
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// LegacyDashboard — show ALL categories (no per-category cap)
+//
+// LegacyDashboard (flag-gated rollback) carries its OWN dashBudgets /
+// forecastChartRows memos. PR #532 un-sliced them (and dropped the fixed
+// per-count inline heights). These tests seed 10 budget + 10 forecast
+// categories and assert every one reaches its chart (one <Cell> per row), so
+// re-introducing a slice on the legacy page fails CI instead of passing
+// silently. DashboardPage renders LegacyDashboard here because the mocked
+// useAuth returns no `features.customDashboard`.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// 10 forecast expense lines, all UNDER plan (fill classification is covered by
+// the tests above; here we only count rows).
+const PLAN_TEN_EXPENSE_LINES = {
+  id: 2,
+  billing_period_id: 1,
+  period_start: "2026-05-01",
+  period_end: null,
+  status: "active",
+  total_planned_income: "0",
+  total_planned_expense: "5000.00",
+  total_actual_income: "0",
+  total_actual_expense: "2000.00",
+  items: Array.from({ length: 10 }, (_, i) => ({
+    id: i + 1,
+    plan_id: 2,
+    category_id: 200 + i,
+    category_name: `Forecast Cat ${i}`,
+    parent_id: null,
+    type: "expense",
+    planned_amount: "500.00",
+    source: "manual",
+    actual_amount: "200.00",
+    variance: "-300.00",
+  })),
+};
+
+// 10 budgets, one per category.
+const TEN_BUDGETS = Array.from({ length: 10 }, (_, i) => ({
+  id: i + 1,
+  category_id: 300 + i,
+  category_name: `Budget Cat ${i}`,
+  amount: "500.00",
+  spent: "300.00",
+  remaining: "200.00",
+  percent_used: 60,
+  period_start: "2026-05-01",
+  period_end: null,
+}));
+
+describe("LegacyDashboard - shows all categories (no per-category cap)", () => {
+  beforeEach(() => {
+    vi.mocked(apiFetch).mockReset();
+    window.history.pushState({}, "", "/dashboard");
+    vi.mocked(useAuth).mockReturnValue({
+      user: USER as never,
+      loading: false,
+      needsSetup: false,
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+  });
+
+  it("Forecast by Category renders a Cell for every expense line when seeded with 10", async () => {
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([]);
+      if (url === "/api/v1/categories") return Promise.resolve([]);
+      if (url === "/api/v1/budgets" || url.startsWith("/api/v1/budgets?"))
+        return Promise.resolve([]);
+      if (url === "/api/v1/settings/billing-cycle")
+        return Promise.resolve({ billing_cycle_day: 1 });
+      if (url === "/api/v1/settings/billing-period")
+        return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
+      if (url === "/api/v1/settings/billing-periods")
+        return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
+      if (url.startsWith("/api/v1/forecast-plans/current"))
+        return Promise.resolve(PLAN_TEN_EXPENSE_LINES);
+      if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
+      if (url.startsWith("/api/v1/forecast/account-balances"))
+        return Promise.resolve({ accounts: [], period_start: "2026-05-01", period_end: "2026-05-31" });
+      if (url.startsWith("/api/v1/transactions"))
+        return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+      return Promise.resolve(null);
+    }) as never);
+
+    render(<DashboardPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Forecast by Category")).toBeTruthy();
+    });
+
+    // The actual <Bar dataKey="actual"> wraps one <Cell> per forecast row.
+    // With budgets empty there is no budget spent-bar, so the only bar-actual
+    // is the forecast one — assert it carries all 10 cells.
+    const actualBars = await screen.findAllByTestId("bar-actual");
+    const forecastBar = actualBars.find(
+      (b) => b.querySelectorAll('[data-testid="cell"]').length === 10,
+    );
+    expect(forecastBar).toBeTruthy();
+    expect(forecastBar!.querySelectorAll('[data-testid="cell"]')).toHaveLength(10);
+  });
+
+  it("Budget Progress renders a Cell for every budget when seeded with 10", async () => {
+    vi.mocked(apiFetch).mockImplementation(((url: string) => {
+      if (url === "/api/v1/accounts") return Promise.resolve([]);
+      if (url === "/api/v1/categories") return Promise.resolve([]);
+      if (url === "/api/v1/budgets" || url.startsWith("/api/v1/budgets?"))
+        return Promise.resolve(TEN_BUDGETS);
+      if (url === "/api/v1/settings/billing-cycle")
+        return Promise.resolve({ billing_cycle_day: 1 });
+      if (url === "/api/v1/settings/billing-period")
+        return Promise.resolve({ id: 1, start_date: "2026-05-01", end_date: null });
+      if (url === "/api/v1/settings/billing-periods")
+        return Promise.resolve([{ id: 1, start_date: "2026-05-01", end_date: null }]);
+      // No forecast plan → no forecast actual-bar to disambiguate against.
+      if (url.startsWith("/api/v1/forecast-plans/current")) return Promise.resolve(null);
+      if (url.startsWith("/api/v1/forecast?period_start=")) return Promise.resolve(null);
+      if (url.startsWith("/api/v1/forecast/account-balances"))
+        return Promise.resolve({ accounts: [], period_start: "2026-05-01", period_end: "2026-05-31" });
+      if (url.startsWith("/api/v1/transactions"))
+        return Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 });
+      return Promise.resolve(null);
+    }) as never);
+
+    render(<DashboardPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Budget Progress")).toBeTruthy();
+    });
+
+    // The spent <Bar dataKey="spent"> wraps one <Cell> per budget row.
+    const spentBars = await screen.findAllByTestId("bar-spent");
+    const budgetBar = spentBars.find(
+      (b) => b.querySelectorAll('[data-testid="cell"]').length === 10,
+    );
+    expect(budgetBar).toBeTruthy();
+    expect(budgetBar!.querySelectorAll('[data-testid="cell"]')).toHaveLength(10);
+  });
+});
