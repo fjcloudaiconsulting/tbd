@@ -53,12 +53,16 @@ vi.mock("recharts", async () => {
     BarChart: ({ children }: { children: React.ReactNode }) => (
       <div data-testid="bar-chart">{children}</div>
     ),
-    // Stub Bar so its onClick prop is invokable via a data-testid button.
-    // The real recharts Bar renders SVG in a canvas that jsdom can't size,
-    // so onClick is never reachable from tests without this stub.
+    // Stub Bar so its onClick prop is invokable via a data-testid button AND
+    // its <Cell> children render into the DOM. The click-mapping tests fire
+    // the button's onClick; the show-all tests count the rendered Cells (one
+    // per category) to prove no per-category cap survives. The real recharts
+    // Bar renders SVG in a canvas jsdom can't size and swallows its children,
+    // so neither is reachable without this stub.
     Bar: ({
       dataKey,
       onClick,
+      children,
     }: {
       dataKey?: string;
       onClick?: (data: unknown, index: number) => void;
@@ -67,8 +71,13 @@ vi.mock("recharts", async () => {
       <button
         data-testid={`bar-${dataKey ?? "unknown"}`}
         onClick={() => onClick?.({}, 0)}
-      />
+      >
+        {children}
+      </button>
     ),
+    // Each <Cell> becomes a countable span so tests can assert the rendered
+    // category count reflects the full (un-capped) dataset.
+    Cell: () => <span data-testid="cell" />,
   };
 });
 
@@ -350,20 +359,29 @@ describe("BudgetBarsWidget", () => {
     expect(wrapper.style.height).toBe("");
   });
 
-  it("card root is a flex column that fills its box (h-full flex flex-col)", () => {
+  it("renders one Cell per budget so ALL categories reach the chart (no per-category cap)", () => {
+    // Seed 10 budgets. The spent Bar renders one <Cell> per dashBudgets entry;
+    // the old code sliced the list, so a cap would show fewer than 10 cells.
+    const budgets = Array.from({ length: 10 }, (_, i) => ({
+      ...MOCK_BUDGET,
+      id: i + 1,
+      category_id: 100 + i,
+      category_name: `Cat ${i}`,
+    }));
     mockWith({
-      budgets: [MOCK_BUDGET],
-      dashBudgets: [MOCK_BUDGET],
-      budgetChartData: [{ name: "Groceries", spent: 300, remaining: 200, pct: 60 }],
+      budgets,
+      dashBudgets: budgets,
+      budgetChartData: budgets.map((b) => ({
+        name: b.category_name,
+        spent: 300,
+        remaining: 200,
+        pct: 60,
+      })),
     });
-    const { container } = render(
-      <>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>,
-    );
-    // The card root is the single child of the fill() wrapper.
-    const cardRoot = container.querySelector(".h-full > *") as HTMLElement;
-    expect(cardRoot).not.toBeNull();
-    expect(cardRoot.classList.contains("flex")).toBe(true);
-    expect(cardRoot.classList.contains("flex-col")).toBe(true);
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_budget", "w2"))}</>);
+    // Cells live in the spent Bar (the remaining Bar has no Cell children).
+    const spentBar = screen.getByTestId("bar-spent");
+    expect(spentBar.querySelectorAll('[data-testid="cell"]')).toHaveLength(10);
   });
 });
 
@@ -473,19 +491,31 @@ describe("ForecastBarsWidget", () => {
     expect(wrapper.style.height).toBe("");
   });
 
-  it("card root is a flex column that fills its box (h-full flex flex-col)", () => {
+  it("renders one Cell per forecast expense row so ALL categories reach the chart (no per-category cap)", () => {
+    // Seed 10 forecast expense rows. The actual Bar renders one <Cell> per
+    // forecastChartRows entry; the old code sliced the list, so a cap would
+    // show fewer than 10 cells.
+    const rows = Array.from({ length: 10 }, (_, i) => ({
+      categoryId: i + 1,
+      name: `Cat ${i}`,
+      planned: 200,
+      actual: 150,
+    }));
+    const items = Array.from({ length: 10 }, (_, i) => ({
+      ...MOCK_FORECAST_EXPENSE_ITEM,
+      id: i + 1,
+      category_id: i + 1,
+      category_name: `Cat ${i}`,
+    }));
     mockWith({
       forecast: MOCK_FORECAST,
-      forecastExpenseItems: [MOCK_FORECAST_EXPENSE_ITEM],
-      forecastChartRows: [{ categoryId: 5, name: "Transport", planned: 200, actual: 150 }],
+      forecastExpenseItems: items,
+      forecastChartRows: rows,
     });
-    const { container } = render(
-      <>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>,
-    );
-    const cardRoot = container.querySelector(".h-full > *") as HTMLElement;
-    expect(cardRoot).not.toBeNull();
-    expect(cardRoot.classList.contains("flex")).toBe(true);
-    expect(cardRoot.classList.contains("flex-col")).toBe(true);
+    render(<>{renderDashboardWidget(emptyDashboardWidget("dash_forecast_category", "w3"))}</>);
+    // Cells live in the actual Bar (the planned Bar has no Cell children).
+    const actualBar = screen.getByTestId("bar-actual");
+    expect(actualBar.querySelectorAll('[data-testid="cell"]')).toHaveLength(10);
   });
 });
 
