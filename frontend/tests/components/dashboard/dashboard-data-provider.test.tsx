@@ -941,6 +941,69 @@ describe("DashboardDataProvider — Phase 2b: forecastChartRows memo", () => {
   });
 });
 
+describe("DashboardDataProvider — show all categories (no slice cap)", () => {
+  it("dashBudgets exposes ALL budgets, not just the first 6", async () => {
+    // 10 budgets — the old code capped dashBudgets/budgetChartData at 6.
+    const tenBudgets = Array.from({ length: 10 }, (_, i) => ({
+      ...BUDGET_1,
+      id: i + 1,
+      category_id: 100 + i,
+      category_name: `Cat ${i + 1}`,
+    }));
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({ budgets: tenBudgets }) as never,
+    );
+
+    renderChartProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("budgets-count").textContent).toBe("10"),
+    );
+    // The bug: these were capped at 6. All 10 must flow through.
+    expect(screen.getByTestId("dash-budgets-count").textContent).toBe("10");
+    expect(screen.getByTestId("budget-chart-data-count").textContent).toBe("10");
+  });
+
+  it("forecastChartRows exposes ALL expense items, not just the first 8", async () => {
+    // Forecast plan with 10 expense items — the old code capped rows at 8.
+    const tenExpenseItems = Array.from({ length: 10 }, (_, i) => ({
+      id: i + 1,
+      plan_id: 1,
+      category_id: 200 + i,
+      category_name: `Exp ${i + 1}`,
+      parent_id: null,
+      type: "expense" as const,
+      planned_amount: "100",
+      source: "manual" as const,
+      actual_amount: "50",
+      variance: "50",
+    }));
+    const planTenItems = {
+      ...FORECAST_PLAN_WITH_ITEMS,
+      items: tenExpenseItems,
+    };
+    vi.mocked(apiFetch).mockImplementation(
+      makeApiFetchHandler({ forecastPlan: planTenItems }) as never,
+    );
+
+    renderChartProvider();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("loading").textContent).toBe("false"),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("forecast-expense-items-count").textContent).toBe("10"),
+    );
+    // The bug: these were capped at 8. All 10 must flow through.
+    expect(screen.getByTestId("forecast-chart-rows-count").textContent).toBe("10");
+  });
+});
+
 describe("DashboardDataProvider — Phase 2b: toggleSpendingSort", () => {
   it("toggleSpendingSort calls setSort with new field + default dir on field change", () => {
     const mockSetSort = vi.fn();

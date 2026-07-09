@@ -790,9 +790,11 @@ export function DashboardDataProvider({
     return list;
   }, [donutDataRaw, totalSpend, spendingSort.field, spendingSort.dir]);
 
-  // First six budgets feed the "Budget Overview" mini bar chart.
+  // All budgets feed the "Budget Progress" bar chart. The canvas tile flex-
+  // fills its resizable box, so every category is shown (thinner bars as the
+  // list grows); the user resizes the tile taller for thickness.
   const dashBudgets = useMemo(
-    () => (Array.isArray(budgets) ? budgets.slice(0, 6) : []),
+    () => (Array.isArray(budgets) ? budgets : []),
     [budgets],
   );
 
@@ -807,7 +809,8 @@ export function DashboardDataProvider({
     [dashBudgets],
   );
 
-  // First eight expense items feed the "Forecast by Category" mini bar chart.
+  // All expense items feed the "Forecast by Category" bar chart. Like the
+  // budget tile, the canvas tile flex-fills its box so every category shows.
   const forecastExpenseItems = useMemo(
     () => forecast?.items.filter((it) => it.type === "expense") ?? [],
     [forecast],
@@ -815,7 +818,7 @@ export function DashboardDataProvider({
 
   const forecastChartRows = useMemo(
     () =>
-      forecastExpenseItems.slice(0, 8).map((it) => ({
+      forecastExpenseItems.map((it) => ({
         categoryId: it.category_id,
         name:
           it.category_name.length > 12
