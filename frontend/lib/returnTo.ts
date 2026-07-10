@@ -70,6 +70,16 @@ export function sanitizeReturnTo(raw: string | null | undefined): string {
   // survive while any smuggled host/control chars are gone.
   const result = `${u.pathname}${u.search}${u.hash}`;
 
+  // Reject any authority-shaped reconstruction ("//host…") outright. The
+  // reconstructed re-parse below compares against the sentinel origin, so a
+  // dot-segment payload whose authority host equals the sentinel host (e.g.
+  // "/..//x.invalid/p" → "//x.invalid/p") would pass both the origin check
+  // and the re-parse, yet resolve cross-origin at the real sink. This
+  // host-independent check makes the same-origin claim true for ALL hosts,
+  // not just the non-resolvable sentinel.
+  if (result.startsWith("//") || u.pathname.startsWith("//"))
+    return RETURN_TO_FALLBACK;
+
   // Dot-segment normalization ("/..//evil.com", "/x/..//evil.com", …) can make
   // u.pathname begin with "//" while the sentinel origin above stays intact.
   // The reconstructed value is then protocol-relative and re-resolves

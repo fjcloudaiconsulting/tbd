@@ -107,6 +107,31 @@ describe("sanitizeReturnTo", () => {
     expect(sanitizeReturnTo(raw)).toBe(expected);
   });
 
+  // ---------------------------------------------------------------------
+  // Sentinel-host collision (defense-in-depth). The reconstructed-string
+  // re-parse compares against the sentinel origin, so a dot-segment payload
+  // whose authority host EQUALS the sentinel host ("x.invalid") passes both
+  // the origin check AND the re-parse, yet resolves CROSS-ORIGIN at the real
+  // sink. It is only harmless today because ".invalid" (RFC 6761) never
+  // resolves. Reject any authority-shaped reconstruction outright so the
+  // same-origin claim holds for ALL hosts, not just the sentinel.
+  // ---------------------------------------------------------------------
+  it.each([
+    ["dot-dot slash //x.invalid/p", "/..//x.invalid/p"],
+    ["dot-dot slash //x.invalid", "/..//x.invalid"],
+  ])(
+    "blocks authority-shaped reconstruction matching the sentinel host: %s",
+    (_label, raw) => {
+      expect(sanitizeReturnTo(raw)).toBe("/dashboard");
+    },
+  );
+
+  it("still allows a single-leading-slash path that names the sentinel host", () => {
+    // Control: one leading slash is a normal same-origin path, not an
+    // authority. It must survive intact even though it contains "x.invalid".
+    expect(sanitizeReturnTo("/x.invalid/p")).toBe("/x.invalid/p");
+  });
+
   it("does not double-decode a legitimate literal percent path", () => {
     // Regression: the old sanitizer called decodeURIComponent a SECOND time
     // on the already-decoded value, so a literal "%" (e.g. "50%-growth")
