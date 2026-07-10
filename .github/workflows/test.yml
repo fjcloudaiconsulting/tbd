@@ -23,8 +23,14 @@ jobs:
   # See specs/ci-test-sharding.md for the rationale and the audit.
   #
   # The suite is self-contained: tests use in-process aiosqlite + a fake
-  # Redis (see backend/tests/conftest.py), so shards need NO MySQL/Redis
-  # service containers — each runner just pip-installs and runs its slice.
+  # Redis (see backend/tests/conftest.py), so shards need NO MySQL and the
+  # fake covers the whole suite. The ONE exception is the reuse-detection
+  # real-Lua regression tests (tests/auth/test_session_reuse_detection.py),
+  # which must execute the shipped DETECT_REUSE_LUA against a real server to
+  # catch a Lua-string bug the fake would mask. We give each shard a Redis
+  # service and expose it ONLY via TEST_REAL_REDIS_URL (a dedicated var, not
+  # REDIS_URL) so those opt-in tests run while the rest of the suite and the
+  # app's rate-limiter config stay on the fake / in-memory path unchanged.
   #
   # The allowlist regression (tests/auth/test_sessions_invalidated_at_allowlist.py)
   # AST-scans backend/app/ source, not test files, so it works correctly in
@@ -36,6 +42,18 @@ jobs:
       fail-fast: false
       matrix:
         group: [1, 2, 3, 4]
+    services:
+      # Only the reuse-detection real-Lua tests use this, via TEST_REAL_REDIS_URL
+      # below; the rest of the suite runs on the in-process fake Redis.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -54,6 +72,10 @@ jobs:
 
       - name: Run backend tests (shard ${{ matrix.group }}/4)
         working-directory: backend
+        env:
+          # Dedicated var (NOT REDIS_URL) so only the opt-in real-Lua
+          # reuse-detection tests use real Redis; app config stays unchanged.
+          TEST_REAL_REDIS_URL: redis://localhost:6379/0
         run: pytest --splits 4 --group ${{ matrix.group }} --durations-path .test_durations
 
       - name: Run backend syntax smoke

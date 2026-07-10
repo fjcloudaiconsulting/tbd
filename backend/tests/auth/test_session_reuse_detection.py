@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -582,10 +583,16 @@ def _uid() -> str:
 async def real_redis(monkeypatch):
     """Real Redis/Valkey client for executing the shipped Lua string.
 
-    Bypasses the autouse fake by rebuilding the production client from
-    ``settings.redis_url`` and repointing ``redis_client.get_client`` at
-    it (so ``require_client()`` inside the wrapper resolves to the real
-    server). Skips when no real Redis is reachable.
+    Bypasses the autouse fake by rebuilding the production client from a
+    real Redis URL and repointing ``redis_client.get_client`` at it (so
+    ``require_client()`` inside the wrapper resolves to the real server).
+
+    URL resolution uses a DEDICATED ``TEST_REAL_REDIS_URL`` env var (CI sets
+    it to a Redis service container), falling back to ``settings.redis_url``
+    for local / agent ``team-*`` stacks where it is already set. Keeping this
+    off ``settings.redis_url`` alone means CI can enable these tests WITHOUT
+    also flipping the app's rate-limiter to Redis-backed. Skips (never fails)
+    when neither is set / reachable, so a plain unit run stays green.
 
     Seeded keys use a short TTL so any key a failing assertion leaves
     behind self-expires — no cross-test contamination in the shared
@@ -593,14 +600,17 @@ async def real_redis(monkeypatch):
     """
     from redis.exceptions import RedisError
 
-    if not settings.redis_url:
-        pytest.skip("no settings.redis_url configured for the real-Redis test")
-    client = redis_client._build_auth_redis_client(settings.redis_url)
+    redis_url = os.environ.get("TEST_REAL_REDIS_URL") or settings.redis_url
+    if not redis_url:
+        pytest.skip(
+            "no TEST_REAL_REDIS_URL or settings.redis_url configured for the real-Redis test"
+        )
+    client = redis_client._build_auth_redis_client(redis_url)
     try:
         await client.ping()
     except (RedisError, OSError) as exc:  # pragma: no cover - infra gate
         await client.aclose()
-        pytest.skip(f"real Redis not reachable at {settings.redis_url!r}: {exc}")
+        pytest.skip(f"real Redis not reachable at {redis_url!r}: {exc}")
     monkeypatch.setattr(redis_client, "get_client", lambda: client)
     monkeypatch.setattr(redis_client, "_client", client, raising=False)
     try:
