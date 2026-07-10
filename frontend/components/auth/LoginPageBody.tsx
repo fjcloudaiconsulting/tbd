@@ -9,8 +9,18 @@ import PasswordInput from "@/components/ui/PasswordInput";
 import ThemeToggle from "@/components/ui/ThemeToggle";
 import { ApiResponseError, apiFetch } from "@/lib/api";
 import { input, label, btnPrimary, btnSecondary, error as errorCls } from "@/lib/styles";
+import { sanitizeReturnTo } from "@/lib/returnTo";
 
 type ResendState = "idle" | "sending" | "sent" | "failed";
+
+// Banner copy for the ``?reason=`` the AppShell re-auth redirect carries.
+// "expired" = involuntary (session died mid-use); "logout" = voluntary
+// sign-out. Any other / absent value shows no banner. Copy avoids
+// em-dashes per the project copy rule.
+const REASON_COPY: Record<string, string> = {
+  expired: "Your session expired. Please sign in to continue.",
+  logout: "You've been signed out.",
+};
 
 /**
  * Friendly copy keyed by the `?sso_error=<code>` value the backend
@@ -60,6 +70,16 @@ export default function LoginPageBody() {
     setSsoErrorVisible(Boolean(ssoErrorCode));
   }, [ssoErrorCode]);
 
+  // Where to land after a successful login (or the already-authenticated
+  // bounce). Open-redirect-guarded: only a same-origin relative path is
+  // honored, everything else falls back to /dashboard. Single-shot — read
+  // from the URL, never persisted.
+  const returnTo = sanitizeReturnTo(searchParams?.get("returnTo"));
+  // Why the user was sent here (session expired vs signed out). Selects the
+  // banner copy; unknown/absent → no banner.
+  const reasonCode = searchParams?.get("reason") ?? "";
+  const reasonMessage = REASON_COPY[reasonCode];
+
   function clearSsoErrorFromUrl() {
     setSsoErrorVisible(false);
     if (typeof window === "undefined") return;
@@ -70,8 +90,8 @@ export default function LoginPageBody() {
 
   useEffect(() => {
     if (!loading && needsSetup) router.replace("/setup");
-    if (!loading && user) router.replace("/dashboard");
-  }, [loading, needsSetup, user, router]);
+    if (!loading && user) router.replace(returnTo);
+  }, [loading, needsSetup, user, router, returnTo]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -81,7 +101,7 @@ export default function LoginPageBody() {
     setSubmitting(true);
     try {
       await login(loginId, password);
-      router.push("/dashboard");
+      router.push(returnTo);
     } catch (err) {
       if (err instanceof MfaRequiredError) {
         sessionStorage.setItem("mfa_token", err.mfaToken);
@@ -131,6 +151,15 @@ export default function LoginPageBody() {
           <h1 className="font-display text-3xl font-semibold text-text-primary">The Better Decision</h1>
           <p className="mt-1.5 text-sm text-text-muted">Sign in</p>
         </div>
+        {reasonMessage && (
+          <div
+            className="mb-5 rounded-md bg-info-dim px-4 py-3 text-sm text-info"
+            role="status"
+            data-testid="auth-reason-banner"
+          >
+            <p>{reasonMessage}</p>
+          </div>
+        )}
         {ssoErrorVisible && ssoErrorCode && (
           <div
             className={`${errorCls} mb-5`}

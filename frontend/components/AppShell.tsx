@@ -232,11 +232,45 @@ const systemItems: readonly SystemNavItem[] = [
   },
 ];
 
+// Auth/public route prefixes we must never round-trip as ``returnTo``:
+// redirecting back onto them would loop the user on an auth screen. The
+// sanitizer on the /login side rejects /login + /setup too, but skipping
+// them here keeps the query string clean and covers the rest of the family.
+const NON_RETURNABLE_PREFIXES = [
+  "/login",
+  "/setup",
+  "/register",
+  "/forgot-password",
+  "/reset-password",
+  "/verify-email",
+  "/accept-invite",
+  "/mfa-verify",
+];
+
+function isReturnablePath(pathname: string): boolean {
+  return !NON_RETURNABLE_PREFIXES.some(
+    (p) => pathname === p || pathname.startsWith(`${p}/`),
+  );
+}
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, loading, logout, features, billingUiEnabled } = useAuth();
+  const {
+    user,
+    loading,
+    logout,
+    features,
+    billingUiEnabled,
+    authExitReason,
+    clearAuthExitReason,
+  } = useAuth();
   const navItems = buildNavItems(features ?? { reports: false, plans: false });
   const router = useRouter();
   const pathname = usePathname();
+  // Guards the redirect to fire exactly once per logged-out episode.
+  // Without it, clearing authExitReason (a setState) below would re-run
+  // this effect and issue a second, reason-less /login replace that
+  // clobbers the first URL. Reset when the user signs back in.
+  const reauthRedirectedRef = useRef(false);
   const tour = useTour();
   const [userExpanded, setUserExpanded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -245,8 +279,32 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useFocusTrap({ active: sidebarOpen, containerRef: sidebarRef });
 
   useEffect(() => {
-    if (!loading && !user) router.replace("/login");
-  }, [user, loading, router]);
+    if (loading) return;
+    if (user) {
+      // Signed back in: arm the guard for the next logged-out episode.
+      reauthRedirectedRef.current = false;
+      return;
+    }
+    // Only redirect once per episode (see reauthRedirectedRef).
+    if (reauthRedirectedRef.current) return;
+    reauthRedirectedRef.current = true;
+
+    const params = new URLSearchParams();
+    // Preserve the destination EXCEPT on a manual logout (the user chose
+    // to leave → land them on /dashboard) or when we're already on an
+    // auth/public route we must not loop back to.
+    if (authExitReason !== "manual" && isReturnablePath(pathname)) {
+      params.set("returnTo", pathname);
+    }
+    // Map the exit reason to the banner selector the /login page reads.
+    if (authExitReason === "expired") params.set("reason", "expired");
+    else if (authExitReason === "manual") params.set("reason", "logout");
+
+    const qs = params.toString();
+    router.replace(qs ? `/login?${qs}` : "/login");
+    // Consume the reason once so a later redirect can't inherit it.
+    clearAuthExitReason?.();
+  }, [user, loading, router, pathname, authExitReason, clearAuthExitReason]);
 
   // Cold-start mitigation: while the user is signed in AND AppShell is
   // mounted, a 4-min heartbeat pings /health?keep-warm=1 to keep the

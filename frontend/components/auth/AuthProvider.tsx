@@ -107,6 +107,28 @@ interface AuthContextValue {
   ) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
+  /**
+   * WHY the user last became unauthenticated, so the /login screen can
+   * show the right message and AppShell can decide whether to preserve
+   * the destination:
+   *   - "expired": involuntary — an established session died mid-use
+   *     (apiFetch's terminal-401 path dispatched ``auth:unauthenticated``).
+   *     AppShell round-trips the current page as ``returnTo`` and /login
+   *     shows the "session expired" banner.
+   *   - "manual": voluntary — the user clicked Sign Out. No ``returnTo``
+   *     (they chose to leave); /login shows the "signed out" banner.
+   *   - null: neither happened this session (fresh deep-link visit while
+   *     logged out). AppShell still preserves ``returnTo`` but shows no
+   *     banner.
+   * Optional in the interface so pre-existing test mocks that omit it keep
+   * type-checking; consumers treat ``undefined`` as ``null``.
+   */
+  authExitReason?: "expired" | "manual" | null;
+  /**
+   * Consume the exit reason (reset to null) so it can't leak into a later
+   * redirect. AppShell calls this immediately after building the /login URL.
+   */
+  clearAuthExitReason?: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -125,6 +147,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // /auth/status resolves so gated surfaces stay hidden on first render.
   // Same "default false until /auth/status" rationale as billingUiEnabled.
   const [features, setFeatures] = useState<{ reports: boolean; plans: boolean; customDashboard: boolean }>({ reports: false, plans: false, customDashboard: false });
+  // WHY the user last became unauthenticated. Drives the /login banner +
+  // returnTo decision (see AuthContextValue.authExitReason). Only the two
+  // deliberate transitions set it: the terminal-401 ``auth:unauthenticated``
+  // event → "expired", and the user-initiated logout() → "manual". A fresh
+  // restore-with-no-session leaves it null (deep-link case).
+  const [authExitReason, setAuthExitReason] = useState<"expired" | "manual" | null>(null);
+  const clearAuthExitReason = useCallback(() => setAuthExitReason(null), []);
 
   const fetchMe = useCallback(async () => {
     // 2026-05-18 review fix: fetchMe is the shared current-user load
@@ -261,6 +290,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // and AppShell can redirect the user to /login instead of spinning forever.
   useEffect(() => {
     const handler = () => {
+      // Involuntary session death mid-use. apiFetch dispatches this ONLY
+      // from its terminal-401 path (never on manual logout, never on a
+      // fresh visit), so tagging "expired" here keeps the three re-auth
+      // states cleanly distinct.
+      setAuthExitReason("expired");
       setUser(null);
       setAccessToken(null);
     };
@@ -332,6 +366,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Best-effort
     }
+    // Voluntary sign-out: tag "manual" so /login shows the "signed out"
+    // banner and AppShell drops returnTo (the user chose to leave).
+    setAuthExitReason("manual");
     setAccessToken(null);
     setUser(null);
     // Reset to fail-closed default so a signed-out user doesn't retain
@@ -351,6 +388,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         register,
         logout,
         refreshMe: fetchMe,
+        authExitReason,
+        clearAuthExitReason,
       }}
     >
       {children}
