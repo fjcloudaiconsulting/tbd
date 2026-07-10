@@ -736,6 +736,142 @@ async def session_revoke_family(sid: str) -> list[str]:
     return jtis
 
 
+# ── Refresh-token reuse detection (fail-safe family revoke) ─────────────
+#
+# HONESTY / THREAT MODEL. This is a FAIL-SAFE REVOKE, not OAuth
+# single-use rotation. It catches a refresh cookie that was rotated
+# PAST the 30s grace window (``SESSION_GRACE_TTL_SECONDS``) and then
+# presented again to ``/refresh`` — the signature of an exfiltrated
+# cookie replayed after the legitimate browser already rotated forward.
+# When that happens we revoke the WHOLE session family, so both the
+# attacker and the victim are logged out and must re-authenticate.
+#
+# It deliberately does NOT catch an attacker who rides the rotation
+# HEAD within the 30s grace window: while grace is alive the presented
+# jti resolves on the grace branch as a benign cross-tab race, which is
+# indistinguishable from the legitimate case. Narrowing that window is
+# inherent to having a grace window at all; leeway stays at 30s.
+#
+# WHY THE REVOKE IS INLINE IN THE LUA. Classify + revoke happen in a
+# single atomic ``EVAL`` so the whole thing is exactly-once under
+# concurrency: the first caller past the grace window consumes the
+# family (SMEMBERS + DEL) and returns ``reused:N``; any second caller
+# racing the same stale jti sees ``SISMEMBER == 0`` and returns
+# ``unknown`` — no second revoke, and (because only the ``reused``
+# branch audits) exactly one audit row. A separate Python-side revoke
+# could not give that guarantee.
+
+# Reuse-detection classifications returned by ``session_detect_reuse_and_revoke``.
+SESSION_REUSE_LIVE = "live"
+SESSION_REUSE_GRACE = "grace"
+SESSION_REUSE_UNKNOWN = "unknown"
+SESSION_REUSE_REUSED = "reused"
+
+# A revoked family larger than this is logged as a structured warning
+# (does not block the revoke). A normal family is a handful of jtis;
+# an enormous one hints at a runaway rotation loop or a wildly long
+# session, worth an operator breadcrumb.
+REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD = 10000
+
+# Single-instance Valkey — computed-key ``redis.call`` inside the script
+# is fine (no cluster slot constraints). The per-member primary / grace
+# key prefixes are hardcoded here and MUST stay in lockstep with
+# ``_primary_key`` / ``_grace_key`` above.
+DETECT_REUSE_LUA = """
+-- KEYS[1] = auth:session:{jti}          primary key of the presented jti
+-- KEYS[2] = auth:session:grace:{jti}    grace key of the presented jti
+-- KEYS[3] = auth:session:by_sid:{sid}   family set for the session
+-- ARGV[1] = jti (presented; checked for family membership)
+-- Returns: "live" | "grace" | "unknown" | "reused:<count>"
+
+-- The presented jti became live again (a concurrent rotation re-issued
+-- it as the head). Not reuse — a benign race.
+if redis.call("EXISTS", KEYS[1]) == 1 then
+    return "live"
+end
+
+-- Still inside the rotation grace/leeway window. Benign cross-tab race,
+-- indistinguishable from the legitimate case; do NOT revoke.
+if redis.call("EXISTS", KEYS[2]) == 1 then
+    return "grace"
+end
+
+-- Not a member of the family: garbage jti, or the family was already
+-- revoked by a prior detection (idempotency: no second revoke).
+if redis.call("SISMEMBER", KEYS[3], ARGV[1]) == 0 then
+    return "unknown"
+end
+
+-- Consumed member, primary gone, past leeway => REUSE. Revoke the whole
+-- family INLINE and atomically so a second concurrent caller sees an
+-- empty family and returns "unknown" (exactly-once revoke + audit).
+local members = redis.call("SMEMBERS", KEYS[3])
+redis.call("DEL", KEYS[3])
+for _, m in ipairs(members) do
+    redis.call("DEL", "auth:session:" .. m)
+    redis.call("DEL", "auth:session:grace:" .. m)
+end
+return "reused:" .. #members
+"""
+
+
+@_normalize_transport_errors
+async def session_detect_reuse_and_revoke(
+    jti: str, sid: str
+) -> tuple[str, int] | tuple[str]:
+    """Classify a both-miss refresh jti and, ONLY on reuse, revoke the
+    whole session family inline (see the module comment above for the
+    threat model and why the revoke lives in the Lua).
+
+    Returns one of:
+      * ``("reused", jti_count)`` — the presented jti was a consumed
+        family member past the grace window; the entire family
+        (family set + every primary + every grace key) was DELeted in
+        this atomic call. ``jti_count`` is the family size that was
+        revoked.
+      * ``("grace",)`` — the grace key is still alive (benign race); no
+        revoke.
+      * ``("live",)`` — the primary key is live again (concurrent
+        rotation re-issued the head); no revoke.
+      * ``("unknown",)`` — not a family member (garbage jti, or the
+        family was already revoked by a prior detection); no revoke.
+
+    Fails CLOSED on unreachable Redis via :func:`require_client`. The
+    ``RedisError`` family bubbles up unchanged so the router returns 503
+    on uncertainty rather than guessing.
+    """
+    client = require_client()
+    result = await client.eval(
+        DETECT_REUSE_LUA,
+        3,  # keycount
+        _primary_key(jti),
+        _grace_key(jti),
+        _family_key(sid),
+        jti,
+    )
+    if isinstance(result, bytes):
+        result = result.decode("utf-8")
+    if isinstance(result, str) and result.startswith(SESSION_REUSE_REUSED + ":"):
+        try:
+            count = int(result.split(":", 1)[1])
+        except (IndexError, ValueError):
+            count = 0
+        if count > REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD:
+            logger.warning(
+                "auth.session.reuse_revoke.large_family",
+                jti_count=count,
+                threshold=REUSE_REVOKE_FAMILY_SIZE_WARN_THRESHOLD,
+            )
+        return (SESSION_REUSE_REUSED, count)
+    if result == SESSION_REUSE_GRACE:
+        return (SESSION_REUSE_GRACE,)
+    if result == SESSION_REUSE_LIVE:
+        return (SESSION_REUSE_LIVE,)
+    # Any other value (including the expected "unknown") is treated as
+    # unknown => no revoke.
+    return (SESSION_REUSE_UNKNOWN,)
+
+
 # ── MFA single-use nonces ───────────────────────────────────────────────
 #
 # The /mfa/email-verify path proves an emailed 6-digit code was not
