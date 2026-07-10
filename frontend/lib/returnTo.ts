@@ -5,41 +5,61 @@
 // attacker-controllable (anyone can craft a /login?returnTo=… link), it
 // must be validated before we ever hand it to router.push / router.replace.
 //
-// Policy: honor ONLY a same-origin, absolute, relative path — i.e. a value
-// that, after a single decode, starts with exactly one "/" and is not a
-// protocol-relative ("//host") or backslash-smuggled ("/\host") URL, nor a
-// scheme like ``javascript:`` / ``https:``. The login and setup routes are
-// additionally rejected so a redirect can never loop back onto the auth
-// screens. Anything that fails falls back to ``/dashboard``.
+// Policy: honor ONLY a same-origin, absolute, relative path. Rather than
+// hand-rolling positional checks (which missed embedded tab/newline/CR that
+// browsers strip mid-parse, collapsing "/⇥/evil.com" into a cross-origin
+// "//evil.com" at navigation time), we resolve the candidate against a
+// sentinel origin with the URL constructor and require the origin to stay
+// put. The login and setup routes are additionally rejected so a redirect
+// can never loop back onto the auth screens. Anything that fails falls back
+// to ``/dashboard``.
 export const RETURN_TO_FALLBACK = "/dashboard";
 
 // Auth/setup routes we must never redirect back to (would loop the user
-// on the login/setup screen). Exact-match only — ``/loginhelp`` is a
-// legitimate app path and must pass.
+// on the login/setup screen). Exact-match only — ``/loginhelp`` and
+// ``/setuphelp`` are legitimate app paths and must pass.
 const BLOCKED_RETURN_PATHS = new Set(["/login", "/setup"]);
 
+// Sentinel we resolve every candidate against. A genuine same-origin path
+// leaves this origin unchanged; anything that reaches out (protocol-relative,
+// absolute URL, backslash-smuggled, control-char smuggled) shifts or drops it.
+const SENTINEL_ORIGIN = "https://x.invalid";
+
 export function sanitizeReturnTo(raw: string | null | undefined): string {
+  // The caller (searchParams.get) has ALREADY percent-decoded the value
+  // once. Decoding a second time throws on a legit literal "%" (e.g.
+  // "/reports/50%-growth") and is itself a bypass-enabler, so we operate on
+  // the value exactly as received.
   if (!raw) return RETURN_TO_FALLBACK;
 
-  let decoded: string;
+  // Must be an absolute same-origin path with a leading slash. A missing
+  // leading slash rejects ``https://``, ``javascript:``, and bare tokens up
+  // front; the origin check below handles the "//host" / "/\host" forms.
+  if (!raw.startsWith("/")) return RETURN_TO_FALLBACK;
+
+  // Belt-and-suspenders against the strip trick: reject ANY C0 control
+  // character. The WHATWG URL parser silently removes U+0009 (tab), U+000A
+  // (LF) and U+000D (CR), so "/\t/evil.com" would otherwise reparse as the
+  // protocol-relative "//evil.com" and redirect cross-origin.
+  if (/[\u0000-\u001f]/.test(raw)) return RETURN_TO_FALLBACK;
+
+  let u: URL;
   try {
-    decoded = decodeURIComponent(raw);
+    u = new URL(raw, SENTINEL_ORIGIN);
   } catch {
-    // Malformed percent-encoding (e.g. a lone "%"): never leak the error,
-    // just fall back.
+    // Malformed input: never leak the error, just fall back.
     return RETURN_TO_FALLBACK;
   }
 
-  // Must be an absolute same-origin path with a single leading slash.
-  // ``/[/\\]`` catches both protocol-relative ("//evil") and
-  // backslash-smuggled ("/\evil") forms in one check; a missing leading
-  // slash rejects ``https://``, ``javascript:``, and bare tokens.
-  if (!decoded.startsWith("/") || /^\/[/\\]/.test(decoded)) {
-    return RETURN_TO_FALLBACK;
-  }
+  // A cross-origin candidate (//evil.com, /\evil.com, https://evil.com,
+  // javascript: → opaque "null" origin) moves the origin off the sentinel.
+  if (u.origin !== SENTINEL_ORIGIN) return RETURN_TO_FALLBACK;
 
-  const pathOnly = decoded.split("?")[0].split("#")[0];
-  if (BLOCKED_RETURN_PATHS.has(pathOnly)) return RETURN_TO_FALLBACK;
+  // Never loop back onto the auth screens. Exact-path match only, so
+  // /loginhelp and /setuphelp stay allowed.
+  if (BLOCKED_RETURN_PATHS.has(u.pathname)) return RETURN_TO_FALLBACK;
 
-  return decoded;
+  // Reconstruct from the parsed components so a legit query + fragment
+  // survive while any smuggled host/control chars are gone.
+  return `${u.pathname}${u.search}${u.hash}`;
 }

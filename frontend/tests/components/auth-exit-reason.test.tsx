@@ -30,8 +30,14 @@ const TEST_USER = {
   trial_end: null,
 } as unknown as User;
 
+// Records every authExitReason value seen across React commits, so a test
+// can assert the reason never *transiently* passed through a forbidden state
+// (not just where it landed).
+const reasonLog: Array<"expired" | "manual" | "null"> = [];
+
 function Harness() {
   const { user, authExitReason, clearAuthExitReason, logout } = useAuth();
+  reasonLog.push(authExitReason ?? "null");
   return (
     <div>
       <div data-testid="user">{user?.email ?? "none"}</div>
@@ -48,6 +54,7 @@ describe("AuthProvider — authExitReason", () => {
   beforeEach(() => {
     apiFetchMock.mockReset();
     vi.mocked(setAccessToken).mockReset();
+    reasonLog.length = 0;
   });
 
   function mountRestored() {
@@ -107,6 +114,11 @@ describe("AuthProvider — authExitReason", () => {
       expect(screen.getByTestId("reason")).toHaveTextContent("manual"),
     );
     expect(screen.getByTestId("user")).toHaveTextContent("none");
+    // Manual sign-out must go straight null → manual; it must never flip
+    // through the involuntary "expired" state (which would show the wrong
+    // /login banner). Assert across every commit, not just the final one.
+    expect(reasonLog).not.toContain("expired");
+    expect(reasonLog).toContain("manual");
   });
 
   it("clearAuthExitReason resets the reason to null", async () => {

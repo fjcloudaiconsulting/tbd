@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { act, render } from "@testing-library/react";
 
 import AppShell from "@/components/AppShell";
@@ -128,15 +129,119 @@ describe("AppShell — graceful re-auth redirect", () => {
     expect(replaceMock).toHaveBeenCalledWith("/login?reason=expired");
   });
 
-  it("redirects only once per logged-out episode (no reason-clear re-fire)", async () => {
+  // A minimal signed-in user for the second-episode test. AppShell reads a
+  // handful of fields when it renders the full shell; onboarded_at is a
+  // non-null string so the onboarding-bounce effect stays dormant.
+  const SIGNED_IN_USER = {
+    id: 1,
+    username: "alice",
+    first_name: "Alice",
+    org_name: "Test Org",
+    is_superadmin: false,
+    role: "owner",
+    onboarded_at: "2026-01-01T00:00:00Z",
+  };
+
+  // Stateful harness: authExitReason + user live in real React state so the
+  // production clearAuthExitReason() consume (setState → re-render →
+  // effect re-run) genuinely happens, exercising the reauthRedirectedRef
+  // fire-once guard instead of mocking it away. Imperative setters are
+  // captured so a test can drive user transitions across episodes.
+  let clearCalls = 0;
+  let setUserExternal: (u: unknown) => void = () => {};
+  let setReasonExternal: (r: "expired" | "manual" | null) => void = () => {};
+
+  function Harness({
+    initialUser,
+    initialReason,
+  }: {
+    initialUser: unknown;
+    initialReason: "expired" | "manual" | null;
+  }) {
+    const [user, setUser] = useState<unknown>(initialUser);
+    const [reason, setReason] = useState<"expired" | "manual" | null>(
+      initialReason,
+    );
+    setUserExternal = setUser;
+    setReasonExternal = setReason;
+    // Parent renders before child, so seeding the mock here means AppShell
+    // reads the current state on every (re-)render.
+    useAuthMock.mockReturnValue({
+      user,
+      loading: false,
+      needsSetup: false,
+      billingUiEnabled: false,
+      features: { reports: false, plans: false, customDashboard: false },
+      authExitReason: reason,
+      clearAuthExitReason: () => {
+        clearCalls += 1;
+        // Real consume: flip the reason to null exactly like AuthProvider.
+        setReason(null);
+      },
+      login: vi.fn(),
+      register: vi.fn(),
+      logout: vi.fn(),
+      refreshMe: vi.fn(),
+    } as never);
+    return (
+      <AppShell>
+        <p>page body</p>
+      </AppShell>
+    );
+  }
+
+  beforeEach(() => {
+    clearCalls = 0;
+  });
+
+  it("fires exactly once per logged-out episode even though clearAuthExitReason re-renders", async () => {
     currentPathname = "/transactions";
-    mockSignedOut("expired");
 
-    await renderShell();
+    await act(async () => {
+      render(<Harness initialUser={null} initialReason="expired" />);
+    });
 
-    // A stale re-run after clearAuthExitReason() must NOT overwrite the URL
-    // with a reason-less redirect.
+    // clearAuthExitReason genuinely flipped reason expired→null and forced a
+    // re-render; the ref guard must have swallowed the second effect run.
+    expect(clearCalls).toBe(1);
     expect(replaceMock).toHaveBeenCalledTimes(1);
-    expect(replaceMock).not.toHaveBeenCalledWith("/login?returnTo=%2Ftransactions");
+    expect(replaceMock).toHaveBeenCalledWith(
+      "/login?returnTo=%2Ftransactions&reason=expired",
+    );
+    // The reason-less redirect the stale re-run WOULD have produced never fires.
+    expect(replaceMock).not.toHaveBeenCalledWith(
+      "/login?returnTo=%2Ftransactions",
+    );
+  });
+
+  it("re-arms for a SECOND logged-out episode after the user signs back in", async () => {
+    currentPathname = "/transactions";
+
+    // Episode 1: session expired → one correct redirect, reason consumed.
+    await act(async () => {
+      render(<Harness initialUser={null} initialReason="expired" />);
+    });
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+    expect(replaceMock).toHaveBeenLastCalledWith(
+      "/login?returnTo=%2Ftransactions&reason=expired",
+    );
+
+    // Sign back in: the effect resets reauthRedirectedRef and issues no
+    // redirect while a user is present.
+    await act(async () => {
+      setUserExternal(SIGNED_IN_USER);
+    });
+    expect(replaceMock).toHaveBeenCalledTimes(1);
+
+    // Episode 2: expire again. Because the ref reset on sign-in, a second
+    // redirect must fire (deleting the reset branch would leave this at 1).
+    await act(async () => {
+      setUserExternal(null);
+      setReasonExternal("expired");
+    });
+    expect(replaceMock).toHaveBeenCalledTimes(2);
+    expect(replaceMock).toHaveBeenLastCalledWith(
+      "/login?returnTo=%2Ftransactions&reason=expired",
+    );
   });
 });
