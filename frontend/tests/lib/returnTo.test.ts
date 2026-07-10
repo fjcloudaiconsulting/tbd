@@ -77,6 +77,36 @@ describe("sanitizeReturnTo", () => {
     expect(sanitizeReturnTo("/setuphelp")).toBe("/setuphelp");
   });
 
+  // ---------------------------------------------------------------------
+  // Dot-segment protocol-relative open-redirect bypass (CRITICAL). The
+  // origin check runs against the PARSED URL, but the sanitizer returns a
+  // RECONSTRUCTED string. Dot-segment normalization can make u.pathname
+  // begin with "//" while the sentinel origin stays intact, so the returned
+  // value is protocol-relative and re-resolves cross-origin when Next's
+  // router parses it against the real app origin.
+  // ---------------------------------------------------------------------
+  it.each([
+    ["dot-dot slash //evil.com", "/..//evil.com"],
+    ["dot slash //evil.com", "/.//evil.com"],
+    ["nested dot-dot //evil.com", "/x/..//evil.com"],
+    ["encoded dot-dot %2e%2e//evil.com", "/%2e%2e//evil.com"],
+    ["deep dot-dot //evil.com", "/foo/../..//evil.com"],
+    ["backslash dot-dot /x/..\\evil.com", "/x/..\\evil.com"],
+  ])("blocks dot-segment protocol-relative redirect: %s", (_label, raw) => {
+    expect(sanitizeReturnTo(raw)).toBe("/dashboard");
+  });
+
+  it.each([
+    // "//" that lives in the query or fragment is not protocol-relative:
+    // the path stays same-origin, so these must be PRESERVED intact.
+    ["query with //", "/path?a=//evil.com", "/path?a=//evil.com"],
+    ["fragment with //", "/path#//evil.com", "/path#//evil.com"],
+    // A legit dot-segment that normalizes to a plain same-origin path.
+    ["legit dot-segment /a/b/../c → /a/c", "/a/b/../c", "/a/c"],
+  ])("allows a legitimate value: %s", (_label, raw, expected) => {
+    expect(sanitizeReturnTo(raw)).toBe(expected);
+  });
+
   it("does not double-decode a legitimate literal percent path", () => {
     // Regression: the old sanitizer called decodeURIComponent a SECOND time
     // on the already-decoded value, so a literal "%" (e.g. "50%-growth")

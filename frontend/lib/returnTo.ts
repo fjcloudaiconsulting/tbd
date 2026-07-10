@@ -41,7 +41,14 @@ export function sanitizeReturnTo(raw: string | null | undefined): string {
   // character. The WHATWG URL parser silently removes U+0009 (tab), U+000A
   // (LF) and U+000D (CR), so "/\t/evil.com" would otherwise reparse as the
   // protocol-relative "//evil.com" and redirect cross-origin.
+  //
+  // Also reject a literal backslash outright. Special-scheme URL parsing
+  // rewrites "\" to "/", so a dot-segment payload like "/x/..\evil.com" can
+  // normalize to a host-shaped path that smuggles a redirect past the origin
+  // check. A backslash never appears in a legitimate returnTo path.
   if (/[\u0000-\u001f]/.test(raw)) return RETURN_TO_FALLBACK;
+
+  if (raw.includes("\\")) return RETURN_TO_FALLBACK;
 
   let u: URL;
   try {
@@ -61,5 +68,18 @@ export function sanitizeReturnTo(raw: string | null | undefined): string {
 
   // Reconstruct from the parsed components so a legit query + fragment
   // survive while any smuggled host/control chars are gone.
-  return `${u.pathname}${u.search}${u.hash}`;
+  const result = `${u.pathname}${u.search}${u.hash}`;
+
+  // Dot-segment normalization ("/..//evil.com", "/x/..//evil.com", …) can make
+  // u.pathname begin with "//" while the sentinel origin above stays intact.
+  // The reconstructed value is then protocol-relative and re-resolves
+  // cross-origin when the router parses it against the real app origin, so
+  // re-validate the reconstructed string before returning it.
+  try {
+    if (new URL(result, SENTINEL_ORIGIN).origin !== SENTINEL_ORIGIN)
+      return RETURN_TO_FALLBACK;
+  } catch {
+    return RETURN_TO_FALLBACK;
+  }
+  return result;
 }
