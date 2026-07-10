@@ -799,8 +799,10 @@ async def test_concurrent_both_miss_reuse_is_exactly_once(
 
         tasks = [asyncio.create_task(_do_refresh()) for _ in range(n)]
         # Deterministically wait until all N coroutines reach the Lua
-        # barrier, then release them together.
-        await fake_redis._eval_arrival_event.wait()
+        # barrier, then release them together. Bound the wait so an unmet
+        # barrier (e.g. a future change short-circuits the both-miss path
+        # before the Lua) fails fast instead of hanging as a CI timeout.
+        await asyncio.wait_for(fake_redis._eval_arrival_event.wait(), timeout=5)
         fake_redis._eval_release_event.set()
         results = await asyncio.gather(*tasks)
 
