@@ -22,9 +22,12 @@ barrier, NEVER ``asyncio.sleep``.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -43,6 +46,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app import redis_client
+from app.config import settings
 from app.database import get_db
 from app.deps import get_session_factory
 from app.models import Base
@@ -51,10 +55,15 @@ from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.routers.auth import (
     LEGACY_REFRESH_COOKIE_PATH,
+    SESSION_EXPIRED_DETAIL,
     RefreshBothMissError,
     router as auth_router,
 )
-from app.security import decode_refresh_jti_sid, hash_password
+from app.security import (
+    create_refresh_token,
+    decode_refresh_jti_sid,
+    hash_password,
+)
 
 from tests.conftest import set_refresh_cookie
 
@@ -534,3 +543,505 @@ async def test_both_miss_error_carries_snapshot(session_factory, fake_redis):
     assert err.user_id == seeded["user_id"]
     assert err.user_email == "alice@example.com"
     assert err.user_org_id == seeded["org_id"]
+
+
+# ── Local key helpers for the direct-Redis tests below ──────────────────────
+
+
+def _primary_key(jti: str) -> str:
+    return f"auth:session:{jti}"
+
+
+def _grace_key(jti: str) -> str:
+    return f"auth:session:grace:{jti}"
+
+
+def _uid() -> str:
+    return uuid.uuid4().hex
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 10. REAL-Redis integration — execute the SHIPPED DETECT_REUSE_LUA
+# ═════════════════════════════════════════════════════════════════════════
+#
+# The autouse fake in ``tests/conftest.py`` REIMPLEMENTS DETECT_REUSE_LUA
+# in Python (``_eval_detect_reuse``), so every fake-backed test above
+# proves the ROUTER contract but NEVER runs the real Lua string. These
+# tests close that gap permanently: they point ``redis_client.get_client``
+# at a REAL client built by the shipped ``_build_auth_redis_client`` (the
+# monkeypatch runs after the autouse fake, so it wins) and drive the public
+# ``session_detect_reuse_and_revoke`` wrapper end to end against a real
+# Redis/Valkey. A future prefix typo, guard-order swap or member-loop bug
+# in the Lua would now fail CI instead of hiding behind the fake.
+#
+# Skipped (never failed) when no real Redis is reachable, so a plain unit
+# run with no server stays green.
+
+
+@pytest_asyncio.fixture
+async def real_redis(monkeypatch):
+    """Real Redis/Valkey client for executing the shipped Lua string.
+
+    Bypasses the autouse fake by rebuilding the production client from
+    ``settings.redis_url`` and repointing ``redis_client.get_client`` at
+    it (so ``require_client()`` inside the wrapper resolves to the real
+    server). Skips when no real Redis is reachable.
+
+    Seeded keys use a short TTL so any key a failing assertion leaves
+    behind self-expires — no cross-test contamination in the shared
+    stack.
+    """
+    from redis.exceptions import RedisError
+
+    if not settings.redis_url:
+        pytest.skip("no settings.redis_url configured for the real-Redis test")
+    client = redis_client._build_auth_redis_client(settings.redis_url)
+    try:
+        await client.ping()
+    except (RedisError, OSError) as exc:  # pragma: no cover - infra gate
+        await client.aclose()
+        pytest.skip(f"real Redis not reachable at {settings.redis_url!r}: {exc}")
+    monkeypatch.setattr(redis_client, "get_client", lambda: client)
+    monkeypatch.setattr(redis_client, "_client", client, raising=False)
+    try:
+        yield client
+    finally:
+        await client.aclose()
+
+
+async def _seed_member(client, sid: str, jti: str, ex: int = 300) -> None:
+    await client.sadd(_family_key(sid), jti)
+    await client.expire(_family_key(sid), ex)
+
+
+async def _seed_primary(client, sid: str, jti: str, ex: int = 300) -> None:
+    await client.set(
+        _primary_key(jti),
+        json.dumps({"user_id": 1, "sid": sid}),
+        ex=ex,
+    )
+
+
+async def _seed_grace(client, sid: str, jti: str, ex: int = 300) -> None:
+    await client.set(
+        _grace_key(jti),
+        json.dumps({"user_id": 1, "sid": sid, "successor_jti": "x"}),
+        ex=ex,
+    )
+
+
+async def test_real_lua_primary_present_returns_live(real_redis):
+    """Primary key present => ``('live',)``, family untouched."""
+    sid, jti = _uid(), _uid()
+    await _seed_member(real_redis, sid, jti)
+    await _seed_primary(real_redis, sid, jti)
+
+    result = await redis_client.session_detect_reuse_and_revoke(jti, sid)
+
+    assert result == ("live",)
+    assert await real_redis.exists(_family_key(sid)) == 1
+    assert await real_redis.sismember(_family_key(sid), jti)
+
+
+async def test_real_lua_grace_present_returns_grace(real_redis):
+    """Primary gone + grace present => ``('grace',)``, family untouched."""
+    sid, jti = _uid(), _uid()
+    await _seed_member(real_redis, sid, jti)
+    await _seed_grace(real_redis, sid, jti)  # no primary
+
+    result = await redis_client.session_detect_reuse_and_revoke(jti, sid)
+
+    assert result == ("grace",)
+    assert await real_redis.exists(_family_key(sid)) == 1
+    assert await real_redis.sismember(_family_key(sid), jti)
+
+
+async def test_real_lua_non_member_returns_unknown_no_partial_revoke(real_redis):
+    """Both gone + jti NOT a member => ``('unknown',)``; the family and
+    every other member survive (NO partial revoke)."""
+    sid = _uid()
+    member_a, member_b, stranger = _uid(), _uid(), _uid()
+    await _seed_member(real_redis, sid, member_a)
+    await _seed_member(real_redis, sid, member_b)
+    await _seed_primary(real_redis, sid, member_b)  # a live head coexists
+
+    result = await redis_client.session_detect_reuse_and_revoke(stranger, sid)
+
+    assert result == ("unknown",)
+    # Family + all other members intact — the unknown branch must not touch
+    # a single key.
+    assert await real_redis.exists(_family_key(sid)) == 1
+    assert await real_redis.sismember(_family_key(sid), member_a)
+    assert await real_redis.sismember(_family_key(sid), member_b)
+    assert await real_redis.exists(_primary_key(member_b)) == 1
+
+
+async def test_real_lua_reused_revokes_entire_family(real_redis):
+    """Both gone + jti IS a member (with two other members) => the whole
+    family (set + every member's primary AND grace) is DELeted, and the
+    wrapper returns ``('reused', 3)``."""
+    sid = _uid()
+    stale, head, other = _uid(), _uid(), _uid()
+    for m in (stale, head, other):
+        await _seed_member(real_redis, sid, m)
+    # ``stale`` is a consumed member (no primary, no grace). Give the two
+    # other members BOTH a primary and a grace key so we can prove the
+    # member loop deletes every key shape.
+    await _seed_primary(real_redis, sid, head)
+    await _seed_primary(real_redis, sid, other)
+    await _seed_grace(real_redis, sid, head)
+    await _seed_grace(real_redis, sid, other)
+
+    result = await redis_client.session_detect_reuse_and_revoke(stale, sid)
+
+    assert result == ("reused", 3)
+    # The family set is gone AND every member's primary + grace key is gone.
+    assert await real_redis.exists(_family_key(sid)) == 0
+    for m in (stale, head, other):
+        assert await real_redis.exists(_primary_key(m)) == 0, m
+        assert await real_redis.exists(_grace_key(m)) == 0, m
+
+
+async def test_real_lua_second_call_is_idempotent_unknown(real_redis):
+    """A second call on the same jti/sid after the revoke => ``('unknown',)``
+    (the family is gone => ``SISMEMBER`` == 0). No second revoke — this is
+    the property the inlined-in-Lua revoke exists to guarantee."""
+    sid = _uid()
+    stale, head = _uid(), _uid()
+    await _seed_member(real_redis, sid, stale)
+    await _seed_member(real_redis, sid, head)
+    await _seed_primary(real_redis, sid, head)
+
+    first = await redis_client.session_detect_reuse_and_revoke(stale, sid)
+    assert first == ("reused", 2)
+    assert await real_redis.exists(_family_key(sid)) == 0
+
+    second = await redis_client.session_detect_reuse_and_revoke(stale, sid)
+    assert second == ("unknown",)
+    assert await real_redis.exists(_family_key(sid)) == 0
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 11. Concurrency — exactly-once reuse under concurrent presentation
+# ═════════════════════════════════════════════════════════════════════════
+
+
+async def test_concurrent_both_miss_reuse_is_exactly_once(
+    session_factory, fake_redis, monkeypatch, _spy_no_notifications
+):
+    """N concurrent ``/refresh`` calls replaying the SAME stale (past-grace)
+    member jti produce EXACTLY ONE reuse+revoke and EXACTLY ONE audit
+    write; the N-1 losers classify ``unknown``.
+
+    This locks the exactly-once property that is the whole reason the
+    revoke is inlined in the atomic Lua. The fake's ``eval_barrier`` lands
+    all N callers at the detect-reuse script body before any runs, and its
+    ``_eval_lock`` then serializes them — the first consumes the family,
+    the rest see an empty family. Gated with ``asyncio.Event`` (the fake's
+    barrier), never ``asyncio.sleep``.
+
+    Exactly-once is asserted at the two in-process control points: the
+    reuse-wrapper outcomes (exactly one ``reused``, the rest ``unknown``)
+    and the number of times the audit writer is invoked (exactly one). We
+    do NOT read the persisted ``auth.session.reuse_detected`` row back:
+    the reuse audit uses a SEPARATE ``record_audit_event`` session, and
+    under N-way concurrency the test harness's single shared in-memory
+    SQLite connection (``StaticPool``) makes that cross-session read
+    unreliable. Production uses a per-request pooled connection, so this
+    is purely a harness artifact; the audit-writer call count is the
+    faithful deterministic proxy for "exactly one row".
+    """
+    from app.routers import auth as auth_module
+
+    outcomes: list[tuple] = []
+    real_wrapper = redis_client.session_detect_reuse_and_revoke
+
+    async def _spy_wrapper(jti, sid):
+        result = await real_wrapper(jti, sid)
+        outcomes.append(result)
+        return result
+
+    monkeypatch.setattr(
+        redis_client, "session_detect_reuse_and_revoke", _spy_wrapper
+    )
+
+    audit_calls = {"n": 0}
+    real_record = auth_module._record_session_reuse_detected
+
+    async def _spy_record(*args, **kwargs):
+        audit_calls["n"] += 1
+        return await real_record(*args, **kwargs)
+
+    monkeypatch.setattr(
+        auth_module, "_record_session_reuse_detected", _spy_record
+    )
+
+    await _seed_user(session_factory)
+    app = _make_app(session_factory)
+
+    with TestClient(app) as client:
+        token = _login(client)
+        old_jti, sid = decode_refresh_jti_sid(token)
+        # Rotate once so old_jti becomes a consumed family member.
+        set_refresh_cookie(client, token)
+        assert client.post("/api/v1/auth/refresh").status_code == 200
+    # Past leeway: drop the grace key so old_jti both-misses => reuse.
+    del fake_redis._kv[f"auth:session:grace:{old_jti}"]
+    assert old_jti in fake_redis._sets[_family_key(sid)]
+
+    n = 5
+    fake_redis.eval_barrier_target = n
+    async with _httpx_app_client(app) as ac:
+        set_refresh_cookie(ac, token)
+
+        async def _do_refresh():
+            return await ac.post("/api/v1/auth/refresh")
+
+        tasks = [asyncio.create_task(_do_refresh()) for _ in range(n)]
+        # Deterministically wait until all N coroutines reach the Lua
+        # barrier, then release them together.
+        await fake_redis._eval_arrival_event.wait()
+        fake_redis._eval_release_event.set()
+        results = await asyncio.gather(*tasks)
+
+    fake_redis.eval_barrier_target = None
+
+    # Every presentation of a both-miss stale jti terminates in a 401.
+    assert [r.status_code for r in results] == [401] * n, (
+        [r.status_code for r in results]
+    )
+    # All N callers ran the detect Lua exactly once each.
+    assert len(outcomes) == n, outcomes
+    # EXACTLY ONE ``reused`` (with the full family size), the rest ``unknown``.
+    reused = [o for o in outcomes if o[0] == redis_client.SESSION_REUSE_REUSED]
+    assert len(reused) == 1, f"expected exactly one reused outcome, got {outcomes}"
+    assert reused[0] == (redis_client.SESSION_REUSE_REUSED, 2)
+    losers = [o for o in outcomes if o[0] != redis_client.SESSION_REUSE_REUSED]
+    assert all(o == (redis_client.SESSION_REUSE_UNKNOWN,) for o in losers), losers
+    # EXACTLY ONE audit write attempted (audit is emitted iff ``reused``).
+    assert audit_calls["n"] == 1, audit_calls
+    # Family consumed exactly once.
+    assert _family_key(sid) not in fake_redis._sets
+    # NO email / NO in-app notification on the reuse path.
+    assert _spy_no_notifications["dispatch"] == 0
+    assert _spy_no_notifications["security_email"] == 0
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 12. Every non-both-miss 401 leaves the reuse wrapper uncalled
+# ═════════════════════════════════════════════════════════════════════════
+
+
+async def _case_iat_before_cutoff(client, session_factory, fake_redis, seeded):
+    """A token issued before the user's session cutoff (post logout /
+    password change) — a generic 401, primary present, never a both-miss."""
+    token = _login(client)
+    _jti, sid = decode_refresh_jti_sid(token)
+    async with session_factory() as db:
+        user = await db.get(User, seeded["user_id"])
+        # Cutoff strictly after the token's iat => iat_before_cutoff.
+        user.sessions_invalidated_at = datetime.now(timezone.utc) + timedelta(
+            minutes=1
+        )
+        await db.commit()
+    return token, sid
+
+
+async def _case_missing_jti_or_sid(client, session_factory, fake_redis, seeded):
+    """A legacy refresh JWT stripped of its jti/sid claims (pre-PR-2)."""
+    import jwt as _jwt
+
+    login_token = _login(client)
+    _jti, sid = decode_refresh_jti_sid(login_token)
+    raw = create_refresh_token(seeded["user_id"], ttl_seconds=3600)[0]
+    payload = _jwt.decode(
+        raw, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+    )
+    payload.pop("jti", None)
+    payload.pop("sid", None)
+    legacy = _jwt.encode(
+        payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
+    )
+    return legacy, sid
+
+
+async def _case_row_binding_mismatch(client, session_factory, fake_redis, seeded):
+    """Primary row's stored sid mismatches the JWT sid — primary present,
+    so the grace fallback never runs; not a both-miss."""
+    token = _login(client)
+    jti, sid = decode_refresh_jti_sid(token)
+    fake_redis._kv[_primary_key(jti)] = json.dumps(
+        {"user_id": seeded["user_id"], "sid": "wrong-sid-not-the-jwt-sid"}
+    )
+    return token, sid
+
+
+async def _case_family_member_missing(client, session_factory, fake_redis, seeded):
+    """Primary present + binding OK, but the jti is no longer a member of
+    the family set (logout Round A landed) — a generic 401, not a
+    both-miss."""
+    token = _login(client)
+    jti, sid = decode_refresh_jti_sid(token)
+    fake_redis._sets[_family_key(sid)].discard(jti)
+    return token, sid
+
+
+async def _case_forged_signature(client, session_factory, fake_redis, seeded):
+    """A structurally valid refresh JWT with a tampered signature —
+    fails decode entirely (``invalid_token_decode``)."""
+    login_token = _login(client)
+    _jti, sid = decode_refresh_jti_sid(login_token)
+    forged = login_token.rsplit(".", 1)[0] + ".dGFtcGVyZWRfc2ln"
+    return forged, sid
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        _case_iat_before_cutoff,
+        _case_missing_jti_or_sid,
+        _case_row_binding_mismatch,
+        _case_family_member_missing,
+        _case_forged_signature,
+    ],
+    ids=[
+        "iat_before_cutoff",
+        "missing_jti_or_sid",
+        "row_binding_mismatch",
+        "family_member_missing",
+        "forged_signature",
+    ],
+)
+async def test_non_both_miss_401_never_reaches_reuse_lua(
+    session_factory, fake_redis, monkeypatch, builder
+):
+    """Only the both-miss (primary AND grace gone past leeway) 401 is a
+    reuse candidate. Every OTHER terminal 401 must leave the reuse wrapper
+    completely uncalled and the family intact."""
+    calls = {"n": 0}
+    real = redis_client.session_detect_reuse_and_revoke
+
+    async def _spy(jti, sid):
+        calls["n"] += 1
+        return await real(jti, sid)
+
+    monkeypatch.setattr(redis_client, "session_detect_reuse_and_revoke", _spy)
+
+    seeded = await _seed_user(session_factory)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        present_token, login_sid = await builder(
+            client, session_factory, fake_redis, seeded
+        )
+        set_refresh_cookie(client, present_token)
+        res = client.post("/api/v1/auth/refresh")
+
+    assert res.status_code == 401, res.text
+    # The reuse Lua wrapper was NEVER invoked.
+    assert calls["n"] == 0
+    # The login family set still exists (nothing revoked it).
+    assert _family_key(login_sid) in fake_redis._sets
+    reuse = await _list_audit(session_factory, "auth.session.reuse_detected")
+    assert reuse == []
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 13. Absolute-lifetime expiry precedes / never masquerades as reuse
+# ═════════════════════════════════════════════════════════════════════════
+
+
+async def test_absolute_lifetime_expiry_is_not_reuse(
+    session_factory, fake_redis, monkeypatch
+):
+    """A token PAST the 30-day absolute lifetime — but with a LIVE primary,
+    correct binding and family membership — must 401 with
+    ``SESSION_EXPIRED_DETAIL`` and NEVER reach the reuse wrapper. Proves an
+    expired-but-legitimate head token is not mistaken for a replayed
+    exfiltrated cookie."""
+    calls = {"n": 0}
+    real = redis_client.session_detect_reuse_and_revoke
+
+    async def _spy(jti, sid):
+        calls["n"] += 1
+        return await real(jti, sid)
+
+    monkeypatch.setattr(redis_client, "session_detect_reuse_and_revoke", _spy)
+
+    seeded = await _seed_user(session_factory)
+    app = _make_app(session_factory)
+    with TestClient(app) as client:
+        login_token = _login(client)
+    _login_jti, sid = decode_refresh_jti_sid(login_token)
+
+    # Mint a token on the SAME family whose session_created_at predates the
+    # 30-day absolute ceiling, and give it a live primary + family
+    # membership so every earlier validator check passes and it reaches the
+    # absolute-lifetime gate.
+    aged_start = datetime.now(timezone.utc) - timedelta(days=31)
+    aged_token, aged_jti, _ = create_refresh_token(
+        seeded["user_id"], sid=sid, session_created_at=aged_start
+    )
+    fake_redis._kv[_primary_key(aged_jti)] = json.dumps(
+        {"user_id": seeded["user_id"], "sid": sid}
+    )
+    fake_redis._sets[_family_key(sid)].add(aged_jti)
+
+    with TestClient(app) as client:
+        set_refresh_cookie(client, aged_token)
+        res = client.post("/api/v1/auth/refresh")
+
+    assert res.status_code == 401, res.text
+    assert res.json()["detail"] == SESSION_EXPIRED_DETAIL
+    assert calls["n"] == 0
+    assert _family_key(sid) in fake_redis._sets
+    reuse = await _list_audit(session_factory, "auth.session.reuse_detected")
+    assert reuse == []
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# 14. Regression: family-set TTL stays in lockstep with the head primary
+# ═════════════════════════════════════════════════════════════════════════
+
+
+async def test_family_ttl_tracks_head_primary_ttl_issue_and_rotate(real_redis):
+    """Pin the IMPLICIT invariant the absolute-lifetime safety rests on:
+    the family-set TTL is written in lockstep with the head-primary TTL, at
+    both ``session_issue`` AND rotation. If a future change ever let the
+    family TTL OUTLIVE the head primary, an idle-expired legitimate head
+    token could present as ``SISMEMBER == 1`` (primary+grace gone but family
+    still alive) and wrongly trigger a family revoke. This regression test
+    catches that decoupling. (Test-only, per review — the validator check
+    order is intentionally NOT reordered.)"""
+    sid, jti = _uid(), _uid()
+    ttl = 3600
+
+    await redis_client.session_issue(jti, sid, 1, ttl)
+    ttl_primary = await real_redis.ttl(_primary_key(jti))
+    ttl_family = await real_redis.ttl(_family_key(sid))
+    assert ttl_primary > 0 and ttl_family > 0, (ttl_primary, ttl_family)
+    # Allow a small delta for the two SET/EXPIRE ops in the MULTI landing at
+    # slightly different whole-second boundaries.
+    assert abs(ttl_family - ttl_primary) <= 2, (ttl_family, ttl_primary)
+
+    # After a rotation the invariant must still hold for the NEW head.
+    new_jti = _uid()
+    rotate_result = await redis_client.session_rotate_lua(jti, new_jti, sid, 1, ttl)
+    assert rotate_result == "ok"
+    ttl_new_primary = await real_redis.ttl(_primary_key(new_jti))
+    ttl_family_after = await real_redis.ttl(_family_key(sid))
+    assert ttl_new_primary > 0 and ttl_family_after > 0, (
+        ttl_new_primary,
+        ttl_family_after,
+    )
+    assert abs(ttl_family_after - ttl_new_primary) <= 2, (
+        ttl_family_after,
+        ttl_new_primary,
+    )
+
+    # Tidy up (keys otherwise self-expire in an hour).
+    await real_redis.delete(
+        _family_key(sid),
+        _primary_key(jti),
+        _primary_key(new_jti),
+        _grace_key(jti),
+    )
