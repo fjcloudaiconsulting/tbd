@@ -601,6 +601,45 @@ async def _rotate_refresh_session(
 # safe response is to force a clean re-login.
 AMBIGUOUS_SESSION_DETAIL = "Ambiguous session — please sign in again"
 
+
+class RefreshBothMissError(Exception):
+    """Raised by ``_validate_single_refresh_token`` for the SPECIFIC
+    both-miss case ONLY: the refresh JWT decoded, the user is
+    live, ``jti`` + ``sid`` are present and passed the cutoff check, but
+    BOTH the primary key ``auth:session:{jti}`` AND the grace key
+    ``auth:session:grace:{jti}`` are absent.
+
+    This is deliberately NOT an ``HTTPException`` so it is impossible to
+    confuse with the four OTHER terminal 401s that share the
+    ``"Session has been invalidated"`` detail string
+    (``iat_before_cutoff``, ``missing_jti_or_sid``, ``row_binding_mismatch``,
+    ``family_member_missing``). Only this both-miss shape is a candidate
+    for reuse detection; a forged-JWT / cutoff / binding / missing-claim
+    401 must NEVER reach the reuse Lua.
+
+    Carries the token's ``jti`` + ``sid`` plus a SNAPSHOT of the resolved
+    user id / email / org id (plain scalars, captured before any await or
+    rollback per the audit-on-failure pattern) so ``/refresh`` can run the
+    fail-safe family-revoke and write the audit row without re-loading the
+    user.
+    """
+
+    def __init__(
+        self,
+        *,
+        jti: str,
+        sid: str,
+        user_id: int,
+        user_email: str,
+        user_org_id: int | None,
+    ) -> None:
+        super().__init__("refresh both-miss (primary + grace absent)")
+        self.jti = jti
+        self.sid = sid
+        self.user_id = user_id
+        self.user_email = user_email
+        self.user_org_id = user_org_id
+
 # Legacy refresh-cookie path used before PR #211 (commit 70ddd26,
 # 2026-05-11) widened the cookie path to ``/``. Cookies set at this
 # narrower path cannot be cleared by ``delete_cookie(path="/")`` because
@@ -922,15 +961,26 @@ async def _validate_single_refresh_token(
             detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
         ) from exc
     if session_row is None:
+        # Both-miss: primary AND grace absent after the jti/sid presence
+        # + cutoff checks passed. This is the ONLY 401 shape that is a
+        # candidate for reuse detection, so surface it DISTINCTLY (not as
+        # the generic ``HTTPException``) — ``/refresh`` runs the fail-safe
+        # revoke Lua on it, ``/verify`` converts it back to a plain 401.
+        # Snapshot the user scalars now, before any further await, so the
+        # downstream audit write survives even if the request session is
+        # later rolled back (audit-on-failure pattern).
         _log_refresh_rejected(
             "redis_primary_and_grace_missing",
             jti=jti,
             sid=sid,
             extra={"sub": user.id},
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session has been invalidated",
+        raise RefreshBothMissError(
+            jti=jti,
+            sid=sid,
+            user_id=user.id,
+            user_email=user.email,
+            user_org_id=user.org_id,
         )
 
     # Architect P2 finding on PR #306: existence of the Redis row is a
@@ -1089,9 +1139,19 @@ async def _validate_refresh_cookie(
     successes: list[tuple[User, dict, datetime | None, str, int, dict]] = []
     last_exc: HTTPException | None = None
     transient_exc: HTTPException | None = None
+    both_miss_exc: RefreshBothMissError | None = None
     for token in refresh_tokens:
         try:
             successes.append(await _validate_single_refresh_token(token, db))
+        except RefreshBothMissError as exc:
+            # Both-miss (primary + grace gone past leeway). Remember the
+            # FIRST one, but do NOT act on it here: a LATER cookie in the
+            # list may still validate, in which case this stale value must
+            # be ignored (no reuse fired for a stale cookie when a valid
+            # one coexists). The reuse decision happens ONCE, in
+            # ``_refresh_impl`` / ``/verify``, only if NO cookie validates.
+            if both_miss_exc is None:
+                both_miss_exc = exc
         except HTTPException as exc:
             last_exc = exc
             # 2026-05-19: remember the FIRST 5xx (transport / Redis
@@ -1105,14 +1165,19 @@ async def _validate_refresh_cookie(
                 transient_exc = exc
 
     if not successes:
-        # Prefer the 5xx (transient / Redis unavailable) over any 4xx
-        # (terminal-auth) seen across the cookie list. The frontend's
-        # classifier treats 5xx as transient and retries on a fresh
-        # connection; treating it as a 401 would force a real logout
-        # for what is actually a recoverable infra blip.
-        chosen = transient_exc or last_exc
-        assert chosen is not None  # loop ran at least once
-        raise chosen
+        # Preference when NOTHING validated:
+        #   1. a 5xx (transient / Redis unavailable) — recoverable, the
+        #      frontend retries on a fresh connection; misclassifying it
+        #      as a 401 would force a real logout for an infra blip.
+        #   2. a both-miss — re-raise so ``/refresh`` can run fail-safe
+        #      reuse detection (``/verify`` converts it to a plain 401).
+        #   3. any other terminal 401.
+        if transient_exc is not None:
+            raise transient_exc
+        if both_miss_exc is not None:
+            raise both_miss_exc
+        assert last_exc is not None  # loop ran at least once
+        raise last_exc
 
     distinct_user_ids = {tup[0].id for tup in successes}
     if len(distinct_user_ids) > 1:
@@ -1212,6 +1277,12 @@ async def _refresh_impl(
         user, payload, session_start, redis_state, ttl_seconds, session_row = await _validate_refresh_cookie(
             refresh_tokens, db
         )
+    except RefreshBothMissError as exc:
+        # Fail-safe reuse detection. Runs the atomic classify+revoke Lua
+        # ONCE, for the resolved both-miss token. Always ends in a
+        # terminal 401 (or 503 if Redis is unreachable); on confirmed
+        # reuse it also revokes the whole family and audits.
+        return await _handle_refresh_reuse(request, session_factory, exc)
     except HTTPException as exc:
         # Two terminal paths clear BOTH the canonical and the legacy
         # cookie so the browser stops sending them: absolute session
@@ -1436,9 +1507,20 @@ async def verify(
     # would violate the no-Set-Cookie invariant RSC callers rely on. The
     # /refresh endpoint is the only place that advances the browser's
     # cookie state. See the 2026-05-19 catch-up fix.
-    user, _payload, _session_start, _redis_state, _ttl_seconds, _session_row = await _validate_refresh_cookie(
-        refresh_tokens, db
-    )
+    try:
+        user, _payload, _session_start, _redis_state, _ttl_seconds, _session_row = await _validate_refresh_cookie(
+            refresh_tokens, db
+        )
+    except RefreshBothMissError as exc:
+        # /verify is READ-ONLY: it never rotates, never revokes, and MUST
+        # NEVER run the reuse-detection Lua (that could revoke a family
+        # from a plain verification call). Convert the both-miss straight
+        # to the same terminal 401 /verify has always returned. The reuse
+        # fail-safe is exclusively a /refresh concern.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been invalidated",
+        ) from exc
 
     await db.refresh(user, ["organization"])
     await subscription_service.check_trial_expiry(db, user.org_id)
@@ -2118,6 +2200,107 @@ async def _record_session_rotated_failed(
         ip_address=get_client_ip(request),
         outcome="failure",
         detail={"old_jti": old_jti, "sid": sid, "reason": reason},
+    )
+
+
+async def _handle_refresh_reuse(
+    request: Request,
+    session_factory: async_sessionmaker[AsyncSession],
+    exc: RefreshBothMissError,
+):
+    """Fail-safe reuse handling for the ``/refresh`` both-miss case.
+
+    Runs the atomic classify+revoke Lua ONCE for the resolved both-miss
+    token (see ``redis_client.session_detect_reuse_and_revoke`` and its
+    module comment for the threat model). This is NOT OAuth single-use:
+    it catches an exfiltrated cookie replayed PAST the 30s grace window,
+    and it does NOT catch an attacker riding the rotation head WITHIN the
+    grace window (inherent to having a grace window at all).
+
+    Dispatch:
+      * ``reused`` — the whole family was revoked inline by the Lua.
+        Write the ``auth.session.reuse_detected`` audit (NO email, NO
+        in-app notification) then return the terminal 401.
+      * ``grace`` / ``live`` — a concurrent rotation raced in after the
+        validator's probe; benign retry, no revoke, plain 401.
+      * ``unknown`` — garbage jti or already-revoked family; plain 401.
+      * Redis unreachable — 503 (never revoke on uncertainty).
+    """
+    try:
+        outcome = await redis_client.session_detect_reuse_and_revoke(
+            exc.jti, exc.sid
+        )
+    except (RedisRequired, RedisError) as redis_exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SESSION_REDIS_UNAVAILABLE_DETAIL,
+        ) from redis_exc
+
+    if outcome[0] == redis_client.SESSION_REUSE_REUSED:
+        jti_count = outcome[1] if len(outcome) > 1 else 0
+        _log_refresh_rejected(
+            "reuse_detected_family_revoked",
+            jti=exc.jti,
+            sid=exc.sid,
+            extra={"sub": exc.user_id, "jti_count": jti_count},
+        )
+        await _record_session_reuse_detected(
+            session_factory,
+            request=request,
+            user_id=exc.user_id,
+            user_email=exc.user_email,
+            user_org_id=exc.user_org_id,
+            old_jti=exc.jti,
+            sid=exc.sid,
+            jti_count=jti_count,
+        )
+
+    # Every classification ends in the same terminal 401 the both-miss
+    # case has always returned. For ``reused`` we have already revoked;
+    # for ``grace`` / ``live`` / ``unknown`` there is nothing to revoke.
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Session has been invalidated",
+    )
+
+
+async def _record_session_reuse_detected(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    request: Request,
+    user_id: int,
+    user_email: str,
+    user_org_id: int | None,
+    old_jti: str,
+    sid: str,
+    jti_count: int,
+) -> None:
+    """Persist an ``auth.session.reuse_detected`` audit event.
+
+    Emitted only when the reuse-detection Lua confirmed a consumed
+    family member was replayed past the grace window and revoked the
+    whole family inline. ``outcome="failure"`` marks it as a security
+    event; the detail carries the revoked family size (``jti_count``),
+    the offending ``old_jti`` and the ``sid`` so operators can
+    reconstruct the family offline in ``/admin/audit``. NO email, NO
+    in-app notification — audit only.
+
+    All identifying fields are plain scalars snapshotted onto
+    ``RefreshBothMissError`` before this await, so the write survives a
+    rolled-back request session (audit-on-failure pattern).
+    """
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    await audit_service.record_audit_event(
+        session_factory,
+        event_type="auth.session.reuse_detected",
+        actor_user_id=user_id,
+        actor_email=user_email,
+        target_org_id=user_org_id,
+        target_org_name=None,
+        request_id=request_id,
+        ip_address=get_client_ip(request),
+        outcome="failure",
+        detail={"old_jti": old_jti, "sid": sid, "jti_count": jti_count},
     )
 
 

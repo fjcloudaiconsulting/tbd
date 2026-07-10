@@ -213,18 +213,23 @@ class _SharedFakeRedis:
 
     # Lua — mimics the ROTATE_SESSION_LUA script in redis_client.py
     async def eval(self, script: str, numkeys: int, *args):
-        """Execute the rotate-session Lua script.
+        """Execute the rotate-session Lua script OR the reuse-detection
+        Lua script.
 
-        Recognises the production script body by the presence of all
-        three guard markers. Any other script raises NotImplementedError
-        so a future caller cannot silently land on a no-op fake.
+        Recognises each production script body by its marker tokens. Any
+        other script raises NotImplementedError so a future caller cannot
+        silently land on a no-op fake.
 
-        Args layout (matches the production call):
+        Rotate args layout (matches the production call):
           KEYS[1..4] = primary, grace, new_primary, family
           ARGV[1..6] = grace_ttl, idle_ttl, grace_val, primary_val,
                        old_jti, new_jti
         """
-        # Sanity check: this fake only knows the rotate script.
+        # Reuse-detection script (DETECT_REUSE_LUA) — disambiguated by
+        # its "reused:" return token, which the rotate script never uses.
+        if 'reused:' in script:
+            return await self._eval_detect_reuse(numkeys, *args)
+        # Sanity check: otherwise this fake only knows the rotate script.
         markers = (
             'SISMEMBER',
             'EXISTS',
@@ -234,7 +239,8 @@ class _SharedFakeRedis:
         )
         if not all(m in script for m in markers):
             raise NotImplementedError(
-                "Fake Redis EVAL only supports ROTATE_SESSION_LUA"
+                "Fake Redis EVAL only supports ROTATE_SESSION_LUA and "
+                "DETECT_REUSE_LUA"
             )
         keys = list(args[:numkeys])
         argv = list(args[numkeys:])
@@ -275,6 +281,42 @@ class _SharedFakeRedis:
             self._kv.pop(primary_key, None)
             _ = grace_ttl, idle_ttl  # TTL not simulated
             return "ok"
+
+    async def _eval_detect_reuse(self, numkeys: int, *args):
+        """Mimic DETECT_REUSE_LUA in redis_client.py.
+
+        Args layout:
+          KEYS[1..3] = primary, grace, family
+          ARGV[1]    = jti (presented)
+
+        Serialized under the same eval lock (and honouring the same
+        optional barrier) as the rotate script so idempotency /
+        concurrency tests are deterministic.
+        """
+        keys = list(args[:numkeys])
+        argv = list(args[numkeys:])
+        primary_key, grace_key, family_key = keys
+        jti = argv[0]
+
+        if self.eval_barrier_target is not None:
+            self._eval_arrival_count += 1
+            if self._eval_arrival_count >= self.eval_barrier_target:
+                self._eval_arrival_event.set()
+            await self._eval_release_event.wait()
+
+        async with self._eval_lock:
+            if primary_key in self._kv:
+                return "live"
+            if grace_key in self._kv:
+                return "grace"
+            if jti not in self._sets.get(family_key, set()):
+                return "unknown"
+            members = list(self._sets.get(family_key, set()))
+            self._sets.pop(family_key, None)
+            for m in members:
+                self._kv.pop(f"auth:session:{m}", None)
+                self._kv.pop(f"auth:session:grace:{m}", None)
+            return "reused:" + str(len(members))
 
     # Lifecycle
     async def aclose(self):
