@@ -62,7 +62,16 @@ resilient. No new categories, no new notification events.
   copy notes it applies to both channels.
 
 - Copy: card title becomes **"Notifications"**; the intro is rewritten to cover
-  both channels; the "these settings only affect email" line is removed.
+  both channels; the "these settings only affect email" line is removed. The
+  **Organization activity** description must also be corrected — the current
+  "Quiet by default, turn it on to follow along" copy contradicts the 2026-07-04
+  opt-out flip (`_default_preferences` now defaults `org_activity` **ON**); rewrite
+  it to reflect default-on.
+
+- The Security row's **in-app** switch renders **hardcoded on** (disabled + on),
+  NOT bound to `prefs.in_app_security`, so it can never display a stale persisted
+  `false` (see Part B read-honesty). The email Security switch stays as today
+  (bound but locked, already read-coerced).
 
 - `toggle(key)` already works for any of the eight keys
   (`{ ...current, [key]: !current[key] }`); Save is unchanged (PUT sends the full
@@ -82,7 +91,16 @@ resilient. No new categories, no new notification events.
 - Add `row.in_app_security = True` immediately beside the existing
   `row.email_security = True` backstop, so a stray `in_app_security=false` can
   never persist.
-- Update the docstring to state that **both** security channels are force-on.
+- **Also add the matching read backstop in `get_preferences`** (mirror the
+  existing `email_security` read coercion): if a loaded row has
+  `in_app_security=false`, set it True and flush. The old `update_preferences`
+  accepted and persisted `in_app_security=false` (the route rejects only
+  `email_security`), so **pre-existing production rows can already hold `false`**.
+  The read backstop self-heals them lazily on next GET — no data migration
+  needed — and guarantees the GET the settings page consumes never returns a
+  stale `false`.
+- Update the docstrings (both functions) to state that **both** security channels
+  are force-on on read and write.
 
 **Route-level 400:** deliberately **not** added. The email side rejects
 `email_security=false` with `400 security_emails_required` at the route *and*
@@ -110,6 +128,13 @@ transaction — safe to guard:
   `_send_notification_email_best_effort` to public use or add a thin single-user
   helper; either is acceptable as long as the category-preference check is
   honoured.
+- **Greenlet safety (required):** `dispatch_notification_best_effort` commits,
+  which with `expire_on_commit=True` expires `target`. The email call therefore
+  MUST use pre-snapshotted plain strings for the recipient email + title/body/link
+  — reuse `member_payload["email"]` (already snapshotted at line ~909) and locals
+  captured from `_tpl_account_role_changed` **before** the dispatch. Do NOT read
+  any `target.*` attribute after the dispatch returns, or the expired-attribute
+  lazy load raises `MissingGreenlet` (cf. the audit-on-failure snapshot pattern).
 
 **`ai_dispatch.py` soft-cap warning (line ~701).** A hand-rolled org-admin fanout
 loop with no savepoint protection. Guard it with the established per-recipient
@@ -119,6 +144,12 @@ soft-cap is a separate product decision, out of scope). If reviewers prefer, thi
 site could instead be routed through the existing
 `dispatch_notification_to_org_admins` helper, but that would add admin emails and
 re-query the recipient set, so it is left as a noted alternative, not the plan.
+Note: `_list_org_admin_user_ids` has **no `is_active` filter** (unlike the
+org-admins helper) — keeping the manual wrap preserves current behavior (inactive
+admins still warned); add a one-line comment marking that divergence as
+intentional. Confirmed safe: no uncommitted business/cost state is pending on
+`db` at either soft-cap call site (the ledger row self-commits upstream), so the
+savepoints + single commit introduce no premature-commit risk.
 
 **Docstring cleanup.** Remove/rewrite the stale PR3/PR4/PR5 references in
 `notification_service.py` (module docstring lines 7–32, and the "Preference
@@ -127,9 +158,13 @@ live, settings UI live) rather than future PRs.
 
 ## Testing
 
-**Frontend** (`page.test.tsx` or equivalent):
+**Frontend** — **extend** the existing `tests/app/settings-notifications-page.test.tsx`
+(do not replace; it already seeds `in_app_*` and uses `"{title} email
+notifications"` aria-labels, so keep that label scheme and add `"{title} in-app
+notifications"` for the new column):
 - Renders all eight switches (four categories × two channels).
-- Both Security switches are disabled and on.
+- Both Security switches are disabled and on; the in-app Security switch shows on
+  even when the seeded prefs carry `in_app_security=false` (hardcoded-on render).
 - Toggling an in-app category (e.g. Org-admin in-app) flips it and Save PUTs the
   full eight-field shape with that field changed and the others intact.
 - Load/save error and success states preserved.
@@ -137,11 +172,19 @@ live, settings UI live) rather than future PRs.
 **Backend:**
 - `update_preferences` coerces `in_app_security=True` even when the payload sends
   `false` (mirrors the existing `email_security` backstop test).
+- `get_preferences` read backstop: a row persisted with `in_app_security=false`
+  is returned as `True` (self-heal on read).
 - Role-change site: emails the affected member (best-effort, pref-respecting) and
   swallows an in-app dispatch failure without propagating (parent op still
-  returns 200; role change stays committed).
+  returns 200; role change stays committed). Assert no `MissingGreenlet` (email
+  reads snapshotted strings, not `target.*`).
 - Soft-cap site: a per-recipient dispatch failure is swallowed (savepoint rolled
   back, loop continues, flow not broken).
+- Note: the existing `test_dispatch_force_writes_for_security_category` seeds
+  `in_app_security=False` via `update_preferences`; after Part B that column
+  coerces to `True`. The test still passes (security dispatch ignores the column;
+  the other three `in_app_*=False` carry the intent) — add a comment so the
+  softened premise is intentional, or assert the coercion explicitly.
 
 ## Out of scope
 
