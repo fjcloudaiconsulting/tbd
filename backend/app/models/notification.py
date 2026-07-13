@@ -21,7 +21,7 @@ Architect-locked decisions baked into this module:
 - ``seen_at`` + ``audit_event_id`` columns are present from PR1's
   create migration (2nd-arch delta G1 + G5).
 - Hardcoded English ``title`` / ``body`` for v1; the template module
-  ``notification_templates.py`` will centralize them in PR3+.
+  ``notification_templates.py`` centralizes them.
 - BigInteger id on MySQL — notification feeds grow unbounded, same
   reasoning as ``audit_events``. SQLite test path uses INTEGER via
   ``with_variant`` so the in-memory autoincrement stays honest.

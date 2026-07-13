@@ -1,4 +1,4 @@
-"""Notification copy templates (PR2 of AI tier train + PR3 of notif train).
+"""Notification copy templates.
 
 This module centralizes notification ``title`` / ``body`` strings for
 events the backend emits. The notification service (`PR1`) deliberately
@@ -50,7 +50,7 @@ def ai_cap_soft_warning(
     return (title, body, None)
 
 
-# ── PR3 of notification train: 5 sensitive-op hook templates ───────
+# ── Sensitive-op hook templates (5) ───────
 
 
 def user_password_changed() -> tuple[str, str, Optional[str]]:
@@ -228,7 +228,7 @@ def admin_org_plan_changed(
     return (title, body, "/admin/organizations")
 
 
-# ── PR4 of notification train: second hook batch templates ─────────
+# ── Second hook-batch templates ─────────
 
 
 def account_role_changed(

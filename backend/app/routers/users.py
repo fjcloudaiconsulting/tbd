@@ -213,8 +213,8 @@ async def update_profile(
     if email_changing:
         # Audit AFTER the business commit succeeds. Independent-session
         # write — a failure here does not roll back the email change.
-        # PR3 of the notification train uses this row as the trigger
-        # source for the user.email.changed in-app + email notification.
+        # This row is the trigger source for the user.email.changed
+        # in-app + email notification.
         # No target_user_id column on audit_events today; the actor
         # (self) carries the user identity, and the OLD email goes in
         # actor_email so a future "who was this" lookup after a malicious
@@ -236,8 +236,8 @@ async def update_profile(
             },
         )
 
-        # PR3: dispatch the security notification AFTER the audit row
-        # commits. The recipient is the actor (self) — the audit
+        # Dispatch the security notification AFTER the audit row commits.
+        # The recipient is the actor (self) — the audit
         # convention uses ``actor_user_id`` for self-target events.
         # The NEW email is interpolated into the body so the recipient
         # can confirm the change at a glance.
@@ -369,9 +369,9 @@ async def change_password(
     current_user.sessions_invalidated_at = now
     await db.commit()
 
-    # Audit AFTER the business commit succeeds. PR3 of the notification
-    # train uses this row as the trigger source for the
-    # user.password.changed security notification (always-on email).
+    # Audit AFTER the business commit succeeds. This row is the trigger
+    # source for the user.password.changed security notification
+    # (always-on email).
     # Failure paths above raise HTTPException before reaching this
     # point — failure-path auditing is intentionally not added in this
     # PR (separate scope per the audit-gap-closures task).
@@ -388,8 +388,8 @@ async def change_password(
         detail={"password_set_initial": was_initial_password_set},
     )
 
-    # PR3 of the notification train: dispatch the in-app notification
-    # AFTER the audit row commits. ``record_audit_event`` returns the
+    # Dispatch the in-app notification AFTER the audit row commits.
+    # ``record_audit_event`` returns the
     # new row's id on success and ``None`` on failure; we skip the
     # notification when audit failed so the forensic trail stays
     # consistent (architect-locked ordering — audit IS the trigger).
