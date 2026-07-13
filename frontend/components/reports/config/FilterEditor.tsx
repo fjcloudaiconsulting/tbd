@@ -135,11 +135,21 @@ export default function FilterEditor({
 
       {/* Settled/Pending is a transactions-only filter (the only source
           publishing a ``status`` field), so the control is offered only
-          for transactions widgets — mirroring the Transfer type gate. */}
+          for transactions widgets — mirroring the Transfer type gate.
+          Status now cascades from the canvas, so it carries the same
+          "Overrides canvas" pill as the date range when the widget value
+          differs from the inherited canvas status. */}
       {allowTransfer && (
         <div className="flex flex-col gap-1">
+          <div className="flex items-center text-xs text-text-secondary">
+            Status
+            {isFieldOverridden("status", filters, canvasFilters) && (
+              <OverridePill />
+            )}
+          </div>
           <StatusFilter
             value={filters.status}
+            label=""
             ariaPrefix="Widget status"
             onChange={(status) => onChange({ ...filters, status })}
           />

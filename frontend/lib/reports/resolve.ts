@@ -60,11 +60,11 @@ export function isFieldOverridden(
   const widgetVal = widgetFilters[field];
   if (!hasMeaningfulValue(field, widgetVal)) return false;
 
-  // Phase 4b: ``date_range`` is the ONLY field the canvas still shares.
-  // Every other field (accounts, categories, tags, txn_type, amount)
-  // is widget-only — the canvas can't hold it, so a widget value is
-  // never an "override" of canvas. Short-circuit them all to false.
-  if (field !== "date_range") {
+  // ``date_range`` and ``status`` are the only fields the canvas still
+  // shares. Every other field (accounts, categories, tags, txn_type,
+  // amount) is widget-only — the canvas can't hold it, so a widget value
+  // is never an "override" of canvas. Short-circuit them all to false.
+  if (field !== "date_range" && field !== "status") {
     return false;
   }
 
@@ -72,7 +72,7 @@ export function isFieldOverridden(
   if (!hasMeaningfulValue(field, canvasVal)) return false;
 
   // Both sides have a value. Pill fires only if they differ.
-  return !valuesEqual(widgetVal, canvasVal);
+  return !valuesEqual(field, widgetVal, canvasVal);
 }
 
 function hasMeaningfulValue(
@@ -92,14 +92,22 @@ function hasMeaningfulValue(
   return true;
 }
 
-// Phase 4b: ``date_range`` is the only field reaching this helper —
-// ``isFieldOverridden`` short-circuits every other field to false
-// before getting here. So this only needs the date comparison.
-function valuesEqual(widgetVal: unknown, canvasVal: unknown): boolean {
-  const a = widgetVal as { start?: string; end?: string };
-  const b = canvasVal as { start?: string; end?: string };
-  return (a.start ?? null) === (b.start ?? null)
-    && (a.end ?? null) === (b.end ?? null);
+// Only ``date_range`` and ``status`` reach this helper —
+// ``isFieldOverridden`` short-circuits every other field to false before
+// getting here. A scalar field (``status``) compares by ``===``;
+// ``date_range`` keeps the structural ``{start,end}`` compare.
+function valuesEqual(
+  field: keyof WidgetFilters,
+  widgetVal: unknown,
+  canvasVal: unknown,
+): boolean {
+  if (field === "date_range") {
+    const a = widgetVal as { start?: string; end?: string };
+    const b = canvasVal as { start?: string; end?: string };
+    return (a.start ?? null) === (b.start ?? null)
+      && (a.end ?? null) === (b.end ?? null);
+  }
+  return widgetVal === canvasVal;
 }
 
 /**
@@ -126,6 +134,32 @@ export function sourceSupportsDateFilter(
 }
 
 /**
+ * True when the data source ``dataset`` publishes a ``status`` filter
+ * field in its catalog — i.e. the source has a Settled/Pending status the
+ * canvas status can scope. Only ``transactions`` does; ``accounts`` and
+ * ``recurring`` do not.
+ *
+ * Mirrors ``sourceSupportsDateFilter``. This gate is the PRIMARY
+ * suppression for the canvas→widget status cascade: without it a canvas
+ * ``Settled`` leaks onto a non-transactions widget and 422s, because
+ * ``pruneFiltersToSource`` only sanitizes persisted widget filters on a
+ * source switch — it never sees the cascaded canvas value.
+ *
+ * Defaults to ``true`` when the source can't be resolved (empty catalog
+ * during the pre-load window, or a dataset missing from the catalog) —
+ * the same safe bias as the date gate.
+ */
+export function sourceSupportsStatusFilter(
+  sources: SourceCatalogEntry[] | undefined,
+  dataset: Dataset,
+): boolean {
+  if (!sources || sources.length === 0) return true;
+  const entry = sources.find((s) => s.key === dataset);
+  if (!entry) return true;
+  return entry.filters.some((f) => f.field === "status");
+}
+
+/**
  * Resolves a widget's effective filters into a list of AST filter
  * primitives. ``widget`` overrides on a per-field basis; otherwise
  * the canvas value cascades through.
@@ -140,6 +174,7 @@ export function resolveFilters(
   canvas: CanvasFilters | undefined,
   widget: WidgetFilters | undefined,
   sourceSupportsDate = true,
+  sourceSupportsStatus = true,
 ): Filter[] {
   const out: Filter[] = [];
   const canvasDr = canvas?.date_range;
@@ -174,11 +209,18 @@ export function resolveFilters(
     out.push({ field: "txn_type", op: "in", value: txnTypes });
   }
 
-  // Settled/Pending status — widget-only (like txn_type). Omitted
-  // entirely for the "All" choice (``status`` undefined). The backend
+  // Settled/Pending status — cascades from the canvas like the date
+  // range: the widget value wins when set, otherwise the canvas value
+  // inherits (a widget status can only NARROW the inherited one). Gated
+  // on ``sourceSupportsStatus`` so a canvas status never leaks onto a
+  // non-transactions widget (accounts/recurring) and 422s —
+  // ``pruneFiltersToSource`` does NOT cover the cascade. Omitted entirely
+  // for the "All" choice (``status`` undefined). The backend
   // ``FilterField.STATUS`` coerces the value to its enum server-side.
-  if (widget?.status) {
-    out.push({ field: "status", op: "eq", value: widget.status });
+  const status =
+    widget?.status ?? (sourceSupportsStatus ? canvas?.status : undefined);
+  if (status) {
+    out.push({ field: "status", op: "eq", value: status });
   }
 
   if (widget?.amount_range) {

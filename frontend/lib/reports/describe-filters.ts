@@ -39,7 +39,12 @@ export interface FilterChip {
     | "categories";
   /** Human, truncated label, e.g. "Groceries +2". */
   label: string;
-  /** Date only: true when the widget overrides the shared canvas date. */
+  /**
+   * True when the widget's value for a canvas-shared field (``date`` or
+   * ``status``) differs from — i.e. overrides — the inherited canvas
+   * value. Only these two fields can carry it; every other chip is
+   * widget-only and never sets it.
+   */
   overridden?: boolean;
 }
 
@@ -58,6 +63,11 @@ export function describeWidgetFilters(
   // chip would show but do nothing. Defaults to true (transactions and
   // the pre-catalog-load window) to preserve current behavior.
   sourceSupportsDate = true,
+  // When false (a source that doesn't publish ``status`` — accounts /
+  // recurring), no status chip is emitted: the resolver drops the
+  // cascaded canvas status at query time, so a chip would lie. Defaults
+  // to true (transactions and the pre-catalog-load window).
+  sourceSupportsStatus = true,
 ): FilterChip[] {
   const chips: FilterChip[] = [];
 
@@ -90,8 +100,18 @@ export function describeWidgetFilters(
   }
 
   // ── status ────────────────────────────────────────────────────
-  if (widgetFilters.status) {
-    chips.push({ key: "status", label: capitalize(widgetFilters.status) });
+  // Cascades from the canvas like the date range: the widget value wins,
+  // otherwise the canvas value inherits. Gated on ``sourceSupportsStatus``
+  // so a cascaded canvas status never shows a chip on an accounts /
+  // recurring widget (the resolver drops it at query time). A widget
+  // status differing from the canvas status reads as an override.
+  const effectiveStatus = widgetFilters.status ?? canvasFilters?.status;
+  if (sourceSupportsStatus && effectiveStatus) {
+    chips.push({
+      key: "status",
+      label: capitalize(effectiveStatus),
+      overridden: isFieldOverridden("status", widgetFilters, canvasFilters),
+    });
   }
 
   // ── amount ────────────────────────────────────────────────────

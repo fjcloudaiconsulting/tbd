@@ -90,7 +90,13 @@ export function buildSankeyBody(
   const widgetFilters = widget.config.filters;
 
   // Reuse the shared resolver — handles canvas date cascade, widget date
-  // override, account_ids, category_ids, txn_type, amount_range, tag_names.
+  // override, canvas status cascade, account_ids, category_ids, txn_type,
+  // amount_range, tag_names. Sankey is always transactions, which
+  // publishes both ``date`` and ``status``, so both cascade here (pass
+  // ``true`` for each). Canvas status SHOULD scope Sankey — it won't 422
+  // and it keeps the cascade consistent — so unlike ``txn_type`` we do
+  // NOT strip it below.
+  //
   // Strip txn_type afterwards: the Sankey endpoint ignores it (it always
   // aggregates all transaction types for the income→spending flow), so
   // sending it would be a silent no-op. Filtering it here keeps the wire
@@ -99,6 +105,7 @@ export function buildSankeyBody(
     canvasFilters,
     widgetFilters,
     true, // transactions always supports date filter
+    true, // transactions publishes status → canvas status scopes Sankey
   );
   const filters = resolvedFilters.filter((f) => f.field !== "txn_type");
 

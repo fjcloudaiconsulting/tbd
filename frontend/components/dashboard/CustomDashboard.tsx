@@ -31,6 +31,7 @@ import {
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import Canvas from "@/components/reports/Canvas";
+import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import WidgetShell from "@/components/reports/WidgetShell";
 import AddWidgetMenu from "@/components/dashboard/AddWidgetMenu";
 import { DashboardDataProvider } from "@/components/dashboard/DashboardDataProvider";
@@ -386,6 +387,24 @@ export default function CustomDashboard() {
 
           {/* Period navigation chrome */}
           <DashboardPeriodNav />
+
+          {/* Canvas-wide status filter — Customize mode only. Date lives
+              in DashboardPeriodNav, so ``hideDate`` renders status alone.
+              Cascades to every transactions chart card via
+              renderDashboardWidget → renderReportWidget. Editing marks the
+              dashboard dirty, same as any layout change. */}
+          {editModeActive && (
+            <div className="mb-4">
+              <CanvasFiltersBar
+                hideDate
+                value={canvasFilters}
+                onChange={(next) => {
+                  setCanvasFilters(next);
+                  setDirty(true);
+                }}
+              />
+            </div>
+          )}
 
           {/* Inline save/load error */}
           {saveError && (
