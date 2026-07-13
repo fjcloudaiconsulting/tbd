@@ -723,6 +723,71 @@ async def test_soft_cap_dispatches_notification_once_per_period(
     assert dispatch_mock.await_count == 1
 
 
+@pytest.mark.asyncio
+async def test_soft_cap_notification_failure_does_not_break_dispatch(
+    db: AsyncSession, org: Organization, admin_user, credential, default_routing, monkeypatch
+):
+    """A per-recipient in-app write failure in the soft-cap fanout is
+    swallowed (savepoint rolled back) so it can neither abort the LLM
+    dispatch nor 500 the caller. Without the savepoint guard the raising
+    ``dispatch_notification`` would propagate out of ``call_llm``.
+    """
+    db.add(
+        OrgAIDefaultCaps(
+            org_id=org.id, soft_cap_cents=5, hard_cap_cents=None, period="monthly"
+        )
+    )
+    db.add(
+        AIUsageLedger(
+            org_id=org.id,
+            credential_id=credential.id,
+            feature_key="chat",
+            model="gpt-4o-mini",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            est_cost_cents=6,
+            latency_ms=1,
+            success=True,
+            error_class=None,
+            dispatched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+    )
+    await db.commit()
+
+    redis_state: dict[str, str] = {}
+
+    class FakeRedis:
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in redis_state:
+                return False
+            redis_state[key] = value
+            return True
+
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.redis_client.get_client", lambda: FakeRedis()
+    )
+
+    boom = AsyncMock(side_effect=RuntimeError("in-app row write failed"))
+    monkeypatch.setattr(
+        "app.services.ai_dispatch.notification_service.dispatch_notification",
+        boom,
+    )
+
+    adapter = _make_adapter()
+    with patch("app.services.ai_dispatch.get_adapter", return_value=adapter):
+        # Must NOT raise even though every recipient dispatch blows up.
+        await call_llm(
+            db,
+            org_id=org.id,
+            feature_key="chat",
+            request_payload={"messages": []},
+        )
+
+    # The fanout was attempted (at least the one admin recipient) and swallowed.
+    assert boom.await_count >= 1
+
+
 # ---------- soft cap boundary-crossing (post-write check) -----------
 
 
