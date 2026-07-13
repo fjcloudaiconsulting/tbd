@@ -112,8 +112,9 @@ in TypeScript.
   ```
   Month-length clamps via `_snap_to_cycle`; **no drift** (re-derived from `today` each call);
   inclusive `[start, end]`, gap-free with the following cycle.
-- **`reports/reports_enums.py`** — new closed `RelativeDateToken` enum (`next_cycle`), a
-  **shared atom** used by both the persisted preset and the AST value so they cannot drift.
+- **`backend/app/schemas/reports_enums.py`** — new closed `RelativeDateToken` enum
+  (`next_cycle`), a **shared atom** used by both the persisted preset and the AST value so
+  they cannot drift. (Imported as `from app.schemas.reports_enums import RelativeDateToken`.)
 - **`schemas/reports_query.py`** — add `RELATIVE = "relative"` to `FilterOp`; in
   `Filter._validate_value` add a branch requiring `field is DATE` and `value ∈ RelativeDateToken`.
 - **`routers/reports.py`** — a shared async pre-pass
@@ -173,6 +174,64 @@ A future cycle is dominated by pending/scheduled rows (pending → `settled_date
 one-line UX note in the chip/help copy if it confuses.
 
 ---
+
+## Architect spec-review folds (implementation must-dos)
+
+Both architects returned APPROVE-WITH-NITS; the following concrete items are folded in so
+the plan is compile-correct and complete.
+
+### Backend (PR2 unless noted)
+- **`RelativeDateToken` lives in `backend/app/schemas/reports_enums.py`** (not `reports/…`),
+  alongside a `Literal["settled","pending"]` **`TxnStatus`** shared atom reused by the PR1
+  `CanvasFilters.status` field (symmetric with `RelativeDateToken`).
+- **Pre-pass org fallback:** `resolve_relative_date_filters(db, org_id, filters)` fetches the
+  `Organization` by `org_id` and uses `cycle_day = org.billing_cycle_day if org else 1`
+  (matches `billing_service.py:71,138`), with `today = datetime.date.today()` (server-local,
+  consistent with all existing billing code).
+- **Construct, don't mutate:** the rewrite builds a **new**
+  `Filter(field=DATE, op=BETWEEN, value=[start,end])` rather than mutating the relative
+  filter in place, so Pydantic re-runs `Filter._validate_value` (the start<=end / window
+  invariants at `reports_query.py:174-181` only fire at construction).
+- **PR1 backend tests (new):** (a) a canvas `status` filter on `dataset=accounts`/`recurring`
+  is **dropped, not 422'd** (this is what locks the new `SHARED_CANVAS_FILTER_FIELDS` entry);
+  (b) on `transactions`, a `status` filter with `op != eq` still **422s** (the published-field
+  eq-only path at `base.py:96` must stay intact).
+
+### Frontend (types that otherwise won't compile)
+- **Widen `FilterOp`** in `types.ts` to include `"relative"` (PR2) — `resolveFilters` emits
+  `op:"relative"` and the current union is `"eq"|"in"|"between"|"gte"|"lte"`.
+- **`buildPresetRanges`/`matchPreset` signatures** must change their `Record` key set to
+  `Exclude<PresetKey, "custom" | "next_cycle">` so adding `next_cycle` to `PresetKey` doesn't
+  force a `next_cycle` entry (`date-presets.ts:44,65`). `PRESET_LABELS` auto-derives, stays fine.
+- **`matchPreset` ordering:** return `"next_cycle"` for a `{preset:"next_cycle"}` value
+  **before** the `!value.start && !value.end` early-return at `date-presets.ts:67` (that guard
+  fires first and would return `null`).
+- **`DatePresetChips.pick()`** needs an explicit branch: `next_cycle` → `onChange({preset:"next_cycle"})`
+  (today `pick` does `onChange(presetRanges[key])`, which is `undefined` for `next_cycle`).
+- **`hasMeaningfulValue` for `date_range`** must also treat `preset` as a value
+  (`resolve.ts:84-87`), or a widget `{preset:"next_cycle"}` override of a canvas range never
+  registers as an override (dead pill). Same preset-awareness in `pickDateRange` (`resolve.ts:279`).
+- **`describe-filters`:** thread a `sourceSupportsStatus` param into `describeWidgetFilters`
+  from its caller `WidgetFilterChips.tsx` (which computes only `sourceSupportsDate` today), and
+  generalize `FilterChip.overridden` beyond date.
+- **Third `resolveFilters` caller — Sankey.** Besides `buildQueryAst` and `buildSeriesQueryAst`
+  (`useReportQuery.ts`), `buildSankeyBody` (`useSankeyQuery.ts:98`) also calls it. **Decision:**
+  canvas status SHOULD scope Sankey too (consistent with the cascade; transactions publishes
+  `status` so it won't 422) — pass `sourceSupportsStatus=true` and do **not** strip status the
+  way `txn_type` is stripped. Add a Sankey test.
+- **`CanvasFiltersBar` reuse:** add a `hideDate?: boolean` prop; its `onChange` must merge
+  `status` (`onChange({...value, status})`). Dashboard wiring: render
+  `<CanvasFiltersBar hideDate value={canvasFilters} onChange={(next)=>{setCanvasFilters(next); setDirty(true);}} />`
+  inside `CustomDashboard`'s edit-mode block.
+- **Move `PresetKey` into `types.ts`** (and have `date-presets.ts` import it) to avoid the
+  type-only import cycle the module header guards against.
+
+### Accepted as-is (no change)
+- **Label-only "Next cycle" chip is correct UX** — `dateLabel` already renders matched presets
+  as their label (not `MMM D – MMM D`), so a token-only chip is symmetric with every other
+  preset; the FE never needing the resolved window is invisible to the user.
+- **`compare_prior_period` + `next_cycle`:** a KPI's prior-period delta can't be computed
+  client-side from a token-only range, so it simply hides. Expected, not a bug.
 
 ## Out of scope
 - Making `this_month`/`last_month` cycle-based (they stay calendar).
