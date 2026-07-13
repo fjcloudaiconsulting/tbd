@@ -392,8 +392,9 @@ async def dispatch_notification_and_email_best_effort(
 
     Both channels are independent and best-effort: a failure in either is
     logged and swallowed so a completed business action is never broken.
-    The email runs AFTER the in-app commit, so the outbound Mailgun call
-    never holds a DB transaction open.
+    The email runs AFTER the in-app write is durably committed, so a send
+    failure can never roll back the in-app row (it only ever reads the
+    preference row before the outbound call).
 
     ``email`` is a caller-supplied string (not read from the user row) so
     the caller can pass a value snapshotted BEFORE the in-app commit,

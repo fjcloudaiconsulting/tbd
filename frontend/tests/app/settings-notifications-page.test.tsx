@@ -214,12 +214,11 @@ describe("Notification preferences settings page", () => {
     );
     const [, opts] = vi.mocked(apiFetch).mock.calls.at(-1)!;
     const sent = JSON.parse((opts as { body: string }).body);
-    // Only the toggled in-app field changed; the rest of the shape is intact.
-    expect(sent).toMatchObject({
+    // Only the toggled in-app field changed; the full eight-field shape is
+    // otherwise identical to the loaded prefs.
+    expect(sent).toEqual({
+      ...makePrefs(),
       in_app_org_admin: false,
-      email_org_admin: true,
-      in_app_account: true,
-      email_security: true,
     });
   });
 

@@ -72,11 +72,13 @@ function ChannelSwitch({
   enabled,
   disabled,
   ariaLabel,
+  describedById,
   onClick,
 }: {
   enabled: boolean;
   disabled: boolean;
   ariaLabel: string;
+  describedById?: string;
   onClick: () => void;
 }) {
   return (
@@ -85,6 +87,7 @@ function ChannelSwitch({
       role="switch"
       aria-checked={enabled}
       aria-label={ariaLabel}
+      aria-describedby={describedById}
       disabled={disabled}
       onClick={onClick}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60 ${
@@ -209,7 +212,10 @@ export default function NotificationsPage() {
                           <p className="text-sm font-medium text-text-primary">
                             {cat.title}
                             {cat.locked && (
-                              <span className="ml-2 text-xs font-normal text-text-muted">
+                              <span
+                                id={`${cat.id}-always-on`}
+                                className="ml-2 text-xs font-normal text-text-muted"
+                              >
                                 (always on)
                               </span>
                             )}
@@ -223,6 +229,9 @@ export default function NotificationsPage() {
                             enabled={emailEnabled}
                             disabled={cat.locked || saving}
                             ariaLabel={`${cat.title} email notifications`}
+                            describedById={
+                              cat.locked ? `${cat.id}-always-on` : undefined
+                            }
                             onClick={() => !cat.locked && toggle(cat.emailKey)}
                           />
                         </div>
@@ -231,6 +240,9 @@ export default function NotificationsPage() {
                             enabled={inAppEnabled}
                             disabled={cat.locked || saving}
                             ariaLabel={`${cat.title} in-app notifications`}
+                            describedById={
+                              cat.locked ? `${cat.id}-always-on` : undefined
+                            }
                             onClick={() => !cat.locked && toggle(cat.inAppKey)}
                           />
                         </div>
