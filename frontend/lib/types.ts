@@ -778,7 +778,7 @@ export interface AdminSubscriptionKPIs {
   generated_at: string;
 }
 
-// ── Notifications (PR3 of notification train) ──────────────────────
+// ── Notifications ──────────────────────
 //
 // Mirrors backend/app/schemas/notification.py. Four categories map to
 // preference toggles; ``security`` is force-on per architect lock.

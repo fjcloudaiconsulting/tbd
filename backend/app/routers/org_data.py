@@ -159,10 +159,9 @@ async def reset_org_data(
         },
     )
 
-    # PR4 of the notification train: fan out an in-app ``org_admin``
-    # notification to every active admin of the org whose data was
-    # reset. Fires only after the audit row is durably persisted
-    # (mirrors the PR3 "dispatch after audit" idiom). The reset commits
+    # Fan out an in-app ``org_admin`` notification to every active
+    # admin of the org whose data was reset. Fires only after the
+    # audit row is durably persisted (dispatch-after-audit idiom). The reset commits
     # per batch internally, so the notification rows need their own
     # commit here.
     if audit_event_id is not None:

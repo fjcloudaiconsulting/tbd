@@ -170,8 +170,8 @@ async def rename_org_endpoint(
         new_name=new_name,
     )
 
-    # PR4 of the notification train: fan out an in-app ``org_admin``
-    # notification to every active admin of the renamed org. Fires
+    # Fan out an in-app ``org_admin`` notification to every active
+    # admin of the renamed org. Fires
     # after the rename + audit row committed (the audit row's id is
     # carried for forensic correlation). The fanout writes notification
     # rows into the request session, so it needs its own commit.
