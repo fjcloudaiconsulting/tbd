@@ -80,17 +80,8 @@ describe("resolveFilters status", () => {
       expect.objectContaining({ field: "status" }),
     );
   });
-  it("reads status off the widget only (canvas status is not consulted)", () => {
-    // Status is widget-only (like txn_type). A stray canvas value must
-    // never leak into the AST — only the widget's own value emits.
-    const out = resolveFilters(
-      { status: "pending" } as unknown as CanvasFilters,
-      { status: "settled" } as WidgetFilters,
-    );
-    expect(out).toContainEqual({ field: "status", op: "eq", value: "settled" });
-    // Exactly one status filter — the canvas value did not add a second.
-    expect(out.filter((f) => f.field === "status")).toHaveLength(1);
-  });
+  // (Status override-wins semantics are covered in the "status cascade"
+  // describe block below — a widget status narrows the inherited canvas one.)
 });
 
 describe("resolveFilters status cascade (Feature 1)", () => {
