@@ -595,7 +595,68 @@ async def test_update_preferences_forces_security_true_defense_in_depth(session_
     assert prefs.email_security is True
 
 
-# ── PR3: preference-aware dispatch + org-admin fanout ─────────────
+@pytest.mark.asyncio
+async def test_update_preferences_forces_in_app_security_true(session_factory):
+    """``in_app_security`` is force-coerced to True on write, mirroring
+    ``email_security``. Unlike email there is no route-level 400 for the
+    in-app channel (the UI never sends False and dispatch ignores the
+    column), so this coercion is the only guarantee the stored value stays
+    honest — a stale False would render the settings page's always-on
+    security switch as a lying OFF.
+    """
+    user_id = await _seed_user(session_factory)
+    payload = _PrefPayload(in_app_security=False)
+    async with session_factory() as db:
+        prefs = await notification_service.update_preferences(
+            db, user_id=user_id, payload=payload
+        )
+        await db.commit()
+    assert prefs.in_app_security is True
+
+
+@pytest.mark.asyncio
+async def test_get_preferences_read_backstop_coerces_in_app_security(session_factory):
+    """A row that already holds ``in_app_security=False`` (persisted by an
+    older PUT before the write-side coercion existed, a migration, or a
+    direct DB poke) is self-healed to True on read, so the GET the settings
+    page consumes never returns a stale False.
+    """
+    user_id = await _seed_user(session_factory)
+    # Write a stale row directly, bypassing update_preferences' coercion.
+    async with session_factory() as db:
+        db.add(
+            UserNotificationPreferences(
+                user_id=user_id,
+                email_security=True,
+                email_account=True,
+                email_org_admin=True,
+                email_org_activity=True,
+                in_app_security=False,
+                in_app_account=True,
+                in_app_org_admin=True,
+                in_app_org_activity=True,
+            )
+        )
+        await db.commit()
+
+    async with session_factory() as db:
+        prefs = await notification_service.get_preferences(db, user_id=user_id)
+        await db.commit()
+    assert prefs.in_app_security is True
+
+    # And the heal is persisted, not just an in-memory fixup.
+    async with session_factory() as db:
+        reread = (
+            await db.execute(
+                select(UserNotificationPreferences).where(
+                    UserNotificationPreferences.user_id == user_id
+                )
+            )
+        ).scalar_one()
+    assert reread.in_app_security is True
+
+
+# ── preference-aware dispatch + org-admin fanout ─────────────
 
 
 async def _seed_extra_admin(
@@ -663,6 +724,10 @@ async def test_dispatch_force_writes_for_security_category(session_factory):
     the user cannot opt out of security signals in the inbox.
     """
     user_id = await _seed_user(session_factory)
+    # NOTE: in_app_security=False here is coerced back to True by
+    # update_preferences' force-on backstop, so the security column ends up
+    # True regardless — the intent (opt out of every in-app category) is still
+    # carried by the other three False flags, and security must still write.
     payload = _PrefPayload(
         in_app_security=False,
         in_app_account=False,

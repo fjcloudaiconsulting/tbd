@@ -4,14 +4,17 @@ Per the 2nd-arch delta (G7 — future-queue readiness) and the parent
 spec, this layer is the single home for:
 
 - ``dispatch_notification`` — write a single notification row for a
-  user. PR3 consults the user's in-app preferences for non-security
+  user. Consults the user's in-app preferences for non-security
   categories before writing; ``security`` is force-on and always
   writes (architect-locked).
-- ``dispatch_notification_to_org_admins`` — fanout helper for
-  org-broadcast events (plan change today, role + rename + reset in
-  PR4). One SELECT for the admin set, then per-user dispatch.
-  Per-user failure does NOT abort the fanout — the contract is
-  best-effort, log-and-continue.
+- ``dispatch_notification_best_effort`` — single-user in-app write +
+  its own commit, log-and-swallow on failure. Used by call sites that
+  must never let an in-app-notification failure break a completed op.
+- ``dispatch_notification_to_org_admins`` / ``_to_org_members`` —
+  fanout helpers for org-broadcast events. One SELECT for the
+  recipient set, then per-user dispatch inside a savepoint, plus a
+  best-effort email per recipient. Per-user failure does NOT abort the
+  fanout — the contract is best-effort, log-and-continue.
 - ``mark_seen`` — bell-open clears the badge for all the user's
   unseen rows. Idempotent.
 - ``mark_read`` — row-click clears a single row's unread state.
@@ -19,17 +22,16 @@ spec, this layer is the single home for:
 - ``list_for_user`` — cursor-paginated inbox feed. Ordered newest
   first by ``(created_at, id)``.
 - ``get_preferences`` — auto-creates the user's preference row on
-  first access. ``email_security`` is forced TRUE on auto-create
-  per the locked default.
+  first access. Both ``email_security`` and ``in_app_security`` are
+  forced TRUE on read as well as on auto-create per the locked default.
 - ``update_preferences`` — applies a typed payload. The 400 for
-  ``email_security=False`` is the route's job; this function trusts
-  its caller.
+  ``email_security=False`` is the route's job; this function trusts its
+  caller but force-coerces both security channels TRUE as a backstop.
 
-PR3 scope intentionally excludes:
-
-- Email scheduling. The 5 sensitive-op routes write the in-app row
-  only in PR3; the Mailgun side wires in PR5.
-- ``/settings/notifications`` UI — PR5.
+Email delivery and the ``/settings/notifications`` UI have both shipped:
+security emails fire from the single-user hooks, and the org fanout
+helpers email each recipient (preference-gated); the settings page
+surfaces per-category email and in-app toggles.
 """
 from __future__ import annotations
 
@@ -251,7 +253,7 @@ async def dispatch_notification(
     notification ROW write goes through the request's ``AsyncSession``
     so it commits atomically with the action that caused it).
 
-    Preference contract (PR3):
+    Preference contract:
 
     - ``category == security`` → ALWAYS write the row. Architect-locked
       force-on. The user cannot opt out of security signals via the
@@ -365,6 +367,59 @@ async def dispatch_notification_best_effort(
             event_type=event_type,
             audit_event_id=audit_event_id,
         )
+
+
+async def dispatch_notification_and_email_best_effort(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    email: str,
+    category: NotificationCategory,
+    event_type: str,
+    title: str,
+    body: str,
+    link_url: Optional[str] = None,
+    audit_event_id: Optional[int] = None,
+) -> None:
+    """Single-user in-app write (guarded, owns its commit) + preference-gated email.
+
+    Convenience wrapper that runs both channels best-effort for a single
+    recipient, mirroring the two-channel contract the org fan-outs give a
+    group. Writes the in-app row via ``dispatch_notification_best_effort``
+    (which commits and log-swallows on failure), then sends the email via
+    ``_send_notification_email_best_effort`` (gated by the recipient's
+    ``email_{category}`` preference; ``security`` is force-on).
+
+    Both channels are independent and best-effort: a failure in either is
+    logged and swallowed so a completed business action is never broken.
+    The email runs AFTER the in-app commit, so the outbound Mailgun call
+    never holds a DB transaction open.
+
+    ``email`` is a caller-supplied string (not read from the user row) so
+    the caller can pass a value snapshotted BEFORE the in-app commit,
+    keeping the email independent of ORM instance state after this helper
+    commits (robust regardless of the session's ``expire_on_commit``).
+    """
+    await dispatch_notification_best_effort(
+        db,
+        user_id=user_id,
+        category=category,
+        event_type=event_type,
+        title=title,
+        body=body,
+        link_url=link_url,
+        audit_event_id=audit_event_id,
+    )
+    await _send_notification_email_best_effort(
+        db,
+        user_id=user_id,
+        email=email,
+        category=category,
+        event_type=event_type,
+        title=title,
+        body=body,
+        link_url=link_url,
+    )
 
 
 async def dispatch_notification_to_org_admins(
@@ -723,12 +778,21 @@ async def get_preferences(
     result = await db.execute(stmt)
     row = result.scalar_one_or_none()
     if row is not None:
-        # Force email_security = True at READ time as well. The column
-        # value should always be True under normal operation (the PUT
-        # endpoint rejects False), but a stale row from a future
-        # migration / direct DB poke must not leak through.
+        # Force both security channels True at READ time as well. The
+        # columns should always be True under normal operation (email
+        # via the PUT reject, in-app via the write-side coercion), but a
+        # stale row — an older PUT that persisted in_app_security=False
+        # before that coercion existed, a future migration, or a direct
+        # DB poke — must not leak through and render the settings page's
+        # (always-on) security switch as a lying OFF.
+        changed = False
         if not row.email_security:
             row.email_security = True
+            changed = True
+        if not row.in_app_security:
+            row.in_app_security = True
+            changed = True
+        if changed:
             await db.flush()
         return row
 
@@ -749,9 +813,11 @@ async def update_preferences(
 
     The route handler is responsible for the 400 ``security_emails_required``
     rejection when ``payload.email_security`` is False. This function
-    trusts the caller; ``email_security`` is force-coerced to True
+    trusts the caller; both security channels are force-coerced to True
     here as a defense-in-depth backstop in case an internal call site
-    forgets the route check.
+    forgets the route check. In-app ``security`` has no route 400 (the
+    UI never sends it False and dispatch ignores the column), so this
+    coercion is the single guarantee that the stored value stays honest.
 
     Auto-creates the row when missing (same path as ``get_preferences``)
     so a PUT-before-GET workflow Just Works.
@@ -761,7 +827,7 @@ async def update_preferences(
     row.email_account = payload.email_account
     row.email_org_admin = payload.email_org_admin
     row.email_org_activity = payload.email_org_activity
-    row.in_app_security = payload.in_app_security
+    row.in_app_security = True  # force-on both channels (no route 400 for in-app)
     row.in_app_account = payload.in_app_account
     row.in_app_org_admin = payload.in_app_org_admin
     row.in_app_org_activity = payload.in_app_org_activity

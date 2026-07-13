@@ -128,13 +128,16 @@ transaction — safe to guard:
   `_send_notification_email_best_effort` to public use or add a thin single-user
   helper; either is acceptable as long as the category-preference check is
   honoured.
-- **Greenlet safety (required):** `dispatch_notification_best_effort` commits,
-  which with `expire_on_commit=True` expires `target`. The email call therefore
-  MUST use pre-snapshotted plain strings for the recipient email + title/body/link
-  — reuse `member_payload["email"]` (already snapshotted at line ~909) and locals
-  captured from `_tpl_account_role_changed` **before** the dispatch. Do NOT read
-  any `target.*` attribute after the dispatch returns, or the expired-attribute
-  lazy load raises `MissingGreenlet` (cf. the audit-on-failure snapshot pattern).
+- **Snapshot the recipient email (defensive):** the best-effort helper commits
+  internally. This app's session runs `expire_on_commit=False`
+  (`database.py:89`), so `target.email` would survive the commit — but the email
+  is passed as the pre-snapshotted `member_payload["email"]` string (captured at
+  line ~909) so the notification never depends on ORM instance state after the
+  commit, regardless of session config. Title/body/link come from
+  `_tpl_account_role_changed` locals captured before the dispatch. (The architect
+  flagged a `MissingGreenlet` risk assuming the SQLAlchemy default
+  `expire_on_commit=True`; this codebase overrides it, so the risk is latent, not
+  live — the snapshot is kept as robust practice anyway.)
 
 **`ai_dispatch.py` soft-cap warning (line ~701).** A hand-rolled org-admin fanout
 loop with no savepoint protection. Guard it with the established per-recipient
