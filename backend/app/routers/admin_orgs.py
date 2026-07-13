@@ -948,11 +948,19 @@ async def update_org_member(
             detail=detail,
         )
 
-        # PR4 of the notification train: when the change was a role
-        # change, dispatch an in-app ``account`` notification to the
-        # TARGET member (the user whose role changed), NOT the actor.
-        # Mirrors the PR3 "dispatch after the audit row commits" idiom
-        # — only fire once the audit row is durably persisted.
+        # When the change was a role change, notify the TARGET member
+        # (the user whose role changed), NOT the actor, on BOTH channels:
+        # an in-app ``account`` row plus a best-effort email (gated by the
+        # member's email_account preference). Fired only once the audit row
+        # is durably persisted ("dispatch after the audit row commits").
+        #
+        # Both channels are best-effort and run after the member mutation
+        # already committed (line ~905), so a notification failure can never
+        # roll back the role change. The recipient email is taken from the
+        # pre-snapshotted ``member_payload`` string rather than ``target``:
+        # the helper commits internally, and passing a plain string keeps the
+        # email independent of ORM instance state after that commit (the
+        # session runs expire_on_commit=False today, but not relying on it).
         if (
             event_type == "admin.org.member.role_changed"
             and audit_event_id is not None
@@ -960,9 +968,10 @@ async def update_org_member(
             title, body, link_url = _tpl_account_role_changed(
                 new_role=str(after["role"]),
             )
-            await notification_service.dispatch_notification(
+            await notification_service.dispatch_notification_and_email_best_effort(
                 db,
                 user_id=target.id,
+                email=member_payload["email"],
                 category=NotificationCategory.ACCOUNT,
                 event_type="account.role_changed",
                 title=title,
@@ -970,7 +979,6 @@ async def update_org_member(
                 link_url=link_url,
                 audit_event_id=audit_event_id,
             )
-            await db.commit()
 
     return member_payload
 

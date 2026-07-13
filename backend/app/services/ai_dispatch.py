@@ -697,16 +697,34 @@ async def _maybe_warn_soft_cap(
     )
 
     recipients = await _list_org_admin_user_ids(db, org_id=org_id)
+    # Best-effort fanout: guard each recipient's in-app write in its own
+    # savepoint so a single failing flush can't poison the session and abort
+    # the whole soft-cap warning (or 500 the AI dispatch that triggered it).
+    # Mirrors dispatch_notification_to_org_admins' rollback-before-log idiom.
+    # NOTE: _list_org_admin_user_ids intentionally has no is_active filter
+    # (unlike that helper), so inactive admins are still warned — keep it.
     for user_id in recipients:
-        await notification_service.dispatch_notification(
-            db,
-            user_id=user_id,
-            category=NotificationCategory.ORG_ADMIN,
-            event_type="ai.cap.soft_warning",
-            title=title,
-            body=body,
-            link_url=link_url,
-        )
+        savepoint = await db.begin_nested()
+        try:
+            await notification_service.dispatch_notification(
+                db,
+                user_id=user_id,
+                category=NotificationCategory.ORG_ADMIN,
+                event_type="ai.cap.soft_warning",
+                title=title,
+                body=body,
+                link_url=link_url,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort soft-cap fanout
+            await savepoint.rollback()
+            logger.warning(
+                "ai.dispatch.soft_cap.notify_failed",
+                org_id=org_id,
+                recipient_user_id=user_id,
+                error_class=type(exc).__name__,
+            )
+        else:
+            await savepoint.commit()
     await db.commit()
 
     logger.info(

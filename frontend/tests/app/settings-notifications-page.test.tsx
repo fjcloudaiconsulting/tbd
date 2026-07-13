@@ -159,6 +159,69 @@ describe("Notification preferences settings page", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders the in-app toggles from the loaded preferences", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs());
+    render(<NotificationsPage />);
+
+    expect(
+      await screen.findByRole("switch", {
+        name: /account in-app notifications/i,
+      }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByRole("switch", {
+        name: /organization activity in-app notifications/i,
+      }),
+    ).toHaveAttribute("aria-checked", "false");
+    // Both channels of all four categories are present.
+    expect(screen.getAllByRole("switch")).toHaveLength(8);
+  });
+
+  it("shows the in-app security switch on and disabled even if the loaded value is false", async () => {
+    // A stale persisted in_app_security=false must not render as a lying OFF —
+    // the switch is hardcoded on (backend force-coerces the column).
+    vi.mocked(apiFetch).mockResolvedValueOnce(makePrefs({ in_app_security: false }));
+    render(<NotificationsPage />);
+
+    const security = await screen.findByRole("switch", {
+      name: /security in-app notifications/i,
+    });
+    expect(security).toHaveAttribute("aria-checked", "true");
+    expect(security).toBeDisabled();
+  });
+
+  it("toggles an in-app category and PUTs the full preference shape", async () => {
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce(makePrefs())
+      .mockResolvedValueOnce(makePrefs({ in_app_org_admin: false }));
+
+    render(<NotificationsPage />);
+
+    const orgAdminInApp = await screen.findByRole("switch", {
+      name: /organization \(admin\) in-app notifications/i,
+    });
+    expect(orgAdminInApp).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(orgAdminInApp);
+    expect(orgAdminInApp).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenLastCalledWith(
+        "/api/v1/notifications/preferences",
+        expect.objectContaining({ method: "PUT" }),
+      ),
+    );
+    const [, opts] = vi.mocked(apiFetch).mock.calls.at(-1)!;
+    const sent = JSON.parse((opts as { body: string }).body);
+    // Only the toggled in-app field changed; the full eight-field shape is
+    // otherwise identical to the loaded prefs.
+    expect(sent).toEqual({
+      ...makePrefs(),
+      in_app_org_admin: false,
+    });
+  });
+
   it("shows an error when loading preferences fails", async () => {
     vi.mocked(apiFetch).mockRejectedValueOnce(new Error("nope"));
     render(<NotificationsPage />);
