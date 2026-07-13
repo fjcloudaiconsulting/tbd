@@ -47,7 +47,13 @@ from pydantic import (
 # Dataset / Aggregation / MeasureField / Dimension are the shared closed
 # enum atoms — defined once in ``reports_enums`` so the saved-layout shape
 # and the live ``/query`` AST (``reports_query``) cannot drift.
-from app.schemas.reports_enums import Aggregation, Dataset, Dimension, MeasureField
+from app.schemas.reports_enums import (
+    Aggregation,
+    Dataset,
+    Dimension,
+    MeasureField,
+    TxnStatus,
+)
 
 
 # ─── closed enums (mirror frontend unions) ──────────────────────────
@@ -292,6 +298,7 @@ class CanvasFilters(BaseModel):
     date_range: Optional[CanvasDateRange] = None
     account_ids: Optional[List[int]] = None
     category_ids: Optional[List[int]] = None
+    status: Optional[TxnStatus] = None
 
 
 # ─── validation entrypoints (used by ReportCreate / ReportUpdate) ───

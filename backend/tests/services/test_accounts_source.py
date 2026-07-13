@@ -155,6 +155,24 @@ async def test_date_filter_tolerated_and_dropped(db_session, seeded):
 
 
 @pytest.mark.asyncio
+async def test_status_filter_tolerated_and_dropped(db_session, seeded):
+    """A canvas-level status filter cascaded onto accounts must validate()
+    without raising and build_rows must still return rows (status dropped) —
+    the shared-canvas contract, now extended to ``status`` so it can cascade
+    beyond transactions widgets."""
+    src = _source()
+    ast = _query(
+        filters=[
+            Filter(field=FilterField.STATUS, op=FilterOp.EQ, value="settled"),
+        ],
+    )
+    src.validate(ast)  # must not raise
+    rows, _ = await src.build_rows(db_session, seeded["org1_id"], ast)
+    assert len(rows) == 1
+    assert rows[0]["value"] == 3
+
+
+@pytest.mark.asyncio
 async def test_sum_balance_by_currency_with_currency_filter(db_session, seeded):
     src = _source()
     ast = _query(
@@ -271,11 +289,13 @@ async def test_validate_rejects_account_active_in_op(db_session, seeded):
 
 @pytest.mark.asyncio
 async def test_validate_rejects_non_shared_field(db_session, seeded):
-    """A transactions-only field (status) that accounts does not publish
-    and is not a shared-canvas field must be rejected outright."""
+    """A transactions-only field (txn_type) that accounts does not publish
+    and is not a shared-canvas field must be rejected outright. (``status``
+    used to be this example but is now a shared-canvas field — see
+    ``test_status_filter_tolerated_and_dropped``.)"""
     src = _source()
     ast = _query(
-        filters=[Filter(field=FilterField.STATUS, op=FilterOp.EQ, value="settled")],
+        filters=[Filter(field=FilterField.TXN_TYPE, op=FilterOp.EQ, value="expense")],
     )
     with pytest.raises(ValueError):
         src.validate(ast)

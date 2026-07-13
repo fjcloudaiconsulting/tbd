@@ -199,6 +199,13 @@ def test_valid_canvas_filters():
     assert body.canvas_filters_json["account_ids"] == [1, 2]
 
 
+def test_valid_canvas_filters_status():
+    # Canvas-level status (the #538-era widget-only filter, now cascaded)
+    # persists in canvas_filters_json.
+    body = ReportCreate(name="r", canvas_filters_json={"status": "settled"})
+    assert body.canvas_filters_json["status"] == "settled"
+
+
 # ─── malformed → ValidationError ────────────────────────────────────
 
 
@@ -363,6 +370,11 @@ def test_reject_canvas_filters_bad_account_ids():
         ReportCreate(
             name="r", canvas_filters_json={"account_ids": ["not-an-int"]}
         )
+
+
+def test_reject_canvas_filters_bad_status():
+    with pytest.raises(ValidationError):
+        ReportCreate(name="r", canvas_filters_json={"status": "cleared"})
 
 
 # ─── update path mirrors create ─────────────────────────────────────
