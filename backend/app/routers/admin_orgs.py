@@ -156,14 +156,13 @@ async def update_org_subscription(
         detail={"before": before, "after": after},
     )
 
-    # Plan-change-specific audit row (audit-gap closure PR2 of the
-    # notification train). The generic `admin.org.subscription.override`
+    # Plan-change-specific audit row. The generic `admin.org.subscription.override`
     # event above covers any field change on the subscription — plan,
-    # status, trial_end, current_period_end — but PR3 of the
-    # notification train needs a clean trigger source that fires
+    # status, trial_end, current_period_end — but the plan-change
+    # notification needs a clean trigger source that fires
     # ONLY when the plan_id actually changes (status flips don't notify
     # org members about a plan change). Emitting both rows lets the
-    # generic compliance log keep its coverage AND the future
+    # generic compliance log keep its coverage AND the
     # notification dispatcher key off the specific event_type without
     # parsing detail.before/detail.after.
     if "plan_id" in before:
@@ -183,8 +182,8 @@ async def update_org_subscription(
             },
         )
 
-        # PR3 of the notification train: fan out the in-app
-        # ``org_admin`` notification to every active org admin of the
+        # Fan out the in-app ``org_admin`` notification to every active
+        # org admin of the
         # affected org. Architect-locked recipient set is OWNER ∪
         # ADMIN; the actor is included (a superadmin operator may also
         # be an org admin elsewhere, but here the broadcast is scoped

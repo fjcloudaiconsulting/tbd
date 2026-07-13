@@ -2353,8 +2353,8 @@ async def mfa_enable(
     current_user.recovery_codes = ",".join(hash_recovery_code(c) for c in codes)
     await db.commit()
 
-    # Audit AFTER the business commit succeeds. PR3 of the notification
-    # train uses this row as the trigger source for user.mfa.enabled.
+    # Audit AFTER the business commit succeeds. This row is the trigger
+    # source for the user.mfa.enabled notification.
     audit_event_id = await audit_service.record_audit_event(
         session_factory,
         event_type="user.mfa.enabled",
@@ -2368,8 +2368,8 @@ async def mfa_enable(
         detail=None,
     )
 
-    # PR3 of the notification train: dispatch the in-app security
-    # notification AFTER the audit row commits. Self-target — the
+    # Dispatch the in-app security notification AFTER the audit row
+    # commits. Self-target — the
     # user who flipped MFA on receives the confirmation.
     if audit_event_id is not None:
         # Snapshot the recipient BEFORE the best-effort dispatch: on failure
@@ -2424,8 +2424,8 @@ async def mfa_disable(
     current_user.recovery_codes = None
     await db.commit()
 
-    # Audit AFTER the business commit succeeds. PR3 of the notification
-    # train uses this row as the trigger source for user.mfa.disabled —
+    # Audit AFTER the business commit succeeds. This row is the trigger
+    # source for the user.mfa.disabled notification —
     # a security-critical signal (the user can react if it wasn't them).
     audit_event_id = await audit_service.record_audit_event(
         session_factory,
@@ -2440,8 +2440,8 @@ async def mfa_disable(
         detail=None,
     )
 
-    # PR3: dispatch the in-app security notification AFTER the audit
-    # row commits. MFA-disabled is the louder of the two MFA signals
+    # Dispatch the in-app security notification AFTER the audit row
+    # commits. MFA-disabled is the louder of the two MFA signals
     # since a stolen credential is now sufficient for full access; the
     # template recommends re-enable.
     if audit_event_id is not None:
