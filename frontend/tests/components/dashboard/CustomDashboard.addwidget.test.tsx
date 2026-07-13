@@ -513,6 +513,39 @@ describe("CustomDashboard — canvas status filter (Feature 1)", () => {
     ).mock.calls[0];
     expect(savedFilters).toEqual({ status: "pending" });
   });
+
+  it("surfaces a saved canvas status read-only in view mode (not just Customize)", async () => {
+    vi.mocked(dashboardApi.getDashboard).mockResolvedValue({
+      ...DASHBOARD_RESPONSE,
+      canvas_filters_json: { status: "settled" },
+    } as never);
+
+    renderWithSWR(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // View mode: no editable control, but a read-only indicator makes the
+    // otherwise-silent card-wide status filter visible.
+    expect(screen.queryByTestId("status-filter")).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/filtered to settled transactions only/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no status indicator in view mode when no canvas status is saved", async () => {
+    renderWithSWR(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByLabelText(/filtered to .* transactions only/i),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("CustomDashboard — clone widget from a report", () => {

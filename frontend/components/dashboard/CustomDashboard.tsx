@@ -406,6 +406,23 @@ export default function CustomDashboard() {
             </div>
           )}
 
+          {/* View mode: a canvas status silently filters every card, so
+              surface it read-only (the editable control lives in Customize
+              mode above). Quiet-by-default — shown only when a status is set. */}
+          {!editModeActive && canvasFilters.status && (
+            <div className="mb-4">
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-xs text-text-secondary"
+                aria-label={`Dashboard filtered to ${canvasFilters.status} transactions only`}
+              >
+                <span className="text-text-muted">Status</span>
+                <span className="font-medium capitalize">
+                  {canvasFilters.status}
+                </span>
+              </span>
+            </div>
+          )}
+
           {/* Inline save/load error */}
           {saveError && (
             <div
