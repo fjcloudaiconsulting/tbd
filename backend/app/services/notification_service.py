@@ -10,8 +10,9 @@ spec, this layer is the single home for:
 - ``dispatch_notification_best_effort`` — single-user in-app write +
   its own commit, log-and-swallow on failure. Used by call sites that
   must never let an in-app-notification failure break a completed op.
-- ``dispatch_notification_to_org_admins`` / ``_to_org_members`` —
-  fanout helpers for org-broadcast events. One SELECT for the
+- ``dispatch_notification_to_org_admins`` /
+  ``dispatch_notification_to_org_members`` — fanout helpers for
+  org-broadcast events. One SELECT for the
   recipient set, then per-user dispatch inside a savepoint, plus a
   best-effort email per recipient. Per-user failure does NOT abort the
   fanout — the contract is best-effort, log-and-continue.

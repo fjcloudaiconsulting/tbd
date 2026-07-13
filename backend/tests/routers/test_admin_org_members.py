@@ -31,6 +31,7 @@ from app.deps import get_current_user, get_session_factory
 from app.models import Base
 from app.models.audit_event import AuditEvent
 from app.models.user import Organization, Role, User
+from app.models.notification import UserNotificationPreferences
 from app.routers.admin_orgs import router as admin_orgs_router
 from app.security import hash_password
 from app.services import notification_service
@@ -332,8 +333,51 @@ async def test_patch_member_role_changed_emails_the_member(
             json={"role": "admin"},
         )
     assert res.status_code == 200
-    # Exactly one email, to the member whose role changed — never the actor.
+    # Exactly one email, to the member whose role changed, never the actor.
     assert [e["to"] for e in sent] == ["t_member@target.io"]
+
+
+@pytest.mark.asyncio
+async def test_patch_member_role_change_respects_email_account_opt_out(
+    session_factory, monkeypatch
+):
+    """The role-change email honors the member's email_account preference:
+    a member who opted out of account emails gets the in-app row but NO email.
+    """
+    sent: list[str] = []
+
+    async def _fake_email(to, *, title, body, link_url=None):
+        sent.append(to)
+
+    monkeypatch.setattr(notification_service, "send_notification_email", _fake_email)
+
+    seed = await _seed(session_factory)
+    # Member opts out of account emails (in-app stays on).
+    async with session_factory() as db:
+        db.add(
+            UserNotificationPreferences(
+                user_id=seed["member_id"],
+                email_security=True,
+                email_account=False,
+                email_org_admin=True,
+                email_org_activity=True,
+                in_app_security=True,
+                in_app_account=True,
+                in_app_org_admin=True,
+                in_app_org_activity=True,
+            )
+        )
+        await db.commit()
+
+    app = _make_app(session_factory, _superadmin_resolver())
+    with TestClient(app) as client:
+        res = client.patch(
+            f"/api/v1/admin/orgs/{seed['target_id']}/members/{seed['member_id']}",
+            json={"role": "admin"},
+        )
+    assert res.status_code == 200
+    # Opted out of account emails → no email sent (in-app row still written).
+    assert sent == []
 
 
 @pytest.mark.asyncio
