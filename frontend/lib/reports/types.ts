@@ -61,7 +61,10 @@ export type FilterField =
   | "status"
   | "tag_name";
 
-export type FilterOp = "eq" | "in" | "between" | "gte" | "lte";
+// ``relative`` carries a not-yet-resolved relative date token (e.g.
+// ``next_cycle``) to the backend, which resolves it to an absolute
+// window per request. Only ever emitted for the ``date`` field.
+export type FilterOp = "eq" | "in" | "between" | "gte" | "lte" | "relative";
 
 export type TagMatch = "all" | "any";
 
@@ -120,11 +123,37 @@ export interface ReportsQueryResponse {
 
 // ─── canvas filters (cascade source) ────────────────────────────
 
+// Date-preset identity. Calendar presets freeze an absolute
+// ``{start,end}`` window; ``next_cycle`` is a DYNAMIC relative token
+// resolved server-side at query time (never frozen to absolute dates).
+// Lives here (not in ``date-presets.ts``) so ``CanvasDateRange`` can
+// carry it without a type-only import cycle. ``date-presets.ts``
+// imports it back from here.
+export type PresetKey =
+  | "this_month"
+  | "last_month"
+  | "ytd"
+  | "last_12_months"
+  | "next_cycle"
+  | "custom";
+
+// The relative-token subset of PresetKey that is persisted in
+// ``CanvasDateRange.preset``. Its own type so the field can't drift from the
+// backend ``RelativeDateToken`` wire contract (next_cycle-only); persisting
+// any other key would 422 server-side.
+export type RelativeDateToken = "next_cycle";
+
 export interface CanvasDateRange {
   /** ISO date YYYY-MM-DD */
   start?: string;
   /** ISO date YYYY-MM-DD */
   end?: string;
+  // Additive optional relative-preset marker. When set (only
+  // ``next_cycle`` in v1) the range carries NO ``start``/``end`` — the
+  // token travels to the backend, which resolves the absolute window
+  // per request. Absent on every calendar preset and every legacy
+  // absolute blob, so the ~dozen ``start``/``end`` readers keep working.
+  preset?: RelativeDateToken;
 }
 
 export interface CanvasFilters {

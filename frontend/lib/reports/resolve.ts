@@ -82,8 +82,11 @@ function hasMeaningfulValue(
   if (v === undefined || v === null) return false;
   if (Array.isArray(v)) return v.length > 0;
   if (field === "date_range") {
-    const dr = v as { start?: string; end?: string };
-    return Boolean(dr.start || dr.end);
+    const dr = v as { start?: string; end?: string; preset?: string };
+    // A relative preset (``next_cycle``) carries no start/end but is
+    // still a real value — otherwise a widget ``{preset:"next_cycle"}``
+    // override of a canvas absolute range never registers (dead pill).
+    return Boolean(dr.start || dr.end || dr.preset);
   }
   if (field === "amount_range") {
     const ar = v as { min?: number; max?: number };
@@ -104,6 +107,12 @@ function valuesEqual(
   if (field === "date_range") {
     const a = widgetVal as { start?: string; end?: string };
     const b = canvasVal as { start?: string; end?: string };
+    // NOTE: ``preset`` is intentionally not compared. With a single relative
+    // token today (next_cycle) that is mutually exclusive with start/end, two
+    // preset-bearing ranges always carry the same token and compare equal via
+    // their (absent) start/end. If a SECOND relative token is ever added, add
+    // a ``preset`` comparison here or a widget token override of a different
+    // canvas token would be a false-negative (no override pill).
     return (a.start ?? null) === (b.start ?? null)
       && (a.end ?? null) === (b.end ?? null);
   }
@@ -180,7 +189,12 @@ export function resolveFilters(
   const canvasDr = canvas?.date_range;
   const widgetDr = widget?.date_range;
   const dr = sourceSupportsDate ? pickDateRange(widgetDr, canvasDr) : undefined;
-  if (dr && dr.start && dr.end) {
+  if (dr && dr.preset === "next_cycle") {
+    // Dynamic relative token — the FE holds only the token; the backend
+    // resolves it to an absolute window per request. ``resolveFilters``
+    // stays synchronous (no billing fetch here).
+    out.push({ field: "date", op: "relative", value: "next_cycle" });
+  } else if (dr && dr.start && dr.end) {
     out.push({
       field: "date",
       op: "between",
@@ -318,6 +332,9 @@ export function pickDateRange(
   widget: CanvasFilters["date_range"] | undefined,
   canvas: CanvasFilters["date_range"] | undefined,
 ): CanvasFilters["date_range"] | undefined {
-  if (widget && (widget.start || widget.end)) return widget;
+  // A relative preset (``next_cycle``) counts as a widget value even
+  // though it carries no start/end, so a widget token override wins
+  // over the canvas.
+  if (widget && (widget.start || widget.end || widget.preset)) return widget;
   return canvas;
 }

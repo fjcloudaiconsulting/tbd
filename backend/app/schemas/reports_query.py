@@ -38,7 +38,13 @@ from pydantic import (
 # Dataset / Aggregation / MeasureField / Dimension are the shared closed
 # enum atoms — defined once in ``reports_enums`` so the live ``/query`` AST
 # and the saved-layout JSON validator (``report_layout``) cannot drift.
-from app.schemas.reports_enums import Aggregation, Dataset, Dimension, MeasureField
+from app.schemas.reports_enums import (
+    Aggregation,
+    Dataset,
+    Dimension,
+    MeasureField,
+    RelativeDateToken,
+)
 
 
 # Hard caps. Module-level constants so tests can import + assert them.
@@ -87,6 +93,9 @@ class FilterOp(str, enum.Enum):
     BETWEEN = "between"
     GTE = "gte"
     LTE = "lte"
+    # ``relative`` carries a RelativeDateToken on the date field; resolved
+    # to an absolute BETWEEN window server-side before validate/compile.
+    RELATIVE = "relative"
 
 
 class Measure(BaseModel):
@@ -200,6 +209,22 @@ class Filter(BaseModel):
                     f"op={op.value!r} requires a scalar value, not a list"
                 )
             self.value = _coerce_filter_scalar(f, self.value)
+
+        elif op is FilterOp.RELATIVE:
+            # A relative date token (e.g. ``next_cycle``) on the date field.
+            # Resolved to an absolute BETWEEN window server-side before
+            # validate/compile (see routers/reports._resolve_relative_date_filters).
+            if f is not FilterField.DATE:
+                raise ValueError(
+                    f"op='relative' is only valid on the date field; got "
+                    f"field={f.value!r}"
+                )
+            try:
+                self.value = RelativeDateToken(self.value).value
+            except ValueError:
+                raise ValueError(
+                    f"unknown relative date token: {self.value!r}"
+                )
 
         return self
 

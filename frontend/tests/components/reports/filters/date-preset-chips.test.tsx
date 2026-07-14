@@ -3,14 +3,16 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import DatePresetChips, {
   buildPresetRanges,
 } from "@/components/reports/filters/DatePresetChips";
+import { matchPreset } from "@/lib/reports/date-presets";
 
 describe("DatePresetChips", () => {
-  it("renders the five preset chips", () => {
+  it("renders the six preset chips (incl. Next cycle)", () => {
     render(<DatePresetChips value={undefined} onChange={() => {}} />);
     expect(screen.getByTestId("date-preset-this_month")).toBeInTheDocument();
     expect(screen.getByTestId("date-preset-last_month")).toBeInTheDocument();
     expect(screen.getByTestId("date-preset-ytd")).toBeInTheDocument();
     expect(screen.getByTestId("date-preset-last_12_months")).toBeInTheDocument();
+    expect(screen.getByTestId("date-preset-next_cycle")).toBeInTheDocument();
     expect(screen.getByTestId("date-preset-custom")).toBeInTheDocument();
   });
 
@@ -73,5 +75,49 @@ describe("DatePresetChips", () => {
     expect(
       screen.getByTestId("date-preset-this_month").getAttribute("aria-pressed"),
     ).toBe("true");
+  });
+
+  it("writes only {preset:'next_cycle'} (NOT absolute dates) when Next cycle is clicked", () => {
+    const now = new Date(2026, 4, 15);
+    const onChange = vi.fn();
+    render(<DatePresetChips value={undefined} onChange={onChange} now={now} />);
+    fireEvent.click(screen.getByTestId("date-preset-next_cycle"));
+    expect(onChange).toHaveBeenCalledWith({ preset: "next_cycle" });
+    // The written value carries no absolute window — the backend resolves it.
+    const written = onChange.mock.calls[0][0];
+    expect(written.start).toBeUndefined();
+    expect(written.end).toBeUndefined();
+  });
+
+  it("gives the Next cycle chip a precise accessible name that contains the visible label", () => {
+    render(<DatePresetChips value={undefined} onChange={() => {}} />);
+    const chip = screen.getByTestId("date-preset-next_cycle");
+    // WCAG 2.5.3: the accessible name must contain the visible "Next cycle".
+    expect(chip).toHaveTextContent("Next cycle");
+    expect(chip).toHaveAttribute("aria-label", "Next cycle (next billing cycle)");
+    expect(chip).toHaveAttribute("title", "Next cycle (next billing cycle)");
+  });
+
+  it("marks the Next cycle chip active for a {preset:'next_cycle'} value", () => {
+    render(
+      <DatePresetChips value={{ preset: "next_cycle" }} onChange={() => {}} />,
+    );
+    expect(
+      screen.getByTestId("date-preset-next_cycle").getAttribute("aria-pressed"),
+    ).toBe("true");
+    // No other chip lights up, and the absolute date inputs stay hidden.
+    expect(
+      screen.getByTestId("date-preset-this_month").getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(screen.queryByTestId("date-preset-from")).not.toBeInTheDocument();
+  });
+
+  it("matchPreset returns 'next_cycle' for a token value, before the empty-range guard", () => {
+    const now = new Date(2026, 4, 15);
+    const ranges = buildPresetRanges(now);
+    // Token-only value (no start/end) — must still resolve to next_cycle.
+    expect(matchPreset({ preset: "next_cycle" }, ranges)).toBe("next_cycle");
+    // A calendar preset still matches its absolute window (regression).
+    expect(matchPreset(ranges.this_month, ranges)).toBe("this_month");
   });
 });
