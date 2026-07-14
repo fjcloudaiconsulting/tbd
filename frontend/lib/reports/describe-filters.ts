@@ -84,7 +84,7 @@ export function describeWidgetFilters(
   if (
     sourceSupportsDate &&
     effectiveDate &&
-    (effectiveDate.start || effectiveDate.end)
+    (effectiveDate.start || effectiveDate.end || effectiveDate.preset)
   ) {
     chips.push({
       key: "date",
@@ -210,6 +210,10 @@ const PRESET_LABELS: Record<
 };
 
 function dateLabel(range: CanvasDateRange, now: Date): string {
+  // Relative token (``next_cycle``): the FE holds only the token; the
+  // authoritative absolute window lives server-side. v1 renders the
+  // label, not a concrete MMM D – MMM D range.
+  if (range.preset === "next_cycle") return "Next cycle";
   const presets = buildPresetRanges(now);
   for (const key of Object.keys(presets) as Array<keyof typeof presets>) {
     const r = presets[key];

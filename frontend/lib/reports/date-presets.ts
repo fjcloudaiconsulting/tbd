@@ -12,14 +12,12 @@
  * authoring time keeps the same report layout reproducible across
  * sessions until the user picks a new preset.
  */
-import type { CanvasDateRange } from "@/lib/reports/types";
+// ``PresetKey`` is owned by ``types.ts`` (so ``CanvasDateRange`` can
+// carry ``preset`` without a type-only import cycle); re-export it here
+// for the ~handful of importers that reach for it via this module.
+import type { CanvasDateRange, PresetKey } from "@/lib/reports/types";
 
-export type PresetKey =
-  | "this_month"
-  | "last_month"
-  | "ytd"
-  | "last_12_months"
-  | "custom";
+export type { PresetKey };
 
 function isoDate(d: Date): string {
   // Build YYYY-MM-DD from local-clock components so a UTC-shifting
@@ -39,9 +37,12 @@ function endOfMonth(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth() + 1, 0);
 }
 
+// ``next_cycle`` is a dynamic relative token (resolved server-side), so
+// it has no calendar-computable window here — it is excluded from the
+// ``Record`` key set alongside ``custom``.
 export function buildPresetRanges(
   now: Date,
-): Record<Exclude<PresetKey, "custom">, CanvasDateRange> {
+): Record<Exclude<PresetKey, "custom" | "next_cycle">, CanvasDateRange> {
   const startThisMonth = startOfMonth(now);
   const endThisMonth = endOfMonth(now);
 
@@ -62,8 +63,12 @@ export function buildPresetRanges(
 
 export function matchPreset(
   value: CanvasDateRange | undefined,
-  ranges: Record<Exclude<PresetKey, "custom">, CanvasDateRange>,
+  ranges: Record<Exclude<PresetKey, "custom" | "next_cycle">, CanvasDateRange>,
 ): PresetKey | null {
+  // A preset-only relative value (``next_cycle``) carries no start/end,
+  // so it must be matched BEFORE the empty-range early-return below —
+  // that guard fires first and would otherwise return ``null``.
+  if (value?.preset === "next_cycle") return "next_cycle";
   if (!value || (!value.start && !value.end)) return null;
   for (const k of Object.keys(ranges) as Array<keyof typeof ranges>) {
     const r = ranges[k];
