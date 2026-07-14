@@ -35,7 +35,9 @@ On the day the dedicated key is set, **0%** of the existing hash population is
 protected — every stored hash was minted under a jwt-based scheme and still
 bricks on a jwt rotation. Protection grows only as users **regenerate** their
 codes (regeneration overwrites a user's entire `recovery_codes` list, so each
-user's list is homogeneous — fully legacy or fully dedicated, never mixed). The
+user's list is homogeneous — fully legacy or fully dedicated, never mixed;
+verified against both regenerate sites, `auth.py:2353` and `2497`, which
+overwrite the entire `recovery_codes` string). The
 permanent jwt fallback caps the protected fraction below 100% forever unless the
 operator runs a one-time **forced-regeneration campaign** after adoption. For
 this app's small userbase that campaign is a clean, optional way to fully sever
@@ -70,6 +72,8 @@ Rejected alternatives:
 - Add a validator that **no-ops when empty** (empty is the backward-compatible
   no-op path — there is no separate placeholder sentinel to reject, unlike
   `jwt_secret_key`), and when non-empty enforces:
+  - `.strip()` first; a stripped-empty value is treated as the empty no-op (else
+    32 whitespace chars would pass the length check)
   - `len >= 32` (parity with the `jwt_secret_key` rule) — also catches short junk
   - **reject equality with `jwt_secret_key`** — a copy-paste of the jwt value
     silently re-couples the two and defeats the entire feature. This needs
@@ -87,14 +91,20 @@ Rejected alternatives:
     single-purpose secret; the derivation layer exists only to avoid reusing the
     *multi-purpose* `jwt_secret_key` raw, and that rationale does not apply to a
     purpose-dedicated key. (Keeps the change minimal; 2 of 3 architects endorsed
-    using it directly.)
+    using it directly.) The key is a `str`, so `.encode()` it to bytes before
+    `hmac.new`, mirroring `_legacy_hmac_key`'s `settings.jwt_secret_key.encode()`.
 - `verify_recovery_code(code, hashed_codes)`: build the candidate list up front —
   dedicated candidate **only when the key is set** (do not fabricate a candidate
   when unset), plus jwt-derived, plus raw-jwt-legacy. Compare every stored entry
   against every candidate with **no early break** (preserve the existing
   constant-time discipline; the chain length varies only by static config, never
   by user input or secret). At most one candidate can match any stored entry, so
-  verify order is irrelevant to correctness.
+  verify order is irrelevant to correctness. "No early break" means: no `break`
+  out of the loop, and prefer a uniform compare of every entry against every
+  candidate over the current `if/elif` (which skips the second compare on a
+  match). The `if/elif` asymmetry only diverges on a legitimate success and is
+  not attacker-observable, so it is acceptable — but honoring the uniform form
+  keeps a reviewer from flagging the `elif` either way.
 - Preserve single-use semantics unchanged: the sole caller pops the matched index
   after a successful verify (and commits only after `_issue_tokens` succeeds).
   **No lazy re-hash on match** — a re-hashed entry would be immediately discarded
@@ -164,5 +174,7 @@ backward compatible. The ship-list is only for when the operator chooses to adop
   must-not-brick requirement), and a raw-jwt-legacy hash still verifies.
 - A stored set mixing all three schemes verifies each correctly, single-use pop
   removes exactly the matched entry.
-- Validator: rejects `len < 32`, rejects placeholder, rejects value equal to
-  `jwt_secret_key`; accepts empty (no-op) and a valid distinct key.
+- Validator: rejects `len < 32` (incl. stripped-whitespace junk), rejects a value
+  equal to `jwt_secret_key`; accepts empty / stripped-empty (no-op) and a valid
+  distinct key. (There is no placeholder sentinel for this var — empty is the
+  no-op path — so there is nothing to reject as a placeholder.)
