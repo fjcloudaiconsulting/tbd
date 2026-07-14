@@ -122,7 +122,7 @@ services:
         value: "eu"
       - key: EMAIL_FROM
         scope: RUN_AND_BUILD_TIME
-        value: "PFV2 <noreply@m.thebetterdecision.com>"
+        value: "The Better Decision <noreply@m.thebetterdecision.com>"
       - key: DATABASE_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET
