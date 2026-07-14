@@ -143,6 +143,7 @@ export default function AdminOrgDetailPage() {
 
   useEffect(() => {
     if (loading || !user || !hasPlatformPermission(user, "orgs.manage") || !orgId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag set before an in-effect fetch; proper fix arrives with the SWR data-hook migration
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, user, orgId]);
