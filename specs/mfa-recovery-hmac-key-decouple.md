@@ -140,6 +140,15 @@ hash can never be re-HMACed / migrated in place. The only remediation is to swap
 the key and **force every user to regenerate** their recovery codes (invalidate
 the stored set).
 
+### Unsetting the key after adoption (rollback direction)
+
+Symmetric to a jwt rotation: once users have regenerated under the dedicated key,
+**unsetting** `MFA_RECOVERY_HMAC_KEY` drops the dedicated candidate from the
+verify chain, so those dedicated-scheme hashes stop verifying and those users
+lose their recovery path until they regenerate. This is inherent one-way-hash
+behavior (removing a key invalidates hashes under it), not a bug. "Unset = no-op"
+holds only for a system that was *never* set; a set→unset rollback is not free.
+
 **Why no `_PREV` slot** (the 2-1 panel decision — document so nobody "fixes" it):
 a `_prev` fallback would let *old-key* hashes keep verifying after a swap, which
 is exactly the wrong behavior when the old key is the compromised one — you want
