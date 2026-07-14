@@ -29,6 +29,7 @@ private -> hard delete) is a follow-up PR. PR1 only ensures the FK is
 fails loud instead of silently dropping reports.
 """
 import dataclasses
+import datetime
 from typing import Optional
 
 import structlog
@@ -46,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.deps import get_current_user
 from app.models.report import Report, ReportVersion, ReportVisibility
-from app.models.user import Role, User
+from app.models.user import Organization, Role, User
 from app.rate_limit import limiter
 from app.reports.templates import get_report_templates
 from app.schemas.report import (
@@ -63,7 +64,17 @@ from app.schemas.report_sources import (
     SourceFilterOut,
     SourceMeasureOut,
 )
-from app.schemas.reports_query import ReportsQuery, ReportsQueryResponse, SankeyQuery, SankeyResponse
+from app.schemas.reports_enums import RelativeDateToken
+from app.schemas.reports_query import (
+    Filter,
+    FilterField,
+    FilterOp,
+    ReportsQuery,
+    ReportsQueryResponse,
+    SankeyQuery,
+    SankeyResponse,
+)
+from app.services import billing_service
 from app.services.feature_gate import Feature, require_feature
 from app.services.sankey_service import build_sankey
 
@@ -142,6 +153,42 @@ async def _snapshot_version(
         await db.delete(stale)
 
 
+async def _resolve_relative_date_filters(db: AsyncSession, org_id: int, query) -> None:
+    """Rewrite relative date-token filters (``op='relative'``) into concrete
+    absolute ``between`` windows, in place on ``query.filters``.
+
+    Resolved server-side per request (using the org's ``billing_cycle_day``
+    and today's date), so a persisted ``next_cycle`` token is DYNAMIC — it
+    re-resolves to the current upcoming cycle on every query. Runs BEFORE
+    ``source.validate()`` / the compiler / the Sankey builder, so everything
+    downstream only ever sees an absolute range — no source-catalog or
+    compiler change is needed. Shared by the query and Sankey paths.
+
+    A fresh ``Filter`` is CONSTRUCTED (not mutated) so Pydantic re-runs the
+    BETWEEN invariants (start<=end / window cap).
+    """
+    if not any(f.op is FilterOp.RELATIVE for f in query.filters):
+        return  # fast path — no DB hit when no relative token is present
+
+    org = await db.scalar(select(Organization).where(Organization.id == org_id))
+    cycle_day = org.billing_cycle_day if org else 1
+    today = datetime.date.today()
+
+    resolved: list[Filter] = []
+    for f in query.filters:
+        if (
+            f.op is FilterOp.RELATIVE
+            and f.value == RelativeDateToken.NEXT_CYCLE.value
+        ):
+            start, end = billing_service.next_cycle_window(cycle_day, today)
+            resolved.append(
+                Filter(field=FilterField.DATE, op=FilterOp.BETWEEN, value=[start, end])
+            )
+        else:
+            resolved.append(f)
+    query.filters = resolved
+
+
 async def _run_source_query(db: AsyncSession, ast: ReportsQuery, *, org_id: int):
     """Resolve the AST's dataset to a registered ReportSource and run it.
 
@@ -153,6 +200,9 @@ async def _run_source_query(db: AsyncSession, ast: ReportsQuery, *, org_id: int)
     stays within THIS source's published catalog. A catalog violation is
     user input — mapped to 422 (a raw ValueError would otherwise 500).
     """
+    # Resolve relative date tokens (e.g. next_cycle) to absolute windows
+    # BEFORE validate/compile, so the source catalog + compiler stay unaware.
+    await _resolve_relative_date_filters(db, org_id, ast)
     source = get_source(ast.dataset.value)
     try:
         source.validate(ast)
@@ -207,6 +257,9 @@ async def run_sankey_query(
     ``source.validate()`` errors.
     """
     try:
+        # Resolve relative date tokens (e.g. next_cycle) to absolute windows
+        # before the Sankey builder sees them (mirrors _run_source_query).
+        await _resolve_relative_date_filters(db, current_user.org_id, body)
         return await build_sankey(db, org_id=current_user.org_id, query=body)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

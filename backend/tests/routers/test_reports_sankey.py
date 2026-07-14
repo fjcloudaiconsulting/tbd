@@ -208,6 +208,27 @@ async def test_sankey_returns_200_with_links(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_sankey_resolves_next_cycle_relative_filter(session_factory):
+    """The relative-date pre-pass must ALSO run on the Sankey path: an
+    unresolved ``op:'relative'`` would 422 in the builder, so a 200 proves the
+    token was resolved to an absolute window before ``build_sankey``. (The
+    seeded income/expense rows fall outside the future cycle, so links are
+    empty — resolution, not data, is the point here.)"""
+    await _seed_two_orgs(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/reports/query/sankey",
+            json={
+                "filters": [
+                    {"field": "date", "op": "relative", "value": "next_cycle"}
+                ]
+            },
+        )
+    assert res.status_code == 200, res.text
+
+
+@pytest.mark.asyncio
 async def test_sankey_org_scoping(session_factory):
     """Org B's data (IncomeB 9999) must NOT appear in Org A's sankey."""
     await _seed_two_orgs(session_factory)

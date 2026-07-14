@@ -52,6 +52,7 @@ from app.schemas.reports_enums import (
     Dataset,
     Dimension,
     MeasureField,
+    RelativeDateToken,
     TxnStatus,
 )
 
@@ -288,6 +289,10 @@ class CanvasDateRange(BaseModel):
 
     start: Optional[str] = None
     end: Optional[str] = None
+    # A relative token (e.g. ``next_cycle``) instead of absolute start/end.
+    # When set, the frontend emits an ``op:'relative'`` date filter that the
+    # backend resolves to a concrete window per request (dynamic).
+    preset: Optional[RelativeDateToken] = None
 
 
 class CanvasFilters(BaseModel):
