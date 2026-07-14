@@ -136,6 +136,90 @@ describe("resolveFilters status cascade (Feature 1)", () => {
   });
 });
 
+describe("resolveFilters next_cycle relative preset (Feature 2)", () => {
+  it("emits {field:date, op:relative, value:next_cycle} for a canvas preset range", () => {
+    const out = resolveFilters(
+      { date_range: { preset: "next_cycle" } } as CanvasFilters,
+      {},
+    );
+    expect(out).toContainEqual({
+      field: "date",
+      op: "relative",
+      value: "next_cycle",
+    });
+    // No absolute date filter is emitted — only the relative token.
+    expect(out.filter((f) => f.field === "date")).toHaveLength(1);
+    expect(out.some((f) => f.op === "between")).toBe(false);
+  });
+
+  it("emits the relative token for a WIDGET preset range too", () => {
+    const out = resolveFilters(undefined, {
+      date_range: { preset: "next_cycle" },
+    } as WidgetFilters);
+    expect(out).toContainEqual({
+      field: "date",
+      op: "relative",
+      value: "next_cycle",
+    });
+  });
+
+  it("lets a widget next_cycle override a canvas ABSOLUTE range (token wins)", () => {
+    const out = resolveFilters(
+      { date_range: { start: "2026-01-01", end: "2026-01-31" } } as CanvasFilters,
+      { date_range: { preset: "next_cycle" } } as WidgetFilters,
+    );
+    // The widget token wins; the canvas absolute window is NOT emitted.
+    expect(out).toContainEqual({
+      field: "date",
+      op: "relative",
+      value: "next_cycle",
+    });
+    expect(out.some((f) => f.op === "between")).toBe(false);
+    expect(out.filter((f) => f.field === "date")).toHaveLength(1);
+  });
+
+  it("registers the widget next_cycle as an override of a canvas absolute range (live pill)", () => {
+    expect(
+      isFieldOverridden(
+        "date_range",
+        { date_range: { preset: "next_cycle" } },
+        { date_range: { start: "2026-01-01", end: "2026-01-31" } } as CanvasFilters,
+      ),
+    ).toBe(true);
+  });
+
+  it("suppresses the relative token on a date-less source (sourceSupportsDate=false)", () => {
+    const out = resolveFilters(
+      { date_range: { preset: "next_cycle" } } as CanvasFilters,
+      {},
+      false, // sourceSupportsDate
+    );
+    expect(out.some((f) => f.field === "date")).toBe(false);
+  });
+
+  it("REGRESSION: frozen calendar presets still emit an absolute between filter", () => {
+    const out = resolveFilters(
+      { date_range: { start: "2026-05-01", end: "2026-05-31" } } as CanvasFilters,
+      {},
+    );
+    expect(out).toContainEqual({
+      field: "date",
+      op: "between",
+      value: ["2026-05-01", "2026-05-31"],
+    });
+    expect(out.some((f) => f.op === "relative")).toBe(false);
+  });
+
+  it("pickDateRange treats a widget preset range as a value (wins over canvas)", () => {
+    expect(
+      pickDateRange(
+        { preset: "next_cycle" },
+        { start: "2026-01-01", end: "2026-01-31" },
+      ),
+    ).toEqual({ preset: "next_cycle" });
+  });
+});
+
 describe("sourceSupportsStatusFilter", () => {
   const TRANSACTIONS: SourceCatalogEntry = {
     key: "transactions",

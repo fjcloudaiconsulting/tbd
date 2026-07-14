@@ -7,9 +7,9 @@ ensure_future_periods.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
-from app.services.billing_service import current_cycle_window
+from app.services.billing_service import current_cycle_window, next_cycle_window
 
 
 def test_cycle_day_1_mid_month():
@@ -46,3 +46,37 @@ def test_january_steps_back_into_previous_year():
     start, end = current_cycle_window(15, date(2026, 1, 5))
     assert start == date(2025, 12, 15)
     assert end == date(2026, 1, 14)
+
+
+# ── next_cycle_window: the upcoming cycle (the "Next cycle" preset) ──
+
+
+def test_next_cycle_day_1():
+    start, end = next_cycle_window(1, date(2026, 6, 15))
+    assert start == date(2026, 7, 1)
+    assert end == date(2026, 7, 31)
+
+
+def test_next_cycle_day_15_before_cycle_day():
+    start, end = next_cycle_window(15, date(2026, 6, 5))
+    assert start == date(2026, 6, 15)
+    assert end == date(2026, 7, 14)
+
+
+def test_next_cycle_day_31_clamps_into_february():
+    start, end = next_cycle_window(31, date(2026, 1, 15))
+    assert start == date(2026, 1, 31)
+    assert end == date(2026, 2, 27)
+
+
+def test_next_cycle_crosses_year_boundary():
+    start, end = next_cycle_window(15, date(2026, 12, 20))
+    assert start == date(2027, 1, 15)
+    assert end == date(2027, 2, 14)
+
+
+def test_next_cycle_is_adjacent_to_current():
+    # The next window starts the day after the current window ends (gap-free).
+    _, cur_end = current_cycle_window(15, date(2026, 6, 20))
+    nxt_start, _ = next_cycle_window(15, date(2026, 6, 20))
+    assert nxt_start == cur_end + timedelta(days=1)

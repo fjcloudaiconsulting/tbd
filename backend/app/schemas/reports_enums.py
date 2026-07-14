@@ -35,6 +35,16 @@ class MeasureField(str, enum.Enum):
     ACCOUNT_ID = "account_id"
 
 
+class RelativeDateToken(str, enum.Enum):
+    """Closed set of relative date-range tokens the reports date filter can
+    carry. Resolved SERVER-SIDE at query time (dynamic — re-resolves every
+    request). Shared atom so the persisted preset (canvas_filters_json) and
+    the live AST filter value cannot drift. ``next_cycle`` = the org's next
+    billing cycle, per ``billing_cycle_day``."""
+
+    NEXT_CYCLE = "next_cycle"
+
+
 class TxnStatus(str, enum.Enum):
     """Closed transaction-status filter value. Shared atom so the saved
     ``canvas_filters_json`` status and the live AST status filter cannot

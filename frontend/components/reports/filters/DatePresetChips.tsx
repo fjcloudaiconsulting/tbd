@@ -35,11 +35,26 @@ interface Props {
   ariaPrefix?: string;
 }
 
-const PRESETS: Array<{ key: PresetKey; label: string }> = [
+// ``title``/``ariaLabel`` override the accessible name where the visible
+// chip text is too terse to be precise on its own. "Next cycle" reads as
+// "Next billing cycle" for screen readers and on hover — the app's domain
+// language is billing cycle, never "Next month".
+const PRESETS: Array<{
+  key: PresetKey;
+  label: string;
+  ariaLabel?: string;
+}> = [
   { key: "this_month", label: "This month" },
   { key: "last_month", label: "Last month" },
   { key: "ytd", label: "YTD" },
   { key: "last_12_months", label: "Last 12 months" },
+  {
+    key: "next_cycle",
+    label: "Next cycle",
+    // Accessible name must CONTAIN the visible "Next cycle" (WCAG 2.5.3
+    // Label in Name) so voice control matches, while still disambiguating.
+    ariaLabel: "Next cycle (next billing cycle)",
+  },
   { key: "custom", label: "Custom" },
 ];
 
@@ -78,6 +93,14 @@ export default function DatePresetChips({
       }
       return;
     }
+    if (key === "next_cycle") {
+      // Dynamic relative token — write ONLY the preset marker (no
+      // absolute start/end). The backend resolves the window per
+      // request; ``presetRanges`` intentionally has no ``next_cycle``
+      // entry (it's calendar-only).
+      onChange({ preset: "next_cycle" });
+      return;
+    }
     onChange(presetRanges[key]);
   }
 
@@ -95,6 +118,8 @@ export default function DatePresetChips({
               type="button"
               data-testid={`date-preset-${p.key}`}
               aria-pressed={isActive}
+              aria-label={p.ariaLabel}
+              title={p.ariaLabel}
               onClick={() => pick(p.key)}
               className={`rounded-full border px-3 py-1 text-xs transition ${
                 isActive

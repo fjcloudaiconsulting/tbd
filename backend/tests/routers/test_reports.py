@@ -17,14 +17,14 @@ Pins the architect-locked invariants:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -295,6 +295,100 @@ async def test_anonymous_request_returns_401(session_factory):
 
 
 # ─── AST validation: hard caps + unknown enum members ─────────────
+
+
+@pytest.mark.asyncio
+async def test_next_cycle_relative_filter_resolves_and_windows(session_factory):
+    """A ``{op:'relative', value:'next_cycle'}`` date filter is resolved
+    server-side to the org's upcoming billing cycle BEFORE validate/compile.
+    Proof: transactions publishes date as between/gte/lte only, so an
+    unresolved ``op:'relative'`` would 422; a 200 means the pre-pass ran. The
+    data assertion confirms it windowed to the next cycle (only the in-window
+    txn survives; the 2026-05-15 seed rows are excluded)."""
+    from app.services.billing_service import next_cycle_window
+
+    seed = await _seed(session_factory)
+    nxt_start, _nxt_end = next_cycle_window(1, date.today())  # org cycle_day=1
+    in_next = nxt_start + timedelta(days=3)
+
+    async with session_factory() as db:
+        acct = (
+            await db.execute(select(Account).where(Account.org_id == seed["org_a_id"]))
+        ).scalars().first()
+        cat = (
+            await db.execute(
+                select(Category).where(
+                    Category.org_id == seed["org_a_id"], Category.name == "Food"
+                )
+            )
+        ).scalars().first()
+        db.add(
+            Transaction(
+                org_id=seed["org_a_id"],
+                account_id=acct.id,
+                category_id=cat.id,
+                description="next-cycle",
+                amount=Decimal("77"),
+                type=TransactionType.EXPENSE,
+                status=TransactionStatus.SETTLED,
+                date=in_next,
+                settled_date=in_next,
+            )
+        )
+        await db.commit()
+
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/reports/query",
+            json={
+                "dataset": "transactions",
+                "measure": {"agg": "sum", "field": "amount"},
+                "filters": [
+                    {"field": "date", "op": "relative", "value": "next_cycle"}
+                ],
+            },
+        )
+    assert res.status_code == 200
+    rows = res.json()["rows"]
+    total = sum(Decimal(str(r["value"])) for r in rows)
+    assert total == Decimal("77")
+
+
+@pytest.mark.asyncio
+async def test_relative_filter_rejects_non_date_field(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/reports/query",
+            json={
+                "dataset": "transactions",
+                "measure": {"agg": "sum", "field": "amount"},
+                "filters": [
+                    {"field": "amount", "op": "relative", "value": "next_cycle"}
+                ],
+            },
+        )
+    assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_relative_filter_rejects_unknown_token(session_factory):
+    await _seed(session_factory)
+    app = _make_app(session_factory, _resolver("user_a"))
+    with TestClient(app) as client:
+        res = client.post(
+            "/api/v1/reports/query",
+            json={
+                "dataset": "transactions",
+                "measure": {"agg": "sum", "field": "amount"},
+                "filters": [
+                    {"field": "date", "op": "relative", "value": "last_decade"}
+                ],
+            },
+        )
+    assert res.status_code == 422
 
 
 @pytest.mark.asyncio

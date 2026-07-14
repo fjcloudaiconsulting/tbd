@@ -206,6 +206,15 @@ def test_valid_canvas_filters_status():
     assert body.canvas_filters_json["status"] == "settled"
 
 
+def test_valid_canvas_filters_next_cycle_preset():
+    # A relative date token persists as the canvas date_range preset.
+    body = ReportCreate(
+        name="r",
+        canvas_filters_json={"date_range": {"preset": "next_cycle"}},
+    )
+    assert body.canvas_filters_json["date_range"]["preset"] == "next_cycle"
+
+
 # ─── malformed → ValidationError ────────────────────────────────────
 
 
@@ -375,6 +384,25 @@ def test_reject_canvas_filters_bad_account_ids():
 def test_reject_canvas_filters_bad_status():
     with pytest.raises(ValidationError):
         ReportCreate(name="r", canvas_filters_json={"status": "cleared"})
+
+
+def test_reject_canvas_filters_bad_preset():
+    with pytest.raises(ValidationError):
+        ReportCreate(
+            name="r", canvas_filters_json={"date_range": {"preset": "yesteryear"}}
+        )
+
+
+def test_reject_canvas_filters_preset_with_absolute_dates():
+    # A relative preset carries no absolute window; a blob with both is
+    # contradictory and rejected (the _preset_excludes_absolute invariant).
+    with pytest.raises(ValidationError):
+        ReportCreate(
+            name="r",
+            canvas_filters_json={
+                "date_range": {"preset": "next_cycle", "start": "2026-01-01"}
+            },
+        )
 
 
 # ─── update path mirrors create ─────────────────────────────────────

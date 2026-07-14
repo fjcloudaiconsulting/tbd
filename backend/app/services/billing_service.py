@@ -43,6 +43,24 @@ def current_cycle_window(
     return start, next_start - datetime.timedelta(days=1)
 
 
+def next_cycle_window(
+    cycle_day: int, today: datetime.date
+) -> tuple[datetime.date, datetime.date]:
+    """The billing cycle window [start, end_inclusive] AFTER the one
+    containing `today` — i.e. the org's next upcoming cycle.
+
+    Pure, no DB I/O. Re-derives the current window from `today` on every
+    call (same self-correcting property as `current_cycle_window`), so there
+    is no cumulative drift, and `_snap_to_cycle` clamps to month length
+    (e.g. cycle_day=31 lands on Feb 28/29). Boundaries are inclusive and
+    gap-free with the following cycle.
+    """
+    cur_start, _ = current_cycle_window(cycle_day, today)
+    next_start = _snap_to_cycle(cur_start + relativedelta(months=1), cycle_day)
+    following = _snap_to_cycle(next_start + relativedelta(months=1), cycle_day)
+    return next_start, following - datetime.timedelta(days=1)
+
+
 async def get_current_period(db: AsyncSession, org_id: int) -> BillingPeriod:
     """Get the currently open period. If none exists, auto-create one."""
     result = await db.execute(

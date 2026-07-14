@@ -119,6 +119,31 @@ describe("describeWidgetFilters", () => {
     expect(date?.overridden).toBe(true);
   });
 
+  it("emits a 'Next cycle' date chip for a canvas next_cycle token", () => {
+    const chips = describeWidgetFilters(
+      bar({}),
+      { date_range: { preset: "next_cycle" } },
+      NO_LOOKUPS,
+      NOW,
+    );
+    const date = chips.find((c) => c.key === "date");
+    expect(date).toBeDefined();
+    expect(date?.label).toBe("Next cycle");
+    expect(date?.overridden).toBeFalsy();
+  });
+
+  it("marks the date chip overridden when a widget next_cycle overrides a canvas absolute range", () => {
+    const chips = describeWidgetFilters(
+      bar({ date_range: { preset: "next_cycle" } }),
+      { date_range: { start: "2026-03-01", end: "2026-03-31" } },
+      NO_LOOKUPS,
+      NOW,
+    );
+    const date = chips.find((c) => c.key === "date");
+    expect(date?.label).toBe("Next cycle");
+    expect(date?.overridden).toBe(true);
+  });
+
   it("does NOT emit a date chip when neither widget nor canvas has a date", () => {
     const chips = describeWidgetFilters(bar({}), {}, NO_LOOKUPS, NOW);
     expect(chips.find((c) => c.key === "date")).toBeUndefined();
