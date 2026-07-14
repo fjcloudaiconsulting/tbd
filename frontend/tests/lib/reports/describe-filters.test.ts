@@ -177,6 +177,44 @@ describe("describeWidgetFilters", () => {
     expect(chips.find((c) => c.key === "status")).toBeUndefined();
   });
 
+  it("emits a status chip INHERITED from canvas (not overridden)", () => {
+    const chips = describeWidgetFilters(
+      bar({}),
+      { status: "settled" },
+      NO_LOOKUPS,
+      NOW,
+    );
+    const status = chips.find((c) => c.key === "status");
+    expect(status?.label).toBe("Settled");
+    expect(status?.overridden).toBeFalsy();
+  });
+
+  it("marks the status chip overridden when the widget status differs from canvas", () => {
+    const chips = describeWidgetFilters(
+      bar({ status: "pending" }),
+      { status: "settled" },
+      NO_LOOKUPS,
+      NOW,
+    );
+    const status = chips.find((c) => c.key === "status");
+    expect(status?.label).toBe("Pending");
+    expect(status?.overridden).toBe(true);
+  });
+
+  it("omits the status chip for a status-less source (sourceSupportsStatus=false)", () => {
+    // A cascaded canvas status must not surface a chip on a source that
+    // can't honor it — the resolver drops it at query time.
+    const chips = describeWidgetFilters(
+      bar({}),
+      { status: "settled" },
+      NO_LOOKUPS,
+      NOW,
+      true, // sourceSupportsDate
+      false, // sourceSupportsStatus
+    );
+    expect(chips.find((c) => c.key === "status")).toBeUndefined();
+  });
+
   it("resolves account ids to names with +N truncation", () => {
     const chips = describeWidgetFilters(
       bar({ account_ids: [1, 2, 3] }),

@@ -31,6 +31,7 @@ import {
 import AppShell from "@/components/AppShell";
 import { useAuth } from "@/components/auth/AuthProvider";
 import Canvas from "@/components/reports/Canvas";
+import CanvasFiltersBar from "@/components/reports/CanvasFiltersBar";
 import WidgetShell from "@/components/reports/WidgetShell";
 import AddWidgetMenu from "@/components/dashboard/AddWidgetMenu";
 import { DashboardDataProvider } from "@/components/dashboard/DashboardDataProvider";
@@ -386,6 +387,41 @@ export default function CustomDashboard() {
 
           {/* Period navigation chrome */}
           <DashboardPeriodNav />
+
+          {/* Canvas-wide status filter — Customize mode only. Date lives
+              in DashboardPeriodNav, so ``hideDate`` renders status alone.
+              Cascades to every transactions chart card via
+              renderDashboardWidget → renderReportWidget. Editing marks the
+              dashboard dirty, same as any layout change. */}
+          {editModeActive && (
+            <div className="mb-4">
+              <CanvasFiltersBar
+                hideDate
+                value={canvasFilters}
+                onChange={(next) => {
+                  setCanvasFilters(next);
+                  setDirty(true);
+                }}
+              />
+            </div>
+          )}
+
+          {/* View mode: a canvas status silently filters every card, so
+              surface it read-only (the editable control lives in Customize
+              mode above). Quiet-by-default — shown only when a status is set. */}
+          {!editModeActive && canvasFilters.status && (
+            <div className="mb-4">
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-xs text-text-secondary"
+                aria-label={`Dashboard filtered to ${canvasFilters.status} transactions only`}
+              >
+                <span className="text-text-muted">Status</span>
+                <span className="font-medium capitalize">
+                  {canvasFilters.status}
+                </span>
+              </span>
+            </div>
+          )}
 
           {/* Inline save/load error */}
           {saveError && (

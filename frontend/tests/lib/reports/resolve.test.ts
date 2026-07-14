@@ -5,8 +5,13 @@ import {
   isFieldOverridden,
   pickDateRange,
   resolveFilters,
+  sourceSupportsStatusFilter,
 } from "@/lib/reports/resolve";
-import type { CanvasFilters, WidgetFilters } from "@/lib/reports/types";
+import type {
+  CanvasFilters,
+  SourceCatalogEntry,
+  WidgetFilters,
+} from "@/lib/reports/types";
 
 describe("asTxnTypeArray", () => {
   it("coerces a legacy string value to a one-element array", () => {
@@ -75,16 +80,104 @@ describe("resolveFilters status", () => {
       expect.objectContaining({ field: "status" }),
     );
   });
-  it("reads status off the widget only (canvas status is not consulted)", () => {
-    // Status is widget-only (like txn_type). A stray canvas value must
-    // never leak into the AST — only the widget's own value emits.
+  // (Status override-wins semantics are covered in the "status cascade"
+  // describe block below — a widget status narrows the inherited canvas one.)
+});
+
+describe("resolveFilters status cascade (Feature 1)", () => {
+  it("cascades a canvas status onto a transactions widget (source supports status)", () => {
     const out = resolveFilters(
-      { status: "pending" } as unknown as CanvasFilters,
+      { status: "settled" } as CanvasFilters,
+      {},
+      true, // sourceSupportsDate
+      true, // sourceSupportsStatus (transactions)
+    );
+    expect(out).toContainEqual({ field: "status", op: "eq", value: "settled" });
+  });
+
+  it("SUPPRESSES the canvas status when the source does not publish status (accounts/recurring)", () => {
+    const out = resolveFilters(
+      { status: "settled" } as CanvasFilters,
+      {},
+      false, // sourceSupportsDate (date-less source)
+      false, // sourceSupportsStatus — the critical gate: no leak, no 422
+    );
+    expect(out.some((f) => f.field === "status")).toBe(false);
+  });
+
+  it("still emits a WIDGET status even when the source gate is false (widget owns the field)", () => {
+    // The gate only governs the CASCADED canvas value. A widget's own
+    // status is only ever set on a transactions widget, so it emits
+    // regardless of the (defensive) gate argument.
+    const out = resolveFilters(
+      undefined,
+      { status: "pending" } as WidgetFilters,
+      false,
+      false,
+    );
+    expect(out).toContainEqual({ field: "status", op: "eq", value: "pending" });
+  });
+
+  it("widget status overrides (narrows) the inherited canvas status", () => {
+    const out = resolveFilters(
+      { status: "pending" } as CanvasFilters,
       { status: "settled" } as WidgetFilters,
+      true,
+      true,
     );
     expect(out).toContainEqual({ field: "status", op: "eq", value: "settled" });
     // Exactly one status filter — the canvas value did not add a second.
     expect(out.filter((f) => f.field === "status")).toHaveLength(1);
+  });
+
+  it("emits no status when neither canvas nor widget sets one", () => {
+    const out = resolveFilters({}, {}, true, true);
+    expect(out.some((f) => f.field === "status")).toBe(false);
+  });
+});
+
+describe("sourceSupportsStatusFilter", () => {
+  const TRANSACTIONS: SourceCatalogEntry = {
+    key: "transactions",
+    label: "Transactions",
+    dimensions: [],
+    measures: [],
+    filters: [
+      { field: "date", label: "Date", ops: ["between"], kind: "date" },
+      { field: "status", label: "Status", ops: ["eq"], kind: "status" },
+    ],
+  };
+  const ACCOUNTS: SourceCatalogEntry = {
+    key: "accounts",
+    label: "Accounts",
+    dimensions: [],
+    measures: [],
+    filters: [],
+  };
+  const RECURRING: SourceCatalogEntry = {
+    key: "recurring",
+    label: "Recurring",
+    dimensions: [],
+    measures: [],
+    filters: [{ field: "amount", label: "Amount", ops: ["between"], kind: "amount" }],
+  };
+  const SOURCES = [TRANSACTIONS, ACCOUNTS, RECURRING];
+
+  it("is true for transactions (publishes a status filter)", () => {
+    expect(sourceSupportsStatusFilter(SOURCES, "transactions")).toBe(true);
+  });
+  it("is false for accounts (no status filter)", () => {
+    expect(sourceSupportsStatusFilter(SOURCES, "accounts")).toBe(false);
+  });
+  it("is false for recurring (no status filter)", () => {
+    expect(sourceSupportsStatusFilter(SOURCES, "recurring")).toBe(false);
+  });
+  it("defaults to true when the catalog is empty (pre-load)", () => {
+    expect(sourceSupportsStatusFilter([], "transactions")).toBe(true);
+    expect(sourceSupportsStatusFilter([], "accounts")).toBe(true);
+  });
+  it("defaults to true when the source is not in the catalog", () => {
+    expect(sourceSupportsStatusFilter([TRANSACTIONS], "accounts")).toBe(true);
   });
 });
 
@@ -195,6 +288,40 @@ describe("isFieldOverridden", () => {
         date_range: { start: "2026-02-01", end: "2026-02-15" },
       };
       expect(isFieldOverridden("date_range", widget, canvas)).toBe(false);
+    });
+  });
+
+  describe("status (canvas-shared, scalar compare)", () => {
+    it("returns false when widget and canvas status are identical", () => {
+      expect(
+        isFieldOverridden(
+          "status",
+          { status: "settled" },
+          { status: "settled" } as CanvasFilters,
+        ),
+      ).toBe(false);
+    });
+
+    it("returns true when the widget status differs from canvas", () => {
+      expect(
+        isFieldOverridden(
+          "status",
+          { status: "settled" },
+          { status: "pending" } as CanvasFilters,
+        ),
+      ).toBe(true);
+    });
+
+    it("returns false when only the canvas has a status (widget inherits)", () => {
+      expect(
+        isFieldOverridden("status", {}, { status: "settled" } as CanvasFilters),
+      ).toBe(false);
+    });
+
+    it("returns false when only the widget has a status (no canvas value)", () => {
+      expect(isFieldOverridden("status", { status: "settled" }, {})).toBe(
+        false,
+      );
     });
   });
 

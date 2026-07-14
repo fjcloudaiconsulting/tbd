@@ -35,6 +35,16 @@ class MeasureField(str, enum.Enum):
     ACCOUNT_ID = "account_id"
 
 
+class TxnStatus(str, enum.Enum):
+    """Closed transaction-status filter value. Shared atom so the saved
+    ``canvas_filters_json`` status and the live AST status filter cannot
+    drift (mirrors the ``RelativeDateToken`` pattern). Values match the
+    ``TransactionStatus`` the query compiler coerces to."""
+
+    SETTLED = "settled"
+    PENDING = "pending"
+
+
 class Dimension(str, enum.Enum):
     CATEGORY = "category"
     CATEGORY_MASTER = "category_master"
