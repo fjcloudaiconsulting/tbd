@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { buildQueryAst } from "@/lib/reports/useReportQuery";
-import { sourceSupportsDateFilter } from "@/lib/reports/resolve";
+import {
+  sourceSupportsDateFilter,
+  sourceSupportsStatusFilter,
+} from "@/lib/reports/resolve";
 import type {
   BarWidget,
   CanvasFilters,
@@ -60,6 +63,7 @@ const TRANSACTIONS_SOURCE: SourceCatalogEntry = {
   ],
   filters: [
     { field: "date", label: "Date", ops: ["between", "gte", "lte"], kind: "date" },
+    { field: "status", label: "Status", ops: ["eq"], kind: "status" },
   ],
 };
 
@@ -200,5 +204,43 @@ describe("buildQueryAst — dataset stamping + date-less source", () => {
       op: "between",
       value: ["2026-01-01", "2026-01-31"],
     });
+  });
+});
+
+describe("buildQueryAst — canvas STATUS cascade (Feature 1)", () => {
+  const CANVAS_STATUS: CanvasFilters = { status: "settled" };
+
+  it("cascades the canvas status onto a transactions widget", () => {
+    const ast = buildQueryAst(
+      transactionsBarWidget(),
+      CANVAS_STATUS,
+      sourceSupportsDateFilter(SOURCES, "transactions"),
+      sourceSupportsStatusFilter(SOURCES, "transactions"),
+    );
+    expect(ast.filters).toContainEqual({
+      field: "status",
+      op: "eq",
+      value: "settled",
+    });
+  });
+
+  it("OMITS the canvas status on an accounts widget (source publishes no status)", () => {
+    const ast = buildQueryAst(
+      accountsBarWidget(),
+      CANVAS_STATUS,
+      sourceSupportsDateFilter(SOURCES, "accounts"),
+      sourceSupportsStatusFilter(SOURCES, "accounts"),
+    );
+    expect(ast.filters.some((f) => f.field === "status")).toBe(false);
+  });
+
+  it("OMITS the canvas status on a recurring widget (no leak, no 422)", () => {
+    const ast = buildQueryAst(
+      recurringBarWidget(),
+      CANVAS_STATUS,
+      sourceSupportsDateFilter(SOURCES, "recurring"),
+      sourceSupportsStatusFilter(SOURCES, "recurring"),
+    );
+    expect(ast.filters.some((f) => f.field === "status")).toBe(false);
   });
 });

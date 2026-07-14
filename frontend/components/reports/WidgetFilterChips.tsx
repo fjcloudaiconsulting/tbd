@@ -16,7 +16,10 @@
  * nothing when the widget has no set filters.
  */
 import { describeWidgetFilters } from "@/lib/reports/describe-filters";
-import { sourceSupportsDateFilter } from "@/lib/reports/resolve";
+import {
+  sourceSupportsDateFilter,
+  sourceSupportsStatusFilter,
+} from "@/lib/reports/resolve";
 import { useReportSources } from "@/lib/reports/use-report-sources";
 import type { CanvasFilters, Widget } from "@/lib/reports/types";
 import type { Account, Category } from "@/lib/types";
@@ -61,6 +64,13 @@ export default function WidgetFilterChips({
     sources,
     widget.config.dataset,
   );
+  // A source that doesn't publish ``status`` (accounts / recurring) gets
+  // no status chip — the resolver drops the cascaded canvas status at
+  // query time, so a chip would lie about what the widget runs.
+  const supportsStatus = sourceSupportsStatusFilter(
+    sources,
+    widget.config.dataset,
+  );
 
   const chips = describeWidgetFilters(
     widget,
@@ -68,6 +78,7 @@ export default function WidgetFilterChips({
     { accounts, categories },
     undefined,
     supportsDate,
+    supportsStatus,
   );
 
   if (chips.length === 0) return null;

@@ -212,6 +212,9 @@ function makeApiFetchHandler() {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
+  // Clear call history so a save performed by one test can't inflate the
+  // ``toHaveBeenCalledTimes`` count another test asserts on.
+  vi.mocked(dashboardApi.saveDashboard).mockClear();
   vi.mocked(dashboardApi.getDashboard).mockResolvedValue(
     DASHBOARD_RESPONSE as never,
   );
@@ -457,6 +460,91 @@ describe("CustomDashboard — Add-widget picker", () => {
 
     // Menu still open because the inner click was stopped before reaching backdrop.
     expect(screen.getByTestId("add-widget-menu")).toBeInTheDocument();
+  });
+});
+
+describe("CustomDashboard — canvas status filter (Feature 1)", () => {
+  it("shows the status control only in Customize mode and saves it into canvas_filters_json", async () => {
+    // Echo the args saveDashboard receives so we can inspect the persisted
+    // canvas_filters_json (second arg).
+    vi.mocked(dashboardApi.saveDashboard).mockImplementation(
+      async (layout, filters) =>
+        ({
+          ...DASHBOARD_RESPONSE,
+          layout_json: layout,
+          canvas_filters_json: filters,
+        }) as never,
+    );
+
+    renderWithSWR(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Not in Customize mode → no canvas status control.
+    expect(screen.queryByTestId("status-filter")).not.toBeInTheDocument();
+
+    // Enter Customize mode → the status control appears (Canvas-prefixed).
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /customize/i }));
+    });
+    expect(screen.getByTestId("status-filter")).toBeInTheDocument();
+    expect(screen.getByLabelText("Canvas status Pending")).toBeInTheDocument();
+    // hideDate: the dashboard keeps its own period nav, so no date chips here.
+    expect(screen.queryByTestId("date-preset-chips")).not.toBeInTheDocument();
+
+    // Choose Pending → marks dirty → Save persists the canvas status.
+    act(() => {
+      fireEvent.click(screen.getByLabelText("Canvas status Pending"));
+    });
+    const saveBtn = screen.getByRole("button", { name: /^save$/i });
+    expect(saveBtn).toBeEnabled();
+    act(() => {
+      fireEvent.click(saveBtn);
+    });
+
+    await waitFor(() =>
+      expect(dashboardApi.saveDashboard).toHaveBeenCalledTimes(1),
+    );
+    const [, savedFilters] = (
+      dashboardApi.saveDashboard as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
+    expect(savedFilters).toEqual({ status: "pending" });
+  });
+
+  it("surfaces a saved canvas status read-only in view mode (not just Customize)", async () => {
+    vi.mocked(dashboardApi.getDashboard).mockResolvedValue({
+      ...DASHBOARD_RESPONSE,
+      canvas_filters_json: { status: "settled" },
+    } as never);
+
+    renderWithSWR(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // View mode: no editable control, but a read-only indicator makes the
+    // otherwise-silent card-wide status filter visible.
+    expect(screen.queryByTestId("status-filter")).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/filtered to settled transactions only/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no status indicator in view mode when no canvas status is saved", async () => {
+    renderWithSWR(<CustomDashboard />);
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("custom-dashboard-loading"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByLabelText(/filtered to .* transactions only/i),
+    ).not.toBeInTheDocument();
   });
 });
 

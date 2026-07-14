@@ -116,6 +116,19 @@ describe("FilterEditor", () => {
     expect(screen.queryAllByTestId("override-pill").length).toBe(0);
   });
 
+  it("shows the override pill when the widget status differs from canvas", async () => {
+    // Dates unset on both sides → the only override pill is the status one.
+    render({ status: "settled" }, { status: "pending" });
+    await screen.findByTestId("category-picker");
+    expect(screen.getAllByTestId("override-pill").length).toBe(1);
+  });
+
+  it("does not show the status override pill when status matches canvas", async () => {
+    render({ status: "settled" }, { status: "settled" });
+    await screen.findByTestId("category-picker");
+    expect(screen.queryAllByTestId("override-pill").length).toBe(0);
+  });
+
   it("merges amount min into amount_range on change", async () => {
     const calls: WidgetFilters[] = [];
     render({}, {}, (next) => calls.push(next));

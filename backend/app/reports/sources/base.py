@@ -33,10 +33,11 @@ class SourceMeasure:
     format: str    # currency|number|percent
 
 
-# Filter fields the shared canvas date-bar can stamp onto any widget. A
-# source that does not publish one of these (e.g. a date-less accounts
-# source) drops the stray filter at build time rather than 422-ing.
-SHARED_CANVAS_FILTER_FIELDS = frozenset({"date", "account_id", "category_id"})
+# Filter fields the shared canvas bar can stamp onto any widget. A source
+# that does not publish one of these (e.g. a date-less accounts source, or
+# any non-transactions source for ``status``) drops the stray filter at
+# build time rather than 422-ing.
+SHARED_CANVAS_FILTER_FIELDS = frozenset({"date", "account_id", "category_id", "status"})
 
 
 @dataclass(frozen=True)

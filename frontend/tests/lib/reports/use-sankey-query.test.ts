@@ -216,6 +216,29 @@ describe("useSankeyQuery", () => {
     );
   });
 
+  it("scopes Sankey by a cascaded canvas status (Feature 1 — not stripped)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(MOCK_SANKEY_RESPONSE));
+
+    const canvasFilters: CanvasFilters = { status: "settled" };
+    const widget = makeWidget();
+
+    const { result } = renderHook(
+      () => useSankeyQuery(widget, canvasFilters),
+      { wrapper: swrWrapper },
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    // Transactions publishes status, so the canvas status cascades onto
+    // Sankey (unlike txn_type, which is stripped).
+    expect(body.filters).toContainEqual({
+      field: "status",
+      op: "eq",
+      value: "settled",
+    });
+  });
+
   it("passes spending_granularity from widget config", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(MOCK_SANKEY_RESPONSE));
 

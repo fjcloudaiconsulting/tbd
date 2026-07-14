@@ -135,6 +135,13 @@ export interface CanvasFilters {
   // ``account_ids`` / ``category_ids`` keys are tolerated by the
   // ``as CanvasFilters`` hydrate cast and simply never read.
   date_range?: CanvasDateRange;
+  // Settled/Pending status — cascades to every transactions widget that
+  // doesn't override it (a widget ``status`` narrows the inherited
+  // value). ``undefined`` = no canvas status ("All"). Only the
+  // transactions source publishes a ``status`` filter, so the resolver
+  // gates this on ``sourceSupportsStatus`` before emitting it — a canvas
+  // status never leaks onto an accounts/recurring widget.
+  status?: TxnStatus;
 }
 
 // ─── widget layout / config ─────────────────────────────────────
