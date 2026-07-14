@@ -143,6 +143,7 @@ export default function DescriptionAutocomplete({
       // Below the minimum: clear visible suggestions immediately.
       // Any prior in-flight fetch was already aborted by the previous
       // cleanup before this effect re-ran.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the suggestion list when the query drops below the minimum length
       setSuggestions([]);
       setHighlightIdx(-1);
       return;

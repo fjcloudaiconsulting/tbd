@@ -86,6 +86,7 @@ export function AIForecastRefinePanel({
   }, [timeframe, scope, periodStart, onGateBlock]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the refine-estimate fetch that loads its result into state when inputs change
     void refreshEstimate();
   }, [refreshEstimate]);
 

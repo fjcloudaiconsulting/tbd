@@ -112,6 +112,7 @@ export default function TransferForm({
   // (e.g. accounts loaded async). Mirrors TransactionForm's pattern.
   useEffect(() => {
     if (fromAccountId === "" && initialFromAccountId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- seeds the from-account selection once the default arrives async (accounts loaded after mount), without clobbering a manual pick
       setFromAccountId(initialFromAccountId);
     }
     // Intentionally not reacting to subsequent activeAccounts changes,

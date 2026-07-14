@@ -100,6 +100,7 @@ export default function MarkAsTransferModal({
   // Fetch candidates when destination changes
   useEffect(() => {
     if (destAcctId === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resets transient candidate state when the destination account is cleared
       setCandidates([]);
       setSelectedCandidateId(null);
       setCreateInstead(false);

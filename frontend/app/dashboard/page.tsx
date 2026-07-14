@@ -172,6 +172,7 @@ function LegacyDashboard() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("reset") === "1") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only mount read of the ?reset=1 URL param to show the reset banner
       setResetBanner(true);
       router.replace("/dashboard");
     }
@@ -391,6 +392,7 @@ function LegacyDashboard() {
       // reference data and no visible error, the user's only clue
       // being widgets that silently fail to populate. Surface it
       // through the existing error banner instead.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- surfaces a reference-data fetch failure into the error banner state
       loadRefs().catch((err) => {
         setError(extractErrorMessage(err, "Failed to load dashboard data"));
       });
@@ -407,6 +409,7 @@ function LegacyDashboard() {
     // would always fail anyway against the strict resolve_period for
     // salary-cycle orgs whose period doesn't start on the 1st.
     if (!loading && user && realPeriodStart) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch loading flag raised before the period-scoped transaction load
       setFetching(true);
       // Same class of bug as the loadRefs catch above: a failed
       // transaction fetch used to clear the spinner and vanish. Now
@@ -420,6 +423,7 @@ function LegacyDashboard() {
 
   useEffect(() => {
     if (!loading && user && realPeriodStart) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the forecast projection fetch that loads its result into state
       void loadForecastProjection();
     }
   }, [loading, user, realPeriodStart, loadForecastProjection]);
@@ -453,6 +457,7 @@ function LegacyDashboard() {
 
   useEffect(() => {
     if (!loading && user) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the per-account month-end forecast fetch that loads its result into state
       void loadAccountMonthEndForecast();
     }
   }, [loading, user, loadAccountMonthEndForecast]);
