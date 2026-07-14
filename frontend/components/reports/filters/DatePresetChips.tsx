@@ -48,7 +48,13 @@ const PRESETS: Array<{
   { key: "last_month", label: "Last month" },
   { key: "ytd", label: "YTD" },
   { key: "last_12_months", label: "Last 12 months" },
-  { key: "next_cycle", label: "Next cycle", ariaLabel: "Next billing cycle" },
+  {
+    key: "next_cycle",
+    label: "Next cycle",
+    // Accessible name must CONTAIN the visible "Next cycle" (WCAG 2.5.3
+    // Label in Name) so voice control matches, while still disambiguating.
+    ariaLabel: "Next cycle (next billing cycle)",
+  },
   { key: "custom", label: "Custom" },
 ];
 

@@ -42,6 +42,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
 # Dataset / Aggregation / MeasureField / Dimension are the shared closed
@@ -293,6 +294,17 @@ class CanvasDateRange(BaseModel):
     # When set, the frontend emits an ``op:'relative'`` date filter that the
     # backend resolves to a concrete window per request (dynamic).
     preset: Optional[RelativeDateToken] = None
+
+    @model_validator(mode="after")
+    def _preset_excludes_absolute(self):
+        # A relative token carries no absolute window (spec: "relative writes
+        # {preset} with no start/end"). Reject a contradictory blob so the
+        # persisted shape can't drift into an ambiguous both-set state.
+        if self.preset is not None and (self.start is not None or self.end is not None):
+            raise ValueError(
+                "date_range.preset is mutually exclusive with start/end"
+            )
+        return self
 
 
 class CanvasFilters(BaseModel):

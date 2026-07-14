@@ -89,13 +89,13 @@ describe("DatePresetChips", () => {
     expect(written.end).toBeUndefined();
   });
 
-  it("gives the Next cycle chip the 'Next billing cycle' accessible name / title", () => {
+  it("gives the Next cycle chip a precise accessible name that contains the visible label", () => {
     render(<DatePresetChips value={undefined} onChange={() => {}} />);
     const chip = screen.getByTestId("date-preset-next_cycle");
-    // Visible text stays terse; the accessible name is precise.
+    // WCAG 2.5.3: the accessible name must contain the visible "Next cycle".
     expect(chip).toHaveTextContent("Next cycle");
-    expect(chip).toHaveAttribute("aria-label", "Next billing cycle");
-    expect(chip).toHaveAttribute("title", "Next billing cycle");
+    expect(chip).toHaveAttribute("aria-label", "Next cycle (next billing cycle)");
+    expect(chip).toHaveAttribute("title", "Next cycle (next billing cycle)");
   });
 
   it("marks the Next cycle chip active for a {preset:'next_cycle'} value", () => {

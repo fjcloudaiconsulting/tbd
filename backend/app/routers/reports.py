@@ -176,16 +176,21 @@ async def _resolve_relative_date_filters(db: AsyncSession, org_id: int, query) -
 
     resolved: list[Filter] = []
     for f in query.filters:
-        if (
-            f.op is FilterOp.RELATIVE
-            and f.value == RelativeDateToken.NEXT_CYCLE.value
-        ):
+        if f.op is not FilterOp.RELATIVE:
+            resolved.append(f)
+            continue
+        if f.value == RelativeDateToken.NEXT_CYCLE.value:
             start, end = billing_service.next_cycle_window(cycle_day, today)
             resolved.append(
                 Filter(field=FilterField.DATE, op=FilterOp.BETWEEN, value=[start, end])
             )
         else:
-            resolved.append(f)
+            # Exhaustive guard: the schema validator only admits known
+            # RelativeDateToken values, so an unhandled one here means a new
+            # token was added without wiring a resolver — a server bug. Fail
+            # loud and local rather than appending it unresolved (which would
+            # surface downstream as a confusing "unsupported op relative").
+            raise ValueError(f"unhandled relative date token: {f.value!r}")
     query.filters = resolved
 
 

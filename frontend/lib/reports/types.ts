@@ -137,6 +137,12 @@ export type PresetKey =
   | "next_cycle"
   | "custom";
 
+// The relative-token subset of PresetKey that is persisted in
+// ``CanvasDateRange.preset``. Its own type so the field can't drift from the
+// backend ``RelativeDateToken`` wire contract (next_cycle-only); persisting
+// any other key would 422 server-side.
+export type RelativeDateToken = "next_cycle";
+
 export interface CanvasDateRange {
   /** ISO date YYYY-MM-DD */
   start?: string;
@@ -147,7 +153,7 @@ export interface CanvasDateRange {
   // token travels to the backend, which resolves the absolute window
   // per request. Absent on every calendar preset and every legacy
   // absolute blob, so the ~dozen ``start``/``end`` readers keep working.
-  preset?: PresetKey;
+  preset?: RelativeDateToken;
 }
 
 export interface CanvasFilters {
