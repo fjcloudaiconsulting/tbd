@@ -26,6 +26,7 @@ export function useWidgetAnchor(
 
   useEffect(() => {
     if (!enabled || !selectedWidgetId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the resolved widget anchor when the picker is disabled or nothing is selected
       setAnchorEl(null);
       return;
     }

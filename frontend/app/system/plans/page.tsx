@@ -127,6 +127,7 @@ export default function SystemPlansPage() {
   }, [sortField, sortDir, page, pageSize]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch: loadPlans() writes the plans page + total into state when sort/page/pageSize change
     if (canManagePlans) void loadPlans();
   }, [canManagePlans, loadPlans]);
 

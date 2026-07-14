@@ -136,6 +136,7 @@ export default function OrganizationSettingsPage() {
   // to whatever the org actually has.
   useEffect(() => {
     if (user?.allow_manual_balance_adjustment !== undefined) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync the local allow-adjust toggle to the org value once AuthContext user (/me) lands
       setAllowAdjustEnabled(user.allow_manual_balance_adjustment);
     }
   }, [user?.allow_manual_balance_adjustment]);
@@ -180,6 +181,7 @@ export default function OrganizationSettingsPage() {
 
   useEffect(() => {
     if (admin) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial admin data fetch: reload() + the billing-period/cycle fetches write org settings into state
       reload();
       apiFetch<{ id: number; start_date: string; end_date: string | null }>(
         "/api/v1/settings/billing-period"

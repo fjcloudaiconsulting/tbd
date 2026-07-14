@@ -140,6 +140,7 @@ export default function BatchMoveModal({
   // Reset internal state when the modal closes or the selection changes.
   useEffect(() => {
     if (!open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the modal's filter/target/preview/error state when it closes
       setFilter("");
       setTargetId(null);
       setPreview(null);
@@ -182,6 +183,7 @@ export default function BatchMoveModal({
   // budget_actuals_shifted flag.
   useEffect(() => {
     if (!open || targetId === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the move preview when the modal is closed or no target is selected
       setPreview(null);
       setPreviewError("");
       return;

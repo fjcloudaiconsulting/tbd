@@ -84,6 +84,7 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
     const parts = [firstName, lastName].filter(Boolean).join(" ");
     if (!parts.trim()) return;
     const slug = parts.toLowerCase().trim().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "");
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-suggest the username slug from the entered name until the user manually edits the field
     if (slug) setUsername(slug);
   }, [firstName, lastName, usernameManual]);
 
@@ -114,6 +115,7 @@ export default function RegisterPageBody({ cspNonce }: RegisterPageBodyProps) {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the availability status when the username is cleared, before the debounced check
     if (!username) { setUsernameStatus(""); return; }
     const timer = setTimeout(() => checkUsername(username), 400);
     return () => clearTimeout(timer);
