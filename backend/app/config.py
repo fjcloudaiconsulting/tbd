@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-generate-a-real-secret"
     jwt_access_token_expire_minutes: int = 15
     jwt_algorithm: str = "HS256"
+    # Dedicated HMAC key for MFA recovery-code hashing. Optional: when unset
+    # (the default), recovery codes hash under the jwt_secret_key-derived key
+    # exactly as before. When set, NEW/regenerated recovery hashes key off this
+    # secret instead, so rotating jwt_secret_key no longer invalidates them.
+    # See specs/mfa-recovery-hmac-key-decouple.md. This is an operational
+    # rotation-decoupling knob, not a key-separation upgrade — purpose
+    # derivation already separates recovery codes from JWT signing.
+    mfa_recovery_hmac_key: str = ""
     # Session TTL (days) — drives the refresh cookie ``Max-Age``, the
     # refresh JWT ``exp`` claim, the Redis primary-key TTL, AND the
     # absolute-lifetime check. Single TTL since the 2026-05-18 session-
@@ -304,6 +312,29 @@ class Settings(BaseSettings):
         if len(v) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters")
         return v
+
+    @model_validator(mode="after")
+    def _validate_mfa_recovery_hmac_key(self) -> "Settings":
+        # Optional: empty (or whitespace-only) is the backward-compatible no-op
+        # path — recovery codes keep hashing under the jwt-derived key. When a
+        # real value is provided, validate it. Cross-field (needs
+        # jwt_secret_key), so this is a model-level validator.
+        key = self.mfa_recovery_hmac_key.strip()
+        # Normalize the stored value so downstream truthiness ("is it set?")
+        # can't be fooled by whitespace-only input.
+        self.mfa_recovery_hmac_key = key
+        if not key:
+            return self
+        if len(key) < 32:
+            raise ValueError("MFA_RECOVERY_HMAC_KEY must be at least 32 characters")
+        if key == self.jwt_secret_key:
+            raise ValueError(
+                "MFA_RECOVERY_HMAC_KEY must differ from JWT_SECRET_KEY — reusing "
+                "the JWT secret re-couples recovery-code hashing to it and "
+                "defeats the decoupling. Generate a distinct secret via: "
+                "python -c 'import secrets; print(secrets.token_urlsafe(64))'"
+            )
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

@@ -167,6 +167,76 @@ def test_verify_recovery_code_wrong_code_fails_under_both_schemes() -> None:
     assert hashed_codes == snapshot  # no migration on failure
 
 
+# ── Dedicated MFA_RECOVERY_HMAC_KEY (jwt-rotation decouple) ───────────────────
+
+_DEDICATED_KEY = "dedicated-recovery-hmac-key-distinct-from-jwt-0123456789"
+
+
+def _dedicated_hash(code: str, key: str = _DEDICATED_KEY) -> str:
+    """Hash a recovery code under the dedicated key (used directly, not derived)."""
+    normalized = code.strip().lower().replace("-", "")
+    return hmac.new(key.encode(), normalized.encode(), "sha256").hexdigest()
+
+
+def _derived_hash(code: str) -> str:
+    """Hash under the jwt_secret_key-derived key (the historical default)."""
+    normalized = code.strip().lower().replace("-", "")
+    return hmac.new(
+        derive_hmac_key(b"mfa-recovery-code-v1"), normalized.encode(), "sha256"
+    ).hexdigest()
+
+
+def test_hash_recovery_code_falls_back_to_derived_when_dedicated_key_unset(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "mfa_recovery_hmac_key", "")
+    code = "aaaa-bbbb-cccc-dddd"
+    assert hash_recovery_code(code) == _derived_hash(code)
+
+
+def test_hash_recovery_code_uses_dedicated_key_when_set(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "mfa_recovery_hmac_key", _DEDICATED_KEY)
+    code = "aaaa-bbbb-cccc-dddd"
+
+    assert hash_recovery_code(code) == _dedicated_hash(code)
+    # Distinct from both jwt-based schemes it decouples from.
+    assert hash_recovery_code(code) != _derived_hash(code)
+    assert hash_recovery_code(code) != _legacy_hash(code)
+
+
+def test_verify_accepts_all_three_schemes_when_dedicated_key_set(monkeypatch) -> None:
+    """The must-not-brick requirement: with the dedicated key set, hashes stored
+    under the dedicated, jwt-derived, and raw-jwt-legacy schemes all verify."""
+    monkeypatch.setattr(settings, "mfa_recovery_hmac_key", _DEDICATED_KEY)
+    hashed_codes = [
+        _dedicated_hash("aaaa-bbbb-cccc-dddd"),
+        _derived_hash("1111-2222-3333-4444"),
+        _legacy_hash("5555-6666-7777-8888"),
+    ]
+    snapshot = list(hashed_codes)
+
+    assert verify_recovery_code("aaaa-bbbb-cccc-dddd", hashed_codes) == 0
+    assert verify_recovery_code("1111-2222-3333-4444", hashed_codes) == 1
+    assert verify_recovery_code("5555-6666-7777-8888", hashed_codes) == 2
+    assert verify_recovery_code("ffff-eeee-dddd-cccc", hashed_codes) is None
+    assert hashed_codes == snapshot  # no lazy migration
+
+
+def test_dedicated_key_hashes_survive_jwt_secret_rotation(monkeypatch) -> None:
+    """The whole point: a dedicated-key hash still verifies after jwt_secret_key
+    rotates, whereas a jwt-derived hash of the same code does not."""
+    monkeypatch.setattr(settings, "mfa_recovery_hmac_key", _DEDICATED_KEY)
+    code = "aaaa-bbbb-cccc-dddd"
+    dedicated_hash = hash_recovery_code(code)
+    derived_hash = _derived_hash(code)
+
+    monkeypatch.setattr(settings, "jwt_secret_key", "rotated-" + "x" * 40)
+
+    assert verify_recovery_code(code, [dedicated_hash]) == 0
+    # jwt-derived hash is now unrecoverable after rotation (expected).
+    assert verify_recovery_code(code, [derived_hash]) is None
+
+
 def test_derived_keys_are_purpose_bound_and_distinct() -> None:
     recovery_key = derive_hmac_key(b"mfa-recovery-code-v1")
     email_key = derive_hmac_key(b"mfa-email-code-v1")
