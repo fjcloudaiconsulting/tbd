@@ -107,6 +107,12 @@ function valuesEqual(
   if (field === "date_range") {
     const a = widgetVal as { start?: string; end?: string };
     const b = canvasVal as { start?: string; end?: string };
+    // NOTE: ``preset`` is intentionally not compared. With a single relative
+    // token today (next_cycle) that is mutually exclusive with start/end, two
+    // preset-bearing ranges always carry the same token and compare equal via
+    // their (absent) start/end. If a SECOND relative token is ever added, add
+    // a ``preset`` comparison here or a widget token override of a different
+    // canvas token would be a false-negative (no override pill).
     return (a.start ?? null) === (b.start ?? null)
       && (a.end ?? null) === (b.end ?? null);
   }

@@ -393,6 +393,18 @@ def test_reject_canvas_filters_bad_preset():
         )
 
 
+def test_reject_canvas_filters_preset_with_absolute_dates():
+    # A relative preset carries no absolute window; a blob with both is
+    # contradictory and rejected (the _preset_excludes_absolute invariant).
+    with pytest.raises(ValidationError):
+        ReportCreate(
+            name="r",
+            canvas_filters_json={
+                "date_range": {"preset": "next_cycle", "start": "2026-01-01"}
+            },
+        )
+
+
 # ─── update path mirrors create ─────────────────────────────────────
 
 
