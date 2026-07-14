@@ -58,7 +58,9 @@ export default function CategoryPicker({
 
   const [search, setSearch] = useState("");
   const selected = useMemo(() => new Set(value), [value]);
-  const cats = data ?? [];
+  // Wrap in useMemo so the `?? []` fallback doesn't mint a fresh array
+  // every render, which would destabilize the `tree` useMemo below.
+  const cats = useMemo(() => data ?? [], [data]);
   const tree = useMemo(() => buildTree(cats), [cats]);
 
   const visibleTree = useMemo(() => {
