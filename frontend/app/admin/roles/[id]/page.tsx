@@ -59,6 +59,7 @@ export default function AdminRoleDetailPage() {
   useEffect(() => {
     if (loading || !user || !hasPlatformPermission(user, "roles.manage")) return;
     if (!Number.isFinite(roleId)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- route-param validation guard inside the fetch effect; setState is intentional
       setError("Invalid role id.");
       setFetching(false);
       return;

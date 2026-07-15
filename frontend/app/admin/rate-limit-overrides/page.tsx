@@ -238,6 +238,7 @@ function AdminRateLimitOverridesPageContent() {
 
   useEffect(() => {
     if (!authLoading && canView) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag set before an in-effect fetch; proper fix arrives with the SWR data-hook migration
       void refresh();
     }
   }, [authLoading, canView, refresh]);
@@ -247,6 +248,7 @@ function AdminRateLimitOverridesPageContent() {
     if (!data) return;
     if (offset > 0 && offset >= data.total) {
       const lastOffset = Math.max(0, (pageCount(data.total, pageSize) - 1) * pageSize);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp URL-owned offset after data lands; not derivable during render
       if (lastOffset !== offset) setOffset(lastOffset);
     }
   }, [data, offset, pageSize]);
