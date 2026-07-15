@@ -38,8 +38,9 @@ export default function FeatureFlagsCard() {
   const clearTimers = useRef<number[]>([]);
 
   useEffect(() => {
+    const timers = clearTimers.current;
     return () => {
-      clearTimers.current.forEach(clearTimeout);
+      timers.forEach(clearTimeout);
     };
   }, []);
 

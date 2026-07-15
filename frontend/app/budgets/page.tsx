@@ -127,11 +127,13 @@ export default function BudgetsPage() {
   }, [periodStart]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial refs fetch: loadRefs() writes categories/periods into state once auth resolves
     if (!loading && user) loadRefs().catch(() => {});
   }, [loading, user, loadRefs]);
 
   useEffect(() => {
     if (!loading && user) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- set the fetching flag before the budgets list load kicks off
       setFetching(true);
       loadBudgets().catch(() => setFetching(false));
     }
@@ -163,6 +165,7 @@ export default function BudgetsPage() {
   // form/state so they can't submit against a read-only period.
   useEffect(() => {
     if (!isEditable) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- drop open form/edit/transfer/delete state when the selected period becomes read-only
       setShowForm(false);
       setEditingId(null);
       setTransferringId(null);

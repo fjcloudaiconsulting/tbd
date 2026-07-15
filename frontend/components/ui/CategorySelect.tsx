@@ -128,12 +128,19 @@ export default function CategorySelect({ id, categories, value, onChange, filter
 
   // Recent items — loaded client-side only to avoid SSR hydration mismatch
   const [recentIds, setRecentIds] = useState<number[]>([]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- load recent categories from localStorage when the dropdown opens (client-only, avoids SSR hydration mismatch)
   useEffect(() => { setRecentIds(getRecent()); }, [open]);
 
   const recentItems = recentIds
     .map((rid) => filtered.find((c) => c.id === rid))
     .filter(Boolean) as Category[];
-  const nonRecent = filtered.filter((c) => !recentIds.includes(c.id));
+  // Memoized so the `grouped` useMemo below depends on a stable reference;
+  // an inline-recreated array here defeats that memo (and the compiler's
+  // ability to preserve it).
+  const nonRecent = useMemo(
+    () => filtered.filter((c) => !recentIds.includes(c.id)),
+    [filtered, recentIds],
+  );
 
   // Build ordered flat list for keyboard nav.
   // Disabled categories are skipped — Enter on an "already added" row
@@ -151,6 +158,7 @@ export default function CategorySelect({ id, categories, value, onChange, filter
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open, showAddModal]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the keyboard highlight index when the query or open state changes
   useEffect(() => { setHighlightIdx(-1); }, [query, open]);
 
   function handleSelect(cat: Category) {

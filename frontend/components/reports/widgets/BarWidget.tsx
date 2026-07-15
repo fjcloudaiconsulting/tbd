@@ -72,7 +72,9 @@ export default function BarWidget({
   const secondaryKey = widget.config.dimensions[1];
   const sliced = Boolean(secondaryKey);
 
-  const queryRows = data?.rows ?? [];
+  // Wrap in useMemo so the `?? []` fallback doesn't mint a fresh array
+  // every render, which would destabilize the simpleRows/stacked useMemos.
+  const queryRows = useMemo(() => data?.rows ?? [], [data]);
 
   // Single-series shape (no break-down): one ``value`` per label.
   // Memoized on the query rows + primary key so unrelated parent renders

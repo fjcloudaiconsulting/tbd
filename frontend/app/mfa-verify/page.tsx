@@ -46,6 +46,7 @@ function MfaVerifyContent() {
   }, [loading, user, mfaToken, router]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the code input and status messages when switching MFA mode (TOTP vs recovery code)
     setCode("");
     setError("");
     setMessage("");

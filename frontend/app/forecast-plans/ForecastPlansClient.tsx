@@ -172,6 +172,7 @@ export default function ForecastPlansClient({
   useEffect(() => {
     try {
       const raw = localStorage.getItem("forecast-plans:show-details");
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- restore persisted show-details preference from localStorage after mount (client-only, avoids SSR hydration mismatch)
       if (raw === "true") setShowDetails(true);
     } catch {
       // localStorage unavailable (private mode etc.) — keep default off.
@@ -239,6 +240,7 @@ export default function ForecastPlansClient({
   const [savingMode, setSavingMode] = useState(false);
   useEffect(() => {
     if (plan?.forecast_input_granularity) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync editable mode to the granularity of the freshly-loaded plan
       setMode(plan.forecast_input_granularity);
     }
   }, [plan?.forecast_input_granularity]);
@@ -507,6 +509,7 @@ export default function ForecastPlansClient({
   // Reset transient form/edit state when the visible period changes so a
   // half-completed Add/Edit on one period doesn't bleed into another.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset transient add/edit form state when the visible period changes so an edit doesn't bleed across periods
     setShowForm(false);
     setEditingId(null);
   }, [periodStart]);

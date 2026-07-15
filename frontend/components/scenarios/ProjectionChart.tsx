@@ -121,6 +121,7 @@ export function ProjectionChart({
   // engine a chance to commit before Recharts measures.
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- defer ResponsiveContainer render by one tick so the flex/grid pane commits its width before Recharts measures (avoids the width(-1) warning)
     setMounted(true);
   }, []);
 

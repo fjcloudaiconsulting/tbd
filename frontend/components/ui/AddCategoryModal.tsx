@@ -62,6 +62,7 @@ export default function AddCategoryModal({
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flag mounted after first commit so the portal + focus effect run client-side only (avoids SSR hydration mismatch)
     setMounted(true);
   }, []);
 

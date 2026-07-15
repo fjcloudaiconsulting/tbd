@@ -44,6 +44,7 @@ export default function SettingsProfilePage() {
   const stepupErrorCode = searchParams?.get("sso_stepup_error");
   const [stepupErrorVisible, setStepupErrorVisible] = useState<boolean>(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror the SSO step-up error banner visibility to the ?sso_stepup_error URL query
     setStepupErrorVisible(Boolean(stepupErrorCode));
   }, [stepupErrorCode]);
   function clearStepupErrorFromUrl() {
@@ -76,6 +77,7 @@ export default function SettingsProfilePage() {
 
   useEffect(() => {
     if (user) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- seed the editable profile fields from AuthContext user once /me lands
       setFirstName(user.first_name ?? "");
       setLastName(user.last_name ?? "");
       setUsername(user.username);
@@ -92,6 +94,7 @@ export default function SettingsProfilePage() {
     const hash = window.location.hash;
     if (hash.startsWith("#stepup_token=")) {
       const token = hash.slice("#stepup_token=".length);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- capture the step-up token from the URL fragment on mount before stripping it from history
       if (token) setStepupToken(token);
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
     }
