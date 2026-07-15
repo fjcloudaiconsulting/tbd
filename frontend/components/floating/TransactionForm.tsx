@@ -143,6 +143,7 @@ export default function TransactionForm({
   // after the panel mounted), pick them up so the form isn't stuck on
   // an empty selection.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- seeds the account selection once the default arrives async (accounts loaded after mount), without clobbering a manual pick
     if (accountId === "" && initialAccountId) setAccountId(initialAccountId);
     // Intentionally not reacting to subsequent activeAccounts changes,
     // we don't want to overwrite a user's manual selection.

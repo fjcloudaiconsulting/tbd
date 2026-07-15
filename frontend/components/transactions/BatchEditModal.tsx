@@ -48,6 +48,7 @@ export default function BatchEditModal({
   // into the next batch.
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resets the batch-edit form fields each time the modal opens
       setCategoryId("");
       setStatus("");
       setAccountId("");
