@@ -131,6 +131,7 @@ export default function AdminUserDetailPage() {
   useEffect(() => {
     if (loading || !user || !hasPlatformPermission(user, "users.view")) return;
     if (!Number.isFinite(userId)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- route-param validation guard inside the fetch effect; setState is intentional
       setError("Invalid user id");
       setFetching(false);
       return;
