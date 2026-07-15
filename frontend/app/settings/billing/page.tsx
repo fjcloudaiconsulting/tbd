@@ -24,6 +24,10 @@ export default function BillingPage() {
   const router = useRouter();
   const [subscription, setSubscription] = useState<SubscriptionDetail | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
+  // Capture "now" once at mount so the trial-days-left math stays out of
+  // render (Date.now() during render is impure). Day-granular countdown, so
+  // mount time vs render time is indistinguishable.
+  const [nowMs] = useState(() => Date.now());
   const [loadingSub, setLoadingSub] = useState(true);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -46,6 +50,7 @@ export default function BillingPage() {
     // fetch entirely when the flag is off. The page short-circuits
     // to the empty state below.
     if (!billingUiEnabled) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the subscription loading flag when the billing kill-switch skips the fetch
       setLoadingSub(false);
       return;
     }
@@ -139,7 +144,7 @@ export default function BillingPage() {
   let trialDaysLeft = 0;
   if (isTrialing && sub?.trial_end) {
     const endMs = Date.parse(sub.trial_end + "T23:59:59Z");
-    trialDaysLeft = Math.max(0, Math.floor((endMs - Date.now()) / 86_400_000));
+    trialDaysLeft = Math.max(0, Math.floor((endMs - nowMs) / 86_400_000));
   }
 
   return (

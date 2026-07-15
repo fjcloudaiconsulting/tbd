@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import ConfirmModal from "@/components/ui/ConfirmModal";
@@ -88,6 +88,7 @@ export default function AddMasterWithSubsModal({
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flag mounted after first commit so the portal + focus effect run client-side only (avoids SSR hydration mismatch)
     setMounted(true);
   }, []);
 
@@ -100,6 +101,26 @@ export default function AddMasterWithSubsModal({
       previousFocusRef.current?.focus();
     };
   }, [mounted]);
+
+  // Hand the created master back to the parent so its list refreshes,
+  // surfacing a retry-able error if that refresh throws. Memoized on
+  // ``onCreated`` so it can be a stable dependency of the keydown effect.
+  const finishWithMaster = useCallback(
+    async (master: Category) => {
+      try {
+        await onCreated(master);
+        setReloadError(false);
+      } catch (err) {
+        setReloadError(true);
+        setErrorText(
+          err instanceof Error
+            ? `Master created but the page failed to refresh: ${err.message}`
+            : "Master created but the page failed to refresh.",
+        );
+      }
+    },
+    [onCreated],
+  );
 
   // Escape closes the parent modal. ConfirmModal owns its own Escape
   // and Tab handling when it is open, so we gate this trap on
@@ -141,7 +162,7 @@ export default function AddMasterWithSubsModal({
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [submitting, confirmOpen, createdMaster, onCancel, onCreated]);
+  }, [submitting, confirmOpen, createdMaster, onCancel, finishWithMaster]);
 
   // Lock body scroll while open.
   useEffect(() => {
@@ -302,20 +323,6 @@ export default function AddMasterWithSubsModal({
   // may fail (network blip during the post-mutation refresh). Surface
   // the error inline with a Retry-refresh button instead of dropping
   // the promise silently.
-  async function finishWithMaster(master: Category) {
-    try {
-      await onCreated(master);
-      setReloadError(false);
-    } catch (err) {
-      setReloadError(true);
-      setErrorText(
-        err instanceof Error
-          ? `Master created but the page failed to refresh: ${err.message}`
-          : "Master created but the page failed to refresh.",
-      );
-    }
-  }
-
   const submitLabel = submitting
     ? "Working..."
     : createdMaster !== null

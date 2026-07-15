@@ -176,6 +176,7 @@ function AdminOrgsPageContent() {
 
   useEffect(() => {
     if (loading || !user || !hasPlatformPermission(user, "orgs.view")) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag set before an in-effect fetch; proper fix arrives with the SWR data-hook migration
     setFetching(true);
     setError("");
     const params = new URLSearchParams({
@@ -196,6 +197,7 @@ function AdminOrgsPageContent() {
     if (!data) return;
     if (offset > 0 && offset >= data.total) {
       const lastOffset = Math.max(0, (pageCount(data.total, pageSize) - 1) * pageSize);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp URL-owned offset after data lands; not derivable during render
       if (lastOffset !== offset) setOffset(lastOffset);
     }
   }, [data, offset, pageSize]);

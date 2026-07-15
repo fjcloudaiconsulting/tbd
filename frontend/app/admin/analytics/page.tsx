@@ -131,6 +131,7 @@ export default function AdminAnalyticsPage() {
     if (loading || !user || !hasPlatformPermission(user, "analytics.view")) {
       return;
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag set before an in-effect fetch; proper fix arrives with the SWR data-hook migration
     setFetching(true);
     apiFetch<AnalyticsResponse>("/api/v1/admin/analytics?days=30")
       .then((d) => setData(d))

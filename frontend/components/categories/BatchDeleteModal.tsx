@@ -76,6 +76,7 @@ export default function BatchDeleteModal({
   // Reset when opening / selection changes.
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset migration targets/pending/failure state when the modal opens or the selection changes
       setMigrationTargets({});
       setPendingIds(selectedSubs.map((s) => s.id));
       setFailures([]);

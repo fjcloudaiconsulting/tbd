@@ -11,7 +11,7 @@
  * is delegated to the extracted control components (``DataTab`` /
  * ``StyleTab`` / ``FilterEditor`` via ``buildWidgetMutations``).
  */
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   useFloating,
   autoUpdate,
@@ -64,6 +64,21 @@ export default function WidgetEditorPopover({
   const [tab, setTab] = useState<TabKey>(() => requestedTab ?? "data");
   const baseId = useId();
 
+  // Latest-value refs for the consume-and-clear handshake below. The two
+  // effects deliberately key on a single trigger each (widget identity /
+  // requestedTab transition) and must read the *latest* requestedTab /
+  // onTabConsumed without those values being effect dependencies (listing
+  // them reintroduces the clobber/re-consume races the two-effect split
+  // exists to avoid). This sync effect runs on every commit, before the
+  // two handshake effects declared after it, so their reads see fresh
+  // values.
+  const requestedTabRef = useRef(requestedTab);
+  const onTabConsumedRef = useRef(onTabConsumed);
+  useEffect(() => {
+    requestedTabRef.current = requestedTab;
+    onTabConsumedRef.current = onTabConsumed;
+  });
+
   const { refs, floatingStyles, context } = useFloating({
     open: true,
     onOpenChange: (next) => {
@@ -98,10 +113,11 @@ export default function WidgetEditorPopover({
   // when the page clears requestedTab (filters → null) this effect does
   // NOT re-fire and clobber the active tab back to Data.
   useEffect(() => {
-    setTab(requestedTab ?? "data");
-    // intentional:
-    // reset only on widget-identity change; requestedTab is read at
-    // switch time, not a dependency (adding it causes a clobber-to-Data).
+    // Read the latest requestedTab via ref (see sync effect above): reset
+    // fires only on widget-identity change; requestedTab must NOT be a
+    // dependency (adding it causes a clobber-to-Data when the page clears
+    // it back to null).
+    setTab(requestedTabRef.current ?? "data");
   }, [widget.id]);
 
   // Honor-request effect — keyed on ``requestedTab`` only. When a chip
@@ -111,16 +127,15 @@ export default function WidgetEditorPopover({
   // makes a SECOND chip click on the already-selected widget work.
   useEffect(() => {
     if (requestedTab) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- switch to the deep-linked tab when a chip-click sets requestedTab (null -> tab transition)
       setTab(requestedTab);
-      onTabConsumed?.();
+      // Read the latest onTabConsumed via ref (see sync effect above):
+      // this effect keys ONLY on a requestedTab transition. onTabConsumed
+      // is a page callback whose identity isn't guaranteed stable; listing
+      // it would re-fire this effect on its identity change (re-consuming a
+      // request that's already been honored).
+      onTabConsumedRef.current?.();
     }
-    // intentional:
-    // honor a request ONLY on a requestedTab transition. ``onTabConsumed``
-    // is a page callback whose identity isn't guaranteed stable across
-    // renders; listing it would re-fire this effect on its identity change
-    // (re-consuming a request that's already been honored). We deliberately
-    // read the latest ``onTabConsumed`` from the closure and key only on
-    // ``requestedTab``.
   }, [requestedTab]);
 
   const dismiss = useDismiss(context, {
