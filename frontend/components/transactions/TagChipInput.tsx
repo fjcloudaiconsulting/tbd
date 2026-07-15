@@ -210,6 +210,7 @@ export default function TagChipInput({
   useEffect(() => {
     if (disabled) return;
     if (atCap) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clears and closes the suggestion dropdown once the tag cap is reached
       setSuggestions([]);
       setOpen(false);
       setHighlightIdx(-1);

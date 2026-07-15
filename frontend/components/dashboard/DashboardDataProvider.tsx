@@ -427,6 +427,7 @@ export function DashboardDataProvider({
   useEffect(() => {
     if (selectedStart === null || periods.length === 0) return;
     if (!periods.some((p) => p.start_date === selectedStart)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- drop the period pin after a revalidation removes the selected period from the list
       setSelectedStart(null);
     }
   }, [periods, selectedStart]);
@@ -618,6 +619,7 @@ export function DashboardDataProvider({
   // flips true; only the imperative loads remain here, gated the same way.
   useEffect(() => {
     if (!refsEnabled) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loads auxiliary refs, surfacing failure into error state and settling the loaded flag
     loadAux()
       .catch((err: unknown) => {
         const msg =
@@ -641,6 +643,7 @@ export function DashboardDataProvider({
   // ── Period-scoped loads (fire when realPeriodStart is known) ────────────────
   useEffect(() => {
     if (realPeriodStart) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the forecast projection fetch that loads its result into state
       void loadForecastProjection();
     }
   }, [realPeriodStart, loadForecastProjection]);
@@ -649,12 +652,14 @@ export function DashboardDataProvider({
   // matching the guard pattern on the sibling loadForecastProjection effect.
   useEffect(() => {
     if (realPeriodStart) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the per-account month-end forecast fetch that loads its result into state
       void loadAccountMonthEndForecast();
     }
   }, [realPeriodStart, loadAccountMonthEndForecast]);
 
   useEffect(() => {
     if (realPeriodStart) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the forecast-plan fetch that loads its result into state
       void loadForecastPlan();
     }
   }, [realPeriodStart, loadForecastPlan]);
@@ -662,6 +667,7 @@ export function DashboardDataProvider({
   // Phase 2b: period snapshot + budgets fire once realPeriodStart resolves.
   useEffect(() => {
     if (realPeriodStart) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the full-period transaction snapshot fetch that loads its result into state
       void loadTransactionSnapshot();
     }
   }, [realPeriodStart, loadTransactionSnapshot]);
@@ -675,6 +681,7 @@ export function DashboardDataProvider({
   // never loading budgets at all.
   useEffect(() => {
     if (periodsResolved) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the budgets fetch that loads its result into state
       void loadBudgets();
     }
   }, [periodsResolved, loadBudgets]);
@@ -683,6 +690,7 @@ export function DashboardDataProvider({
   // page changes. Period nav does NOT reset the page (mirrors LegacyDashboard).
   useEffect(() => {
     if (realPeriodStart) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- triggers the paginated recent-transactions fetch that loads its result into state
       void loadPageTransactions(page);
     }
   }, [realPeriodStart, page, loadPageTransactions]);

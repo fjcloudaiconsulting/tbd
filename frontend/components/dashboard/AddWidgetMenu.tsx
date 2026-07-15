@@ -129,6 +129,7 @@ export default function AddWidgetMenu({
   // Reset sub-view when the menu closes.
   useEffect(() => {
     if (!open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resets the menu's transient sub-view state when it closes
       setView("root");
       setSelectedReport(null);
       setReports([]);

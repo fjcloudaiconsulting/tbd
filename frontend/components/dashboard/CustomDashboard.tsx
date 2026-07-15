@@ -141,6 +141,7 @@ export default function CustomDashboard() {
   useEffect(() => {
     if (!authReady) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch loading flag raised before the dashboard layout load
     setLoading(true);
     getDashboard()
       .then((data) => {

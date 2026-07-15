@@ -196,22 +196,33 @@ function TransactionsPageContent() {
     filterSearch,
     filterPeriod,
   } = persistedFilters.filters;
+  // setField is memoized inside the hook; hoist it to a stable identifier so
+  // the useCallback-wrapped setters below get a clean, stable dependency.
+  const persistedSetField = persistedFilters.setField;
   const setFilterAccount = (v: number | "") =>
-    persistedFilters.setField("filterAccount", v);
-  const setFilterCategory = (v: number | "") =>
-    persistedFilters.setField("filterCategory", v);
+    persistedSetField("filterAccount", v);
+  // Stable across renders (setField is memoized) so effects that call this
+  // setter can list it in their dep array without re-running every render.
+  const setFilterCategory = useCallback(
+    (v: number | "") => persistedSetField("filterCategory", v),
+    [persistedSetField],
+  );
   const setFilterType = (v: string) =>
-    persistedFilters.setField("filterType", v);
+    persistedSetField("filterType", v);
   const setFilterStatus = (v: string) =>
-    persistedFilters.setField("filterStatus", v);
+    persistedSetField("filterStatus", v);
   const setFilterDateFrom = (v: string) =>
-    persistedFilters.setField("filterDateFrom", v);
+    persistedSetField("filterDateFrom", v);
   const setFilterDateTo = (v: string) =>
-    persistedFilters.setField("filterDateTo", v);
+    persistedSetField("filterDateTo", v);
   const setFilterSearch = (v: string) =>
-    persistedFilters.setField("filterSearch", v);
-  const setFilterPeriod = (v: string) =>
-    persistedFilters.setField("filterPeriod", v);
+    persistedSetField("filterSearch", v);
+  // Stable across renders (setField is memoized) so effects that call this
+  // setter can list it in their dep array without re-running every render.
+  const setFilterPeriod = useCallback(
+    (v: string) => persistedSetField("filterPeriod", v),
+    [persistedSetField],
+  );
 
   const persistedSort = usePersistedSort<SortField>(
     SORT_KEY_TRANSACTIONS,
@@ -316,7 +327,7 @@ function TransactionsPageContent() {
         setFilterCategory(match.id);
       }
     }
-  }, [categories, searchParams]);
+  }, [categories, searchParams, setFilterCategory]);
 
   const closedPeriods = useMemo(
     () => periods.filter((p) => p.end_date !== null),
@@ -329,7 +340,7 @@ function TransactionsPageContent() {
       (p) => String(p.id) === filterPeriod,
     );
     if (!selectedClosedPeriod) setFilterPeriod("");
-  }, [closedPeriods, filterPeriod, periodsLoaded]);
+  }, [closedPeriods, filterPeriod, periodsLoaded, setFilterPeriod]);
 
   // Arm the stalled-periods fallback only while we are actually waiting.
   useEffect(() => {
@@ -340,18 +351,23 @@ function TransactionsPageContent() {
 
   useEffect(() => {
     if (!loading && user && canLoadList) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch loading flag raised before the async transaction list load kicks off
       setFetching(true);
       loadTransactions(page).catch(() => setFetching(false));
     }
   }, [loading, user, canLoadList, loadTransactions, page]);
 
-  useEffect(() => { setPage(0); }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset pagination to the first page whenever any filter selection changes
+    setPage(0);
+  }, [filterAccount, filterCategory, filterType, filterStatus, filterDateFrom, filterDateTo, filterSearch, filterPeriod]);
 
   // Clamp the page after a refetch shrinks the result set (e.g. a bulk
   // delete that empties the last page) so the user is never stranded on a
   // page beyond the new total.
   useEffect(() => {
     const last = pageCount(total, pageSize) - 1;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clamp the current page down after a refetch shrinks the result set past it
     if (page > last) setPage(Math.max(0, last));
   }, [total, pageSize, page]);
 
