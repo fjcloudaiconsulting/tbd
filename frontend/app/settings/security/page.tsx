@@ -597,6 +597,7 @@ export default function SecurityPage() {
                   </p>
                   <figure className="space-y-2">
                     <div className="flex justify-center rounded-lg bg-white p-4">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- the MFA QR is an inline base64 data URI; next/image cannot optimize a data URI and would only add config/CSP friction. */}
                       <img
                         src={`data:image/png;base64,${setupData.qr_code}`}
                         alt="QR code for two-factor authentication. Scan with your authenticator app, or expand the manual key below."

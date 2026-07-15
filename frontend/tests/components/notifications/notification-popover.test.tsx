@@ -57,6 +57,24 @@ describe("NotificationPopover", () => {
     ).toBeInTheDocument();
   });
 
+  it("footer 'View all' links to the notifications settings page and closes on click", () => {
+    const onClose = vi.fn();
+    render(
+      <NotificationPopover
+        items={[]}
+        onAfterReadChange={() => {}}
+        onClose={onClose}
+      />,
+    );
+    const link = screen.getByRole("link", { name: /view all/i });
+    expect(link).toHaveAttribute("href", "/settings/notifications");
+    // Cancel the anchor's default action so jsdom doesn't log an
+    // unimplemented-navigation warning; the onClick (onClose) still fires.
+    link.addEventListener("click", (e) => e.preventDefault());
+    fireEvent.click(link);
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("caps the list to 10 rows even when more are passed", () => {
     const many = Array.from({ length: 15 }, (_, i) =>
       mkNotification(i + 1, { title: `Row ${i + 1}` }),
