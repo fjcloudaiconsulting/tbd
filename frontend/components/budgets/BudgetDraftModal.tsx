@@ -47,6 +47,7 @@ export default function BudgetDraftModal({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the modal's loading/response/error/selection state each time it opens, before fetching the draft
     setLoading(true);
     setResponse(null);
     setFetchError("");

@@ -67,6 +67,7 @@ export default function LoginPageBody() {
   const ssoErrorCode = searchParams?.get("sso_error");
   const [ssoErrorVisible, setSsoErrorVisible] = useState<boolean>(false);
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mirror the SSO error banner visibility to the ?sso_error URL query
     setSsoErrorVisible(Boolean(ssoErrorCode));
   }, [ssoErrorCode]);
 

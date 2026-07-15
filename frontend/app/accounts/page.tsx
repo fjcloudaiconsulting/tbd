@@ -233,6 +233,7 @@ export default function AccountsPage() {
   }, [fetchAux, mutateAccounts]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: reload() writes fetched accounts/types/pending into state once auth resolves
     if (!loading && user) reload().catch(() => {});
   }, [loading, user, reload]);
 

@@ -166,6 +166,7 @@ function TourOverlay({ api }: { api: TourApi }) {
   const [rect, setRect] = useState<AnchorRect | null>(null);
   const [mounted, setMounted] = useState(false);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- flag mounted after first commit so the overlay portal renders client-side only (avoids SSR hydration mismatch)
   useEffect(() => setMounted(true), []);
 
   const recompute = useCallback(() => {
@@ -174,6 +175,7 @@ function TourOverlay({ api }: { api: TourApi }) {
 
   useLayoutEffect(() => {
     if (!api.isActive) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- measure the active tour anchor's rect after layout so the highlight/card position correctly (recompute -> setRect)
     recompute();
   }, [api.isActive, api.currentStep, recompute]);
 

@@ -12,7 +12,7 @@
  * parent (which checks via the `onValidityChange` callback).
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 
 import {
   btnSecondary,
@@ -108,13 +108,15 @@ export function RetirementParamsEditor({
     return [];
   }, [params.contribution_curve]);
 
-  const [curveError, setCurveError] = useState<string | null>(null);
+  // Derived state: the curve's validity is a pure function of `curve`, so
+  // compute it in render rather than mirroring it into state via an effect.
+  const curveError = useMemo(() => validateCurve(curve), [curve]);
 
+  // Notify the parent of validity changes (a genuine side effect, kept in
+  // an effect; no state is set here).
   useEffect(() => {
-    const err = validateCurve(curve);
-    setCurveError(err);
-    onValidityChange?.(err === null);
-  }, [curve, onValidityChange]);
+    onValidityChange?.(curveError === null);
+  }, [curveError, onValidityChange]);
 
   function updateCurve(next: RetirementCurveStep[]) {
     set("contribution_curve", next);

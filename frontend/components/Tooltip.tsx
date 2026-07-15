@@ -130,6 +130,7 @@ export default function Tooltip({
   const reducedMotion = useReducedMotion();
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- flag mounted after first commit so the portal renders client-side only (avoids SSR hydration mismatch)
     setMounted(true);
   }, []);
 

@@ -64,7 +64,9 @@ export default function Canvas({
   renderWidget,
   compact = false,
 }: Props) {
-  const items = layout.widgets ?? [];
+  // Wrap in useMemo so the `?? []` fallback doesn't mint a fresh array
+  // every render, which would destabilize the rgLayout useMemo below.
+  const items = useMemo(() => layout.widgets ?? [], [layout.widgets]);
   // The stored layout is the 12-column (lg/md) layout. At narrower
   // breakpoints react-grid-layout clamps widget widths to fit fewer
   // columns (e.g. a w=12 table → w=6 at sm); those clamped layouts are

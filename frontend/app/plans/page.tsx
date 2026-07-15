@@ -203,6 +203,7 @@ export default function PlansPage() {
 
   useEffect(() => {
     // Do not fetch scenarios when the Plans feature is disabled for this org.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: loadAll() writes the scenarios list into state once auth + feature gate resolve
     if (user && features?.plans !== false) void loadAll();
   }, [user, features, loadAll]);
 
@@ -219,6 +220,7 @@ export default function PlansPage() {
     const id = Number(raw);
     if (Number.isFinite(id)) {
       const match = items.find((s) => s.id === id);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- open the plan named by the ?open=<id> URL param in the editor once the list has loaded
       if (match) setActive(match);
     }
     openParamConsumedRef.current = true;
@@ -585,6 +587,7 @@ function PlanEditor({
   // Clear it as soon as the editor goes dirty again.
   useEffect(() => {
     if (isDirty && statusMsg) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the stale "Saved"/"Discarded" status message once the editor goes dirty again
       setStatusMsg("");
     }
   }, [isDirty, statusMsg]);

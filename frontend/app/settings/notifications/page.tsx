@@ -112,6 +112,7 @@ export default function NotificationsPage() {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clear the load error before fetching notification preferences into state
     setLoadErr("");
     apiFetch<NotificationPreferences>("/api/v1/notifications/preferences")
       .then((data) => {

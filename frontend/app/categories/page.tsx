@@ -199,6 +199,7 @@ export default function CategoriesPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: reload() writes the categories list into state once auth resolves
     if (!loading && user) reload().catch(() => setFetching(false));
   }, [loading, user, reload]);
 
@@ -345,6 +346,7 @@ export default function CategoriesPage() {
   useEffect(() => {
     if (pendingDrag === null) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset preview loading/result/error state before fetching the drag-move preview
     setPendingPreviewLoading(true);
     setPendingPreview(null);
     setPendingPreviewError("");

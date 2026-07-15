@@ -188,6 +188,7 @@ function ImportPageContent() {
   useEffect(() => {
     const paramId = searchParams.get("account");
     if (paramId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- pre-select the import account from the ?account URL param, falling back to the default account
       setAccountId(Number(paramId));
     } else if (defaultAccount && accountId === "") {
       setAccountId(defaultAccount.id);

@@ -35,6 +35,7 @@ export default function AcceptInviteBody() {
 
   useEffect(() => {
     if (!token) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- surface the missing-token error and clear the loading flag when there is no invite token to fetch
       setPreviewError("Missing invitation token.");
       setLoading(false);
       return;

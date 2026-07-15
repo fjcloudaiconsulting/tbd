@@ -31,6 +31,7 @@ export default function ConsentBanner() {
 
   useEffect(() => {
     // Show the banner when there's no valid (non-expired) stored choice.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- open the consent banner after mount when no stored choice exists (reads localStorage, client-only)
     if (!readConsent(Date.now())) setOpen(true);
 
     // The footer "Cookie preferences" link re-opens the banner regardless of

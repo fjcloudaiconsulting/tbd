@@ -119,6 +119,10 @@ export default function SystemAnnouncementsPage() {
   const [formIsActive, setFormIsActive] = useState(true);
   const [formStartAt, setFormStartAt] = useState("");
   const [formEndAt, setFormEndAt] = useState("");
+  // Capture "now" once at mount so status derivation stays out of render
+  // (Date.now() during render is impure). The table reloads via loadItems,
+  // so a mount-time reference is sufficient for the status badges.
+  const [nowMs] = useState(() => Date.now());
 
   const canManage = !!user && isSuperadmin(user);
 
@@ -153,6 +157,7 @@ export default function SystemAnnouncementsPage() {
   }, [sortField, sortDir, page, pageSize]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch: loadItems() writes the announcements page + total into state when sort/page/pageSize change
     if (canManage) void loadItems();
   }, [canManage, loadItems]);
 
@@ -241,8 +246,6 @@ export default function SystemAnnouncementsPage() {
   }
 
   if (loading || !canManage) return null;
-
-  const nowMs = Date.now();
 
   return (
     <AppShell>

@@ -222,6 +222,7 @@ export default function AiProvidersPage() {
 
   useEffect(() => {
     if (!loading && user && isAdmin(user)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: fetchAll() writes the credentials list into state once auth resolves for an admin
       fetchAll();
     }
   }, [loading, user, fetchAll]);
@@ -797,6 +798,7 @@ function FeatureRoutingTable({
         model: existing?.model ?? "",
       };
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- seed editable per-feature routing drafts from the async-fetched features list when it lands/changes
     setDrafts(m);
   }, [features]);
 
@@ -966,6 +968,7 @@ function CapsSection({ caps, onSaved }: CapsSectionProps) {
   const [errorText, setErrorText] = useState<string | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- seed editable default soft/hard cap inputs from the async-fetched caps when they land/change
     setDefaultSoft(
       caps?.default?.soft_cap_cents != null
         ? (caps.default.soft_cap_cents / 100).toString()

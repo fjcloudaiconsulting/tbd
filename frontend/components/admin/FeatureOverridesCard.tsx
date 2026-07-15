@@ -30,6 +30,7 @@ export default function FeatureOverridesCard({ orgId }: Props) {
     }
   }, [orgId]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: load() writes the org feature-state into state on mount
   useEffect(() => { load(); }, [load]);
 
   async function handleRevoke(key: FeatureKey) {

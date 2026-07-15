@@ -22,6 +22,7 @@ export default function BackLink({ className = "" }: { className?: string }) {
     // This check runs client-side only (useEffect), so there's no SSR
     // mismatch — we render the "Home" fallback on first paint and upgrade
     // to "Back" once we know the history state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- upgrade from the "Home" fallback to "Back" after reading window.history.length client-side (avoids SSR hydration mismatch)
     setCanGoBack(window.history.length > 1);
   }, []);
 

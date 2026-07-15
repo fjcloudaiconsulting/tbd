@@ -46,6 +46,7 @@ export default function HistoryPanel({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the versions list + error before fetching report history when the panel opens
     setVersions(null);
     setError(null);
     listVersions(reportId)

@@ -91,6 +91,7 @@ export default function ComparePlansPage() {
 
   useEffect(() => {
     // Do not fetch scenarios when the Plans feature is disabled for this org.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: loadPlans() writes the scenarios list into state once auth + feature gate resolve
     if (user && features?.plans !== false) void loadPlans();
   }, [user, features, loadPlans]);
 

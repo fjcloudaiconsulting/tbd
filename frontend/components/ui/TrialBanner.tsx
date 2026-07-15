@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
 import type { User } from "@/lib/types";
 
@@ -10,6 +11,10 @@ interface Props {
 
 export default function TrialBanner({ user }: Props) {
   const { billingUiEnabled } = useAuth();
+  // Capture "now" once at mount so render stays pure (no Date.now() read
+  // during render). Trial countdown is day-granular, so mount-time vs
+  // render-time is indistinguishable.
+  const [nowMs] = useState(() => Date.now());
   const { subscription_status, subscription_plan, trial_end } = user;
 
   // Customer-facing billing surface kill switch. Hides the trial /
@@ -24,7 +29,6 @@ export default function TrialBanner({ user }: Props) {
   if (subscription_status === "trialing" && trial_end) {
     // Parse as UTC to avoid timezone drift; trial_end is a date string (YYYY-MM-DD)
     const endMs = Date.parse(trial_end + "T23:59:59Z");
-    const nowMs = Date.now();
     daysLeft = Math.max(0, Math.floor((endMs - nowMs) / 86_400_000));
   }
 

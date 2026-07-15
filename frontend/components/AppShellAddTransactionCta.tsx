@@ -96,6 +96,7 @@ export default function AppShellAddTransactionCta() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: loadRefs() writes accounts/categories refs into state for the quick-add forms
     void loadRefs();
   }, [loadRefs]);
 

@@ -380,6 +380,7 @@ export default function RecurringPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch: reload() writes the recurring templates list into state once auth resolves
     if (!loading && user) reload().catch(() => setFetching(false));
   }, [loading, user, reload]);
 

@@ -21,6 +21,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const stored = localStorage.getItem("tbd-theme");
     if (stored === "light" || stored === "dark") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- restore persisted theme from localStorage after mount (client-only, avoids SSR hydration mismatch)
       setTheme(stored);
       if (stored === "light") {
         document.documentElement.setAttribute("data-theme", "light");

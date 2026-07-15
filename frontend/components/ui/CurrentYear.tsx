@@ -10,6 +10,7 @@ export default function CurrentYear() {
   const [year, setYear] = useState(() => new Date().getFullYear());
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-evaluate the current year on the client after hydration so a visitor landing on Jan 1 sees the new year (server emits the build-time year)
     setYear(new Date().getFullYear());
   }, []);
 

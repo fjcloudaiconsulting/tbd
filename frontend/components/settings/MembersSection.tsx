@@ -124,6 +124,7 @@ export default function MembersSection({
   ]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch: refresh() writes the members/invitations pages into state when sort/page change
     refresh().catch(() => {});
   }, [refresh]);
 

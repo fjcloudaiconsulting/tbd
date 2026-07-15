@@ -62,6 +62,7 @@ export default function SingleDeleteModal({
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the reassign target/failure/submit state when the modal opens
       setTarget("");
       setNeedsTarget(hasKnownDependents);
       setFailure(null);
