@@ -21,11 +21,10 @@
  * - account / org_admin → neutral muted dot (informational)
  * - org_activity → muted further (background noise, opt-in only)
  *
- * "See all" footer link points to ``/settings/notifications`` —
- * that page lands in PR5 of the train. Until then it renders as a
- * disabled-looking text link rather than a hard 404 so we don't ship
- * a dangling anchor.
+ * "View all" footer link navigates to ``/settings/notifications``
+ * (the full inbox / preferences page) and closes the popover.
  */
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback } from "react";
 
@@ -107,7 +106,7 @@ export default function NotificationPopover({
           You&apos;re all caught up.
         </div>
         <div className="border-t border-border" />
-        <FooterLink />
+        <FooterLink onClose={onClose} />
       </div>
     );
   }
@@ -174,20 +173,23 @@ export default function NotificationPopover({
         ))}
       </ul>
       <div className="border-t border-border" />
-      <FooterLink />
+      <FooterLink onClose={onClose} />
     </div>
   );
 }
 
-function FooterLink() {
-  // The full inbox page (/settings/notifications) lands in PR5. Until
-  // then we render the link as a disabled-looking element so we don't
-  // ship a 404 anchor. When PR5 lands, swap this for a real <Link />.
+function FooterLink({ onClose }: { onClose: () => void }) {
+  // Links to the full inbox / preferences page (shipped in #430). Closing
+  // the popover on navigate mirrors the row-click behaviour above.
   return (
-    <div className="px-4 py-2 text-center text-xs text-text-muted">
-      <span aria-disabled="true" title="Available in a future update">
-        View all (coming soon)
-      </span>
+    <div className="px-4 py-2 text-center">
+      <Link
+        href="/settings/notifications"
+        onClick={onClose}
+        className="rounded text-xs font-medium text-text-secondary transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+      >
+        View all notifications
+      </Link>
     </div>
   );
 }

@@ -58,6 +58,7 @@ export default async function RootLayout({
         <GoogleAnalytics nonce={nonce} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        {/* eslint-disable-next-line @next/next/no-page-custom-font -- App Router loads webfonts via a <link> in the root layout <head>; no-page-custom-font is a Pages-Router rule and a false positive here. */}
         <link
           href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Outfit:wght@300;400;500;600&display=swap"
           rel="stylesheet"

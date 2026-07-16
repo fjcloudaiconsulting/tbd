@@ -101,6 +101,7 @@ export default function GlobalError({
             <button type="button" onClick={() => reset()} style={buttonStyle}>
               Reload application
             </button>
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- global-error replaces the root layout on a fatal error and renders outside Next's router tree, where next/link is unsafe; a plain <a> is required here. */}
             <a href="/" style={buttonStyle}>
               Go to home page
             </a>
