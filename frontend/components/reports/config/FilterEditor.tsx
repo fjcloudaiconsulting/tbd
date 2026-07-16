@@ -171,6 +171,39 @@ export default function FilterEditor({
         </div>
       )}
 
+      {/* "Include transfers & adjustments" is transactions-only. By default
+          reports exclude transfer legs, manual balance adjustments, and
+          reverted (skipped/rejected) reconciliation rows — matching Budgets,
+          Forecast, and the Sankey. This opt-in re-includes transfer legs +
+          manual adjustments; reverted rows stay excluded server-side. */}
+      {allowTransfer && (
+        <label className="flex items-start gap-2 text-xs text-text-secondary">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            aria-label="Include transfers and adjustments"
+            aria-describedby="include-non-reportable-help"
+            checked={!!filters.include_non_reportable}
+            onChange={(e) =>
+              onChange({
+                ...filters,
+                include_non_reportable: e.target.checked || undefined,
+              })
+            }
+          />
+          <span className="flex flex-col gap-0.5">
+            <span>Include transfers &amp; adjustments</span>
+            <span
+              id="include-non-reportable-help"
+              className="text-[11px] text-text-muted"
+            >
+              By default reports leave out transfers and balance adjustments,
+              like Budgets and Forecast do. Turn this on to count them.
+            </span>
+          </span>
+        </label>
+      )}
+
       <TagFilter
         value={filters.tag_names ?? []}
         match={(filters.tag_match ?? "all") as TagMatch}

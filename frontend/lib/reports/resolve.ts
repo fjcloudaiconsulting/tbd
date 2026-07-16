@@ -285,6 +285,11 @@ const FILTER_KEY_TO_SOURCE_FIELD: Record<keyof WidgetFilters, string> = {
   txn_type: "txn_type",
   status: "status",
   amount_range: "amount",
+  // ``include_non_reportable`` is a transactions-only query mode, not a
+  // column filter. Gate it on ``status`` (a field ONLY the transactions
+  // source publishes) so ``pruneFiltersToSource`` drops it on a switch to
+  // accounts/recurring but keeps it on transactions.
+  include_non_reportable: "status",
   tag_names: "tag_name",
   tag_match: "tag_name",
 };

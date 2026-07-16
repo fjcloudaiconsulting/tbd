@@ -13,6 +13,7 @@ from app.models.transaction import TransactionStatus, TransactionType
 from app.services.transaction_filters import (
     is_reportable_transaction,
     is_transfer_leg,
+    non_reverted_transaction_filter,
     reportable_transaction_filter,
 )
 
@@ -111,3 +112,33 @@ async def test_reportable_transaction_filter_excludes_transfer_legs_in_query(db_
     )
     rows = list(result.scalars().all())
     assert rows == []  # both legs are linked
+
+
+async def test_non_reverted_filter_keeps_transfers_but_drops_reverted(db_session):
+    """``non_reverted_transaction_filter`` (the Reports "include transfers &
+    adjustments" half) keeps transfer legs but still drops reverted
+    reconciliation rows, whose amount was reverted from the account balance."""
+    from datetime import date as _date
+
+    expense, income = await _seed_pair(db_session)  # two linked (accepted) legs
+    rej = Transaction(
+        org_id=expense.org_id,
+        account_id=expense.account_id,
+        category_id=expense.category_id,
+        description="rejected",
+        amount=15,
+        type=TransactionType.EXPENSE,
+        status=TransactionStatus.SETTLED,
+        date=_date(2026, 5, 1),
+        settled_date=_date(2026, 5, 1),
+        reconciliation_state="rejected",
+    )
+    db_session.add(rej)
+    await db_session.commit()
+
+    result = await db_session.execute(
+        select(Transaction).where(non_reverted_transaction_filter())
+    )
+    ids = {r.id for r in result.scalars().all()}
+    assert expense.id in ids and income.id in ids  # transfer legs retained
+    assert rej.id not in ids  # reverted row dropped

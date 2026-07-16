@@ -51,6 +51,22 @@ def reportable_transaction_filter():
     )
 
 
+def non_reverted_transaction_filter():
+    """SQL clause: rows whose amount still counts against the account balance.
+
+    The always-on half of ``reportable_transaction_filter``: it excludes ONLY
+    the reverted reconciliation rows (skipped/rejected), whose amount was
+    reverted from ``accounts.balance`` at the state transition. Transfer legs
+    and manual balance adjustments are NOT excluded here.
+
+    Used by the Reports "Include transfers & adjustments" opt-in: when a report
+    widget asks to include transfers + adjustments, it must still drop the
+    reverted rows, otherwise their amount double-counts against a balance that
+    no longer contains them.
+    """
+    return Transaction.reconciliation_state.notin_(_RECON_EXCLUDED_STATES)
+
+
 def effective_period_date_expr():
     """Period-bucketing date for billing-window queries.
 
