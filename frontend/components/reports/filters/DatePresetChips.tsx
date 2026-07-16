@@ -132,9 +132,13 @@ export default function DatePresetChips({
           );
         })}
       </div>
+      {/* Native date inputs have a fixed intrinsic width and won't shrink, so
+          below ~360px they overflow rather than wrap. Each label is full-width
+          (stacked) on very narrow screens and auto-width (side by side) at
+          ≥360px. */}
       {showDateInputs && (
         <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1">
+          <label className="flex w-full flex-col gap-1 min-[360px]:w-auto">
             <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
               From
             </span>
@@ -149,10 +153,10 @@ export default function DatePresetChips({
                   start: e.target.value || undefined,
                 })
               }
-              className="rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+              className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
             />
           </label>
-          <label className="flex flex-col gap-1">
+          <label className="flex w-full flex-col gap-1 min-[360px]:w-auto">
             <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
               To
             </span>
@@ -167,7 +171,7 @@ export default function DatePresetChips({
                   end: e.target.value || undefined,
                 })
               }
-              className="rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+              className="w-full rounded-md border border-border bg-bg px-2 py-1 text-sm text-text-primary"
             />
           </label>
         </div>
